@@ -40,6 +40,12 @@ supplementary server's environment is baked at deploy time, so a credential
 stored now is on the box after the next deploy, not the moment the page says it
 was written.
 
+An agent cannot do any of step 3: consent is a browser handshake with Google. A
+deployment that mounts the [`connectors`
+builtin](/operate/runtime-config/#the-oauth-leg-is-a-handoff-not-a-flow) gives it
+the next best thing, `describe_connector_authorization`, which hands back the
+console URL for the person to open and the parameter path the token lands at.
+
 ## The configuration
 
 ```yaml

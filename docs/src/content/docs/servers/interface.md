@@ -707,6 +707,27 @@ servers:
     entitlements: [admin]
 ```
 
+The strad image itself ships two: `./servers/echo.js`, and
+`./servers/connectors.js` — the server roster as MCP tools, the counterpart to
+the console at `/connectors`. Neither is mounted unless a config entry names it,
+so a deployment that wants an agent to be able to add, edit, disable and remove
+a connector opts in:
+
+```yaml
+servers:
+  - slug: connectors
+    kind: builtin
+    module: "./servers/connectors.js"
+    bundle: core
+    entitlements: [admin]
+```
+
+It serves nothing at all unless `gateway.configStore.enabled` is set, it lists
+its three write tools only where core holds the credential that persists a
+roster change, and an ordinary `tools:` `allow:` naming only its read tools
+mounts the read half by itself. Full model:
+[Runtime config](/operate/runtime-config/#the-same-roster-over-mcp).
+
 ## Validation refuses to boot on
 
 strad validates the whole config strictly at boot (a Zod `superRefine` in
@@ -897,6 +918,51 @@ reads `/strad/{env}/gateway/static/` at runtime, so a secret added or rotated in
 the store reaches a running gateway without a deploy. Setting it to
 `gcp-parameter-store` without a store credential is a hard boot failure, not a
 silent downgrade to env vars. Full model: [Secrets](/operate/secrets/).
+
+## `gateway.configStore`
+
+Whether the `servers:` list above is the whole roster, or the base a console can
+edit at runtime.
+
+```yaml
+gateway:
+  env: prod
+  secrets:
+    provider: gcp-parameter-store
+  configStore:
+    enabled: false # default
+    pollSeconds: 60 # default; floor 10, ceiling 86400
+```
+
+`enabled: false` is the default and means one document, one source, changed by a
+deploy. `enabled: true` adds an **overlay** — entries added, entries overridden,
+entries removed — stored as one non-secret parameter at
+`/strad/{env}/gateway/config/SERVERS` and merged over this document before the
+schema sees it. The console at `/connectors` writes it, as does the `connectors`
+builtin above on a deployment that mounts it, and a change takes effect on the
+next request with no redeploy and no restart. The file stays authoritative
+for everything nobody has touched.
+
+`pollSeconds` is how often core re-reads the overlay. The process that wrote a
+change reloads at once and does not wait for it; the poll is what carries a
+change to the other instances of core.
+
+Two constraints the config itself enforces or implies:
+
+- It requires `gateway.secrets.provider: gcp-parameter-store`. Declaring it under
+  the `env` provider is a validation error, not a silent no-op — there is no
+  store to write the overlay to.
+- Writing needs the console's admin credential
+  (`SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON`) on core, which `consoleEnv:` already
+  puts there for the secrets pages. Without it the roster page renders read-only
+  and says so.
+
+What an overlay may carry is narrower than what this page documents, because a
+running process cannot be given a container variable: `remote-http` and
+`local-tunnel` fully, a `supplementary-image` slug pointed at a mount that is
+already deployed and declaring none of `env:`, `params:`, `paramsWritable:`,
+`paramsRefresh:`, `consoleEnv:`, `consoleStores:` or `mcpStores:`, and a
+`builtin` never. Full model: [Runtime config](/operate/runtime-config/).
 
 ## `auth.staticTokens`
 

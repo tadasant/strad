@@ -1,9 +1,18 @@
 import { tokenStoreFromConfig } from "./auth/index.ts";
 import { assertDevBypassAllowed } from "./auth/dev.ts";
-import { configPathFromEnv, loadConfig } from "./config/load.ts";
+import { configPathFromEnv, loadConfigDocument } from "./config/load.ts";
+import {
+  ConfigPoller,
+  RuntimeConfig,
+  readOverlayAtBoot,
+} from "./config/runtime.ts";
+import { configStoreFrom } from "./config/store.ts";
+import type { StradConfig } from "./config/schema.ts";
 import { mountTargets } from "./gateway/mount-health.ts";
 import { ToolSurfaceMonitor } from "./gateway/reachability.ts";
 import { Registry, type Mode } from "./gateway/registry.ts";
+import { ReloadableGateway, type GatewayInstance } from "./gateway/reload.ts";
+import { createServer } from "node:http";
 import { createApp } from "./http/app.ts";
 import { createParameterWriteBack } from "./http/params.ts";
 import { loadSecrets } from "./secrets/index.ts";
@@ -48,13 +57,19 @@ async function main(): Promise<void> {
   const identity = { mode, component: bundleName ?? "core" };
   errorReporter = await startErrorReporter({ env, identity });
 
+  // The checked-in config, AND the document it came from. The document is the
+  // DESUGARED one — `mcpServers:` already folded into `servers:` — which is
+  // what the runtime overlay merges into. See src/config/load.ts.
+  //
   // The `mcp.json` dialect reports what it attached, and telemetry is not up
   // yet — so it is collected here and emitted below, beside the other event
   // that has to wait for the exporter. See src/config/mcp-json.ts.
   let unentitledFromMcpJson: string[] = [];
-  const config = await loadConfig(configPathFromEnv(env), env, (dialect) => {
-    unentitledFromMcpJson = dialect.notices.map((n) => n.slug);
-  });
+  const { config: baseConfig, document: baseDocument } =
+    await loadConfigDocument(configPathFromEnv(env), env, (dialect) => {
+      unentitledFromMcpJson = dialect.notices.map((n) => n.slug);
+    });
+  let config = baseConfig;
 
   // The runtime secret provider, built from what the config declares. With
   // `gateway.secrets.provider: env` (the default) this is a wrapper around
@@ -151,29 +166,21 @@ async function main(): Promise<void> {
   // Boot-time guard, before anything can serve a request.
   assertDevBypassAllowed(config, env);
 
-  const registry = await Registry.build({
-    config,
-    secrets: secretProviders,
-    mode,
-    bundleName,
-    env,
-    resolver,
-    // Where a `remote-http` server's rotated refresh token is persisted. Core
-    // only: core is the component holding the store-admin credential, and the
-    // only one that proxies an unhosted server. Same store, same `rotate()`,
-    // same invalidation as the bundle write-back route — see
-    // src/http/params.ts.
-    writeBack:
-      mode === "core"
-        ? createParameterWriteBack({
-            config,
-            env,
-            secrets,
-            secretProvider: secretProviders,
-            diagnosticStore: resolver,
-          })
-        : undefined,
-  });
+  // The mutable layer, if this deployment asked for one. Off by default, and
+  // null costs nothing — every line below behaves exactly as it did.
+  //
+  // Core only, and that is not a simplification. The kinds a console can add
+  // (`remote-http`, `local-tunnel`) are mounted by core and by nothing else, a
+  // bundle mounts only the builtins compiled into its image, and no overlay
+  // entry can produce one of those. A bundle reading this would be a store read
+  // per interval to learn about servers it does not serve.
+  const configStore =
+    mode === "core"
+      ? configStoreFrom({ config: baseConfig, env, resolver })
+      : null;
+
+  const boot = await readOverlayAtBoot(configStore, baseDocument);
+  if (boot.config) config = boot.config;
 
   // `secretProviders`, so a `parameter-store` token store reads the records
   // through the same client, the same credential and the same reading of the
@@ -196,6 +203,100 @@ async function main(): Promise<void> {
       return 0;
     });
 
+  // Where the config write-back persists a rotated refresh token. Built from
+  // the BASE config: everything it reads (`gateway.env`, the secrets provider)
+  // is outside what an overlay may change, and a write-back that outlives a
+  // reload is one fewer thing a roster change can break.
+  const writeBack =
+    mode === "core"
+      ? createParameterWriteBack({
+          config: baseConfig,
+          env,
+          secrets,
+          secretProvider: secretProviders,
+          diagnosticStore: resolver,
+        })
+      : undefined;
+
+  /**
+   * Everything downstream of the config, built from one.
+   *
+   * Called once at boot and once per roster change. It is a pure function of
+   * `next` plus the process-wide things above it — the store client, the
+   * providers, the token store — none of which an overlay may touch. See
+   * src/gateway/reload.ts for why this is a rebuild rather than a mutation.
+   */
+  const buildGateway = async (next: StradConfig): Promise<GatewayInstance> => {
+    const registry = await Registry.build({
+      config: next,
+      secrets: secretProviders,
+      mode,
+      bundleName,
+      env,
+      resolver,
+      writeBack,
+      // For the `connectors` builtin, when a deployment mounts it. Late-bound
+      // for the same reason the console's is: the holder owns the rebuild that
+      // produces this registry.
+      runtime: () => runtimeRef.current,
+    });
+
+    // Which of the mounted slugs actually serve tools. See the long note below
+    // the listen() call for what this monitor is for; the interval is validated
+    // rather than coerced, because `Number("60s")` is NaN and setTimeout clamps
+    // it to 1ms — a typo would turn this into a hot loop probing every upstream.
+    const toolSurfaces = new ToolSurfaceMonitor({
+      registry,
+      intervalMs: positiveMs(env.STRAD_TOOL_SURFACE_INTERVAL_MS, 60_000),
+      mounts:
+        mode === "core" ? { targets: mountTargets(next), env } : undefined,
+    });
+
+    const app = createApp({
+      config: next,
+      registry,
+      tokenStore,
+      mode,
+      env,
+      secrets,
+      secretProvider: secretProviders,
+      // The SAME client the providers read through, so the console's and the
+      // readiness route's diagnosis is answered from the snapshot this process
+      // already holds rather than from a second client with a reading of its
+      // own. A write through the console drops both by dropping one.
+      diagnosticStore: resolver,
+      toolSurfaces: () => toolSurfaces.snapshot(),
+      // Late-bound on purpose: the console's roster editor needs the runtime,
+      // the runtime needs a gateway to rebuild, and the gateway is what this
+      // function returns. A thunk breaks the cycle, and every route that reads
+      // it runs long after the box is filled.
+      runtimeConfig: () => runtimeRef.current,
+    });
+
+    return { config: next, registry, app, toolSurfaces };
+  };
+
+  const runtimeRef: { current: RuntimeConfig | null } = { current: null };
+
+  const gateway = await ReloadableGateway.start(buildGateway, config);
+
+  const runtime = new RuntimeConfig({
+    baseDocument,
+    config,
+    overlay: boot.overlay,
+    store: configStore,
+    rebuild: (next) => gateway.reload(next),
+    env,
+  });
+  runtimeRef.current = runtime;
+
+  // Carries a change written by another core instance into this one. Never
+  // started when there is no store — a poll with nothing to poll is a timer
+  // that exists to do nothing.
+  const poller = configStore
+    ? new ConfigPoller(runtime, config.gateway.configStore.pollSeconds * 1000)
+    : null;
+
   if (mode === "core" && tokenCount === 0) {
     // Not fatal — an operator may be mid-rollout — but /mcp is now a wall with
     // no door, and that is worth being noisy about.
@@ -212,46 +313,18 @@ async function main(): Promise<void> {
   // this ${NAME} resolve?" for a store-backed deployment, where the answer is in
   // the parameter store and in no bag.
 
-  // Which of the mounted slugs actually serve tools.
-  //
   // A slug can be configured, entitled, routed and dead, and the only symptom is
-  // an empty `tools/list` that reads exactly like a server with no tools. This
-  // watches for that from inside the process, says so in the logs, and publishes
-  // the answer on /healthz so a deploy can assert on it. It never blocks the
-  // boot and never fails it — see gateway/reachability.ts.
-  //
-  // The interval is an escape hatch, not configuration anyone should need. It is
-  // VALIDATED rather than coerced: `Number("")` is 0 and `Number("60s")` is NaN,
-  // and setTimeout clamps both to 1ms — a typo would turn this into a hot loop
-  // probing every upstream continuously.
+  // an empty `tools/list` that reads exactly like a server with no tools. The
+  // ToolSurfaceMonitor built in `buildGateway` watches for that from inside the
+  // process, says so in the logs, and publishes the answer on /healthz so a
+  // deploy can assert on it. It never blocks the boot and never fails it — see
+  // gateway/reachability.ts.
   //
   // In core it also asks each bundle what it says about its own mounts, because
   // a mount can list every tool and fail every call — a stale login — and only
   // the bundle knows. Core is the process that routes those slugs and holds the
   // bundles' private URLs; a bundle-mode process mounts no supplementary slug
   // and has nothing to ask. See gateway/mount-health.ts.
-  const toolSurfaces = new ToolSurfaceMonitor({
-    registry,
-    intervalMs: positiveMs(env.STRAD_TOOL_SURFACE_INTERVAL_MS, 60_000),
-    mounts:
-      mode === "core" ? { targets: mountTargets(config), env } : undefined,
-  });
-
-  const app = createApp({
-    config,
-    registry,
-    tokenStore,
-    mode,
-    env,
-    secrets,
-    secretProvider: secretProviders,
-    // The SAME client the providers read through, so the console's and the
-    // readiness route's diagnosis is answered from the snapshot this process
-    // already holds rather than from a second client with a reading of its
-    // own. A write through the console drops both by dropping one.
-    diagnosticStore: resolver,
-    toolSurfaces: () => toolSurfaces.snapshot(),
-  });
 
   // App Platform: a PUBLIC component sets http_port. An INTERNAL component sets
   // internal_ports and must NOT set http_port (http_port is what mints the
@@ -259,22 +332,30 @@ async function main(): Promise<void> {
   // Both land on 8080 here; the app spec decides which one is which.
   const port = Number(env.PORT ?? 8080);
 
-  const server = app.listen(port, () => {
+  // `http.createServer` rather than `app.listen`, because the app is no longer
+  // a constant: the socket outlives every rebuild and dispatches to whichever
+  // app the gateway currently holds. See src/gateway/reload.ts for why this is
+  // a bare dispatch rather than an Express app mounted inside another one.
+  const server = createServer(gateway.handle);
+
+  server.listen(port, () => {
     event({
       evt: "strad.listening",
       port,
       mode,
       bundle: bundleName ?? "core",
       env: config.gateway.env,
-      servers: registry.slugs,
+      servers: gateway.registry.slugs,
       tokens: tokenCount,
       telemetry: telemetry.enabled ? telemetry.serviceName : "disabled",
     });
     // AFTER listening, deliberately: the first probe reaches every upstream, and
     // on a bundle-hosted builtin that upstream is another strad which may still
     // be coming up. Starting here costs the boot nothing and the interval
-    // catches whatever was not ready yet.
-    toolSurfaces.start();
+    // catches whatever was not ready yet. `startProbing` also latches, so a
+    // roster change later starts the NEW monitor without anyone remembering to.
+    gateway.startProbing();
+    poller?.start();
   });
 
   // App Platform sends SIGTERM and does not wait long. Close cleanly.
@@ -286,9 +367,10 @@ async function main(): Promise<void> {
     // BEFORE the adapters it probes through: a probe still in flight when
     // registry.close() lands would fail against a closed adapter and write a
     // "this slug serves NOTHING" line on the way out the door.
-    toolSurfaces.stop();
+    poller?.stop();
+    gateway.toolSurfaces.stop();
     server.close();
-    await registry.close();
+    await gateway.close();
     // Flush telemetry LAST and before exit. When App Platform OOM-kills this
     // container, the final few seconds of memory metrics are the entire
     // diagnosis, and an unflushed exporter throws them away. This is bounded:

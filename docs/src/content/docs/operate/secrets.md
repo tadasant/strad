@@ -383,6 +383,24 @@ Before this, only the second namespace existed, so a name was a deployment-wide
 singleton: `telegram-ro` and `telegram-rw` both write `${TELEGRAM_API_HASH}` and
 could not be given different credentials, whatever was seeded where.
 
+### An entry authored at runtime reads layer 1 only
+
+A server entry added through [`gateway.configStore`](/operate/runtime-config/) —
+from the console at `/connectors`, or from the `connectors` builtin over `/mcp` —
+resolves its `${NAME}` refs against `/strad/{env}/mcp/{slug}/static/` and stops
+there. Layer 2 is not behind it.
+
+The caller of a runtime write chooses both the name and the URL it is
+interpolated into, so a chain ending at the gateway namespace and core's process
+environment would let such an entry read a credential it has no claim on and send
+it to a host that caller picked. `forServerIsolated` is the narrowed provider;
+[what a runtime write may
+reach](/operate/runtime-config/#who-may-write-and-what-a-write-may-reach) has the
+reasoning and the other bound that goes with it.
+
+An entry the checked-in config declares is unaffected — both layers, in the order
+above. The bound follows provenance, not the ref syntax.
+
 ### A connector's variables are read from that namespace WITHOUT being referenced
 
 An `oauth:` connector names three variables — the OAuth client id, the client
@@ -636,6 +654,36 @@ only one of them holds it, the other still falls through to the gateway namespac
 so the name is missing and the deploy fails. The gateway's own boot keys
 (`STRAD_TOKENS`, `STRAD_INTERNAL_TOKEN`, …) can never be covered this way: no
 server references them, and the process reads them for itself.
+
+## One parameter in this store is not a credential
+
+A deployment with `gateway.configStore.enabled: true` keeps its **runtime server
+overlay** — the entries a human added or changed through the console — in the
+same store, as one non-secret parameter:
+
+```
+/strad/{env}/gateway/config/SERVERS
+```
+
+The namespace is deliberate. `config/` is not `static/`, and only `static/` is
+read for `${NAME}` resolution, so the overlay can never resolve as a variable
+some server happens to reference. Nothing else is kept under `config/`.
+
+It is a **non-secret** parameter: its value is a config document — slugs, urls,
+role names, `${NAME}` references — and holds no credential. Anything
+credential-shaped inside it is a reference to something under `static/`, resolved
+per request like every other one.
+
+The two credentials are the ones already on the deployment. Reads go through the
+**resolver** key the container already carries. Writes go through the **admin**
+key, on core only, via `consoleEnv:` — the same `SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON`
+the console's secrets pages use. A gateway holding the resolver key and not the
+admin key serves the roster read-only and says which credential is missing.
+Nothing new is granted: the admin identity could already write any parameter in
+this store.
+
+The document is capped at 64 KiB, the same bound the write-back route below
+applies. Full model: [Runtime config](/operate/runtime-config/).
 
 ## Fail-loud, without reading a value
 

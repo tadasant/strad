@@ -1,4 +1,5 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { RuntimeConfig } from "../../config/runtime.ts";
 import type {
   BuiltinContext,
   BuiltinModule,
@@ -36,10 +37,20 @@ export class BuiltinServerAdapter implements ServerAdapter {
      */
     private readonly options: () => Promise<Record<string, unknown>>,
     private readonly component: BuiltinContext["component"],
+    /** The roster holder, for a builtin whose surface depends on it. */
+    private readonly runtime?: () => RuntimeConfig | null,
   ) {}
 
   async listTools(): Promise<Tool[]> {
-    return this.mod.tools;
+    // `visibleTools` where the module has one, `tools` where it does not.
+    // Neither resolves `options`, so listing still cannot fail on a store
+    // outage — see the note on the options thunk above.
+    return (
+      this.mod.visibleTools?.({
+        component: this.component,
+        ...(this.runtime ? { runtime: this.runtime } : {}),
+      }) ?? this.mod.tools
+    );
   }
 
   async callTool(
@@ -50,6 +61,7 @@ export class BuiltinServerAdapter implements ServerAdapter {
     return this.mod.call(name, args, {
       options: await this.options(),
       component: this.component,
+      ...(this.runtime ? { runtime: this.runtime } : {}),
       clientCapabilities: ctx?.clientCapabilities,
     });
   }

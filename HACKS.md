@@ -4891,3 +4891,69 @@ this that is durable in a log names nothing about the file.
 **Not a hack, and worth saying:** no bytes are stored anywhere. The mount streams
 from Slack on the GET, so there is no temporary file and no bucket object to
 retain, expire or clean up.
+
+---
+
+---
+
+## 96. The runtime roster can add a slug, not a credential
+
+**What.** `gateway.configStore.enabled` lets a human add, edit, disable and
+remove a `servers:` entry from the console at `/connectors`, and an agent do the
+same over `/mcp` through the `connectors` builtin, with the change live on the
+next request and no deploy. Two things it does not do, and the first is the one
+somebody will expect.
+
+**A second account of an existing bundled server still needs a deploy.** "Add a
+second gmail account and use it immediately" is the shape this feature looks
+like it delivers, and it does not. A `supplementary-image` mount's credentials
+reach its container as environment variables the renderer bakes into the app
+spec at render time, and a process's environment is fixed at spawn — so a new
+`GMAIL_PERSONAL_*` value cannot reach a running container at all. The bundle
+host compounds it: it discovers the extra slugs it should mount by looking for
+prefixed marker variables in its own `process.env` (`servers/bundle/host/src/mounts.ts`),
+so a slug whose variables are not there is a slug that container does not serve,
+whatever the roster says. `assertCreatable` refuses the fields that would lie
+(`env`, `params`, `paramsWritable`, `paramsRefresh`, `consoleEnv`,
+`consoleStores`, `mcpStores`) rather than accept an entry the deployment cannot
+honour. What IS deliverable at runtime is a second slug onto a mount that is
+ALREADY deployed and already credentialed — the `gmail-ro` / `gmail-rw` pattern,
+two entries on one `path:` differing by `tools:` — and the two unhosted kinds,
+`remote-http` and `local-tunnel`, which run in core's own process and are
+genuinely add-and-use.
+
+**The overlay parameter has no compare-and-swap.** Parameter Manager offers
+none, so the write is a read-modify-write. The console carries the `revision` it
+rendered and refuses a stale Save with a `409`, which catches the collision a
+human causes — a second tab, a second console process. Two writes landing inside
+one read-modify-write window still lose one, silently, and the loser is whichever
+wrote first. What bounds it is that writes are rare and come from one place:
+core is the only component holding the admin credential, whether the write
+arrives as a console form or a tool call. `RuntimeConfig` serialises `apply` and
+`poll` within a process, so the remaining window is strictly cross-process.
+
+The MCP door inherits that window rather than widening it: `save_connector`
+takes `expectedRevision` optionally, so a caller that read the roster first gets
+the same refusal, and one that did not gets the same last-writer-wins.
+
+**Neither gap means a runtime write is unbounded.** Two rules bound what one may
+reach, as distinct from who may make one. A runtime-authored entry's `${NAME}`
+refs resolve against that slug's own `/strad/{env}/mcp/{slug}/static/` namespace
+and nothing else (`forServerIsolated`, `src/secrets/provider/index.ts`), so a
+connector `url:` cannot read core's process environment and send it off-box. And
+a runtime write may not change `entitlements:` or `tools:` on a slug the
+checked-in document declares (`assertNoAccessControlChange`,
+`src/config/overlay.ts`), keyed on the document so remove-then-recreate is bound
+too. `docs/src/content/docs/operate/runtime-config.md` has both.
+
+**Why.** The first is physics, not policy: nothing in a running App Platform
+container can be handed a new environment variable, and a feature that pretended
+otherwise would ship a Save button whose result is a mount that lists no tools.
+The second is a store limitation strad cannot fix from the client side.
+
+**Undo.** For the first: a credential path that a running container reads rather
+than receives — the same move `paramsRefresh:` makes, widened from "a value
+behind an already-listed name" to "a name the spec never listed", which needs the
+bundle host to discover mounts from the store instead of from `process.env`.
+tadasant/strad#343 carries it. For the second: a stored document with an
+`etag`-style precondition, or a single writer elected per deployment.

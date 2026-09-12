@@ -2829,6 +2829,59 @@ See `HACKS.md` #95.
 
 ---
 
+### 96. The runtime roster can add a slug, not a credential
+
+[`gateway.configStore`](/operate/runtime-config/) lets a human add, edit, disable
+and remove a server entry from the console at `/connectors`, and an agent do the
+same over `/mcp` through the `connectors` builtin, live on the next request with
+no deploy. Two things it does not do, and the first is the one people expect.
+
+**A second account of an existing bundled server still needs a deploy.** A
+`supplementary-image` mount's credentials reach its container as environment
+variables the renderer bakes into the app spec, and a process's environment is
+fixed at spawn — so a new value cannot reach a running container at all. The
+bundle host compounds it: it discovers the extra slugs it should mount by looking
+for prefixed marker variables in its own environment, so a slug whose variables
+are not there is a slug that container does not serve, whatever the roster says.
+Both doors refuse the fields that would lie — `env:`, `params:`,
+`paramsWritable:`, `paramsRefresh:`, `consoleEnv:`, `consoleStores:`,
+`mcpStores:` — rather than accept an entry the deployment cannot honour. What is
+deliverable at runtime is a second slug onto a mount that is already deployed and
+already credentialed (the `gmail-ro` / `gmail-rw` pattern, two entries on one
+`path:` differing by `tools:`), and the two unhosted kinds, `remote-http` and
+`local-tunnel`, which run in core's own process.
+
+**The overlay parameter has no compare-and-swap.** Parameter Manager offers none,
+so a write is a read-modify-write. The console form carries the revision it
+rendered and a stale Save is refused with `409`, which catches the collision a
+human causes — a second tab, a second console process. The write tools take the
+same revision as `expectedRevision`, optionally, so a caller that read the roster
+first gets the same refusal. Two writes landing inside one read-modify-write
+window still lose one, silently, and the loser is whichever wrote first. What
+bounds it is that writes are rare and come from one component: core is the only
+thing holding the admin credential, whichever door the write arrived through.
+
+**Neither gap means a runtime write is unbounded.** Two rules bound what a write
+may reach, as distinct from who may make one: a runtime-authored entry's
+`${NAME}` refs resolve against that slug's own `/strad/{env}/mcp/{slug}/static/`
+namespace and nothing else, so a connector `url:` cannot read core's process
+environment and send it off-box, and a runtime write may not change
+`entitlements:` or `tools:` on a slug the checked-in document declares. Both are
+in [Who may write, and what a write may
+reach](/operate/runtime-config/#who-may-write-and-what-a-write-may-reach).
+
+**Undo:** for the first, a credential path a running container reads rather than
+receives — what `paramsRefresh:` does for a value behind an already-listed name,
+widened to a name the spec never listed, which needs the bundle host to discover
+mounts from the store instead of from its environment
+([strad#343](https://github.com/tadasant/strad/issues/343) carries it). For the
+second, a stored document with an `etag`-style precondition, or one writer
+elected per deployment.
+
+See `HACKS.md` #96.
+
+---
+
 ## What the human still needs to provision
 
 The one-time steps that clear most of the list above:

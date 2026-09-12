@@ -28,11 +28,25 @@ import { normaliseNamespace } from "../secrets/parameters/namespace.ts";
  * them is what lets src/secrets/env-prefix.ts promise injectivity rather than hope
  * for it.
  */
+/**
+ * The slug alphabet, as a SOURCE string rather than only a compiled regex.
+ *
+ * The console's connector form puts it in an HTML `pattern=` attribute, and a
+ * second hand-written spelling of it there would drift from this one silently —
+ * the form would accept what the schema refuses, or refuse what it accepts, and
+ * the human would find out on Save. Unanchored, because `pattern=` anchors on
+ * its own, and free of a character-class hyphen, because the browser compiles
+ * `pattern=` with the `v` flag and an unescaped `-` inside a class is a syntax
+ * error there — one that makes the browser drop the attribute silently rather
+ * than complain.
+ */
+export const SLUG_PATTERN = "[a-z0-9]+(-[a-z0-9]+)*";
+
 export const SLUG = z
   .string()
   .max(63, "slug must be at most 63 characters")
   .regex(
-    /^[a-z0-9]+(-[a-z0-9]+)*$/,
+    new RegExp(`^${SLUG_PATTERN}$`),
     "slug must be lowercase alphanumeric with single dashes between segments " +
       "(no leading, trailing or doubled dash — a doubled dash would make two " +
       "different servers' environment variables collide on the container)",
@@ -1305,6 +1319,57 @@ const SecretsConfig = z
     paramRefreshSeconds: 300,
   });
 
+/**
+ * Where a server entry a human added through the console is KEPT.
+ *
+ * The checked-in document stays the base. This block adds a second, mutable
+ * layer on top of it: an OVERLAY of server entries — upserts keyed by slug and
+ * removals naming one — held in the parameter store under
+ * `/strad/{env}/gateway/config/`, read at boot and re-read on the interval
+ * below. Disabled (the default), strad behaves exactly as it did: one document,
+ * one source, changed by a deploy.
+ *
+ * The asymmetry with `secrets:` above is deliberate and worth stating. A secret
+ * is a VALUE the config points at, so the store can serve it to any component.
+ * A server entry is the config itself, and only ONE component routes the kinds
+ * that can be added without a deploy — `remote-http` and `local-tunnel` are
+ * mounted by core and by nothing else (src/gateway/registry.ts). So the overlay
+ * is a core-only concern, the process that writes it is the process that serves
+ * it, and a write is visible to the writer at once.
+ *
+ * Validation moves with the data. The boot path stays lenient — a rollback must
+ * not become an outage, the same argument src/config/strict.ts makes — and the
+ * WRITE path is strict: a merged document that does not satisfy this schema,
+ * including every cross-field rule below, is refused before it is stored. The
+ * config never becomes invalid, so nothing downstream has to cope with one.
+ */
+const ConfigStoreConfig = z
+  .object({
+    /**
+     * Off by default. On, core reads the overlay at boot, serves the merged
+     * roster, and exposes the console's connector editor.
+     *
+     * It needs `secrets.provider: gcp-parameter-store` — the overlay lives in
+     * the same store, reached with the same credentials. Declaring it under the
+     * `env` provider is a config error rather than a silent no-op (see the
+     * superRefine below): a deployment that thinks its console writes are
+     * durable and finds out otherwise is the failure this refuses to ship.
+     */
+    enabled: z.boolean().default(false),
+    /**
+     * How often core re-reads the overlay, in seconds.
+     *
+     * The process that WROTE a change reloads at once and does not wait for
+     * this. The poll is what carries a change to the other instances of core,
+     * when there is more than one, and what picks up an edit made by a second
+     * console process. Two store reads per interval per instance — small next
+     * to the per-parameter secret reads `ttlSeconds` bounds, and the floor is
+     * there for the same reason that one has a floor.
+     */
+    pollSeconds: z.number().int().min(10).max(86_400).default(60),
+  })
+  .default({ enabled: false, pollSeconds: 60 });
+
 // ---------------------------------------------------------------------------
 // Root
 // ---------------------------------------------------------------------------
@@ -1321,8 +1386,9 @@ export const StradConfig = z
         /** staging | prod | dev — also the middle segment of static tokens. */
         env: z.string().default("dev"),
         secrets: SecretsConfig,
+        configStore: ConfigStoreConfig,
       })
-      .default({ name: "strad", env: "dev", secrets: {} }),
+      .default({ name: "strad", env: "dev", secrets: {}, configStore: {} }),
 
     auth: AuthConfig,
 
@@ -2402,6 +2468,26 @@ export const StradConfig = z
           path: ["bundles"],
         });
       }
+    }
+
+    // The overlay lives in the parameter store, so there has to BE one. Under
+    // the `env` provider there is no store client, no credential and nowhere
+    // to put a write — a console edit would look like it worked and vanish at
+    // the next restart. Refuse the combination rather than degrade to a console
+    // whose Save button lies.
+    if (
+      cfg.gateway.configStore.enabled &&
+      cfg.gateway.secrets.provider !== "gcp-parameter-store"
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          `gateway.configStore.enabled requires gateway.secrets.provider: ` +
+          `gcp-parameter-store (got "${cfg.gateway.secrets.provider}"). The ` +
+          `runtime server overlay is stored as a parameter, and the env ` +
+          `provider has no store to write it to.`,
+        path: ["gateway", "configStore", "enabled"],
+      });
     }
   });
 

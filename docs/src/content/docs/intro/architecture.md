@@ -365,6 +365,43 @@ Selection is re-checked at `tools/call` time too: `tools/list` filters by the
 current `?servers=`, but a client could call any tool name it saw on a prior
 request, so authorization is re-enforced on the action itself.
 
+## The config is not necessarily fixed for the life of the process
+
+A deployment with
+[`gateway.configStore.enabled`](/operate/runtime-config/) merges a stored
+overlay over the checked-in `servers:` list, which means the roster core serves
+can change while core is running. Every component below the config still gets
+**one** config for its whole life, because a change is a rebuild rather than a
+mutation.
+
+`ReloadableGateway` (`src/gateway/reload.ts`) owns that. `http.createServer` is
+handed a stable dispatch function, and what sits behind it — the registry, the
+Express app, the tool-surface monitor — is built fresh on the new config and
+installed with one pointer assignment. The listening socket outlives the rebuild,
+so nothing re-binds a port and no connection is dropped; the next request routes
+on the new roster.
+
+The outgoing registry **drains** rather than closing. Its adapters hold live MCP
+connections, and a request that was mid-`tools/call` at the moment of the swap is
+still holding one, so closing underneath it would turn a successful call into a
+transport error for no reason. It is closed 30 seconds later — long enough to
+outlast a request already in flight, short enough not to leak a connection per
+reload. A call still running at the end of that window gets its transport closed,
+which is what a redeploy would have done to it.
+
+A rebuild that throws leaves everything exactly as it was: the new instance is
+never assigned and the old registry is never drained, which is what lets a bad
+roster edit be a refusal rather than an outage.
+
+Both of strad's doors can make that edit. The console at `/connectors` is the
+human one; the `connectors` builtin (`src/servers/connectors.ts`) is the same
+roster as MCP tools, so an agent can add a `remote-http` server and select it on
+its next request. They share one implementation of the rules and one rebuild —
+`RuntimeConfig.assertAcceptable` decides what may be written, `RuntimeConfig.apply`
+validates the whole merged document — because two answers to "may I add this" is
+one answer too many. The builtin ships in the image and is mounted only by a
+deployment that declares it.
+
 ## Capability (read-only vs read-write)
 
 A server's capability — which of its tools may actually be used — is a property of
