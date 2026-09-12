@@ -3,6 +3,7 @@ import { serverConsolePath } from "./paths.ts";
 import { SLUG_PATTERN, type StradConfig } from "../config/schema.ts";
 import type { EntrySource, ServerOverlay } from "../config/overlay.ts";
 import { RUNTIME_CREATABLE_KINDS, immutableFields } from "../config/overlay.ts";
+import { CREDENTIAL_SCHEMES } from "../config/secret-position.ts";
 
 /**
  * The connector editor's pages.
@@ -488,7 +489,8 @@ ${field(
     "Headers",
     area("headers", pairs(entry.headers), 3, "headers"),
     `One <code>Name: value</code> per line. Each value must be one
-     <code>\${NAME}</code> ref, optionally after an auth scheme — for example
+     <code>\${NAME}</code> ref, optionally after an auth scheme
+     (${CREDENTIAL_SCHEMES.map((scheme) => `<code>${esc(scheme)}</code>`).join(", ")}) — for example
      <code>Authorization: Bearer \${GRANOLA_TOKEN}</code>. A runtime write stores
      the reference and never the value, and the ref is resolved from the
      parameter store on every call, so rotating the credential behind it needs

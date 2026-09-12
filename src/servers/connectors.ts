@@ -129,10 +129,10 @@ const READ_TOOLS: Tool[] = [
       "(a credential ref, a narrower tools policy), and pass it to save_connector. " +
       "`immutableFields` names the fields that only a deploy can move on this kind. " +
       "A credential-carrying field holding a LITERAL rather than a ${NAME} ref comes " +
-      "back redacted — which now only happens for an entry the CHECKED-IN config " +
-      "declares, since a runtime write cannot store a literal in one. save_connector " +
-      "refuses an entry that still carries the redaction, so replace it with a ref " +
-      "rather than copying it through.",
+      "back redacted — an entry the CHECKED-IN config declares, or one stored before " +
+      "runtime writes refused literals; a runtime write cannot store a new one. " +
+      "save_connector refuses an entry that still carries the redaction, so replace " +
+      "it with a ref rather than copying it through.",
     inputSchema: {
       type: "object",
       properties: {
@@ -283,12 +283,13 @@ const REF = /\$\{[^}]+\}/;
  * schema already requires each to be exactly one `${NAME}`, so anything else
  * there cannot have come through a validated config.
  *
- * WHAT THIS STILL HAS TO COVER, since `src/config/secret-position.ts`. A
- * runtime write can no longer store a literal in either of these positions, so
- * the only entries that can reach this function carrying one are the ones the
- * CHECKED-IN document declares — which this surface reads and cannot rewrite.
- * That is a narrower job than it was and not an empty one: a deployment mounts
- * the read tools precisely so an agent can browse a roster it did not author.
+ * WHAT THIS HAS TO COVER, given `src/config/secret-position.ts`. A runtime
+ * write cannot store a NEW literal in either of these positions, so an entry
+ * reaching this function carrying one is either declared by the CHECKED-IN
+ * document or was stored in the overlay before that rule refused it — an
+ * overlay the poll and the boot still serve, on purpose. Neither is something
+ * this surface can rewrite, and a deployment mounts the read tools precisely so
+ * an agent can browse a roster it did not author.
  *
  * Redaction for the common case, not secret detection. A credential
  * interpolated beside a ref, or typed into some field nobody thinks of as

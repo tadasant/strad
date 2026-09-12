@@ -356,7 +356,8 @@ the way in.
 
 The rule is that a credential-carrying value must be a **reference**: one
 `${NAME}`, optionally introduced by an auth scheme — `Bearer`, `Basic`, `Token`,
-`Bot` or `ApiKey`. That is the shape every entry in a strad config already uses:
+`Bot` or `ApiKey`. That is the shape every `headers:` value in this repo's configs
+already has:
 
 ```yaml
 headers:
@@ -368,7 +369,7 @@ headers:
 It covers `headers:` on every kind that has one, `url:`'s userinfo (the
 `user:password@` before the host), and `oauthRefresh:`'s `clientSecret` and
 `refreshToken` — which the schema already bound to exactly one `${NAME}`, and
-which the runtime path now refuses earlier and with a message that names the fix.
+which the runtime path refuses earlier and with a message that names the fix.
 
 A **literal that is not a secret is refused too**. `Notion-Version: 2022-06-28`
 is harmless and strad cannot tell it from `sk-live-…`; a rule that tried would
@@ -395,12 +396,19 @@ re-upsert an entry read straight out of the merged document, so without it a
 literal in a checked-in `headers:` would be copied into the overlay by a button
 that only meant to disable something.
 
-The second check is scoped to what a write **changes**. A literal stored before
-this rule existed is still served — boot and poll stay lenient on purpose, so
-that an image rollback cannot be taken down by something a console wrote — and
+The second check is scoped to what a write **changes**. A literal already in the
+stored overlay is still served — boot and poll stay lenient on purpose, so that
+an image rollback cannot be taken down by something a console wrote — and
 refusing every later write because of it would let one old entry freeze the
 roster. It is refused on the next write that touches its entry, which is where
 somebody can act on it.
+
+That includes **disabling** it. Disable re-upserts the entry with `enabled:
+false`, so a connector carrying a literal — a checked-in one or a stored one —
+cannot be disabled from either door until its value is moved into the store.
+**Remove** is always allowed: it stores no entry, so there is nothing to judge,
+and it is the way to stop serving a connector nobody can fix right now. The
+refusal says so.
 
 ### A runtime write cannot move access control the deploy authorised
 

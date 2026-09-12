@@ -2869,7 +2869,8 @@ environment and send it off-box; a runtime write may not change `entitlements:`
 or `tools:` on a slug the checked-in document declares; and a runtime write may
 name a credential but never carry one, so a literal in `headers:`, in `url:`'s
 userinfo or in an `oauthRefresh:` grant is refused rather than stored in the
-clear. All three are in [Who may write, and what a write may
+clear. Disabling a connector that carries one is refused too, because disable
+re-upserts the entry; removing it is always allowed. All three are in [Who may write, and what a write may
 reach](/operate/runtime-config/#who-may-write-and-what-a-write-may-reach).
 
 **The third rule has two positions it does not cover.** A **URL query

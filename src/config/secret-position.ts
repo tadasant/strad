@@ -12,13 +12,13 @@ import { soleRefName } from "./schema.ts";
  * overlay document is not a place a credential can be, whatever anyone types
  * into either door.
  *
- * That was previously a convention. `src/config/schema.ts` says of `SecretRef`
- * that a bare string "is used literally — fine for non-secret values, but never
- * put a real credential in the config file", the console's headers hint said
- * "put the secret in the store, not here", and `get_connector` redacted a
- * literal on the way OUT. Nothing refused one on the way IN. A human or an agent
- * could save `Authorization: Bearer sk-live-…` through `/connectors` or
- * `save_connector` and it would be persisted, verbatim, into
+ * A convention alone does not make that true. `src/config/schema.ts` says of
+ * `SecretRef` that a bare string "is used literally — fine for non-secret
+ * values, but never put a real credential in the config file", and
+ * `get_connector` redacts a literal on the way OUT — neither of which refuses
+ * one on the way IN. Without this module a human or an agent could save
+ * `Authorization: Bearer sk-live-…` through `/connectors` or `save_connector`
+ * and it would be persisted, verbatim, into
  * `/strad/{env}/gateway/config/SERVERS` — which `src/config/store.ts` creates
  * with `secret: false`, because a roster is not a secret. This module is what
  * makes the convention a refusal.
@@ -100,9 +100,9 @@ const REFERENCE_ONLY = new RegExp(
 /**
  * Whether a value NAMES a credential rather than carrying one.
  *
- * Exported for the two doors' hint text and for the tests, which is also why it
- * takes `unknown`: a form post and a tool argument both arrive untyped, and a
- * non-string in a header is not a reference either.
+ * Exported for the tests. It takes `unknown` because a form post and a tool
+ * argument both arrive untyped, and a non-string in a header is not a reference
+ * either. The two doors' hint text reads `CREDENTIAL_SCHEMES` instead.
  */
 export function isCredentialReference(value: unknown): boolean {
   return typeof value === "string" && REFERENCE_ONLY.test(value);
@@ -122,7 +122,9 @@ function useTheStore(slug: string): string {
     `slug's own namespace — /strad/{env}/mcp/${slug || "{slug}"}/static/{NAME} ` +
     `— through the secrets console or the secrets MCP server, and write ` +
     `\${NAME} here. A value that is not secret goes there too, as an ordinary ` +
-    `non-secret parameter; strad cannot tell the two apart and does not guess.`
+    `non-secret parameter; strad cannot tell the two apart and does not guess. ` +
+    `A connector that already carries one cannot be saved or disabled until it ` +
+    `is fixed this way; removing it is always allowed.`
   );
 }
 
@@ -209,7 +211,7 @@ function assertNoUserinfo(url: string, slug: string): void {
  * does not already hold byte-identically.
  *
  * The narrowing is what keeps the `apply`-level check from wedging a console. A
- * literal written before this rule existed is still served — boot and poll stay
+ * literal already in the stored overlay is still served — boot and poll stay
  * lenient on purpose, so that an image rollback cannot be taken down by
  * something a console wrote — and refusing every later write because of it
  * would mean one old entry froze the whole roster. Bound the rule to what the

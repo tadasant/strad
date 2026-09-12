@@ -195,8 +195,8 @@ export class RuntimeConfig {
       // literal in a checked-in `headers:` would otherwise be copied into the
       // overlay by a button that only meant to disable something.
       //
-      // Scoped to what this write CHANGES, so a literal stored before the rule
-      // existed refuses the next write that touches its entry rather than
+      // Scoped to what this write CHANGES, so a literal already in the stored
+      // overlay refuses the next write that touches its entry rather than
       // freezing the whole roster. src/config/secret-position.ts argues it.
       for (const entry of changedUpserts(
         this.currentOverlay.servers.upserts,

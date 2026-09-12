@@ -284,7 +284,7 @@ describe("both write routes into the store", () => {
   });
 
   it("does not wedge a roster that already holds one", async () => {
-    // A literal stored before this rule existed is still SERVED — boot and poll
+    // A literal already in the stored overlay is still SERVED — boot and poll
     // stay lenient on purpose. What must not happen is every later write being
     // refused because of it, which would make one old entry freeze the roster.
     const stale = withUpsert(
@@ -328,6 +328,28 @@ describe("both write routes into the store", () => {
       { fileSlugs: runtime.fileSlugs() },
     );
     await expect(runtime.apply(touched)).rejects.toThrow(LiteralCredential);
+  });
+});
+
+describe("a rename is judged like any other write", () => {
+  it("refuses a rename that carries a value, however it is spelled", async () => {
+    // `withUpsert` with a `previousSlug` is a removal plus an upsert under a NEW
+    // slug, so `changedUpserts` sees a slug it has never held — which is the
+    // property that keeps a rename from slipping past the apply-level check.
+    const runtime = runtimeOn(BASE_DOC);
+    const next = withUpsert(
+      runtime.overlay(),
+      {
+        slug: "declared-renamed",
+        kind: "remote-http",
+        url: "https://declared.example.com/mcp",
+        headers: { Authorization: `Bearer ${SECRET}` },
+        entitlements: ["admin"],
+      },
+      { previousSlug: "declared", fileSlugs: runtime.fileSlugs() },
+    );
+    await expect(runtime.apply(next)).rejects.toThrow(LiteralCredential);
+    expect(runtime.overlay().revision).toBe(0);
   });
 });
 

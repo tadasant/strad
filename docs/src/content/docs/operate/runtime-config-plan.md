@@ -1,12 +1,12 @@
 ---
 title: "Runtime config: the plan"
-description: "What stands between gateway.configStore as it ships today and a deployment whose whole MCP posture is managed from /connectors — measured against the production roster, phase by phase, with the steps only a human can take named separately."
+description: "What stands between gateway.configStore as it ships and a deployment whose whole MCP posture is managed from /connectors — measured against the production roster, phase by phase, with the steps only a human can take named separately."
 sidebar:
   order: 7
 ---
 
-[Runtime config](/operate/runtime-config/) describes the overlay that ships
-today: a mutable layer over `servers:`, written from `/connectors` or over
+[Runtime config](/operate/runtime-config/) describes the overlay as it ships:
+a mutable layer over `servers:`, written from `/connectors` or over
 `/mcp`, live on the next request. This page is about the distance between that
 and the end state somebody actually asked for —
 
@@ -21,9 +21,11 @@ to rather than a footnote.
 
 ## Where the coverage actually is
 
-Measured against the production roster on 2026-09-12. The numbers matter more
-than the impression: "the mechanism exists" and "the mechanism covers the
-fleet" are different claims, and only the first is true today.
+Measured against the production roster — `strad/infra/strad.prod.yaml` in the
+private `tadasant/tadasant-internal`, on 2026-09-12 — so these counts are a dated
+snapshot this repo cannot re-derive. The numbers matter more than the
+impression: "the mechanism exists" and "the mechanism covers the fleet" are
+different claims, and on that date only the first was true.
 
 |                                           | count      |
 | ----------------------------------------- | ---------- |
@@ -67,10 +69,10 @@ a description of existing practice rather than a migration.
    Entitlement is a two-sided intersection (`src/gateway/entitlements.ts`): a
    `roles:` entry names servers, a server's `entitlements:` names roles, and
    **both must agree**. The overlay carries `entitlements:` because that lives
-   on a server entry. It does not carry `roles:`. Production's `zimmer` role
-   names seventeen slugs explicitly rather than `*`, so **a connector created at
-   runtime is unreachable by `zimmer` until a deploy edits `roles:`** — however
-   its `entitlements:` are written. See [phase 4](#phase-4--roles-become-part-of-the-overlay).
+   on a server entry. It does not carry `roles:`. A role that names its slugs
+   explicitly rather than `*` therefore **cannot reach a connector created at
+   runtime until a deploy edits `roles:`** — however its `entitlements:` are
+   written — and production's narrower roles are written that way. See [phase 4](#phase-4--roles-become-part-of-the-overlay).
 3. **A runtime-created connector must never hold a secret value.** Real, and
    **shipped** — [phase 1](#phase-1--a-runtime-write-names-a-credential-never-carries-one-shipped).
 4. **`envFallback: true` still permits a `${NAME}` to resolve from the process
@@ -85,16 +87,15 @@ a description of existing practice rather than a migration.
 
 A fifth thing is not on that list and belongs on this one.
 
-5. **The write tools are admin-equivalent, and two separate mechanisms make them
-   so.** [strad#349](https://github.com/tadasant/strad/issues/349) has the first:
-   a runtime write may CREATE a `supplementary-image` entry on any `path:` in a
-   declared bundle, reaching that mount's baked credential under whatever
-   `entitlements:` the new slug carries. The second is verified in
-   [phase 2](#phase-2--bound-what-the-write-tools-are-worth) below and is not in
-   that issue: a runtime write may change `url:` on a slug the **checked-in
-   config declares**, and the slug's credential follows it. Both are bounded
-   today by the one thing outside the roster — the `connectors` slug is
-   `admin`-only — and both stop being bounded the moment that changes.
+5. **Reaching the write tools is worth more than it looks.** The fields a
+   runtime write may still move on an entry — a new slug's `path:`, and fields
+   the access-control rules do not bind on a checked-in one — let a writer reach
+   credentials that belong to other slugs. The mechanisms and their
+   reproductions are tracked in the private
+   [strad#349](https://github.com/tadasant/strad/issues/349) rather than on
+   this page. They are bounded by the one thing outside the roster — the
+   `connectors` slug being `admin`-only — and stop being bounded the moment that
+   changes. See [phase 2](#phase-2--bound-what-the-write-tools-are-worth).
 
 ## The phases
 
@@ -127,40 +128,20 @@ parameter, and a **builtin's `options:`**. Both in
 
 ### Phase 2 — bound what the write tools are worth
 
-Today, reaching the `connectors` write tools is worth admin over every mount in a
-declared bundle and over every file-declared slug's credential. Two mechanisms:
-
-- **Create onto a privileged `path:`.** A new `supplementary-image` entry may
-  name any `path:` in a bundle this deployment runs, and serves that mount's
-  full tool surface under the new slug's own `entitlements:`.
-  [strad#349](https://github.com/tadasant/strad/issues/349) has it, verified.
-- **Re-point a file-declared `url:`.** `immutableFields("remote-http")` is
-  `["kind"]` and `assertNoAccessControlChange` compares `entitlements:`,
-  `tools:` and (for supplementary) `path:` — so `url:` moves freely on an entry
-  the checked-in config declares. The slug's `headers:` refs go with it. The
-  isolated-provider bound does not help here: editing a file slug makes its
-  source `store`, so it resolves against **its own namespace**, and for the
-  slugs whose credential lives there that is exactly the value being sent.
-  Verified in-process: a write moving nothing but `url:` on a file-declared
-  `remote-http` delivered `Authorization: Bearer <the slug's token>` to a local
-  sink.
-
-  `url:` cannot simply be frozen — a Cloudflare quick tunnel mints a new
-  hostname on every restart, and re-pointing a `local-tunnel` without a deploy is
-  the flagship reason the roster is editable at all. So this is a design
-  decision, not a patch. The candidates: refuse an **origin** change on a
-  file-declared entry that carries a credential ref (a tunnel would need a
-  one-line file edit or an explicit re-consent); or strip credential headers from
-  the first request after an origin change until somebody confirms; or thread the
-  writing principal into `assertAcceptable` and bound a write by what that
-  principal could already reach.
+The `connectors` write tools let a writer reach mounts and credentials that
+belong to slugs other than the one being written. strad#349 has the mechanisms,
+verified, and the candidate bounds. None is a patch: every candidate trades a
+workflow the roster exists to serve — re-pointing a quick tunnel without a
+deploy, adding a second slug onto an already-deployed mount — against how much
+a write can reach, and one of them needs the writing principal threaded into
+`RuntimeConfig.assertAcceptable`, which does not have it.
 
 **Owner.** `strad` — this repo. The _choice_ is a posture decision (see
 [below](#what-only-a-human-can-do)).
 
-**Evidence.** A test in `test/connectors.isolation.test.ts` for each mechanism,
-in the shape the existing three bounds use: the attack, then the bound, then the
-legitimate case that must keep working.
+**Evidence.** A test in `test/connectors.isolation.test.ts` for each mechanism
+strad#349 names, in the shape the existing three bounds use: the attack, then
+the bound, then the legitimate case that must keep working.
 
 ### Phase 3 — a mount reads its own credentials instead of receiving them
 
@@ -195,7 +176,7 @@ no entry in `infra/strad.prod.yaml`.
 
 ### Phase 4 — `roles:` becomes part of the overlay
 
-Granting or revoking a role's reach is a PR and a deploy today, and this is the
+Granting or revoking a role's reach takes a PR and a deploy, and this is the
 wall that gets hit most often. It is small in code and large in consequence:
 `roles:` is one half of the entitlement intersection, so an overlay that can
 write it is an overlay that can grant access.
@@ -278,19 +259,19 @@ what decides whether it can ever be automated away.
    This is a posture decision, not a defect: strad#349's three options —
    read-tools-only for the narrow role, keep the write tools admin-only, or bound
    creates in strad — are a trade between capability and blast radius, and an
-   agent picking one of them is an agent choosing its own privileges. **This one
-   is live right now**: a separate change grants the `zimmer` role reach to the
-   `connectors` slug, and whether that includes the write half is exactly this
-   decision.
-2. **Choose how a file-declared `url:` may move** (phase 2). Same character:
-   every candidate trades the quick-tunnel workflow against credential
-   containment, and there is no reading of the requirements that settles it.
+   agent picking one of them is an agent choosing its own privileges. On
+   2026-09-12 a separate change was granting the `zimmer` role reach to the
+   `connectors` slug, and whether a grant like that includes the write half is
+   exactly this decision.
+2. **Choose phase 2's bound** among the candidates strad#349 lists. Same
+   character: each trades a workflow the roster exists for against how much a
+   write can reach, and there is no reading of the requirements that settles it.
 3. **Grant the IAM the host-side credential path needs** (phase 3). Reading a
    parameter from a container that holds no cloud credential means core serving
    it a value over the private network, and whatever principal ends up
    dereferencing a **secret** parameter needs
    `roles/parametermanager.parameterAccessor`. That role is the one thing
-   standing between `/mcp` and a production secret value today, so who holds it
+   standing between `/mcp` and a production secret value, so who holds it
    is a decision only its owner can make. An agent can write the Terraform; it
    cannot decide that a new principal may deref secrets.
 4. **Complete each OAuth consent** (phases 3 and 4, ongoing). Granting consent

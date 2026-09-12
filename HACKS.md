@@ -4947,7 +4947,8 @@ checked-in document declares (`assertNoAccessControlChange`,
 too. And a runtime write may NAME a credential and may not CARRY one
 (`assertSecretsByReference`, `src/config/secret-position.ts`): the overlay is a
 non-secret parameter, so a literal saved into `headers:`, into `url:`'s userinfo
-or into `oauthRefresh:`'s grant would be a credential at rest in the clear.
+or into `oauthRefresh:`'s grant would be a credential at rest in the clear. Disabling a connector that carries one is refused too, because disable
+re-upserts the entry; removing it is always allowed.
 `docs/src/content/docs/operate/runtime-config.md` has all three.
 
 **THE THIRD RULE HAS TWO POSITIONS IT DOES NOT COVER**, and the reason is the

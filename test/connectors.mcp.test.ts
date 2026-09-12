@@ -511,7 +511,7 @@ describe("the guards on the write tools", () => {
   });
 
   it("still redacts a literal out of an entry the CHECKED-IN config declares", async () => {
-    // Which is now the only way one can reach `get_connector` at all. A
+    // Which is the only way one can reach `get_connector` at all. A
     // deployment mounts the read tools precisely so an agent can browse a
     // roster it did not author, and that roster is not bound by the rule above.
     const literalYaml = GATEWAY_YAML.replace(
@@ -539,6 +539,38 @@ describe("the guards on the write tools", () => {
       expect(headers.Authorization).not.toContain("checked-in-literal");
       expect(headers.Authorization).toContain("redacted");
       expect(headers["X-Key"]).toBe("${RESIDENT_KEY}");
+
+      // A copy-and-save round trip is refused rather than writing the sentinel
+      // in as the value.
+      const copied = await call(client, "save_connector", {
+        entry: { ...(body.entry as Record<string, unknown>), slug: "copied" },
+      });
+      expect(copied.isError).toBe(true);
+      expect(String(copied.body.error)).toContain("redact");
+
+      // Disabling re-upserts the entry, so it would copy the checked-in literal
+      // into the store; `apply` refuses it and the message names the way out.
+      const disabled = await call(client, "set_connector_enabled", {
+        slug: "resident",
+        enabled: false,
+      });
+      expect(disabled.isError).toBe(true);
+      expect(String(disabled.body.error)).toContain("Authorization:");
+      expect(String(disabled.body.error)).not.toContain("checked-in-literal");
+      expect(String(disabled.body.error)).toContain(
+        "removing it is always allowed",
+      );
+      expect(booted.runtime.overlay().servers.upserts).toEqual([]);
+
+      // Removal stores no entry, so it is not judged — it is the way out.
+      const removed = await call(client, "remove_connector", {
+        slug: "resident",
+      });
+      expect(removed.isError).toBe(false);
+      expect(booted.runtime.overlay().servers.removals).toEqual(["resident"]);
+      expect(JSON.stringify(booted.runtime.overlay())).not.toContain(
+        "checked-in-literal",
+      );
       await client.close();
     } finally {
       booted.server.close();
