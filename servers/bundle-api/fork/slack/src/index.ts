@@ -7,7 +7,21 @@ export {
   type ISlackClient,
   type ClientFactory,
   type CreateMCPServerOptions,
+  type DownloadOutcome,
 } from './server.js';
+
+// The signed download link. Exported for the bundle host, which serves the route
+// the token is presented at, and for this tree's own tests.
+export {
+  DEFAULT_TTL_SECONDS,
+  MAX_TTL_SECONDS,
+  NonceLedger,
+  deriveKey,
+  mintDownloadToken,
+  verifyDownloadToken,
+  type MintedLink,
+  type VerifyResult,
+} from './download-link.js';
 
 // Tools
 export { createRegisterTools, registerTools } from './tools.js';

@@ -1,3 +1,4 @@
+import { RESERVED_AUTHORIZE_PARAMS } from "../connectors/oauth-flow.ts";
 import { z } from "zod";
 import { MAX_VARIABLE_LENGTH, isEnvName, secretRefsIn } from "./env-name.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
@@ -89,25 +90,21 @@ export const ToolPolicySchema = z
   });
 
 /**
- * kind: the ONE OAuth provider strad can drive a consent flow for.
- *
- * A literal rather than an enum with one member: a second provider is a second
- * implementation (a different token endpoint, a different identity proof, a
- * different notion of "scope"), and a config that could NAME one strad has no
- * code for would be a promise nothing keeps.
- */
-const OAuthProvider = z.literal("google");
-
-/**
  * The names of the three variables one Google connector owns, all defaulted to
  * the Google Sheets set (the first — and so far only — server that consumes them).
  *
  * They are VARIABLE NAMES, never paths. Core composes
- * `/strad/{env}/mcp/{slug}/static/{VARIABLE}` from the slug and these strings and
- * from nothing else, so there is no spelling of one that addresses another
- * server's namespace, another kind, or another deployment. That is the same fence
- * `paramsWritable:` stands behind, and it is why the console's callback can take
- * a slug from sealed state and still never let a browser choose a target.
+ * `/strad/{env}/mcp/{slug}/{kind}/{VARIABLE}` from the slug, one of the two
+ * KINDS, and these strings — and from nothing else, so there is no spelling of
+ * one that addresses another server's namespace or another deployment. That is
+ * the same fence `paramsWritable:` stands behind, and it is why the console's
+ * callback can take a slug from sealed state and still never let a browser
+ * choose a target.
+ *
+ * These are GOOGLE's defaults, and they are defaulted only on the `google`
+ * variant. A `generic` connector must name all three: a Linear credential
+ * silently landing in `GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN` is a wrong answer that
+ * renders, deploys and looks right.
  */
 const OAUTH_DEFAULTS = {
   clientIdVariable: "GOOGLE_SHEETS_OAUTH_CLIENT_ID",
@@ -163,8 +160,37 @@ const OAUTH_DEFAULTS = {
  * Writing the same names into `env:` as `${NAME}` refs would put the cycle back,
  * so the `superRefine` below refuses it by name.
  */
-const OAuthConnector = z.object({
-  provider: OAuthProvider,
+/**
+ * The three variable names, shared by both variants.
+ *
+ * A factory rather than a spread constant because the DEFAULTS differ: Google
+ * gets the Sheets set (the first server that consumed them, and the reason they
+ * exist), and a generic provider gets none.
+ */
+function connectorVariableFields(defaults: {
+  clientIdVariable?: string;
+  clientSecretVariable?: string;
+  refreshTokenVariable?: string;
+}) {
+  const named = (fallback: string | undefined) =>
+    fallback === undefined
+      ? z.string().min(1)
+      : z.string().min(1).default(fallback);
+  return {
+    /** The variable holding the OAuth client id, in THIS slug's own namespace. */
+    clientIdVariable: named(defaults.clientIdVariable),
+    /** The variable holding the OAuth client secret, in THIS slug's own namespace. */
+    clientSecretVariable: named(defaults.clientSecretVariable),
+    /**
+     * The variable the consent flow WRITES, under this slug's `oauth` kind.
+     * Created on connect, rotated on reconnect.
+     */
+    refreshTokenVariable: named(defaults.refreshTokenVariable),
+  };
+}
+
+const GoogleConnector = z.object({
+  provider: z.literal("google"),
   /**
    * The Google account this slug is pinned to, e.g. `tadas412@gmail.com`.
    *
@@ -189,19 +215,141 @@ const OAuthConnector = z.object({
    * identity.
    */
   scopes: z.array(z.string().min(1)).min(1),
-  /** The variable holding the OAuth client id, in THIS slug's own namespace. */
-  clientIdVariable: z.string().min(1).default(OAUTH_DEFAULTS.clientIdVariable),
-  /** The variable holding the OAuth client secret, in THIS slug's own namespace. */
-  clientSecretVariable: z
-    .string()
-    .min(1)
-    .default(OAUTH_DEFAULTS.clientSecretVariable),
-  /** The variable the consent flow WRITES. Created on connect, rotated on reconnect. */
-  refreshTokenVariable: z
-    .string()
-    .min(1)
-    .default(OAUTH_DEFAULTS.refreshTokenVariable),
+  ...connectorVariableFields(OAUTH_DEFAULTS),
 });
+
+/**
+ * `provider: generic` — plain RFC 6749 authorization code + PKCE, against
+ * endpoints the config names.
+ *
+ * ## What it does NOT do, said first
+ *
+ * There is no identity proof and therefore no `account:`. OpenID Connect is what
+ * makes Google's account pinning possible, and a provider that does not issue an
+ * ID token gives strad nothing to check a consent against. A generic connector
+ * stores whatever account the human was signed in as at the provider, and the
+ * console says so above the button rather than implying a check it cannot make.
+ * If that matters for a given provider, the answer is a first-class variant like
+ * `google`, not a field here.
+ *
+ * There is also no refresh. The durable credential is stored and injected; see
+ * `oauthRefresh:` for the upstream that mints bearers from one.
+ *
+ *   - slug: linear-ro
+ *     kind: supplementary-image
+ *     ...
+ *     oauth:
+ *       provider: generic
+ *       label: Linear
+ *       authorizeUrl: https://linear.app/oauth/authorize
+ *       tokenUrl: https://api.linear.app/oauth/token
+ *       scopes: [read]
+ *       clientIdVariable: LINEAR_OAUTH_CLIENT_ID
+ *       clientSecretVariable: LINEAR_OAUTH_CLIENT_SECRET
+ *       refreshTokenVariable: LINEAR_OAUTH_TOKEN
+ */
+const GenericConnector = z.object({
+  provider: z.literal("generic"),
+  /**
+   * What the console calls this provider above the button, e.g. `Linear`.
+   * Defaults to the authorize URL's host, which is always something a human
+   * recognises and never something strad has to be told twice.
+   */
+  label: z.string().min(1).optional(),
+  /**
+   * The provider's authorization endpoint — where the human's browser is sent.
+   *
+   * Required, and https-only (checked in the `superRefine`). strad appends
+   * `client_id`, `redirect_uri`, `response_type=code`, `scope`, `state` and the
+   * PKCE `code_challenge`; anything else the provider needs goes in
+   * `authorizeParams:`.
+   */
+  authorizeUrl: z.string().url(),
+  /**
+   * The provider's token endpoint — where the authorization code is exchanged,
+   * server to server. Required, https-only.
+   */
+  tokenUrl: z.string().url(),
+  /**
+   * The scopes to request, space-delimited per RFC 6749 §3.3. May be empty: a
+   * provider whose tokens carry a fixed grant has nothing to ask for.
+   *
+   * Every one of them is checked against what the token response says it
+   * GRANTED — but only when the response says anything at all. A provider that
+   * omits `scope` is taken at its word, because the alternative is refusing
+   * every consent from a spec-compliant provider that exercises its right to
+   * leave the field out.
+   */
+  scopes: z.array(z.string().min(1)).default([]),
+  /**
+   * Extra query parameters for the authorization URL — the escape hatch for the
+   * one thing every provider spells differently: how to ask for offline access.
+   * `access_type: offline` for Google-shaped providers, `duration: permanent`
+   * for Reddit, `prompt: consent` to force a fresh grant.
+   *
+   * The parameters strad sets itself cannot be overridden here; the
+   * `superRefine` refuses each by name. That is not tidiness — `redirect_uri`
+   * and `code_challenge` are the two controls that keep an authorization code
+   * from leaving the building, and a config key that could rewrite either would
+   * make them advisory.
+   */
+  authorizeParams: z.record(z.string()).default({}),
+  /**
+   * How the client credentials reach the token endpoint: `post` puts them in the
+   * form body (RFC 6749 §2.3.1's second option, what most providers document),
+   * `basic` puts them in an `Authorization: Basic` header (the first option,
+   * which the RFC says a server MUST support and several require).
+   *
+   * There is no "try one then the other". A failed exchange burns the
+   * authorization code — it is single-use at the provider — so a retry with the
+   * other method exchanges a code that is already spent and reports the wrong
+   * cause.
+   */
+  clientAuth: z.enum(["post", "basic"]).default("post"),
+  /**
+   * WHICH FIELD OF THE TOKEN RESPONSE IS THE DURABLE CREDENTIAL.
+   *
+   * `refresh_token` is the usual answer and the default. `access_token` is for
+   * the providers whose access tokens simply do not expire and which issue no
+   * refresh token at all (Slack bot tokens, Linear, Notion) — for those,
+   * demanding a `refresh_token` would refuse every correct consent they can
+   * produce.
+   *
+   * It is declared rather than sniffed. "Take the refresh token if there is one,
+   * else the access token" would store an hour-long credential the moment a
+   * provider changed its mind, and the symptom would be a slug that worked all
+   * afternoon and was dead by morning.
+   */
+  credential: z
+    .enum(["refresh_token", "access_token"])
+    .default("refresh_token"),
+  ...connectorVariableFields({}),
+});
+
+/**
+ * `oauth.provider`: which consent flow strad drives, and therefore which fields
+ * the block carries.
+ *
+ * Two, and they are not two spellings of one thing. `google` is an
+ * IMPLEMENTATION — strad knows Google's endpoints, asks for an ID token, and
+ * refuses a consent that came back from the wrong account. `generic` is a
+ * DECLARATION — the config names the endpoints, and strad runs plain RFC 6749
+ * authorization-code-with-PKCE against them, proving nothing about who consented
+ * because there is nothing standard to prove it with.
+ *
+ * DISCRIMINATED, rather than one object with optional halves, and that is the
+ * whole answer to the failure this block is most exposed to. Zod STRIPS an
+ * unknown key, so an optional `authorizeUrl:` misspelled once would render
+ * clean, deploy clean, and send a human to `accounts.google.com` for a
+ * credential they asked Linear for. Under a discriminated union the field is
+ * REQUIRED on the variant that has it, so the same typo is a
+ * missing-required-field error at parse time, on the config gate, before
+ * anything is written.
+ */
+const OAuthConnector = z.discriminatedUnion("provider", [
+  GoogleConnector,
+  GenericConnector,
+]);
 
 /**
  * ONE parameter store the SSO console can browse: a GCP project, the namespaces
@@ -1521,6 +1669,50 @@ export const StradConfig = z
         });
       }
 
+      // THE ENDPOINTS A GENERIC CONNECTOR NAMES.
+      //
+      // https, or http to a loopback host, checked with the SAME predicate
+      // `oauthRefresh.tokenUrl` uses — an authorization code and a client secret
+      // travel over these, so a plain-http endpoint on a real host would put both
+      // on the wire. `loopbackOrHttps` is reused rather than re-expressed because
+      // two spellings of one rule is how one of them ends up weaker.
+      if (oauth.provider === "generic") {
+        for (const field of ["authorizeUrl", "tokenUrl"] as const) {
+          if (loopbackOrHttps(oauth[field])) continue;
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `server "${s.slug}" sets oauth.${field} to "${oauth[field]}". It ` +
+              `must be an https URL (plain http is allowed only for a loopback ` +
+              `host): an authorization code and a client secret travel over it.`,
+            path: ["servers"],
+          });
+        }
+
+        // THE PARAMETERS STRAD OWNS ARE NOT CONFIGURABLE.
+        //
+        // `redirect_uri` and `code_challenge` are the two controls that keep an
+        // authorization code from leaving the building, and `client_id`, `scope`
+        // and `state` are the terms a human is shown before consenting. A config
+        // key that could rewrite any of them would make the whole "the browser
+        // supplies nothing" story advisory. The builder skips a reserved key
+        // anyway; this is what makes the attempt LOUD rather than ignored.
+        for (const key of Object.keys(oauth.authorizeParams)) {
+          if (!(RESERVED_AUTHORIZE_PARAMS as readonly string[]).includes(key))
+            continue;
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `server "${s.slug}" sets oauth.authorizeParams.${key}, which is ` +
+              `one of the authorization parameters strad composes itself ` +
+              `(${RESERVED_AUTHORIZE_PARAMS.join(", ")}). They carry the terms ` +
+              `of the grant and the PKCE challenge; a config cannot rewrite ` +
+              `them. Delete this key.`,
+            path: ["servers"],
+          });
+        }
+      }
+
       const named: { field: string; variable: string }[] = [
         { field: "clientIdVariable", variable: oauth.clientIdVariable },
         { field: "clientSecretVariable", variable: oauth.clientSecretVariable },
@@ -1535,10 +1727,43 @@ export const StradConfig = z
               `server "${s.slug}" sets oauth.${field} to "${variable}", which ` +
               `is not a legal environment variable name (letters, digits and ` +
               `underscores; not starting with a digit; at most 200 ` +
-              `characters). It addresses /strad/{env}/mcp/${s.slug}/static/` +
+              `characters). It addresses /strad/{env}/mcp/${s.slug}/{kind}/` +
               `{VARIABLE} and nothing else.`,
             path: ["servers"],
           });
+        }
+      }
+
+      // A CONNECTOR VARIABLE MAY NOT ALSO BE A `paramsWritable:` OR
+      // `paramsRefresh:` ENTRY.
+      //
+      // Those two name variables in this slug's `static/` namespace and nowhere
+      // else (src/http/params.ts composes `parameterPath`), while a connector's
+      // credential lives under `oauth/` and outranks `static/` for the same
+      // name. Allowing both would make the container re-read a stale hand-typed
+      // copy over the credential a human just consented to, and write a rotation
+      // back to a path the `oauth/` copy permanently shadows — silently, in both
+      // directions. Refusing the combination is what keeps the two mechanisms
+      // from addressing one name through different kinds.
+      if (s.kind === "supplementary-image") {
+        const owned = new Set(
+          named.map(({ variable }) => variable.toLowerCase()),
+        );
+        for (const field of ["paramsWritable", "paramsRefresh"] as const) {
+          for (const variable of s[field]) {
+            if (!owned.has(variable.toLowerCase())) continue;
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message:
+                `server "${s.slug}" lists "${variable}" under ${field}: and ` +
+                `names it on its oauth: connector. ${field} addresses ` +
+                `/strad/{env}/mcp/${s.slug}/static/, and a connector's ` +
+                `credential is written to the oauth/ kind, which outranks it — ` +
+                `so the two would address one name through different kinds and ` +
+                `disagree without failing. Drop it from ${field}:.`,
+              path: ["servers"],
+            });
+          }
         }
       }
 
@@ -1560,11 +1785,18 @@ export const StradConfig = z
         claimed.set(fold, field);
       }
 
-      // strad requests `openid` and `email` itself; see OAuthConnector.scopes.
+      // strad requests `openid` and `email` itself; see GoogleConnector.scopes.
       // Listing one here is not wrong so much as a claim about capability that
       // the identity scopes do not make, and the deploy gate is where a config
       // gets told.
-      const IDENTITY = new Set(["openid", "email", "profile"]);
+      //
+      // GOOGLE'S RULE, AND ONLY GOOGLE'S. A generic provider gets no identity
+      // scopes added — strad has no standard proof to ask one for — so `profile`
+      // there is an ordinary capability scope whose name happens to collide, and
+      // refusing it would refuse a correct config.
+      const IDENTITY = new Set(
+        oauth.provider === "google" ? ["openid", "email", "profile"] : [],
+      );
       const seenScopes = new Set<string>();
       for (const scope of oauth.scopes) {
         if (IDENTITY.has(scope)) {
@@ -1619,7 +1851,7 @@ export const StradConfig = z
           message:
             `server "${s.slug}" references \${${variable}} in its config AND ` +
             `names it under oauth.${field}. A connector's variables are ` +
-            `INJECTED from /strad/{env}/mcp/${s.slug}/static/, not referenced` +
+            `INJECTED from /strad/{env}/mcp/${s.slug}/{oauth,static}/, not referenced` +
             (field === "refreshTokenVariable"
               ? `: the refresh token does not exist until a human completes the ` +
                 `console consent flow, and render-spec exits 1 on the first ` +

@@ -261,18 +261,32 @@ describe("seededByServer", () => {
     expect(seeded.get("telegram-rw")).toEqual(["TELEGRAM_API_HASH"]);
   });
 
-  it("ignores anything that is not a static server parameter", () => {
+  it("ignores anything that is not a server parameter", () => {
     const seeded = seededByServer("test", [
       // The gateway namespace is a sibling of mcp/, not a member of it.
       meta("/strad/test/gateway/static/STRAD_TOKENS"),
-      // A future `oauth` kind is not a static parameter.
-      meta("/strad/test/mcp/gcs/oauth/TOKEN"),
       // Another environment entirely.
       meta("/strad/prod/mcp/gcs/static/GCS_BUCKET"),
       // Present, but with no value to resolve.
       meta("/strad/test/mcp/gcs/static/EMPTY", false),
     ]);
     expect([...seeded.keys()]).toEqual([]);
+  });
+
+  it("routes BOTH kinds, and reports which of them a slug holds", () => {
+    // The `oauth` kind is read exactly as `static` is — that is the whole point
+    // of the kind. A resolver that skipped it would leave a credential a human
+    // just consented to sitting in a namespace nothing reads.
+    const { seeded, kinds } = groupByServer("test", [
+      meta("/strad/test/mcp/gcs/oauth/TOKEN"),
+      meta("/strad/test/mcp/gcs/static/GCS_BUCKET"),
+      meta("/strad/test/mcp/sheets/oauth/TOKEN"),
+    ]);
+    expect(seeded.get("gcs")).toEqual(["GCS_BUCKET", "TOKEN"]);
+    expect([...kinds.get("gcs")!].sort()).toEqual(["oauth", "static"]);
+    // A slug with nothing under `static/` reports only the kind it holds, which
+    // is what lets a caller resolve one namespace instead of two.
+    expect([...kinds.get("sheets")!]).toEqual(["oauth"]);
   });
 
   it("keys a DEEP path on its last segment, because the resolver does", () => {
@@ -288,14 +302,14 @@ describe("seededByServer", () => {
   it("hands back the paths no resolver reads, rather than dropping them", () => {
     const { seeded, unroutable } = groupByServer("test", [
       meta("/strad/test/mcp/gcs/statik/TYPO"),
-      meta("/strad/test/mcp/gcs/oauth/TOKEN"),
       meta("/strad/test/mcp/BARE"),
       meta("/strad/test/mcp/gcs/static/GOOD"),
     ]);
     expect(seeded.get("gcs")).toEqual(["GOOD"]);
+    // A TYPO'D KIND IS STILL UNROUTABLE. Two kinds are read; a third spelling is
+    // read by nothing, and saying so is the point of this list.
     expect(unroutable).toEqual([
       "/strad/test/mcp/BARE",
-      "/strad/test/mcp/gcs/oauth/TOKEN",
       "/strad/test/mcp/gcs/statik/TYPO",
     ]);
   });
@@ -317,9 +331,10 @@ describe("unreadParameters", () => {
     expect(findings).toHaveLength(1);
     // The referenced one is read; only the other is reported.
     expect(findings[0]!.variables).toEqual(["UNREFERENCED_NAME"]);
-    expect(findings[0]!.message).toContain(
-      "/strad/test/mcp/telegram-ro/static/",
-    );
+    // The slug's root, not one kind's namespace: `seeded` is the union across
+    // kinds, so naming `static/` in a message about a variable that may sit
+    // under `oauth/` would send a human to the wrong page.
+    expect(findings[0]!.message).toContain("/strad/test/mcp/telegram-ro/");
     expect(findings[0]!.message).toContain("params: true");
   });
 

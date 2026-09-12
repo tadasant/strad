@@ -1502,7 +1502,7 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       // ONE, and not configurable. Console login tokens and their sessions are
       // records in this process's memory (src/auth/console-tokens.ts); a second
       // replica fails them closed — a mint on one is unknown to the other — but
-      // it does fail them. HACKS.md #95 has the shared-store upgrade.
+      // it does fail them. HACKS.md #96 has the shared-store upgrade.
       instance_count: 1,
       // The ONE public component. http_port is what mints the public route.
       http_port: PORT,

@@ -1,5 +1,5 @@
 import type { StradConfig } from "../../config/schema.ts";
-import { gatewayNamespace, staticNamespace } from "../parameters/namespace.ts";
+import { gatewayNamespace, serverNamespaces } from "../parameters/namespace.ts";
 import { resolverFromEnv } from "../parameters/resolver.ts";
 import type { ParameterResolver } from "../parameters/types.ts";
 import { ChainSecretProvider } from "./chain.ts";
@@ -208,19 +208,25 @@ export function buildSecretProviders(
   const forServer = (slug: string): SecretProvider => {
     const held = perServer.get(slug);
     if (held) return held;
-    const own = new StoreSecretProvider(
-      resolver,
-      staticNamespace(opts.config.gateway.env, slug),
-      { negativeTtlMs: Infinity },
+    // ONE PROVIDER PER KIND, in precedence order — `oauth/` then `static/`.
+    //
+    // Each slices the SAME process snapshot of the store (see gcp.ts
+    // `snapshot()`), so the extra layer costs a map lookup rather than a round
+    // trip, and a slug with nothing under `oauth/` resolves exactly as it did.
+    const own = serverNamespaces(opts.config.gateway.env, slug).map(
+      (namespace) =>
+        new StoreSecretProvider(resolver, namespace, {
+          negativeTtlMs: Infinity,
+        }),
     );
     // ChainSecretProvider unchanged, including its rule that a THROW does not
     // fall through. An unreachable store must not silently demote a server to
     // whatever the shared namespace happens to hold — that is how a rotated
     // credential comes back from the dead. It is also the semantics a
-    // `params: true` server already has for the same namespace, resolved by the
-    // registry's parameter cache, so the two halves of `/mcp/{slug}/static/`
-    // fail the same way.
-    const chained = new ChainSecretProvider([own, shared]);
+    // `params: true` server already has for the same namespaces, resolved by the
+    // registry's parameter cache, so the two halves of `/mcp/{slug}/` fail the
+    // same way.
+    const chained = new ChainSecretProvider([...own, shared]);
     perServer.set(slug, chained);
     return chained;
   };

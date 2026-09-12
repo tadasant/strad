@@ -74,7 +74,9 @@ describe("oauth: the shape", () => {
     });
   });
 
-  it("addresses this slug's own namespace, and composes the path from config alone", () => {
+  it("writes to this slug's own OAUTH kind, composed from config alone", () => {
+    // The `oauth` kind is where a credential strad MINTED goes — the whole point
+    // of the kind being separate from `static/`, which is what a human typed.
     const config = parseConfig(BASE(MINIMAL));
     expect(
       refreshTokenPath(
@@ -82,7 +84,7 @@ describe("oauth: the shape", () => {
         connectorFor(config, "google-sheets-tadas412-ro")!,
       ),
     ).toBe(
-      "/strad/test/mcp/google-sheets-tadas412-ro/static/GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN",
+      "/strad/test/mcp/google-sheets-tadas412-ro/oauth/GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN",
     );
   });
 
@@ -91,6 +93,11 @@ describe("oauth: the shape", () => {
     expect(connectorTier([SHEETS_RW])).toBe("read-write");
     // Mixed errs toward the alarming word: a human is about to consent.
     expect(connectorTier([SHEETS_RO, SHEETS_RW])).toBe("read-write");
+    // NO SCOPES is read-WRITE. A generic connector may legitimately declare
+    // none, and then strad knows nothing about what the credential can do —
+    // `[].every()` is vacuously true, so the naive reading would print the
+    // reassuring word in the one case with no evidence behind it.
+    expect(connectorTier([])).toBe("read-write");
   });
 
   it("adds the identity scopes itself, and only those", () => {
@@ -289,5 +296,180 @@ servers:
     // THE POINT: nothing for render-spec to fail on. A slug ships before its
     // token exists, mounts degraded, and becomes whole on the next deploy.
     expect(server.env).toEqual({});
+  });
+});
+
+/**
+ * `provider: generic` — the variant that carries its own endpoints.
+ *
+ * THE FAILURE THIS BLOCK IS ABOUT is the one the issue gate called out: Zod
+ * strips an unknown key, so a misspelled field on a credential-shaped config
+ * renders clean, deploys clean, and silently does the wrong thing. The design
+ * answer is that every field a generic connector cannot work without is
+ * REQUIRED on the variant, which turns a typo from a silent strip into a parse
+ * error — and the tests below pin both halves: a well-formed declaration
+ * survives with its fields intact, and each malformed one is REFUSED rather
+ * than quietly defaulted.
+ */
+describe("oauth: provider generic", () => {
+  const GENERIC = `      provider: generic
+      label: Linear
+      authorizeUrl: https://linear.app/oauth/authorize
+      tokenUrl: https://api.linear.app/oauth/token
+      scopes: [read]
+      clientIdVariable: LINEAR_OAUTH_CLIENT_ID
+      clientSecretVariable: LINEAR_OAUTH_CLIENT_SECRET
+      refreshTokenVariable: LINEAR_OAUTH_TOKEN
+`;
+
+  it("survives parsing with every field intact", () => {
+    // THE ANTI-STRIP ASSERTION. Each of these is read on the way out (to build
+    // the consent URL) or on the way back (to exchange and store), and a value
+    // Zod dropped would be an empty default nothing complains about.
+    const config = parseConfig(BASE(GENERIC));
+    const entry = connectorFor(config, "google-sheets-tadas412-ro");
+    expect(entry!.oauth).toEqual({
+      provider: "generic",
+      label: "Linear",
+      authorizeUrl: "https://linear.app/oauth/authorize",
+      tokenUrl: "https://api.linear.app/oauth/token",
+      scopes: ["read"],
+      authorizeParams: {},
+      clientAuth: "post",
+      credential: "refresh_token",
+      clientIdVariable: "LINEAR_OAUTH_CLIENT_ID",
+      clientSecretVariable: "LINEAR_OAUTH_CLIENT_SECRET",
+      refreshTokenVariable: "LINEAR_OAUTH_TOKEN",
+    });
+  });
+
+  it("keeps authorizeParams, clientAuth and credential verbatim", () => {
+    const config = parseConfig(
+      BASE(
+        GENERIC +
+          `      clientAuth: basic
+      credential: access_token
+` +
+          `      authorizeParams:
+        access_type: offline
+        prompt: consent
+`,
+      ),
+    );
+    const oauth = connectorFor(config, "google-sheets-tadas412-ro")!.oauth;
+    expect(oauth).toMatchObject({
+      clientAuth: "basic",
+      credential: "access_token",
+      authorizeParams: { access_type: "offline", prompt: "consent" },
+    });
+  });
+
+  it("REFUSES a missing endpoint rather than defaulting one", () => {
+    // The typo case, and the reason the fields are required: `authorizeURL` is
+    // stripped, `authorizeUrl` is then absent, and absent is a hard error.
+    const raw = BASE(
+      `      provider: generic
+      authorizeURL: https://linear.app/oauth/authorize
+` +
+        `      tokenUrl: https://api.linear.app/oauth/token
+` +
+        `      clientIdVariable: A
+      clientSecretVariable: B
+      refreshTokenVariable: C
+`,
+    );
+    expect(() => parseConfig(raw)).toThrow(/authorizeUrl/);
+  });
+
+  it("REFUSES a generic connector that names no variables", () => {
+    // Google's defaults are Google's. A Linear credential landing in
+    // GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN is a wrong answer that renders clean.
+    const raw = BASE(
+      `      provider: generic
+      authorizeUrl: https://linear.app/oauth/authorize
+` +
+        `      tokenUrl: https://api.linear.app/oauth/token
+`,
+    );
+    expect(() => parseConfig(raw)).toThrow(/clientIdVariable/);
+  });
+
+  it("REFUSES a plain-http endpoint on a real host", () => {
+    const raw = BASE(
+      GENERIC.replace(
+        "https://api.linear.app/oauth/token",
+        "http://api.linear.app/oauth/token",
+      ),
+    );
+    expect(() => parseConfig(raw)).toThrow(/https/);
+  });
+
+  it("REFUSES an authorizeParams key strad composes itself", () => {
+    // `redirect_uri` and `code_challenge` are the two controls that keep an
+    // authorization code from leaving the building.
+    for (const key of ["redirect_uri", "code_challenge", "state"]) {
+      const raw = BASE(
+        GENERIC +
+          `      authorizeParams:
+        ${key}: anything
+`,
+      );
+      expect(() => parseConfig(raw)).toThrow(/authorizeParams/);
+    }
+  });
+
+  it("REFUSES an unknown provider by name", () => {
+    const raw = BASE(
+      `      provider: githubb
+      authorizeUrl: https://x.example/a
+` +
+        `      tokenUrl: https://x.example/t
+      clientIdVariable: A
+` +
+        `      clientSecretVariable: B
+      refreshTokenVariable: C
+`,
+    );
+    expect(() => parseConfig(raw)).toThrow();
+  });
+
+  it("reports a misspelled generic key rather than stripping it silently", () => {
+    const raw = BASE(
+      GENERIC +
+        `      clientAuthMethod: basic
+`,
+    );
+    const unknown = unknownConfigKeys(raw, parseConfig(raw));
+    expect(unknown.map((u) => u.key)).toContain("clientAuthMethod");
+  });
+
+  it("REFUSES a connector variable that is also paramsWritable or paramsRefresh", () => {
+    // Those two address `static/` and nothing else, while a connector's
+    // credential is written to `oauth/` and outranks it. Allowing both would let
+    // a container re-read a stale hand-typed copy over the credential a human
+    // just consented to, and write a rotation back where the `oauth/` copy
+    // permanently shadows it — silently, in both directions.
+    for (const field of ["paramsWritable", "paramsRefresh"]) {
+      const raw = BASE(
+        GENERIC,
+        `    params: true\n    ${field}: [LINEAR_OAUTH_TOKEN]\n`,
+      );
+      expect(() => parseConfig(raw)).toThrow(new RegExp(field));
+    }
+  });
+
+  it("adds no identity scopes, because it can prove no identity", () => {
+    const config = parseConfig(BASE(GENERIC));
+    const oauth = connectorFor(config, "google-sheets-tadas412-ro")!.oauth;
+    // Google gets `openid email` added; a generic provider gets exactly what the
+    // config named, because there is no standard proof to ask one for.
+    expect(requestedScopes(oauth)).toEqual(["read"]);
+  });
+
+  it("allows `profile` as an ordinary capability scope", () => {
+    // Google refuses it under oauth.scopes: because strad requests the identity
+    // scopes itself. For a generic provider the name is just a name.
+    const raw = BASE(GENERIC.replace("scopes: [read]", "scopes: [profile]"));
+    expect(() => parseConfig(raw)).not.toThrow();
   });
 });

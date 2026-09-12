@@ -1,7 +1,12 @@
 import { isUnhosted, unhostedRefFields } from "../config/schema.ts";
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
 import type { ParameterMeta } from "../secrets/parameters/types.ts";
-import { staticNamespace } from "../secrets/parameters/namespace.ts";
+import {
+  isServerParamKind,
+  serverKindNamespace,
+  SERVER_PARAM_KINDS,
+  type ServerParamKind,
+} from "../secrets/parameters/namespace.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
 import { isSecretRef } from "../secrets/parameters/wire.ts";
 
@@ -18,8 +23,15 @@ import { isSecretRef } from "../secrets/parameters/wire.ts";
  *
  * So resolution is LAYERED, and the layering is the whole feature:
  *
- *     1. /strad/{env}/mcp/{slug}/static/{NAME}   — this server's own namespace
- *     2. /strad/{env}/gateway/static/{NAME}      — the shared one
+ *     1. /strad/{env}/mcp/{slug}/oauth/{NAME}    — this server's own, minted
+ *     2. /strad/{env}/mcp/{slug}/static/{NAME}   — this server's own, typed
+ *     3. /strad/{env}/gateway/static/{NAME}      — the shared one
+ *
+ * Layers 1 and 2 are the two KINDS one server's namespace is divided into, and
+ * the order between them is decided in src/secrets/parameters/namespace.ts: a
+ * value strad minted through a console consent beats one a human typed months
+ * ago. Every layered read walks `serverNamespaces()` rather than naming a kind,
+ * so a kind is read by all of them or by none.
  *
  * The server's own namespace WINS. Nothing else would be useful: the shared
  * namespace is where every existing deployment's names already are, so a
@@ -92,45 +104,81 @@ export function seededByServer(
 }
 
 /**
- * The same fold, keeping what it DROPPED.
+ * The same fold, keeping what it DROPPED and which KIND each name came from.
  *
- * A path under `mcp/` that is not `{slug}/static/…` is read by no resolver at
- * all — a typo'd kind (`{slug}/statik/VAR`), a bare `{slug}/VAR`, a future
- * `oauth` kind nothing implements yet. Dropping it silently would be the same
- * silent no-op this module exists to end, one shape further out, so the caller
- * gets it back and warns.
+ * A path under `mcp/` that is not `{slug}/{kind}/…` for a kind some resolver
+ * reads is read by nothing at all — a typo'd kind (`{slug}/statik/VAR`), a bare
+ * `{slug}/VAR`. Dropping it silently would be the same silent no-op this module
+ * exists to end, one shape further out, so the caller gets it back and warns.
+ *
+ * `kinds` is what lets a caller resolve only the namespaces that hold anything.
+ * `resolve()` renders every parameter in a namespace, so asking for an empty
+ * `oauth/` on every slug would be a round trip per server for nothing — and on a
+ * render of thirty-odd servers that is the burst Parameter Manager's per-project
+ * read quota already refused once.
  */
 export function groupByServer(
   env: string,
   metas: readonly ParameterMeta[],
-): { seeded: Map<string, string[]>; unroutable: string[] } {
+): {
+  seeded: Map<string, string[]>;
+  /** slug -> the kinds whose namespace actually holds a value. */
+  kinds: Map<string, Set<ServerParamKind>>;
+  unroutable: string[];
+} {
   const prefix = mcpNamespace(env);
   const out = new Map<string, string[]>();
+  const kinds = new Map<string, Set<ServerParamKind>>();
   const unroutable: string[] = [];
   for (const meta of metas) {
     if (!meta.hasValue) continue;
     if (!meta.path.startsWith(prefix)) continue;
-    // {slug}/static/{…}/{VARIABLE}. The variable is the LAST segment, not the
-    // third one: `resolve()` lists everything under `{slug}/static/` and keys
+    // {slug}/{kind}/{…}/{VARIABLE}. The variable is the LAST segment, not the
+    // third one: `resolve()` lists everything under `{slug}/{kind}/` and keys
     // the result by the last segment (gcp.ts `variableOf`), so
     // `{slug}/static/extra/TOKEN` really does arrive as `TOKEN`. Reading only
     // three segments here would call a path unread that the resolver reads —
-    // the more dangerous direction, and the one the console's SLUG_STATIC
+    // the more dangerous direction, and the one the console's SLUG_KIND
     // already refuses to take.
     const segments = meta.path.slice(prefix.length).split("/");
     const [slug, kind] = segments;
     const variable = segments[segments.length - 1];
-    if (segments.length < 3 || !slug || kind !== "static" || !variable) {
+    if (
+      segments.length < 3 ||
+      !slug ||
+      !kind ||
+      !isServerParamKind(kind) ||
+      !variable
+    ) {
       unroutable.push(meta.path);
       continue;
     }
     const held = out.get(slug) ?? [];
     if (!held.includes(variable)) held.push(variable);
     out.set(slug, held);
+    const heldKinds = kinds.get(slug) ?? new Set<ServerParamKind>();
+    heldKinds.add(kind);
+    kinds.set(slug, heldKinds);
   }
   for (const held of out.values()) held.sort();
   unroutable.sort();
-  return { seeded: out, unroutable };
+  return { seeded: out, kinds, unroutable };
+}
+
+/**
+ * The namespaces one slug is worth resolving, in precedence order.
+ *
+ * Filtered by what the listing found, so a slug with nothing under `oauth/`
+ * costs exactly the read it cost before this kind existed.
+ */
+export function seededNamespaces(
+  env: string,
+  slug: string,
+  kinds: ReadonlySet<ServerParamKind> | undefined,
+): string[] {
+  return SERVER_PARAM_KINDS.filter((kind) => kinds?.has(kind)).map((kind) =>
+    serverKindNamespace(env, slug, kind),
+  );
 }
 
 /**
@@ -228,7 +276,8 @@ export function ownNamespaceRefsBySlug(
  * The three variables ONE server's `oauth:` connector owns, or [] for a server
  * that declares none.
  *
- * They are read from that server's own namespace and INJECTED — they are never
+ * They are read from that server's own namespaces — `oauth/` ahead of
+ * `static/`, the same layering everything else here applies — and INJECTED — they are never
  * `${NAME}` references, and the config gate refuses one written by hand (see the
  * `superRefine` in src/config/schema.ts). That is the whole deploy-ordering
  * answer: the refresh token cannot exist until a human completes the console
@@ -318,7 +367,10 @@ export function unreadParameters(
   for (const [slug, variables] of [...seeded].sort(([a], [b]) =>
     a.localeCompare(b),
   )) {
-    const namespace = staticNamespace(config.gateway.env, slug);
+    // The slug's `/mcp/{slug}/` root rather than one kind's namespace: `seeded`
+    // is the union across kinds, so naming `static/` in a message about a
+    // variable that sits under `oauth/` would send a human to the wrong page.
+    const namespace = `/strad/${config.gateway.env}/mcp/${slug}/`;
     const server = config.servers.find((s) => s.slug === slug && s.enabled);
 
     if (!server) {

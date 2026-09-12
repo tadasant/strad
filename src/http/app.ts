@@ -55,7 +55,7 @@ import type { SecretBag } from "../secrets/index.ts";
 import { mountConsoleUi } from "../ui/index.ts";
 import type { GcsLister } from "../ui/gcs-client.ts";
 import type { ConsoleUiOptions } from "../ui/index.ts";
-import { asyncRoute, jsonFailure } from "./async-route.ts";
+import { asyncRoute, jsonFailure, streamFailure } from "./async-route.ts";
 import {
   mountConsoleTokens,
   TOKEN_LOGIN_PATH,
@@ -223,6 +223,53 @@ export function createApp(opts: AppOptions): Express {
       ),
     ),
   );
+  // The download half of the raw data plane, and the gateway's whole part in it.
+  //
+  // UNAUTHENTICATED BY DESIGN, exactly as `/mcp-upload` above is. The signature
+  // in `:token` IS the credential: the caller is an agent session that holds no
+  // strad API key and cannot be given one, so a header-authenticated route would
+  // be unusable by the only thing that needs it. The upstream that signed the
+  // token is the only thing that can check it, and does.
+  //
+  // NOTHING SLACK-SPECIFIC LIVES HERE. The gateway resolves a slug to a
+  // supplementary image and pipes; any mount that serves `/download/:token`
+  // works through it unchanged. That is what keeps the Slack attachment case
+  // from becoming a Slack-shaped route on a general-purpose gateway.
+  //
+  // Registered before `express.json` for the same reason the upload route is:
+  // this is a body parser's blind spot, not its business.
+  app.get(
+    "/mcp-download/:slug/:token",
+    asyncRoute(
+      async (req, res) => {
+        const slug = req.params.slug;
+        const token = req.params.token;
+        const adapter = slug ? opts.registry.get(slug) : undefined;
+        if (
+          adapter?.kind !== "supplementary-image" ||
+          !adapter.getRaw ||
+          !token
+        ) {
+          res.status(404).json({ error: "not_found" });
+          return;
+        }
+        await adapter.getRaw(
+          `/download/${encodeURIComponent(token)}`,
+          req,
+          res,
+        );
+      },
+      streamFailure(
+        "mcp_download",
+        (err) => ({
+          error: "download_proxy_failed",
+          message: errorText(err),
+        }),
+        502,
+      ),
+    ),
+  );
+
   // Resolved here, ahead of the body parser, for one reason: a login token
   // anywhere in ANY URL core receives is burned before a route — or a
   // malformed body the parser refuses — can answer first and leave it live.

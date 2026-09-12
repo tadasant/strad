@@ -42,10 +42,24 @@ const P_EMAIL =
 const P_KEY =
   "/strad/staging/mcp/remote-filesystem-tmp-public/static/REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY";
 const P_OUTSIDE = "/strad/staging/core/static/STRAD_TOKENS";
+/**
+ * A parameter of the `oauth` KIND — a credential strad MINTED through a console
+ * consent, rather than one a human typed.
+ *
+ * It is inside the same `/strad/staging/mcp/` namespace this server is scoped
+ * to, so it must be LISTED exactly as a `static` one is, and its value must be
+ * as unreachable as any other secret parameter's. That pairing is the whole of
+ * the viewer's half of the `oauth` kind: an agent can see that a slug has been
+ * authorized, and can never read what it was authorized with.
+ */
+const P_OAUTH =
+  "/strad/staging/mcp/google-sheets-tadas412-ro/oauth/GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN";
 
 const EMAIL_VALUE = "remote-fs@strad-staging.iam.gserviceaccount.com";
 /** The secret's bytes. They live only in Secret Manager and must never appear. */
 const CANARY = "-----BEGIN PRIVATE KEY-----canary-DO-NOT-LEAK-9f3a2b";
+/** The minted token's bytes. Same rule, and a separate canary so a leak names itself. */
+const CANARY_OAUTH = "1//0e-REFRESH-TOKEN-canary-DO-NOT-LEAK-4c81d";
 /** A second canary, on a parameter OUTSIDE the namespace. Also never appears. */
 const CANARY_OUTSIDE = "strad-token-DO-NOT-LEAK-tttt";
 
@@ -61,6 +75,7 @@ const CANARY_OUTSIDE = "strad-token-DO-NOT-LEAK-tttt";
 async function fixture(caps) {
   const projectId = "test-project";
   const secretId = "strad-staging-remote-filesystem-tmp-public-gcs-private-key";
+  const oauthSecretId = "strad-staging-google-sheets-tadas412-ro-oauth-refresh-token";
 
   const seeds = [
     makeParameter(projectId, {
@@ -75,6 +90,14 @@ async function fixture(caps) {
       secretId,
       note: "rotate on staff change",
     }),
+    // The `oauth` kind: written by the console's consent callback, secret by
+    // construction, and listed under the same namespace as everything else.
+    makeParameter(projectId, {
+      path: P_OAUTH,
+      secret: true,
+      secretId: oauthSecretId,
+      note: "connected as tadas412@gmail.com via the strad console on 2026-09-11T00:00:00.000Z; granted: https://www.googleapis.com/auth/spreadsheets.readonly",
+    }),
     // Managed by strad, but OUTSIDE the mcp namespace: strad's own token store.
     // It must never appear in an mcp listing, nor be gettable through this server.
     makeParameter(projectId, {
@@ -86,7 +109,10 @@ async function fixture(caps) {
   ];
 
   const parameters = new Map(seeds.map((s) => [s.id, s.entry]));
-  const secretManager = new Map([[secretId, CANARY]]);
+  const secretManager = new Map([
+    [secretId, CANARY],
+    [oauthSecretId, CANARY_OAUTH],
+  ]);
 
   const fake = await startFakeParameterManager({
     projectId,
@@ -319,7 +345,7 @@ test("list_parameters returns paths, secret flags and NOTES, and never a secret 
   });
   const payload = JSON.parse(res.content[0].text);
 
-  assert.equal(payload.count, 2);
+  assert.equal(payload.count, 3);
   const byName = Object.fromEntries(payload.parameters.map((p) => [p.name, p]));
 
   assert.ok(byName[P_EMAIL], "the non-secret parameter is listed");
@@ -337,6 +363,42 @@ test("list_parameters returns paths, secret flags and NOTES, and never a secret 
     assert.equal(p.value, undefined, "list_parameters must not carry a value");
   }
   assert.ok(!JSON.stringify(res).includes(CANARY), "a secret value reached the listing");
+  await close();
+});
+
+test("an `oauth` kind parameter is listed as metadata, and its token is not", async () => {
+  const { client, close } = await fixture();
+
+  const res = await client.callTool({
+    name: "list_parameters",
+    arguments: { namespace: NS },
+  });
+  const payload = JSON.parse(res.content[0].text);
+  const entry = payload.parameters.find((p) => p.name === P_OAUTH);
+
+  // LISTED. A kind the viewer could not see would leave an agent unable to tell
+  // a slug that has been authorized from one that never was.
+  assert.ok(entry, "the oauth-kind parameter is listed");
+  assert.equal(entry.secret, true);
+  assert.equal(entry.variable, "GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN");
+  assert.ok(entry.latestVersion, "it has a version");
+  // The note strad wrote at consent time is safe metadata by construction: who
+  // consented, what was granted, when. It is exactly what an agent needs to tell
+  // a human whether to re-authorize.
+  assert.match(entry.note, /connected as tadas412@gmail\.com/);
+  assert.equal(entry.value, undefined, "a listing never carries a value");
+  assert.ok(!JSON.stringify(res).includes(CANARY_OAUTH));
+
+  // AND NEVER READABLE. Same refusal as any other secret parameter — the kind
+  // buys the agent no new reach.
+  const got = await client.callTool({
+    name: "get_parameter",
+    arguments: { name: P_OAUTH },
+  });
+  assert.equal(got.isError, true);
+  assert.match(got.content[0].text, /is a SECRET parameter/);
+  assert.ok(!JSON.stringify(got).includes(CANARY_OAUTH));
+  assert.ok(!JSON.stringify(got).includes("__REF__"));
   await close();
 });
 
@@ -425,8 +487,10 @@ test("calling EVERY tool with EVERY argument shape never yields a canary", async
     { name: "get_parameter", arguments: { name: P_EMAIL } },
     { name: "get_parameter", arguments: { name: P_KEY } },
     { name: "get_parameter", arguments: { name: P_OUTSIDE } },
+    { name: "get_parameter", arguments: { name: P_OAUTH } },
     { name: "open_secrets_manager", arguments: {} },
     { name: "open_secrets_manager", arguments: { secret: P_KEY } },
+    { name: "open_secrets_manager", arguments: { secret: P_OAUTH } },
   ];
   assert.equal(new Set(attempts.map((a) => a.name)).size, tools.length);
 
@@ -437,6 +501,12 @@ test("calling EVERY tool with EVERY argument shape never yields a canary", async
     assert.ok(
       !blob.includes(CANARY_OUTSIDE),
       `${attempt.name} leaked an out-of-namespace value`,
+    );
+    // The `oauth` kind is swept by the same canary rule as everything else: the
+    // kind changes where a credential comes FROM, never what a tool may return.
+    assert.ok(
+      !blob.includes(CANARY_OAUTH),
+      `${attempt.name} leaked a minted OAuth credential`,
     );
   }
   await close();
@@ -625,6 +695,33 @@ test("the tool descriptions tell the agent it cannot have a secret value", () =>
   assert.match(get.description, /SECRET, this returns an error/);
   const list = defs.find((d) => d.name === "list_parameters");
   assert.match(list.description, /never a secret value/);
+});
+
+test("the write tool's description steers an agent away from the `oauth` kind", () => {
+  // A path's kind segment decides WHO owns the value. `oauth/` belongs to the
+  // console's consent callback and is read FIRST, so an agent that wrote a value
+  // there would silently outrank the `static/` one a human set — and nothing
+  // would fail. The tool description is the only place an agent learns that
+  // before it picks a path, so it is asserted rather than left to prose.
+  const defs = toolDefinitions(
+    {
+      stores: [
+        {
+          project: "p",
+          namespaces: [NS],
+          account: null,
+          viewerKeyVar: "SECRETS_SERVICE_ACCOUNT_KEY_JSON",
+        },
+      ],
+    },
+    new Map([["p", CAPS.readWrite]]),
+  );
+  const create = defs.find((d) => d.name === "create_parameter");
+  assert.ok(create, "the write tool is listed when the credential can write");
+  const name = create.inputSchema.properties.name.description;
+  assert.match(name, /<kind>/);
+  assert.match(name, /oauth/);
+  assert.match(name, /Write to "static"/);
 });
 
 /**

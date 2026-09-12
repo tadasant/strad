@@ -1,6 +1,18 @@
-import { createHash, randomBytes } from "node:crypto";
 import { verifyGoogleIdToken } from "../auth/google.ts";
-import { withRequestDeadline } from "../util/deadline.ts";
+import {
+  buildPkceAuthorizeUrl,
+  ConnectorError,
+  exchangeAuthorizationCode,
+  grantedScopeSet,
+  stringField,
+  type PendingConnectorAuth,
+} from "./oauth-flow.ts";
+
+export {
+  ConnectorError,
+  type ConnectorErrorCode,
+  type PendingConnectorAuth,
+} from "./oauth-flow.ts";
 
 /**
  * The Google half of a console connector: build the consent URL, exchange the
@@ -21,32 +33,17 @@ import { withRequestDeadline } from "../util/deadline.ts";
  * second RS256/JWKS/issuer/audience implementation is a second place to get the
  * only proof of identity in this flow wrong.
  *
- * ## Nothing here is ever quoted back
+ * ## What is here, and what is one file over
  *
- * Every failure below is a {@link ConnectorError} carrying a code from a closed
- * set and a sentence this repo wrote. Google's own error bodies are read for
- * NOTHING — not for a message, not for a hint, not for a log line. An upstream
- * OAuth error body is attacker-influenceable text on a path that is one string
- * concatenation away from a rendered page, a span attribute and an exception
- * report, and the operational value of it ("invalid_grant" versus a 400) is
- * carried by the code instead.
+ * PKCE, the consent URL's shape, the bounded token POST and the rule that an
+ * upstream error body is never quoted back are all in `./oauth-flow.ts`, shared
+ * with the generic provider. What is HERE is the part that is Google's alone:
+ * `access_type=offline`, `prompt=consent`, and the ID-token proof of which
+ * account consented.
  */
 
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
-
-/**
- * How long the code exchange waits on Google before it is a refusal.
- *
- * Ten seconds, the number src/auth/google.ts bounds the console's own handshake
- * with: a different OAuth client and a different flow, but the same endpoint and
- * the same human waiting on a redirect. Node's `fetch` has no overall timeout,
- * so without it a stalled token endpoint holds this callback for undici's 300s
- * header timeout — and an authorization code is single-use and short-lived, so
- * every second past the point the exchange could have worked is spent on a code
- * that will be refused anyway.
- */
-const EXCHANGE_TIMEOUT_MS = 10_000;
 
 /**
  * The scopes strad adds to every connector consent, on top of the config's.
@@ -63,34 +60,6 @@ const EXCHANGE_TIMEOUT_MS = 10_000;
  * settles the question.
  */
 export const IDENTITY_SCOPES = ["openid", "email"] as const;
-
-/** A closed set. Every one of these is a strad word, safe to log and export. */
-export type ConnectorErrorCode =
-  | "exchange_failed"
-  | "exchange_timed_out"
-  | "no_refresh_token"
-  | "no_identity"
-  | "identity_unverified"
-  | "account_mismatch"
-  | "scope_not_granted";
-
-export class ConnectorError extends Error {
-  constructor(
-    readonly code: ConnectorErrorCode,
-    message: string,
-  ) {
-    super(message);
-    this.name = "ConnectorError";
-  }
-}
-
-export interface PendingConnectorAuth {
-  /** The CSRF value Google echoes back. Sealed into the transaction cookie. */
-  state: string;
-  /** The PKCE verifier. Sealed into the transaction cookie; never in a URL. */
-  verifier: string;
-  url: string;
-}
 
 export interface AuthorizeInput {
   clientId: string;
@@ -124,27 +93,24 @@ export interface AuthorizeInput {
  */
 export function buildAuthorizeUrl(
   input: AuthorizeInput,
-  random: (bytes: number) => Buffer = randomBytes,
+  random?: (bytes: number) => Buffer,
 ): PendingConnectorAuth {
-  const state = random(32).toString("base64url");
-  const verifier = random(32).toString("base64url");
-  const challenge = createHash("sha256").update(verifier).digest("base64url");
-
-  const url = new URL(AUTH_ENDPOINT);
-  url.searchParams.set("client_id", input.clientId);
-  url.searchParams.set("redirect_uri", input.redirectUri);
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", input.scopes.join(" "));
-  url.searchParams.set("state", state);
-  url.searchParams.set("code_challenge", challenge);
-  url.searchParams.set("code_challenge_method", "S256");
-  url.searchParams.set("access_type", "offline");
-  url.searchParams.set("prompt", "consent");
-  // A hint to the account chooser, and NOT a security control: the human may
-  // pick any account they like, and the callback checks what came back.
-  url.searchParams.set("login_hint", input.loginHint);
-
-  return { state, verifier, url: url.toString() };
+  return buildPkceAuthorizeUrl(
+    {
+      endpoint: AUTH_ENDPOINT,
+      clientId: input.clientId,
+      redirectUri: input.redirectUri,
+      scopes: input.scopes,
+      extra: {
+        access_type: "offline",
+        prompt: "consent",
+        // A hint to the account chooser, and NOT a security control: the human
+        // may pick any account they like, and the callback checks what came back.
+        login_hint: input.loginHint,
+      },
+    },
+    random,
+  );
 }
 
 export interface ExchangeInput {
@@ -185,69 +151,20 @@ export async function exchangeCode(
   input: ExchangeInput,
   fetchImpl: typeof fetch = fetch,
 ): Promise<ConnectorGrant> {
-  const body = new URLSearchParams({
-    code: input.code,
-    client_id: input.clientId,
-    client_secret: input.clientSecret,
-    redirect_uri: input.redirectUri,
-    grant_type: "authorization_code",
-    code_verifier: input.verifier,
-  });
-
-  // THE BODY READ IS INSIDE THE DEADLINE, not merely the response. A host that
-  // sends its headers and then trickles the body is the stall a header timeout
-  // never catches, and a rejection that arrives after this call returned would
-  // reach `src/ui/connector.ts` as a bare `DOMException` — classified
-  // `store_failed`, "the write was refused", on a flow that never got a token.
-  const json = await withRequestDeadline(
-    EXCHANGE_TIMEOUT_MS,
-    async (signal) => {
-      const res = await fetchImpl(TOKEN_ENDPOINT, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body,
-        signal,
-      });
-
-      if (!res.ok) {
-        // The STATUS and nothing else. Google's body on a failed exchange
-        // carries `error_description`, which is upstream text — and on a
-        // redirect-URI mismatch it quotes the URI back, which is ours but sets
-        // the precedent.
-        throw new ConnectorError(
-          "exchange_failed",
-          `Google refused the authorization code (HTTP ${res.status}). The code may ` +
-            `have expired, been used already, or been issued for a different OAuth ` +
-            `client than the one this server's namespace holds.`,
-        );
-      }
-
-      return (await res.json()) as {
-        refresh_token?: unknown;
-        id_token?: unknown;
-        scope?: unknown;
-      };
+  const json = await exchangeAuthorizationCode(
+    {
+      endpoint: TOKEN_ENDPOINT,
+      clientId: input.clientId,
+      clientSecret: input.clientSecret,
+      redirectUri: input.redirectUri,
+      code: input.code,
+      verifier: input.verifier,
     },
-    // A CODE FROM THE CLOSED SET, like every other refusal here, because the
-    // callback puts it in a query string and an event field. A timeout is not
-    // `exchange_failed`: Google refusing a code and Google not answering send a
-    // human to different places, and the page's sentence for each says so.
-    () =>
-      new ConnectorError(
-        "exchange_timed_out",
-        `The authorization code exchange timed out after ` +
-          `${EXCHANGE_TIMEOUT_MS}ms. Nothing was written.`,
-      ),
+    fetchImpl,
   );
 
-  const refreshToken =
-    typeof json.refresh_token === "string" && json.refresh_token !== ""
-      ? json.refresh_token
-      : null;
-  const idToken =
-    typeof json.id_token === "string" && json.id_token !== ""
-      ? json.id_token
-      : null;
+  const refreshToken = stringField(json, "refresh_token");
+  const idToken = stringField(json, "id_token");
 
   // NO REFRESH TOKEN IS A FAILURE, NOT A PARTIAL SUCCESS. Google withholds one
   // when the account has already consented and `prompt=consent` was not honoured
@@ -310,11 +227,7 @@ export async function exchangeCode(
   // human untick a scope; a token stored from that consent leaves a slug that
   // looks connected and 403s on its first real call, which is the least
   // diagnosable outcome available.
-  const granted = new Set(
-    typeof json.scope === "string"
-      ? json.scope.split(/\s+/).filter(Boolean)
-      : [],
-  );
+  const granted = grantedScopeSet(json);
   const withheld = input.requiredScopes.filter((s) => !granted.has(s));
   if (withheld.length > 0) {
     throw new ConnectorError(

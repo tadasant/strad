@@ -9,7 +9,7 @@ import { postMessageTool } from './tools/post-message.js';
 import { replyToThreadTool } from './tools/reply-to-thread.js';
 import { updateMessageTool } from './tools/update-message.js';
 import { reactToMessageTool } from './tools/react-to-message.js';
-import { downloadFileTool } from './tools/download-file.js';
+import { downloadFileTool, type DownloadLinkConfig } from './tools/download-file.js';
 import { uploadSnippetTool } from './tools/upload-snippet.js';
 import { findUserTool } from './tools/find-user.js';
 import { getDmsTool } from './tools/get-dms.js';
@@ -64,7 +64,22 @@ interface Tool {
   }>;
 }
 
-type ToolFactory = (server: Server, clientFactory: ClientFactory) => Tool;
+/**
+ * Per-mount wiring a tool may need beyond a Slack client.
+ *
+ * Threaded as a third argument so the twelve tools that need none of it keep
+ * their two-parameter signatures unchanged — a narrower function is assignable
+ * to a wider one, which is what keeps this additive.
+ */
+export interface ToolContext {
+  downloadLink?: DownloadLinkConfig;
+}
+
+type ToolFactory = (
+  server: Server,
+  clientFactory: ClientFactory,
+  ctx: ToolContext
+) => Tool;
 
 interface ToolDefinition {
   factory: ToolFactory;
@@ -95,13 +110,17 @@ const ALL_TOOLS: ToolDefinition[] = [
 /**
  * Creates a function to register all tools with the server
  */
-export function createRegisterTools(clientFactory: ClientFactory, enabledGroups?: ToolGroup[]) {
+export function createRegisterTools(
+  clientFactory: ClientFactory,
+  enabledGroups?: ToolGroup[],
+  ctx: ToolContext = {}
+) {
   const groups = enabledGroups || parseEnabledToolGroups(process.env.ENABLED_TOOLGROUPS);
 
   return (server: Server) => {
     // Filter tools by enabled groups and create instances
     const tools = ALL_TOOLS.filter((def) => def.groups.some((g) => groups.includes(g))).map((def) =>
-      def.factory(server, clientFactory)
+      def.factory(server, clientFactory, ctx)
     );
 
     // List available tools

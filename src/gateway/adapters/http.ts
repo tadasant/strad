@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import type { Request, Response } from "express";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
@@ -842,6 +844,104 @@ export class HttpServerAdapter implements ServerAdapter {
       res.send(buffer);
     } finally {
       clearTimeout(timeout);
+    }
+  }
+
+  /**
+   * Stream a non-MCP GET from this upstream to the caller.
+   *
+   * WHY THIS IS NOT `postRaw` WITH A VERB PARAMETER. `postRaw` ends in
+   * `await upstream.arrayBuffer()` and a single `res.send`, which is fine for an
+   * upload the store already bounds at 100MB. A download is not bounded — a
+   * Slack attachment may be hundreds of megabytes — so the body is piped and the
+   * gateway's memory stays flat regardless of size.
+   *
+   * AND WHY THE TIMEOUT IS DIFFERENT. `postRaw` aborts the whole operation after
+   * `timeoutMs`. Applied here that would be a SIZE limit wearing a clock's
+   * clothes: at the 120s default, any artifact needing more than 120s of
+   * transfer would fail partway through no matter how healthy the connection.
+   * The timer below is reset on every chunk, so it bounds a transfer that has
+   * STOPPED MOVING and lets a large, healthy one run as long as it keeps going.
+   *
+   * "Stopped moving" is the honest phrasing rather than "an upstream that has
+   * gone quiet", because the timer is driven from inside the pipeline: when the
+   * CALLER stops reading, backpressure stops the chunks reaching the Transform
+   * and the timer runs too. A client paused longer than `timeoutMs` is dropped.
+   * That is the intended bound — it is what stops a stalled reader holding an
+   * upstream connection open indefinitely — but it is a bound on both ends, not
+   * just the far one.
+   */
+  async getRaw(path: string, req: Request, res: Response): Promise<void> {
+    const endpoint = await this.opts.endpoint();
+    const url = new URL(endpoint.url);
+    url.pathname = joinPath(url.pathname, path);
+    url.search = "";
+
+    const headers = new Headers(endpoint.headers);
+    const controller = new AbortController();
+    let idle: NodeJS.Timeout | undefined;
+    const touch = (): void => {
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(() => controller.abort(), this.opts.timeoutMs);
+    };
+    touch();
+
+    try {
+      const upstream = await this.hop("get_raw", () =>
+        fetch(url, { method: "GET", headers, signal: controller.signal }),
+      );
+      if (upstream.status === 401) this.opts.onUnauthorized?.(endpoint);
+
+      // `fetch` DECOMPRESSES a body it asked for, so on an encoded response the
+      // upstream's `content-encoding` and `content-length` both describe bytes
+      // this hop is no longer carrying. Passing them on would declare a length
+      // the caller's file never reaches, and Node stops writing at it — a
+      // truncated artifact under a 200 whose length header agrees with it, which
+      // nothing downstream can detect.
+      const encoded = upstream.headers.has("content-encoding");
+      res.status(upstream.status);
+      upstream.headers.forEach((value, key) => {
+        const name = key.toLowerCase();
+        // Properties of THIS hop's connection rather than of the artifact.
+        if (name === "transfer-encoding" || name === "connection") return;
+        if (
+          encoded &&
+          (name === "content-encoding" || name === "content-length")
+        ) {
+          return;
+        }
+        res.setHeader(key, value);
+      });
+
+      if (!upstream.body) {
+        res.end();
+        return;
+      }
+
+      // A Transform rather than a `data` listener: attaching one would put the
+      // stream in flowing mode and discard backpressure, which is the whole
+      // reason this path streams at all.
+      const heartbeat = new Transform({
+        transform(chunk, _enc, cb) {
+          touch();
+          cb(null, chunk);
+        },
+      });
+
+      await pipeline(Readable.fromWeb(upstream.body), heartbeat, res);
+    } catch (err) {
+      // Stop pulling from the upstream if the caller went away or the pipe broke;
+      // without this the fetch would run to completion into nothing.
+      controller.abort();
+      // A caller that hung up mid-download is not a strad fault, and reporting it
+      // as one is actively harmful: `strad.route_failed` exports are throttled to
+      // one per route per minute, so a Ctrl-C would swallow a real
+      // `mcp_download` failure arriving in the same minute. There is also no
+      // response left to write. Anything else still raises.
+      if (req.destroyed || res.destroyed) return;
+      throw err;
+    } finally {
+      if (idle) clearTimeout(idle);
     }
   }
 
