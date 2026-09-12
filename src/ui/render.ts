@@ -1822,6 +1822,10 @@ form.inline{display:flex;align-items:center;gap:.25rem;margin:0}
 .in{font:inherit;font-size:.85rem;padding:.45rem .6rem;border-radius:.35rem;border:1px solid var(--g5);
   background:var(--bg);color:var(--white);width:100%;font-family:var(--font-mono)}
 .in:focus{outline:none;border-color:var(--accent)}
+/* The connector form calls these "greyed out" and lists them by name, so they
+   have to actually look it — a field that reads as editable and refuses the
+   save is the control that page is not supposed to render. */
+.in:disabled{opacity:.45;cursor:not-allowed}
 .in-sm{font-size:.74rem;padding:.28rem .4rem;width:8.5rem}
 .addbox{margin-top:1.5rem;border:1px solid var(--g5);border-radius:.6rem;background:var(--g7);padding:1.2rem 1.4rem}
 .addbox-title{margin:0 0 .9rem;font-size:1rem;color:var(--white)}

@@ -191,6 +191,7 @@ not a confession.
 | `servers/good-eggs/**` — the basket read, a cart tool, what a result may claim        | `limitations.md`, and `servers/good-eggs/FORK.md`                                                                             |
 | `servers/strad-fetch/**` — a strategy, the cache bounds, an env name, the tool        | `servers/strad-fetch.md`, `limitations.md`, and `servers/strad-fetch/FORK.md`                                                 |
 | `scripts/check-config.ts`, `src/config/strict.ts` — the config CI gate                | `operate/deploy-model.md`, `servers/interface.md`                                                                             |
+| `src/config/overlay.ts` — what a runtime roster write may create, edit or move        | `operate/runtime-config.md`                                                                                                   |
 | `src/config/mcp-json.ts`, `mcp-json-refs.ts` — the draft SEP-2633 input dialect       | `servers/interface.md`, `servers/adding.md`, `limitations.md`, **and** `strad.config.example.yaml`                            |
 | `scripts/check-store.ts`, `src/deploy/store-check.ts` — the pre-flip gate             | `operate/deploy-model.md`, `operate/secrets.md`                                                                               |
 | `src/deploy/preflight.ts` — what a deploy demands of the store                        | `operate/secrets.md`, `limitations.md`                                                                                        |

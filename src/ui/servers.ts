@@ -23,6 +23,7 @@ import {
   RUNTIME_CREATABLE_KINDS,
   SlugCollision,
   assertNoCollision,
+  immutableFields,
   rawEntry,
   withRemoval,
   withRestore,
@@ -362,6 +363,14 @@ async function handleSave(
     (copiedFrom ? rawEntry(runtime.document(), copiedFrom) : undefined);
   const carry = carrySource ? withoutSlug(carrySource) : undefined;
 
+  /**
+   * Whether this save is an EDIT of an entry the roster currently holds, which
+   * is what decides how a field the form rendered disabled is read back. A
+   * create copied from another entry renders those fields ENABLED, so it owns
+   * them; only an edit hands them back.
+   */
+  const editing = before !== undefined;
+
   const redraw = (flash: Flash, status = 400): void => {
     res
       .status(status)
@@ -371,7 +380,7 @@ async function handleSave(
           config: runtime.config(),
           // What they typed, not what was stored — a refusal that clears the
           // form is a refusal that costs the work.
-          entry: entryFromForm(body, carry, accessLocked),
+          entry: entryFromForm(body, carry, { accessLocked, editing }),
           ...(original ? { slug: original } : {}),
           kind,
           copyable: original ? [] : copyable(runtime, kind),
@@ -405,7 +414,7 @@ async function handleSave(
 
   let entry: Record<string, unknown>;
   try {
-    entry = entryFromForm(body, carry, accessLocked);
+    entry = entryFromForm(body, carry, { accessLocked, editing });
     requireSlug(entry);
     // `original` is undefined on an Add, so an Add onto an existing slug is a
     // collision rather than a replace. On an Edit it is the slug being edited,
@@ -632,12 +641,16 @@ function pruned(entry: Record<string, unknown>): Record<string, unknown> {
  * turn "change the title" into "delete four fields". So the result is the
  * original entry with the form's fields written over it, and only the form's
  * own fields are ever cleared by being left blank.
+ *
+ * `editing` is what tells a blank field apart from a field the form rendered
+ * DISABLED, which is the same distinction `accessLocked` draws for the roles.
  */
 export function entryFromForm(
   body: Record<string, unknown>,
   before?: Record<string, unknown>,
-  accessLocked = false,
+  opts: { accessLocked?: boolean; editing?: boolean } = {},
 ): Record<string, unknown> {
+  const accessLocked = opts.accessLocked ?? false;
   const kind = str(body, "kind");
 
   const entitlements = Object.keys(body)
@@ -665,7 +678,7 @@ export function entryFromForm(
     mayBeUnseeded: list(body, "mayBeUnseeded"),
   };
 
-  const specific = kindFields(kind, body);
+  const specific: Record<string, unknown> = kindFields(kind, body);
 
   // The form's own fields are authoritative — including when they are now
   // blank. Everything else on the original entry survives untouched.
@@ -679,6 +692,18 @@ export function entryFromForm(
     owned.delete("tools");
     delete common.entitlements;
     delete common.tools;
+  }
+  if (opts.editing && before) {
+    // Same rule, for the fields `renderForm` greys out on an edit. A disabled
+    // `image:` input posts nothing, so owning it would hand `assertEditable` an
+    // entry with no image — read as an image CHANGE, and refused. `kind` is
+    // excluded because it rides a hidden input, which is never disabled.
+    for (const field of immutableFields(kind)) {
+      if (field === "kind") continue;
+      owned.delete(field);
+      delete common[field];
+      delete specific[field];
+    }
   }
   const carried = Object.fromEntries(
     Object.entries(before ?? {}).filter(([k]) => !owned.has(k)),
