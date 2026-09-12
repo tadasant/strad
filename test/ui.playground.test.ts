@@ -16,6 +16,7 @@ import {
   originFor,
   playgroundHref,
   readable,
+  renderPlaygroundIndex,
 } from "../src/ui/playground.ts";
 import { jsonForScript } from "../src/ui/render.ts";
 
@@ -280,13 +281,65 @@ describe("/playground is the picker, and it picks by the same rule the page enfo
     expect(html).toContain("4 servers you may inspect");
   });
 
+  it("escapes a hostile title and description on a card", () => {
+    // The picker is a new interpolation site, and `title:`/`description:` are
+    // operator-written through the runtime roster editor — on a console that can
+    // mint /mcp tokens. Escaping here is the thing between a bad roster entry
+    // and a script running when an admin opens this page.
+    const nasty = `"><script>alert(1)</script>`;
+    const html = renderPlaygroundIndex({
+      entries: [
+        {
+          server: {
+            ...CONFIG.servers[0]!,
+            title: nasty,
+            description: nasty,
+          },
+          access: { ok: true, server: CONFIG.servers[0]! },
+        },
+        {
+          server: { ...CONFIG.servers[0]!, slug: nasty, title: nasty },
+          access: { ok: false, status: "disabled", server: CONFIG.servers[0]! },
+        },
+      ],
+    });
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain("&lt;script&gt;");
+  });
+
+  it("blames the right thing when nothing opens", () => {
+    // Three facts reach the empty state and only one of them is about roles.
+    // Telling an admin on a server-less gateway that their identity has no
+    // grants sends them to edit the thing that is not the problem.
+    const bare = renderPlaygroundIndex({ entries: [] });
+    expect(bare).toContain("no servers configured");
+    expect(bare).not.toContain("granted no server");
+
+    const allOff = renderPlaygroundIndex({
+      entries: CONFIG.servers.slice(0, 2).map((server) => ({
+        server,
+        access: { ok: false, status: "disabled", server } as const,
+      })),
+    });
+    expect(allOff).toContain("switched off");
+    expect(allOff).not.toContain("granted no server");
+
+    const allWalled = renderPlaygroundIndex({
+      entries: CONFIG.servers.slice(0, 2).map((server) => ({
+        server,
+        access: { ok: false, status: "not_entitled", server } as const,
+      })),
+    });
+    expect(allWalled).toContain("granted no server");
+  });
+
   it("still NAMES the slugs it will not open, with the reason for each", async () => {
     const res = await fetch(`${baseUrl}/playground`, { headers: { cookie } });
     const html = await res.text();
 
     // "not in the list" and "not yours" are different facts, and only one of
     // them is fixed by a role change. The picker says which.
-    expect(html).toContain("Not open to you");
+    expect(html).toContain("Will not open here");
     expect(html).toMatch(
       /<span class="card-title">walled<\/span>\s*<span class="chip chip-off">not entitled</,
     );

@@ -427,7 +427,6 @@ async function handleServerView(
           heading: "No such server",
           sub: `No server named "${slug}" is configured on this gateway.`,
           tone: "warn",
-          breadcrumbToIndex: true,
           nav: "servers",
         }),
       );
@@ -443,7 +442,6 @@ async function handleServerView(
         heading: "No browser view for this server",
         sub: `The "${slug}" server (kind: ${view.server.kind}) has no human resource view yet. The GCS browser is wired first; other kinds follow the same pattern.`,
         tone: "info",
-        breadcrumbToIndex: true,
         nav: "servers",
       }),
     );
@@ -486,7 +484,6 @@ async function handleServerView(
           view.accountReason ??
           "This server is scoped to a GCS bucket, but the console cannot resolve its credentials.",
         tone: "warn",
-        breadcrumbToIndex: true,
         nav: "servers",
       }),
     );
@@ -521,7 +518,6 @@ async function handleServerView(
           heading: "Could not list this bucket",
           sub: `GCS rejected the request. This is usually a credential or bucket-permission problem. Detail: ${detail}`,
           tone: "error",
-          breadcrumbToIndex: true,
           nav: "servers",
         }),
       );
@@ -580,7 +576,6 @@ async function handleSecretAction(
           heading: "No such secrets server",
           sub: `"${slug}" is not a parameters-backed server on this gateway.`,
           tone: "warn",
-          breadcrumbToIndex: true,
           nav: "servers",
         }),
       );
@@ -621,7 +616,6 @@ async function handleSecretAction(
             `nothing was written. Configured stores: ` +
             `${view.stores.map((st) => st.projectId).join(", ")}.`,
           tone: "warn",
-          breadcrumbToIndex: true,
           nav: "servers",
         }),
       );
@@ -907,7 +901,6 @@ async function renderSecretsPage(
           `"/strad/${opts.config.gateway.env}/mcp/" — under this store's namespaces: (or, on a ` +
           `single-store config, SECRETS_NAMESPACES under this server's consoleEnv:).`,
         tone: "warn",
-        breadcrumbToIndex: true,
         nav: "servers",
         otherStores,
         siblingPages,
@@ -931,7 +924,6 @@ async function renderSecretsPage(
           `fall back to another store's key: each store on this page carries its OWN admin ` +
           `credential, by design. Store: ${selected.label}. Detail: ${selected.accountReason ?? "no credential"}`,
         tone: "warn",
-        breadcrumbToIndex: true,
         nav: "servers",
         otherStores,
         siblingPages,
@@ -1048,7 +1040,6 @@ function renderNoStores(
         `Add at least one entry under consoleStores: (project, namespaces, adminKeyVar), or ` +
         `set SECRETS_PROJECT_ID under this server's consoleEnv:.`,
       tone: "warn",
-      breadcrumbToIndex: true,
       nav: "servers",
     }),
   );
@@ -1319,7 +1310,6 @@ function renderUnexpected(res: Response, err: unknown): void {
         heading: "Something went wrong",
         sub: describe(err),
         tone: "error",
-        breadcrumbToIndex: true,
         nav: "servers",
       }),
     );

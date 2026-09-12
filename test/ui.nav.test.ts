@@ -9,7 +9,11 @@ import {
   sharedSecretProviders,
 } from "../src/secrets/provider/index.ts";
 import { NAV_DESTINATIONS, type NavKey } from "../src/ui/nav.ts";
-import { renderConsent, renderDomainRefusal } from "../src/ui/oauth-consent.ts";
+import {
+  renderAuthorizeError,
+  renderConsent,
+  renderDomainRefusal,
+} from "../src/ui/oauth-consent.ts";
 import { renderOffline, renderSignIn } from "../src/ui/render.ts";
 import { EMPTY_OVERLAY } from "../src/config/overlay.ts";
 import { renderForm, renderRoster } from "../src/ui/servers-page.ts";
@@ -209,6 +213,9 @@ describe("the pages reached without a console session carry no bar", () => {
     expect(renderDomainRefusal({ hostedDomain: "tadasant.com" })).not.toContain(
       'class="mainnav"',
     );
+    expect(
+      renderAuthorizeError({ heading: "Unknown client", detail: "no such id" }),
+    ).not.toContain('class="mainnav"');
   });
 });
 

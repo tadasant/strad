@@ -130,14 +130,14 @@ export function mountPlayground(
   // A bare `/playground` is the picker: the servers this console session may
   // open, as links, and the ones it may not, with the reason.
   //
-  // It used to redirect to `/ui`, on the argument that the console index is
-  // already a list of the same servers and a second one is a second thing to
-  // keep true. The shared nav bar (src/ui/nav.ts) is what changed that: a bar
-  // that names "playground" and lands the reader on "servers" teaches them the
-  // bar is lying. The duplication the old comment worried about is avoided the
-  // other way — this list is derived from `playgroundAccess`, the same function
-  // that decides whether the index draws its playground icon, so the two cannot
-  // disagree about which slugs open.
+  // A page rather than a redirect to `/ui`, because the shared nav bar
+  // (src/ui/nav.ts) names "playground" and a bar that lands the reader on
+  // "servers" teaches them the bar is lying. The obvious objection — that the
+  // console index is already a list of the same servers, and a second list is a
+  // second thing to keep true — is answered by where this one comes from: it is
+  // derived from `playgroundAccess`, the same function that decides whether the
+  // index draws its playground icon, so the two cannot disagree about which
+  // slugs open.
   //
   // Behind the gate, so an anonymous request still 401s rather than being told
   // what this gateway fronts.
@@ -660,6 +660,9 @@ function shapeTool(tool: Tool, slug: string): Record<string, unknown> {
 // The page
 // ---------------------------------------------------------------------------
 
+/** The half of `PlaygroundAccess` that means "this slug does not open". */
+type ShutAccess = Extract<PlaygroundAccess, { ok: false }>;
+
 export interface PlaygroundIndexOptions {
   /** Every configured server, with this session's verdict on each. */
   entries: { server: ServerConfig; access: PlaygroundAccess }[];
@@ -677,7 +680,13 @@ export interface PlaygroundIndexOptions {
  */
 export function renderPlaygroundIndex(opts: PlaygroundIndexOptions): string {
   const open = opts.entries.filter((e) => e.access.ok);
-  const shut = opts.entries.filter((e) => !e.access.ok);
+  // A type predicate rather than a bare `!e.access.ok`, because `filter` does
+  // not narrow: without it `shutRow` has to handle an `ok: true` entry and a
+  // `not_configured` one, and neither can reach it — every entry is built from
+  // `config.servers`, so `playgroundAccess`'s lookup always hits.
+  const shut = opts.entries.filter(
+    (e): e is { server: ServerConfig; access: ShutAccess } => !e.access.ok,
+  );
 
   // Most servers declare no `title:`, so the heading IS the slug — printing it
   // again under the heading is noise on the majority of cards. Same rule the
@@ -698,14 +707,10 @@ export function renderPlaygroundIndex(opts: PlaygroundIndexOptions): string {
 
   const shutRow = (entry: {
     server: ServerConfig;
-    access: PlaygroundAccess;
+    access: ShutAccess;
   }): string => {
     const reason =
-      entry.access.ok || entry.access.status === "not_configured"
-        ? "unavailable"
-        : entry.access.status === "disabled"
-          ? "disabled"
-          : "not entitled";
+      entry.access.status === "disabled" ? "disabled" : "not entitled";
     const title = entry.server.title ?? entry.server.slug;
     return `    <div class="card card-shut">
       <div class="card-head">
@@ -735,7 +740,18 @@ ${
     ? `  <div class="card-grid">
 ${open.map((e) => card(e.server)).join("\n")}
   </div>`
-    : `  <p class="empty">Your console identity is granted no server on this gateway, so
+    : // Three different facts reach this branch and they need three different
+      // answers: a gateway with no `servers:` at all, one whose entries are all
+      // switched off, and one whose entries are all granted to some other role.
+      // Telling an admin on an empty gateway that their identity has no grants
+      // is false, and sends them to edit roles that are not the problem.
+      opts.entries.length === 0
+      ? `  <p class="empty">This gateway has no servers configured, so there is nothing to
+     open. Add one on the connectors page, or in the checked-in config.</p>`
+      : shut.every((e) => e.access.status === "disabled")
+        ? `  <p class="empty">Every server on this gateway is switched off. A disabled entry
+     is not mounted, so there is nothing for a session to open.</p>`
+        : `  <p class="empty">Your console identity is granted no server on this gateway, so
      there is nothing here to open. Roles are what decide it — see the servers page.</p>`
 }
 </section>
@@ -744,8 +760,8 @@ ${
     ? `
 <section class="panel">
   <div class="panel-head">
-    <h2>Not open to you</h2>
-    <span class="panel-note">configured · will not answer here</span>
+    <h2>Will not open here</h2>
+    <span class="panel-note">configured · not yours, or not running</span>
   </div>
   <div class="card-grid">
 ${shut.map(shutRow).join("\n")}
@@ -790,7 +806,7 @@ export function renderPlayground(opts: PlaygroundPageOptions): string {
 
   const body = `
 <section class="intro">
-  <nav class="breadcrumb"><a href="/ui" class="crumb">servers</a><span class="crumb-sep">/</span><span class="crumb crumb-current">${esc(title)}</span></nav>
+  <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/ui" class="crumb">servers</a><span class="crumb-sep">/</span><span class="crumb crumb-current">${esc(title)}</span></nav>
   <h1>Playground <span class="env-badge">${esc(slug)}</span></h1>
   <p class="lede">A human MCP client for this one server. It lists the tools this server
     actually serves you, and calls them with the arguments you type.

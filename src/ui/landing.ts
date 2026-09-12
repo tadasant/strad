@@ -88,7 +88,7 @@ export function renderLanding(opts: LandingOptions): string {
 <section class="panel">
   <div class="panel-head"><h2>Consoles</h2></div>
   <div class="card-grid">
-${consoleCards(opts.consoleMounted).join("\n")}
+${consoleCards(opts.consoleMounted, gateway.configStore.enabled).join("\n")}
   </div>
 </section>
 
@@ -138,8 +138,15 @@ function copyRow(url: string, note: string): string {
  * The bar is chrome and the tile is a sentence about what the page is for, so
  * they are written separately; `test/landing.test.ts` is what keeps a
  * destination added to the bar from going missing here.
+ *
+ * A tile is a CLAIM about a page, which is why the connector one reads the
+ * config: the bar can name `/connectors` on any deployment because a tooltip
+ * promises nothing, and a paragraph promising a roster editor cannot.
  */
-function consoleCards(consoleMounted: boolean): string[] {
+function consoleCards(
+  consoleMounted: boolean,
+  rosterEditable: boolean,
+): string[] {
   const cards = [
     {
       // One console entry, not two. The secret roster used to be a second card
@@ -153,9 +160,16 @@ function consoleCards(consoleMounted: boolean): string[] {
     },
     {
       href: "/connectors",
+      // The tile is always offered, because the bar offers it and a front door
+      // that lists four of five destinations is the problem this set solves.
+      // What it CLAIMS depends on the deployment: a two-sentence promise of an
+      // editor that answers "not enabled" is worse than no tile, where the
+      // bar's one-line tooltip is chrome a reader forgives.
       title: "Connectors",
-      desc: "The server roster itself: add an entry, edit one, take one out. A change here is stored and applied to the running process — no deploy, no restart.",
-      cta: "Edit →",
+      desc: rosterEditable
+        ? "The server roster itself: add an entry, edit one, take one out. A change here is stored and applied to the running process — no deploy, no restart."
+        : "The server roster. This gateway sets no gateway.configStore:, so its roster comes from the checked-in document and changes with a deploy — the page says so and lists nothing to edit.",
+      cta: rosterEditable ? "Edit →" : "Open →",
       show: consoleMounted,
     },
     {

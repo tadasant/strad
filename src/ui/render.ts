@@ -319,7 +319,7 @@ function breadcrumb(
     );
   });
 
-  return `<nav class="breadcrumb">${crumbs.join("")}</nav>`;
+  return `<nav class="breadcrumb" aria-label="Breadcrumb">${crumbs.join("")}</nav>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -497,7 +497,7 @@ export function renderSecrets(opts: SecretsViewOptions): string {
   const secretCount = parameters.filter((p) => p.secret).length;
 
   const body = `
-<nav class="breadcrumb"><a href="/ui" class="crumb">servers</a><span class="crumb-sep">/</span><span class="crumb crumb-current">${esc(slug)}</span></nav>
+<nav class="breadcrumb" aria-label="Breadcrumb"><a href="/ui" class="crumb">servers</a><span class="crumb-sep">/</span><span class="crumb crumb-current">${esc(slug)}</span></nav>
 ${siblingStrip(opts.siblingPages)}
 
 <section class="browse-head">
@@ -1408,7 +1408,6 @@ export function renderMessage(opts: {
   sub: string;
   tone?: "info" | "warn" | "error";
   icon?: string;
-  breadcrumbToIndex?: boolean;
   /**
    * The nav section this refusal belongs to — the page the reader was trying to
    * reach, not the one they got. A 424 on `/playground/slack` still marks
@@ -1442,7 +1441,6 @@ export function renderMessage(opts: {
         .join(" · ")}</p>`
     : "";
   const body = `
-${opts.breadcrumbToIndex ? `<nav class="breadcrumb"><a href="/ui" class="crumb">servers</a></nav>` : ""}
 ${siblingStrip(opts.siblingPages ?? [])}
 <div class="state state-${tone}">
   <div class="state-icon">${opts.icon ?? INFO_SVG}</div>

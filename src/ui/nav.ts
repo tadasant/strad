@@ -6,13 +6,11 @@ import { UI_PREFIX } from "./paths.ts";
  *
  * ## Why it exists
  *
- * The console grew a page at a time and each one was reachable only from the URL
- * that created it. `/ui` linked nowhere, `/connectors` and `/playground` and
- * `/tokens` linked back to `/ui` with a breadcrumb at best, and a human who
- * bookmarked one page had no way to discover that the other four existed. The
- * only cure for that is a bar every page draws from the SAME list, so a
- * destination added here appears everywhere at once and a page cannot quietly
- * disagree with its siblings about what this console can do.
+ * A console whose pages each link only to themselves is a console you can only
+ * use by knowing its URLs, and a human who bookmarks one page has no way to
+ * discover the other four. The cure is a bar every page draws from the SAME
+ * list: a destination added here appears everywhere at once, and no page can
+ * quietly disagree with its siblings about what this console can do.
  *
  * ## What is in it, and what is not
  *
@@ -47,7 +45,7 @@ import { UI_PREFIX } from "./paths.ts";
 export type NavKey =
   "gateway" | "servers" | "connectors" | "playground" | "tokens";
 
-interface NavDestination {
+export interface NavDestination {
   key: NavKey;
   href: string;
   label: string;
@@ -94,7 +92,7 @@ export const NAV_DESTINATIONS: readonly NavDestination[] = [
     label: "tokens",
     hint: "Mint and revoke the credentials /mcp accepts",
   },
-] as const;
+];
 
 /**
  * The bar, with one destination marked.
