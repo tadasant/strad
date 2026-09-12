@@ -82,6 +82,11 @@ const env: NodeJS.ProcessEnv = {
   STRAD_TOKENS: JSON.stringify([mcpToken.record]),
   ALLOW_DEV_AUTH: "true",
   ADMIN_BOOTSTRAP_TOKEN: BOOTSTRAP,
+  // The upstream's bearer, under the name the console entry REFERENCES. A
+  // runtime write may name a credential and may not carry one
+  // (src/config/secret-position.ts), so the token has to be somewhere the
+  // resolver can reach rather than in the form post.
+  ADDED_TOKEN: upstreamToken.plaintext,
 };
 
 async function listen(server: Server): Promise<string> {
@@ -227,7 +232,7 @@ describe("adding a connector through the console", () => {
         slug: "added",
         title: "Added from the console",
         url: `${upstreamUrl}/mcp?servers=echo`,
-        headers: `Authorization: Bearer ${upstreamToken.plaintext}`,
+        headers: "Authorization: Bearer ${ADDED_TOKEN}",
         "entitlement:admin": "on",
         enabled: "on",
       }),
@@ -295,6 +300,36 @@ describe("adding a connector through the console", () => {
     // The one field that must be unique is the one that is NOT copied: the
     // slug input renders blank even though everything around it is prefilled.
     expect(html).toMatch(/name="slug"[^>]*value=""/);
+  });
+
+  it("refuses a save that carries a credential VALUE rather than a ref", async () => {
+    // The console half of the same bound the `connectors` tools enforce. Both
+    // doors call `RuntimeConfig.assertAcceptable`, so there is one answer —
+    // and the refusal must not echo what it refused into an HTML page.
+    const res = await consoleFetch(
+      "/connectors/save",
+      saveForm({
+        kind: "remote-http",
+        slug: "carried",
+        url: "https://carried.example.com/mcp",
+        headers: "Authorization: Bearer sk-live-typed-into-the-form",
+        "entitlement:admin": "on",
+        enabled: "on",
+      }),
+    );
+    expect(res.status).toBe(400);
+    const html = await res.text();
+    const flash = /<div class="flash flash-error">([\s\S]*?)<\/div>/.exec(html);
+    expect(flash?.[1]).toContain("Authorization:");
+    expect(flash?.[1]).toContain("must be one ${NAME}");
+    // The refusal does not quote what it refused. The FORM is redrawn with what
+    // the human typed still in it — losing their work would be the wrong trade
+    // on a page they are looking at behind SSO — so the assertion is on the
+    // message, which is the part that also goes over /mcp.
+    expect(flash?.[1]).not.toContain("sk-live-typed-into-the-form");
+    expect(runtime.config().servers.map((s) => s.slug)).not.toContain(
+      "carried",
+    );
   });
 
   it("refuses a save built on a stale revision, without changing anything", async () => {

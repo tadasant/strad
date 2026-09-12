@@ -2861,14 +2861,29 @@ window still lose one, silently, and the loser is whichever wrote first. What
 bounds it is that writes are rare and come from one component: core is the only
 thing holding the admin credential, whichever door the write arrived through.
 
-**Neither gap means a runtime write is unbounded.** Two rules bound what a write
-may reach, as distinct from who may make one: a runtime-authored entry's
+**Neither gap means a runtime write is unbounded.** Three rules bound what a
+write may reach, as distinct from who may make one: a runtime-authored entry's
 `${NAME}` refs resolve against that slug's own `/strad/{env}/mcp/{slug}/static/`
 namespace and nothing else, so a connector `url:` cannot read core's process
-environment and send it off-box, and a runtime write may not change
-`entitlements:` or `tools:` on a slug the checked-in document declares. Both are
-in [Who may write, and what a write may
+environment and send it off-box; a runtime write may not change `entitlements:`
+or `tools:` on a slug the checked-in document declares; and a runtime write may
+name a credential but never carry one, so a literal in `headers:`, in `url:`'s
+userinfo or in an `oauthRefresh:` grant is refused rather than stored in the
+clear. Disabling a connector that carries one is refused too, because disable
+re-upserts the entry; removing it is always allowed. All three are in [Who may write, and what a write may
 reach](/operate/runtime-config/#who-may-write-and-what-a-write-may-reach).
+
+**The third rule has two positions it does not cover.** A **URL query
+parameter** — `https://api.example.com/mcp?key=abc` — is a literal credential
+and is accepted, because nothing can tell it from `?version=2` without refusing
+every URL that carries a query at all; userinfo is refused because
+`user:pass@` is a credential by definition. And a **builtin's `options:`** is an
+untyped bag whose ordinary contents are non-secret literals, so the reachable
+surface there is editing the options of a builtin the checked-in config already
+declares — one cannot be created at runtime. Closing either needs a typed
+statement of which fields carry a credential, per kind and per builtin, which is
+a schema change rather than a rule; [the runtime-config
+plan](/operate/runtime-config-plan/) carries it as a later phase.
 
 **Undo:** for the first, a credential path a running container reads rather than
 receives — what `paramsRefresh:` does for a value behind an already-listed name,

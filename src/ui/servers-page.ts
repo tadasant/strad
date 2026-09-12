@@ -3,6 +3,7 @@ import { serverConsolePath } from "./paths.ts";
 import { SLUG_PATTERN, type StradConfig } from "../config/schema.ts";
 import type { EntrySource, ServerOverlay } from "../config/overlay.ts";
 import { RUNTIME_CREATABLE_KINDS, immutableFields } from "../config/overlay.ts";
+import { CREDENTIAL_SCHEMES } from "../config/secret-position.ts";
 
 /**
  * The connector editor's pages.
@@ -488,10 +489,15 @@ ${field(
   const headersField = field(
     "Headers",
     area("headers", pairs(entry.headers), 3, "headers"),
-    `One <code>Name: value</code> per line. A value may be a
-     <code>\${NAME}</code> ref, resolved from the parameter store on every call
-     — so rotating the credential behind it needs no deploy and no restart. Put
-     the secret in the store, not here.`,
+    `One <code>Name: value</code> per line. Each value must be one
+     <code>\${NAME}</code> ref, optionally after an auth scheme
+     (${CREDENTIAL_SCHEMES.map((scheme) => `<code>${esc(scheme)}</code>`).join(", ")}) — for example
+     <code>Authorization: Bearer \${GRANOLA_TOKEN}</code>. A runtime write stores
+     the reference and never the value, and the ref is resolved from the
+     parameter store on every call, so rotating the credential behind it needs
+     no deploy and no restart. A literal is refused here, including one that is
+     not a secret — strad cannot tell the difference, so put that in the store
+     too, as an ordinary non-secret parameter.`,
     { optional: true, id: "headers" },
   );
 
@@ -505,7 +511,9 @@ ${field(
     id: "url",
     placeholder: "https://mcp.example.com/mcp",
   }),
-  "The streamable-HTTP MCP endpoint. Re-resolved on every call, so a <code>${NAME}</code> ref here works too.",
+  `The streamable-HTTP MCP endpoint. Re-resolved on every call, so a
+   <code>\${NAME}</code> ref here works too. A <code>user:password@</code> before
+   the host is refused — send it as <code>Authorization: Basic \${NAME}</code>.`,
   { id: "url" },
 )}
 ${headersField}
@@ -586,7 +594,9 @@ ${field(
     id: "url",
     placeholder: "https://tunnel.example.com/",
   }),
-  "Where the tunnel terminates. The machine behind it is usually NOT there, and that is the case this kind exists to handle well.",
+  `Where the tunnel terminates. The machine behind it is usually NOT there, and
+   that is the case this kind exists to handle well. A
+   <code>user:password@</code> before the host is refused — send it as a header.`,
   { id: "url" },
 )}
 ${headersField}
