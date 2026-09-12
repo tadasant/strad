@@ -367,14 +367,17 @@ value.
 **Every `${NAME}` written on a server entry resolves from that server's own
 namespace first**, whatever the kind and whatever the field:
 
-| Order | Namespace                               | Holds                                    |
-| ----- | --------------------------------------- | ---------------------------------------- |
-| 1     | `/strad/{env}/mcp/{slug}/static/{NAME}` | That one server's value. **Wins.**       |
-| 2     | `/strad/{env}/gateway/static/{NAME}`    | The deployment-wide value. The fallback. |
+| Order | Namespace                               | Holds                                          |
+| ----- | --------------------------------------- | ---------------------------------------------- |
+| 1     | `/strad/{env}/mcp/{slug}/oauth/{NAME}`  | A credential strad **minted**. **Wins.**       |
+| 2     | `/strad/{env}/mcp/{slug}/static/{NAME}` | A value a human **typed** for that one server. |
+| 3     | `/strad/{env}/gateway/static/{NAME}`    | The deployment-wide value. The fallback.       |
 
-The gateway namespace is for things that genuinely belong to the gateway —
-`STRAD_TOKENS`, `GOOGLE_CLIENT_SECRET`, a name several servers deliberately
-share. A credential that belongs to one MCP server belongs under that server.
+Layers 1 and 2 are the two **kinds** one server's namespace is divided into —
+see [The two kinds](#the-two-kinds-static-and-oauth) below. The gateway namespace
+is for things that genuinely belong to the gateway — `STRAD_TOKENS`,
+`GOOGLE_CLIENT_SECRET`, a name several servers deliberately share. A credential
+that belongs to one MCP server belongs under that server.
 
 Before this, only the second namespace existed, so a name was a deployment-wide
 singleton: `telegram-ro` and `telegram-rw` both write `${TELEGRAM_API_HASH}` and
@@ -384,9 +387,9 @@ could not be given different credentials, whatever was seeded where.
 
 An `oauth:` connector names three variables — the OAuth client id, the client
 secret, and the refresh token the console flow writes — and none of them is a
-`${NAME}`. The renderer reads them out of `/strad/{env}/mcp/{slug}/static/` and
-injects them, each one only if the store holds it; the config gate refuses a
-`${NAME}` reference to any of them by name.
+`${NAME}`. The renderer reads them out of that slug's own namespaces — `oauth/`
+ahead of `static/` — and injects them, each one only if the store holds it; the
+config gate refuses a `${NAME}` reference to any of them by name.
 
 That is not a stylistic preference. `render-spec` fails the **whole** app spec on
 one unresolvable reference, and the refresh token cannot exist until a human has
@@ -398,6 +401,39 @@ There is no fallback for these three: the gateway namespace is not consulted, an
 neither is a sibling slug's. A client id seeded once at the gateway would make six
 Google Sheets slugs all look ready while none of them owned a credential. Seed
 them per slug. See [Connectors](/operate/connectors/).
+
+### The two kinds: `static` and `oauth`
+
+The canonical path is `/strad/{env}/mcp/{slug}/{kind}/{VARIABLE}`, and `kind`
+names **where the value came from**:
+
+| Kind     | Written by                                     | Typical contents                                                  |
+| -------- | ---------------------------------------------- | ----------------------------------------------------------------- |
+| `static` | a human, in the console                        | an API key, an OAuth client id and client secret                  |
+| `oauth`  | strad's own consent callback, and nothing else | the refresh token (or long-lived access token) a human authorized |
+
+Both resolve the same way. Everything on this page that is true of a `static`
+parameter is true of an `oauth` one: `params: true` injects it, a `${NAME}`
+substitutes from it, the `secrets` MCP server lists it as metadata and can never
+read its value, and a secret one lives in Secret Manager behind a `__REF__`
+pointer.
+
+**`oauth` wins over `static` for the same variable name.** A value a human typed
+months ago and a consent completed this morning disagree; the fresh grant is the
+one a call should carry. That ordering is also what makes the kind safe to adopt:
+a deployment whose connector token was written under `static/` before the kind
+existed keeps working untouched, and the next **Reconnect** writes to `oauth/` and
+takes precedence from then on. The console says which path the current credential
+is being read from whenever the two differ.
+
+A value under `oauth/` is one **no person has ever seen** — it went from the
+provider's token endpoint into Secret Manager without being rendered, returned or
+logged. That is the reason the kind exists as a separate namespace rather than as
+a naming convention: "a human typed this" and "strad minted this" are different
+provenance claims, and the path is where the claim lives.
+
+A third spelling is not a kind. `{slug}/statik/TOKEN` is stored, listed, and read
+by nothing — `render-spec` warns about it by name rather than resolving it.
 
 ### The same rule, applied at two times
 
@@ -2234,7 +2270,7 @@ The two shapes a namespace usually takes:
 
 | Namespace                      | Holds                                                                          |
 | ------------------------------ | ------------------------------------------------------------------------------ |
-| `/strad/{env}/mcp/`            | Per-server parameters, under `{slug}/static/`.                                 |
+| `/strad/{env}/mcp/`            | Per-server parameters, under `{slug}/static/` and `{slug}/oauth/`.             |
 | `/strad/{env}/gateway/static/` | The deployment's own `${NAME}` references — the token store, the OAuth secret. |
 
 Staging manages both on the **console** side and only the first on the **MCP**
@@ -2276,7 +2312,7 @@ the variable name — separately from the variable:
 └──── namespace ──┘  └──────────── path prefix ─────────┘  └── variable ──┘
 ```
 
-The prefix is the routing key. `{slug}/static/` is what makes a parameter belong
+The prefix is the routing key. `{slug}/{kind}/` is what makes a parameter belong
 to one MCP server; without it the console could only ever write
 `{namespace}{VARIABLE}`, which is a well-formed path that no resolver reads. The
 field is the same combobox as the namespace picker: it opens this gateway's own

@@ -66,6 +66,13 @@ const RW_ACCOUNT = "tadas@tadasant.com";
 
 const RO_NS = `/strad/test/mcp/${RO_SLUG}/static/`;
 const RW_NS = `/strad/test/mcp/${RW_SLUG}/static/`;
+// THE TWO KINDS OF ONE SLUG. The OAuth application (client id and secret) is
+// seeded by a human and lives under `static/`; the credential the consent flow
+// MINTS lands under `oauth/`, which is the kind's whole purpose. A resolver
+// reads both, `oauth/` first.
+const RO_OAUTH_NS = `/strad/test/mcp/${RO_SLUG}/oauth/`;
+const RW_OAUTH_NS = `/strad/test/mcp/${RW_SLUG}/oauth/`;
+const TOKEN_VAR = "GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN";
 const SECRETS_NS = "/strad/test/mcp/";
 const GATEWAY_NS = "/strad/test/gateway/static/";
 
@@ -353,7 +360,7 @@ describe("the two states a human sees", () => {
     expect(html).toContain(RO_ACCOUNT);
     expect(html).toContain("read-only");
     expect(html).toContain(SHEETS_RO);
-    expect(html).toContain(`${RO_NS}GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`);
+    expect(html).toContain(`${RO_OAUTH_NS}${TOKEN_VAR}`);
     expect(html).toContain("https://strad.example/ui/oauth/callback");
   });
 
@@ -400,14 +407,14 @@ describe("a full round trip", () => {
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe(`/ui/${RO_SLUG}?connected=1`);
 
+    // The application namespace is UNTOUCHED — the flow writes one parameter,
+    // and it writes it to the `oauth` kind.
     expect(await listed(RO_NS)).toEqual([
       "GOOGLE_SHEETS_OAUTH_CLIENT_ID",
       "GOOGLE_SHEETS_OAUTH_CLIENT_SECRET",
-      "GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN",
     ]);
-    expect(
-      await fake.store.reveal(`${RO_NS}GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`),
-    ).toBe(REFRESH);
+    expect(await listed(RO_OAUTH_NS)).toEqual([TOKEN_VAR]);
+    expect(await fake.store.reveal(`${RO_OAUTH_NS}${TOKEN_VAR}`)).toBe(REFRESH);
   });
 
   it("puts the value in Secret Manager and NOT in any Parameter Manager payload", async () => {
@@ -435,8 +442,8 @@ describe("a full round trip", () => {
       `state=${encodeURIComponent(state)}&code=${AUTH_CODE}`,
     );
 
-    const meta = (await fake.store.list(RO_NS)).find(
-      (p) => p.variable === "GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN",
+    const meta = (await fake.store.list(RO_OAUTH_NS)).find(
+      (p) => p.variable === TOKEN_VAR,
     );
     expect(meta?.note).toContain(`connected as ${RO_ACCOUNT}`);
     expect(meta?.note).toContain(SHEETS_RO);
@@ -485,10 +492,10 @@ describe("reconnect", () => {
       `state=${encodeURIComponent(second.state)}&code=${AUTH_CODE}`,
     );
 
-    expect(await listed(RO_NS)).toHaveLength(3);
-    expect(
-      await fake.store.reveal(`${RO_NS}GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`),
-    ).toBe(REFRESH_2);
+    expect(await listed(RO_OAUTH_NS)).toEqual([TOKEN_VAR]);
+    expect(await fake.store.reveal(`${RO_OAUTH_NS}${TOKEN_VAR}`)).toBe(
+      REFRESH_2,
+    );
   });
 
   it("leaves the previous credential current when the new consent is refused", async () => {
@@ -509,9 +516,7 @@ describe("reconnect", () => {
     expect(res.headers.get("location")).toBe(
       `/ui/${RO_SLUG}?error=exchange_failed`,
     );
-    expect(
-      await fake.store.reveal(`${RO_NS}GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`),
-    ).toBe(REFRESH);
+    expect(await fake.store.reveal(`${RO_OAUTH_NS}${TOKEN_VAR}`)).toBe(REFRESH);
   });
 });
 
@@ -538,6 +543,7 @@ describe("a mismatched account is refused, and nothing is stored", () => {
       "GOOGLE_SHEETS_OAUTH_CLIENT_ID",
       "GOOGLE_SHEETS_OAUTH_CLIENT_SECRET",
     ]);
+    expect(await listed(RO_OAUTH_NS)).toEqual([]);
     expect(JSON.stringify([...fake.secrets.values()])).not.toContain(REFRESH);
 
     const html = await (
@@ -564,9 +570,7 @@ describe("a mismatched account is refused, and nothing is stored", () => {
       `state=${encodeURIComponent(state)}&code=${AUTH_CODE}`,
     );
 
-    expect(await listed(RW_NS)).not.toContain(
-      "GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN",
-    );
+    expect(await listed(RW_OAUTH_NS)).toEqual([]);
   });
 
   it("refuses a read-only consent for a read-write slug", async () => {
@@ -585,7 +589,7 @@ describe("a mismatched account is refused, and nothing is stored", () => {
     expect(res.headers.get("location")).toBe(
       `/ui/${RW_SLUG}?error=scope_not_granted`,
     );
-    expect(await listed(RW_NS)).toHaveLength(2);
+    expect(await listed(RW_OAUTH_NS)).toEqual([]);
   });
 
   it("refuses a consent that returned no refresh token", async () => {
@@ -604,7 +608,7 @@ describe("a mismatched account is refused, and nothing is stored", () => {
     expect(res.headers.get("location")).toBe(
       `/ui/${RO_SLUG}?error=no_refresh_token`,
     );
-    expect(await listed(RO_NS)).toHaveLength(2);
+    expect(await listed(RO_OAUTH_NS)).toEqual([]);
   });
 });
 
@@ -707,7 +711,7 @@ describe("the state, and what a callback cannot do", () => {
 
     expect(res.headers.get("location")).toBe(`/ui/${RO_SLUG}?connected=1`);
     // The write landed where the CONFIG said, and nowhere else.
-    expect(await listed(RO_NS)).toContain("GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN");
+    expect(await listed(RO_OAUTH_NS)).toContain(TOKEN_VAR);
     expect(await listed(GATEWAY_NS)).toEqual([]);
   });
 
@@ -794,12 +798,10 @@ describe("the credential is the SLUG's, and only the slug's", () => {
       `state=${encodeURIComponent(rw.state)}&code=${AUTH_CODE}`,
     );
 
-    expect(
-      await fake.store.reveal(`${RO_NS}GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`),
-    ).toBe(REFRESH);
-    expect(
-      await fake.store.reveal(`${RW_NS}GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`),
-    ).toBe(REFRESH_2);
+    expect(await fake.store.reveal(`${RO_OAUTH_NS}${TOKEN_VAR}`)).toBe(REFRESH);
+    expect(await fake.store.reveal(`${RW_OAUTH_NS}${TOKEN_VAR}`)).toBe(
+      REFRESH_2,
+    );
   });
 });
 

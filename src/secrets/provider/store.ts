@@ -1,3 +1,4 @@
+import { isUsableValue } from "../parameters/namespace.ts";
 import type { ParameterResolver } from "../parameters/types.ts";
 import { NamespaceView } from "./view.ts";
 import type { SecretProvider } from "./types.ts";
@@ -18,6 +19,10 @@ import type { SecretProvider } from "./types.ts";
  * rather than standing up a second way to talk to the same two stores or a
  * second timer over the same values. All that is added here is what a MISS
  * means, and what happens when the resolver throws.
+ *
+ * A parameter that EXISTS and holds no usable value — an un-dereferenced
+ * `__REF__`, an empty payload — counts as a miss here rather than as a hit. See
+ * the note in `get()`: it is what lets the layer beneath answer instead.
  *
  * The credential is the RESOLVER identity — `parametermanager.parameterViewer`
  * plus `parametermanager.parameterAccessor`, which is the role that carries
@@ -100,8 +105,19 @@ export class StoreSecretProvider implements SecretProvider {
   async get(name: string): Promise<string | null> {
     const values = await this.view.get(this.namespace);
 
+    // A HIT IS ONLY A HIT IF THE VALUE IS USABLE.
+    //
+    // `resolve()` does not promise a value: a `:render` that could not
+    // dereference hands the `__REF__` pointer back, and an empty payload
+    // resolves to `""`. Returning either would be a definitive answer made of a
+    // non-credential — and, worse, it would stop `ChainSecretProvider` dead, so
+    // the layer beneath (this slug's other kind, then the gateway namespace)
+    // never gets asked and a credential that WORKS is suppressed by one that
+    // does not. `layerNamespaces` applies the identical rule to the readers that
+    // take whole namespaces at once; this is the same rule for the reader that
+    // takes one name at a time.
     const hit = values[name];
-    if (hit !== undefined) return hit;
+    if (hit !== undefined && isUsableValue(hit)) return hit;
 
     // A MISS. The snapshot may simply predate the secret being added, which is
     // the case this whole class exists to serve. Ask the resolver to drop it
@@ -125,7 +141,7 @@ export class StoreSecretProvider implements SecretProvider {
       this.resolver.forget?.();
       await this.view.refresh(this.namespace);
       const retry = this.view.peek(this.namespace)?.[name];
-      if (retry !== undefined) return retry;
+      if (retry !== undefined && isUsableValue(retry)) return retry;
     }
 
     return null;

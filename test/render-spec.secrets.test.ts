@@ -952,7 +952,7 @@ describe("render-spec, per-server namespaces", () => {
     expect(result.ok).toBe(true);
     expect(result.stderr).toContain("::warning::");
     expect(result.stderr).toContain("UNREAD_BY_ANYTHING");
-    expect(result.stderr).toContain("/strad/test/mcp/shop/static/");
+    expect(result.stderr).toContain("/strad/test/mcp/shop/");
     // A warning about a value is not a place to print one.
     expect(result.stderr).not.toContain("fake-unread-value");
   });

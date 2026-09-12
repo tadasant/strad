@@ -25,7 +25,7 @@ import type { ParametersWriter } from "./write-client.js";
  * THE INVARIANT: no tool returns a secret value the store's own credential
  * cannot fetch. Not a redacted one, not a truncated one, not a "safe prefix" —
  * none. An agent can learn that a parameter
- * `/strad/staging/mcp/<slug>/static/<VAR>` exists, whether it is secret, the note
+ * `/strad/staging/mcp/<slug>/<kind>/<VAR>` exists, whether it is secret, the note
  * a human left on it, and when its latest version landed. If the parameter is
  * NON-secret it can also read its literal value (non-secrets are configuration,
  * not credentials, and live directly in Parameter Manager). If it is SECRET, the
@@ -159,7 +159,9 @@ export function toolDefinitions(
             type: "string",
             description:
               "The canonical path, e.g. \"/strad/staging/mcp/remote-filesystem-tmp-public/static/REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL\". " +
-              "The namespace it starts with is what selects the store.",
+              "The namespace it starts with is what selects the store. A path whose kind segment " +
+              "is \"oauth\" rather than \"static\" holds a credential strad minted from a console " +
+              "consent; it is always secret, so this reports its metadata and never its value.",
           },
         },
         required: ["name"],
@@ -254,7 +256,11 @@ export function toolDefinitions(
             type: "string",
             description:
               "The canonical path, e.g. \"/strad/staging/mcp/<slug>/static/<VAR>\". The " +
-              "<slug>/static/ segment is what routes the value to one MCP server.",
+              "<slug>/<kind>/ segment is what routes the value to one MCP server. <kind> is " +
+              "\"static\" for a value a human sets — which is what you want here — or \"oauth\" " +
+              "for one strad minted itself from a console consent flow. Write to \"static\": " +
+              "the \"oauth\" namespace belongs to that flow, and a server reads it FIRST, so a " +
+              "value placed there would silently outrank the one you meant to set.",
           },
           value: { type: "string", description: "The value to store." },
           secret: {

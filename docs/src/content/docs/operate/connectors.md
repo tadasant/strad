@@ -1,6 +1,6 @@
 ---
 title: Connectors
-description: Connect and Reconnect Google for a server slug, from strad's own console — how the consent flow works, what it refuses, where the refresh token is stored, and why a slug can ship before it is connected.
+description: Connect and Reconnect a server slug from strad's own console — how the consent flow works for Google and for any OAuth 2.0 provider, what it refuses, where the credential is stored, and why a slug can ship before it is connected.
 ---
 
 Some MCP servers authenticate as a **person**, not as a service account. A person
@@ -12,8 +12,12 @@ web page. A local script prints it to a shell. Either way the credential has bee
 somewhere before it reaches the store, and somebody has to copy and paste it.
 
 strad runs the consent itself instead. A server slug with an `oauth:` block gets
-**Connect Google** on its console page; the token goes from Google's token
+a **Connect** button on its console page; the token goes from the provider's token
 endpoint into the parameter store without being rendered, returned or logged.
+
+It lands under the **`oauth` kind** — `/strad/{env}/mcp/{slug}/oauth/{VARIABLE}` —
+which is the namespace for credentials strad minted rather than ones a human
+typed. See [the two kinds](/operate/secrets/#the-two-kinds-static-and-oauth).
 
 ## What a human does
 
@@ -24,11 +28,11 @@ endpoint into the parameter store without being rendered, returned or logged.
    /strad/{env}/mcp/<slug>/static/GOOGLE_SHEETS_OAUTH_CLIENT_SECRET
    ```
 
-2. Open `/ui/<slug>` in the console. It states the Google account the slug is
-   pinned to, whether the grant is read-only or read-write, and the exact scopes
-   it is about to request.
-3. Click **Connect Google**, consent as that account, and land back on the same
-   page.
+2. Open `/ui/<slug>` in the console. It states which provider, which account the
+   slug is pinned to (or that strad cannot check one), whether the grant is
+   read-only or read-write, and the exact scopes it is about to request.
+3. Click **Connect**, consent, and land back on the same page. The credential is
+   written to `/strad/{env}/mcp/<slug>/oauth/<VARIABLE>`.
 4. Deploy. The token reaches the container on the next render.
 
 Step 4 is not a wart, and the console says so rather than implying otherwise: a
@@ -62,7 +66,7 @@ was written.
 
 | Field                  | Meaning                                                                                               |
 | ---------------------- | ----------------------------------------------------------------------------------------------------- |
-| `provider`             | `google`. The only one strad implements; a config cannot name a provider there is no code for         |
+| `provider`             | `google` or `generic`. It decides which other fields the block carries                                |
 | `account`              | The Google account this slug is pinned to. Checked against the verified `email` claim on the way back |
 | `scopes`               | The exact capability scopes to request. strad adds `openid` and `email` itself                        |
 | `clientIdVariable`     | Defaults to `GOOGLE_SHEETS_OAUTH_CLIENT_ID`                                                           |
@@ -70,9 +74,80 @@ was written.
 | `refreshTokenVariable` | Defaults to `GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`. This is the one the flow writes                      |
 
 The three variables are **names, not paths**. Core composes
-`/strad/{env}/mcp/{slug}/static/{VARIABLE}` from the slug and these strings and
-from nothing else, so there is no spelling of one that reaches another server's
-namespace.
+`/strad/{env}/mcp/{slug}/{kind}/{VARIABLE}` from the slug, a kind and these
+strings — and from nothing else, so there is no spelling of one that reaches
+another server's namespace. The flow **writes** to `oauth/`; it **reads** the
+client id and secret from `oauth/` first and `static/` second, which is the same
+layering everything else applies.
+
+## `provider: generic` — any OAuth 2.0 provider
+
+`google` is an implementation: strad knows the endpoints, asks for an ID token,
+and refuses a consent that came back from the wrong account. `generic` is a
+declaration — the config names the endpoints and strad runs plain RFC 6749
+authorization-code-with-PKCE against them.
+
+```yaml
+- slug: linear-ro
+  kind: supplementary-image
+  image: ghcr.io/tadasant/strad-bundle:latest
+  bundle: bundle
+  path: /linear-ro
+  entitlements: [zimmer]
+  oauth:
+    provider: generic
+    label: Linear
+    authorizeUrl: https://linear.app/oauth/authorize
+    tokenUrl: https://api.linear.app/oauth/token
+    scopes: [read]
+    authorizeParams:
+      access_type: offline
+    clientIdVariable: LINEAR_OAUTH_CLIENT_ID
+    clientSecretVariable: LINEAR_OAUTH_CLIENT_SECRET
+    refreshTokenVariable: LINEAR_OAUTH_TOKEN
+```
+
+| Field             | Meaning                                                                                                  |
+| ----------------- | -------------------------------------------------------------------------------------------------------- |
+| `authorizeUrl`    | Where the browser is sent. Required, https (http only to a loopback host)                                |
+| `tokenUrl`        | Where the code is exchanged, server to server. Required, same rule                                       |
+| `label`           | What the console calls the provider. Defaults to the authorize URL's host                                |
+| `scopes`          | Requested verbatim, space-delimited. May be empty                                                        |
+| `authorizeParams` | Extra query parameters — `access_type: offline`, `duration: permanent`, `prompt: consent`                |
+| `clientAuth`      | `post` (default) puts the client secret in the body; `basic` puts it in an `Authorization: Basic` header |
+| `credential`      | Which token-response field is durable: `refresh_token` (default) or `access_token`                       |
+
+The three variable names are **required** here. Google's defaults are Google's; a
+Linear credential silently landing in `GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN` is a
+wrong answer that renders clean.
+
+**Every field a generic connector cannot work without is required**, and that is
+deliberate. Zod strips an unknown key, so an _optional_ `authorizeUrl:` misspelled
+once would parse clean, deploy clean, and send a human to the wrong provider.
+Required means the same typo is a parse error on the config gate instead.
+
+`authorizeParams` cannot set a parameter strad composes itself — `client_id`,
+`redirect_uri`, `response_type`, `scope`, `state`, `code_challenge`,
+`code_challenge_method`. Those carry the terms of the grant and the PKCE
+challenge, and the config gate refuses each by name.
+
+### What a generic connector does NOT do
+
+**It proves no identity, so there is no `account:`.** OpenID Connect is what makes
+Google's account pinning possible, and nothing in plain OAuth 2.0 says whose
+account a token belongs to. A generic connector stores whatever account the human
+was signed in as at the provider, and the console says exactly that above the
+button rather than implying a check it cannot make. If that matters for a given
+provider, the answer is a first-class variant like `google`, not a field.
+
+**It does not refresh.** The durable credential is stored and injected. For an
+upstream that needs short-lived bearers minted from it, see `oauthRefresh:`.
+
+**A scope check happens only when the provider speaks.** RFC 6749 §5.1 makes
+`scope` optional in a token response and required only when the grant differs from
+the request, so silence is taken as "what you asked for". When the provider does
+name its scopes, every configured one must be among them or the consent is
+refused and nothing is written.
 
 **The tier is derived, not declared.** A slug is read-only when every capability
 scope ends in `.readonly`, and read-write otherwise. A label in the config would

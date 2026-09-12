@@ -208,22 +208,29 @@ describe("what one refresh costs the store, at production's shape", () => {
 
     await tick(store, providers, c.now);
 
-    // Ten enumerations for one tick: the shared provider, six per-server
-    // providers, the builtin's parameters, and the diagnosis's list AND render
-    // pass. Each one reads a version of all 34 parameters.
-    expect(counts.listParameters).toBe(10);
-    expect(counts.getVersion).toBe(10 * total);
+    // Sixteen enumerations for one tick: the shared provider, six per-server
+    // providers that are TWO LAYERS EACH since the `oauth` kind (a miss in
+    // `{slug}/oauth/` falls through to `{slug}/static/`), the builtin's
+    // parameters, and the diagnosis's list AND render pass. Each one reads a
+    // version of all 34 parameters.
+    //
+    // The extra six are the price of the second kind in the configuration the
+    // gateway NO LONGER RUNS — `snapshotTtlMs: 0`, an enumeration per namespace.
+    // The test below is the one that describes production, and there the second
+    // layer is free: it slices the same reading, and `listParameters` is still 1.
+    expect(counts.listParameters).toBe(16);
+    expect(counts.getVersion).toBe(16 * total);
     // Plus the renders each namespace actually needed.
     expect(counts.render).toBe(
       GATEWAY_NAMES.length * 2 + // shared provider, and the diagnosis
         SLUGS.length * PER_SLUG_NAMES.length + // six per-server providers
         PER_SLUG_NAMES.length, // the builtin's parameters, again
     );
-    expect(billed()).toBe(388);
+    expect(billed()).toBe(592);
     // At the 60s TTL production ran, the poller re-drove this every minute:
-    // 388 x 1440 = 558,720 billed reads a day from ONE core process, before
+    // 592 x 1440 = 852,480 billed reads a day from ONE core process, before
     // the two bundle processes and any real traffic.
-    expect(billed() * 1440).toBe(558_720);
+    expect(billed() * 1440).toBe(852_480);
   });
 
   it("with one reading per process, a refresh costs 2 x P and the namespaces are free", async () => {

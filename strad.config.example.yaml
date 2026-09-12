@@ -315,9 +315,9 @@ servers:
   # bare string is used literally (see `GCS_BUCKET`); only `${NAME}` is a secret
   # lookup.
   #
-  # A `${NAME}` is resolved from THIS SERVER'S OWN namespace first —
-  # /strad/{env}/mcp/{slug}/static/{NAME} — and from the shared
-  # /strad/{env}/gateway/static/{NAME} only as a fallback. That is what lets two
+  # A `${NAME}` is resolved from THIS SERVER'S OWN namespaces first —
+  # /strad/{env}/mcp/{slug}/oauth/{NAME}, then .../static/{NAME} — and from the
+  # shared /strad/{env}/gateway/static/{NAME} only as a fallback. That is what lets two
   # servers write the same `${NAME}` and be given different values; seed nothing
   # per-server and it resolves exactly as it always has.
   #
@@ -334,9 +334,10 @@ servers:
   #   - `consoleEnv:` — env that lands on the CORE gateway ONLY (the human /ui),
   #     never on the bundle. The `secrets` server uses it to keep an admin key off
   #     the /mcp container. See the `secrets` entry.
-  #   - `params: true` — resolve everything a human has stored under
-  #     /strad/{env}/mcp/{slug}/static/* in the secrets system and inject it as this
-  #     server's env at deploy time. See the `remote-filesystem-tmp-public` entry.
+  #   - `params: true` — resolve everything stored under
+  #     /strad/{env}/mcp/{slug}/static/* and .../oauth/* in the secrets system and
+  #     inject it as this server's env at deploy time. See the
+  #     `remote-filesystem-tmp-public` entry.
   #
   # `timeoutMs` overrides the MCP SDK's silent 60s default, which otherwise kills
   # a slow tool call and presents as a mysterious platform failure. Set it
@@ -481,11 +482,15 @@ servers:
   # `oauth:` IS THE CREDENTIAL, and there is no `env:` block on either entry.
   #
   # A refresh token is minted by a HUMAN in a browser, so strad's console runs
-  # the consent itself: this slug's page gets a Connect Google button, and the
-  # token goes from Google's token endpoint into
-  # /strad/{env}/mcp/{slug}/static/GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN without ever
-  # being displayed. The client id and secret are seeded there by hand, once per
-  # slug; the renderer injects all three onto the bundle.
+  # the consent itself: this slug's page gets a Connect button, and the token goes
+  # from the provider's token endpoint into
+  # /strad/{env}/mcp/{slug}/oauth/GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN without ever
+  # being displayed.
+  #
+  # THE `oauth` KIND is the namespace for a credential strad MINTED. The client id
+  # and secret are seeded by hand under `static/` — the kind for a value a human
+  # TYPED — and a server reads `oauth/` first, `static/` second. The renderer
+  # injects all three onto the bundle. See docs/operate/secrets.md.
   #
   # DO NOT write them as ${NAME} refs — the config gate refuses it, because
   # render-spec fails the WHOLE spec on one unresolvable ref and the token cannot
@@ -529,6 +534,40 @@ servers:
       account: someone@example.com
       scopes:
         - https://www.googleapis.com/auth/spreadsheets
+
+  # --- oauth: provider generic ------------------------------------------------
+  # `google` is an IMPLEMENTATION — strad knows the endpoints, asks for an ID
+  # token, and refuses a consent from the wrong account. `generic` is a
+  # DECLARATION: name the endpoints and strad runs plain RFC 6749
+  # authorization-code-with-PKCE against them.
+  #
+  # It proves NO identity, so there is no `account:` — nothing in plain OAuth 2.0
+  # says whose account a token belongs to, and the console says so above the
+  # button rather than implying a check it cannot make.
+  #
+  # Every field it cannot work without is REQUIRED, including all three variable
+  # names: Zod strips an unknown key, so an optional `authorizeUrl:` misspelled
+  # once would deploy clean and send a human to the wrong provider.
+  #
+  # - slug: linear-ro
+  #   kind: supplementary-image
+  #   image: ghcr.io/tadasant/strad-bundle:latest
+  #   bundle: bundle
+  #   path: /linear-ro
+  #   entitlements: [admin]
+  #   oauth:
+  #     provider: generic
+  #     label: Linear                # what the console calls it; defaults to the host
+  #     authorizeUrl: https://linear.app/oauth/authorize
+  #     tokenUrl: https://api.linear.app/oauth/token
+  #     scopes: [read]
+  #     authorizeParams:             # how THIS provider spells "offline access"
+  #       access_type: offline
+  #     clientAuth: post             # or `basic`, for the providers that require it
+  #     credential: refresh_token    # or `access_token`, where that is the durable one
+  #     clientIdVariable: LINEAR_OAUTH_CLIENT_ID
+  #     clientSecretVariable: LINEAR_OAUTH_CLIENT_SECRET
+  #     refreshTokenVariable: LINEAR_OAUTH_TOKEN
 
   # No credential at all — public endpoints, every tool.
   - slug: google-flights

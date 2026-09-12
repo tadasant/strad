@@ -28,7 +28,16 @@ export {
 export { resolverFromEnv, RESOLVER_ENV } from "./resolver.ts";
 
 export {
+  SERVER_PARAM_KINDS,
+  type ServerParamKind,
+  isServerParamKind,
+  serverKindNamespace,
+  serverNamespaces,
+  layerNamespaces,
+  isUsableValue,
   staticNamespace,
+  oauthNamespace,
+  oauthParameterPath,
   gatewayNamespace,
   gatewayParameterPath,
   parameterPath,

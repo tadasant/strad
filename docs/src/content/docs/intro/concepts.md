@@ -137,9 +137,11 @@ email, a private key. A parameter is **either** non-secret (safe to read back) o
 /strad/{env}/mcp/{server-slug}/{kind}/{VARIABLE_NAME}
 ```
 
-`kind` is `static` today; an `oauth` kind is a future ticket ([issue
-#32](https://github.com/tadasant/strad/issues/32)). A **namespace** is a prefix of
-that path (e.g. `/strad/staging/mcp/`) — the `secrets` server is scoped to one and
+`kind` names where the value came from: `static` is a value a human typed into the
+console, `oauth` is a credential strad's own consent callback minted. Both resolve
+the same way, `oauth` first — see [the two
+kinds](/operate/secrets/#the-two-kinds-static-and-oauth). A **namespace** is a
+prefix of that path (e.g. `/strad/staging/mcp/`) — the `secrets` server is scoped to one and
 refuses to act outside it. Parameters live behind a store-agnostic interface; GCP
 (Parameter Manager indexing everything, Secret Manager backing the secret parts) is
 the first backend. See [Architecture](/intro/architecture/#the-secrets-and-parameters-system).
@@ -148,7 +150,8 @@ the first backend. See [Architecture](/intro/architecture/#the-secrets-and-param
 deployment rather than to one server — the `${NAME}` references a config makes,
 and the gateway's own keys. It is what `gateway.secrets.provider:
 gcp-parameter-store` reads at runtime. A supplementary server's `env:` reference
-reads its own `mcp/{slug}/static/` first and falls back to this one, so the same
+reads its own `mcp/{slug}/oauth/` and `mcp/{slug}/static/` first and falls back to
+this one, so the same
 `${NAME}` in two servers can mean two values; see [two servers, one variable
 name](/operate/secrets/#a-servers-secrets-live-in-that-servers-namespace) and
 [Secrets](/operate/secrets/).

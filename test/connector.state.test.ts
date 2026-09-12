@@ -46,6 +46,8 @@ const payload = (
   verifier: "a-pkce-verifier-of-adequate-length",
   slug: "google-sheets-tadas412-ro",
   env: "staging",
+  provider: "google",
+  terms: "",
   account: "tadas412@gmail.com",
   scopes: [
     "openid",
