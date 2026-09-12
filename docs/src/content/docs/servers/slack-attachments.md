@@ -51,8 +51,11 @@ The token is an HMAC over the file id, an expiry and a random nonce. Three
 properties follow, and each closes a specific hole:
 
 - **One file.** The link authorises one attachment, not the workspace.
-- **One use.** The nonce is marked spent once Slack has answered. A GET that
-  never produced bytes gives the link back, so a Slack failure does not burn it.
+- **One use.** The nonce is marked spent when the link is *presented*, which is
+  what makes two simultaneous requests resolve to one winner. A request that
+  produced no bytes at all — Slack refused, or the file had gone — hands the
+  claim back, so an ordinary retry still works. A transfer that dies *after* the
+  response began has spent its link; call the tool again.
 - **One mount.** The gateway slug **and a fingerprint of the mount's bot token**
   are folded into the signing key rather than the payload, so a link minted by
   one mount **fails to verify** at another instead of being honoured somewhere
@@ -82,9 +85,10 @@ up afterwards, because nothing was kept.
 **The filename is never in the URL.** It travels in `Content-Disposition` on the
 response instead. A URL ends up in access logs; a response header does not.
 
-**The token is in the URL path**, so it does reach the edge access log. A
-fifteen-minute, single-use link is what keeps that from mattering — and it is why
-the expiry is minutes rather than days.
+**The token is a bearer credential in a URL path**, so it reaches the edge access
+log, and it is also in the calling agent's transcript. A fifteen-minute,
+single-use link is what keeps that from mattering — and it is why the expiry is
+minutes rather than days.
 
 Responses are served `Cache-Control: no-store`.
 
@@ -94,11 +98,18 @@ The bytes stream end to end — Slack to the mount, the mount to core, core to t
 caller — and nothing on the path holds the file. A 39MB archive costs the same
 memory as a 39KB screenshot.
 
-The bound is silence, not size: a transfer is abandoned only if it **stops
+The bound is movement, not size: a transfer is abandoned only if it **stops
 moving** for the upstream timeout, so an artifact of any size arrives as long as
-it keeps flowing. A failure partway destroys the connection rather than ending it
-cleanly, so a truncated file is reported as a failed transfer instead of arriving
-as a short one that looks complete.
+it keeps flowing. That cuts both ways — a caller that stops reading for longer
+than the timeout is dropped too, which is what stops a stalled reader holding a
+connection open indefinitely.
+
+A failure partway destroys the connection rather than ending it cleanly, so a
+truncated file is reported as a failed transfer instead of arriving as a short
+one that looks complete. `Content-Length` is declared only when the response from
+Slack was not content-encoded, because a decompressed body makes the header
+describe bytes nobody is sending — and a length that agrees with a truncation is
+the one kind of short file a caller cannot detect.
 
 ## Configuration
 

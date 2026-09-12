@@ -1,16 +1,15 @@
 /**
  * The signed, short-lived download link a Slack attachment is handed over as.
  *
- * WHY THIS EXISTS. `slack_download_file` used to write the bytes into this
- * container's `tmpdir()` and return `file://<path>`. The caller is on another
- * machine, so that path named nothing it could open — the tool reported success
- * and the session could not read the file. Slack itself offers no URL we can
- * pass through instead: `url_private` and `url_private_download` both require
- * `Authorization: Bearer <bot token>`, and the only unauthenticated form,
- * `permalink_public`, is minted by `files.sharedPublicURL` — a USER-token method
- * that makes the file public indefinitely until `files.revokePublicURL`. Wrong
- * on both counts. So strad mints the link, and the SIGNATURE is the credential:
- * the caller holds no strad API key and sends no header.
+ * WHY THIS EXISTS. The caller of `slack_download_file` runs on a different
+ * machine from this mount, so a filesystem path names nothing it can open.
+ * Slack offers no URL to pass through instead: `url_private` and
+ * `url_private_download` both require `Authorization: Bearer <bot token>`, and
+ * the only unauthenticated form, `permalink_public`, is minted by
+ * `files.sharedPublicURL` — a USER-token method that makes the file public
+ * indefinitely until `files.revokePublicURL`. Wrong on both counts. So strad
+ * mints the link, and the SIGNATURE is the credential: the caller holds no strad
+ * API key and sends no header. FORK.md carries the incident behind it.
  *
  * WHAT THE SIGNATURE COVERS, and why each field is in there:
  *
@@ -20,18 +19,19 @@
  *                  that from mattering.
  *   - `nonce`    — makes each mint unique, and is the handle {@link NonceLedger}
  *                  marks as spent so a link is single-use.
- *   - `slug`     — NOT in the payload: it is folded into the KEY by
- *                  {@link deriveKey}. Binding it there rather than in the body
- *                  means a token minted for one slug does not merely fail a
- *                  field comparison at another, it fails to verify at all, and
- *                  a misrouted link cannot be read back for its file id.
+ *
+ * The mount's identity is NOT in the payload either — it is folded into the KEY
+ * by {@link deriveKey}, so a token from elsewhere fails to verify rather than
+ * failing a field comparison, and a misrouted link cannot be read back for its
+ * file id. Note what that does and does not check: the slug in the REQUEST URL
+ * is never compared with anything. It is a routing address, and the container it
+ * routes to either holds the key that signed the token or does not.
  *
  * THE FILENAME IS DELIBERATELY ABSENT. It would otherwise travel in the URL and
- * therefore into request logs and spans; strad's telemetry rule (`src/telemetry/
- * redact.ts`) is that tool arguments and results are never recorded, and a
- * filename in a path is exactly the leak that rule exists to prevent. The name
- * is served in `Content-Disposition` on the response instead, where no log
- * keeps it.
+ * therefore into request logs and spans. strad's telemetry rule is that tool
+ * arguments and results are never recorded, and a filename in a path is exactly
+ * the leak that rule exists to prevent. The name is served in
+ * `Content-Disposition` on the response instead, where no log keeps it.
  *
  * THE KEY IS DERIVED, NOT SEEDED. `STRAD_INTERNAL_TOKEN` is already on every
  * bundle component — the deploy refuses to render one without it — so there is
@@ -125,7 +125,14 @@ export function mintDownloadToken(opts: {
   now?: number;
 }): MintedLink {
   const now = opts.now ?? Date.now();
-  const ttl = Math.min(Math.max(opts.ttlSeconds ?? DEFAULT_TTL_SECONDS, 1), MAX_TTL_SECONDS);
+  // `Number.isFinite` first: NaN survives Math.min/Math.max unchanged, and an
+  // `exp: NaN` mints a token that every verify then refuses — total failure,
+  // silently, from one bad argument.
+  const requested = opts.ttlSeconds;
+  const ttl = Math.min(
+    Math.max(Number.isFinite(requested) ? (requested as number) : DEFAULT_TTL_SECONDS, 1),
+    MAX_TTL_SECONDS
+  );
   const expMs = now + ttl * 1000;
 
   const payload: Payload = {
@@ -193,14 +200,19 @@ export function verifyDownloadToken(opts: {
  *
  * IN MEMORY, AND THAT IS A BOUND RATHER THAN A HOLE. A restart forgets which
  * nonces were spent, so a link could in principle be replayed across one — but
- * only within its own few-minute expiry, which is the outer limit on this
- * whole mechanism anyway. The upload lease store next door (`servers/
- * remote-filesystem/shared/src/upload-targets.ts`) makes the same trade for the
- * same reason. It is recorded in `HACKS.md`.
+ * only within its own few-minute expiry, which is the outer limit on this whole
+ * mechanism anyway. The artifact store's upload lease store makes the same trade
+ * for the same reason. It is recorded in `HACKS.md`.
  *
- * A nonce is spent only once Slack has answered and the body is on its way —
- * see the handler in `src/server.ts`. Spending it on arrival would mean a
- * connection that died before the first byte burned the link.
+ * A nonce is spent when the link is PRESENTED, not when the bytes land — see
+ * `handleDownload` in `src/server.ts`. Claiming first is what makes two
+ * simultaneous requests resolve to one winner; claiming after Slack answered
+ * would let both through. The cost is that a transfer which dies after the
+ * response began has still spent its link, and the caller re-calls the tool.
+ *
+ * {@link NonceLedger.release} narrows that to the cases worth narrowing: a
+ * claim taken for work that never reached the caller at all — Slack refused, or
+ * the file had gone — is handed back, so an ordinary retry still works.
  */
 export class NonceLedger {
   private readonly spent = new Map<string, number>();

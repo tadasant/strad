@@ -1609,6 +1609,11 @@ async function main(): Promise<void> {
           // Signed, single-use and short-lived: there is nothing here a cache
           // could usefully hold, and a cached copy would outlive the link.
           res.setHeader("cache-control", "no-store");
+          // The content type comes from Slack, which took it from whoever
+          // uploaded the file. `Content-Disposition: attachment` already stops a
+          // browser rendering it, but this origin also serves the SSO'd console,
+          // so the sniffing argument is not one worth leaving open.
+          res.setHeader("x-content-type-options", "nosniff");
 
           await pipeline(Readable.fromWeb(outcome.body), res);
         })

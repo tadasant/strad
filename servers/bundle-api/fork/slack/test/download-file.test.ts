@@ -101,6 +101,8 @@ describe('slack_download_file', () => {
     ['a traversal', '../../etc/passwd'],
     ['a quote-escape', "x'; rm -rf ~; echo '"],
     ['a command substitution', 'y$(whoami)`id`.zip'],
+    ['a leading dash that curl would read as an option', '-o /etc/passwd'],
+    ['a name that is only dots', '..'],
   ])('neutralises %s in the filename it puts in the curl command', async (_label, name) => {
     const result = await callTool(stubClient({ getFileInfo: async () => ({ ...FILE, name }) as SlackFile }), {
       downloadLink: LINK,
@@ -254,6 +256,11 @@ describe('handleDownload', () => {
 
     expect(outcome.ok).toBe(false);
     if (!outcome.ok) expect(outcome.status).toBe(404);
+
+    // And the link was NOT spent by it. Nothing was served, so a retry — the
+    // natural response to a 404 — must not come back "already used", which
+    // would describe the wrong problem entirely.
+    expect((await server.handleDownload(token, () => client)).ok).toBe(true);
   });
 
   it('serves nothing at all when the deployment configured no download route', async () => {

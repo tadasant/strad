@@ -860,9 +860,16 @@ export class HttpServerAdapter implements ServerAdapter {
    * `timeoutMs`. Applied here that would be a SIZE limit wearing a clock's
    * clothes: at the 120s default, any artifact needing more than 120s of
    * transfer would fail partway through no matter how healthy the connection.
-   * The timer below is reset on every chunk, so it bounds SILENCE — an upstream
-   * that has stopped producing — and lets a large, healthy download run as long
-   * as it keeps moving.
+   * The timer below is reset on every chunk, so it bounds a transfer that has
+   * STOPPED MOVING and lets a large, healthy one run as long as it keeps going.
+   *
+   * "Stopped moving" is the honest phrasing rather than "an upstream that has
+   * gone quiet", because the timer is driven from inside the pipeline: when the
+   * CALLER stops reading, backpressure stops the chunks reaching the Transform
+   * and the timer runs too. A client paused longer than `timeoutMs` is dropped.
+   * That is the intended bound — it is what stops a stalled reader holding an
+   * upstream connection open indefinitely — but it is a bound on both ends, not
+   * just the far one.
    */
   async getRaw(path: string, req: Request, res: Response): Promise<void> {
     const endpoint = await this.opts.endpoint();
@@ -885,12 +892,24 @@ export class HttpServerAdapter implements ServerAdapter {
       );
       if (upstream.status === 401) this.opts.onUnauthorized?.(endpoint);
 
+      // `fetch` DECOMPRESSES a body it asked for, so on an encoded response the
+      // upstream's `content-encoding` and `content-length` both describe bytes
+      // this hop is no longer carrying. Passing them on would declare a length
+      // the caller's file never reaches, and Node stops writing at it — a
+      // truncated artifact under a 200 whose length header agrees with it, which
+      // nothing downstream can detect.
+      const encoded = upstream.headers.has("content-encoding");
       res.status(upstream.status);
       upstream.headers.forEach((value, key) => {
-        // Both are properties of THIS hop's connection, not of the artifact, and
-        // re-emitting either would describe a framing the caller is not getting.
         const name = key.toLowerCase();
+        // Properties of THIS hop's connection rather than of the artifact.
         if (name === "transfer-encoding" || name === "connection") return;
+        if (
+          encoded &&
+          (name === "content-encoding" || name === "content-length")
+        ) {
+          return;
+        }
         res.setHeader(key, value);
       });
 
@@ -914,6 +933,12 @@ export class HttpServerAdapter implements ServerAdapter {
       // Stop pulling from the upstream if the caller went away or the pipe broke;
       // without this the fetch would run to completion into nothing.
       controller.abort();
+      // A caller that hung up mid-download is not a strad fault, and reporting it
+      // as one is actively harmful: `strad.route_failed` exports are throttled to
+      // one per route per minute, so a Ctrl-C would swallow a real
+      // `mcp_download` failure arriving in the same minute. There is also no
+      // response left to write. Anything else still raises.
+      if (req.destroyed || res.destroyed) return;
       throw err;
     } finally {
       if (idle) clearTimeout(idle);

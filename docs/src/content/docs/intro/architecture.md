@@ -208,9 +208,12 @@ store caps it at 100MB — so `postRaw` may buffer. A download is not bounded, s
 resident, and the gateway's memory does not grow with the file. `getRaw`'s
 timeout differs for the same reason. `postRaw` aborts the whole operation after
 `timeoutMs`; applied to a download that would be a size limit wearing a clock's
-clothes, so `getRaw` resets its timer on every chunk instead. It bounds
-**silence** — an upstream that has stopped producing — and lets a large, healthy
-transfer run as long as it keeps moving.
+clothes, so `getRaw` resets its timer on every chunk instead. It bounds a
+transfer that has **stopped moving**, and lets a large, healthy one run as long
+as it keeps going. That bound applies at both ends: the timer is driven from
+inside the pipeline, so a caller that stops reading for longer than `timeoutMs`
+is dropped too, which is what stops a stalled reader holding an upstream
+connection open indefinitely.
 
 A body that fails partway is **destroyed, not ended**. A stream ended tidily
 after a failure is a truncated file delivered under a `200`, and a half-written

@@ -4882,8 +4882,9 @@ minutes later.
    independently.
 
 **The token is in the URL path**, so it reaches App Platform's edge access log.
-That is what the fifteen-minute expiry and the single use are for, and it is why
-neither is configurable upward beyond an hour. The FILENAME is deliberately kept
+That is what the fifteen-minute expiry and the single use are for. The expiry is
+fixed at fifteen minutes — no deployment configures it — and the module will not
+sign for longer than an hour whatever it is asked for. The FILENAME is deliberately kept
 out of the URL and served in `Content-Disposition` instead, so the one part of
 this that is durable in a log names nothing about the file.
 

@@ -113,7 +113,14 @@ export function downloadFileTool(
 
         const url = `${link.publicBaseUrl}/mcp-download/${encodeURIComponent(link.publicSlug)}/${token}`;
         const name = fileInfo.name || fileInfo.title || parsed.file_id;
-        const safeName = name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        // The curl line is pasted into a shell, so this name is untrusted input
+        // arriving at one. Everything outside the allowed set becomes `_`, which
+        // takes out quotes, `/` and every metacharacter. Two residues are worth
+        // handling separately: a leading `-` would be read as an OPTION rather
+        // than a path, and a name of only dots (`..`) targets a directory. Both
+        // are curl errors rather than a real hazard, but a confusing one.
+        const safeName =
+          name.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/^[-.]+/, '') || parsed.file_id;
 
         return {
           content: [

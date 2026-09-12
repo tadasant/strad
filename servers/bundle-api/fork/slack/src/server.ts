@@ -395,6 +395,11 @@ export function createMCPServer(options: CreateMCPServerOptions) {
       const info = await client.getFileInfo(verified.fileId);
       const url = info.url_private_download || info.url_private;
       if (!url) {
+        // Nothing was served, so the claim goes back — same rule as the throw
+        // below. A file that has gone will not come back, but burning the link
+        // would replace one honest 404 with a confusing "already used" on the
+        // retry a caller naturally makes.
+        ledger.release(verified.nonce);
         return { ok: false, status: 404, error: 'That file is no longer downloadable from Slack.' };
       }
 

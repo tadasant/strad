@@ -13,6 +13,7 @@
 // credential and the upstream that signed it is the only thing that checks it.
 // The gateway's job is to resolve a slug and pipe.
 import { createServer, type Server } from "node:http";
+import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { parseConfig } from "../src/config/load.ts";
@@ -213,6 +214,29 @@ describe("/mcp-download", () => {
     // Generous, because a GC may not have run: the point is that growth is not
     // proportional to the 64MB that went through.
     expect(peak - before).toBeLessThan(32 * 1024 * 1024);
+  });
+
+  // Core fetches the bundle with `fetch`, which DECOMPRESSES an encoded body and
+  // leaves `content-length` describing the compressed bytes. Relaying that pair
+  // would declare a length the caller never reaches — Node stops writing at it,
+  // and the truncation agrees with the header, so nothing can detect it.
+  it("drops content-length and content-encoding when the upstream body was encoded", async () => {
+    const payload = Buffer.alloc(100_000, 65);
+    const gz = gzipSync(payload);
+    const upstream = createServer((_req, res) => {
+      res.setHeader("content-type", "application/zip");
+      res.setHeader("content-encoding", "gzip");
+      res.setHeader("content-length", String(gz.length));
+      res.end(gz);
+    });
+    const base = await gatewayFor(await listen(upstream));
+
+    const res = await fetch(`${base}/mcp-download/slack-zimmer/tok`);
+    expect(res.status).toBe(200);
+
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.length).toBe(payload.length);
+    expect(body.equals(payload)).toBe(true);
   });
 
   it("destroys the connection when a body fails partway, rather than ending it cleanly", async () => {
