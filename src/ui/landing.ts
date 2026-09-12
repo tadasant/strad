@@ -113,6 +113,7 @@ ${COPY_SCRIPT}`;
     title: `${gateway.env} gateway`,
     body,
     signedInAs: opts.signedInAs,
+    nav: "gateway",
     brandHref: "/",
     brandSub: "gateway",
     footNote: "SSO-gated · humans only",
@@ -129,6 +130,15 @@ function copyRow(url: string, note: string): string {
   <p class="copy-note">${esc(note)}</p>`;
 }
 
+/**
+ * The tiles under "Consoles".
+ *
+ * They cover every destination the shared nav bar names (src/ui/nav.ts) plus
+ * the two the bar deliberately does not — the sign-in endpoint and `/healthz`.
+ * The bar is chrome and the tile is a sentence about what the page is for, so
+ * they are written separately; `test/landing.test.ts` is what keeps a
+ * destination added to the bar from going missing here.
+ */
 function consoleCards(consoleMounted: boolean): string[] {
   const cards = [
     {
@@ -138,6 +148,20 @@ function consoleCards(consoleMounted: boolean): string[] {
       href: "/ui",
       title: "Console",
       desc: "Every server: what it is scoped to, and whether the secrets it needs are seeded — with the exact GCP path to fix what is not. Names and status only, never values.",
+      cta: "Open →",
+      show: consoleMounted,
+    },
+    {
+      href: "/connectors",
+      title: "Connectors",
+      desc: "The server roster itself: add an entry, edit one, take one out. A change here is stored and applied to the running process — no deploy, no restart.",
+      cta: "Edit →",
+      show: consoleMounted,
+    },
+    {
+      href: "/playground",
+      title: "Playground",
+      desc: "A human MCP client, one server at a time: list the tools it serves you and call one with the arguments you type. No model is involved, and a call runs for real.",
       cta: "Open →",
       show: consoleMounted,
     },

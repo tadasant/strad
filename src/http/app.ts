@@ -144,8 +144,8 @@ export interface AppOptions {
    * does not exist yet. The thunk is what breaks that cycle (see src/index.ts).
    *
    * Returning null is the ordinary shape of a deployment that has not enabled
-   * `gateway.configStore:` — the editor is not mounted, and every other console
-   * page is unchanged.
+   * `gateway.configStore:` — `/connectors` answers with the page that says the
+   * editor is off, and every other console page is unchanged.
    */
   runtimeConfig?: () => RuntimeConfig | null;
 }

@@ -88,6 +88,7 @@ export function renderConsent(opts: ConsentPageOptions): string {
   return layout({
     title: "Authorize",
     body,
+    nav: false,
     brandHref: "/",
     brandSub: "authorize",
     footLead: "strad · MCP authorization",
@@ -127,6 +128,7 @@ export function renderDomainRefusal(opts: {
   return layout({
     title: "Not authorized",
     body,
+    nav: false,
     brandHref: "/",
     brandSub: "authorize",
     footLead: "strad · MCP authorization",
@@ -155,6 +157,7 @@ export function renderAuthorizeError(opts: {
   return layout({
     title: "Authorization failed",
     body,
+    nav: false,
     brandHref: "/",
     brandSub: "authorize",
     footLead: "strad · MCP authorization",

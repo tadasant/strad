@@ -20,6 +20,7 @@ import {
   type Routing,
 } from "./param-routing.ts";
 import type { RevealPosture } from "./reveal.ts";
+import { NAV_CSS, renderNav, type NavKey } from "./nav.ts";
 import { PWA_HEAD } from "./pwa.ts";
 
 /**
@@ -46,6 +47,19 @@ export interface LayoutOptions {
   serverSlug?: string;
   signedInAs?: string;
   body: string;
+  /**
+   * The shared nav bar (src/ui/nav.ts), and which top-level destination this
+   * page belongs to.
+   *
+   * Default-on, deliberately: "every console page carries the nav" is the
+   * property, and a default that had to be opted into would be one page away
+   * from being false again. `undefined` draws the bar with nothing marked — for
+   * a page that is a console page but none of the five destinations. `false`
+   * omits it, and only the pages reached WITHOUT a console session pass it: the
+   * sign-in refusal, the offline shell, and the `/mcp` OAuth screens, where
+   * every link in the bar would answer 401.
+   */
+  nav?: NavKey | false;
   /** Where the brand mark links. Defaults to the console index. */
   brandHref?: string;
   /** The word beside the brand mark. Defaults to "console". */
@@ -113,6 +127,7 @@ ${PWA_HEAD}
       ${opts.help ? helpButton() : ""}
     </div>
   </div>
+  ${opts.nav === false ? "" : renderNav(opts.nav)}
 </header>
 <main class="page">
 ${opts.body}
@@ -273,6 +288,7 @@ ${listing}`;
     serverSlug: slug,
     signedInAs: opts.signedInAs,
     body,
+    nav: "servers",
   });
 }
 
@@ -573,6 +589,7 @@ ${comboBoxScript()}`;
     serverSlug: slug,
     signedInAs: opts.signedInAs,
     body,
+    nav: "servers",
     helpTitle: "Parameters guide",
     help: secretsGuide(
       config,
@@ -1393,6 +1410,13 @@ export function renderMessage(opts: {
   icon?: string;
   breadcrumbToIndex?: boolean;
   /**
+   * The nav section this refusal belongs to — the page the reader was trying to
+   * reach, not the one they got. A 424 on `/playground/slack` still marks
+   * "playground", so the bar tells them where they are rather than going blank
+   * on exactly the page they are most lost on.
+   */
+  nav?: NavKey;
+  /**
    * Other stores on this console page, offered as links.
    *
    * A multi-store secrets page whose SELECTED store is broken — an unseeded
@@ -1431,6 +1455,7 @@ ${siblingStrip(opts.siblingPages ?? [])}
     serverSlug: opts.serverSlug,
     signedInAs: opts.signedInAs,
     body,
+    nav: opts.nav,
   });
 }
 
@@ -1459,7 +1484,7 @@ export function renderSignIn(denial: ConsoleDenial): string {
   <p class="state-sub">${sub}</p>
   <p class="state-detail">${esc(`dev bypass: ${denial.devBypass}`)}</p>
 </div>`;
-  return layout({ title: "Sign in", body });
+  return layout({ title: "Sign in", body, nav: false });
 }
 
 /**
@@ -1487,6 +1512,7 @@ export function renderOffline(): string {
   return layout({
     title: "Offline",
     body,
+    nav: false,
     footNote: "offline · nothing cached",
   });
 }
@@ -1616,6 +1642,8 @@ code{font-family:var(--font-mono);font-size:.84em;background:var(--bg-code);
   box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 25%,transparent);}
 .whoami{color:var(--g3);font-size:.8rem;font-family:var(--font-mono)}
 
+/* Shared nav — src/ui/nav.ts owns the markup this styles. */
+${NAV_CSS}
 /* Page */
 .page{max-width:60rem;margin:0 auto;padding:1.9rem 1.5rem 3rem;width:100%;flex:1}
 

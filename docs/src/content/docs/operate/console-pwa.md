@@ -106,7 +106,7 @@ be worth caching are exactly the things that must not be.
 
 ## Updating it
 
-The cache is named `strad-shell-v1`, in `SHELL_CACHE`. The worker's `activate`
+The cache is named `strad-shell-v2`, in `SHELL_CACHE`. The worker's `activate`
 deletes every cache whose name is not the current one, so **renaming the cache is
 also the eviction**. Bump it whenever a cached byte changes without the worker
 script changing — an edit to the offline page's copy is the case that matters.

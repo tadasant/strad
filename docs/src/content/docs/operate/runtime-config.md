@@ -362,9 +362,16 @@ form as "the human cleared the roles".
 ## The console flow
 
 `/connectors`, behind the same Google Workspace SSO gate as the rest of the
-console. It is at the top level rather than under `/ui` because `/ui/:server` is
-a wildcard — `/ui/servers` would be one config entry away from being shadowed by
-a server that happens to be called `servers`.
+console, and one of the five destinations on its [shared nav
+bar](/auth/overview/#what-the-console-serves-and-how-you-get-between-the-pages).
+It is at the top level rather than under `/ui` because `/ui/:server` is a
+wildcard — `/ui/servers` would be one config entry away from being shadowed by a
+server that happens to be called `servers`.
+
+The prefix is served on every deployment, including one that sets no
+`gateway.configStore:`. There it answers with the page that says the editor is
+off and that this gateway's roster comes from the checked-in document — an honest
+answer for a link every console page draws, which a framework `404` would not be.
 
 1. **`/connectors`** lists every entry the gateway is serving: slug, kind, a
    source chip (`console` or `config file`), title, roles, and the current

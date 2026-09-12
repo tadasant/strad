@@ -253,13 +253,46 @@ describe("the playground is behind the console gate", () => {
     expect(res.status).toBe(415);
   });
 
-  it("sends /playground with no server back to the index that lists them", async () => {
-    const res = await fetch(`${baseUrl}/playground`, {
-      headers: { cookie },
-      redirect: "manual",
-    });
-    expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe("/ui");
+  it("401s an anonymous /playground — the picker is not a directory either", async () => {
+    const res = await fetch(`${baseUrl}/playground`, { redirect: "manual" });
+    expect(res.status).toBe(401);
+    const html = await res.text();
+    expect(html).toContain("Sign in required");
+    expect(html).not.toContain("playground/echo");
+  });
+});
+
+// --- the picker ------------------------------------------------------------
+
+describe("/playground is the picker, and it picks by the same rule the page enforces", () => {
+  it("links every slug this session may open, and no slug it may not", async () => {
+    const res = await fetch(`${baseUrl}/playground`, { headers: { cookie } });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    // The four this console identity is entitled to, enabled, and configured.
+    for (const slug of ["echo", "locked", "dead", "sleepy"]) {
+      expect(html).toContain(`href="/playground/${slug}"`);
+    }
+    // Granted to `other`, not to this session — and switched off, respectively.
+    expect(html).not.toContain(`href="/playground/walled"`);
+    expect(html).not.toContain(`href="/playground/parked"`);
+    expect(html).toContain("4 servers you may inspect");
+  });
+
+  it("still NAMES the slugs it will not open, with the reason for each", async () => {
+    const res = await fetch(`${baseUrl}/playground`, { headers: { cookie } });
+    const html = await res.text();
+
+    // "not in the list" and "not yours" are different facts, and only one of
+    // them is fixed by a role change. The picker says which.
+    expect(html).toContain("Not open to you");
+    expect(html).toMatch(
+      /<span class="card-title">walled<\/span>\s*<span class="chip chip-off">not entitled</,
+    );
+    expect(html).toMatch(
+      /<span class="card-title">parked<\/span>\s*<span class="chip chip-off">disabled</,
+    );
   });
 });
 

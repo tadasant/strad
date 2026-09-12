@@ -157,6 +157,7 @@ async function handleConnect(
           sub: `"${slug}" does not declare an oauth: connector on this gateway.`,
           tone: "warn",
           breadcrumbToIndex: true,
+          nav: "servers",
         }),
       );
     return;
@@ -297,6 +298,7 @@ async function handleCallback(
           sub,
           tone: "error",
           breadcrumbToIndex: true,
+          nav: "servers",
         }),
       );
   };
@@ -744,6 +746,7 @@ ${scopeRows}
         title: `${slug} · connector`,
         serverSlug: slug,
         signedInAs: extras.signedInAs,
+        nav: "servers",
         body,
       }),
     );
@@ -878,6 +881,7 @@ function renderUnexpected(res: Response, err: unknown): void {
         sub: "The console hit an unexpected error. Nothing was written.",
         tone: "error",
         breadcrumbToIndex: true,
+        nav: "servers",
       }),
     );
 }

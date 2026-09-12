@@ -250,6 +250,7 @@ ${INDEX_CSS}`;
     title: "Servers",
     body,
     signedInAs: opts.signedInAs,
+    nav: "servers",
     brandHref: "/",
     brandSub: "console",
     footNote: "status and guidance · never values",

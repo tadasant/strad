@@ -184,6 +184,7 @@ not a confession.
 | `src/secrets/parameters/write-rules.ts` — the ranking, the mint, the render grant     | `operate/secrets.md`, and `npm run writerules:sync`                                                                           |
 | `src/ui/secret-status.ts` — a state, a label, or the source badge                     | `operate/secrets.md`, `limitations.md`                                                                                        |
 | `src/ui/pwa.ts`, `pwa-icons.ts` — the manifest, the worker, what it may cache         | `operate/console-pwa.md`, `auth/overview.md`                                                                                  |
+| `src/ui/nav.ts` — a console destination added, removed, relabelled or reordered       | `auth/overview.md`, the console tiles in `src/ui/landing.ts`, `operate/runtime-config.md`                                     |
 | `servers/remote-filesystem/**` — a tool, the link model, the sensitivity model        | `servers/artifact-store.md`, `limitations.md`                                                                                 |
 | `servers/telegram/**` — a tool, the credential model, the read/write split            | `servers/telegram.md`, `limitations.md`                                                                                       |
 | `servers/bill-spend/**` — a tool, the write's body shapes, the read-back rule         | `servers/bill-spend.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                               |
