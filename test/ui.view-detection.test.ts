@@ -266,9 +266,8 @@ describe("/ui links every page it renders", () => {
     expect(html).toContain(`href="/ui/remote-filesystem-tmp-public"`);
     expect(html).toContain(`href="/ui/archive"`);
     expect(html).toContain(`href="/ui/zimmer-secrets"`);
-    // A server with no view is still listed — it just isn't linked.
-    expect(html).toContain("deepwiki");
-    expect(html).not.toContain(`href="/ui/deepwiki"`);
+    // A server with no dedicated view is linked too — to its overview.
+    expect(html).toContain(`href="/ui/deepwiki"`);
   });
 
   it("serves the page that link points at", async () => {

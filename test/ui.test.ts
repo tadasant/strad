@@ -267,10 +267,10 @@ describe("/ui/:server GCS browse", () => {
     expect(res.status).toBe(404);
   });
 
-  it("shows a no-view notice for a non-GCS server", async () => {
+  it("shows the read-only overview for a non-GCS server", async () => {
     const res = await fetch(`${baseUrl}/ui/echo`, { headers: auth });
     expect(res.status).toBe(200);
-    expect(await res.text()).toContain("No browser view");
+    expect(await res.text()).toContain("read-only overview");
   });
 });
 

@@ -44,6 +44,9 @@ import {
 import { resolverConfigured } from "./param-routing.ts";
 import { revealPosture } from "./reveal.ts";
 import { renderIndex } from "./index-page.ts";
+import { renderServerOverview } from "./server-overview.ts";
+import { originFor, playgroundAccess } from "./playground.ts";
+import { entitledServers } from "../gateway/entitlements.ts";
 import { storeFor } from "./store-client.ts";
 import { mountTokensConsole } from "./tokens.ts";
 import { SERVER_ROUTE, serverConsolePath, UI_PREFIX } from "./paths.ts";
@@ -74,8 +77,9 @@ import { mountPwa } from "./pwa.ts";
  *                                 scoped to, and whether its secrets are seeded
  *   GET  /secrets               — 302 to /ui. The secret roster was a page of its
  *                                 own; it is now part of the index it describes.
- *   GET  /ui/:server            — the per-server view (GCS browser, parameters
- *                                 manager, or a "no view yet" notice). The
+ *   GET  /ui/:server            — the per-server page (connector, GCS browser,
+ *                                 parameters manager, or the read-only overview
+ *                                 every other kind gets — src/ui/server-overview.ts). The
  *                                 parameters manager takes `?project=<gcp id>`:
  *                                 ONE page fronts N parameter stores, each with
  *                                 its own project, namespaces, bounds and admin
@@ -442,15 +446,33 @@ async function handleServerView(
   }
 
   if (view.kind === "no_viewer") {
+    // Every index card links here, so a kind with no dedicated view still gets a
+    // page worth landing on: the read-only overview. Its badge is the SAME
+    // reading the index renders, not a second derivation of it.
+    const { statuses } = await readDeploymentSecretStatus({
+      config: opts.config,
+      bag: opts.secrets,
+      env: opts.env,
+      secretProvider: opts.secretProvider,
+      fetchImpl: opts.fetchImpl,
+      presence: opts.presence,
+      store: opts.diagnosticStore,
+    });
+    const host = req.get("host");
     res.type("html").send(
-      renderMessage({
-        title: `${slug} · no view`,
-        serverSlug: slug,
+      renderServerOverview({
+        server: view.server,
+        status: statuses.find((s) => s.server.slug === slug),
+        playable: playgroundAccess(
+          opts.config,
+          entitledServers(consolePrincipal(res), opts.config),
+          slug,
+        ).ok,
+        base: originFor(
+          opts.config,
+          host ? `${req.protocol}://${host}` : undefined,
+        ),
         signedInAs,
-        heading: "No browser view for this server",
-        sub: `The "${slug}" server (kind: ${view.server.kind}) has no human resource view yet. The GCS browser is wired first; other kinds follow the same pattern.`,
-        tone: "info",
-        nav: "servers",
       }),
     );
     return;

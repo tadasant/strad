@@ -1646,24 +1646,34 @@ unusable gateway. The popout carries the distinction; the badge does not pretend
 
 ### Ordering
 
-`READY` first, then `ISSUE`. Within each group, servers with a console view come
-before servers without one, and config order breaks the remaining ties. Disabled
-servers sort last and carry no badge at all — strad does not mount them, so they
-need no secrets, and a green would be a claim about a server that answers nothing.
+`READY` first, then `ISSUE`. Within each group, servers with a dedicated console
+view come before servers that only have the overview, and config order breaks the
+remaining ties. Disabled servers sort last and carry no badge at all — strad does
+not mount them, so they need no secrets, and a green would be a claim about a
+server that answers nothing.
 
 ### Which servers have a console view
 
-A server has a console view because its **config declares one**, not because of
-its slug. Two shapes light up, and an entry that matches neither is listed without
-a link:
+**Every card links to `/ui/<slug>`**, its title and its call to action both, and
+every slug answers there. What the page is depends on what the **config
+declares**, not on the slug, asked in this order:
 
-| The server declares                                                | `/ui/<slug>` is                      |
-| ------------------------------------------------------------------ | ------------------------------------ |
-| `SECRETS_PROJECT_ID`                                               | the parameter store for that project |
-| `GCS_BUCKET`, `GCS_SERVICE_ACCOUNT_KEY_JSON` or `GCS_CLIENT_EMAIL` | the object browser for that bucket   |
+| The server declares                                                | `/ui/<slug>` is                          | The card says |
+| ------------------------------------------------------------------ | ---------------------------------------- | ------------- |
+| `oauth:`, and is enabled                                           | the [Connect page](/operate/connectors/) | `Manage →`    |
+| `SECRETS_PROJECT_ID`                                               | the parameter store for that project     | `Manage →`    |
+| `GCS_BUCKET`, `GCS_SERVICE_ACCOUNT_KEY_JSON` or `GCS_CLIENT_EMAIL` | the object browser for that bucket       | `Browse →`    |
+| none of these                                                      | a read-only overview                     | `Details →`   |
 
-A server that somehow declared both gets the parameter store: the secrets check
-runs first.
+The overview is what every other kind gets until it has a view of its own: the
+kind, the slug, whether it is enabled, its bundle and path or its upstream host
+(the host only, never the URL's path), the same badge and summary the index
+draws, its MCP URL, and links to its playground and its entry in the connectors
+editor. It shows declared config and nothing else, and it has no form on it.
+
+A disabled `oauth:` server gets the overview, not the Connect page: the console
+answers a connector only while it is enabled. A server that somehow declared both
+a parameters project and a bucket gets the parameter store.
 
 "Declares" means the same thing here as everywhere else the console reads config —
 a `supplementary-image`'s `env:` and `consoleEnv:` together, a `builtin`'s
