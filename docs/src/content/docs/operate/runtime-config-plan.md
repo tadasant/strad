@@ -96,7 +96,8 @@ A fifth thing is not on that list and belongs on this one.
    this page. They were bounded only by the one thing outside the roster — the
    `connectors` slug being `admin`-only — and would have stopped being bounded
    the moment that changed. [Phase 2](#phase-2--bound-what-the-write-tools-are-worth-shipped-with-one-half-left-open)
-   bounds them inside strad instead, with one half of the question left open.
+   bounds them inside strad instead, with one half of the question left open on
+   purpose.
 
 ## The phases
 
@@ -178,18 +179,43 @@ holds the write tools today. The identity freeze costs nothing because all three
 were already immutable on the edit path; it makes a move refused as one call
 refused as two.
 
-**The half that is still a choice: carrying the `tools:` policy along.** The
+**The half that was left a choice: carrying the `tools:` policy along.** The
 bounds are measured in mounts, so a writer that already reaches a mount may
 create a second slug on it with a wider tool surface than the checked-in slug it
 reaches that mount through. Closing that means a created slug may serve no more
-than its author already reaches on that mount — and that one **does** trade a
+than its author already reaches on that mount, and that one **does** trade a
 workflow, because it narrows the wildcard role too. Three of those 27 mounts are
 reachable by it only through a `tools.allow` slug — the three
 `google-sheets-*-ro` mounts, which are prod-only and are in neither this repo's
 staging config nor anything else a reader here can check — and on those it could
-no longer create the wider half of a `-ro` / `-rw` pair without a deploy. Whether that residual widening is
-worth that is the posture decision this page reserved, and it is still
-[a human's](#what-only-a-human-can-do).
+no longer create the wider half of a `-ro` / `-rw` pair without a deploy.
+
+**Decided on 2026-09-13: the half stays open.** Tadas, given that trade: _"i want
+to keep the workflow you mentioned for now"_. A runtime write may still create a
+wider-tool slug on a mount its author already reaches, and the `-ro` / `-rw`
+runtime workflow is kept. "For now" is part of the decision: it is a present
+choice about a present roster.
+
+**What reopens it: a `connectors` write tool granted to a role other than
+`admin`.** What bounds the residual today is who holds the write tools rather
+than what they may do with them. `save_connector`, `set_connector_enabled`,
+`restore_connector` and `remove_connector` are `admin`-only in production, and
+`admin` already reaches every mount the deployment declares, so the only
+widening available through them is the `-ro` / `-rw` workflow the decision keeps.
+Production gives the `zimmer` role the read half alone, as a `connectors-ro`
+slug (tadasant-internal#2816). Grant any of those four to a role narrower than
+`admin` and the escalation the bound would have closed becomes reachable: a role
+the deploy gave read-only tools on a container can hand itself the write ones.
+The trigger is drawn wider than the mechanism deliberately. The widening itself
+runs through `save_connector` alone, because it is the only one of the four that
+composes an entry and so the only one that reaches `assertAcceptable` at all —
+but the other three carry the availability residual described in
+[Known limitations](/limitations/) #96, and a grant is decided as a grant rather
+than tool by tool. So any of the four re-opens this, in the PR that proposes it.
+Human step [1](#what-only-a-human-can-do) decides the grant; this is the
+question that travels with it. Both prod facts here are a dated read of
+`strad/infra/strad.prod.yaml` in the private `tadasant/tadasant-internal`, like
+the counts above, and this repo cannot re-derive either.
 
 **Owner.** `strad` — this repo.
 
@@ -201,8 +227,8 @@ as still passing. The principal is proved to survive each door end to end rather
 than asserted: `test/connectors.mcp.test.ts` drives a narrow-role token through a
 real MCP client, `test/connectors.hot-reload.test.ts` drives a narrow-role console
 session through a real form post, and both fail if either door stops passing it.
-The open half is recorded as a test of what strad does today, so that closing it
-must update the record.
+The chosen behaviour of the open half is recorded as a test, so that re-taking
+the decision must update the record.
 
 ### Phase 3 — a mount reads its own credentials instead of receiving them
 
@@ -317,27 +343,43 @@ nine present before the flip, and `/healthz` is not degraded after it.
 
 ## What only a human can do
 
-The answer to "will I need to jump in?" is **yes, in five places**, and none of
-them is "review the code". Each is named with the reason, because the reason is
-what decides whether it can ever be automated away.
+The answer to "will I need to jump in?" is **yes, in five places** — one of them
+already answered — and none of them is "review the code". Each is named with the
+reason, because the reason is what decides whether it can ever be automated away.
+Item 2 stays listed after its answer because that answer carries a condition that
+brings the question back.
 
 1. **Decide what the `connectors` write tools may be granted to** (phase 2).
    This is a posture decision, not a defect: strad#349's three options —
    read-tools-only for the narrow role, keep the write tools admin-only, or bound
    creates in strad — are a trade between capability and blast radius, and an
-   agent picking one of them is an agent choosing its own privileges. On
-   2026-09-12 a separate change was granting the `zimmer` role reach to the
-   `connectors` slug, and whether a grant like that includes the write half is
-   exactly this decision.
+   agent picking one of them is an agent choosing its own privileges. The grant
+   that raised it landed on the read half: the `zimmer` role reaches the
+   `connectors` slug as a `connectors-ro` slug, the read tools alone
+   (tadasant-internal#2816). Whether a later grant includes the write half is
+   still exactly this decision, and item 2 comes with it.
 2. **Decide whether a runtime write may widen a mount's tool surface** — the
    half of [phase 2](#phase-2--bound-what-the-write-tools-are-worth-shipped-with-one-half-left-open)
-   that is still open. The bounds that shipped cost no workflow, so they needed
-   no decision and did not get one. This one does: forbidding a created slug from
-   serving more than its author already reaches on that mount closes a writer
-   widening its own read-only access to a container, and takes the wider half of
-   a `-ro` / `-rw` pair out of the runtime roster on any mount whose only
-   checked-in slug is the narrow one — three of production's 27 mounts. Capability
-   against blast radius, with no reading of the requirements that settles it.
+   that is left open. **Answered on 2026-09-13 by Tadas:** _"i want to keep the
+   workflow you mentioned for now"_. The bounds that shipped cost no workflow, so
+   they needed no decision and did not get one. This one did: forbidding a
+   created slug from serving more than its author already reaches on that mount
+   closes a writer widening its own read-only access to a container, and takes
+   the wider half of a `-ro` / `-rw` pair out of the runtime roster on any mount
+   whose only checked-in slug is the narrow one, which is three of production's
+   27 mounts. Adding the read-write half on those would then need a deploy. The
+   answer keeps that workflow, so the widening stays.
+
+   It comes back with item 1, and only with it. The residual is bounded by who
+   holds the write tools: `save_connector`, `set_connector_enabled`,
+   `restore_connector` and `remove_connector` are `admin`-only in production, and
+   the `zimmer` role holds the read half alone (tadasant-internal#2816). Granting
+   any of the four to a role narrower than `admin` is what makes the trade live
+   again — the widening itself runs through `save_connector`, the only one of the
+   four that composes an entry, and the trigger is drawn at the grant because
+   that is the unit the decision is taken in. The PR proposing such a grant is
+   where this gets re-taken rather than assumed settled.
+
 3. **Grant the IAM the host-side credential path needs** (phase 3). Reading a
    parameter from a container that holds no cloud credential means core serving
    it a value over the private network, and whatever principal ends up

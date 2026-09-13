@@ -818,8 +818,10 @@ function principalReachesSlug(
  * widest checked-in slug the writer reaches there, which is the `gmail-ro` /
  * `gmail-rw` create on a mount whose checked-in slug is the narrow one. That is a
  * trade between a workflow and a residual widening rather than a pure
- * tightening, so it is a posture decision and not one this module makes. See
- * phase 2 in `docs/operate/runtime-config-plan.md`.
+ * tightening, so it is a posture decision and not one this module makes. The
+ * operator took it on 2026-09-13 and kept the workflow, and it is re-taken if a
+ * `connectors` write tool is granted to a role other than `admin`. See phase 2
+ * in `docs/operate/runtime-config-plan.md`.
  *
  * What IS a pure tightening is the mount bound above: `admin` reaches every mount
  * a deployment declares (its role is `["*"]` and every slug's `entitlements:`

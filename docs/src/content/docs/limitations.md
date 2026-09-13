@@ -2988,9 +2988,13 @@ access to a container can hand itself that container's write tools. Closing it
 would narrow the role that reaches everything in the same motion — on any mount
 whose only checked-in slug is the narrow one, it could no longer create the wider
 half of a `-ro` / `-rw` pair without a deploy — so it is a workflow traded
-against a residual widening rather than a free tightening, and it is left to the
-operator as the open half of phase 2 in [the runtime-config
-plan](/operate/runtime-config-plan/).
+against a residual widening rather than a free tightening. The operator took it
+on 2026-09-13 and kept the workflow, so the widening stays and is chosen. It is
+re-taken if a `connectors` write tool is granted to a role other than `admin` —
+`save_connector` is the one of the four the widening runs through, and the
+trigger is the grant because that is the unit the decision is taken in. Phase 2
+in [the runtime-config plan](/operate/runtime-config-plan/) carries the decision
+and the condition.
 
 **And it bounds what a write reaches, not what a writer stops.** Disable, remove
 and restore compose no entry, so no bound here touches them: a writer holding the

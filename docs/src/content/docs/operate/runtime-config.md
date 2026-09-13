@@ -520,9 +520,11 @@ role given read-only access to a container can hand itself the write tools on it
 Closing that would also narrow the role that reaches everything, on any mount
 whose only checked-in slug is the narrow one: it could no longer create the wider
 half of a `-ro` / `-rw` pair without a deploy. That is a workflow traded against a
-residual widening rather than a free tightening, so it is an operator's decision —
-[the runtime-config plan](/operate/runtime-config-plan/) carries it as the open
-half of phase 2.
+residual widening rather than a free tightening, so it is an operator's decision.
+It was taken on 2026-09-13 in favour of keeping the workflow, and it comes back
+if a `connectors` write tool is ever granted to a role other than `admin`:
+[the runtime-config plan](/operate/runtime-config-plan/) carries both the
+decision and that condition as the open half of phase 2.
 
 And it does not bound **disable and remove**. Those two tools compose no entry,
 so they never reach `assertAcceptable` at all: a writer holding them can disable
