@@ -2397,7 +2397,9 @@ session away from it.** Two things do:
 
 1. **`SECRETS_REVEAL_ENABLED`** — absent means off, which is prod's default. A
    session cannot reveal what the deployment does not offer, and after the
-   [§1 downgrade](/operate/secrets-iam/) it cannot reveal at all.
+   [§1 downgrade](/operate/secrets-iam/) it cannot reveal anything except the
+   OAuth client secrets an `oauth:` connector has been
+   [granted per secret](/operate/secrets-iam/#an-oauth-connector-reads-its-own-oauth-client).
 2. **`SECRETS_NAMESPACES_STRICT=true`** on the server's `consoleEnv:` — restores
    `SECRETS_NAMESPACES` as a hard limit on the console rather than a set of
    suggestions. Set it where you want the deploy-time fence back.
