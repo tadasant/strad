@@ -87,11 +87,11 @@ import { mountPwa } from "./pwa.ts";
  *                                 secret-status reading; everything else under
  *                                 the prefix is src/ui/servers.ts.
  *   GET  /ui                    — 302 to /connectors. The roster and the secret
- *                                 status were a destination of their own; they
- *                                 are on the entries now.
- *   GET  /secrets               — 302 to /connectors, same reasoning, one move
- *                                 earlier: it was the secret roster's own page
- *                                 before the roster absorbed it.
+ *                                 status belong on the entries they describe
+ *                                 rather than on a destination of their own.
+ *   GET  /secrets               — 302 to /connectors, same reasoning applied one
+ *                                 move earlier: the secret roster is part of the
+ *                                 roster it describes.
  *   GET  /ui/:server            — the per-server page (connector, GCS browser,
  *                                 parameters manager, or the read-only overview
  *                                 every other kind gets — src/ui/server-overview.ts). The
@@ -275,13 +275,12 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     asyncRoute((req, res) => renderRoster(req, res), renderUnexpected),
   );
 
-  // The roster and the per-server secret status were their own destination here
-  // and are on `/connectors` now, on the entries they describe. The redirect
-  // stays because the URL was published — bookmarks, the PWA's old `start_url`,
-  // the docs — and a 404 for a page whose content simply moved teaches nobody
-  // anything. Exact-path, so `/ui/:server` and `/ui/oauth/callback` are
-  // untouched: the per-server pages did not move and the OAuth redirect URI is
-  // registered with Google.
+  // The roster and the per-server secret status live on `/connectors`, on the
+  // entries they describe. This redirect exists because the URL was published —
+  // bookmarks, an earlier PWA `start_url`, the docs — and a 404 for a page whose
+  // content simply moved teaches nobody anything. Exact-path, so `/ui/:server`
+  // and `/ui/oauth/callback` are untouched: the per-server pages are unmoved and
+  // the OAuth redirect URI is registered with Google.
   //
   // Behind the gate rather than in front of it so an anonymous request still
   // 401s: an open redirect to a gated page is not a leak, but a door that
@@ -342,10 +341,10 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
       renderRoster(res.req, res, flash, status),
   });
 
-  // The secret roster used to live here, as its own destination. It does not any
-  // more — it is on `/connectors`, on the entry it describes. Sent straight
-  // there rather than through `/ui`: a redirect to a redirect is a hop nobody
-  // needs. Same gate, same reasoning as above.
+  // The secret roster is on `/connectors`, on the entry it describes, and this
+  // URL was published too. Sent straight there rather than through `/ui`: a
+  // redirect to a redirect is a hop nobody needs. Same gate, same reasoning as
+  // above.
   app.get("/secrets", gate, (_req, res) => {
     res.redirect(302, CONNECTORS_PREFIX);
   });

@@ -64,7 +64,7 @@ import { errorSummary } from "../util/error-text.ts";
  * result, not an error. Only auth failures and an unhandled crash are non-200.
  *
  * **3. Derived from the SAME code as the console.** `readSecretStatus` is shared
- * with `/ui`. A JSON field and a badge computed by two paths would drift, and the
+ * with `/connectors`. A JSON field and a badge computed by two paths would drift, and the
  * entire value of this endpoint is that a platform app can trust it says what the
  * page says.
  *

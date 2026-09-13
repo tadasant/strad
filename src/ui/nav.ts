@@ -24,13 +24,13 @@ import { CONNECTORS_PREFIX } from "./paths.ts";
  *
  * ## Why there is one servers destination and not two
  *
- * There were two, and they were the same list of servers answering different
- * questions: `/ui` said what each server is scoped to and whether its secrets
- * resolve, `/connectors` added, edited and removed the entries. Nobody wants
- * either in isolation — you read the status in order to decide what to change —
- * so the status is on the entry now and `/ui` is a redirect. `/` keeps its place
- * as the front door and is a splash: the endpoint to paste into a client, and
- * the doors into the console.
+ * Two destinations would be the same list of servers answering different
+ * questions: one for what each server is scoped to and whether its secrets
+ * resolve, one for adding, editing and removing the entries. Nobody wants either
+ * in isolation — you read the status in order to decide what to change — so the
+ * status is on the entry, the editor is on the entry, and `/ui` is a redirect.
+ * `/` holds the one thing that is about no particular server: the endpoint to
+ * paste into a client, and the doors into the console.
  *
  * ## Why it is not conditional
  *

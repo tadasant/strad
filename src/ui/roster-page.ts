@@ -44,15 +44,15 @@ import {
  *
  * ## Why it is one page and not three
  *
- * It was three, and the first two were the same list of servers answering
- * different questions. `/` listed every slug as a directory tile. `/ui` listed
- * every slug again with its scope and its secret status. `/connectors` listed
- * every slug a third time with the editor controls. Nobody wants any of those in
- * isolation: you read a status in order to decide what to change, and you change
- * an entry whose status you are looking at. So the status is on the entry, the
- * editor is on the entry, and `/` is a splash carrying the one thing that is not
- * about a particular server — the endpoint to paste into a client. `/ui` and
- * `/secrets` are redirects here, because both URLs were published.
+ * Split three ways, the first two are the same list of servers answering
+ * different questions: one listing every slug as a directory tile, one listing
+ * every slug again with its scope and secret status, one listing every slug a
+ * third time with the editor controls. Nobody wants any of those in isolation —
+ * you read a status in order to decide what to change, and you change an entry
+ * whose status you are looking at. So the status is on the entry, the editor is
+ * on the entry, and `/` is a splash carrying the one thing that is about no
+ * particular server: the endpoint to paste into a client. `/ui` and `/secrets`
+ * redirect here, because both URLs were published.
  *
  * ## It answers on every deployment
  *
@@ -230,11 +230,10 @@ function groupOf(entry: Entry): GroupKey {
  * Needs attention before READY; within each group, entries with a dedicated view
  * first, and config order breaks the remaining ties.
  *
- * The order runs the other way from the one the roster shipped with. Sorting the
- * greens to the top was pleasant and backwards: this is a working surface, the
- * entries that need something done to them are the reason anyone opens it, and
- * on a 35-entry roster the ones that did not fit on the first screen were
- * precisely the ones worth reading.
+ * Sorting the greens to the top would be pleasant and backwards: this is a
+ * working surface, the entries that need something done to them are the reason
+ * anyone opens it, and on a 35-entry roster the ones that do not fit on the
+ * first screen would be precisely the ones worth reading.
  */
 export function sortEntries(entries: Entry[]): Entry[] {
   // Array.prototype.sort is stable, so config order survives inside a rank.
@@ -662,12 +661,12 @@ interface RowContext {
 /**
  * One entry, as a row.
  *
- * It was a card in a three-across grid, and a 35-entry roster of them was two
- * and a half screens of prose you had to read in a zig-zag. A row puts the one
- * thing that varies — the badge — in the same place on every line, and lets the
- * kind and the roles line up into columns you can scan down instead of hunting
- * across. The description and the status summary are clamped to one line each,
- * so a row's height does not depend on how talkative its `description:` is.
+ * A row rather than a card in a three-across grid: 35 cards are two and a half
+ * screens of prose you read in a zig-zag. A row puts the one thing that varies —
+ * the badge — in the same place on every line, and lets the kind and the roles
+ * line up into columns you can scan down instead of hunting across. The
+ * description and the status summary are clamped to one line each, so a row's
+ * height does not depend on how talkative its `description:` is.
  *
  * EVERY name is a link to `/ui/<slug>`, and it is the only link in the first
  * cell: the playground and copy icons are controls of their own in the last one,
@@ -1662,7 +1661,7 @@ const ROSTER_CSS = `<style>
 .conn-group-note{margin-left:.7rem;font-size:.74rem;color:var(--g4)}
 /* The icons, the CTA and the editor controls share the last cell. Quiet until
    hovered: on a 35-row roster two loud glyphs per line is a wall of teal. */
-/* One line, always. The controls wrapping onto three rows per entry cost more
+/* One line, always. Wrapping the controls onto three rows per entry costs more
    height than the whole rest of the row; below 46rem the media query turns the
    table into a stack and lets them wrap again. */
 .conn-acts{display:flex;align-items:center;gap:.35rem;justify-content:flex-end;

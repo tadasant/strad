@@ -395,7 +395,8 @@ function setSessionCookie(
 ): void {
   res.cookie(SESSION_COOKIE, sealer.seal(payload), {
     ...cookieFlags(env),
-    // Scoped to "/" because the gate covers the landing page as well as /ui.
+    // Scoped to "/" because the gate covers the splash at "/" as well as the
+    // console's own pages.
     // It therefore rides along to /mcp, which is inert: /mcp authenticates the
     // Authorization header against the static token store and never reads a
     // cookie (HACKS.md #2).
@@ -439,7 +440,7 @@ export function clearOauthTxCookie(
  * SameSite=Lax, not Strict: the browser arrives back from accounts.google.com as
  * a top-level GET navigation, and Strict would withhold the transaction cookie
  * on exactly that request, breaking every login. Lax sends it there and still
- * withholds it from cross-site POSTs, which is what protects the `/ui` writes.
+ * withholds it from cross-site POSTs, which is what protects the console writes.
  */
 function cookieFlags(env: NodeJS.ProcessEnv) {
   return {

@@ -134,13 +134,13 @@ export function mountPlayground(
   // A bare `/playground` is the picker: the servers this console session may
   // open, as links, and the ones it may not, with the reason.
   //
-  // A page rather than a redirect to `/ui`, because the shared nav bar
+  // A page rather than a redirect to `/connectors`, because the shared nav bar
   // (src/ui/nav.ts) names "playground" and a bar that lands the reader on
-  // "servers" teaches them the bar is lying. The obvious objection — that the
-  // console index is already a list of the same servers, and a second list is a
-  // second thing to keep true — is answered by where this one comes from: it is
-  // derived from `playgroundAccess`, the same function that decides whether the
-  // index draws its playground icon, so the two cannot disagree about which
+  // "connectors" teaches them the bar is lying. The obvious objection — that the
+  // roster is already a list of the same servers, and a second list is a second
+  // thing to keep true — is answered by where this one comes from: it is derived
+  // from `playgroundAccess`, the same function that decides whether the roster
+  // draws its playground icon, so the two cannot disagree about which
   // slugs open.
   //
   // Behind the gate, so an anonymous request still 401s rather than being told

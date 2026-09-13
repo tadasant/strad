@@ -67,10 +67,10 @@ export interface LayoutOptions {
    *
    * 60rem is the measure for PROSE, and every console page but one is mostly
    * prose. The connectors roster is a table of short facts per slug, and at
-   * 60rem its last column had to wrap its own controls onto three lines, which
-   * cost more vertical space than the extra width would ever have. All three
-   * bars move together, because widening only the content leaves the nav and
-   * the footer visibly out of register with it.
+   * 60rem its last column wraps its own controls onto three lines — which costs
+   * more vertical space than the extra width ever does. All three bars move
+   * together, because widening only the content leaves the nav and the footer
+   * visibly out of register with it.
    */
   wide?: boolean;
   /** The word beside the brand mark. Defaults to "console". */

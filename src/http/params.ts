@@ -414,7 +414,7 @@ export function createParamWriteHandler(
       await rotateFirstHeld(resolved.store, found.paths, parsed.value);
       // Both halves of what this process holds about the store, exactly as
       // a console write drops them: the runtime providers' reading, and the
-      // diagnosis pass `/ui` and `/api/secrets/readiness` reuse for up to a
+      // diagnosis pass `/connectors` and `/api/secrets/readiness` reuse for up to a
       // minute. Without the second, a connector that has just healed itself
       // through this route keeps reading as broken to whoever polls readiness.
       opts.secretProvider?.invalidate();

@@ -848,7 +848,7 @@ const SupplementaryImageServer = ServerBase.extend({
    *
    * `env:` above lands on the component that answers /mcp. Anything in it is a
    * credential the AGENT path holds. `consoleEnv:` lands on core, which serves
-   * the SSO-gated /ui and nothing an agent can reach.
+   * the SSO-gated human console and nothing an agent can reach.
    *
    * The `secrets` server is why this exists: its MCP container runs as a viewer
    * with `roles/secretmanager.viewer` (list/describe — no `versions.access`), so

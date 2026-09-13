@@ -15,12 +15,12 @@ client framework, no bundle. A Progressive Web App needs three things on top of
 that — a manifest, icons, a service worker — plus, in strad's case, one page of
 its own. All of it is static text Express hands out:
 
-| Path                               | What it is                                         |
-| ---------------------------------- | -------------------------------------------------- |
-| `/manifest.webmanifest`            | The app manifest: name, icons, colours, start URL. |
-| `/sw.js`                           | The service worker. Scope `/`.                     |
-| `/pwa/icon.svg`, `/pwa/icon-*.png` | The mark, at the sizes an installer asks for.      |
-| `/pwa/offline`                     | One static page, shown when the gateway is gone.   |
+| Path                               | What it is                                               |
+| ---------------------------------- | -------------------------------------------------------- |
+| `/manifest.webmanifest`            | The app manifest: name, icons, colours, start URL, `id`. |
+| `/sw.js`                           | The service worker. Scope `/`.                           |
+| `/pwa/icon.svg`, `/pwa/icon-*.png` | The mark, at the sizes an installer asks for.            |
+| `/pwa/offline`                     | One static page, shown when the gateway is gone.         |
 
 They are built by `src/ui/pwa.ts` and the icons are inlined in
 `src/ui/pwa-icons.ts` as base64 PNG. That is not squeamishness about binaries: the
@@ -34,6 +34,12 @@ container.
 server roster, every per-server view and the splash at `/` are all inside the
 installed window. Clicking the brand mark stays in the app instead of throwing you
 back into a browser tab.
+
+**`id` is pinned to `/ui`, and it is not a path anything fetches.** It is the
+string a browser keys the installed app on, so pinning it is what lets `start_url`
+move without an already-installed console re-installing itself as a second app
+beside the first. Leaving it to default would make it track `start_url`, which is
+the one thing it must not do. `test/pwa.test.ts` asserts both values together.
 
 **These docs are not.** This site is a separate Astro build on a different origin,
 deployed to Cloudflare Pages. A service worker cannot cross an origin, and there

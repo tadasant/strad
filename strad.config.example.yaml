@@ -404,7 +404,7 @@ servers:
   # picking a winner. See docs/operate/secrets.md.
   #
   # Two other ways a server gets its values, both shown further down:
-  #   - `consoleEnv:` — env that lands on the CORE gateway ONLY (the human /ui),
+  #   - `consoleEnv:` — env that lands on the CORE gateway ONLY (the human console),
   #     never on the bundle. The `secrets` server uses it to keep an admin key off
   #     the /mcp container. See the `secrets` entry.
   #   - `params: true` — resolve everything stored under

@@ -754,22 +754,21 @@ destination it belongs to. `/ui/slack` and `/ui/slack/connect` both light up
 `/connectors/new` light up `connectors` too. The bar's mark is a section, not a
 URL, and it is carried by `aria-current="page"` as well as by colour.
 
-**There were five, and two of them were the same list of servers.** `/` carried a
-directory tile per slug, `/ui` carried the same slugs again with their scope and
-secret status, and `/connectors` carried them a third time with the editor
-controls. Nobody wants any of those in isolation — you read a status in order to
-decide what to change — so the status is on the entry now, the editor is on the
-entry, and `/` keeps only the thing that is about no particular server. `/ui` and
-`/secrets` are both `302`s to `/connectors`; both URLs were published, and a `404`
-for a page whose content moved teaches nobody anything.
+Split five ways, three of those were the same list of servers: `/` as a directory
+tile per slug, `/ui` as the same slugs again with their scope and secret status,
+and `/connectors` as the same slugs a third time with the editor controls. Nobody
+wants any of those in isolation — you read a status in order to decide what to
+change — so the status is on the entry, the editor is on the entry, and `/` keeps
+only the thing that is about no particular server. `/ui` and `/secrets` are both
+`302`s to `/connectors`; both URLs were published, and a `404` for a page whose
+content moved teaches nobody anything.
 
 `/connectors` is served on **every** deployment, whether or not
-`gateway.configStore.enabled` is set — and it serves the same roster, the same
-badges and the same popouts either way. What the flag gates is the **editor**: the
-Edit / Disable / Remove controls on each row, the "add a connector" menu, and the
-"removed" section. Without a store the page says so in place of them, because a
-reader hunting for controls that were never going to be there is the failure this
-sentence prevents.
+`gateway.configStore.enabled` is set, and it renders the same roster and the same
+badges either way. What the flag gates is the **editor**: the Edit / Disable /
+Remove controls on each row, the "add a connector" menu, and the "removed"
+section. Without a store the page says so in place of them, so nobody goes
+hunting for controls that were never going to be there.
 
 The bar is omitted on exactly the pages reached **without** a console session: the
 `401` sign-in refusal, the precached offline page, and the `/mcp` OAuth consent

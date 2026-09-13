@@ -26,8 +26,8 @@ import { serveFake } from "./helpers/serve-fake.ts";
  * store does not hold, and it forgives the boot keys a correct deployment may
  * legitimately lack. That second half is right for a deploy and wrong for a
  * provider flip — `GOOGLE_CLIENT_ID` is optional at boot and load-bearing for
- * `/ui` the moment `auth.google.enabled` is true, so a namespace missing it
- * passes preflight and takes the console's front door down.
+ * the console the moment `auth.google.enabled` is true, so a namespace missing
+ * it passes preflight and takes the console's front door down.
  *
  * The first test in this file is that contrast, on one input.
  */
@@ -115,7 +115,7 @@ describe("the gap this closes", () => {
     expect(preflight.missing).toStrictEqual([]);
 
     // The pre-flip check: red, by name. With auth.google.enabled that absence is
-    // a front-door outage on /ui, not a dormant one.
+    // a front-door outage on the console, not a dormant one.
     const check = await checkStore(fake.store, config);
     expect(check.missing).toStrictEqual([
       "GOOGLE_CLIENT_ID",

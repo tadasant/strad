@@ -1434,7 +1434,9 @@ fails CI on the PR rather than the deploy after it.
 
 - **`/`** is the front door, and it is a **splash**: the gateway's name and
   environment, the `/mcp` endpoint and its `?servers=` form as copyable fields,
-  and one card per console destination. Core-only — a bundle component is
+  and a card per door — every nav destination except this page, plus `/console`
+  and `/healthz`, which the bar deliberately does not carry. Core-only — a bundle
+  component is
   internal and has no front door. It sits behind the **same SSO gate as
   `/connectors` and `/console`**, never a softer door: strad requires identity
   before exposing anything, and even the count of what the gateway fronts is

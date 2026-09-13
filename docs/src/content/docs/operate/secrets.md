@@ -1612,10 +1612,10 @@ what you do having read the second. So the answer is on the entry rather than on
 navigation away. `/ui` and `/secrets` are both 302s to `/connectors` — both URLs
 were published, and a page whose content moved teaches nobody anything by 404ing.
 
-**The roster does not depend on `gateway.configStore:`.** Every row, every badge
-and every popout is served on a deployment that keeps its roster in the
-checked-in document; what such a deployment loses is the editor controls, and the
-page says which of the two it is. See [the console
+**The roster does not depend on `gateway.configStore:`.** A deployment that keeps
+its roster in the checked-in document still gets every row and every badge, with
+the popout behind each; what it loses is the editor controls, and the page says
+which of the two it is. See [the console
 flow](/operate/runtime-config/#the-console-flow) for the editing half.
 
 The preflight above is honest but late. A `${NAME}` that is not seeded is
@@ -1656,10 +1656,9 @@ unusable gateway. The popout carries the distinction; the badge does not pretend
 ### Grouping and ordering
 
 Three headings, worst first: **needs attention**, then **ready**, then
-**disabled**, each with its count. This is a working surface rather than a
-scoreboard — the entries something has to be done about are why anyone opens it —
-and sorting the greens to the top is what put exactly the wrong rows below the
-fold on a 35-entry roster.
+**disabled**, each with its count. The entries something has to be done about are
+why anyone opens this page, and sorting the greens to the top is what puts exactly
+the wrong rows below the fold on a 35-entry roster.
 
 Within each group, servers with a dedicated console view come before servers that
 only have the overview, and config order breaks the remaining ties. A disabled
@@ -1719,7 +1718,7 @@ console. That is the honest state, and it is the one that tells you to repeat th
 key under `consoleEnv:`; hiding the entry instead only makes the page harder to
 find.
 
-The index link and the page are **one decision**: `serverLooksGcs` and
+The roster link and the page are **one decision**: `serverLooksGcs` and
 `serverLooksSecrets` in `src/ui/resolve.ts` are the same predicates
 `resolveServerView` branches on. A detector that could read the config more
 narrowly than its resolver is how you get a working page nothing links to, so
@@ -2522,10 +2521,10 @@ breadcrumb: the slug, linking to `/ui/<slug>`, and each of that page's stores by
 project and namespaces. Where a sibling fronts several stores
 ([`consoleStores:`](#one-console-page-many-stores)), each project links straight
 to its own store with `?project=`. A disabled sibling is marked, as it is on the
-index. On a gateway with one secrets page there is no strip.
+roster. On a gateway with one secrets page there is no strip.
 
-The list is the index's list. It asks `serverLooksSecrets`, the same predicate
-behind the index's `Manage →` links, so the two cannot disagree about which pages
+The list is the roster's list. It asks `serverLooksSecrets`, the same predicate
+behind the roster's `Manage →` links, so the two cannot disagree about which pages
 exist. It describes each sibling the way that page resolves itself. The one slug
 it leaves out is one that also declares [`oauth:`](/operate/connectors/): the
 console answers a connector before it looks at env, so that slug's `/ui/<slug>` is

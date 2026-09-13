@@ -13,11 +13,11 @@ import { NAV_DESTINATIONS } from "./nav.ts";
  *
  * ## Why there is no directory of servers on it
  *
- * There was, and it was the third rendering of the same list. `/connectors` now
- * carries every entry with its scope, its secret status and its controls
- * (src/ui/roster-page.ts), so a tile per slug here was a second, weaker answer
- * to a question one page already answers well — and it was the thing that made
- * the front page three screens long. What is left is what is NOT about any
+ * A tile per slug here would be a third rendering of the same list.
+ * `/connectors` carries every entry with its scope, its secret status and its
+ * controls (src/ui/roster-page.ts), so a directory here is a second, weaker
+ * answer to a question one page already answers well — and it is what would make
+ * the front page three screens long. What belongs here is what is NOT about any
  * particular server: the endpoint, and where to go next.
  *
  * IT IS GATED, like every other human surface. strad's model is that Google
@@ -29,12 +29,12 @@ import { NAV_DESTINATIONS } from "./nav.ts";
  * needed here. This page only ever asks whether the gate resolved a Principal.
  *
  * That gate is the security boundary, so what this page carries is a UX decision
- * rather than a disclosure one. It is still kept narrow, and narrower than it
- * was: no SLUG, and therefore no `url`, `headers:`, `env:`, `image`, `bundle`,
- * `path`, `module`, `tools:` policy, `entitlements`, title or description
- * either. test/landing.test.ts asserts each absence — defence in depth behind
- * the gate, and the thing that would have to be revisited before this could ever
- * be opened up.
+ * rather than a disclosure one. It is kept narrow regardless: no SLUG, and
+ * therefore no `url`, `headers:`, `env:`, `image`, `bundle`, `path`, `module`,
+ * `tools:` policy, `entitlements`, title or description either.
+ * test/landing.test.ts asserts each absence — defence in depth behind the gate,
+ * and the thing that would have to be revisited before this could ever be opened
+ * up.
  *
  * The one number it prints is how many servers are ENABLED. Disabled ones are
  * not counted: `Registry.build` does not mount them, so they are absent from
@@ -134,10 +134,8 @@ function copyRow(url: string, note: string): string {
  * the page is for, so they are written separately; `test/landing.test.ts` is
  * what keeps a destination added to the bar from going missing here.
  *
- * One SENTENCE each, not a paragraph. The long-form descriptions were written
- * when this page was the only index of anything; the page they describe now says
- * all of it in its own words, one click away, and a splash whose tiles need
- * scrolling is not a splash.
+ * One SENTENCE each, not a paragraph. Each page says all of it in its own words,
+ * one click away, and a splash whose tiles need scrolling is not a splash.
  */
 const DOOR_BLURB: Record<string, string> = {
   "/connectors":

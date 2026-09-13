@@ -25,7 +25,7 @@ import {
  * carries, on every door strad has.
  *
  * The doors are the public `/mcp` and the readiness route (a static token), the
- * console's `/ui` gate and `/console` (the bootstrap token, from a header), and
+ * console gate and `/console` (the bootstrap token, from a header), and
  * the internal token: a bundle's `/mcp` and `/_strad/presence` in the strad
  * image, and core's `/_strad/params` and `/_strad/store/refresh`. The host
  * image's mounts and presence route run the same vendored parse, and assert it

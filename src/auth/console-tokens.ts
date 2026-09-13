@@ -6,7 +6,7 @@ import type { Principal } from "./index.ts";
 /**
  * The console login token: short-lived, single-use, revocable.
  *
- * What it is for. An automated actor — a CI job, an agent driving `/ui` with
+ * What it is for. An automated actor — a CI job, an agent driving the console with
  * Playwright — needs a console session, and the only non-interactive credential
  * that opens one is a STANDING one (`ADMIN_BOOTSTRAP_TOKEN`, or a human's Google
  * session). Handing the standing credential to the actor puts it in a job log, a

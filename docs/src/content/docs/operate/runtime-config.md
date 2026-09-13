@@ -561,7 +561,9 @@ whole view.
    its `READY` / `ISSUE` [secret badge](/operate/secrets/) with the popout behind
    it, and a playground and copy-URL icon where each is offered. Edit,
    Enable/Disable and Remove join them **only** where the store exists and can be
-   written.
+   written. Above the table, beside the ready/issue counts, sits the roster's
+   provenance: `runtime roster · revision N` with who last changed it and when,
+   or `roster from the checked-in config` where there is no store.
 2. **Removed** lists the slugs the checked-in config declares and the overlay
    subtracts, each with a Restore. A standing instruction to subtract something
    has to be visible to whoever reasons about the file.

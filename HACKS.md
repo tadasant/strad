@@ -3619,8 +3619,8 @@ removes the thing that used to guarantee somebody dealt with it — a red deploy
 hard to ignore, and a warning in a run log is not.
 
 The state is visible in four places: `/healthz` (`servers[].state` and a top-level
-`unconfigured` list), the console index (chip `awaiting credential`, counted as
-actionable), `/api/secrets/readiness`, and one `strad.tool_surface_unconfigured`
+`unconfigured` list), the connectors roster (chip `awaiting credential`, counted
+as actionable), `/api/secrets/readiness`, and one `strad.tool_surface_unconfigured`
 log line per boot and per state change. What none of them do is ESCALATE. A slug
 waiting a week looks exactly like a slug waiting ten minutes, and no alert fires
 either way — deliberately, because the same event at ERROR severity would page a
@@ -3965,7 +3965,7 @@ role next to the other principals on that page.
 
 ---
 
-## 77. The console index still describes a multi-store slug by its FIRST store
+## 77. The console roster still describes a multi-store slug by its FIRST store
 
 **✅ RESOLVED.** The roster asks which store's namespaces COVER a path instead of
 reading a project off the config: `storeProjectForPath()` in
