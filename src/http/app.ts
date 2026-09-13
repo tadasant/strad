@@ -16,6 +16,7 @@ import {
   OAUTH_TX_COOKIE,
   sanitizeNext,
   sessionKeyProblem,
+  sessionWindows,
   stateMatches,
   unsealCookie,
   type ConsoleSessions,
@@ -754,7 +755,13 @@ function mountConsole(
           String(req.query.code ?? ""),
           tx.verifier,
         );
-        issueSessionCookie(res, sessions.session, identity, env);
+        issueSessionCookie(
+          res,
+          sessions.session,
+          identity,
+          sessionWindows(cfg),
+          env,
+        );
         // Back to the page they asked for, as a human expects — not JSON.
         res.redirect(302, sanitizeNext(tx.next));
       } catch (err) {

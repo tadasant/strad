@@ -108,6 +108,19 @@ auth:
     enabled: true
     hostedDomain: tadasant.com
     roles: [admin]
+    # How long a sign-in keeps the console open. A session cookie lives
+    # `slidingTtlSeconds`, and the console re-issues it once more than half of
+    # that has run, so an active human is not signed out. `absoluteTtlSeconds`
+    # is the cap, counted from the Google sign-in, which renewal never moves: a
+    # stolen cookie that keeps being used still dies there. Both are read on
+    # every request, so changing one applies to sessions already issued —
+    # raising the cap extends every live session, a stolen one included.
+    # 60 seconds to 30 days each; equal values mean a fixed session. Rotating
+    # CONSOLE_SESSION_SECRET is the only way to end sessions early, and it ends
+    # all of them.
+    session:
+      slidingTtlSeconds: 172800 # default, 48 hours
+      absoluteTtlSeconds: 604800 # default, 7 days
 
   # Machines. `strad_<env>_<pubid>_<secret>`; only the SHA-256 is stored.
   # Mint with: npm run token:mint -- --label "my agent" --roles admin

@@ -407,6 +407,31 @@ Same scope as #2: it is console-class only and cannot reach `/mcp`.
 
 **Undo:** it goes away with the dev bypass itself.
 
+### 97. A console session cannot be revoked one at a time
+
+A Google console session is a signed cookie with no server-side record. It
+renews while it is used and dies at an absolute cap counted from the sign-in —
+48 hours sliding and 7 days absolute by default, set under
+[`auth.google.session`](/servers/interface/#authgooglesession). Until then
+nothing ends one session early. The only lever is rotating
+`CONSOLE_SESSION_SECRET`, which signs **everyone** out.
+
+Renewal is what makes this worth stating. A stolen cookie the thief keeps using
+renews itself exactly as the owner's does, so it lives until the cap: up to 7 days
+after the owner signed in, where a fixed 12-hour session would have given it 12
+hours. The same
+holds for a person removed from the Workspace: strad does not ask Google again
+after sign-in, so a session they already hold runs its clocks out. Lower
+`absoluteTtlSeconds` if that is too long for your deployment. The schema will not
+let it go past 30 days.
+
+**How you would know.** You would not, from strad: there is no list of live
+sessions to look at. That absence is the limitation.
+
+**Undo:** a durable session store, shared with #43's login tokens, that renewal
+checks and the console can strike a session from. See `HACKS.md` #97 and
+[Auth](/auth/overview/#the-console-session).
+
 ### 6. Token records live in an env var, not a database
 
 **Resolved** for a store-backed deployment, with two narrower residuals.

@@ -1106,6 +1106,32 @@ const BundleConfig = z.object({
 // ---------------------------------------------------------------------------
 
 /**
+ * The console session's two clocks, when `auth.google.session` does not set
+ * them.
+ *
+ * 48 hours sliding, because renewal happens past the HALF-way mark: a cookie is
+ * re-issued by any request in the second 24 hours of its window, so a human who
+ * comes back every working day stays signed in, and a weekend away does not. 24 hours would not do it — a session renewed at 9am would go
+ * unrenewed through a 9-to-6 day and be dead the next morning, which is the
+ * daily bounce #46 exists to end.
+ *
+ * 7 days absolute, because it is the ceiling on the case renewal makes worse: a
+ * stolen cookie the thief keeps using. Stateless sessions cannot be revoked one
+ * at a time, so this number is how long that thief keeps the console unless
+ * somebody rotates the signing key, which signs everyone out. A week means one
+ * Google redirect a week for an active human — a redirect against a live Google
+ * session, not a password.
+ */
+export const CONSOLE_SESSION_DEFAULTS = {
+  slidingTtlSeconds: 48 * 60 * 60,
+  absoluteTtlSeconds: 7 * 24 * 60 * 60,
+} as const;
+/** A minute: shorter is a unit mistake — a few hours written as seconds. */
+const MIN_CONSOLE_SESSION_SECONDS = 60;
+/** 30 days. Neither clock may be set past it. */
+const MAX_CONSOLE_SESSION_SECONDS = 30 * 24 * 60 * 60;
+
+/**
  * strad is on the open internet. There is no network perimeter — no tailnet,
  * no VPN, no IP allowlist. Auth is the ONLY gate. Two doors:
  *
@@ -1129,6 +1155,49 @@ const AuthConfig = z.object({
       hostedDomain: z.string().min(1),
       /** Roles granted to any verified member of `hostedDomain`. */
       roles: z.array(Role).default([]),
+      /**
+       * How long a Google sign-in keeps the console open. Two clocks, both read
+       * from THIS config on every request rather than from the cookie, so
+       * tightening either one takes effect for sessions already issued
+       * (src/auth/session.ts):
+       *
+       *   slidingTtlSeconds  — each session cookie's own lifetime. Once more than
+       *                        half of it has run, the next request through the
+       *                        console gate re-issues the cookie with a fresh
+       *                        one. An active human is not signed out; a cookie
+       *                        nobody uses dies this long after its last renewal.
+       *   absoluteTtlSeconds — the cap, counted from the Google sign-in itself,
+       *                        which renewal never moves. Past it the session is
+       *                        refused however recently it was renewed, so a
+       *                        stolen cookie that keeps being used still dies.
+       *
+       * Both bounded to 30 days, because a cap that config can raise without
+       * limit is not a cap. Equal values give a fixed session with no sliding.
+       */
+      session: z
+        .object({
+          slidingTtlSeconds: z
+            .number()
+            .int()
+            .min(MIN_CONSOLE_SESSION_SECONDS)
+            .max(MAX_CONSOLE_SESSION_SECONDS)
+            .default(CONSOLE_SESSION_DEFAULTS.slidingTtlSeconds),
+          absoluteTtlSeconds: z
+            .number()
+            .int()
+            .min(MIN_CONSOLE_SESSION_SECONDS)
+            .max(MAX_CONSOLE_SESSION_SECONDS)
+            .default(CONSOLE_SESSION_DEFAULTS.absoluteTtlSeconds),
+        })
+        .refine((s) => s.absoluteTtlSeconds >= s.slidingTtlSeconds, {
+          message:
+            "absoluteTtlSeconds must be at least slidingTtlSeconds (the cap " +
+            `defaults to ${CONSOLE_SESSION_DEFAULTS.absoluteTtlSeconds}, 7 days, ` +
+            "when unset): the cap is what bounds a renewing session, and a cap " +
+            "shorter than one cookie is a sliding window nobody can use",
+          path: ["absoluteTtlSeconds"],
+        })
+        .default(CONSOLE_SESSION_DEFAULTS),
     })
     .optional(),
 
