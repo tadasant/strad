@@ -241,12 +241,12 @@ The boundary is enforced in `src/config/overlay.ts`, on the write path, before
 the merge is validated — so the message names the thing you can change rather
 than the schema error it would eventually cause.
 
-| Kind                  | Creatable at runtime, from either door                                                 |
-| --------------------- | -------------------------------------------------------------------------------------- |
-| `remote-http`         | Yes, fully.                                                                            |
-| `local-tunnel`        | Yes, fully.                                                                            |
-| `supplementary-image` | Only against a mount this deployment already runs, and only with no deploy-only field. |
-| `builtin`             | Never.                                                                                 |
+| Kind                  | Creatable at runtime, from either door                                                                                     |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `remote-http`         | Yes, fully.                                                                                                                |
+| `local-tunnel`        | Yes, fully.                                                                                                                |
+| `supplementary-image` | Against a mount this deployment already runs with no deploy-only field, or as a store-served instance with `params: true`. |
+| `builtin`             | Never.                                                                                                                     |
 
 `remote-http` and `local-tunnel` are unhosted: `renderAppSpec` skips them
 entirely, so they occupy no container, no component and no deploy-time
@@ -271,6 +271,24 @@ HTTP call to a container that is already running. Three conditions:
 Those seven are baked onto the container at render time and fixed at process
 spawn. A value added here would be a variable nothing on that container ever
 reads, so the save is refused rather than accepted and quietly ignored.
+
+**The one supplementary shape that brings its own credential is a store-served
+instance**: `path: /_instance/{tree}/{its own slug}` for `telegram`,
+`google-sheets` or `grafana`, with `params: true`. Nothing about it is baked, so
+nothing needs a deploy — the bundle host learns about it from core and reads its
+credentials out of its own namespace (see [Store-served
+instances](/operate/secrets/#store-served-instances--a-mount-credentialed-from-its-own-namespace)).
+On one, `params: true` is accepted and the other six are still refused, each for
+its own reason: `env:` and `consoleEnv:` would be baked where no instance reads
+them, `paramsRefresh:` repeats what every sync does, no instance tree writes a
+credential back, and the store declarations belong to the secrets server.
+
+So "add a second account and use it" works for those three trees: seed the
+credential under the new slug's namespace in `/ui/secrets` (or complete its
+connector's consent), save the entry, and the next request for it is served. For
+a tree that reads `process.env` once at start-up — gmail, calendar, docs and most
+third-party images — it still does not, and no runtime config changes that: a
+second credential there needs a second process.
 
 ### What an edit may not move
 
@@ -474,6 +492,15 @@ tool surface under the credential the deploy baked onto the container.
   on a create, which is where a mount is chosen; an edit cannot move a mount,
   because `immutableFields` freezes `bundle:` and `path:` on every supplementary
   edit.
+
+  A **store-served instance on its own path** is the exception, because it
+  reaches no mount a deploy credentialed: `/_instance/` is a prefix no
+  conventional mount has, and the instance holds its own namespace and nothing
+  from the container. It is asked something weaker instead — that the author
+  reaches **some** checked-in slug on that component — because an instance still
+  runs a server inside a container, and a writer the deploy gave no part of that
+  container has no business placing one there.
+
 - **A credential's destination on a checked-in slug** may only be moved by an
   author that slug's `entitlements:` admit. These fields cannot simply be frozen
   — re-pointing a quick tunnel without a deploy is a reason the roster is

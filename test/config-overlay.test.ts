@@ -427,6 +427,44 @@ describe("assertCreatable", () => {
       ),
     ).toThrow(/not reachable/);
   });
+
+  // strad#343. A store-served instance brings its own credential without a
+  // deploy, so the one deploy-only field it honours is accepted on it — and only
+  // on it. See test/instances.test.ts for the end-to-end half.
+  const instance = {
+    slug: "gamma-home",
+    kind: "supplementary-image",
+    image: "ghcr.io/example/bundle:latest",
+    bundle: "bundle",
+    path: "/_instance/telegram/gamma-home",
+  };
+
+  it("allows params: true on a store-served instance, which it honours at request time", () => {
+    expect(() =>
+      assertCreatable({ ...instance, params: true }, ctx),
+    ).not.toThrow();
+  });
+
+  it("refuses params: true on an ordinary path, where only a deploy delivers it", () => {
+    expect(() =>
+      assertCreatable({ ...instance, path: "/gamma", params: true }, ctx),
+    ).toThrow(/params/);
+  });
+
+  it("still refuses the other six on an instance, naming each", () => {
+    for (const [field, value] of [
+      ["env", { A: "${B}" }],
+      ["paramsWritable", ["A"]],
+      ["paramsRefresh", ["A"]],
+      ["consoleEnv", { A: "${B}" }],
+      ["consoleStores", [{ project: "p" }]],
+      ["mcpStores", [{ project: "p" }]],
+    ] as const) {
+      expect(() =>
+        assertCreatable({ ...instance, params: true, [field]: value }, ctx),
+      ).toThrow(new RegExp(`store-served instance.*${field}`));
+    }
+  });
 });
 
 describe("assertEditable", () => {

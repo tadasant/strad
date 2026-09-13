@@ -1126,6 +1126,7 @@ const UNOBSERVABLE_ROUTE: Record<UnobservableScope["reason"], string> = {
   unreachable: "not visible here",
   unmanifested: "not visible here",
   silent: "not visible here",
+  instance: "read from the store when the bundle asks",
   // NOT "not visible here". This process holds these values; what it does not
   // do is read them on this page.
   "in-process": "resolved in this process",
@@ -1140,6 +1141,7 @@ const UNOBSERVABLE_LABEL: Record<UnobservableScope["reason"], string> = {
   unreachable: "component did not answer",
   unmanifested: "component manifested no parameters",
   silent: "component listed none for this slug",
+  instance: "store-served instance — nothing on the container",
   "in-process": "resolved per tool call, within the TTL",
   delegated: "resolved by that component, per tool call",
   inert: "no resolver credential on this deployment",
@@ -1164,6 +1166,8 @@ const UNOBSERVABLE_EVIDENCE: Record<UnobservableScope["reason"], string> = {
   unreachable: CONTAINER_EVIDENCE,
   unmanifested: CONTAINER_EVIDENCE,
   silent: CONTAINER_EVIDENCE,
+  instance:
+    "Established by: nothing on this page. A store-served instance holds no value on its container to ask about: the bundle reads this namespace through core and builds the instance from it, and the console does not read that namespace.",
   "in-process":
     "Established by: nothing on this page. This process does resolve these values — per tool call, out of the snapshot it holds of the store — but the console does not read that namespace, so nothing here observed one.",
   // NOT the container line: that component does not HOLD these either, it

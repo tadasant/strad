@@ -53,18 +53,20 @@ network and is never reachable from the internet. The core reaches a bundle at
 `${bundle.PRIVATE_URL}`, which resolves to `http://bundle-name:8080` — a private,
 in-VPC hop (~4ms) with no public-edge hairpin.
 
-Traffic runs core → bundle with one exception, and two things use it. A server
+Traffic runs core → bundle with one exception, and three things use it. A server
 that declares
 [`paramsWritable:`](/operate/secrets/#paramswritable--a-credential-that-rotates-on-use)
 calls **back** to core to persist a credential that rotated under it; one that
 declares
 [`paramsRefresh:`](/operate/secrets/#paramsrefresh--a-rotation-that-lands-without-a-deploy)
 calls back on an interval to re-read a credential somebody rotated in the store.
-Both go over the same private network, authenticated with the component's own
-`STRAD_INTERNAL_TOKEN`, because core is the component that holds the store-admin
-credential and the bundle deliberately holds none. Core reads the caller's
-component off that token and answers only for servers on it. Every non-core
-component gets `STRAD_CORE_URL` for it.
+And the bundle host asks it which
+[store-served instances](/operate/secrets/#store-served-instances--a-mount-credentialed-from-its-own-namespace)
+to run, and what each one holds. All three go over the same private network,
+authenticated with the component's own `STRAD_INTERNAL_TOKEN`, because core is
+the component that holds the store-admin credential and the bundle deliberately
+holds none. Core reads the caller's component off that token and answers only
+for servers on it. Every non-core component gets `STRAD_CORE_URL` for it.
 
 A bundle runs **one image**, and any number of servers may share it, each on its
 own `path`. strad's own deployment has one main bundle: a
@@ -87,6 +89,15 @@ bucket, and google-sheets wants the OAuth client id and secret — never the
 refresh token, which a human mints later on the mount's own console page. That is what makes six
 `google-sheets-*` slugs over three Google accounts one server rather than three —
 see [Google Sheets](/servers/google-sheets/).
+
+A **store-served instance** is the same per-slug mount with nothing on the
+container. A server on `path: /_instance/{tree}/{slug}` is listed to its bundle
+by core (`GET /_strad/instances`), and the host builds a telegram, google-sheets
+or grafana instance from that slug's own namespace, which it reads through core
+(`GET /_strad/instances/{slug}`) rather than from its environment. It re-syncs on
+`STRAD_INSTANCE_SYNC_SECONDS` (default 60, floor 15) and on the first request for
+an instance it does not hold yet, so a slug a runtime write creates is served on
+that request, with no deploy.
 
 It has a **second** bundle, `bundle-zimmer-secrets`, and the reason is worth
 stating because it is the one thing a bundle cannot share: `process.env`. That

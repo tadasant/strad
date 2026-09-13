@@ -172,3 +172,47 @@ export function missingCredentialsDegraded(
   if (missing.length === 0) return null;
   return `${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not set; every tool will fail`;
 }
+
+/**
+ * The process variables a STORE-SERVED instance inherits, and nothing else.
+ *
+ * Every other per-slug mount starts from `slugEnvView`, which is the whole
+ * container environment with the slug's own names laid over it. That fallback
+ * is exactly wrong here: an instance exists to hold ONE account, served out of
+ * its own namespace, and a bare `TELEGRAM_STRING_SESSION` baked for the
+ * conventional mount would otherwise complete an instance whose namespace is
+ * half-seeded — a slug quietly running on a sibling's login.
+ *
+ * So an instance gets what a process needs to run at all — the grafana tree
+ * spawns a Go binary, which needs a `PATH`, a `HOME` and its CA settings — plus
+ * what core served. The list is deliberately the one the grafana tree already
+ * passes its child (servers/grafana/shared/src/config.ts), and none of it is a
+ * credential.
+ */
+export const INSTANCE_PROCESS_ENV_NAMES = [
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+] as const;
+
+export function instanceEnv(
+  served: Readonly<Record<string, string>>,
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = {};
+  for (const name of INSTANCE_PROCESS_ENV_NAMES) {
+    if (env[name]) out[name] = env[name];
+  }
+  // Served values last, but a served name never REPLACES a process one: a
+  // parameter called `PATH` in a slug's namespace is not a credential, and
+  // letting it steer which binary the grafana tree spawns would make seeding
+  // a namespace a way to run code.
+  for (const [name, value] of Object.entries(served)) {
+    if ((INSTANCE_PROCESS_ENV_NAMES as readonly string[]).includes(name)) continue;
+    out[name] = value;
+  }
+  return out;
+}

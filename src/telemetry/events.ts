@@ -347,6 +347,21 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      */
     "strad.param_refused": [],
     /**
+     * A bundle read a store-served INSTANCE's credentials through core
+     * (src/http/instances.ts) — the record a runtime-created mount would
+     * otherwise not leave, since nothing about it is in a rendered spec.
+     *
+     * `slug` and `tree` come from the CONFIG (the entry's own slug and the tree
+     * its path names), never from the URL; `variables` is how many usable
+     * values the namespace held. Never a name and never a value.
+     *
+     * `strad.instance_refused` carries nothing, for the reason
+     * `strad.param_refused` does: the only slug in scope is the caller's bytes.
+     */
+    "strad.instance_read": ["slug", "tree", "variables"],
+    "strad.instance_read_failed": ["slug"],
+    "strad.instance_refused": [],
+    /**
      * The console connector flow: a human consenting, in strad's own UI, to
      * hand one server slug a credential for their Google account.
      *

@@ -113,6 +113,7 @@ import {
   legacyInstanceSizes,
 } from "../src/deploy/instance-size.ts";
 import { unusedWaivers, waivedNames } from "../src/deploy/unseeded.ts";
+import { isInstancePath } from "../src/secrets/param-route.ts";
 
 const { values } = parseArgs({
   options: {
@@ -959,6 +960,10 @@ const resolver = store;
 for (const server of config.servers) {
   if (server.kind !== "supplementary-image" || !server.enabled) continue;
   if (!server.params) continue;
+  // A store-served instance's namespace is read by core when the bundle asks,
+  // and `renderAppSpec` bakes nothing for one — resolving it here would be a
+  // store read per deploy for values that go nowhere.
+  if (isInstancePath(server.path)) continue;
   if (!resolver) {
     console.error(
       `[render-spec] server "${server.slug}" has params: true but no resolver ` +

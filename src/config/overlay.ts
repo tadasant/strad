@@ -2,6 +2,12 @@ import { z } from "zod";
 import { parseYamlDocument } from "./load.ts";
 import { StradConfig, type ServerConfig } from "./schema.ts";
 import { unknownKeysIn, formatUnknownKey, type UnknownKey } from "./strict.ts";
+import {
+  INSTANCE_PATH_PREFIX,
+  INSTANCE_TREES,
+  isInstancePath,
+  parseInstancePath,
+} from "../secrets/param-route.ts";
 
 /**
  * The mutable layer over the checked-in config.
@@ -443,6 +449,20 @@ export const DEPLOY_ONLY_FIELDS = [
   "mcpStores",
 ] as const;
 
+/**
+ * The deploy-only fields a runtime write MAY declare on a store-served instance
+ * — `path: /_instance/{tree}/{its own slug}` — because the instance honours them
+ * without a deploy.
+ *
+ * Only `params`. On an instance it means what it means everywhere — "this
+ * server's environment is its own namespace" — delivered when the bundle host
+ * asks core rather than baked at render. The other six still describe delivery
+ * through the render (`env:`, `consoleEnv:`), a write-back no instance tree
+ * performs (`paramsWritable:`), a poll every sync already subsumes
+ * (`paramsRefresh:`), or the secrets server's own stores.
+ */
+export const HONOURED_ON_AN_INSTANCE = ["params"] as const;
+
 export class NotRuntimeCreatable extends Error {}
 
 /**
@@ -480,7 +500,20 @@ export function assertCreatable(
 
   if (kind !== "supplementary-image") return;
 
+  // A STORE-SERVED INSTANCE is the one supplementary shape that brings its own
+  // credential without a deploy: its path names a tree and its own slug, and
+  // the bundle host reads that slug's namespace through core when it asks. So
+  // `params: true` — "my environment is my namespace" — is honoured on one, and
+  // is exactly what the schema requires of one. Every other deploy-only field
+  // still describes delivery through the render, which an instance never gets.
+  const instance = isInstancePath(String(entry.path ?? "/mcp"));
   const declared = DEPLOY_ONLY_FIELDS.filter((field) => {
+    if (
+      instance &&
+      (HONOURED_ON_AN_INSTANCE as readonly string[]).includes(field)
+    ) {
+      return false;
+    }
     const value = entry[field];
     if (value === undefined || value === null) return false;
     if (Array.isArray(value)) return value.length > 0;
@@ -489,11 +522,20 @@ export function assertCreatable(
   });
   if (declared.length > 0) {
     throw new NotRuntimeCreatable(
-      `A supplementary server added at runtime may not declare ` +
-        `${declared.join(", ")}: those reach the container as env vars baked ` +
-        `by the deploy, and a running container cannot be given a new one. ` +
-        `Point this entry at a mount that is already deployed, or add it to ` +
-        `the checked-in config and deploy.`,
+      instance
+        ? `A store-served instance added at runtime may not declare ` +
+            `${declared.join(", ")}: an instance is credentialed from its own ` +
+            `namespace when the bundle asks, and nothing about it is rendered onto ` +
+            `the container — so these would be baked where no instance reads ` +
+            `them, or (paramsRefresh) repeat what every sync already does. Seed ` +
+            `the values under this slug's own namespace and keep params: true.`
+        : `A supplementary server added at runtime may not declare ` +
+            `${declared.join(", ")}: those reach the container as env vars baked ` +
+            `by the deploy, and a running container cannot be given a new one. ` +
+            `Point this entry at a mount that is already deployed; or, for ` +
+            `${INSTANCE_TREES.join(", ")}, give it credentials of its own with ` +
+            `path: ${INSTANCE_PATH_PREFIX}/{tree}/{its own slug} and params: true; ` +
+            `or add it to the checked-in config and deploy.`,
     );
   }
 
@@ -882,6 +924,38 @@ export function assertWithinReach(
 
   const bundle = String(entry.bundle ?? "");
   const path = String(entry.path ?? "/mcp");
+
+  // A STORE-SERVED INSTANCE ON ITS OWN PATH reaches no mount the deploy
+  // credentialed. `/_instance/{tree}/{slug}` is a prefix no conventional mount
+  // can have, the instance holds its own namespace and nothing from the
+  // container's environment (servers/bundle/host/src/mounts.ts,
+  // `instanceEnv`), and the schema refuses an instance path naming another
+  // slug. So there is no baked credential for bound A to protect — and, for the
+  // same reason, no checked-in slug on that path for it to measure against.
+  //
+  // What it still asks is that the author reach the COMPONENT: an instance runs
+  // tree code inside a container, and a writer the deploy gave no slug on that
+  // container has no business placing one there. That is a weaker question than
+  // bound A's and it is the right one — the mount is new, the container is not.
+  if (parseInstancePath(path)?.slug === slug) {
+    const reachesComponent = baseConfig.servers.some(
+      (s) =>
+        s.kind === "supplementary-image" &&
+        s.bundle === bundle &&
+        principalReachesSlug(baseConfig, principal.roles, s),
+    );
+    if (!reachesComponent) {
+      throw new ReachExceeded(
+        `${slug} cannot be created as a store-served instance on ${bundle}: no ` +
+          `slug the checked-in config authorised for you is served by that ` +
+          `component, so this would run a server inside a container the deploy ` +
+          `gave you no part of. Create it on a component you already reach, or ` +
+          `add the entry to the checked-in config and deploy.`,
+      );
+    }
+    return;
+  }
+
   const mounts = baseConfig.servers.filter(
     (s) =>
       s.kind === "supplementary-image" &&

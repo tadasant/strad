@@ -344,6 +344,13 @@ learn:
   refreshable names a property of the **rendered spec** rather than of whatever
   happens to be in the store: adding a name is still a deploy, and only the value
   behind an already-listed name may change under a running process.
+- **A store-served instance puts nothing on its component.** A server on
+  `path: /_instance/{tree}/{slug}` contributes no variable, no per-slug alias and
+  no `STRAD_PARAM_KEYS` entry, even though it sets `params: true`, and
+  `render-spec` does not resolve its namespace at all. Its component still
+  renders, and still gets `STRAD_CORE_URL`, which is how the bundle host learns
+  about the instance. A bare-named copy would be worse than wasted: the
+  conventional mount of the same tree would read it as its own.
 - **A component that hosts a `paramsWritable:` server may not have
   `instanceCount` above 1.** The render throws rather than emit it: a credential
   that rotates on use has exactly one valid value at a time, so two replicas

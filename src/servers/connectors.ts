@@ -1,4 +1,5 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { INSTANCE_PATH_PREFIX, INSTANCE_TREES } from "../secrets/param-route.ts";
 import type {
   BuiltinContext,
   BuiltinModule,
@@ -175,7 +176,13 @@ const WRITE_TOOLS: Tool[] = [
       "written unless it passes. Kinds that can be created: " +
       RUNTIME_CREATABLE_KINDS.join(", ") +
       " — a `builtin` never can, because its module has to ship inside the image, and a " +
-      "`supplementary-image` only onto a mount this deployment already runs. For a slug " +
+      "`supplementary-image` either onto a mount this deployment already runs, or as a " +
+      "store-served instance: `path: " +
+      INSTANCE_PATH_PREFIX +
+      "/{tree}/{its own slug}` with `params: true`, for " +
+      INSTANCE_TREES.join(", ") +
+      ". An instance is credentialed from that slug's own namespace, so seed its values " +
+      "through the secrets surface first; it is served on its first request. For a slug " +
       "the CHECKED-IN config declares, `entitlements:` and `tools:` cannot be changed " +
       "here at all: those decide who reaches that server and which of its tools they " +
       "get, and for a server the deploy authorised they stay with the deploy.",
