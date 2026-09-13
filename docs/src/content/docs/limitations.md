@@ -1200,7 +1200,7 @@ project IAM admin, which no strad process holds, so it is a human step and is no
 applied yet. Removing `setIamPolicy` instead is not an option: it would remove the
 console's ability to create a secret parameter at all.
 
-### 98. An `oauth:` connector needs the console to read its OAuth client
+### 99. An `oauth:` connector needs the console to read its OAuth client
 
 A [connector](/operate/connectors/) reads the slug's client id and client secret
 with the console's own credential, and for a secret parameter that read is Secret
@@ -1229,7 +1229,7 @@ strad has not built or tested.
 **Undo:** a connector that never reads its client through the console. Seeding
 the client id as a non-secret parameter halves the grant. Running the code
 exchange in the slug's own container, which already has both values in its
-environment, removes it. `HACKS.md` #98 has both.
+environment, removes it. `HACKS.md` #99 has both.
 
 ### 33. Secret values are base64url in Secret Manager, and only the boundary is unverified
 
@@ -2973,7 +2973,7 @@ The one-time steps that clear most of the list above:
   needs the whole set of its own.
 - For each `oauth:` connector in production, `roles/secretmanager.secretAccessor`
   for the console's service account on that slug's client-id and client-secret
-  secrets — per secret, never on the project — clears the refusal in **#98**.
+  secrets — per secret, never on the project — clears the refusal in **#99**.
 - An OAuth client for `https://strad.tadasant.com/console/oauth/callback`, and its
   `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — clears **#2** and **#20**.
 - Delete the DigitalOcean Container Registry named `strad`. Staging and prod pull

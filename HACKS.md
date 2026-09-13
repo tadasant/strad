@@ -5013,7 +5013,7 @@ tokens rather than built twice: each renewal checks a revocation list, and the
 console lists and ends individual sessions. That is the issue's option C, deferred
 until per-session revocation is a requirement on its own.
 
-## 98. An `oauth:` connector reads its OAuth client through the console, which is the one read production's console is set up not to have
+## 99. An `oauth:` connector reads its OAuth client through the console, which is the one read production's console is set up not to have
 
 **What.** The connector flow (`src/ui/connector.ts`) reads a slug's client id and
 client secret with the console admin store's `reveal()`. For a secret parameter

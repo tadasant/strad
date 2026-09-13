@@ -386,7 +386,7 @@ Three consequences to know:
   not resource names. Keeping both means tagging the connector's client secrets
   and exempting that tag in the rule's `denialCondition`, and strad has neither
   built nor tested that. Decide which one a deployment wants before applying the
-  deny policy. [Known limitations](/limitations/) #98 has the trade.
+  deny policy. [Known limitations](/limitations/) #99 has the trade.
 - **The console's reveal control reaches the same two values.** The grant is on
   the console's credential, and reveal uses that credential too. With
   `SECRETS_REVEAL_ENABLED` on, a signed-in session could display this slug's
