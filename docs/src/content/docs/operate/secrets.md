@@ -425,10 +425,10 @@ them per slug. See [Connectors](/operate/connectors/).
 The canonical path is `/strad/{env}/mcp/{slug}/{kind}/{VARIABLE}`, and `kind`
 names **where the value came from**:
 
-| Kind     | Written by                                     | Typical contents                                                  |
-| -------- | ---------------------------------------------- | ----------------------------------------------------------------- |
-| `static` | a human, in the console                        | an API key, an OAuth client id and client secret                  |
-| `oauth`  | strad's own consent callback, and nothing else | the refresh token (or long-lived access token) a human authorized |
+| Kind     | Written by                                                                                                                                                               | Typical contents                                                  |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------- |
+| `static` | a human, in the console, who creates it; the write-back route, which rotates an existing one for a `paramsWritable:` name                                                | an API key, an OAuth client id and client secret                  |
+| `oauth`  | strad's own consent callback, which creates it; the write-back route, which rotates it for a [`paramsWritable:`](#paramswritable--a-credential-that-rotates-on-use) name | the refresh token (or long-lived access token) a human authorized |
 
 Both resolve the same way. Everything on this page that is true of a `static`
 parameter is true of an `oauth` one: `params: true` injects it, a `${NAME}`
@@ -444,7 +444,16 @@ existed keeps working untouched, and the next **Reconnect** writes to `oauth/` a
 takes precedence from then on. The console says which path the current credential
 is being read from whenever the two differ.
 
-A value under `oauth/` is one **no person has ever seen** — it went from the
+**Two writers, one credential.** The consent callback is the only thing that
+_creates_ an `oauth/` parameter. The write-back route can only `rotate()` one that
+already exists, which is what a provider with single-use refresh tokens needs: the
+container spends the consented token, the provider hands back its successor, and
+core writes that successor over the same path. It is the same credential
+continuing, through the same admin credential, and a rotation leaves the
+parameter secret and the consent note intact. A rotation before anyone has
+consented is a 404, not a quiet create.
+
+A value the consent wrote under `oauth/` is one **no person has ever seen** — it went from the
 provider's token endpoint into Secret Manager without being rendered, returned or
 logged. That is the reason the kind exists as a separate namespace rather than as
 a naming convention: "a human typed this" and "strad minted this" are different
@@ -995,7 +1004,7 @@ of the store:
 | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | A `${NAME}` in a `remote-http` server's `url`/`headers`, or a `builtin`'s `options`                                                              | within `ttlSeconds`      | Resolved on the **request path** by the runtime provider.                                                                                                                                                                                                                                                                                           |
 | A `remote-http` server's `oauthRefresh:` refresh token                                                                                           | within `ttlSeconds`      | Resolved on the request path like any other `${NAME}`; a value strad has never held starts a new token lineage, and the old account's access token is dropped before the next request. A token the provider **rotated** is written back by core — see [`oauthRefresh:`](#oauthrefresh--a-rotating-refresh-token-on-a-remote-http-server).           |
-| A `params: true` **supplementary image's** managed parameters                                                                                    | on the next **deploy**   | Resolved at render time onto that server's own component. Unless the name is on that server's [`paramsRefresh:`](#paramsrefresh--a-rotation-that-lands-without-a-deploy) list (**within `paramRefreshSeconds`**, no deploy) or its [`paramsWritable:`](#paramswritable-a-credential-that-rotates-on-use) list (re-read at **boot**).                |
+| A `params: true` **supplementary image's** managed parameters                                                                                    | on the next **deploy**   | Resolved at render time onto that server's own component. Unless the name is on that server's [`paramsRefresh:`](#paramsrefresh--a-rotation-that-lands-without-a-deploy) list (**within `paramRefreshSeconds`**, no deploy) or its [`paramsWritable:`](#paramswritable--a-credential-that-rotates-on-use) list (re-read at **boot**).               |
 | A `params: true` **builtin's** managed parameters                                                                                                | within `ttlSeconds`      | Resolved by **core itself**, per tool call: `optionsFor` merges the namespace over the resolved `options:` through the same TTL cache the runtime provider uses. No deploy is in the loop, which is what makes staging's `echo` a live rotation observatory.                                                                                        |
 | The core boot keys — `STRAD_TOKENS`, `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CONSOLE_SESSION_SECRET`, `SENTRY_DSN` | on the next **restart**  | Hydrated from the store once, at boot, by code with no provider in scope. **`STRAD_TOKENS` is the exception under `auth.staticTokens.store: parameter-store`**: the token store reads it through the runtime provider on the request path instead, so it rotates within `ttlSeconds` — and at once when the change is made in `/tokens`. See below. |
 | `STRAD_INTERNAL_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS`                                                                                             | on the next **deploy**   | Hydrated on core, **baked** on every supplementary component — see below. A restart moves only one side, and for the internal token both sides must agree.                                                                                                                                                                                          |
@@ -1078,7 +1087,7 @@ nor the credential to fetch it:
 A supplementary server that wants genuinely live rotation should read the store
 itself, the way `servers/secrets` does — or, for the specific case of a
 credential that rotates on use, declare it under
-[`paramsWritable:`](#paramswritable-a-credential-that-rotates-on-use).
+[`paramsWritable:`](#paramswritable--a-credential-that-rotates-on-use).
 
 A server's `consoleEnv:` is **never** hydrated. It carries the console's
 store-_admin_ credential, which can write and reveal, and two things depend on it
@@ -1110,10 +1119,51 @@ server may write back to its own namespace:
 ```
 
 It requires `params: true` — that flag is what makes
-`/strad/{env}/mcp/{slug}/static/` this server's environment in the first place,
-and writing a namespace nothing injects would be a credential going nowhere. Each
-entry is a **variable name**, never a path, so there is no spelling of one that
-addresses another server's namespace or the gateway's.
+`/strad/{env}/mcp/{slug}/` (both kinds, `oauth/` first) this server's environment
+in the first place, and writing a namespace nothing injects would be a credential
+going nowhere. Each entry is a **variable name**, never a path, so there is no
+spelling of one that addresses another server's namespace or the gateway's.
+
+### Which kind it writes: the one the read would pick
+
+A name the same server does **not** declare on its [`oauth:` connector](/operate/connectors/)
+is read and written under `static/`, and nowhere else.
+
+A name the connector **does** declare may live under either kind, so the route
+takes the highest one the store holds: `oauth/` when a consent has written it,
+`static/` when only a hand-seeded copy exists. That is the precedence every
+layered read applies, so the copy the route rotates is the copy the next boot and
+the next render read. Which kinds are candidates comes from the config, and which
+candidate wins comes from the store. Nothing comes from the request: the route has
+no URL segment, body field or header for a kind.
+
+That is what gives a consented credential that rotates on use both a console
+consent and durability:
+
+```yaml
+- slug: x-twitter
+  kind: supplementary-image
+  params: true
+  paramsWritable: [X_OAUTH_REFRESH_TOKEN]
+  oauth:
+    provider: generic
+    refreshTokenVariable: X_OAUTH_REFRESH_TOKEN
+    # ...
+```
+
+The consent writes `oauth/X_OAUTH_REFRESH_TOKEN`, every rotation after it
+rotates that same path, and the boot read and the next render both read it back.
+A rotation written to `static/` while the `oauth/` copy exists would land under a
+copy that permanently shadows it, and the credential would die at the next
+restart with nothing failing.
+
+Adding a connector to a server whose token was seeded under `static/` changes
+nothing until someone connects: rotations keep landing in `static/`, which is
+still the only copy. The first **Reconnect** writes `oauth/`, and from then on
+rotations go there.
+
+A rotation never creates a parameter. If neither kind holds the name, the write
+is a 404, and the mount degrades.
 
 What counts as a legal variable name is **one rule**, in `src/config/env-name.ts`,
 and everything that gates on it imports it from there: the config check above, the
@@ -1127,7 +1177,8 @@ literal; a test greps them, and [Limitations](/limitations/) #81 says why.
 
 **Seed the parameter first.** The write is a `rotate()`, which needs a parameter
 to rotate: create the name in `/ui/secrets` (or with `store:seed`) under that
-server's namespace before the first deploy. Until it exists the boot read gets a
+server's namespace before the first deploy. For a connector's refresh token, the
+console consent creates it. Until it exists the boot read gets a
 404 and the container falls back to its baked value — which works, and quietly
 keeps working, right up until the first rotation has nowhere to land.
 
@@ -1274,11 +1325,17 @@ deliberate: a change in secret resolution touches every slug on the deployment,
 and prod runs more than forty of them.
 
 It requires `params: true`, for the same reason `paramsWritable:` does and for
-one more. That flag is what makes `/strad/{env}/mcp/{slug}/static/` this server's
+one more. That flag is what makes `/strad/{env}/mcp/{slug}/` this server's
 environment at all, so re-reading a namespace nothing injects would keep a value
 current that nothing reads. And because `params: true` already bakes that whole
 namespace onto this component at render time, **the read discloses nothing new**:
 the container is already holding these values. What the read adds is freshness.
+
+It reads through the same kind rule as the write. A name the server also declares
+on its `oauth:` connector is re-read from `oauth/` when the store holds a usable
+value there, and from `static/` otherwise. Every other name is re-read from
+`static/`. So a refresh never swaps a consented credential for a stale hand-typed
+copy, and a client secret seeded under `static/` still refreshes.
 
 ### How it travels
 
@@ -1289,7 +1346,7 @@ variable names, and those are already in the store, in the console and in the
 spec beside them.
 
 The read itself goes over the route that already existed for
-[`paramsWritable:`](#paramswritable-a-credential-that-rotates-on-use):
+[`paramsWritable:`](#paramswritable--a-credential-that-rotates-on-use):
 `GET /_strad/params/{slug}/{VARIABLE}` on **core**, which is the component
 holding the store-admin credential. No new credential reaches the container, and
 no new IAM is involved. Core still composes the store path out of the config's

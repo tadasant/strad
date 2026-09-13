@@ -2245,7 +2245,7 @@ unchanged by the fork.
 
 ### 62. A `paramsWritable` write is single-writer only because the render says so
 
-[`paramsWritable:`](/operate/secrets/#paramswritable-a-credential-that-rotates-on-use)
+[`paramsWritable:`](/operate/secrets/#paramswritable--a-credential-that-rotates-on-use)
 lets a supplementary server persist a credential that rotated under it: it POSTs
 to core, which performs the write with the store-admin credential it already
 holds. The write is a plain `rotate()` — there is no compare-and-set on the
@@ -2268,7 +2268,7 @@ deploy rather than a silent outage.
 For the current fleet that is free — every bundle runs one instance — but it is a
 real constraint, and the render error is the only place it is enforced.
 
-Two smaller edges of the same path:
+Three smaller edges of the same path:
 
 - **The boot read makes the store authoritative at boot** for the names on the
   list. That is the point: it is what closes the race where a deploy bakes a value
@@ -2281,6 +2281,12 @@ Two smaller edges of the same path:
   about this process. Read a degraded x-twitter as "re-seed before this restarts",
   not as "it is down". The alternative is a silent loss that surfaces hours later
   as a total outage.
+- **A console Reconnect does not reach a running process.** A connector's
+  variable on `paramsWritable:` is rotated under `oauth/` once a consent has
+  written it there. Reconnecting writes a fresh grant there, but the running process
+  still holds the token it booted with, and its next rotation writes over the
+  reconnect. Restart the component after a reconnect. A hand re-seed of any
+  `paramsWritable:` name has the same window.
 
 **Exit.** A compare-and-set `put()` — read the latest version id, write
 conditional on it, re-read on conflict — plus dropping the render check, for any
@@ -2290,14 +2296,14 @@ decision for us.
 
 ### 63. One internal token means any container can reach any writable parameter
 
-The [parameter write-back routes](/operate/secrets/#paramswritable-a-credential-that-rotates-on-use)
+The [parameter write-back routes](/operate/secrets/#paramswritable--a-credential-that-rotates-on-use)
 authenticate with `STRAD_INTERNAL_TOKEN` — one token, broadcast to every
 supplementary component, because it is the same token core presents when it
 proxies `/mcp` to them. Nothing binds a caller to the slug it addresses.
 
 So the reachable set is not "this server's allowlist"; it is the **union** of
 every enabled server's `paramsWritable:`, for any container holding the token.
-Two consequences worth stating plainly:
+Three consequences worth stating plainly:
 
 - A compromised container on one bundle can read and overwrite the rotating
   credential of a server on another.
@@ -2305,6 +2311,9 @@ Two consequences worth stating plainly:
   stored value took the console admin key behind Google SSO — so
   `STRAD_INTERNAL_TOKEN` is now also a read credential for the names on that
   union, which belongs in how often you rotate it.
+- A connector's variable listed under `paramsWritable:` is in that union too, so a
+  credential a human consented to in the console is reachable the same way. The
+  route can only rotate it, never create it.
 
 The union is opt-in and empty by default, and every name in it is by construction
 a credential that rotates, so losing one costs a re-seed rather than a durable

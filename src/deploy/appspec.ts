@@ -908,9 +908,9 @@ function firstWins(
  * The connector variables this server's own namespace actually holds.
  *
  * Absent values are simply absent — see the note at the call site. Reads only
- * `serverSecrets[slug]`, which render-spec populates from
- * `/strad/{env}/mcp/{slug}/static/` and from nowhere else, so a client id seeded
- * at the gateway cannot land here.
+ * `serverSecrets[slug]`, which render-spec populates from this slug's own
+ * `/strad/{env}/mcp/{slug}/` kinds (`oauth/` ahead of `static/`) and from
+ * nowhere else, so a client id seeded at the gateway cannot land here.
  */
 function connectorEnv(
   server: ServerConfig,

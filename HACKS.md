@@ -3199,7 +3199,7 @@ error is the only place it is enforced. A deployment that grows a genuinely
 concurrent write-back need (a credential that is NOT single-use, several replicas)
 has to implement the CAS first.
 
-**Two smaller edges of the same path:**
+**Three smaller edges of the same path:**
 
 - **The boot read makes the store authoritative at boot, which is a behaviour
   change for the names on the list.** A container that previously always started
@@ -3213,6 +3213,13 @@ has to implement the CAS first.
   this process, and it is the only shape available: the alternative is a silent
   loss that surfaces hours later as a total outage. Read a degraded x-twitter as
   "re-seed before this restarts", not as "it is down".
+- **A console Reconnect does not reach a running process.** A connector's
+  variable on `paramsWritable:` is rotated under `oauth/` once a consent has
+  written it there. Reconnecting writes a fresh grant there, but the running process still
+  holds the token it booted with, and its next rotation writes over the reconnect
+  — last-write-wins, with no compare-and-set. Restart the component after a
+  reconnect. The same window exists for a hand re-seed of any `paramsWritable:`
+  name.
 
 **Exit.** A compare-and-set `put()` — read the parameter's latest version id,
 write conditional on it, re-read on conflict — plus dropping the render check, for
@@ -3229,7 +3236,7 @@ is the same token core presents to proxy `/mcp` to each of them. Nothing binds a
 caller to the slug it addresses.
 
 So the reachable set is not "this server's allowlist" — it is the UNION of every
-enabled server's `paramsWritable:`, for any container holding the token. Two
+enabled server's `paramsWritable:`, for any container holding the token. Three
 concrete consequences, and the docs must not claim otherwise:
 
 - A compromised container on bundle A can READ and OVERWRITE the rotating
@@ -3238,6 +3245,9 @@ concrete consequences, and the docs must not claim otherwise:
   stored value took the console admin key behind Google SSO. `STRAD_INTERNAL_TOKEN`
   is now also a read credential for the names on that union, which belongs in how
   often it is rotated.
+- A connector's variable listed under `paramsWritable:` is in that union too, so
+  the rotating credential a human consented to in the console is reachable the same
+  way. The route can only `rotate()` it, never create it.
 
 **Why anyway.** The union is opt-in, empty by default, and every name in it is by
 construction a credential that ROTATES — the thing `paramsWritable` exists for.

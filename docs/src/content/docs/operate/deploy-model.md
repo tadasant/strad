@@ -322,7 +322,7 @@ learn:
   (~3.9ms) with no public-edge hairpin (~58ms). It binds in both directions: core
   gets one per bundle it proxies to, and every non-core component gets
   `STRAD_CORE_URL` = `${core.PRIVATE_URL}` for the
-  [parameter write-back route](/operate/secrets/#paramswritable-a-credential-that-rotates-on-use),
+  [parameter write-back route](/operate/secrets/#paramswritable--a-credential-that-rotates-on-use),
   which is the one call that runs bundle → core. The same route carries the
   [`paramsRefresh:`](/operate/secrets/#paramsrefresh--a-rotation-that-lands-without-a-deploy)
   poll.

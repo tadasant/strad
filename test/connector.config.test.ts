@@ -443,18 +443,16 @@ describe("oauth: provider generic", () => {
     expect(unknown.map((u) => u.key)).toContain("clientAuthMethod");
   });
 
-  it("REFUSES a connector variable that is also paramsWritable or paramsRefresh", () => {
-    // Those two address `static/` and nothing else, while a connector's
-    // credential is written to `oauth/` and outranks it. Allowing both would let
-    // a container re-read a stale hand-typed copy over the credential a human
-    // just consented to, and write a rotation back where the `oauth/` copy
-    // permanently shadows it — silently, in both directions.
+  it("ACCEPTS a connector variable that is also paramsWritable or paramsRefresh", () => {
+    // The route addresses such a name through the highest kind the store holds
+    // (`kindsOf` in src/http/params.ts), so the combination is how a consented
+    // credential that rotates on use survives a restart.
     for (const field of ["paramsWritable", "paramsRefresh"]) {
       const raw = BASE(
         GENERIC,
         `    params: true\n    ${field}: [LINEAR_OAUTH_TOKEN]\n`,
       );
-      expect(() => parseConfig(raw)).toThrow(new RegExp(field));
+      expect(() => parseConfig(raw)).not.toThrow();
     }
   });
 
