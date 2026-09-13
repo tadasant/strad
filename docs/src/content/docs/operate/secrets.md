@@ -420,6 +420,19 @@ neither is a sibling slug's. A client id seeded once at the gateway would make s
 Google Sheets slugs all look ready while none of them owned a credential. Seed
 them per slug. See [Connectors](/operate/connectors/).
 
+**Two of the three are also the one secret the console may read back.** The
+consent flow reveals the client id before it redirects and both halves at the
+callback, with the console's own credential — which on a
+[§1 deployment](/operate/secrets-iam/#1-prod-console-write-but-never-read) can
+write a secret and not read one. So creating either of them at
+`{slug}/static/` also binds the console's service account `secretAccessor` on
+that one secret, and a connector seeded before that offers the same grant from
+its own page. Which paths qualify comes from the config's `oauth:` blocks and
+from nowhere else, the `oauth/` kind is never granted, and the grant is verified
+by reading the value back — a deny policy beats it, and saying so is the point.
+See [An `oauth:` connector reads its own OAuth
+client](/operate/secrets-iam/#an-oauth-connector-reads-its-own-oauth-client).
+
 ### The two kinds: `static` and `oauth`
 
 The canonical path is `/strad/{env}/mcp/{slug}/{kind}/{VARIABLE}`, and `kind`

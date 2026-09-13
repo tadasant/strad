@@ -10,6 +10,7 @@
 
 export {
   type ParameterMeta,
+  type ConsoleReadGrant,
   type CreateParameterInput,
   type ParameterAdmin,
   type ParameterResolver,

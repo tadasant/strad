@@ -23,6 +23,7 @@ import {
 import {
   beginAuthorization,
   completeAuthorization,
+  connectorClientVariables,
   connectorFor,
   connectorRedirectUri,
   connectorStore,
@@ -31,6 +32,7 @@ import {
   connectionNote,
   ConnectorError,
   credentialKind,
+  isConnectorClientPath,
   unexpectedScopes,
   readConnectorState,
   refreshTokenPath,
@@ -49,6 +51,7 @@ import {
   ParameterStoreError,
   staticNamespace,
   UnreadablePayloadError,
+  type ConsoleReadGrant,
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
 
@@ -60,6 +63,7 @@ import {
  *   POST /ui/<slug>/connect      seal a transaction, 302 to the provider
  *   GET  /ui/oauth/callback      verify, exchange, check, write, 302 back
  *   GET  /ui/<slug>              render the panel, in one of five states
+ *   POST /ui/<slug>/grant-client bind the console's own read on the client
  *
  * ONE pair of routes for every provider. Which provider a slug uses is a
  * property of its config (`oauth.provider`), dispatched in
@@ -112,7 +116,7 @@ export interface ConnectorUiOptions extends ConnectorDeps {
   connectorFetch?: typeof fetch;
 }
 
-/** Mount the two connector routes. `gate` is the console's SSO middleware. */
+/** Mount the three connector routes. `gate` is the console's SSO middleware. */
 export function mountConnector(
   app: Express,
   gate: RequestHandler,
@@ -141,6 +145,18 @@ export function mountConnector(
     gate,
     refuseTokenSession,
     asyncRoute((req, res) => handleConnect(req, res, opts), renderUnexpected),
+  );
+
+  // The repair for the refusal above. A POST for the same reason `connect` is
+  // one — it writes an IAM policy — and behind the same two locks.
+  app.post(
+    `${SERVER_ROUTE}/grant-client`,
+    gate,
+    refuseTokenSession,
+    asyncRoute(
+      (req, res) => handleGrantClient(req, res, opts),
+      renderUnexpected,
+    ),
   );
 }
 
@@ -257,6 +273,12 @@ async function handleConnect(
       status: 409,
       state,
       flash: { tone: "error", message },
+      // THE ONE REFUSAL WITH A BUTTON BEHIND IT. Every other branch here needs a
+      // config change, a redeploy or a human seeding a value; this one is a
+      // binding the console's own credential is already permitted to write, so
+      // the fix belongs beside the sentence that diagnosed it rather than in a
+      // doc a human has to go and find.
+      repair: reason === "client_unreadable",
     });
   };
 
@@ -640,6 +662,244 @@ async function handleCallback(
   }
 }
 
+// ---------------------------------------------------------------------------
+// POST /ui/:server/grant-client
+// ---------------------------------------------------------------------------
+
+/**
+ * Why the console could not repair its own read access, as one word from a
+ * closed set.
+ *
+ * `denied` is the one that matters and the one this route exists to report
+ * honestly: the binding was written, the store took it, and the value still
+ * cannot be read. On a deployment that applied the `strad-console-no-read` deny
+ * policy from docs/operate/secrets-iam.md §1 that is the permanent answer, and
+ * the whole point of reading the value back is that this route says so instead
+ * of claiming success and letting **Connect** fail after the consent screen.
+ */
+type GrantRefusal =
+  | "not_ready"
+  | "no_store"
+  | "unsupported"
+  | "not_eligible"
+  | "write_refused"
+  | "denied";
+
+/**
+ * `strad.connector_client_granted` / `_grant_failed`: the console binding its
+ * OWN credential read access to one slug's OAuth client.
+ *
+ * Every field is the config's or a word strad wrote. `variable` is the name out
+ * of that server's `oauth:` block; `result` is `granted` (the policy was
+ * written) or `already` (it already said this). `failure` and `status` on the
+ * failure are the SAME closed vocabulary `strad.connector_connect_failed` uses
+ * for a client read, because they classify the same read with the same function.
+ *
+ * The value that was read back is not here, not counted, and not hinted at —
+ * `grantConsoleRead` reads it and drops it, and only the boolean comes back.
+ */
+function grantFailed(
+  slug: string,
+  reason: GrantRefusal,
+  detail: Record<string, string | number> = {},
+): void {
+  event({
+    evt: "strad.connector_client_grant_failed",
+    slug,
+    reason,
+    ...detail,
+  });
+}
+
+/**
+ * Bind this console's own service account `secretAccessor` on ONE slug's OAuth
+ * client id and client secret, and then prove it worked by reading them.
+ *
+ * ## What the browser says: the slug, and nothing else
+ *
+ * The POST carries no fields. The two variable names come out of that server's
+ * `oauth:` block, the paths come from `connectorVariablePath` (the copy presence
+ * actually found), and every one of them is put through `isConnectorClientPath`
+ * before a binding is written — so the set of secrets this route can grant the
+ * console read on is closed by config. There is no spelling of the URL that
+ * reaches a refresh token, a sibling slug, or a parameter under `oauth/`.
+ *
+ * ## Why it is verified rather than reported
+ *
+ * `setIamPolicy` succeeding says the policy now carries the member. It does not
+ * say the member can read, because an IAM DENY policy is evaluated before any
+ * allow and cannot be granted around — and §1 of docs/operate/secrets-iam.md
+ * recommends exactly such a policy for this service account. A button that
+ * claimed success there would move the failure from before the consent screen to
+ * after it, which is worse than the hand-run `gcloud` loop it replaces. So the
+ * store reads the value back, and this page reports what actually happened using
+ * `clientReadFailure` — the same sentence the refusal it repairs is built from.
+ */
+async function handleGrantClient(
+  req: Request,
+  res: Response,
+  opts: ConnectorUiOptions,
+): Promise<void> {
+  const slug = req.params.server ?? "";
+  const signedInAs = signedInLabel(res);
+  const entry = connectorFor(opts.config, slug);
+
+  // NO EVENT, for the reason `handleConnect` gives: there is no connector here
+  // to have failed, and `slug` is the caller's own path segment.
+  if (!entry) {
+    res
+      .status(404)
+      .type("html")
+      .send(
+        renderMessage({
+          title: "Not found",
+          signedInAs,
+          heading: "No connector on this server",
+          sub: `"${slug}" does not declare an oauth: connector on this gateway.`,
+          tone: "warn",
+          nav: "servers",
+        }),
+      );
+    return;
+  }
+
+  // 409 AND NEVER A 5xx, and the page keeps offering the repair: see
+  // `handleConnect` for why the edge makes that a rule rather than a preference.
+  const refuse = async (
+    reason: GrantRefusal,
+    message: string,
+    state?: ConnectorState,
+    detail: Record<string, string | number> = {},
+  ): Promise<void> => {
+    grantFailed(entry.server.slug, reason, detail);
+    await renderConnectorPage(res, opts, entry, {
+      signedInAs,
+      status: 409,
+      state,
+      flash: { tone: "error", message },
+      repair: true,
+    });
+  };
+
+  const state = await readConnectorState(opts, entry);
+  if (state.kind !== "ready" && state.kind !== "connected") {
+    await refuse(
+      "not_ready",
+      "There is no OAuth client on this server to grant read access to. See " +
+        "the setup below. Nothing was changed.",
+      state,
+    );
+    return;
+  }
+
+  const resolved = connectorStore(opts, entry);
+  if (!resolved.store) {
+    await refuse("no_store", resolved.reason, state);
+    return;
+  }
+  const store = resolved.store;
+  const grant = store.grantConsoleRead?.bind(store);
+  if (!grant) {
+    await refuse(
+      "unsupported",
+      `This deployment's parameter store (${store.backend}) does not express ` +
+        `per-secret access grants, so strad cannot repair this from the ` +
+        `console. Nothing was changed.`,
+      state,
+    );
+    return;
+  }
+
+  // The two CLIENT variables, from config, in the order the flow reads them —
+  // the client id first, because that is the one the connect POST needs and the
+  // one whose failure a human sees before consenting.
+  for (const variable of connectorClientVariables(entry.oauth)) {
+    const path = connectorVariablePath(
+      opts.config,
+      entry,
+      state.presence,
+      variable,
+    );
+
+    // THE FENCE, and it is checked per path rather than per slug. A client
+    // hand-seeded under `oauth/` is not eligible: that kind is the one strad
+    // mints the refresh token into, and the console being unable to read it back
+    // is what the kind means. Such a deployment keeps the hand-run grant.
+    if (!isConnectorClientPath(opts.config, path)) {
+      await refuse(
+        "not_eligible",
+        `${variable} for this server is held at ${path}, which is not this ` +
+          `slug's own static/ namespace, so strad will not grant itself read ` +
+          `access to it. Only a connector's client id and client secret under ` +
+          `static/ are eligible — the oauth/ kind holds credentials strad ` +
+          `minted and no person has seen. Nothing was changed.`,
+        state,
+        { variable },
+      );
+      return;
+    }
+
+    let outcome: ConsoleReadGrant;
+    try {
+      outcome = await grant(path);
+    } catch (err) {
+      // The BINDING ITSELF was refused — usually the console credential lacking
+      // `secretmanager.secrets.setIamPolicy`, which is a different problem from
+      // the read being denied and deserves different words.
+      const read = clientReadFailure(err, variable, path);
+      await refuse(
+        "write_refused",
+        `strad could not write the binding for ${variable}: ${read.sentence} ` +
+          `Nothing was changed.`,
+        state,
+        clientReadDetail(variable, read, err),
+      );
+      return;
+    }
+
+    if (!outcome.readable) {
+      const read = clientReadFailure(outcome.error, variable, path);
+      await refuse(
+        "denied",
+        `strad bound this console's own service account ` +
+          `roles/secretmanager.secretAccessor on the secret behind ${path}, ` +
+          `and the value still cannot be read — so Connect would still refuse. ` +
+          `${read.sentence}` +
+          (read.failure === "denied"
+            ? ` A binding that is in place and grants nothing is what an IAM ` +
+              `deny policy looks like: deny is evaluated before allow and ` +
+              `cannot be granted around. strad-console-no-read, on the Secrets ` +
+              `IAM page, is the one this deployment may have applied — a ` +
+              `deployment that has it has decided connectors need a human.`
+            : ""),
+        state,
+        clientReadDetail(variable, read, outcome.error),
+      );
+      return;
+    }
+
+    event({
+      evt: "strad.connector_client_granted",
+      slug: entry.server.slug,
+      variable,
+      result: outcome.changed ? "granted" : "already",
+    });
+  }
+
+  await renderConnectorPage(res, opts, entry, {
+    signedInAs,
+    state,
+    flash: {
+      tone: "ok",
+      message:
+        `strad can now read this server's OAuth client. Both halves were read ` +
+        `back after the binding, so Connect has what it needs. The grant is on ` +
+        `those two secrets only — this server's stored credential stays ` +
+        `unreadable to the console.`,
+    },
+  });
+}
+
 /**
  * Read ONE variable out of THIS slug's own namespaces.
  *
@@ -811,6 +1071,29 @@ export interface ConnectorPageExtras {
   flash?: { tone: "ok" | "error"; message: string };
   /** Already-read state, when the caller has one. Read here otherwise. */
   state?: ConnectorState;
+  /**
+   * Offer the read-access repair — the button for `POST /<slug>/grant-client`.
+   *
+   * Set by the `client_unreadable` refusal, by the callback that came back with
+   * that code, and by the repair route's own answers, so the panel is the reply
+   * to a refusal rather than a permanent fixture. A connector nobody has failed
+   * to connect does not need it, and a page that offered every slug a button to
+   * widen the console's read access would be advertising the escalation rather
+   * than repairing one deployment's connector.
+   */
+  repair?: boolean;
+}
+
+/**
+ * Does this query string describe a client the console could not read?
+ *
+ * `client_unreadable` is the only code the callback redirects with that a button
+ * on this page can do anything about, and it is checked against that exact
+ * literal — the same closed set `refusalMessage` reads, so nothing in a URL can
+ * turn on an affordance that writes IAM by spelling something new.
+ */
+export function offersClientRepair(query: Request["query"]): boolean {
+  return query.error === "client_unreadable";
 }
 
 /**
@@ -847,6 +1130,31 @@ export async function renderConnectorPage(
 
   const flash = extras.flash
     ? `<div class="flash flash-${extras.flash.tone}">${esc(extras.flash.message)}</div>`
+    : "";
+
+  // The repair, offered only in reply to a read that failed. `static/` is named
+  // out loud because the fence is real: a client hand-placed under `oauth/` is
+  // refused, and a human reading this should know that before pressing it.
+  const repairBlock = extras.repair
+    ? `
+<section class="panel">
+  <div class="panel-head"><h2>Let strad read this server's OAuth client</h2>
+    <span class="panel-note">two secrets, never the project</span></div>
+  <div class="field">
+    <span class="field-h">This console's service account can write a secret and not read one
+      back, which is how strad's Secrets IAM page says to run it. An <code>oauth:</code> connector
+      is the one exception — the consent flow reads this slug's own client id and client secret to
+      begin and to exchange. Granting binds
+      <code>roles/secretmanager.secretAccessor</code> for this console's service account on those
+      two secrets, under this server's <code>static/</code> namespace, and on nothing else. The
+      credential this connector stores under <code>oauth/</code> stays unreadable.</span>
+  </div>
+  <form method="post" action="${esc(`${serverConsolePath(slug)}/grant-client`)}" class="connect-form">
+    <button class="btn btn-primary">Grant read on this client</button>
+    <span class="field-h">strad writes the binding and then reads the client id and secret back.
+      If a deny policy overrides the grant, this page says so rather than reporting success.</span>
+  </form>
+</section>`
     : "";
 
   const scopeRows = scopes
@@ -960,6 +1268,7 @@ ${button(
 
 ${flash}
 ${statusBlock}
+${repairBlock}
 
 <section class="panel">
   <div class="panel-head"><h2>What this authorization grants</h2>

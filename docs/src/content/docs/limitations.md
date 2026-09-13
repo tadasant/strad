@@ -1239,33 +1239,50 @@ A [connector](/operate/connectors/) reads the slug's client id and client secret
 with the console's own credential, and for a secret parameter that read is Secret
 Manager's `versions.access`: the permission the
 [write-never-read console](/operate/secrets-iam/#1-prod-console-write-but-never-read)
-withholds. So production's connectors need a hand-applied grant,
-`roles/secretmanager.secretAccessor` for the console's service account, **on each
-slug's two client secrets and nothing else**. The command is in
-[Secrets IAM](/operate/secrets-iam/#an-oauth-connector-reads-its-own-oauth-client).
-It is a human step per slug, outside the deploy, and deliberately so. The
-console's own credential holds `secretmanager.secrets.setIamPolicy`, so strad
-could make the binding itself, but the console granting itself read is exactly
-the escalation #31 describes, and doing it routinely would erase the audit signal
-that makes it conspicuous.
+withholds. So every connector needs `roles/secretmanager.secretAccessor` for the
+console's service account, **on that slug's two client secrets and nothing
+else**.
 
-Without it, **Connect** refuses. It says so on the page, at 409, naming the
-permission and the exact resource, and it emits `strad.connector_connect_failed`
+**✅ The grant is no longer a human step.** Creating either client value from the
+console makes the binding as part of the create, and a connector seeded before
+that offers **Grant read on this client** on its own page, beside the refusal
+that diagnosed it. Which paths qualify is derived from the config's `oauth:`
+blocks — no field on any form can ask for it — and the `oauth/` kind is never
+granted, so the credential strad mints and stores there stays unreadable to the
+console.
+
+**What is left is the deny policy fork, and it is why this entry stays.** The
+`strad-console-no-read` deny policy from **#31** is evaluated before any allow
+and cannot be granted around, so on a deployment that applied it the binding
+writes successfully and buys nothing. strad therefore **reads the value back**
+before it claims the grant worked, and says so when it did not — naming the
+permission, the resource and the deny policy — rather than letting **Connect**
+fail after the human has already consented. A deployment that applied the deny
+policy has decided its connectors need a human, and keeps the hand-run grant
+documented in
+[Secrets IAM](/operate/secrets-iam/#an-oauth-connector-reads-its-own-oauth-client).
+Keeping both would mean tagging the connector's client secrets and exempting that
+tag in the deny rule's condition — a deny rule can match resource tags but not
+resource names — which strad has neither built nor tested.
+
+**And the audit cost is real.** The console granting itself read is exactly the
+escalation **#31** describes, and doing it on a button makes a conspicuous act a
+routine one. What replaces the conspicuousness is a record: a
+`strad.connector_client_granted` event naming the slug and the variable at the
+moment it happens, and `strad.connector_client_grant_failed` at ERROR when the
+binding landed and the value still could not be read.
+
+When the grant is absent, **Connect** refuses on the page, at 409, naming the
+permission and the exact resource, and emits `strad.connector_connect_failed`
 with `reason: client_unreadable` and `status: 403`. It is a 409 because the App
 Platform ingress replaces an upstream 5xx with its own edge page, which would
 drop the sentence that says why.
 
-Two costs are worth stating. The per-secret grant is a real, narrow exception to
-write-never-read: two values, per connector, never the refresh tokens the flow
-writes. And it does not survive the deny policy from #31. Deny beats allow, and a
-deny rule's conditions can match resource tags but not resource names, so a
-deployment has to choose, or tag its connector secrets and exempt that tag, which
-strad has not built or tested.
-
-**Undo:** a connector that never reads its client through the console. Seeding
-the client id as a non-secret parameter halves the grant. Running the code
-exchange in the slug's own container, which already has both values in its
-environment, removes it. `HACKS.md` #99 has both.
+**Undo:** a connector that never reads its client through the console at all,
+which would close the exception rather than automate it. Seeding the client id as
+a non-secret parameter halves it. Running the code exchange in the slug's own
+container, which already has both values in its environment, removes it.
+`HACKS.md` #99 has both.
 
 ### 33. Secret values are base64url in Secret Manager, and only the boundary is unverified
 
@@ -3034,7 +3051,11 @@ The one-time steps that clear most of the list above:
   needs the whole set of its own.
 - For each `oauth:` connector in production, `roles/secretmanager.secretAccessor`
   for the console's service account on that slug's client-id and client-secret
-  secrets — per secret, never on the project — clears the refusal in **#99**.
+  secrets — per secret, never on the project. **The console now does this
+  itself**, from the connector's own page or as part of a create, so what is left
+  for a human is pressing the button once per already-seeded slug — or, on a
+  deployment that applied #31's deny policy, deciding between that policy and
+  working connectors. See **#99**.
 - An OAuth client for `https://strad.tadasant.com/console/oauth/callback`, and its
   `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — clears **#2** and **#20**.
 - Delete the DigitalOcean Container Registry named `strad`. Staging and prod pull

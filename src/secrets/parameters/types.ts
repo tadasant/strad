@@ -47,6 +47,47 @@ export interface CreateParameterInput {
   secret: boolean;
   value: string;
   note?: string;
+  /**
+   * Also let the CONSOLE'S OWN credential read this secret back — on this one
+   * secret, never at project level.
+   *
+   * Off by default, because §1 of docs/operate/secrets-iam.md runs the console
+   * write-without-read on purpose. The ONE value that has to be exempt is a
+   * declared `oauth:` connector's OAuth client: the consent flow reveals the
+   * client id before it redirects and both halves at the callback, with the
+   * console's credential, so a client the console cannot read is a **Connect**
+   * that 403s after a human has already consented.
+   *
+   * WHETHER A PATH QUALIFIES IS THE CALLER'S TO DECIDE, FROM CONFIG. This
+   * interface speaks paths and values; it has no idea what a connector is, and
+   * a store that took the question from a request would let a request name the
+   * secret the console may read. `isConnectorClientPath` (src/connectors) is the
+   * one derivation, and both the create form and the repair button go through it.
+   */
+  consoleReadable?: boolean;
+}
+
+/**
+ * What binding the console's own credential to one secret actually achieved.
+ *
+ * `readable` is the whole point, and it is MEASURED rather than assumed: an IAM
+ * deny policy (docs/operate/secrets-iam.md §1 recommends one) is evaluated
+ * before any allow and cannot be granted around, so a `setIamPolicy` that
+ * returns 200 proves nothing about whether the value can be read. The store
+ * writes the binding and then reads the value back, and reports what happened.
+ *
+ * `error` is the read's own rejection, carried unclassified: the console turns
+ * it into a sentence with the same `clientReadFailure` that writes the refusal,
+ * so the button and the 403 it repairs cannot disagree about what a 403 means.
+ * The VALUE that was read is never carried — it is read and dropped.
+ */
+export interface ConsoleReadGrant {
+  /** True when the policy was actually written; false when it already said this. */
+  changed: boolean;
+  /** Did a read of the value succeed AFTER the write? */
+  readable: boolean;
+  /** Why it did not, when it did not. Never a value. */
+  error?: unknown;
 }
 
 /**
@@ -75,6 +116,23 @@ export interface ParameterAdmin {
    */
   reveal(path: string): Promise<string>;
   destroy(path: string): Promise<void>;
+  /**
+   * Give this console's OWN credential read access to one secret parameter, and
+   * report whether the value can now actually be read.
+   *
+   * The REPAIR half of `CreateParameterInput.consoleReadable`: a connector
+   * seeded before strad made that grant is stuck, and this is the click that
+   * unsticks it. Same binding, same one secret, same verification.
+   *
+   * Optional because it is a statement about per-resource IAM, which not every
+   * backend has. A store without it makes the console say so rather than offer
+   * a button that does nothing — see `resolveDetailed` for the same shape.
+   *
+   * THE CALLER DECIDES WHICH PATHS ARE ELIGIBLE. Nothing here knows a connector
+   * from any other parameter, so a caller that passed an arbitrary path would
+   * be handing the console read access to an arbitrary secret.
+   */
+  grantConsoleRead?(path: string): Promise<ConsoleReadGrant>;
 }
 
 /**

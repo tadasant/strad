@@ -3,6 +3,8 @@ import type { SecretBag } from "../secrets/index.ts";
 import {
   oauthParameterPath,
   serverNamespaces,
+  staticNamespace,
+  variableOf,
   type ParameterMeta,
   type ParameterStore,
   type ServerParamKind,
@@ -233,6 +235,59 @@ export function refreshTokenPath(
     entry.server.slug,
     entry.oauth.refreshTokenVariable,
   );
+}
+
+/**
+ * The two variables a connector's OAuth APPLICATION is made of — and NEVER the
+ * refresh token, which is the point of naming them separately.
+ *
+ * These are the only values the console has any business reading back. The
+ * client id goes out in every authorization URL; the client secret is one the
+ * human typed in and holds a copy of. The refresh token is the one strad minted
+ * and nobody has ever seen, and it stays that way.
+ */
+export function connectorClientVariables(
+  oauth: ConnectorConfig,
+): [clientId: string, clientSecret: string] {
+  return [oauth.clientIdVariable, oauth.clientSecretVariable];
+}
+
+/**
+ * Is this store path one of a DECLARED connector's OAuth client variables?
+ *
+ * The ONE derivation behind both halves of the console's read grant: the
+ * `consoleReadable` flag a create sets, and the repair button that binds the
+ * same access after the fact. Both ask this, so there is one answer to "which
+ * secrets may the console read" and it is computed from config — the same
+ * discipline `writableTarget()`/`kindsOf()` keep for `/_strad/params`. No part
+ * of a request reaches it: the caller passes a path it composed itself, and a
+ * path that is not one an enabled server's `oauth:` block names is a no.
+ *
+ * THE `static` KIND ONLY, and that is a rule rather than an oversight. `oauth/`
+ * is the kind strad MINTS into — a value under it is one no person has seen —
+ * and the console being unable to read it back is the whole meaning of the kind.
+ * The client id and secret are what a human types, `static/` is where the
+ * console's own "not seeded" message sends them, and a client hand-placed under
+ * `oauth/` is not granted: it would make the refresh token's own namespace a
+ * place the console can be given read access to, one variable at a time.
+ *
+ * A PREFIX MATCH ON THE NAMESPACE plus an exact match on the trailing variable,
+ * which is `presenceFrom`'s rule and `resolve()`'s: a value at
+ * `{slug}/static/extra/CLIENT_ID` really is injected as `CLIENT_ID` and really
+ * is what the connector reads, so it is what the console has to be able to read.
+ */
+export function isConnectorClientPath(
+  config: StradConfig,
+  path: string,
+): boolean {
+  const variable = variableOf(path);
+  for (const server of config.servers) {
+    if (!server.enabled || !server.oauth) continue;
+    const namespace = staticNamespace(config.gateway.env, server.slug);
+    if (!path.startsWith(namespace)) continue;
+    if (connectorClientVariables(server.oauth).includes(variable)) return true;
+  }
+  return false;
 }
 
 /** Both of this slug's own namespaces, `oauth/` first. */

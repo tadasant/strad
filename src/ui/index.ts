@@ -53,9 +53,10 @@ import { SERVER_ROUTE, serverConsolePath, UI_PREFIX } from "./paths.ts";
 import {
   connectorFlash,
   mountConnector,
+  offersClientRepair,
   renderConnectorPage,
 } from "./connector.ts";
-import { connectorFor } from "../connectors/index.ts";
+import { connectorFor, isConnectorClientPath } from "../connectors/index.ts";
 import {
   forgetDeploymentDiagnosis,
   readDeploymentSecretStatus,
@@ -421,7 +422,13 @@ async function handleServerView(
         connectorFetch: opts.connectorFetch,
       },
       connector,
-      { signedInAs, flash: connectorFlash(req.query, connector) },
+      {
+        signedInAs,
+        flash: connectorFlash(req.query, connector),
+        // A callback that came back `client_unreadable` lands here, and the
+        // repair for it is one button. See `offersClientRepair`.
+        repair: offersClientRepair(req.query),
+      },
     );
     return;
   }
@@ -734,11 +741,19 @@ async function handleSecretAction(
         const prefix = normalisePathPrefix(prefixRaw);
         const fullPath = `${namespace}${prefix}${variable}`;
         assertWellFormed(fullPath);
+        // DERIVED FROM CONFIG, NEVER FROM THE FORM. The path was composed here
+        // out of a namespace, a prefix and a variable name the human typed, and
+        // `isConnectorClientPath` asks whether an ENABLED server's own `oauth:`
+        // block names that variable in that slug's `static/` namespace. There is
+        // no field on this form that can say "let the console read this".
+        const consoleReadable =
+          secret && isConnectorClientPath(opts.config, fullPath);
         await store.create({
           path: fullPath,
           secret,
           value,
           note: note || undefined,
+          consoleReadable,
         });
         forgetStoreReading(opts);
         await renderSecretsPage(res, view, store_, opts, {
@@ -746,7 +761,11 @@ async function handleSecretAction(
           namespace,
           flash: {
             tone: "ok",
-            message: `Created ${prefix}${variable} (${secret ? "secret" : "non-secret"}) at ${namespace}${prefix}${variable}.`,
+            message:
+              `Created ${prefix}${variable} (${secret ? "secret" : "non-secret"}) at ${namespace}${prefix}${variable}.` +
+              (consoleReadable
+                ? ` It is a connector's OAuth client, so strad also granted this console's own service account read access to that one secret — Connect needs it.`
+                : ""),
           },
         });
         return;
