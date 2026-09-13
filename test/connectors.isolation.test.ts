@@ -1212,9 +1212,9 @@ describe("a runtime write cannot re-create a checked-in slug as another kind", (
   });
 });
 
-describe("what phase 2 leaves open, recorded rather than implied", () => {
+describe("what phase 2 leaves open on purpose, recorded rather than implied", () => {
   /**
-   * THE RESIDUAL, and it is a posture decision rather than an oversight.
+   * THE RESIDUAL, and the operator decided to keep it.
    *
    * The bounds above are measured in MOUNTS. A writer that already reaches a
    * mount may create a second slug on it with a WIDER tool surface than the
@@ -1224,12 +1224,15 @@ describe("what phase 2 leaves open, recorded rather than implied", () => {
    * Carrying the `tools:` policy along would close it, and would narrow `admin`
    * in the same motion: `admin` reaches three of production's twenty-seven
    * mounts only through a `tools.allow` slug, and on those it could no longer
-   * create the wider half of a `-ro` / `-rw` pair without a deploy. That is a
-   * workflow traded against a residual widening, which is a choice for the
-   * operator — see phase 2 in `docs/operate/runtime-config-plan.md`.
+   * create the wider half of a `-ro` / `-rw` pair without a deploy. Asked to
+   * trade that workflow for the residual widening, the operator kept the
+   * workflow on 2026-09-13 — see phase 2 in
+   * `docs/operate/runtime-config-plan.md`, which also names what reopens it: a
+   * `connectors` write tool granted to a role other than `admin`.
    *
-   * This test asserts what strad does TODAY. It is meant to fail the moment the
-   * choice is made, so that the record and the behaviour move together.
+   * So this test asserts the behaviour that was CHOSEN, not a behaviour waiting
+   * on a decision. It is meant to fail if that choice is ever re-taken, so that
+   * the record and the behaviour move together.
    */
   it("accepts a wider slug on a mount the writer already reaches read-only", () => {
     expect(() =>
