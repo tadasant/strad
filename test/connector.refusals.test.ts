@@ -21,7 +21,12 @@ import { CONNECTOR_TX_COOKIE } from "../src/connectors/state.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import { createFakeGcp, type FakeGcp } from "../src/secrets/parameters/fake.ts";
-import type { ParameterStore } from "../src/secrets/parameters/index.ts";
+import {
+  ParameterStoreError,
+  UnreadablePayloadError,
+  type ParameterStore,
+} from "../src/secrets/parameters/index.ts";
+import { ServiceAccountAuthError } from "../src/secrets/parameters/service-account.ts";
 import { parameterId } from "../src/secrets/parameters/wire.ts";
 import {
   EnvSecretProvider,
@@ -39,13 +44,12 @@ import {
  *
  *   1. A STATUS THE EDGE PASSES THROUGH. Never a 5xx: the App Platform ingress
  *      treats an upstream 5xx as its own failure and replaces the body with its
- *      generic edge page — see src/http/readiness.ts. A refusal answered 503
- *      reached a human in production as "Error code: 503" and nothing else.
+ *      generic edge page — see src/http/readiness.ts — so the human would see
+ *      "Error code: 503" and nothing else.
  *   2. THE SPECIFIC REASON, ON THE PAGE. Enough to act on: which permission,
  *      on which resource.
- *   3. A STRUCTURED EVENT, EXPORTED. The same refusal left no trace in the obs
- *      stack at all: a bare `catch {}` and no event on any branch. The export
- *      is asserted through a real OTel logger, so what is checked is what an
+ *   3. A STRUCTURED EVENT, EXPORTED, AT ERROR, ON STDERR. The export is
+ *      asserted through a real OTel logger, so what is checked is what an
  *      ingestor would receive — and none of it may carry a value.
  *
  * The production case is `client_unreadable`, reproduced exactly: the client id
@@ -218,7 +222,10 @@ afterAll(() => {
 // --- what leaves the process -------------------------------------------------
 
 let exporter: InMemoryLogRecordExporter;
+/** Every line written to stdout, stderr or the warn stream, for the canary sweep. */
 let streams: string[] = [];
+/** The stderr lines alone, which is where a `_failed` event must land. */
+let stderr: string[] = [];
 
 beforeEach(async () => {
   exporter = new InMemoryLogRecordExporter();
@@ -231,9 +238,12 @@ beforeEach(async () => {
   enableEventExport("strad-test", "0.0.0");
   resetEventThrottle();
   streams = [];
+  stderr = [];
   for (const method of ["log", "error", "warn"] as const) {
     vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
-      streams.push(args.map(String).join(" "));
+      const line = args.map(String).join(" ");
+      streams.push(line);
+      if (method === "error") stderr.push(line);
     });
   }
 
@@ -277,6 +287,21 @@ function exported(evt: string) {
   return exporter.getFinishedLogRecords().filter((r) => r.body === evt);
 }
 
+/** The one `strad.connector_connect_failed` line on stderr, parsed. */
+function stderrEvent(): Record<string, unknown> {
+  const lines = stderr.filter((s) =>
+    s.includes('"evt":"strad.connector_connect_failed"'),
+  );
+  expect(lines).toHaveLength(1);
+  return JSON.parse(lines[0]!) as Record<string, unknown>;
+}
+
+/** A store whose `reveal()` rejects with `err`, and is otherwise the fake's. */
+function revealRejects(err: unknown): () => ParameterStore {
+  return () =>
+    ({ ...fake.store, reveal: () => Promise.reject(err) }) as ParameterStore;
+}
+
 /**
  * The HTML flash, unescaped, so a sentence can be matched as a human reads it.
  * `esc()` is what put the entities there; the assertion is on the words.
@@ -310,15 +335,18 @@ async function refusal(
   expect(flash).not.toBe("");
 
   // 3. Exactly one record, at ERROR, carrying exactly the allowlisted fields —
-  // and not `error`, which holds the store's own summary and stays on stderr.
+  // and not `error`, which holds the store's own summary and stays on stderr,
+  // where the whole payload goes.
   const records = exported("strad.connector_connect_failed");
   expect(records).toHaveLength(1);
   expect(records[0]!.severityNumber).toBe(SeverityNumber.ERROR);
   expect(records[0]!.attributes).toEqual({
     "strad.evt": "strad.connector_connect_failed",
     slug: SLUG,
+    stage: "begin",
     ...expectedAttributes,
   });
+  expect(stderrEvent().reason).toBe(expectedAttributes.reason);
 
   // Nothing began: no transaction cookie, no redirect to the provider.
   expect(res.headers.get("location")).toBeNull();
@@ -355,22 +383,100 @@ describe("the connect POST refuses with a 409 the edge passes through, says why,
     const secret = `projects/strad-secrets-test/secrets/${parameterId(`${NS}${CLIENT_ID_VAR}`)}`;
     expect(flash).toContain("strad cannot read this server's OAuth client");
     expect(flash).toContain(
-      `the console's credential lacks secretmanager.versions.access on ${secret}`,
+      `Secret Manager refused the console's credential secretmanager.versions.access on ${secret}`,
     );
     expect(flash).toContain(`${NS}${CLIENT_ID_VAR}`);
     expect(flash).toContain("roles/secretmanager.secretAccessor");
     expect(flash).toContain("never on the project");
+    // A 403 with the grant in place is the deny policy, and the page says so.
+    expect(flash).toContain("deny policy");
     expect(flash).toContain("Nothing was written.");
 
-    // The store's own summary is kept — on stderr, beside the event, where the
-    // bare `catch {}` used to throw it away.
-    const line = streams.find((s) =>
-      s.includes('"evt":"strad.connector_connect_failed"'),
-    );
-    expect(line).toBeDefined();
-    expect(JSON.parse(line!).error).toBe(
+    // The store's own summary is kept, on stderr beside the event.
+    expect(stderrEvent().error).toBe(
       `ParameterStoreError: GET ${secret}/versions/latest failed: 403 Forbidden`,
     );
+  });
+
+  it("client_unreadable: a Parameter Manager 403 names the path and the store's words, not a Secret Manager grant", async () => {
+    pick = revealRejects(
+      new ParameterStoreError(
+        "GET projects/p/locations/global/parameters/x/versions/v1 failed: 403 Forbidden",
+        403,
+      ),
+    );
+    const flash = await refusal(await connect(), {
+      reason: "client_unreadable",
+      variable: CLIENT_ID_VAR,
+      failure: "denied",
+      status: 403,
+    });
+    expect(flash).toContain(
+      `the store refused the console's credential reading ${NS}${CLIENT_ID_VAR}`,
+    );
+    expect(flash).not.toContain("secretAccessor");
+  });
+
+  it("client_unreadable: a 404 says the value went away since it was listed", async () => {
+    pick = revealRejects(
+      new ParameterStoreError(
+        `secret "${NS}${CLIENT_ID_VAR}" has no version to reveal`,
+        404,
+      ),
+    );
+    const flash = await refusal(await connect(), {
+      reason: "client_unreadable",
+      variable: CLIENT_ID_VAR,
+      failure: "not_found",
+      status: 404,
+    });
+    expect(flash).toContain("has no version to reveal");
+    expect(flash).toContain("reload this page");
+  });
+
+  it("client_unreadable: a store 5xx carries its status, so a down store is not read as a missing grant", async () => {
+    pick = revealRejects(
+      new ParameterStoreError(
+        "GET projects/p/secrets/s/versions/latest failed: 503 Service Unavailable",
+        503,
+      ),
+    );
+    const flash = await refusal(await connect(), {
+      reason: "client_unreadable",
+      variable: CLIENT_ID_VAR,
+      failure: "store",
+      status: 503,
+    });
+    expect(flash).toContain("503 Service Unavailable");
+    expect(flash).not.toContain("secretAccessor");
+  });
+
+  it("client_unreadable: a payload that is not an envelope says to rotate it", async () => {
+    pick = revealRejects(new UnreadablePayloadError(`projects/p/secrets/s`));
+    const flash = await refusal(await connect(), {
+      reason: "client_unreadable",
+      variable: CLIENT_ID_VAR,
+      failure: "unreadable",
+      status: 502,
+    });
+    expect(flash).toContain("is not a strad envelope");
+  });
+
+  it("client_unreadable: a key that cannot mint a token is the credential, not a permission on the secret", async () => {
+    pick = revealRejects(
+      new ServiceAccountAuthError(
+        "token exchange failed: 400 Bad Request",
+        400,
+      ),
+    );
+    const flash = await refusal(await connect(), {
+      reason: "client_unreadable",
+      variable: CLIENT_ID_VAR,
+      failure: "credential",
+      status: 400,
+    });
+    expect(flash).toContain("could not get an access token");
+    expect(flash).toContain("not a permission on the secret");
   });
 
   it("client_unreadable: a timeout reads as the store being slow, not as a refusal", async () => {
@@ -449,6 +555,12 @@ describe("the connect POST refuses with a 409 the edge passes through, says why,
     expect(html).toContain("The parameter store did not answer");
   });
 
+  it("no_store: there is no store to read the connector's state from", async () => {
+    pick = () => null as unknown as ParameterStore;
+    const flash = await refusal(await connect(), { reason: "no_store" });
+    expect(flash).toContain("not ready to authorize");
+  });
+
   it("no_store: the store resolved for the state is gone by the time it is used", async () => {
     // The only way to reach this branch: the readiness read found a store, and
     // the second resolution — the one the connect POST uses — did not.
@@ -500,17 +612,23 @@ describe("the callback", () => {
     // The code was never spent against a client strad could not read.
     expect(tokenRequests).toBe(0);
 
-    const records = exported("strad.connector_refused");
+    // The deployment failing, not the consent: ERROR, on stderr, stage
+    // `callback`, naming the variable that could not be read.
+    const records = exported("strad.connector_connect_failed");
     expect(records.map((r) => r.attributes)).toEqual([
       {
-        "strad.evt": "strad.connector_refused",
+        "strad.evt": "strad.connector_connect_failed",
         slug: SLUG,
+        stage: "callback",
         reason: "client_unreadable",
         variable: CLIENT_SECRET_VAR,
         failure: "denied",
         status: 403,
       },
     ]);
+    expect(records[0]!.severityNumber).toBe(SeverityNumber.ERROR);
+    expect(stderrEvent().variable).toBe(CLIENT_SECRET_VAR);
+    expect(exported("strad.connector_refused")).toEqual([]);
 
     const page = await fetch(`${main.baseUrl}${res.headers.get("location")}`, {
       headers: auth,
@@ -518,6 +636,7 @@ describe("the callback", () => {
     const flash = flashOf(await page.text());
     expect(flash).toContain("could not read this server's OAuth client");
     expect(flash).toContain("secretmanager.versions.access");
+    expect(flash).toContain("client-id or client-secret secret");
     expect(flash).not.toContain("refused the write");
 
     const everything = [
@@ -538,5 +657,38 @@ describe("the callback", () => {
       "strad cannot reach the parameter store this connector writes to",
     );
     expect(tokenRequests).toBe(0);
+    expect(
+      exported("strad.connector_connect_failed").map((r) => r.attributes),
+    ).toEqual([
+      {
+        "strad.evt": "strad.connector_connect_failed",
+        slug: SLUG,
+        stage: "callback",
+        reason: "store_error",
+      },
+    ]);
+  });
+
+  it("answers a store that is gone by the callback with a 409, not a 503", async () => {
+    const { cookie, state } = await begin();
+    pick = () => null as unknown as ParameterStore;
+
+    const res = await callback(cookie, state);
+    expect(res.status).toBe(409);
+    expect(await res.text()).toContain(
+      "strad cannot complete this authorization",
+    );
+    expect(tokenRequests).toBe(0);
+    expect(
+      exported("strad.connector_connect_failed").map((r) => r.attributes),
+    ).toEqual([
+      {
+        "strad.evt": "strad.connector_connect_failed",
+        slug: SLUG,
+        stage: "callback",
+        reason: "no_store",
+      },
+    ]);
+    expect(stderrEvent().stage).toBe("callback");
   });
 });

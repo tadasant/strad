@@ -324,8 +324,8 @@ See [the grant it needs](/operate/secrets-iam/#an-oauth-connector-reads-its-own-
 
 Each one renders the slug's own page with the reason in a flash, at **409**, never
 a 5xx. The App Platform ingress treats an upstream 5xx as its own failure and
-swaps the body for its generic edge page, so a refusal answered 503 reached the
-human as "Error code: 503" and nothing else. A store failure names the permission
+swaps the body for its generic edge page, so a refusal answered 503 would reach
+the human as "Error code: 503" and nothing else. A store failure names the permission
 and the resource it was refused on, and never the value: a message the store
 did not write is reduced to its error class. The callback applies the same rule
 to its own setup refusals, and a client it cannot read comes back to the page
@@ -395,22 +395,25 @@ own words:
 
 - `strad.connector_begin` (slug) and `strad.connector_connected` (slug,
   variable): a flow that started, and one that stored a credential.
-- `strad.connector_refused` (slug, reason): the callback refused. `reason` is a
-  refusal code (`account_mismatch`, `scope_not_granted`, `store_failed`,
-  `client_unreadable`, …).
-- `strad.connector_connect_failed` (slug, reason): **Connect** refused before
-  anyone reached the provider. `reason` is one of `no_redirect_uri`,
-  `no_session_key`, `incomplete`, `store_error`, `no_store` or
-  `client_unreadable`. The name ends `_failed`, so it ships at **ERROR** and goes
-  to stderr. The POST carries no fields, so the human did nothing wrong in any
-  branch, and every one of them is the deployment failing.
+- `strad.connector_refused` (slug, reason): the callback refused the consent.
+  `reason` is a refusal code (`account_mismatch`, `scope_not_granted`,
+  `store_failed`, …).
+- `strad.connector_connect_failed` (slug, stage, reason): the **deployment**
+  could not carry a connect through. `stage` is `begin` (the Connect POST) or
+  `callback` (the return from the provider), and `reason` is one of
+  `no_redirect_uri`, `no_session_key`, `incomplete`, `store_error`, `no_store`
+  or `client_unreadable`. The name ends `_failed`, so it ships at **ERROR** and
+  goes to stderr. The human did nothing wrong in any of these branches, so every
+  one of them is the deployment failing. It is throttled to one exported record
+  a minute per slug; stderr gets every one.
 
-On `client_unreadable`, either event also carries `variable` (the config's name
-for the value that could not be read), `failure` (`denied`, `not_found`,
-`unreadable`, `timeout`, `store` or `unexpected`) and `status`, the store's HTTP
+On `client_unreadable` it also carries `variable` (the config's name for the
+value that could not be read), `failure` (`denied`, `not_found`, `unreadable`,
+`timeout`, `store`, `credential` or `unexpected`) and `status`, the store's HTTP
 status as a number. So `slug=google-sheets-tadas412-ro reason=client_unreadable
 failure=denied status=403` is enough to know which grant is missing. The store's
-own one-line summary, which names the Secret Manager resource, stays on stderr.
+own one-line summary, which names the Secret Manager resource, rides in the same
+payload on stderr and is not exported.
 Nothing derived from a credential is exported — see [Telemetry](/operate/telemetry/).
 
 ## Limits

@@ -1210,14 +1210,17 @@ withholds. So production's connectors need a hand-applied grant,
 `roles/secretmanager.secretAccessor` for the console's service account, **on each
 slug's two client secrets and nothing else**. The command is in
 [Secrets IAM](/operate/secrets-iam/#an-oauth-connector-reads-its-own-oauth-client).
-It needs project IAM admin, which no strad process holds, so it is a human step
-per slug, outside the deploy.
+It is a human step per slug, outside the deploy, and deliberately so. The
+console's own credential holds `secretmanager.secrets.setIamPolicy`, so strad
+could make the binding itself, but the console granting itself read is exactly
+the escalation #31 describes, and doing it routinely would erase the audit signal
+that makes it conspicuous.
 
 Without it, **Connect** refuses. It says so on the page, at 409, naming the
 permission and the exact resource, and it emits `strad.connector_connect_failed`
-with `reason: client_unreadable` and `status: 403`. That refusal used to be a 503
-that the App Platform ingress replaced with its own edge page, and a bare
-`catch {}` kept no trace of it.
+with `reason: client_unreadable` and `status: 403`. It is a 409 because the App
+Platform ingress replaces an upstream 5xx with its own edge page, which would
+drop the sentence that says why.
 
 Two costs are worth stating. The per-secret grant is a real, narrow exception to
 write-never-read: two values, per connector, never the refresh tokens the flow

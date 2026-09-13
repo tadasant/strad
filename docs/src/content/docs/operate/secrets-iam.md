@@ -52,16 +52,17 @@ console does not need an IAM change to enumerate or relabel what it already owns
 
 **Reveal is the only operation that needs `secretmanager.versions.access`.**
 Everything else the console does — create, rotate, note, delete, list — works
-without it. One console feature is a reveal under another name: an `oauth:`
-connector reads its own OAuth client through it, so a connector needs that
-permission on its two client secrets and nowhere else. That is the one exception
-to §1, granted per secret — see
-[An `oauth:` connector reads its own OAuth client](#an-oauth-connector-reads-its-own-oauth-client).
-So write-without-read is achievable _as a permission set_: the console
+without it. So write-without-read is achievable _as a permission set_: the console
 keeps managing secrets and loses the ability to display one. It is **not** a
 boundary on its own, because a secret create also needs
 `secretmanager.secrets.setIamPolicy`, and that permission can grant read back to
 its holder — see [the danger note below](#1-prod-console-write-but-never-read).
+
+One console feature is a reveal under another name: an `oauth:` connector reads
+its own OAuth client through it, so a connector needs `versions.access` on its two
+client secrets and nowhere else. That is the one exception to §1, granted per
+secret — see
+[An `oauth:` connector reads its own OAuth client](#an-oauth-connector-reads-its-own-oauth-client).
 
 **`parameterVersions.get` is safe to keep.** It reads the parameter's raw
 envelope, and for a secret parameter that envelope holds a `__REF__` pointer, not
@@ -374,7 +375,7 @@ values it has to read anyway, for one slug, and nothing else. The tokens a
 connector writes under `oauth/` stay unreadable to it, and those are the
 credentials worth protecting.
 
-Three consequences to know:
+Four consequences to know:
 
 - **The §1 audit cannot see this grant, in either direction.**
   `projects:testIamPermissions` answers at project level, so it still prints `{}`

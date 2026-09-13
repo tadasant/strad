@@ -40,6 +40,7 @@ import {
 } from "../connectors/index.ts";
 import { CONNECTOR_CALLBACK_PATH } from "../connectors/index.ts";
 import { errorSummary } from "../util/error-text.ts";
+import { ServiceAccountAuthError } from "../secrets/parameters/service-account.ts";
 import {
   ParameterStoreError,
   staticNamespace,
@@ -139,7 +140,8 @@ export function mountConnector(
 // ---------------------------------------------------------------------------
 
 /**
- * Why the connect POST refused, as one word from a closed set strad wrote.
+ * Why the deployment could not carry a connect through, as one word from a
+ * closed set strad wrote.
  *
  * The four readiness words are `ConnectorState` kinds, shipped as they are, so
  * the event and the panel under the flash agree on what state the connector was
@@ -151,6 +153,50 @@ type ConnectRefusal =
   | Exclude<ConnectorState["kind"], "ready" | "connected">
   | "no_session_key"
   | "client_unreadable";
+
+/**
+ * `strad.connector_connect_failed`: the DEPLOYMENT could not carry a connect
+ * through, at either end of the flow.
+ *
+ * `begin` is the POST behind the button, `callback` is the return from the
+ * provider. What they share is that the human did nothing wrong — the POST
+ * carries no fields, and a callback that reached these branches has already
+ * passed every check on the transaction — so each is the deployment failing,
+ * which is why the name ends `_failed` and ships at ERROR on stderr. A refusal
+ * of the CONSENT (wrong account, narrowed scopes, a spent transaction) is
+ * `strad.connector_refused` instead.
+ *
+ * Every field is the config's or a word from a closed set. `error` is on no
+ * allowlist, so the store's own one-line summary reaches stderr only.
+ */
+function connectFailed(
+  stage: "begin" | "callback",
+  slug: string,
+  reason: ConnectRefusal,
+  detail: Record<string, string | number> = {},
+): void {
+  event({
+    evt: "strad.connector_connect_failed",
+    slug,
+    stage,
+    reason,
+    ...detail,
+  });
+}
+
+/** The event fields a failed client read adds, beside `reason`. */
+function clientReadDetail(
+  variable: string,
+  read: ClientRead,
+  err: unknown,
+): Record<string, string | number> {
+  return {
+    variable,
+    failure: read.failure,
+    ...(read.status === undefined ? {} : { status: read.status }),
+    error: errorSummary(err),
+  };
+}
 
 async function handleConnect(
   req: Request,
@@ -183,30 +229,20 @@ async function handleConnect(
 
   // EVERY REFUSAL BELOW IS A 409, NEVER A 5xx. The App Platform ingress treats
   // an upstream 5xx as its own failure and replaces the body with its generic
-  // edge page (the trap src/http/readiness.ts is shaped around), so a 503 here
-  // delivered "Error code: 503" and none of the sentence that said why. 409 is
-  // what this handler already answered for a connector that is not ready, and
-  // rendering in place — rather than redirecting with `?error=` — keeps the
-  // specific reason off the URL, where the page accepts only a closed set of
-  // codes.
+  // edge page (the trap src/http/readiness.ts is shaped around), so the human
+  // would see "Error code: 503" and none of the sentence that says why. 409 is
+  // what a connector that is not ready gets, and rendering in place — rather
+  // than redirecting with `?error=` — keeps the specific reason off the URL,
+  // where the page accepts only a closed set of codes.
   //
-  // And every one is an event. A human pressed Connect and did nothing wrong in
-  // any of these branches — the POST carries no fields — so each is the
-  // deployment failing to begin a flow, which is why the name ends `_failed`
-  // and ships at ERROR. Every field is the config's or a word from a closed set;
-  // `error` is on no allowlist, so the store's own summary reaches stderr only.
+  // And every one is an event: see `connectFailed`.
   const refuse = async (
     reason: ConnectRefusal,
     message: string,
     state?: ConnectorState,
     detail: Record<string, string | number> = {},
   ): Promise<void> => {
-    event({
-      evt: "strad.connector_connect_failed",
-      slug: entry.server.slug,
-      reason,
-      ...detail,
-    });
+    connectFailed("begin", entry.server.slug, reason, detail);
     await renderConnectorPage(res, opts, entry, {
       signedInAs,
       status: 409,
@@ -286,12 +322,7 @@ async function handleConnect(
       `strad cannot read this server's OAuth client, so it cannot begin an ` +
         `authorization: ${read.sentence} Nothing was written.`,
       state,
-      {
-        variable: clientIdVariable,
-        failure: read.failure,
-        ...(read.status === undefined ? {} : { status: read.status }),
-        error: errorSummary(err),
-      },
+      clientReadDetail(clientIdVariable, read, err),
     );
     return;
   }
@@ -458,6 +489,11 @@ async function handleCallback(
   const redirectUri = connectorRedirectUri(opts.config);
   const resolved = connectorStore(opts, entry);
   if (!redirectUri || !resolved.store) {
+    connectFailed(
+      "callback",
+      entry.server.slug,
+      redirectUri ? "no_store" : "no_redirect_uri",
+    );
     refuse(
       "strad cannot complete this authorization",
       redirectUri
@@ -476,6 +512,7 @@ async function handleCallback(
   // exist — which is what makes this a rotate rather than a create.
   const state = await readConnectorState(opts, entry);
   if (state.kind !== "ready" && state.kind !== "connected") {
+    connectFailed("callback", entry.server.slug, state.kind);
     refuse(
       "This connector is no longer ready",
       state.kind === "incomplete"
@@ -493,10 +530,10 @@ async function handleCallback(
   };
 
   // The OAuth client, read BEFORE the exchange and outside its `try`. Inside it,
-  // a read the store refused was reported as `store_failed` — "the
-  // authorization succeeded but the parameter store refused the write" — which
-  // sends an operator to the write grants when it was the client secret the
-  // console could not read. The connect POST read only the client id, so a
+  // a read the store refused would surface as `store_failed` — "the
+  // authorization succeeded but the parameter store refused the write" — and
+  // send an operator to the write grants when it was the client secret the
+  // console could not read. The connect POST reads only the client id, so a
   // deployment that can read that one secret and not this one gets exactly here.
   let client: { clientId: string; clientSecret: string };
   let reading = entry.oauth.clientIdVariable;
@@ -523,15 +560,12 @@ async function handleCallback(
       reading,
       connectorVariablePath(opts.config, entry, state.presence, reading),
     );
-    event({
-      evt: "strad.connector_refused",
-      slug: entry.server.slug,
-      reason: "client_unreadable",
-      variable: reading,
-      failure: read.failure,
-      ...(read.status === undefined ? {} : { status: read.status }),
-      error: errorSummary(err),
-    });
+    connectFailed(
+      "callback",
+      entry.server.slug,
+      "client_unreadable",
+      clientReadDetail(reading, read, err),
+    );
     back(`?error=client_unreadable`);
     return;
   }
@@ -624,7 +658,21 @@ function readOwnVariable(
 
 /** What went wrong reading the OAuth client, as a word from a closed set. */
 type ClientReadFailure =
-  "denied" | "not_found" | "unreadable" | "timeout" | "store" | "unexpected";
+  | "denied"
+  | "not_found"
+  | "unreadable"
+  | "timeout"
+  | "store"
+  | "credential"
+  | "unexpected";
+
+/** A failed client read: the sentence for the page, the words for the event. */
+interface ClientRead {
+  sentence: string;
+  failure: ClientReadFailure;
+  /** The store's HTTP status, when it answered with one. */
+  status?: number;
+}
 
 /**
  * `projects/<project>/secrets/<id>`, when the refused call was Secret Manager's.
@@ -651,16 +699,18 @@ const SECRET_ACCESS = /^GET (projects\/[^/\s]+\/secrets\/[^/\s]+)\/versions\//;
  * rather than the role, because the grant it points at is per secret — see
  * that page's section on connectors.
  *
- * NO MESSAGE BUT THE STORE'S OWN. Anything that is not a `ParameterStoreError`
- * is reduced to its class, for the reason `errorSummary` gives: an exception
- * raised while reading a payload can quote a window of it, and here the payload
- * is an OAuth client secret.
+ * NO MESSAGE BUT STRAD'S OWN. A `ParameterStoreError` is built from a method,
+ * a resource and a status, and a `ServiceAccountAuthError` from strad's own
+ * sentences about a token exchange; neither can carry a value. Anything else is
+ * reduced to its class, for the reason `errorSummary` gives: an exception raised
+ * while reading a payload can quote a window of it, and here the payload is an
+ * OAuth client secret.
  */
 function clientReadFailure(
   err: unknown,
   variable: string,
   path: string,
-): { sentence: string; failure: ClientReadFailure; status?: number } {
+): ClientRead {
   if (err instanceof UnreadablePayloadError) {
     return {
       failure: "unreadable",
@@ -677,13 +727,14 @@ function clientReadFailure(
         failure: "denied",
         status: 403,
         sentence:
-          `the console's credential lacks secretmanager.versions.access on ` +
-          `${secret}, the secret behind ${path}, so reading ${variable} was ` +
-          `refused (403). An oauth: connector reads its client through the ` +
-          `console, so that service account needs ` +
+          `Secret Manager refused the console's credential ` +
+          `secretmanager.versions.access on ${secret}, the secret behind ` +
+          `${path}, so reading ${variable} failed (403). An oauth: connector ` +
+          `reads its client through the console, so that service account needs ` +
           `roles/secretmanager.secretAccessor on this slug's own client-id ` +
           `and client-secret secrets — on those secrets only, never on the ` +
-          `project. The Secrets IAM page has the exact grant.`,
+          `project. If that grant is already in place, an IAM deny policy on ` +
+          `the project overrides it. The Secrets IAM page has the exact grant.`,
       };
     }
     if (err.status === 403) {
@@ -709,6 +760,17 @@ function clientReadFailure(
       failure: "store",
       status: err.status,
       sentence: `the store refused reading ${path} (${err.message}).`,
+    };
+  }
+  if (err instanceof ServiceAccountAuthError) {
+    return {
+      failure: "credential",
+      status: err.status,
+      sentence:
+        `the console's service-account key could not get an access token ` +
+        `(${err.message}), so nothing reached the store. The key is rejected ` +
+        `or revoked, or Google's token endpoint is failing — this is not a ` +
+        `permission on the secret.`,
     };
   }
   if (
@@ -1045,10 +1107,10 @@ function refusalMessage(code: string, terms: ConnectorTerms): string {
         `read this server's OAuth client from its own namespace to exchange ` +
         `the code, so nothing was exchanged and nothing was written. The usual ` +
         `cause is the console's service account lacking ` +
-        `secretmanager.versions.access on the client-secret secret — an ` +
-        `oauth: connector needs roles/secretmanager.secretAccessor on this ` +
-        `slug's own client-id and client-secret secrets. strad's logs name ` +
-        `the variable and the status under strad.connector_refused.`
+        `secretmanager.versions.access on the client-id or client-secret ` +
+        `secret — an oauth: connector needs roles/secretmanager.secretAccessor ` +
+        `on this slug's own client-id and client-secret secrets. strad's logs ` +
+        `name which variable, and why, under strad.connector_connect_failed.`
       );
     case "store_failed":
       return (

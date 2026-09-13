@@ -5024,18 +5024,26 @@ run the way that page says, a connector whose client values are secret parameter
 lists as ready and refuses at **Connect**. Making it work takes a human IAM step:
 `roles/secretmanager.secretAccessor` for the console's service account, bound on
 that slug's two client secrets and nothing else. It is a `gcloud` command per
-slug, outside the deploy, and no strad process holds the project IAM admin it
-needs. It conflicts with the §1 deny policy (#31), which overrides any allow and
-whose conditions can match tags but not resource names.
+slug, outside the deploy. It conflicts with the §1 deny policy (#31), which
+overrides any allow and whose conditions can match tags but not resource names.
+
+**Why strad does not apply it itself.** It could. The binding is a policy edit on
+one secret, which needs `secretmanager.secrets.getIamPolicy` and `setIamPolicy`,
+and the console's credential holds both project-wide because a secret create
+needs them (`grantRenderAccess()` in `src/secrets/parameters/gcp.ts` makes the
+same edit for a parameter's own principal). But the console granting ITSELF read
+on a secret is exactly the escalation #31 describes: the thing the write-never-read
+posture treats as a conspicuous, logged act. Doing it on purpose, per connector,
+would make that act routine and blind the audit signal it is. So the grant stays a
+deliberate human step.
 
 **Why it ships anyway.** Core has no other credential that reaches one slug's
 namespace. The per-secret grant is the narrowest one IAM can express, and it
 exposes two values the flow has to read anyway, never the refresh tokens the flow
-writes under `oauth/`. Before this entry, the failure was also invisible: the
-connect POST answered 503, the App Platform ingress replaced the page with its own,
-and a bare `catch {}` dropped the error. Both are fixed. The refusal is a 409 that
-names the permission and the resource, and it emits
-`strad.connector_connect_failed`. The grant itself is what stays manual.
+writes under `oauth/`. And a missing grant is visible rather than silent: the
+refusal is a 409 the App Platform ingress passes through, it names the permission
+and the resource, and it emits `strad.connector_connect_failed` at ERROR. The
+grant itself is what stays manual.
 
 **Undo.** A connector that never needs the console to read its client. Two
 options, and choosing between them is a posture decision rather than a code one:
