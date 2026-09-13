@@ -4998,8 +4998,12 @@ deliberately, as a posture decision for the operator rather than a defect. The
 operator took it on 2026-09-13 and kept the workflow, and it is re-taken if a
 `connectors` write tool is granted to a role other than `admin` — which is what
 bounds the widening today, since the four write tools are `admin`-only in
-production. `docs/src/content/docs/operate/runtime-config-plan.md` carries the
-decision and that condition as the open half of phase 2, and
+production. `save_connector` is the one of the four the widening actually runs
+through, being the only one that composes an entry and so the only one that
+reaches `assertAcceptable`; the trigger is drawn at the grant because that is
+the unit the decision is taken in.
+`docs/src/content/docs/operate/runtime-config-plan.md` carries the decision and
+that condition as the open half of phase 2, and
 `test/connectors.isolation.test.ts` asserts the behaviour that was chosen so
 that re-taking it must update the record.
 
