@@ -344,8 +344,6 @@ export function renderTokensPage(opts: TokensPageOptions): string {
   </section>`;
 
   const body = `
-<nav class="breadcrumb"><a href="/ui" class="crumb">servers</a><span class="crumb-sep">/</span><span class="crumb crumb-current">tokens</span></nav>
-
 <section class="browse-head">
   <div class="stat"><span class="stat-n">${live.length}</span><span class="stat-l">live</span></div>
   <div class="stat"><span class="stat-n">${records.length - live.length}</span><span class="stat-l">revoked</span></div>
@@ -365,6 +363,7 @@ ${CONFIRM_SCRIPT}`;
     title: "system tokens",
     signedInAs: opts.signedInAs,
     body,
+    nav: "tokens",
     helpTitle: "Token guide",
     help: tokensGuide(config, blocked),
   });
@@ -487,6 +486,7 @@ function unexpected(res: Response, err: unknown): void {
     .send(
       layout({
         title: "tokens · error",
+        nav: "tokens",
         body: `<div class="state state-error">
         <p class="state-title">Something went wrong</p>
         <p class="state-sub">No record was changed — every write here refuses before it writes rather than half-way through. Try again; if it keeps happening, the gateway's logs carry the reason.</p>

@@ -1,6 +1,8 @@
 import express, { type Express, type Request, type Response } from "express";
 import type { ConsoleTokenStore } from "../auth/console-tokens.ts";
 import type { ConsoleSessions } from "../auth/session.ts";
+import type { RuntimeConfig } from "../config/runtime.ts";
+import { mountServersUi } from "./servers.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { asyncRoute } from "../http/async-route.ts";
 import type { SecretBag } from "../secrets/index.ts";
@@ -175,6 +177,16 @@ export interface ConsoleUiOptions {
   consoleTokens?: ConsoleTokenStore | null;
   /** Test seam: the transport a connector's token exchange uses. See ConnectorUiOptions. */
   connectorFetch?: typeof fetch;
+  /**
+   * The runtime roster holder, when this deployment has one.
+   *
+   * A getter, because the app this mounts into is rebuilt on every roster
+   * change and the holder is what rebuilds it — see AppOptions.runtimeConfig.
+   * Absent or returning null means `gateway.configStore:` is off: `/connectors`
+   * is still served — the shared nav bar links it from every page — and every
+   * route under it answers with the page that says the editor is off.
+   */
+  runtimeConfig?: () => RuntimeConfig | null;
 }
 
 export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
@@ -258,6 +270,23 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     env: opts.env,
     secretProvider: opts.secretProvider,
     parametersStore: opts.parametersStore,
+  });
+
+  // Create / edit / remove a server entry, when this deployment keeps its
+  // roster in a store. Mounted at its own top-level prefix rather than under
+  // `/ui/:server` — see src/ui/servers.ts for why that wildcard makes `/ui/...`
+  // the wrong home for it.
+  //
+  // ALWAYS mounted, including when there is no runtime holder to edit through.
+  // The routes already answer a store-less gateway with the page that says the
+  // editor is off (`unavailable()` there), and the shared nav bar links
+  // `/connectors` from every page — so leaving the prefix unregistered would
+  // turn one item in that bar into Express's own stock 404 on exactly the
+  // deployments that most need telling why. A thunk that returns null is the
+  // shape of "no store", and the handlers already read it that way.
+  mountServersUi(app, gate, {
+    runtimeConfig: opts.runtimeConfig ?? (() => null),
+    env: opts.env,
   });
 
   // The secret roster used to live here, as its own destination. It does not any
@@ -406,7 +435,7 @@ async function handleServerView(
           heading: "No such server",
           sub: `No server named "${slug}" is configured on this gateway.`,
           tone: "warn",
-          breadcrumbToIndex: true,
+          nav: "servers",
         }),
       );
     return;
@@ -421,7 +450,7 @@ async function handleServerView(
         heading: "No browser view for this server",
         sub: `The "${slug}" server (kind: ${view.server.kind}) has no human resource view yet. The GCS browser is wired first; other kinds follow the same pattern.`,
         tone: "info",
-        breadcrumbToIndex: true,
+        nav: "servers",
       }),
     );
     return;
@@ -463,7 +492,7 @@ async function handleServerView(
           view.accountReason ??
           "This server is scoped to a GCS bucket, but the console cannot resolve its credentials.",
         tone: "warn",
-        breadcrumbToIndex: true,
+        nav: "servers",
       }),
     );
     return;
@@ -497,7 +526,7 @@ async function handleServerView(
           heading: "Could not list this bucket",
           sub: `GCS rejected the request. This is usually a credential or bucket-permission problem. Detail: ${detail}`,
           tone: "error",
-          breadcrumbToIndex: true,
+          nav: "servers",
         }),
       );
   }
@@ -555,7 +584,7 @@ async function handleSecretAction(
           heading: "No such secrets server",
           sub: `"${slug}" is not a parameters-backed server on this gateway.`,
           tone: "warn",
-          breadcrumbToIndex: true,
+          nav: "servers",
         }),
       );
     return;
@@ -595,7 +624,7 @@ async function handleSecretAction(
             `nothing was written. Configured stores: ` +
             `${view.stores.map((st) => st.projectId).join(", ")}.`,
           tone: "warn",
-          breadcrumbToIndex: true,
+          nav: "servers",
         }),
       );
     return;
@@ -880,7 +909,7 @@ async function renderSecretsPage(
           `"/strad/${opts.config.gateway.env}/mcp/" — under this store's namespaces: (or, on a ` +
           `single-store config, SECRETS_NAMESPACES under this server's consoleEnv:).`,
         tone: "warn",
-        breadcrumbToIndex: true,
+        nav: "servers",
         otherStores,
         siblingPages,
       }),
@@ -903,7 +932,7 @@ async function renderSecretsPage(
           `fall back to another store's key: each store on this page carries its OWN admin ` +
           `credential, by design. Store: ${selected.label}. Detail: ${selected.accountReason ?? "no credential"}`,
         tone: "warn",
-        breadcrumbToIndex: true,
+        nav: "servers",
         otherStores,
         siblingPages,
       }),
@@ -1019,7 +1048,7 @@ function renderNoStores(
         `Add at least one entry under consoleStores: (project, namespaces, adminKeyVar), or ` +
         `set SECRETS_PROJECT_ID under this server's consoleEnv:.`,
       tone: "warn",
-      breadcrumbToIndex: true,
+      nav: "servers",
     }),
   );
 }
@@ -1289,7 +1318,7 @@ function renderUnexpected(res: Response, err: unknown): void {
         heading: "Something went wrong",
         sub: describe(err),
         tone: "error",
-        breadcrumbToIndex: true,
+        nav: "servers",
       }),
     );
 }

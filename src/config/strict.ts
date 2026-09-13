@@ -157,7 +157,27 @@ export function unknownConfigKeys(
       suggestion: nearest(u.key, [...u.known]),
     });
   }
-  walk(dialect.doc, parsed, "", out);
+  out.push(...unknownKeysIn(dialect.doc, parsed));
+  return out;
+}
+
+/**
+ * The same diff, over a document that is already parsed out of its text.
+ *
+ * The strict check was born with YAML on one side of it, because the only thing
+ * that had ever produced a config was a file. The runtime overlay
+ * (src/config/overlay.ts) produces one by MERGING a stored document into the
+ * checked-in one, and there is no single text to re-parse — so the walk takes
+ * the two objects it always compared, and `unknownConfigKeys` becomes the
+ * text-shaped wrapper it always was underneath, plus the dialect's own findings.
+ *
+ * Same rules, verbatim: keys the schema ADDS are invisible (the walk only looks
+ * at what the source declared), and keys inside a `z.record()` map are kept by
+ * the schema so the diff finds nothing.
+ */
+export function unknownKeysIn(raw: unknown, parsed: unknown): UnknownKey[] {
+  const out: UnknownKey[] = [];
+  walk(raw, parsed, "", out);
   return out;
 }
 

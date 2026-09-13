@@ -1844,7 +1844,7 @@ done; the class is what is left.
 
 **What.** The console is installable, and its service worker precaches a fixed
 shell — the icons, the manifest and one static offline page — into a cache named
-by the `SHELL_CACHE` constant in `src/ui/pwa.ts`, currently `strad-shell-v1`. The
+by the `SHELL_CACHE` constant in `src/ui/pwa.ts`, currently `strad-shell-v2`. The
 worker's `activate` deletes every cache whose name is not the current one, so
 renaming the constant is also the eviction. Nothing renames it for you, and
 nothing fails if you forget.
@@ -3199,7 +3199,7 @@ error is the only place it is enforced. A deployment that grows a genuinely
 concurrent write-back need (a credential that is NOT single-use, several replicas)
 has to implement the CAS first.
 
-**Two smaller edges of the same path:**
+**Three smaller edges of the same path:**
 
 - **The boot read makes the store authoritative at boot, which is a behaviour
   change for the names on the list.** A container that previously always started
@@ -3213,6 +3213,13 @@ has to implement the CAS first.
   this process, and it is the only shape available: the alternative is a silent
   loss that surfaces hours later as a total outage. Read a degraded x-twitter as
   "re-seed before this restarts", not as "it is down".
+- **A console Reconnect does not reach a running process.** A connector's
+  variable on `paramsWritable:` is rotated under `oauth/` once a consent has
+  written it there. Reconnecting writes a fresh grant there, but the running process still
+  holds the token it booted with, and its next rotation writes over the reconnect
+  — last-write-wins, with no compare-and-set. Restart the component after a
+  reconnect. The same window exists for a hand re-seed of any `paramsWritable:`
+  name.
 
 **Exit.** A compare-and-set `put()` — read the parameter's latest version id,
 write conditional on it, re-read on conflict — plus dropping the render check, for
@@ -3229,7 +3236,7 @@ is the same token core presents to proxy `/mcp` to each of them. Nothing binds a
 caller to the slug it addresses.
 
 So the reachable set is not "this server's allowlist" — it is the UNION of every
-enabled server's `paramsWritable:`, for any container holding the token. Two
+enabled server's `paramsWritable:`, for any container holding the token. Three
 concrete consequences, and the docs must not claim otherwise:
 
 - A compromised container on bundle A can READ and OVERWRITE the rotating
@@ -3238,6 +3245,9 @@ concrete consequences, and the docs must not claim otherwise:
   stored value took the console admin key behind Google SSO. `STRAD_INTERNAL_TOKEN`
   is now also a read credential for the names on that union, which belongs in how
   often it is rotated.
+- A connector's variable listed under `paramsWritable:` is in that union too, so
+  the rotating credential a human consented to in the console is reachable the same
+  way. The route can only `rotate()` it, never create it.
 
 **Why anyway.** The union is opt-in, empty by default, and every name in it is by
 construction a credential that ROTATES — the thing `paramsWritable` exists for.
@@ -4894,7 +4904,118 @@ retain, expire or clean up.
 
 ---
 
-## 96. Console login tokens live in core's memory
+## 96. The runtime roster can add a slug, not a credential
+
+**What.** `gateway.configStore.enabled` lets a human add, edit, disable and
+remove a `servers:` entry from the console at `/connectors`, and an agent do the
+same over `/mcp` through the `connectors` builtin, with the change live on the
+next request and no deploy. Two things it does not do, and the first is the one
+somebody will expect.
+
+**A second account of an existing bundled server still needs a deploy.** "Add a
+second gmail account and use it immediately" is the shape this feature looks
+like it delivers, and it does not. A `supplementary-image` mount's credentials
+reach its container as environment variables the renderer bakes into the app
+spec at render time, and a process's environment is fixed at spawn — so a new
+`GMAIL_PERSONAL_*` value cannot reach a running container at all. The bundle
+host compounds it: it discovers the extra slugs it should mount by looking for
+prefixed marker variables in its own `process.env` (`servers/bundle/host/src/mounts.ts`),
+so a slug whose variables are not there is a slug that container does not serve,
+whatever the roster says. `assertCreatable` refuses the fields that would lie
+(`env`, `params`, `paramsWritable`, `paramsRefresh`, `consoleEnv`,
+`consoleStores`, `mcpStores`) rather than accept an entry the deployment cannot
+honour. What IS deliverable at runtime is a second slug onto a mount that is
+ALREADY deployed and already credentialed — the `gmail-ro` / `gmail-rw` pattern,
+two entries on one `path:` differing by `tools:` — and the two unhosted kinds,
+`remote-http` and `local-tunnel`, which run in core's own process and are
+genuinely add-and-use.
+
+**The overlay parameter has no compare-and-swap.** Parameter Manager offers
+none, so the write is a read-modify-write. The console carries the `revision` it
+rendered and refuses a stale Save with a `409`, which catches the collision a
+human causes — a second tab, a second console process. Two writes landing inside
+one read-modify-write window still lose one, silently, and the loser is whichever
+wrote first. What bounds it is that writes are rare and come from one place:
+core is the only component holding the admin credential, whether the write
+arrives as a console form or a tool call. `RuntimeConfig` serialises `apply` and
+`poll` within a process, so the remaining window is strictly cross-process.
+
+The MCP door inherits that window rather than widening it: `save_connector`
+takes `expectedRevision` optionally, so a caller that read the roster first gets
+the same refusal, and one that did not gets the same last-writer-wins.
+
+**Neither gap means a runtime write is unbounded.** Three rules bound what one
+may reach, as distinct from who may make one. A runtime-authored entry's
+`${NAME}` refs resolve against that slug's own `/strad/{env}/mcp/{slug}/static/`
+namespace and nothing else (`forServerIsolated`, `src/secrets/provider/index.ts`),
+so a connector `url:` cannot read core's process environment and send it off-box.
+A runtime write may not change `entitlements:` or `tools:` on a slug the
+checked-in document declares (`assertNoAccessControlChange`,
+`src/config/overlay.ts`), keyed on the document so remove-then-recreate is bound
+too. And a runtime write may NAME a credential and may not CARRY one
+(`assertSecretsByReference`, `src/config/secret-position.ts`): the overlay is a
+non-secret parameter, so a literal saved into `headers:`, into `url:`'s userinfo
+or into `oauthRefresh:`'s grant would be a credential at rest in the clear. Disabling a connector that carries one is refused too, because disable
+re-upserts the entry; removing it is always allowed.
+`docs/src/content/docs/operate/runtime-config.md` has all three.
+
+**THE THIRD RULE HAS TWO POSITIONS IT DOES NOT COVER**, and the reason is the
+same in both: a ref-only rule there would refuse the ordinary case. A **URL
+query parameter** — `https://api.example.com/mcp?key=abc` — is a literal
+credential and is accepted, because nothing can tell it from `?version=2`
+without refusing every URL that carries a query. Userinfo is different and IS
+refused: `user:pass@` is a credential by definition. And a **builtin's
+`options:`** is an untyped bag whose ordinary contents are non-secret literals
+(`echo`'s `greeting`), so the reachable surface there is editing the options of
+a builtin the checked-in document already declares — a builtin cannot be created
+at runtime. Closing either needs a typed statement of which fields carry a
+credential, per kind and per builtin, which is a schema change rather than a
+rule. `docs/src/content/docs/operate/runtime-config-plan.md` carries it as a
+later phase.
+
+**Why.** The first is physics, not policy: nothing in a running App Platform
+container can be handed a new environment variable, and a feature that pretended
+otherwise would ship a Save button whose result is a mount that lists no tools.
+The second is a store limitation strad cannot fix from the client side.
+
+**Undo.** For the first: a credential path that a running container reads rather
+than receives — the same move `paramsRefresh:` makes, widened from "a value
+behind an already-listed name" to "a name the spec never listed", which needs the
+bundle host to discover mounts from the store instead of from `process.env`.
+tadasant/strad#343 carries it. For the second: a stored document with an
+`etag`-style precondition, or a single writer elected per deployment.
+
+---
+
+## 97. A console session cannot be revoked one at a time, and one in use renews to its cap
+
+**What.** The Google console session is a signed cookie with no server-side
+record (`src/auth/session.ts`). It slides: past half its window
+(`auth.google.session.slidingTtlSeconds`, 48 hours by default) the console gate
+re-issues it, and an absolute cap counted from the Google sign-in
+(`absoluteTtlSeconds`, 7 days by default) refuses it however recently it was
+renewed. Nothing can end ONE session early. The only revocation is rotating
+`CONSOLE_SESSION_SECRET` (or `GOOGLE_CLIENT_SECRET`, when that is the key), which
+signs everyone out.
+
+**Why.** strad has no datastore, and the console may run more than one replica,
+so a session table would have the failure #11 fixed for the OAuth transaction: a
+session minted on one replica unknown to another, and every restart a sign-out.
+A fixed 12-hour life would bound a stolen cookie at 12 hours, at the price of a
+sign-in every day. Renewal (#46) trades that for the cap: a stolen cookie the
+thief keeps using renews itself just as the owner's does, and stays live until 7
+days after the owner signed in.
+The cap can be lowered in config and never raised past 30 days, and a cookie that
+cannot say when its sign-in was is refused rather than uncapped.
+
+**Undo.** A durable server-side session store, shared with #43's single-use login
+tokens rather than built twice: each renewal checks a revocation list, and the
+console lists and ends individual sessions. That is the issue's option C, deferred
+until per-session revocation is a requirement on its own.
+
+---
+
+## 98. Console login tokens live in core's memory
 
 **What.** A console login token (`POST /console/tokens`, `src/auth/console-tokens.ts`)
 and the 30-minute session it is exchanged for are records in a `Map` inside the

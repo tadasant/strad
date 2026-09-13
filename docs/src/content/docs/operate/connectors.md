@@ -40,6 +40,12 @@ supplementary server's environment is baked at deploy time, so a credential
 stored now is on the box after the next deploy, not the moment the page says it
 was written.
 
+An agent cannot do any of step 3: consent is a browser handshake with Google. A
+deployment that mounts the [`connectors`
+builtin](/operate/runtime-config/#the-oauth-leg-is-a-handoff-not-a-flow) gives it
+the next best thing, `describe_connector_authorization`, which hands back the
+console URL for the person to open and the parameter path the token lands at.
+
 ## The configuration
 
 ```yaml
@@ -79,6 +85,31 @@ strings — and from nothing else, so there is no spelling of one that reaches
 another server's namespace. The flow **writes** to `oauth/`; it **reads** the
 client id and secret from `oauth/` first and `static/` second, which is the same
 layering everything else applies.
+
+### A credential that rotates on use: list it under `paramsWritable:` too
+
+Some providers' refresh tokens are single-use: every refresh returns a new one and
+kills the old one. X's are. The console mints the
+first token, but the server spends it, so the server has to persist each successor
+or the next restart comes back holding a dead one.
+
+List the connector's variable under [`paramsWritable:`](/operate/secrets/#paramswritable--a-credential-that-rotates-on-use)
+on the same server (it needs `params: true`). The write-back route sees that the
+name belongs to this server's connector and rotates `oauth/`, the path the consent
+wrote and the one every read prefers. If the store holds only a copy seeded by
+hand under `static/`, for example a token set up before the connector existed,
+the route rotates that copy until someone connects. So two things write `oauth/`: the consent
+callback, which creates the parameter and records who consented, and the
+write-back route, which rotates it. The route cannot create it, so a server that rotates when neither kind holds the
+name gets a 404 and degrades. It also leaves the
+parameter secret and the consent note alone. [`paramsRefresh:`](/operate/secrets/#paramsrefresh--a-rotation-that-lands-without-a-deploy)
+follows the same rule for a re-read.
+
+**Reconnect** writes a fresh grant over the same path, and the server picks it up
+at its next boot. Restart it after reconnecting. A process that is still running
+holds the token it booted with, and its next rotation writes over the reconnect:
+the route has no compare-and-set, the same window a hand re-seed of any
+`paramsWritable:` name has.
 
 ## `provider: generic` — any OAuth 2.0 provider
 

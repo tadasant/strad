@@ -20,6 +20,7 @@ import {
   type Routing,
 } from "./param-routing.ts";
 import type { RevealPosture } from "./reveal.ts";
+import { NAV_CSS, renderNav, type NavKey } from "./nav.ts";
 import { PWA_HEAD } from "./pwa.ts";
 
 /**
@@ -46,6 +47,19 @@ export interface LayoutOptions {
   serverSlug?: string;
   signedInAs?: string;
   body: string;
+  /**
+   * The shared nav bar (src/ui/nav.ts), and which top-level destination this
+   * page belongs to.
+   *
+   * Default-on, deliberately: "every console page carries the nav" is the
+   * property, and a default that had to be opted into would be one page away
+   * from being false again. `undefined` draws the bar with nothing marked — for
+   * a page that is a console page but none of the five destinations. `false`
+   * omits it, and only the pages reached WITHOUT a console session pass it: the
+   * sign-in refusal, the offline shell, and the `/mcp` OAuth screens, where
+   * every link in the bar would answer 401.
+   */
+  nav?: NavKey | false;
   /** Where the brand mark links. Defaults to the console index. */
   brandHref?: string;
   /** The word beside the brand mark. Defaults to "console". */
@@ -113,6 +127,7 @@ ${PWA_HEAD}
       ${opts.help ? helpButton() : ""}
     </div>
   </div>
+  ${opts.nav === false ? "" : renderNav(opts.nav)}
 </header>
 <main class="page">
 ${opts.body}
@@ -273,6 +288,7 @@ ${listing}`;
     serverSlug: slug,
     signedInAs: opts.signedInAs,
     body,
+    nav: "servers",
   });
 }
 
@@ -303,7 +319,7 @@ function breadcrumb(
     );
   });
 
-  return `<nav class="breadcrumb">${crumbs.join("")}</nav>`;
+  return `<nav class="breadcrumb" aria-label="Breadcrumb">${crumbs.join("")}</nav>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -481,7 +497,7 @@ export function renderSecrets(opts: SecretsViewOptions): string {
   const secretCount = parameters.filter((p) => p.secret).length;
 
   const body = `
-<nav class="breadcrumb"><a href="/ui" class="crumb">servers</a><span class="crumb-sep">/</span><span class="crumb crumb-current">${esc(slug)}</span></nav>
+<nav class="breadcrumb" aria-label="Breadcrumb"><a href="/ui" class="crumb">servers</a><span class="crumb-sep">/</span><span class="crumb crumb-current">${esc(slug)}</span></nav>
 ${siblingStrip(opts.siblingPages)}
 
 <section class="browse-head">
@@ -573,6 +589,7 @@ ${comboBoxScript()}`;
     serverSlug: slug,
     signedInAs: opts.signedInAs,
     body,
+    nav: "servers",
     helpTitle: "Parameters guide",
     help: secretsGuide(
       config,
@@ -1391,7 +1408,13 @@ export function renderMessage(opts: {
   sub: string;
   tone?: "info" | "warn" | "error";
   icon?: string;
-  breadcrumbToIndex?: boolean;
+  /**
+   * The nav section this refusal belongs to — the page the reader was trying to
+   * reach, not the one they got. A 424 on `/playground/slack` still marks
+   * "playground", so the bar tells them where they are rather than going blank
+   * on exactly the page they are most lost on.
+   */
+  nav?: NavKey;
   /**
    * Other stores on this console page, offered as links.
    *
@@ -1418,7 +1441,6 @@ export function renderMessage(opts: {
         .join(" · ")}</p>`
     : "";
   const body = `
-${opts.breadcrumbToIndex ? `<nav class="breadcrumb"><a href="/ui" class="crumb">servers</a></nav>` : ""}
 ${siblingStrip(opts.siblingPages ?? [])}
 <div class="state state-${tone}">
   <div class="state-icon">${opts.icon ?? INFO_SVG}</div>
@@ -1431,6 +1453,7 @@ ${siblingStrip(opts.siblingPages ?? [])}
     serverSlug: opts.serverSlug,
     signedInAs: opts.signedInAs,
     body,
+    nav: opts.nav,
   });
 }
 
@@ -1459,7 +1482,7 @@ export function renderSignIn(denial: ConsoleDenial): string {
   <p class="state-sub">${sub}</p>
   <p class="state-detail">${esc(`dev bypass: ${denial.devBypass}`)}</p>
 </div>`;
-  return layout({ title: "Sign in", body });
+  return layout({ title: "Sign in", body, nav: false });
 }
 
 /**
@@ -1487,6 +1510,7 @@ export function renderOffline(): string {
   return layout({
     title: "Offline",
     body,
+    nav: false,
     footNote: "offline · nothing cached",
   });
 }
@@ -1616,6 +1640,8 @@ code{font-family:var(--font-mono);font-size:.84em;background:var(--bg-code);
   box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 25%,transparent);}
 .whoami{color:var(--g3);font-size:.8rem;font-family:var(--font-mono)}
 
+/* Shared nav — src/ui/nav.ts owns the markup this styles. */
+${NAV_CSS}
 /* Page */
 .page{max-width:60rem;margin:0 auto;padding:1.9rem 1.5rem 3rem;width:100%;flex:1}
 
@@ -1822,6 +1848,10 @@ form.inline{display:flex;align-items:center;gap:.25rem;margin:0}
 .in{font:inherit;font-size:.85rem;padding:.45rem .6rem;border-radius:.35rem;border:1px solid var(--g5);
   background:var(--bg);color:var(--white);width:100%;font-family:var(--font-mono)}
 .in:focus{outline:none;border-color:var(--accent)}
+/* The connector form calls these "greyed out" and lists them by name, so they
+   have to actually look it — a field that reads as editable and refuses the
+   save is the control that page is not supposed to render. */
+.in:disabled{opacity:.45;cursor:not-allowed}
 .in-sm{font-size:.74rem;padding:.28rem .4rem;width:8.5rem}
 .addbox{margin-top:1.5rem;border:1px solid var(--g5);border-radius:.6rem;background:var(--g7);padding:1.2rem 1.4rem}
 .addbox-title{margin:0 0 .9rem;font-size:1rem;color:var(--white)}
@@ -1875,6 +1905,29 @@ form.inline{display:flex;align-items:center;gap:.25rem;margin:0}
 .tile-slug code{font-size:.82rem;color:var(--text-accent);word-break:break-all}
 .tile-actions{display:flex;align-items:center;justify-content:space-between;gap:.6rem;
   margin-top:auto;padding-top:.2rem}
+
+/* The connector roster (src/ui/servers-page.ts). A real table, because the
+   roster is a grid of short facts per slug rather than the variable-length
+   rows .listing is shaped for. */
+.conn-table{width:100%;border-collapse:collapse;margin-top:1rem;
+  border:1px solid var(--g5);border-radius:.6rem;overflow:hidden;background:var(--g7)}
+.conn-table th{text-align:left;padding:.6rem .8rem;font-size:.7rem;font-weight:600;
+  text-transform:uppercase;letter-spacing:.06em;color:var(--g3);
+  background:var(--g6);border-bottom:1px solid var(--g5);white-space:nowrap}
+.conn-table td{padding:.65rem .8rem;border-top:1px solid var(--g6);vertical-align:middle;
+  font-size:.86rem}
+.conn-table tr:first-child td{border-top:none}
+.conn-table td.conn-slug{font-family:var(--font-mono);font-size:.84rem;white-space:nowrap}
+.conn-table td.conn-title{color:var(--g2);max-width:18rem;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.conn-table td.conn-roles{color:var(--g3);font-size:.8rem;white-space:nowrap}
+.conn-acts{display:flex;gap:.35rem;justify-content:flex-end;flex-wrap:wrap}
+.conn-acts form{display:inline}
+.conn-head{display:flex;align-items:baseline;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+.conn-meta{font-family:var(--font-mono);font-size:.74rem;color:var(--g4)}
+.conn-form{max-width:42rem}
+.conn-form .field{margin-bottom:1.1rem}
+.conn-sub{font-size:.95rem;font-weight:600;color:var(--white);margin:1.6rem 0 .3rem}
 
 /* Footer */
 .foot{max-width:60rem;margin:0 auto;padding:1.2rem 1.5rem;width:100%;

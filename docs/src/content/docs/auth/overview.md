@@ -620,9 +620,28 @@ open redirect.
 A verified identity becomes a **signed, expiring, stateless cookie**
 (`strad_console_session`), and that cookie is what `/`, `/ui` and `/ui/:server`
 accept. It is HttpOnly, `SameSite=Lax`, `Secure` under `NODE_ENV=production`,
-scoped to `/`, and lives **12 hours absolute** — no sliding renewal, so the clock
-starts at sign-in and nothing an attacker holds can extend it. Re-authenticating
-is a redirect, not a password.
+and scoped to `/`. Re-authenticating is a redirect, not a password.
+
+It runs on two clocks, both set under `auth.google.session`
+([config](/servers/interface/#authgooglesession)):
+
+- **A sliding window, 48 hours by default.** Once a cookie is more than half way
+  through its window, the console gate re-issues it with a fresh one on the next
+  request: one extra `Set-Cookie` on an ordinary page, and no server-side record.
+  A cookie nobody uses dies 48 hours after it was last sealed.
+- **An absolute cap, 7 days by default,** counted from the Google sign-in. The
+  cookie carries that instant as `authAt`, and renewal copies it forward and
+  never moves it. Past the cap the session is refused however recently it was
+  renewed, and the human goes back through Google.
+
+So an active human signs in about once a week, and the sign-in they meet is a
+redirect against a live Google session. Why these numbers: renewal happens past
+the half-way mark, so a window has to be twice the longest gap it should forgive.
+48 hours means any request in the second day of a window renews it, so a human
+who comes back every working day stays signed in and a weekend away does not. A 24-hour window
+would not end the daily bounce: a session renewed at 9am and used until 6pm is
+dead the next morning. The cap is 7 days because it is the number that bounds
+the case renewal makes worse, below.
 
 Stateless is a deliberate choice over a server-side session table. strad has no
 datastore, and a human's session should not depend on core staying one replica: a
@@ -631,17 +650,33 @@ B, and a redeploy signs everyone out. An HMAC has neither problem. The **same** 
 carries the in-flight OAuth transaction, so no login state lives on the server at
 all.
 
-What that costs is per-session revocation: a cookie is valid until it expires.
-Three things bound it.
+What that costs is per-session revocation: a cookie is valid until it expires,
+and there is no list of sessions to strike one from. Renewal makes that window
+**slide**. A stolen cookie that the thief keeps using renews itself exactly as the
+owner's does, so it stays live until the absolute cap, up to 7 days after the
+owner signed in. A stolen cookie nobody uses dies inside one sliding window. The
+same goes for a person removed from the Workspace: strad does not ask Google
+again after sign-in, so a session they already hold runs its clocks out. The
+cap is what keeps the first case from being forever, so it has no off switch:
+config can move it, never past 30 days, and a cookie that cannot say when its
+sign-in was is refused rather than uncapped. A cookie minted before `authAt`
+existed was never renewed, so its `iat` is its sign-in, and the cap counts from
+there. Three things bound a session.
 
-- The 12-hour absolute lifetime.
+- The two clocks. Both are read from the **current** config on every request,
+  not from the cookie, so changing either one applies to sessions already
+  issued. That cuts both ways: raising the cap extends every live session,
+  including one somebody stole. Setting them equal gives a fixed session that never slides.
 - `hd` is re-checked against the **current** config on every request, and roles are
   read from the **current** `auth.google.roles` rather than from the cookie. The
   cookie carries a verified identity (`sub`, `email`, `hd`, an optional `name`)
-  plus `v`, `iat` and `exp` — no grant of any kind. Re-pointing `hostedDomain`
-  invalidates every session already issued, on the next request.
-- Rotating the signing key invalidates every session at once. That is the kill
-  switch, and it is a secret rotation rather than a deploy of new code.
+  plus `v`, `iat`, `authAt` and `exp` — no grant of any kind. Re-pointing
+  `hostedDomain` invalidates every session already issued, on the next request.
+- Rotating the signing key invalidates every session at once. That is the
+  **only** way to revoke a session before its clocks run out, and it signs
+  everyone out, not just the cookie you are worried about. It is a secret
+  rotation rather than a deploy of new code. Revoking one session at a time needs
+  a server-side session store, which strad does not have (#46, #43).
 
 The signing key is `CONSOLE_SESSION_SECRET` when set, and otherwise **derived**
 (HKDF-SHA256) from `GOOGLE_CLIENT_SECRET`, which is necessarily present whenever
@@ -698,10 +733,49 @@ may reach through `entitledServers()`, so `roles: []` reaches every console page
 and no server's tools. The icon on `/ui` that opens it is the same decision, so a
 card whose playground would refuse does not offer one.
 
+### What the console serves, and how you get between the pages
+
+Five destinations, and every page draws the same bar naming all five. That bar is
+one definition — `NAV_DESTINATIONS` in `src/ui/nav.ts`, rendered by `layout()` —
+so a page cannot disagree with its siblings about what this console can do, and a
+destination added there appears everywhere at once.
+
+| Destination  | Path          | What it is for                                                                      |
+| ------------ | ------------- | ----------------------------------------------------------------------------------- |
+| `gateway`    | `/`           | The `/mcp` endpoint to paste into a client, and a directory of what sits behind it. |
+| `servers`    | `/ui`         | Each server's scope, and whether the secrets it needs are seeded.                   |
+| `connectors` | `/connectors` | Add, edit or remove a server entry without a deploy.                                |
+| `playground` | `/playground` | Open a server by hand: list the tools it serves you, and call one.                  |
+| `tokens`     | `/tokens`     | Mint and revoke the credentials `/mcp` accepts.                                     |
+
+A per-server or per-action route is **not** a sixth destination — it marks the
+destination it belongs to. `/ui/slack` and `/ui/slack/connect` both light up
+`servers`; `/playground/slack` lights up `playground`; `/connectors/slack` and
+`/connectors/new` light up `connectors`. The bar's mark is a section, not a URL,
+and it is carried by `aria-current="page"` as well as by colour.
+
+`/connectors` is served on **every** deployment, whether or not
+`gateway.configStore.enabled` is set. With a store it is the roster editor; with
+none it is the page that says the editor is off and that this gateway's roster
+comes from the checked-in document. A nav item that resolved to a framework `404`
+on the deployments that most need the explanation would be worse than no item.
+
+The bar is omitted on exactly the pages reached **without** a console session: the
+`401` sign-in refusal, the precached offline page, and the `/mcp` OAuth consent
+and refusal screens. Every link in it is gated, so drawing it there would
+advertise five doors that answer `401`. `/console`, `/console/login` and
+`/console/logout` are not in it either — they are the session endpoints, not
+pages.
+
 ### The console playground
 
 `/playground/:server` is a human MCP client in the console: it lists a server's
-tools and calls them with arguments a human types. That makes it the one console
+tools and calls them with arguments a human types. `/playground` with no server is
+the picker: every configured slug, with the ones this console session may open as
+links and the ones it may not named with the reason — `disabled` is a config
+change, `not entitled` is a role change. It is derived from the same
+`playgroundAccess()` the `/ui` cards ask, so the two cannot disagree about which
+slugs open. That makes it the one console
 surface that has to answer an MCP question, and the two doors share no credential
 — a browser holding a console session cannot present a bearer token to `/mcp`,
 and `/mcp` reads no cookie.
@@ -956,9 +1030,14 @@ the roster, each server's parameters, the playground and its tool lists — and 
 re-read the store. It is refused with a `403` on everything that reads a stored
 value, writes the store, or makes an upstream act: `reveal`, `create`, `rotate`,
 `note` and `delete` under `/ui/:server`, a connector's `connect`, the
-playground's `tools/call`, and minting, revoking or forgetting an `/mcp` token
-on `/tokens` — that last one hands out a standing credential for the agent
-door, which is the widest write the console has. That is a rule on the principal's kind, not its roles,
+playground's `tools/call`, minting, revoking or forgetting an `/mcp` token on
+`/tokens` — which hands out a standing credential for the agent door, the
+widest write the console has — and every runtime roster write under
+`/connectors`, since an entry may name a stored credential by reference. The
+rule is enforced by structure, not by review: `test/console-tokens.test.ts`
+walks every mounted route and fails on any write behind the console gate that
+does not refuse a token session, so a console write added later cannot quietly
+skip it. That is a rule on the principal's kind, not its roles,
 because the secret actions read no role and the token's whole premise is a
 credential whose leak is over in minutes. Thirty minutes of `reveal` would read
 the bootstrap token out of the store, and thirty minutes of `rotate` would plant a

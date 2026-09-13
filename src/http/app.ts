@@ -22,6 +22,7 @@ import {
   sanitizeNext,
   sessionKeyProblem,
   readCookies,
+  sessionWindows,
   stateMatches,
   unsealCookie,
   type ConsoleSessions,
@@ -52,6 +53,7 @@ import { createMcpHandler } from "../gateway/router.ts";
 import type { Mode, Registry } from "../gateway/registry.ts";
 import type { ToolSurfaceSnapshot } from "../gateway/reachability.ts";
 import type { SecretBag } from "../secrets/index.ts";
+import type { RuntimeConfig } from "../config/runtime.ts";
 import { mountConsoleUi } from "../ui/index.ts";
 import type { GcsLister } from "../ui/gcs-client.ts";
 import type { ConsoleUiOptions } from "../ui/index.ts";
@@ -156,6 +158,19 @@ export interface AppOptions {
    * mounts no monitor. See gateway/reachability.ts.
    */
   toolSurfaces?: () => ToolSurfaceSnapshot | null;
+  /**
+   * The runtime config holder, for the console's connector editor.
+   *
+   * A getter rather than a value, and for a sharper reason than most of the
+   * seams above: this app is REBUILT on every roster change, and the runtime is
+   * what rebuilds it, so at the moment `createApp` is first called the runtime
+   * does not exist yet. The thunk is what breaks that cycle (see src/index.ts).
+   *
+   * Returning null is the ordinary shape of a deployment that has not enabled
+   * `gateway.configStore:` — `/connectors` answers with the page that says the
+   * editor is off, and every other console page is unchanged.
+   */
+  runtimeConfig?: () => RuntimeConfig | null;
 }
 
 /** The slice of GoogleOAuthProvider the console actually drives. */
@@ -525,6 +540,7 @@ export function createApp(opts: AppOptions): Express {
       googleReady: auth.ready,
       consoleTokens,
       connectorFetch: opts.connectorFetch,
+      runtimeConfig: opts.runtimeConfig,
     });
   }
 
@@ -834,7 +850,13 @@ function mountConsole(
           String(req.query.code ?? ""),
           tx.verifier,
         );
-        issueSessionCookie(res, sessions.session, identity, env);
+        issueSessionCookie(
+          res,
+          sessions.session,
+          identity,
+          sessionWindows(cfg),
+          env,
+        );
         // Back to the page they asked for, as a human expects — not JSON.
         res.redirect(302, sanitizeNext(tx.next));
       } catch (err) {

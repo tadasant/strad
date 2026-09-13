@@ -590,8 +590,12 @@ plus two that shape how this server gets its values:
   fails rather than pick a winner.
 
 - **`paramsWritable`** (default `[]`) — the variables this server may **write
-  back** to its own `/strad/{env}/mcp/{slug}/static/` namespace, and read fresh at
-  boot rather than trusting the value the deploy baked.
+  back** to its own `/strad/{env}/mcp/{slug}/` namespace, and read fresh at boot
+  rather than trusting the value the deploy baked. A name the same server also
+  declares on its `oauth:` connector is written under `oauth/` when a console
+  consent has minted it there, and under `static/` otherwise; every other name
+  under `static/`. The request never picks the kind, so one variable can be both
+  consented in the console and rotated on use.
 
   For credentials that rotate **on use** — an OAuth refresh token that is
   single-use, a session token the upstream reissues — where holding the baked
@@ -614,7 +618,7 @@ plus two that shape how this server gets its values:
   ```
 
   See [a credential that rotates on
-  use](/operate/secrets/#paramswritable-a-credential-that-rotates-on-use) for the
+  use](/operate/secrets/#paramswritable--a-credential-that-rotates-on-use) for the
   transport, the failure modes and what the grant actually is.
 
 - **`paramsRefresh`** (default `[]`) — the variables this server **re-reads at
@@ -706,6 +710,27 @@ servers:
     bundle: core
     entitlements: [admin]
 ```
+
+The strad image itself ships two: `./servers/echo.js`, and
+`./servers/connectors.js` — the server roster as MCP tools, the counterpart to
+the console at `/connectors`. Neither is mounted unless a config entry names it,
+so a deployment that wants an agent to be able to add, edit, disable and remove
+a connector opts in:
+
+```yaml
+servers:
+  - slug: connectors
+    kind: builtin
+    module: "./servers/connectors.js"
+    bundle: core
+    entitlements: [admin]
+```
+
+It serves nothing at all unless `gateway.configStore.enabled` is set, it lists
+its three write tools only where core holds the credential that persists a
+roster change, and an ordinary `tools:` `allow:` naming only its read tools
+mounts the read half by itself. Full model:
+[Runtime config](/operate/runtime-config/#the-same-roster-over-mcp).
 
 ## Validation refuses to boot on
 
@@ -898,6 +923,51 @@ the store reaches a running gateway without a deploy. Setting it to
 `gcp-parameter-store` without a store credential is a hard boot failure, not a
 silent downgrade to env vars. Full model: [Secrets](/operate/secrets/).
 
+## `gateway.configStore`
+
+Whether the `servers:` list above is the whole roster, or the base a console can
+edit at runtime.
+
+```yaml
+gateway:
+  env: prod
+  secrets:
+    provider: gcp-parameter-store
+  configStore:
+    enabled: false # default
+    pollSeconds: 60 # default; floor 10, ceiling 86400
+```
+
+`enabled: false` is the default and means one document, one source, changed by a
+deploy. `enabled: true` adds an **overlay** — entries added, entries overridden,
+entries removed — stored as one non-secret parameter at
+`/strad/{env}/gateway/config/SERVERS` and merged over this document before the
+schema sees it. The console at `/connectors` writes it, as does the `connectors`
+builtin above on a deployment that mounts it, and a change takes effect on the
+next request with no redeploy and no restart. The file stays authoritative
+for everything nobody has touched.
+
+`pollSeconds` is how often core re-reads the overlay. The process that wrote a
+change reloads at once and does not wait for it; the poll is what carries a
+change to the other instances of core.
+
+Two constraints the config itself enforces or implies:
+
+- It requires `gateway.secrets.provider: gcp-parameter-store`. Declaring it under
+  the `env` provider is a validation error, not a silent no-op — there is no
+  store to write the overlay to.
+- Writing needs the console's admin credential
+  (`SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON`) on core, which `consoleEnv:` already
+  puts there for the secrets pages. Without it the roster page renders read-only
+  and says so.
+
+What an overlay may carry is narrower than what this page documents, because a
+running process cannot be given a container variable: `remote-http` and
+`local-tunnel` fully, a `supplementary-image` slug pointed at a mount that is
+already deployed and declaring none of `env:`, `params:`, `paramsWritable:`,
+`paramsRefresh:`, `consoleEnv:`, `consoleStores:` or `mcpStores:`, and a
+`builtin` never. Full model: [Runtime config](/operate/runtime-config/).
+
 ## `auth.staticTokens`
 
 The credential agents present to `/mcp`.
@@ -958,6 +1028,36 @@ grants nobody anything a standing credential did not already hold, and it never
 reaches `/mcp`. See
 [Auth](/auth/overview/#console-login-tokens-the-automated-actors-door).
 
+## `auth.google.session`
+
+How long a Google sign-in keeps the console open. Both fields are optional.
+
+```yaml
+auth:
+  google:
+    enabled: true
+    hostedDomain: tadasant.com
+    roles: [admin]
+    session:
+      slidingTtlSeconds: 172800 # default, 48h: each cookie's lifetime, renewed past half
+      absoluteTtlSeconds: 604800 # default, 7d: from the Google sign-in, which renewal never moves
+```
+
+`slidingTtlSeconds` is how long one session cookie lives. Once more than half of
+it has run, the next request through the console gate re-issues the cookie with a
+fresh one, so an active human is not signed out. `absoluteTtlSeconds` is the cap:
+counted from the sign-in itself, and past it the session is refused however
+recently it was renewed.
+
+Both are read on every request, not baked into the cookie, so changing either
+applies to sessions already issued: lowering one ends sessions sooner, and
+raising the cap extends every live session, a stolen one included. Setting them equal gives a fixed session that
+never slides. The parse refuses a value under 60 seconds (a small number of
+hours written as seconds) or over 30 days (milliseconds written as seconds, or a cap raised until
+it stops being one), and an `absoluteTtlSeconds` below `slidingTtlSeconds`. What
+the numbers trade, and why the defaults are these, is in
+[Auth](/auth/overview/#the-console-session).
+
 ## `auth.mcpOAuth`
 
 strad's own OAuth 2.1 authorization server, in front of `/mcp`. It is what lets
@@ -1006,6 +1106,7 @@ verified with no lookup and cannot be revoked before it expires. That is what th
 five-minute floor is for. Refresh tokens carry no expiry at all and are revoked
 at Google. The whole model is in
 [Auth](/auth/overview/#mcp--oauth-21-interactive-clients).
+
 
 ## `mcpServers:` — the draft SEP-2633 input dialect
 
@@ -1195,6 +1296,7 @@ Same split as the YAML interface: an unrecognised key in an `mcpServers` entry i
 path you wrote it under (`mcpServers.x.timeout`). Boot stays lenient on purpose —
 an image that refused to start on a key it had not heard of would turn a rollback
 into an outage, and this dialect's upstream is a draft, so new keys are expected.
+
 
 ## Where the config comes from
 

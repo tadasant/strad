@@ -14,8 +14,13 @@ import {
 import {
   gatewayParameterPath,
   parameterPath,
+  isUsableValue,
+  serverParameterPath,
   ParameterStoreError,
+  SERVER_PARAM_KINDS,
+  type ServerParamKind,
 } from "../secrets/parameters/index.ts";
+import { connectorVariables } from "../deploy/server-namespaces.ts";
 import { storeForPath, type StoreClientOptions } from "../ui/store-client.ts";
 import { forgetDeploymentDiagnosis } from "../ui/secret-status.ts";
 import { event } from "../telemetry/index.ts";
@@ -39,6 +44,27 @@ import { errorSummary } from "../util/error-text.ts";
  * test. There is no spelling of a URL that addresses a path no config names —
  * not a traversal, not an encoding trick, not a case fold — because no part of
  * the request is ever concatenated into a path.
+ *
+ * ## Nor does the KIND
+ *
+ * A path has a third component the caller does not name at all: the kind,
+ * `oauth/` or `static/`. Which kinds a name MAY live under comes from the
+ * config (`kindsOf`): both, `oauth/` first, for a variable the server declares
+ * on its `oauth:` connector; `static/` alone for every other name. Which of
+ * those candidates a read or a write actually addresses is the highest one the
+ * store HOLDS — the same precedence every layered read applies, so the copy
+ * this route rotates is the copy the next boot and the next render read. The
+ * URL has no segment for a kind, the body has no field for one, and nothing
+ * here reads a header for one.
+ *
+ * That is what lets one variable be consented in the console AND rotated by the
+ * container that holds it. The consent writes `oauth/`, which outranks
+ * `static/`; a rotation addressed to `static/` while an `oauth/` copy exists
+ * would land under a copy that shadows it, and the credential would die at the
+ * next restart with nothing failing. Falling back to `static/` only when
+ * `oauth/` holds nothing is what keeps a connector added over a token already
+ * seeded under `static/` rotating that token, rather than 404ing against a
+ * consent nobody has given.
  *
  * ## Two verbs, two allowlists
  *
@@ -107,18 +133,34 @@ export interface ParamsHandlerOptions {
 }
 
 /**
- * The config's own slug and variable for a requested pair, or null.
+ * One resolved target: which server, which variable, and under WHICH KIND.
+ *
+ * All three come out of the parsed config. None of them is a request string.
+ */
+export interface ParamTarget {
+  slug: string;
+  variable: string;
+  /** The kinds this name may live under, HIGHEST PRECEDENCE FIRST. Never empty. */
+  kinds: readonly ServerParamKind[];
+}
+
+/**
+ * The config's own slug, variable and candidate KINDS for a requested pair, or
+ * null.
  *
  * Returning the CONFIG's strings rather than a boolean is the load-bearing part.
  * A caller that spells the slug or the variable differently gets null; a caller
  * that spells them identically gets back strings that came out of the parsed
- * config, so what reaches `parameterPath` never passed through a URL.
+ * config, so what reaches `serverParameterPath` never passed through a URL. The
+ * candidate kinds are the same property one step further on: they are DERIVED
+ * from the config (see `kindsOf`), so there is no request — no body field, no
+ * query parameter, no header — that can move a write from one kind to another.
  */
 export function writableTarget(
   config: StradConfig,
   slug: string,
   variable: string,
-): { slug: string; variable: string } | null {
+): ParamTarget | null {
   return targetIn(config, slug, variable, (s) => s.paramsWritable);
 }
 
@@ -143,11 +185,97 @@ export function readableTarget(
   config: StradConfig,
   slug: string,
   variable: string,
-): { slug: string; variable: string } | null {
+): ParamTarget | null {
   return targetIn(config, slug, variable, (s) => [
     ...s.paramsWritable,
     ...s.paramsRefresh,
   ]);
+}
+
+/**
+ * WHICH KINDS one server's variable may live under, HIGHEST PRECEDENCE FIRST,
+ * from the config alone.
+ *
+ * `static/` alone for a name the server's `oauth:` connector does not own — which
+ * is every name on a server with no connector, so such a name is addressed
+ * exactly where it always was. Both kinds, `oauth/` first, for a name the
+ * connector does own: the consent writes `oauth/`, and a human may have seeded
+ * the same name under `static/` (the client id and secret always are, and a
+ * refresh token set up by hand is too). The route then takes the first
+ * candidate the store holds — see `rotateFirstHeld` and `revealFirstHeld`.
+ *
+ * The match folds case because the schema's duplicate checks do. It decides
+ * which kinds are CANDIDATES and nothing else: the path is still built from the
+ * `paramsWritable:` / `paramsRefresh:` spelling, and a parameter stored under a
+ * differently-cased spelling is a 404 (`assertSamePath` in
+ * src/secrets/parameters/gcp.ts), loudly.
+ */
+export function kindsOf(
+  server: StradConfig["servers"][number],
+  variable: string,
+): readonly ServerParamKind[] {
+  const fold = variable.toLowerCase();
+  return connectorVariables(server).some((v) => v.toLowerCase() === fold)
+    ? SERVER_PARAM_KINDS
+    : ["static"];
+}
+
+/** A store miss: the parameter does not exist, or holds no version to read. */
+function isMissing(err: unknown): boolean {
+  return err instanceof ParameterStoreError && err.status === 404;
+}
+
+/**
+ * Rotate the FIRST candidate path that exists, and return it.
+ *
+ * `rotate()` checks for the parameter before it writes anything, so a 404 here
+ * has written nothing and trying the next kind is safe. A miss on the LAST
+ * candidate is thrown, which is what keeps this from ever creating a parameter:
+ * a rotation nobody seeded or consented to fails loudly, as it always has. Any
+ * other failure is thrown at once — falling through to a lower kind after a 403
+ * or a 5xx would write a copy the higher one still shadows.
+ */
+async function rotateFirstHeld(
+  store: { rotate(path: string, value: string): Promise<void> },
+  paths: readonly string[],
+  value: string,
+): Promise<string> {
+  for (const [i, path] of paths.entries()) {
+    try {
+      await store.rotate(path, value);
+      return path;
+    } catch (err) {
+      if (i < paths.length - 1 && isMissing(err)) continue;
+      throw err;
+    }
+  }
+  throw new Error("no candidate parameter path");
+}
+
+/**
+ * Reveal the FIRST candidate path holding a usable value.
+ *
+ * The same rule `layerNamespaces` applies to a render: a higher kind that is
+ * absent, or present with nothing usable in it, does not shadow a lower kind
+ * that holds a real credential. So the boot read agrees with the value the
+ * deploy baked about WHICH copy is current, and only differs in how fresh it is.
+ */
+async function revealFirstHeld(
+  store: { reveal(path: string): Promise<string> },
+  paths: readonly string[],
+): Promise<string> {
+  for (const [i, path] of paths.entries()) {
+    const last = i === paths.length - 1;
+    try {
+      const value = await store.reveal(path);
+      if (!last && !isUsableValue(value)) continue;
+      return value;
+    } catch (err) {
+      if (!last && isMissing(err)) continue;
+      throw err;
+    }
+  }
+  throw new Error("no candidate parameter path");
 }
 
 /** Shared by both: find the server, then match the request against ITS strings. */
@@ -161,14 +289,21 @@ function targetIn(
       { kind: "supplementary-image" }
     >,
   ) => readonly string[],
-): { slug: string; variable: string } | null {
+): ParamTarget | null {
   for (const server of config.servers) {
     if (!server.enabled) continue;
     if (server.kind !== "supplementary-image") continue;
     if (server.slug !== slug) continue;
     const allowed = allowlist(server).find((v) => v === variable);
     if (allowed === undefined) return null;
-    return { slug: server.slug, variable: allowed };
+    return {
+      slug: server.slug,
+      variable: allowed,
+      // From the config's own name, never the request's. They are equal strings
+      // here, and using the config's is what keeps that a property of the code
+      // rather than of this line happening to run after the equality test.
+      kinds: kindsOf(server, allowed),
+    };
   }
   return null;
 }
@@ -187,7 +322,7 @@ function target(
   res: Response,
   opts: ParamsHandlerOptions,
   lookup: typeof writableTarget,
-): { slug: string; variable: string; path: string } | null {
+): (ParamTarget & { paths: string[] }) | null {
   const auth = authorizePresence(
     req.get("authorization"),
     opts.env.STRAD_INTERNAL_TOKEN,
@@ -227,7 +362,14 @@ function target(
 
   return {
     ...found,
-    path: parameterPath(opts.config.gateway.env, found.slug, found.variable),
+    paths: found.kinds.map((kind) =>
+      serverParameterPath(
+        opts.config.gateway.env,
+        found.slug,
+        kind,
+        found.variable,
+      ),
+    ),
   };
 }
 
@@ -249,7 +391,14 @@ export function createParamWriteHandler(
       return;
     }
 
-    const resolved = storeForPath(opts.config, opts.secrets, found.path, opts);
+    // Every candidate sits under one slug's `/mcp/{slug}/`, so one store answers
+    // for all of them.
+    const resolved = storeForPath(
+      opts.config,
+      opts.secrets,
+      found.paths[0]!,
+      opts,
+    );
     if (!resolved.store) {
       res
         .status(503)
@@ -262,7 +411,7 @@ export function createParamWriteHandler(
       // and, for a secret parameter, writes only to Secret Manager so the
       // per-parameter `secretAccessor` grant survives. A second write path
       // here would be a second chance to get both of those wrong.
-      await resolved.store.rotate(found.path, parsed.value);
+      await rotateFirstHeld(resolved.store, found.paths, parsed.value);
       // Both halves of what this process holds about the store, exactly as
       // a console write drops them: the runtime providers' reading, and the
       // diagnosis pass `/ui` and `/api/secrets/readiness` reuse for up to a
@@ -287,7 +436,7 @@ export function createParamWriteHandler(
       const status = err instanceof ParameterStoreError ? err.status : 502;
       const message = errorSummary(err);
       console.error(
-        `[strad] parameter write-back failed for ${found.path}: ${message}`,
+        `[strad] parameter write-back failed for ${found.paths.join(" or ")}: ${message}`,
       );
       event({
         evt: "strad.param_write_failed",
@@ -321,7 +470,14 @@ export function createParamReadHandler(
     const found = target(req, res, opts, readableTarget);
     if (!found) return;
 
-    const resolved = storeForPath(opts.config, opts.secrets, found.path, opts);
+    // Every candidate sits under one slug's `/mcp/{slug}/`, so one store answers
+    // for all of them.
+    const resolved = storeForPath(
+      opts.config,
+      opts.secrets,
+      found.paths[0]!,
+      opts,
+    );
     if (!resolved.store) {
       res
         .status(503)
@@ -330,7 +486,7 @@ export function createParamReadHandler(
     }
 
     try {
-      const value = await resolved.store.reveal(found.path);
+      const value = await revealFirstHeld(resolved.store, found.paths);
       // The record a runtime refresh would otherwise not leave. Config strings
       // only, never the value — see telemetry/events.ts.
       event({
@@ -352,7 +508,7 @@ export function createParamReadHandler(
       const message = errorSummary(err);
       if (status !== 404) {
         console.error(
-          `[strad] parameter read failed for ${found.path}: ${message}`,
+          `[strad] parameter read failed for ${found.paths.join(" or ")}: ${message}`,
         );
       }
       res

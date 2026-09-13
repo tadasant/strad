@@ -11,7 +11,8 @@ import type { Principal } from "../auth/index.ts";
 import {
   principalFromSession,
   readCookies,
-  unsealCookie,
+  renewSessionIfDue,
+  sessionWindows,
   SESSION_COOKIE,
   type ConsoleSessionPayload,
   type ConsoleSessions,
@@ -32,7 +33,8 @@ import { renderSignIn } from "./render.ts";
  *
  *   1. A Google session — a signed, expiring cookie minted by
  *      /console/oauth/callback from a verified Workspace identity
- *      (src/auth/session.ts). This is the real door.
+ *      (src/auth/session.ts). This is the real door, and the gate is where it
+ *      slides: a session past half its window is re-issued on the way through.
  *   2. The console dev bypass — ADMIN_BOOTSTRAP_TOKEN, itself triple-guarded
  *      (src/auth/dev.ts). It is what keeps staging and an unprovisioned prod
  *      enterable, and it goes away once Google sign-in is verified in prod.
@@ -120,13 +122,27 @@ export function requireConsoleUi(deps: ConsoleAuthDeps) {
     // holding both must not be demoted to the look-only one, and a token cookie
     // tossed in by a sibling subdomain must not shadow a human's real session.
     // (A login token in `?token=` never gets this far as a credential: it was
-    // burned on arrival, see burnFromUrl.)
+    // burned on arrival, see burnFromUrl.) Only the Google session renews
+    // below; a token session keeps its absolute thirty minutes.
+    const google = googleSession(cookies, sessions, config);
     const principal =
-      googlePrincipal(cookies, sessions, config) ??
+      google?.principal ??
       bypassPrincipal(cookies, fromHeader, config, env) ??
       tokenSession(cookies, consoleTokens)?.principal;
 
     if (principal) {
+      // An active human is not signed out on a fixed clock: past half its
+      // window, the session is re-sealed with a fresh `exp` and the same
+      // sign-in time, so the absolute cap still counts from Google.
+      if (google && sessions) {
+        renewSessionIfDue(
+          res,
+          sessions.session,
+          google.payload,
+          sessionWindows(config),
+          env,
+        );
+      }
       res.locals.principal = principal;
       next();
       return;
@@ -172,14 +188,31 @@ export function googlePrincipal(
   sessions: ConsoleSessions | null,
   config: StradConfig,
 ): Principal | null {
+  return googleSession(cookieHeader, sessions, config)?.principal ?? null;
+}
+
+/**
+ * The first Google session cookie that is live under the CURRENT config, with
+ * the payload it came from, so the gate can renew the one it accepted.
+ *
+ * Every value is tried all the way through `principalFromSession`, not just the
+ * MAC: a cookie strad sealed can still be past this config's cap or for another
+ * Workspace, and it must not stop a later one that is neither from counting.
+ */
+export function googleSession(
+  cookieHeader: string | undefined,
+  sessions: ConsoleSessions | null,
+  config: StradConfig,
+  now: number = Date.now(),
+): { principal: Principal; payload: ConsoleSessionPayload } | null {
   if (!sessions) return null;
-  const payload = unsealCookie<ConsoleSessionPayload>(
-    sessions.session,
-    cookieHeader,
-    SESSION_COOKIE,
-  );
-  if (!payload) return null;
-  return principalFromSession(payload, config);
+  for (const value of readCookies(cookieHeader, SESSION_COOKIE)) {
+    const payload = sessions.session.unseal<ConsoleSessionPayload>(value, now);
+    if (!payload) continue;
+    const principal = principalFromSession(payload, config, now);
+    if (principal) return { principal, payload };
+  }
+  return null;
 }
 
 /** The first token session cookie that is live, or null. */

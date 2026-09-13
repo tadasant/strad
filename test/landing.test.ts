@@ -6,6 +6,7 @@ import { parseConfig } from "../src/config/load.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
+import { NAV_DESTINATIONS } from "../src/ui/nav.ts";
 
 /**
  * The front door at `/`.
@@ -214,6 +215,19 @@ describe("GET /", () => {
   it("lists every ENABLED server slug", () => {
     for (const slug of ["gcs", "echo", "deepwiki"]) {
       expect(html).toContain(slug);
+    }
+  });
+
+  it("offers a tile for every destination the shared nav bar names", () => {
+    // The bar is chrome; these tiles are a sentence each about what the page is
+    // for, so they are written separately. This is what keeps a destination
+    // added to src/ui/nav.ts from silently going missing from the front door.
+    for (const dest of NAV_DESTINATIONS) {
+      // `gateway` is this page. Every other destination is a tile on it.
+      if (dest.key === "gateway") continue;
+      expect(html, `no tile for ${dest.href}`).toContain(
+        `<a class="card card-link" href="${dest.href}">`,
+      );
     }
   });
 

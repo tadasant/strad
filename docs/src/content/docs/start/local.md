@@ -79,6 +79,13 @@ moves the token into an `HttpOnly` cookie and redirects to the console.
 `/console?token=…` authenticates the same way but answers JSON — it is the
 session endpoint, not the screen.
 
+From there the [nav
+bar](/auth/overview/#what-the-console-serves-and-how-you-get-between-the-pages)
+carries the other four destinations — `/`, `/connectors`, `/playground` and
+`/tokens` — so the one URL above reaches the whole console. `/connectors` says the
+roster editor is off on this config, which is correct: the dev config sets no
+`gateway.configStore:`.
+
 ### Signing in as an automated actor
 
 An agent driving the console with Playwright should not hold the bootstrap token.

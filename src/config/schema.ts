@@ -28,11 +28,25 @@ import { normaliseNamespace } from "../secrets/parameters/namespace.ts";
  * them is what lets src/secrets/env-prefix.ts promise injectivity rather than hope
  * for it.
  */
+/**
+ * The slug alphabet, as a SOURCE string rather than only a compiled regex.
+ *
+ * The console's connector form puts it in an HTML `pattern=` attribute, and a
+ * second hand-written spelling of it there would drift from this one silently —
+ * the form would accept what the schema refuses, or refuse what it accepts, and
+ * the human would find out on Save. Unanchored, because `pattern=` anchors on
+ * its own, and free of a character-class hyphen, because the browser compiles
+ * `pattern=` with the `v` flag and an unescaped `-` inside a class is a syntax
+ * error there — one that makes the browser drop the attribute silently rather
+ * than complain.
+ */
+export const SLUG_PATTERN = "[a-z0-9]+(-[a-z0-9]+)*";
+
 export const SLUG = z
   .string()
   .max(63, "slug must be at most 63 characters")
   .regex(
-    /^[a-z0-9]+(-[a-z0-9]+)*$/,
+    new RegExp(`^${SLUG_PATTERN}$`),
     "slug must be lowercase alphanumeric with single dashes between segments " +
       "(no leading, trailing or doubled dash — a doubled dash would make two " +
       "different servers' environment variables collide on the container)",
@@ -752,7 +766,8 @@ const SupplementaryImageServer = ServerBase.extend({
   env: z.record(SecretRef).default({}),
   /**
    * Opt this server into PARAMETER RESOLUTION. When true, everything under
-   * `/strad/{env}/mcp/{slug}/static/*` in the secrets system (non-secret values
+   * `/strad/{env}/mcp/{slug}/*` — both kinds, `oauth/` ahead of `static/` — in
+   * the secrets system (non-secret values
    * from Parameter Manager, secret values from Secret Manager) is resolved and
    * injected as this server's environment — see src/secrets/parameters. For a
    * supplementary image that resolution happens at DEPLOY time (render-spec, with
@@ -774,9 +789,16 @@ const SupplementaryImageServer = ServerBase.extend({
    * it already holds. Enforced in the `superRefine` below — it requires
    * `params: true` (the flag that injects the namespace this writes into) and a
    * legal environment-variable name, which is what confines the write to this
-   * server's own `/{slug}/static/` namespace. A name is a variable, not a path:
-   * there is no spelling of one that escapes the namespace, because core
-   * composes the path from the slug and the name and never from a URL.
+   * server's own `/{slug}/` namespace. A name is a variable, not a path: there
+   * is no spelling of one that escapes the namespace, because core composes the
+   * path from the slug and the name and never from a URL.
+   *
+   * WHICH KIND inside that namespace follows the same precedence as the read. A
+   * name this server also declares on its `oauth:` connector is written to
+   * `oauth/` when the store holds it there — the kind the console's consent
+   * minted it under, and the one that outranks `static/` on the way back out —
+   * and to `static/` when only a hand-seeded copy exists. Every other name is
+   * written to `static/`. The request never says.
    */
   paramsWritable: z.array(z.string().min(1)).default([]),
   /**
@@ -1084,6 +1106,32 @@ const BundleConfig = z.object({
 // ---------------------------------------------------------------------------
 
 /**
+ * The console session's two clocks, when `auth.google.session` does not set
+ * them.
+ *
+ * 48 hours sliding, because renewal happens past the HALF-way mark: a cookie is
+ * re-issued by any request in the second 24 hours of its window, so a human who
+ * comes back every working day stays signed in, and a weekend away does not. 24 hours would not do it — a session renewed at 9am would go
+ * unrenewed through a 9-to-6 day and be dead the next morning, which is the
+ * daily bounce #46 exists to end.
+ *
+ * 7 days absolute, because it is the ceiling on the case renewal makes worse: a
+ * stolen cookie the thief keeps using. Stateless sessions cannot be revoked one
+ * at a time, so this number is how long that thief keeps the console unless
+ * somebody rotates the signing key, which signs everyone out. A week means one
+ * Google redirect a week for an active human — a redirect against a live Google
+ * session, not a password.
+ */
+export const CONSOLE_SESSION_DEFAULTS = {
+  slidingTtlSeconds: 48 * 60 * 60,
+  absoluteTtlSeconds: 7 * 24 * 60 * 60,
+} as const;
+/** A minute: shorter is a unit mistake — a few hours written as seconds. */
+const MIN_CONSOLE_SESSION_SECONDS = 60;
+/** 30 days. Neither clock may be set past it. */
+const MAX_CONSOLE_SESSION_SECONDS = 30 * 24 * 60 * 60;
+
+/**
  * strad is on the open internet. There is no network perimeter — no tailnet,
  * no VPN, no IP allowlist. Auth is the ONLY gate. Two doors:
  *
@@ -1109,6 +1157,49 @@ const AuthConfig = z.object({
       hostedDomain: z.string().min(1),
       /** Roles granted to any verified member of `hostedDomain`. */
       roles: z.array(Role).default([]),
+      /**
+       * How long a Google sign-in keeps the console open. Two clocks, both read
+       * from THIS config on every request rather than from the cookie, so
+       * tightening either one takes effect for sessions already issued
+       * (src/auth/session.ts):
+       *
+       *   slidingTtlSeconds  — each session cookie's own lifetime. Once more than
+       *                        half of it has run, the next request through the
+       *                        console gate re-issues the cookie with a fresh
+       *                        one. An active human is not signed out; a cookie
+       *                        nobody uses dies this long after its last renewal.
+       *   absoluteTtlSeconds — the cap, counted from the Google sign-in itself,
+       *                        which renewal never moves. Past it the session is
+       *                        refused however recently it was renewed, so a
+       *                        stolen cookie that keeps being used still dies.
+       *
+       * Both bounded to 30 days, because a cap that config can raise without
+       * limit is not a cap. Equal values give a fixed session with no sliding.
+       */
+      session: z
+        .object({
+          slidingTtlSeconds: z
+            .number()
+            .int()
+            .min(MIN_CONSOLE_SESSION_SECONDS)
+            .max(MAX_CONSOLE_SESSION_SECONDS)
+            .default(CONSOLE_SESSION_DEFAULTS.slidingTtlSeconds),
+          absoluteTtlSeconds: z
+            .number()
+            .int()
+            .min(MIN_CONSOLE_SESSION_SECONDS)
+            .max(MAX_CONSOLE_SESSION_SECONDS)
+            .default(CONSOLE_SESSION_DEFAULTS.absoluteTtlSeconds),
+        })
+        .refine((s) => s.absoluteTtlSeconds >= s.slidingTtlSeconds, {
+          message:
+            "absoluteTtlSeconds must be at least slidingTtlSeconds (the cap " +
+            `defaults to ${CONSOLE_SESSION_DEFAULTS.absoluteTtlSeconds}, 7 days, ` +
+            "when unset): the cap is what bounds a renewing session, and a cap " +
+            "shorter than one cookie is a sliding window nobody can use",
+          path: ["absoluteTtlSeconds"],
+        })
+        .default(CONSOLE_SESSION_DEFAULTS),
     })
     .optional(),
 
@@ -1328,6 +1419,57 @@ const SecretsConfig = z
     paramRefreshSeconds: 300,
   });
 
+/**
+ * Where a server entry a human added through the console is KEPT.
+ *
+ * The checked-in document stays the base. This block adds a second, mutable
+ * layer on top of it: an OVERLAY of server entries — upserts keyed by slug and
+ * removals naming one — held in the parameter store under
+ * `/strad/{env}/gateway/config/`, read at boot and re-read on the interval
+ * below. Disabled (the default), strad behaves exactly as it did: one document,
+ * one source, changed by a deploy.
+ *
+ * The asymmetry with `secrets:` above is deliberate and worth stating. A secret
+ * is a VALUE the config points at, so the store can serve it to any component.
+ * A server entry is the config itself, and only ONE component routes the kinds
+ * that can be added without a deploy — `remote-http` and `local-tunnel` are
+ * mounted by core and by nothing else (src/gateway/registry.ts). So the overlay
+ * is a core-only concern, the process that writes it is the process that serves
+ * it, and a write is visible to the writer at once.
+ *
+ * Validation moves with the data. The boot path stays lenient — a rollback must
+ * not become an outage, the same argument src/config/strict.ts makes — and the
+ * WRITE path is strict: a merged document that does not satisfy this schema,
+ * including every cross-field rule below, is refused before it is stored. The
+ * config never becomes invalid, so nothing downstream has to cope with one.
+ */
+const ConfigStoreConfig = z
+  .object({
+    /**
+     * Off by default. On, core reads the overlay at boot, serves the merged
+     * roster, and exposes the console's connector editor.
+     *
+     * It needs `secrets.provider: gcp-parameter-store` — the overlay lives in
+     * the same store, reached with the same credentials. Declaring it under the
+     * `env` provider is a config error rather than a silent no-op (see the
+     * superRefine below): a deployment that thinks its console writes are
+     * durable and finds out otherwise is the failure this refuses to ship.
+     */
+    enabled: z.boolean().default(false),
+    /**
+     * How often core re-reads the overlay, in seconds.
+     *
+     * The process that WROTE a change reloads at once and does not wait for
+     * this. The poll is what carries a change to the other instances of core,
+     * when there is more than one, and what picks up an edit made by a second
+     * console process. Two store reads per interval per instance — small next
+     * to the per-parameter secret reads `ttlSeconds` bounds, and the floor is
+     * there for the same reason that one has a floor.
+     */
+    pollSeconds: z.number().int().min(10).max(86_400).default(60),
+  })
+  .default({ enabled: false, pollSeconds: 60 });
+
 // ---------------------------------------------------------------------------
 // Root
 // ---------------------------------------------------------------------------
@@ -1344,8 +1486,9 @@ export const StradConfig = z
         /** staging | prod | dev — also the middle segment of static tokens. */
         env: z.string().default("dev"),
         secrets: SecretsConfig,
+        configStore: ConfigStoreConfig,
       })
-      .default({ name: "strad", env: "dev", secrets: {} }),
+      .default({ name: "strad", env: "dev", secrets: {}, configStore: {} }),
 
     auth: AuthConfig,
 
@@ -1466,15 +1609,23 @@ export const StradConfig = z
     // both come from src/config/env-name.ts — a zero-import module, so this file
     // pays nothing for importing it and the two gates cannot drift apart.
     //
+    // WHICH KIND a name is addressed through is not checked here. `kindsOf`
+    // (src/http/params.ts) makes `oauth/` a candidate, ahead of `static/`, for a
+    // variable the server also declares on its `oauth:` connector, and `static/`
+    // the only candidate for every other name; the route takes the highest one
+    // the store holds. A name may therefore appear on both lists — that is how a
+    // credential the console consented to can rotate on use and survive a
+    // restart.
+    //
     // `params: true` is REQUIRED for both, and not merely for tidiness. That
-    // flag is what injects `/strad/{env}/mcp/{slug}/static/` onto this component
-    // in the first place. Without it `paramsWritable:` would write a namespace
-    // the server does not read — a credential going nowhere, the silent no-op
-    // src/deploy/server-namespaces.ts exists to stop shipping — and
-    // `paramsRefresh:` would re-read a namespace nothing injected, which is the
-    // same no-op arrived at from the other end. It is also what makes the read
-    // side disclose nothing: the value is already baked on this component, and
-    // the refresh only replaces a stale copy of it.
+    // flag is what injects `/strad/{env}/mcp/{slug}/` — both kinds, layered —
+    // onto this component in the first place. Without it `paramsWritable:` would
+    // write a namespace the server does not read — a credential going nowhere,
+    // the silent no-op src/deploy/server-namespaces.ts exists to stop shipping —
+    // and `paramsRefresh:` would re-read a namespace nothing injected, which is
+    // the same no-op arrived at from the other end. It is also what makes the
+    // read side disclose nothing: the value is already baked on this component,
+    // and the refresh only replaces a stale copy of it.
     for (const s of cfg.servers) {
       if (s.kind !== "supplementary-image") continue;
       const lists = [
@@ -1489,7 +1640,7 @@ export const StradConfig = z
             message:
               `server "${s.slug}" sets ${field}: but not params: true. ` +
               `${field} names variables in this server's own ` +
-              `/strad/{env}/mcp/${s.slug}/static/ namespace, and params: true is ` +
+              `/strad/{env}/mcp/${s.slug}/ namespace, and params: true is ` +
               `what makes that namespace this server's environment. Without it ` +
               `the server would ${verb} values nothing injects.`,
             path: ["servers"],
@@ -1509,7 +1660,7 @@ export const StradConfig = z
                 `which is not a legal environment variable name (letters, digits ` +
                 `and underscores; not starting with a digit; at most 200 ` +
                 `characters). A ${field} entry is a VARIABLE, not a path — ` +
-                `it addresses /strad/{env}/mcp/${s.slug}/static/{VARIABLE} and ` +
+                `it addresses /strad/{env}/mcp/${s.slug}/{kind}/{VARIABLE} and ` +
                 `nothing else.`,
               path: ["servers"],
             });
@@ -1734,38 +1885,12 @@ export const StradConfig = z
         }
       }
 
-      // A CONNECTOR VARIABLE MAY NOT ALSO BE A `paramsWritable:` OR
-      // `paramsRefresh:` ENTRY.
-      //
-      // Those two name variables in this slug's `static/` namespace and nowhere
-      // else (src/http/params.ts composes `parameterPath`), while a connector's
-      // credential lives under `oauth/` and outranks `static/` for the same
-      // name. Allowing both would make the container re-read a stale hand-typed
-      // copy over the credential a human just consented to, and write a rotation
-      // back to a path the `oauth/` copy permanently shadows — silently, in both
-      // directions. Refusing the combination is what keeps the two mechanisms
-      // from addressing one name through different kinds.
-      if (s.kind === "supplementary-image") {
-        const owned = new Set(
-          named.map(({ variable }) => variable.toLowerCase()),
-        );
-        for (const field of ["paramsWritable", "paramsRefresh"] as const) {
-          for (const variable of s[field]) {
-            if (!owned.has(variable.toLowerCase())) continue;
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              message:
-                `server "${s.slug}" lists "${variable}" under ${field}: and ` +
-                `names it on its oauth: connector. ${field} addresses ` +
-                `/strad/{env}/mcp/${s.slug}/static/, and a connector's ` +
-                `credential is written to the oauth/ kind, which outranks it — ` +
-                `so the two would address one name through different kinds and ` +
-                `disagree without failing. Drop it from ${field}:.`,
-              path: ["servers"],
-            });
-          }
-        }
-      }
+      // A connector variable may also be a `paramsWritable:` or `paramsRefresh:`
+      // entry. The route addresses such a name through `oauth/` when the store
+      // holds it there and `static/` otherwise (`kindsOf` in
+      // src/http/params.ts), which is the precedence every layered read
+      // applies — so the two mechanisms address one parameter, and a consented
+      // credential that rotates on use survives a restart.
 
       const claimed = new Map<string, string>();
       for (const { field, variable } of named) {
@@ -2425,6 +2550,26 @@ export const StradConfig = z
           path: ["bundles"],
         });
       }
+    }
+
+    // The overlay lives in the parameter store, so there has to BE one. Under
+    // the `env` provider there is no store client, no credential and nowhere
+    // to put a write — a console edit would look like it worked and vanish at
+    // the next restart. Refuse the combination rather than degrade to a console
+    // whose Save button lies.
+    if (
+      cfg.gateway.configStore.enabled &&
+      cfg.gateway.secrets.provider !== "gcp-parameter-store"
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          `gateway.configStore.enabled requires gateway.secrets.provider: ` +
+          `gcp-parameter-store (got "${cfg.gateway.secrets.provider}"). The ` +
+          `runtime server overlay is stored as a parameter, and the env ` +
+          `provider has no store to write it to.`,
+        path: ["gateway", "configStore", "enabled"],
+      });
     }
   });
 

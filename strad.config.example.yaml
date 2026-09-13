@@ -70,6 +70,37 @@ gateway:
     # default.
     paramRefreshSeconds: 300
 
+  # Where a server entry a HUMAN added through the console is kept.
+  #
+  # Off by default, and off means today's behaviour exactly: one document, one
+  # source, changed by a deploy. On, core also reads an OVERLAY from
+  # /strad/{env}/gateway/config/SERVERS — entries added, entries overridden,
+  # entries removed — merges it over this document, and serves the result. The
+  # console at /connectors is what writes it, and a change takes effect on the
+  # next request with no redeploy and no restart.
+  #
+  # The file stays authoritative for everything nobody has touched. An absent
+  # overlay is byte-for-byte the same roster as no overlay at all, so turning
+  # this on changes nothing until somebody presses Save.
+  #
+  # Needs `provider: gcp-parameter-store` above — the overlay lives in that
+  # store. Declaring it under the `env` provider is a config error rather than a
+  # silent no-op, because a console whose Save button does not persist is worse
+  # than one that is not there. Writing also needs the console's admin
+  # credential (SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON) on core; without it the
+  # roster page renders read-only and says so.
+  #
+  # What can be added this way is bounded by what a running process can serve:
+  # `remote-http` and `local-tunnel` fully, a `supplementary-image` slug pointed
+  # at a mount that is already deployed, and a `builtin` never. See
+  # docs/operate/runtime-config.
+  configStore:
+    enabled: false
+    # How often core re-reads the overlay. The process that WROTE a change
+    # reloads at once; this is what carries another instance's change to this
+    # one. Two store reads per interval per core instance.
+    pollSeconds: 60
+
 auth:
   # Humans. Verified against the Google Workspace `hd` claim — NOT the email
   # suffix, which a personal account can spell however it likes.
@@ -77,6 +108,19 @@ auth:
     enabled: true
     hostedDomain: tadasant.com
     roles: [admin]
+    # How long a sign-in keeps the console open. A session cookie lives
+    # `slidingTtlSeconds`, and the console re-issues it once more than half of
+    # that has run, so an active human is not signed out. `absoluteTtlSeconds`
+    # is the cap, counted from the Google sign-in, which renewal never moves: a
+    # stolen cookie that keeps being used still dies there. Both are read on
+    # every request, so changing one applies to sessions already issued —
+    # raising the cap extends every live session, a stolen one included.
+    # 60 seconds to 30 days each; equal values mean a fixed session. Rotating
+    # CONSOLE_SESSION_SECRET is the only way to end sessions early, and it ends
+    # all of them.
+    session:
+      slidingTtlSeconds: 172800 # default, 48 hours
+      absoluteTtlSeconds: 604800 # default, 7 days
 
   # Machines. `strad_<env>_<pubid>_<secret>`; only the SHA-256 is stored.
   # Mint with: npm run token:mint -- --label "my agent" --roles admin
@@ -176,6 +220,26 @@ bundles:
     instanceSizeSlug: apps-s-1vcpu-2gb
 
 servers:
+  # The roster editor, as an MCP server — the other half of the console at
+  # /connectors. Mount it and an AGENT can add, edit, disable and remove a
+  # connector in the middle of a session; leave it out and only a human at the
+  # console can. It is opt-in on purpose: a tool that edits the server list can
+  # point a slug at an endpoint of its own choosing.
+  #
+  # It offers nothing at all unless gateway.configStore.enabled is set above,
+  # and it offers only its three READ tools unless this gateway also holds a
+  # credential that can persist a change. To mount the read half deliberately,
+  # narrow it here — an allow list is exhaustive and enforced on tools/list and
+  # tools/call alike:
+  #
+  #   tools:
+  #     allow: [list_connectors, get_connector, describe_connector_authorization]
+  - slug: connectors
+    kind: builtin
+    module: "./servers/connectors.js"
+    bundle: core
+    entitlements: [admin]
+
   # --- kind: builtin --------------------------------------------------------
   # Compiled into the strad image. This is how private/internal servers ship:
   # tadasant-internal builds its own image with its modules and registers them
@@ -401,6 +465,13 @@ servers:
   # through core, and re-read the live one at boot instead of the value the last
   # deploy baked — which is what makes "set it once and it keeps working" true
   # across restarts. See docs: /operate/secrets/.
+  #
+  # Or CONSENT in the console and keep durability: add an `oauth:` connector whose
+  # refreshTokenVariable is X_OAUTH_REFRESH_TOKEN, and keep it under
+  # paramsWritable:. The consent writes /strad/{env}/mcp/x-twitter/oauth/, and
+  # because the name is on the connector every rotation is written back there too.
+  # A token already seeded under static/ keeps rotating there until the first
+  # Connect, so adding the connector is safe before anyone consents.
   #
   # THE OTHER HALF, for a credential that does NOT rotate on use but does get
   # rotated by a human: `paramsRefresh:`. A supplementary server's managed

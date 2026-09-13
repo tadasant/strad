@@ -828,7 +828,40 @@ servers:
     entitlements: [admin, zimmer]
     env:
       SECRETS_PROJECT_ID: "zimmer-secrets-staging"
-      SECRETS_NAMESPACES: "/zimmer/staging/mcp/static/"
+      # TWO namespaces, both the PARENT of a documented leaf, and BOTH halves get
+      # them — see the `consoleEnv:` note below for why there is no third option.
+      #
+      # WHY TWO. Zimmer is RENAMING its bucket, /zimmer/{env}/mcp/ ->
+      # /zimmer/{env}/secrets/ (tadasant/zimmer#926): `mcp` stopped being true
+      # once it held GH_TOKEN and OPENROUTER_API_KEY. There is no rename verb —
+      # the migration is create-new, verify, delete-old — so parameters really do
+      # exist at both paths for its duration, and with STRICT on below, a CREATE
+      # under whichever one was not listed is refused with a 400. The `mcp` entry
+      # comes out once the old bucket is empty; that is a separate, later change.
+      # strad.prod.yaml (private) already carries the same pair on its
+      # `zimmer-secrets-staging` console store.
+      #
+      # WHY THE PARENT, not a `.../static/` leaf. Under STRICT `selectNamespace`
+      # (src/ui/index.ts) is EXACT membership, so a pinned leaf makes every
+      # per-server sibling of it — /zimmer/staging/secrets/<slug>/ —
+      # unaddressable and, on a browse, invisible: the console silently falls back
+      # to namespaces[0] rather than erroring. The parent is still not a wildcard:
+      # a create names the leaf as its `prefix` field, which lands BETWEEN the
+      # namespace and the variable, so the path written is unchanged.
+      #
+      # A CONSEQUENCE, since both entries here are exact-membership addresses.
+      # `list_parameters` resolves its namespace argument through
+      # storeForNamespace, which is `includes()` and not a prefix test, so an
+      # agent passes one of these two verbatim — `list_managed_namespaces` is
+      # what reports them, and a stale leaf comes back as a named refusal. The
+      # console's equivalent is quieter: a bookmarked `?ns=` naming a namespace
+      # not on this list falls back to namespaces[0] with no error.
+      #
+      # ORDER IS BEHAVIOUR. `secrets` first makes it the default view and the
+      # default create target, which during the migration is the bucket that
+      # starts EMPTY — the right one to write into and the wrong one to read
+      # from, so expect to switch the picker to `mcp` to see the data being moved.
+      SECRETS_NAMESPACES: "/zimmer/staging/secrets/,/zimmer/staging/mcp/"
       SECRETS_CONSOLE_URL: "https://staging.strad.tadasant.com/ui/zimmer-secrets"
       # Viewer-only. See point 3 above — this is the one line that keeps /mcp
       # away from a Zimmer secret value, and it is IAM rather than markup.
@@ -843,12 +876,20 @@ servers:
     # `ZIMMER_SECRETS_SECRETS_PROJECT_ID` here would look meaningful and do
     # nothing; the console reads the `env:` literal.
     #
-    # The consequence, so it is not rediscovered: this slug CANNOT give its
-    # console a wider namespace list than its MCP half, the way `secrets` does
-    # above. That trick works there because the key is bare in both maps and
-    # `consoleEnv:` is spread last — and bare is exactly what a second slug may
-    # not use. If Zimmer ever needs a console-only namespace, the fix is upstream
-    # (make the namespaced form an override), not a bare key here.
+    # The consequence, so it is not rediscovered: with the namespace list bare
+    # under `env:` above, this slug CANNOT give its console a wider list than its
+    # MCP half, the way `secrets` does. That trick works there because the key is
+    # bare in BOTH maps and `consoleEnv:` is spread last — and bare is exactly
+    # what a second slug may not use. So the two namespaces above are addressable
+    # over `/mcp` as well as in the console, deliberately: the credential is the
+    # same viewer either way, and Google refuses it every secret value.
+    #
+    # The exit, if Zimmer ever needs a console-only namespace, is `consoleStores:`
+    # — a per-store `namespaces`/`namespacesStrict`/`reveal` list that wins
+    # outright over these env vars (src/ui/resolve.ts, `resolveSecretsView`) and
+    # names its own `adminKeyVar`. That is the shape prod's `secrets` slug already
+    # uses for its four stores. It is not what this slug needs today, because the
+    # widening wanted here is wanted on both halves.
     consoleEnv:
       # Reveal is a human-only surface behind the console's SSO gate. It is on
       # because round-tripping a value is how a store gets tested, and because

@@ -366,6 +366,28 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
     "strad.connector_begin": ["slug"],
     "strad.connector_connected": ["slug", "variable"],
     "strad.connector_refused": ["slug", "reason"],
+    /**
+     * The runtime server roster changed, and the two ways it can.
+     *
+     * `config_applied` is a human pressing Save in the console;
+     * `config_reloaded` is this process picking up a change another one wrote.
+     * Both ship the resulting slug list, because "which servers does this
+     * gateway serve" is the question an incident asks and `strad.listening`
+     * only answers it at boot — after the first console edit that line is
+     * stale, and this pair is what keeps the answer current.
+     *
+     * WHO made the change is deliberately absent. It is a console identity, a
+     * person's email, and the stored overlay already carries it for the console
+     * to display; the ingestor gets the shape of the change and not the name.
+     *
+     * `reason` on the failure is a closed vocabulary computed here —
+     * `unreadable`, `invalid`, `rebuild_failed` — never an exception's text: a
+     * parameter-store client's error can quote a rendered value, and a schema
+     * issue can quote a header. Both stay on stderr.
+     */
+    "strad.config_applied": ["revision", "servers", "upserts", "removals"],
+    "strad.config_reloaded": ["revision", "servers"],
+    "strad.config_reload_failed": ["reason", "revision"],
     /** Clean SIGTERM or an OOM kill — the difference is one line, or its absence. */
     "strad.shutdown": ["signal"],
     /**

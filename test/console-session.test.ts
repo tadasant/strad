@@ -9,8 +9,8 @@ import {
   principalFromSession,
   sanitizeNext,
   Sealer,
-  SESSION_TTL_MS,
   sessionKeyProblem,
+  sessionWindows,
   stateMatches,
   type ConsoleSessionPayload,
 } from "../src/auth/session.ts";
@@ -56,6 +56,9 @@ servers:
     module: "./servers/echo.js"
     entitlements: [admin]
 `);
+
+/** One sliding window under CONFIG, which sets none: the schema default. */
+const SESSION_TTL_MS = sessionWindows(CONFIG).slidingMs;
 
 const BOOTSTRAP = "bootstrap-secret-xyz";
 const CLIENT_SECRET = "google-client-secret-abc";
@@ -428,7 +431,8 @@ describe("the callback mints a session", () => {
     expect(session.toLowerCase()).toContain("httponly");
     expect(session.toLowerCase()).toContain("samesite=lax");
     expect(session).toContain("Path=/");
-    expect(session).toContain("Max-Age=43200");
+    // One sliding window — 48 hours, the default — not the absolute cap.
+    expect(session).toContain("Max-Age=172800");
     // The transaction is spent, whatever happened.
     expect(setCookieFor(callback, "strad_oauth_tx")).toBeTruthy();
     expect(cookie).toContain("strad_console_session=");

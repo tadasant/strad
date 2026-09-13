@@ -1501,8 +1501,10 @@ fails CI on the PR rather than the deploy after it.
   With `gateway.publicUrl` unset, that URL falls back to the origin the request
   arrived on — the same fallback `/` takes, and the reason to set `publicUrl` on
   any deployment where the `Host` header is not the gateway's own name.
-  A Google login mints a signed 12-hour session cookie; the dev bypass's cookie is
-  still the bootstrap token itself, which is a shim (see
+  A Google login mints a signed session cookie that renews while it is used and
+  dies at an absolute cap counted from sign-in (seven days by default, see
+  [the console session](/auth/overview/#the-console-session)); the dev bypass's
+  cookie is still the bootstrap token itself, which is a shim (see
   [Known limitations](/limitations/)).
 - **`/playground/:server`**, core-only and behind the same gate, is a human MCP
   client for one server: it lists the tools that server serves _you_ and calls
@@ -1511,7 +1513,8 @@ fails CI on the PR rather than the deploy after it.
   against the same server object `/mcp` builds, so entitlements and the `tools:`
   policy apply identically — see
   [the console playground](/auth/overview/#the-console-playground). A bare
-  `/playground` 302s to `/ui`, which is the picker.
+  `/playground` is the picker: every configured slug, with the ones this console
+  session may open as links and the ones it may not named with the reason.
 - **`/api/secrets/readiness`** is core-only and is the one authenticated surface
   there that the console gate does **not** guard: its consumer is a machine, so it
   takes a static bearer token through the same path `/mcp` does. It returns the

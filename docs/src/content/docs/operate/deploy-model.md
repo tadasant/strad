@@ -322,7 +322,7 @@ learn:
   (~3.9ms) with no public-edge hairpin (~58ms). It binds in both directions: core
   gets one per bundle it proxies to, and every non-core component gets
   `STRAD_CORE_URL` = `${core.PRIVATE_URL}` for the
-  [parameter write-back route](/operate/secrets/#paramswritable-a-credential-that-rotates-on-use),
+  [parameter write-back route](/operate/secrets/#paramswritable--a-credential-that-rotates-on-use),
   which is the one call that runs bundle → core. The same route carries the
   [`paramsRefresh:`](/operate/secrets/#paramsrefresh--a-rotation-that-lands-without-a-deploy)
   poll.
@@ -375,6 +375,33 @@ Capability is config, and config can be shared; a parameter STORE is
 gateway](/operate/secrets/#two-stores-one-gateway) for the shape and its cost.
 
 Prod, in `tadasant-internal`, is a separate config against the same renderer.
+
+## A roster change through the console is not a deploy
+
+With `gateway.configStore.enabled: true`, the `servers:` list a deployment serves
+is the checked-in document plus an overlay stored as one parameter, and the
+console can edit that overlay. Adopting it is one line in the config and one
+deploy:
+
+```yaml
+gateway:
+  configStore:
+    enabled: true
+```
+
+That deploy is the only one this feature needs. There is no new secret to seed,
+no new IAM grant, and no step performed by hand on a container — reads use the
+resolver key every store-backed container already holds, and writes use the
+console admin key `consoleEnv:` already puts on core.
+
+Everything on this page stays true afterwards, because a roster change touches
+none of it. The spec is not re-rendered, `STRAD_CONFIG_YAML` does not move, no
+image is pulled, and the component list is exactly what it was: core rebuilds its
+registry and routes in-process under a socket that never closes. Which also
+bounds what an overlay may contain — an entry needing a new container, a new
+image, or a variable baked onto one is refused at the console rather than
+written, because a deploy is the only thing that could deliver it. See
+[Runtime config](/operate/runtime-config/).
 
 ## The config travels without its prose, and the spec has a size
 

@@ -29,6 +29,7 @@ import { parseConfig } from "../src/config/load.ts";
 import type { StradConfig } from "../src/config/schema.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
+import { refuseTokenSession } from "../src/ui/console-auth.ts";
 import {
   EnvSecretProvider,
   sharedSecretProviders,
@@ -300,6 +301,12 @@ describe("a token session can look at the console and cannot act through it", ()
     "/tokens/mint",
     "/tokens/revoke",
     "/tokens/forget",
+    // The runtime roster: an entry may name a stored credential by reference,
+    // so adding or re-pointing one is not a look.
+    "/connectors/save",
+    "/connectors/echo/remove",
+    "/connectors/echo/toggle",
+    "/connectors/echo/restore",
     "/ui/echo/create",
     "/ui/echo/rotate",
     "/ui/echo/note",
@@ -940,6 +947,73 @@ describe("hard-off in production", () => {
     );
     expect(cfg.auth.consoleTokenLogin.enabled).toBe(false);
     expect(consoleTokenLoginStatus(cfg).active).toBe(false);
+  });
+});
+
+// --- the rule, enforced by structure rather than by review --------------------
+
+describe("every console write refuses a token session", () => {
+  // POSTs that only READ: `refresh` drops this process's cached store reading,
+  // and `tools/list` returns tool metadata. Both are looking, so both stay open
+  // to a token session. Anything else on this list needs the same argument.
+  const READ_ONLY_POSTS = new Set([
+    "/ui/:server/refresh",
+    "/playground/:server/tools/list",
+  ]);
+
+  it("guards each non-GET route behind the console gate", async () => {
+    // Walks the mounted routes rather than a list somebody maintains. Every
+    // console write added since this rule existed — a token mint page, a
+    // runtime roster — arrived behind the gate alone, and each would have been
+    // one POST from a durable credential for a look-only session. A route that
+    // wears the gate and writes must wear refuseTokenSession too, or this
+    // names it.
+    const registry = await Registry.build({
+      config: STAGING,
+      secrets: sharedSecretProviders(new EnvSecretProvider({})),
+      mode: "core",
+      env: ENV,
+    });
+    const app = createApp({
+      config: STAGING,
+      registry,
+      tokenStore: tokenStoreFromConfig(STAGING, ENV),
+      mode: "core",
+      env: ENV,
+      googleProvider: null,
+      consoleTokens: new ConsoleTokenStore(),
+    });
+    type RouteLayer = {
+      route?: {
+        path: string;
+        methods: Record<string, boolean>;
+        stack: { handle: unknown }[];
+      };
+    };
+    const routes = (
+      app as unknown as { _router: { stack: RouteLayer[] } }
+    )._router.stack.flatMap((l) => (l.route ? [l.route] : []));
+    const gatedWrites = routes
+      .filter((r) =>
+        Object.keys(r.methods).some((m) => m !== "get" && m !== "head"),
+      )
+      .filter((r) =>
+        r.stack.some(
+          (s) => typeof s.handle === "function" && s.handle.name === "gate",
+        ),
+      );
+
+    // The scan is not vacuous: it found the console's writes.
+    expect(gatedWrites.length).toBeGreaterThan(10);
+    for (const path of READ_ONLY_POSTS) {
+      expect(gatedWrites.map((r) => r.path)).toContain(path);
+    }
+
+    const unguarded = gatedWrites
+      .filter((r) => !READ_ONLY_POSTS.has(r.path))
+      .filter((r) => !r.stack.some((s) => s.handle === refuseTokenSession))
+      .map((r) => r.path);
+    expect(unguarded).toEqual([]);
   });
 });
 

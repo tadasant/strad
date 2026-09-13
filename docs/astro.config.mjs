@@ -115,6 +115,11 @@ export default defineConfig({
             { label: "Deploy model", slug: "operate/deploy-model" },
             { label: "Secrets", slug: "operate/secrets" },
             { label: "Connectors", slug: "operate/connectors" },
+            { label: "Runtime config", slug: "operate/runtime-config" },
+            {
+              label: "Runtime config: the plan",
+              slug: "operate/runtime-config-plan",
+            },
             { label: "Secrets IAM", slug: "operate/secrets-iam" },
             { label: "Operations & CI", slug: "operate/operations" },
             { label: "Telemetry", slug: "operate/telemetry" },

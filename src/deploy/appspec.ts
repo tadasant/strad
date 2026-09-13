@@ -908,9 +908,9 @@ function firstWins(
  * The connector variables this server's own namespace actually holds.
  *
  * Absent values are simply absent — see the note at the call site. Reads only
- * `serverSecrets[slug]`, which render-spec populates from
- * `/strad/{env}/mcp/{slug}/static/` and from nowhere else, so a client id seeded
- * at the gateway cannot land here.
+ * `serverSecrets[slug]`, which render-spec populates from this slug's own
+ * `/strad/{env}/mcp/{slug}/` kinds (`oauth/` ahead of `static/`) and from
+ * nowhere else, so a client id seeded at the gateway cannot land here.
  */
 function connectorEnv(
   server: ServerConfig,
@@ -1502,7 +1502,7 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       // ONE, and not configurable. Console login tokens and their sessions are
       // records in this process's memory (src/auth/console-tokens.ts); a second
       // replica fails them closed — a mint on one is unknown to the other — but
-      // it does fail them. HACKS.md #96 has the shared-store upgrade.
+      // it does fail them. HACKS.md #98 has the shared-store upgrade.
       instance_count: 1,
       // The ONE public component. http_port is what mints the public route.
       http_port: PORT,

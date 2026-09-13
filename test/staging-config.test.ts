@@ -387,6 +387,25 @@ describe("staging config", () => {
         throw new Error("expected a supplementary image");
       expect(secrets.env.SECRETS_NAMESPACES).toBe("/strad/staging/mcp/");
       expect(secrets.env.SECRETS_NAMESPACES).not.toContain("gateway");
+
+      // AND THE SAME QUESTION OF THE OTHER STORE, because the justification
+      // above is "two separate projects, EACH fenced again by its own namespace
+      // list" — a claim with only one of the two fences asserted stays literally
+      // true while the unasserted one is widened to the whole project. This one
+      // is a list, and it is deliberately the PARENT of each documented leaf so
+      // a per-server sibling is addressable under strict; what it must never
+      // become is Zimmer's project root.
+      // test/staging-config.multi-store.test.ts pins both halves of it.
+      const zimmerSecrets = CONFIG.servers.find(
+        (s) => s.slug === "zimmer-secrets",
+      );
+      if (zimmerSecrets?.kind !== "supplementary-image")
+        throw new Error("expected a supplementary image");
+      const zimmerFence = zimmerSecrets.env.SECRETS_NAMESPACES ?? "";
+      expect(zimmerFence).toBe("/zimmer/staging/secrets/,/zimmer/staging/mcp/");
+      for (const ns of zimmerFence.split(",")) {
+        expect(ns.startsWith("/zimmer/staging/")).toBe(true);
+      }
     });
 
     it("can watch a rotation, because echo resolves its options at call time", () => {

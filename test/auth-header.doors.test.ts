@@ -451,23 +451,29 @@ describe("no door parses or compares a credential by hand", () => {
         ([, text]) =>
           // An anchored regex, or a quoted `"bearer"` / `"Bearer "` to compare
           // or prefix-match against. `Bearer ${token}` in a template literal —
-          // a header strad SENDS — is neither, and neither is the one other
-          // place the word is a value rather than a pattern: `token_type:
-          // "Bearer"`, RFC 6749 §5.1's field on the token endpoint's response
-          // (src/http/oauth.ts). That is strad naming the scheme it just issued
-          // a credential for; nothing is matched against it. It is stripped by
-          // its whole `token_type:` key rather than exempted by file, so a
-          // second quoted `"Bearer"` in the same module is still caught.
+          // a header strad SENDS — is neither, and neither are the two places
+          // the word is a value rather than a pattern. `token_type: "Bearer"`
+          // is RFC 6749 §5.1's field on the token endpoint's response
+          // (src/http/oauth.ts): strad naming the scheme it just issued a
+          // credential for. `CREDENTIAL_SCHEMES` (src/config/secret-position.ts)
+          // is the vocabulary a CONFIG value may name in front of a `${NAME}`
+          // ref — what a roster entry is allowed to say strad should SEND, not
+          // anything an arriving header is compared against.
+          //
+          // Both are stripped by their own name rather than exempted by file,
+          // so a second quoted `"Bearer"` in either module is still caught.
           /\/\^\s*bearer/i.test(text) ||
-          /["']bearer ?["']/i.test(withoutTokenType(text)),
+          /["']bearer ?["']/i.test(withoutSpokenSchemes(text)),
       )
       .map(([path]) => path);
     expect(offenders).toEqual([]);
   });
 
-  /** RFC 6749 §5.1's `token_type` field, and only it. */
-  function withoutTokenType(text: string): string {
-    return text.replace(/token_type:\s*["']Bearer["']/g, "token_type: <>");
+  /** The two places the scheme is a word strad SPEAKS, and only those two. */
+  function withoutSpokenSchemes(text: string): string {
+    return text
+      .replace(/token_type:\s*["']Bearer["']/g, "token_type: <>")
+      .replace(/CREDENTIAL_SCHEMES = \[[^\]]*\]/g, "CREDENTIAL_SCHEMES = <>");
   }
 
   it("calls timingSafeEqual nowhere but the owner, and the session MAC", () => {

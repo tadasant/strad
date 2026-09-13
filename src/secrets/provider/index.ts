@@ -83,6 +83,28 @@ export interface ServerSecretProviders {
    */
   forServer(slug: string): SecretProvider;
   /**
+   * The provider a RUNTIME-AUTHORED server's refs resolve against: that
+   * server's own namespace and NOTHING ELSE.
+   *
+   * `forServer` chains `shared` behind the slug's namespace, and `shared` ends
+   * at the process environment. That is right for an entry a deploy put in the
+   * config — a human wrote the `${NAME}` and a human reviewed where it points.
+   * It is wrong for an entry authored at runtime through `/mcp`, because the
+   * caller chooses BOTH the name and the URL it is interpolated into: a
+   * connector at `https://elsewhere.example/?k=${SOME_NAME}` would resolve
+   * `SOME_NAME` down to core's environment and send the result off-box on the
+   * first tool call. Core's environment holds the store's own admin and
+   * resolver keys, so that is a credential exfiltration primitive rather than a
+   * configuration mistake.
+   *
+   * Isolating the namespace closes it: a runtime entry can only read values
+   * somebody put under its own slug, which is exactly the set of values that
+   * entry is entitled to. It resolves NOTHING under the `env` provider, which
+   * has no per-slug namespace — fail closed, and unreachable anyway, since
+   * `gateway.configStore:` requires the store provider.
+   */
+  forServerIsolated(slug: string): SecretProvider;
+  /**
    * Drop the process's reading of the store, so the next `get` anywhere reaches
    * it. What a write through strad's own console calls.
    */
@@ -97,6 +119,13 @@ export interface ServerSecretProviders {
  * holding a single provider (a test, a tool that builds its own). `forServer`
  * returning the same object is the correct answer there, not a stub.
  */
+/** Resolves nothing, ever. The isolated layer under a provider that has none. */
+const EMPTY_PROVIDER: SecretProvider = {
+  name: "none",
+  get: () => Promise.resolve(null),
+  invalidate: () => undefined,
+};
+
 export function sharedSecretProviders(
   provider: SecretProvider,
 ): ServerSecretProviders {
@@ -107,6 +136,11 @@ export function sharedSecretProviders(
     // caller that asked for the store layer must not be handed `process.env`
     // wearing its name.
     forServer: () => provider,
+    // Nothing, deliberately. There is no per-slug namespace here, so the only
+    // honest isolated answer is "no value" — and a runtime-authored entry
+    // cannot exist under this provider anyway, because
+    // `gateway.configStore.enabled` requires the store one.
+    forServerIsolated: () => EMPTY_PROVIDER,
     invalidate: (name?: string) => provider.invalidate(name),
   };
 }
@@ -205,20 +239,34 @@ export function buildSecretProviders(
     : store;
 
   const perServer = new Map<string, SecretProvider>();
-  const forServer = (slug: string): SecretProvider => {
-    const held = perServer.get(slug);
+  const isolated = new Map<string, SecretProvider>();
+  const layers = new Map<string, StoreSecretProvider[]>();
+
+  /**
+   * The slug's OWN namespace layers, memoised — the same set behind both
+   * accessors, so a value read through one is the value the other holds.
+   *
+   * ONE PROVIDER PER KIND, in precedence order — `oauth/` then `static/`.
+   * Each slices the SAME process snapshot of the store (see gcp.ts
+   * `snapshot()`), so the extra layer costs a map lookup rather than a round
+   * trip, and a slug with nothing under `oauth/` resolves exactly as it did.
+   */
+  const ownLayers = (slug: string): StoreSecretProvider[] => {
+    const held = layers.get(slug);
     if (held) return held;
-    // ONE PROVIDER PER KIND, in precedence order — `oauth/` then `static/`.
-    //
-    // Each slices the SAME process snapshot of the store (see gcp.ts
-    // `snapshot()`), so the extra layer costs a map lookup rather than a round
-    // trip, and a slug with nothing under `oauth/` resolves exactly as it did.
     const own = serverNamespaces(opts.config.gateway.env, slug).map(
       (namespace) =>
         new StoreSecretProvider(resolver, namespace, {
           negativeTtlMs: Infinity,
         }),
     );
+    layers.set(slug, own);
+    return own;
+  };
+
+  const forServer = (slug: string): SecretProvider => {
+    const held = perServer.get(slug);
+    if (held) return held;
     // ChainSecretProvider unchanged, including its rule that a THROW does not
     // fall through. An unreachable store must not silently demote a server to
     // whatever the shared namespace happens to hold — that is how a rotated
@@ -226,8 +274,19 @@ export function buildSecretProviders(
     // `params: true` server already has for the same namespaces, resolved by the
     // registry's parameter cache, so the two halves of `/mcp/{slug}/` fail the
     // same way.
-    const chained = new ChainSecretProvider([...own, shared]);
+    const chained = new ChainSecretProvider([...ownLayers(slug), shared]);
     perServer.set(slug, chained);
+    return chained;
+  };
+
+  // The slug's own namespaces and NOTHING behind them — no gateway namespace,
+  // no environment. Same layers, same snapshot, same throw-does-not-fall-through
+  // rule; the only difference from `forServer` is where the chain ENDS.
+  const forServerIsolated = (slug: string): SecretProvider => {
+    const held = isolated.get(slug);
+    if (held) return held;
+    const chained = new ChainSecretProvider(ownLayers(slug));
+    isolated.set(slug, chained);
     return chained;
   };
 
@@ -235,9 +294,11 @@ export function buildSecretProviders(
     shared,
     gatewayStore: store,
     forServer,
+    forServerIsolated,
     invalidate: (name?: string) => {
       shared.invalidate(name);
       for (const provider of perServer.values()) provider.invalidate(name);
+      for (const provider of isolated.values()) provider.invalidate(name);
     },
   };
 }

@@ -230,7 +230,7 @@ every tree's factory contract, which is why it is a list.
 
 The console is [installable](/operate/console-pwa/), and its service worker
 precaches a fixed shell — the icons, the manifest, and one static offline page —
-into a cache named `strad-shell-v1`. Renaming that constant is what evicts the old
+into a cache named `strad-shell-v2`. Renaming that constant is what evicts the old
 cache. Nothing renames it for you, and nothing fails if you forget.
 
 The shell list is interpolated into the worker script, so adding or removing a
@@ -409,6 +409,31 @@ Same scope as #2: it is console-class only and cannot reach `/mcp`.
 
 **Undo:** it goes away with the dev bypass itself.
 
+### 97. A console session cannot be revoked one at a time
+
+A Google console session is a signed cookie with no server-side record. It
+renews while it is used and dies at an absolute cap counted from the sign-in —
+48 hours sliding and 7 days absolute by default, set under
+[`auth.google.session`](/servers/interface/#authgooglesession). Until then
+nothing ends one session early. The only lever is rotating
+`CONSOLE_SESSION_SECRET`, which signs **everyone** out.
+
+Renewal is what makes this worth stating. A stolen cookie the thief keeps using
+renews itself exactly as the owner's does, so it lives until the cap: up to 7 days
+after the owner signed in, where a fixed 12-hour session would have given it 12
+hours. The same
+holds for a person removed from the Workspace: strad does not ask Google again
+after sign-in, so a session they already hold runs its clocks out. Lower
+`absoluteTtlSeconds` if that is too long for your deployment. The schema will not
+let it go past 30 days.
+
+**How you would know.** You would not, from strad: there is no list of live
+sessions to look at. That absence is the limitation.
+
+**Undo:** a durable session store, shared with #43's login tokens, that renewal
+checks and the console can strike a session from. See `HACKS.md` #97 and
+[Auth](/auth/overview/#the-console-session).
+
 ### 6. Token records live in an env var, not a database
 
 **Resolved** for a store-backed deployment, with two narrower residuals.
@@ -507,7 +532,7 @@ first, second and fourth together, and gives the console page something to read.
 The third stays Google's shape unless strad mints its own grant identity, which
 it should not.
 
-### 96. Console login tokens live in core's memory
+### 98. Console login tokens live in core's memory
 
 A [console login token](/auth/overview/#console-login-tokens-the-automated-actors-door)
 and the 30-minute session it opens are records in core's memory. A restart ends
@@ -2278,7 +2303,7 @@ unchanged by the fork.
 
 ### 62. A `paramsWritable` write is single-writer only because the render says so
 
-[`paramsWritable:`](/operate/secrets/#paramswritable-a-credential-that-rotates-on-use)
+[`paramsWritable:`](/operate/secrets/#paramswritable--a-credential-that-rotates-on-use)
 lets a supplementary server persist a credential that rotated under it: it POSTs
 to core, which performs the write with the store-admin credential it already
 holds. The write is a plain `rotate()` — there is no compare-and-set on the
@@ -2301,7 +2326,7 @@ deploy rather than a silent outage.
 For the current fleet that is free — every bundle runs one instance — but it is a
 real constraint, and the render error is the only place it is enforced.
 
-Two smaller edges of the same path:
+Three smaller edges of the same path:
 
 - **The boot read makes the store authoritative at boot** for the names on the
   list. That is the point: it is what closes the race where a deploy bakes a value
@@ -2314,6 +2339,12 @@ Two smaller edges of the same path:
   about this process. Read a degraded x-twitter as "re-seed before this restarts",
   not as "it is down". The alternative is a silent loss that surfaces hours later
   as a total outage.
+- **A console Reconnect does not reach a running process.** A connector's
+  variable on `paramsWritable:` is rotated under `oauth/` once a consent has
+  written it there. Reconnecting writes a fresh grant there, but the running process
+  still holds the token it booted with, and its next rotation writes over the
+  reconnect. Restart the component after a reconnect. A hand re-seed of any
+  `paramsWritable:` name has the same window.
 
 **Exit.** A compare-and-set `put()` — read the latest version id, write
 conditional on it, re-read on conflict — plus dropping the render check, for any
@@ -2323,14 +2354,14 @@ decision for us.
 
 ### 63. One internal token means any container can reach any writable parameter
 
-The [parameter write-back routes](/operate/secrets/#paramswritable-a-credential-that-rotates-on-use)
+The [parameter write-back routes](/operate/secrets/#paramswritable--a-credential-that-rotates-on-use)
 authenticate with `STRAD_INTERNAL_TOKEN` — one token, broadcast to every
 supplementary component, because it is the same token core presents when it
 proxies `/mcp` to them. Nothing binds a caller to the slug it addresses.
 
 So the reachable set is not "this server's allowlist"; it is the **union** of
 every enabled server's `paramsWritable:`, for any container holding the token.
-Two consequences worth stating plainly:
+Three consequences worth stating plainly:
 
 - A compromised container on one bundle can read and overwrite the rotating
   credential of a server on another.
@@ -2338,6 +2369,9 @@ Two consequences worth stating plainly:
   stored value took the console admin key behind Google SSO — so
   `STRAD_INTERNAL_TOKEN` is now also a read credential for the names on that
   union, which belongs in how often you rotate it.
+- A connector's variable listed under `paramsWritable:` is in that union too, so a
+  credential a human consented to in the console is reachable the same way. The
+  route can only rotate it, never create it.
 
 The union is opt-in and empty by default, and every name in it is by construction
 a credential that rotates, so losing one costs a re-seed rather than a durable
@@ -2859,6 +2893,74 @@ The token rides in the URL path and therefore reaches App Platform's edge access
 **Undo:** none needed — call `slack_download_file` again. A fresh link costs one round trip.
 
 See `HACKS.md` #95.
+
+---
+
+### 96. The runtime roster can add a slug, not a credential
+
+[`gateway.configStore`](/operate/runtime-config/) lets a human add, edit, disable
+and remove a server entry from the console at `/connectors`, and an agent do the
+same over `/mcp` through the `connectors` builtin, live on the next request with
+no deploy. Two things it does not do, and the first is the one people expect.
+
+**A second account of an existing bundled server still needs a deploy.** A
+`supplementary-image` mount's credentials reach its container as environment
+variables the renderer bakes into the app spec, and a process's environment is
+fixed at spawn — so a new value cannot reach a running container at all. The
+bundle host compounds it: it discovers the extra slugs it should mount by looking
+for prefixed marker variables in its own environment, so a slug whose variables
+are not there is a slug that container does not serve, whatever the roster says.
+Both doors refuse the fields that would lie — `env:`, `params:`,
+`paramsWritable:`, `paramsRefresh:`, `consoleEnv:`, `consoleStores:`,
+`mcpStores:` — rather than accept an entry the deployment cannot honour. What is
+deliverable at runtime is a second slug onto a mount that is already deployed and
+already credentialed (the `gmail-ro` / `gmail-rw` pattern, two entries on one
+`path:` differing by `tools:`), and the two unhosted kinds, `remote-http` and
+`local-tunnel`, which run in core's own process.
+
+**The overlay parameter has no compare-and-swap.** Parameter Manager offers none,
+so a write is a read-modify-write. The console form carries the revision it
+rendered and a stale Save is refused with `409`, which catches the collision a
+human causes — a second tab, a second console process. The write tools take the
+same revision as `expectedRevision`, optionally, so a caller that read the roster
+first gets the same refusal. Two writes landing inside one read-modify-write
+window still lose one, silently, and the loser is whichever wrote first. What
+bounds it is that writes are rare and come from one component: core is the only
+thing holding the admin credential, whichever door the write arrived through.
+
+**Neither gap means a runtime write is unbounded.** Three rules bound what a
+write may reach, as distinct from who may make one: a runtime-authored entry's
+`${NAME}` refs resolve against that slug's own `/strad/{env}/mcp/{slug}/static/`
+namespace and nothing else, so a connector `url:` cannot read core's process
+environment and send it off-box; a runtime write may not change `entitlements:`
+or `tools:` on a slug the checked-in document declares; and a runtime write may
+name a credential but never carry one, so a literal in `headers:`, in `url:`'s
+userinfo or in an `oauthRefresh:` grant is refused rather than stored in the
+clear. Disabling a connector that carries one is refused too, because disable
+re-upserts the entry; removing it is always allowed. All three are in [Who may write, and what a write may
+reach](/operate/runtime-config/#who-may-write-and-what-a-write-may-reach).
+
+**The third rule has two positions it does not cover.** A **URL query
+parameter** — `https://api.example.com/mcp?key=abc` — is a literal credential
+and is accepted, because nothing can tell it from `?version=2` without refusing
+every URL that carries a query at all; userinfo is refused because
+`user:pass@` is a credential by definition. And a **builtin's `options:`** is an
+untyped bag whose ordinary contents are non-secret literals, so the reachable
+surface there is editing the options of a builtin the checked-in config already
+declares — one cannot be created at runtime. Closing either needs a typed
+statement of which fields carry a credential, per kind and per builtin, which is
+a schema change rather than a rule; [the runtime-config
+plan](/operate/runtime-config-plan/) carries it as a later phase.
+
+**Undo:** for the first, a credential path a running container reads rather than
+receives — what `paramsRefresh:` does for a value behind an already-listed name,
+widened to a name the spec never listed, which needs the bundle host to discover
+mounts from the store instead of from its environment
+([strad#343](https://github.com/tadasant/strad/issues/343) carries it). For the
+second, a stored document with an `etag`-style precondition, or one writer
+elected per deployment.
+
+See `HACKS.md` #96.
 
 ---
 
