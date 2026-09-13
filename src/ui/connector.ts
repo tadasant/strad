@@ -25,6 +25,7 @@ import {
   completeAuthorization,
   connectorClientVariables,
   connectorFor,
+  grantAuthority,
   connectorRedirectUri,
   connectorStore,
   connectorTerms,
@@ -678,8 +679,7 @@ async function handleCallback(
  * of claiming success and letting **Connect** fail after the consent screen.
  */
 type GrantRefusal =
-  | "not_ready"
-  | "no_store"
+  | Exclude<ConnectorState["kind"], "ready" | "connected">
   | "unsupported"
   | "not_eligible"
   | "write_refused"
@@ -781,12 +781,16 @@ async function handleGrantClient(
     });
   };
 
+  // THE STATE'S OWN KIND is the reason, exactly as `handleConnect` ships it, and
+  // the sentence stays neutral about which of the four it was. `store_error` is
+  // why: the store did not answer, so "there is no OAuth client here" would be
+  // asserting a fact strad could not establish.
   const state = await readConnectorState(opts, entry);
   if (state.kind !== "ready" && state.kind !== "connected") {
     await refuse(
-      "not_ready",
-      "There is no OAuth client on this server to grant read access to. See " +
-        "the setup below. Nothing was changed.",
+      state.kind,
+      "strad cannot see an OAuth client to grant read access to on this " +
+        "server. See the setup below. Nothing was changed.",
       state,
     );
     return;
@@ -813,32 +817,41 @@ async function handleGrantClient(
   // The two CLIENT variables, from config, in the order the flow reads them —
   // the client id first, because that is the one the connect POST needs and the
   // one whose failure a human sees before consenting.
-  for (const variable of connectorClientVariables(entry.oauth)) {
-    const path = connectorVariablePath(
-      opts.config,
-      entry,
-      state.presence,
-      variable,
+  const targets = connectorClientVariables(entry.oauth).map((variable) => ({
+    variable,
+    path: connectorVariablePath(opts.config, entry, state.presence, variable),
+  }));
+
+  // THE FENCE, AND EVERY PATH PASSES IT BEFORE ANY OF THEM IS WRITTEN. Checked
+  // in its own pass rather than inside the loop because a refusal on the SECOND
+  // variable after the first was already bound would be a page saying "nothing
+  // was changed" over a binding that had just been made permanent.
+  //
+  // Two things it refuses. A client hand-seeded under `oauth/`: that kind is the
+  // one strad mints the refresh token into, and the console being unable to read
+  // it back is what the kind means. And a variable the CHECKED-IN config does
+  // not nominate — `grantAuthority` reads the declared document, so a runtime
+  // roster write that edited this slug's `oauth:` block cannot aim the grant at
+  // a secret the deploy never approved.
+  const declared = grantAuthority(opts);
+  for (const { variable, path } of targets) {
+    if (isConnectorClientPath(declared, path)) continue;
+    await refuse(
+      "not_eligible",
+      `${variable} for this server is held at ${path}, which is not a path ` +
+        `this deployment's checked-in config nominates as this slug's OAuth ` +
+        `client, so strad will not grant itself read access to it. Only a ` +
+        `connector's client id and client secret under its own static/ ` +
+        `namespace are eligible — the oauth/ kind holds credentials strad ` +
+        `minted and no person has seen, and an oauth: block added by a runtime ` +
+        `roster write nominates nothing. Nothing was changed.`,
+      state,
+      { variable },
     );
+    return;
+  }
 
-    // THE FENCE, and it is checked per path rather than per slug. A client
-    // hand-seeded under `oauth/` is not eligible: that kind is the one strad
-    // mints the refresh token into, and the console being unable to read it back
-    // is what the kind means. Such a deployment keeps the hand-run grant.
-    if (!isConnectorClientPath(opts.config, path)) {
-      await refuse(
-        "not_eligible",
-        `${variable} for this server is held at ${path}, which is not this ` +
-          `slug's own static/ namespace, so strad will not grant itself read ` +
-          `access to it. Only a connector's client id and client secret under ` +
-          `static/ are eligible — the oauth/ kind holds credentials strad ` +
-          `minted and no person has seen. Nothing was changed.`,
-        state,
-        { variable },
-      );
-      return;
-    }
-
+  for (const { variable, path } of targets) {
     let outcome: ConsoleReadGrant;
     try {
       outcome = await grant(path);
@@ -861,7 +874,8 @@ async function handleGrantClient(
       const read = clientReadFailure(outcome.error, variable, path);
       await refuse(
         "denied",
-        `strad bound this console's own service account ` +
+        `This console's own service account ` +
+          `${outcome.changed ? "is now bound" : "was already bound"} ` +
           `roles/secretmanager.secretAccessor on the secret behind ${path}, ` +
           `and the value still cannot be read — so Connect would still refuse. ` +
           `${read.sentence}` +

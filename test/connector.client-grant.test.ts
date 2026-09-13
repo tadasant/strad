@@ -17,7 +17,10 @@ import {
 } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { parseConfig } from "../src/config/load.ts";
-import { isConnectorClientPath } from "../src/connectors/index.ts";
+import {
+  grantAuthority,
+  isConnectorClientPath,
+} from "../src/connectors/index.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import { createFakeGcp, type FakeGcp } from "../src/secrets/parameters/fake.ts";
@@ -332,6 +335,37 @@ function post(path: string): Promise<Response> {
 const connect = (slug = SLUG) => post(`/ui/${slug}/connect`);
 const grantClient = (slug = SLUG) => post(`/ui/${slug}/grant-client`);
 
+/**
+ * Create a parameter THROUGH THE CONSOLE'S OWN FORM.
+ *
+ * The point is the wiring: `handleSecretAction` is what decides
+ * `consoleReadable`, and a test that computed the flag itself would pass with
+ * that line deleted.
+ */
+function createViaForm(opts: {
+  prefix: string;
+  variable: string;
+  value: string;
+  secret?: boolean;
+}): Promise<Response> {
+  const body = new URLSearchParams({
+    // The store as the CONFIG names it. The fake stands behind it via the
+    // `parametersStore` seam; the console picks the store by project id.
+    project: "demo-project",
+    ns: `/strad/${ENV}/mcp/`,
+    prefix: opts.prefix,
+    variable: opts.variable,
+    value: opts.value,
+    ...(opts.secret === false ? {} : { secret: "on" }),
+  });
+  return fetch(`${main.baseUrl}/ui/secrets/create`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", ...auth },
+    body: body.toString(),
+    redirect: "manual",
+  });
+}
+
 /** The HTML flash, unescaped, so a sentence can be matched as a human reads it. */
 function flashOf(html: string): string {
   const m = /<div class="flash flash-(?:ok|error)">([^<]*)<\/div>/.exec(html);
@@ -419,6 +453,57 @@ describe("creating a declared connector's OAuth client grants the console read o
     });
   });
 
+  it("the console's own create form makes the grant, and says it read the value back", async () => {
+    const res = await createViaForm({
+      prefix: `${SLUG}/static/`,
+      variable: CLIENT_ID_VAR,
+      value: CLIENT_ID,
+    });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(flashOf(html)).toContain("Created");
+    // VERIFIED, not asserted: the flash says the value was read back, and it
+    // only says that because `describeClientGrant` actually read it.
+    expect(flashOf(html)).toContain("read it back");
+    expect(consoleCanReach(`${NS}${CLIENT_ID_VAR}`)).toBe(true);
+    expect(await readable(`${NS}${CLIENT_ID_VAR}`)).toBe(true);
+    assertNoCanary(html);
+  });
+
+  it("the same form grants nothing for a variable no connector nominates", async () => {
+    const res = await createViaForm({
+      prefix: `${SLUG}/static/`,
+      variable: "SOME_OTHER_TOKEN",
+      value: "neighbour-value",
+    });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(flashOf(html)).toContain("Created");
+    expect(flashOf(html)).not.toContain("read access");
+    expect(consoleCanReach(`${NS}SOME_OTHER_TOKEN`)).toBe(false);
+  });
+
+  it("the form reports the deny policy rather than claiming the grant took", async () => {
+    fake.denied.add(ACCESS_PERMISSION);
+    const res = await createViaForm({
+      prefix: `${SLUG}/static/`,
+      variable: CLIENT_ID_VAR,
+      value: CLIENT_ID,
+    });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // The create SUCCEEDED — the message leads with that — and the flash is red,
+    // because what needs doing next is not "press Connect".
+    expect(html).toContain('class="flash flash-error"');
+    expect(flashOf(html)).toContain("Created");
+    expect(flashOf(html)).not.toContain("read it back");
+    expect(flashOf(html)).toContain("the value still cannot be read");
+    expect(flashOf(html)).toContain("strad-console-no-read");
+    // The binding was still written; it simply bought nothing.
+    expect(consoleCanReach(`${NS}${CLIENT_ID_VAR}`)).toBe(true);
+    assertNoCanary(html);
+  });
+
   it("leaves a non-connector secret create exactly as it was", async () => {
     const path = `${ns(PLAIN_SLUG)}GCS_BUCKET_TOKEN`;
     await consoleStore.create({ path, secret: true, value: "a-bucket-token" });
@@ -459,6 +544,48 @@ describe("creating a declared connector's OAuth client grants the console read o
     // read there: that kind is where the credential nobody has seen is written.
     const path = `${ns(SLUG, "oauth")}${CLIENT_ID_VAR}`;
     expect(isConnectorClientPath(CONFIG, path)).toBe(false);
+  });
+
+  it("a runtime roster write cannot aim the grant: the fence reads the DECLARED config", () => {
+    // `oauth:` is NOT among `immutableFields()` (src/config/overlay.ts), so a
+    // roster write may add or edit one at runtime. The merged config that write
+    // produces is what the console SERVES — and if the fence read it, a writer
+    // could point `clientIdVariable` at some other secret already sitting in
+    // that slug's namespace and have one press of the button bind the console
+    // `secretAccessor` on it. That is precisely the escalation the per-secret
+    // grant exists to bound.
+    const overlaid = parseConfig(
+      CONFIG_YAML.replace(
+        `      scopes: [https://www.googleapis.com/auth/spreadsheets.readonly]`,
+        `      scopes: [https://www.googleapis.com/auth/spreadsheets.readonly]\n` +
+          `      clientIdVariable: SOME_OTHER_TOKEN`,
+      ),
+    );
+    const aimed = `${NS}SOME_OTHER_TOKEN`;
+
+    // Read against the MERGED document, it passes — which is the bug.
+    expect(isConnectorClientPath(overlaid, aimed)).toBe(true);
+    // Read against the CHECKED-IN one, it does not.
+    expect(isConnectorClientPath(CONFIG, aimed)).toBe(false);
+
+    // `grantAuthority` is what picks between them, and it fails closed: a
+    // deployment whose base document will not parse nominates nothing.
+    expect(grantAuthority({ config: overlaid })).toBe(overlaid);
+    expect(
+      grantAuthority({
+        config: overlaid,
+        runtimeConfig: () => ({ baseConfig: () => CONFIG }) as never,
+      }),
+    ).toBe(CONFIG);
+    expect(
+      isConnectorClientPath(
+        grantAuthority({
+          config: overlaid,
+          runtimeConfig: () => ({ baseConfig: () => null }) as never,
+        }),
+        `${NS}${CLIENT_ID_VAR}`,
+      ),
+    ).toBe(false);
   });
 
   it("does not reach a DISABLED server's connector", () => {
@@ -665,7 +792,9 @@ describe("a connector whose client is present but unreadable is repaired from it
     const res = await grantClient();
     expect(res.status).toBe(409);
     const html = await res.text();
-    expect(flashOf(html)).toContain("is not this slug's own static/ namespace");
+    expect(flashOf(html)).toContain(
+      "is not a path this deployment's checked-in config nominates",
+    );
     expect(consoleCanReach(`${ns(SLUG, "oauth")}${CLIENT_ID_VAR}`)).toBe(false);
     expect(
       exported("strad.connector_client_grant_failed")[0]!.attributes,
@@ -673,15 +802,50 @@ describe("a connector whose client is present but unreadable is repaired from it
     assertNoCanary(html);
   });
 
+  it('a half-eligible pair binds NOTHING, so "nothing was changed" is true', async () => {
+    // The client id under `static/` (eligible) and the client secret under
+    // `oauth/` (not). The fence runs over BOTH paths before any binding is
+    // written — otherwise the page would refuse on the second while the first
+    // had already been made permanently readable, under a sentence saying
+    // nothing had changed.
+    await consoleStore.create({
+      path: `${NS}${CLIENT_ID_VAR}`,
+      secret: true,
+      value: CLIENT_ID,
+    });
+    await consoleStore.create({
+      path: `${ns(SLUG, "oauth")}${CLIENT_SECRET_VAR}`,
+      secret: true,
+      value: CLIENT_SECRET,
+    });
+
+    const res = await grantClient();
+    expect(res.status).toBe(409);
+    const html = await res.text();
+    expect(flashOf(html)).toContain("Nothing was changed.");
+    // And that claim is TRUE: neither half was bound.
+    expect(consoleCanReach(`${NS}${CLIENT_ID_VAR}`)).toBe(false);
+    expect(consoleCanReach(`${ns(SLUG, "oauth")}${CLIENT_SECRET_VAR}`)).toBe(
+      false,
+    );
+    expect(exported("strad.connector_client_granted")).toHaveLength(0);
+    expect(
+      exported("strad.connector_client_grant_failed")[0]!.attributes,
+    ).toMatchObject({ reason: "not_eligible", variable: CLIENT_SECRET_VAR });
+    assertNoCanary(html);
+  });
+
   it("refuses when there is no OAuth client seeded at all", async () => {
     const res = await grantClient();
     expect(res.status).toBe(409);
     expect(flashOf(await res.text())).toContain(
-      "There is no OAuth client on this server to grant read access to",
+      "strad cannot see an OAuth client to grant read access to",
     );
+    // THE STATE'S OWN KIND, not a flattened "not_ready" — `store_error` and
+    // `incomplete` are opposite diagnoses and the event has to tell them apart.
     expect(
       exported("strad.connector_client_grant_failed")[0]!.attributes,
-    ).toMatchObject({ reason: "not_ready" });
+    ).toMatchObject({ reason: "incomplete" });
   });
 
   it("says so, rather than offering a button that does nothing, when the store cannot express it", async () => {

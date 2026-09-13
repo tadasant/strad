@@ -56,7 +56,11 @@ import {
   offersClientRepair,
   renderConnectorPage,
 } from "./connector.ts";
-import { connectorFor, isConnectorClientPath } from "../connectors/index.ts";
+import {
+  connectorFor,
+  grantAuthority,
+  isConnectorClientPath,
+} from "../connectors/index.ts";
 import {
   forgetDeploymentDiagnosis,
   readDeploymentSecretStatus,
@@ -263,6 +267,7 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     sessions: opts.sessions,
     parametersStore: opts.parametersStore,
     connectorFetch: opts.connectorFetch,
+    runtimeConfig: opts.runtimeConfig,
   });
 
   // `/tokens` — mint and revoke the credentials /mcp accepts. Same gate, same
@@ -420,6 +425,7 @@ async function handleServerView(
         sessions: opts.sessions,
         parametersStore: opts.parametersStore,
         connectorFetch: opts.connectorFetch,
+        runtimeConfig: opts.runtimeConfig,
       },
       connector,
       {
@@ -592,6 +598,63 @@ function forgetStoreReading(opts: ConsoleUiOptions): void {
   forgetDeploymentDiagnosis({ env: opts.env, store: opts.diagnosticStore });
 }
 
+/**
+ * Whether the console can ACTUALLY read the OAuth client it has just created —
+ * as a sentence for the create flash, and a boolean for its colour.
+ *
+ * `create({ consoleReadable: true })` has already written the binding. This
+ * re-runs the same grant the connector page's repair button does, which is a
+ * no-op on the policy (the member is already there) and a READ of the value,
+ * and the read is the entire point: an IAM deny policy is evaluated before any
+ * allow and cannot be granted around, so on a deployment that applied
+ * `strad-console-no-read` the binding lands and buys nothing. Saying "granted"
+ * there would move the failure past the consent screen — see
+ * docs/operate/secrets-iam.md.
+ *
+ * NO VALUE, AND NOTHING DERIVED FROM ONE. `grantConsoleRead` reads the value and
+ * drops it; only the boolean comes back, and the failure is described by shape
+ * rather than by the store's message, which on this path could quote a client
+ * secret.
+ */
+async function describeClientGrant(
+  store: ParameterStore,
+  path: string,
+): Promise<{ ok: boolean; note: string }> {
+  const grant = await store
+    .grantConsoleRead?.(path)
+    .catch(() => null)
+    .then((g) => g ?? null);
+  if (!grant) {
+    return {
+      ok: false,
+      note:
+        ` It is a connector's OAuth client, so strad also bound this console's own ` +
+        `service account read access to that one secret — but could not confirm ` +
+        `the read afterwards. Open that server's own page and use Grant read on ` +
+        `this client, which reports what actually happened.`,
+    };
+  }
+  if (grant.readable) {
+    return {
+      ok: true,
+      note:
+        ` It is a connector's OAuth client, so strad also granted this console's ` +
+        `own service account read access to that one secret, and read it back — ` +
+        `Connect has what it needs.`,
+    };
+  }
+  return {
+    ok: false,
+    note:
+      ` It is a connector's OAuth client, so strad also bound this console's own ` +
+      `service account read access to that one secret — and the value still ` +
+      `cannot be read, so Connect will refuse. A binding that is in place and ` +
+      `grants nothing is what an IAM deny policy looks like: deny is evaluated ` +
+      `before allow and cannot be granted around. strad-console-no-read, on the ` +
+      `Secrets IAM page, is the one this deployment may have applied.`,
+  };
+}
+
 async function handleSecretAction(
   action: SecretAction,
   req: Request,
@@ -741,13 +804,15 @@ async function handleSecretAction(
         const prefix = normalisePathPrefix(prefixRaw);
         const fullPath = `${namespace}${prefix}${variable}`;
         assertWellFormed(fullPath);
-        // DERIVED FROM CONFIG, NEVER FROM THE FORM. The path was composed here
-        // out of a namespace, a prefix and a variable name the human typed, and
-        // `isConnectorClientPath` asks whether an ENABLED server's own `oauth:`
-        // block names that variable in that slug's `static/` namespace. There is
-        // no field on this form that can say "let the console read this".
+        // DERIVED FROM THE CHECKED-IN CONFIG, NEVER FROM THE FORM. The path
+        // was composed here out of a namespace, a prefix and a variable name the
+        // human typed, and `isConnectorClientPath` asks whether an ENABLED
+        // server's own `oauth:` block names that variable in that slug's
+        // `static/` namespace. There is no field on this form that can say "let
+        // the console read this" — and `grantAuthority` is why a runtime roster
+        // write cannot say it either.
         const consoleReadable =
-          secret && isConnectorClientPath(opts.config, fullPath);
+          secret && isConnectorClientPath(grantAuthority(opts), fullPath);
         await store.create({
           path: fullPath,
           secret,
@@ -756,16 +821,28 @@ async function handleSecretAction(
           consoleReadable,
         });
         forgetStoreReading(opts);
+        // VERIFIED, NOT ASSUMED — the same rule the repair button follows, for
+        // the same reason. An IAM deny policy is evaluated before any allow, so
+        // the binding the create just wrote can land and grant nothing; a flash
+        // claiming the console can now read it would send a human to Connect,
+        // which would then 403 after the consent screen. Reading it back is the
+        // only thing that can tell those apart, and it costs one call on the one
+        // create in a hundred that is a connector's client.
+        const grant = consoleReadable
+          ? await describeClientGrant(store, fullPath)
+          : null;
         await renderSecretsPage(res, view, store_, opts, {
           signedInAs,
           namespace,
           flash: {
-            tone: "ok",
+            // The CREATE succeeded either way — the message leads with that. The
+            // tone is about what needs doing next: a grant that did not take is
+            // a connector that will still refuse, and a green flash would send a
+            // human to Connect to find that out after the consent screen.
+            tone: grant && !grant.ok ? "error" : "ok",
             message:
               `Created ${prefix}${variable} (${secret ? "secret" : "non-secret"}) at ${namespace}${prefix}${variable}.` +
-              (consoleReadable
-                ? ` It is a connector's OAuth client, so strad also granted this console's own service account read access to that one secret — Connect needs it.`
-                : ""),
+              (grant?.note ?? ""),
           },
         });
         return;

@@ -212,8 +212,15 @@ export class RuntimeConfig {
    * Parsed lazily and once, non-strictly (the same leniency boot uses — an
    * unknown key in the file must not fail a write any more than it fails a
    * boot), and cached because a write path should not re-run the schema.
+   *
+   * PUBLIC because the reach bound is not the only rule that must read the
+   * DECLARED document rather than the served one. The console's connector read
+   * grant is the other: which secrets it may bind itself on comes from an
+   * `oauth:` block, and `oauth:` is not among `immutableFields` — so a runtime
+   * roster write can edit one, and fencing the grant on the merged config would
+   * let that write aim it. `null` fails both of them closed.
    */
-  private baseConfig(): StradConfig | null {
+  baseConfig(): StradConfig | null {
     if (this.baseConfigCache === undefined) {
       const result = validateMerged(this.base, { strict: false });
       this.baseConfigCache = result.ok ? result.config : null;

@@ -1029,7 +1029,9 @@ every copy of the cookie.
 the roster, each server's parameters, the playground and its tool lists — and may
 re-read the store. It is refused with a `403` on everything that reads a stored
 value, writes the store, or makes an upstream act: `reveal`, `create`, `rotate`,
-`note` and `delete` under `/ui/:server`, a connector's `connect`, the
+`note` and `delete` under `/ui/:server`, a connector's `connect` and its
+`grant-client` — the widest-consequence of them, since it edits an IAM policy to
+let the console read a secret back — the
 playground's `tools/call`, minting, revoking or forgetting an `/mcp` token on
 `/tokens` — which hands out a standing credential for the agent door, the
 widest write the console has — and every runtime roster write under
