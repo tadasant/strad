@@ -5219,13 +5219,13 @@ choosing between them is a posture decision rather than a code one:
 
 ---
 
-## 100. Store-served instances: three trees, a leaked telegram connection, a poll
+## 100. What a store-served instance does not cover
 
 **What.** A `supplementary-image` server on `path: /_instance/{tree}/{slug}` is
 credentialed at runtime: core lists it to its bundle (`GET /_strad/instances`) and
 serves that slug's own namespace (`GET /_strad/instances/{slug}`), and the bundle
 host builds the instance from those values (`src/secrets/param-route.ts`,
-`src/http/instances.ts`). Three edges, and the boundary that bounds them.
+`src/http/instances.ts`). Six edges, and the boundary that bounds them.
 
 **The caller is the component that serves the slug, and no other.** Both
 routes read the caller's component off its own internal token (#63,
@@ -5245,15 +5245,32 @@ instances with the same values seeded twice.
 
 **A telegram rebuild does not close the connection it replaces.** A grafana
 instance is closed when it is replaced (its child process stops). telegram's
-MTProto connection is memoised inside the tree with no close, so a rotated
-telegram credential leaves the previous connection open until the container
-restarts. It is a leak, not a second identity: nothing routes to the replaced
-instance.
+MTProto connection is memoised inside the tree with no close, so any change to
+the slug's namespace — not only a rotated credential — leaves the previous
+connection open until the container restarts. It is a leak, not a second
+identity: nothing routes to the replaced instance.
 
 **A sync is a poll.** One list call per component per
 `STRAD_INSTANCE_SYNC_SECONDS` (default 60), plus one env call per instance, each
 a slice of core's one reading of the store rather than a store read — paid on
 every component whether or not it runs an instance.
+
+**A namespace outlives its entry.** An instance reads whatever its slug's
+namespace holds, including values a removed slug left behind or a consent
+somebody else gave. A writer who creates an instance under that slug is served
+that account. That is not a reach this change adds: a runtime-created
+`remote-http` entry already reads the same namespace through
+`forServerIsolated` and can send it to a URL of its choosing. Both are bounded by
+who holds the `connectors` write tools, and neither by the namespace itself.
+
+**Nothing checks the image.** An instance only runs on a component running the
+strad bundle image, which is the only thing with a reconciler. An instance entry
+on a component running another image is listed to it and never served.
+
+**Health lags the first sync.** The host lists a built instance on `/healthz` at
+its path, and one core listed but that could not be built as degraded with the
+reason. Before its first sync it lists neither, so a component serving only
+instances reads as unrecognised to core's mount health for up to one sync.
 
 **Why.** The alternative to the route is a credential on the container, which is
 what the viewer/admin/resolver split exists to refuse; the route is what keeps

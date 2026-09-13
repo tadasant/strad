@@ -106,6 +106,9 @@ function authorized(
   res: Response,
   opts: InstancesHandlerOptions,
 ): boolean {
+  // Every answer from both routes, refusals included: none of them describes
+  // anything a cache may hold, and the 200 of one of them is credentials.
+  res.set("cache-control", "no-store");
   const auth = authorizePresence(
     req.get("authorization"),
     opts.env.STRAD_INTERNAL_TOKEN,

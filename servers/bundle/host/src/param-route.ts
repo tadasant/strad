@@ -56,7 +56,9 @@
  * requires `params: true`, and `params: true` bakes the whole namespace onto that
  * component at render time. What the GET adds is FRESHNESS — the value as of now
  * rather than as of the last deploy — which is precisely the race it exists to
- * close.
+ * close. The store-served instance routes at the end of this file are the one
+ * exception — their values are baked nowhere — and HACKS.md #98 says what that
+ * widens.
  *
  * This file is VENDORED into the bundle host tree (`npm run paramroute:sync`,
  * `test/vendored.sync.test.ts`), so it must stay import-free. It carries BOTH
@@ -1132,12 +1134,21 @@ export interface InstanceReconcilerOptions<T> {
 export interface InstanceReconciler<T> {
   /** The instances currently served, by slug. */
   held(): ReadonlyMap<string, HeldInstance<T>>;
+  /**
+   * Instances core listed that this process could NOT build, by slug, with the
+   * reason — its credentials could not be read, or its build threw. What the
+   * host reports as degraded, so a broken instance is not an unheard-of one.
+   */
+  unbuilt(): ReadonlyMap<string, { tree: InstanceTree; reason: string }>;
   /** Sync now. Concurrent calls share one pass. NEVER THROWS. */
   sync(): Promise<InstanceSyncOutcome>;
   /**
-   * Sync because a request named an instance this process does not hold —
-   * unless a sync STARTED inside the floor, in which case wait for any pass in
-   * flight and change nothing. NEVER THROWS.
+   * Sync because a request named an instance this process does not hold.
+   *
+   * Waits for any pass in flight FIRST and then syncs anyway, because that pass
+   * may have listed before the write that created the slug. Bounded by a floor
+   * measured from the last MISS-triggered sync, so an interval sync that just
+   * ran cannot starve a first request. NEVER THROWS.
    */
   syncOnMiss(): Promise<void>;
 }
@@ -1168,7 +1179,8 @@ export function createInstanceReconciler<T>(
   const now = opts.now ?? Date.now;
   const missFloorMs = opts.missFloorMs ?? INSTANCE_MISS_FLOOR_MS;
   let inFlight: Promise<InstanceSyncOutcome> | null = null;
-  let lastStartedAt = -Infinity;
+  const unbuilt = new Map<string, { tree: InstanceTree; reason: string }>();
+  let lastMissAt = -Infinity;
   let reportedUnconfigured = false;
 
   const release = async (slug: string, value: T): Promise<void> => {
@@ -1214,6 +1226,9 @@ export function createInstanceReconciler<T>(
     }
 
     const wanted = new Map(listed.instances.map((i) => [i.slug, i]));
+    for (const slug of [...unbuilt.keys()]) {
+      if (!wanted.has(slug)) unbuilt.delete(slug);
+    }
     for (const [slug, instance] of [...held]) {
       if (wanted.get(slug)?.tree === instance.tree) continue;
       held.delete(slug);
@@ -1231,6 +1246,7 @@ export function createInstanceReconciler<T>(
       const served = await opts.client.env(descriptor);
       if (!served.ok) {
         outcome.failed.push({ slug, reason: served.reason });
+        if (!current) unbuilt.set(slug, { tree, reason: served.reason });
         note(
           "warn",
           current
@@ -1248,6 +1264,7 @@ export function createInstanceReconciler<T>(
       } catch (err) {
         const reason = `building the instance threw (${err instanceof Error ? err.name : "unknown error"})`;
         outcome.failed.push({ slug, reason });
+        if (!current) unbuilt.set(slug, { tree, reason });
         note(
           "warn",
           `${slug}: ${reason}; ${current ? "keeping the previous instance" : "not built"}`,
@@ -1255,6 +1272,7 @@ export function createInstanceReconciler<T>(
         continue;
       }
       held.set(slug, { tree, value, reading });
+      unbuilt.delete(slug);
       if (current) {
         await release(slug, current.value);
         outcome.changed.push(slug);
@@ -1272,7 +1290,6 @@ export function createInstanceReconciler<T>(
 
   const sync = (): Promise<InstanceSyncOutcome> => {
     if (inFlight) return inFlight;
-    lastStartedAt = now();
     inFlight = pass()
       .catch((err: unknown): InstanceSyncOutcome => {
         // `pass` is built never to throw, but `build` and `dispose` are the
@@ -1295,13 +1312,12 @@ export function createInstanceReconciler<T>(
 
   return {
     held: () => held,
+    unbuilt: () => unbuilt,
     sync,
     async syncOnMiss() {
-      if (inFlight) {
-        await inFlight;
-        return;
-      }
-      if (now() - lastStartedAt < missFloorMs) return;
+      if (inFlight) await inFlight;
+      if (now() - lastMissAt < missFloorMs) return;
+      lastMissAt = now();
       await sync();
     },
   };

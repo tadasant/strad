@@ -639,8 +639,8 @@ change here is stored in the parameter store and applied to the running process
   container by the deploy, so an entry added here reuses what the mount already
   has. That is how one upstream becomes a read-only and a read-write slug.</li>
   <li><strong>supplementary-image, as a store-served instance</strong> —
-  <code>path: /_instance/{tree}/{its own slug}</code> with
-  <code>params: true</code>, for telegram, google-sheets or grafana. It brings its
+  <code>path: ${INSTANCE_PATH_PREFIX}/{tree}/{its own slug}</code> with
+  <code>params: true</code>, for ${INSTANCE_TREES.join(", ")}. It brings its
   own credential, read from the slug's namespace, so a second account is live on
   its first request with no deploy.</li>
   <li><strong>builtin</strong> — never. The module is imported out of the

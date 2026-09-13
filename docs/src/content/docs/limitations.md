@@ -3092,7 +3092,7 @@ See `HACKS.md` #96.
 
 A server on [`path: /_instance/{tree}/{slug}`](/operate/secrets/#store-served-instances--a-mount-credentialed-from-its-own-namespace)
 is credentialed at runtime: core lists it to its bundle and serves that slug's own
-namespace, and the bundle host builds the instance from the values. Four edges.
+namespace, and the bundle host builds the instance from the values. Seven edges.
 
 **Any internal-token holder can read any instance's credentials.** The routes
 authenticate `STRAD_INTERNAL_TOKEN`, which every supplementary component holds,
@@ -3106,13 +3106,23 @@ only. `remote-filesystem-tmp-public` is not one yet, and gmail, calendar, docs a
 every tree that reads its environment once cannot be. An instance path names its
 own slug, so a `-ro` / `-rw` pair over one account is two instances seeded twice.
 
-**A telegram rebuild does not close the connection it replaces**, so a rotated
-telegram credential leaves the previous connection open until the container
+**A telegram rebuild does not close the connection it replaces**, so any change
+to the slug's namespace leaves the previous connection open until the container
 restarts. Nothing routes to it. A grafana instance is closed properly.
 
 **A sync is a poll**: one list call per component per
 `STRAD_INSTANCE_SYNC_SECONDS` (default 60) plus one read per instance, each a
 slice of core's one reading of the store.
+
+**A namespace outlives its entry.** An instance is served whatever its slug's
+namespace holds, including values a removed slug left behind. A runtime-created
+`remote-http` entry already reads the same namespace, so this adds no reach; both
+are bounded by who holds the `connectors` write tools.
+
+**Nothing checks the image**: an instance on a component that does not run the
+strad bundle image is listed to it and never served. **Health lags the first
+sync**: before it, a component serving only instances reads as unrecognised to
+core's mount health.
 
 **Undo:** per-component internal tokens, a `close()` on the telegram tree, and an
 instance tree for remote-filesystem once its routes key on the slug.

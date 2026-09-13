@@ -650,7 +650,6 @@ function loadGrafana(
   // caller reads this slug's view of the container.
   env: Record<string, string | undefined> = slugEnvView(process.env, slug),
 ): Mount {
-
   // Degraded, not unmounted, and for the usual reason: the tools must still LIST
   // so the console shows the slug and an agent can see what it would offer once
   // a token lands. mcp-grafana lists its 52 tools without ever reaching Grafana,
@@ -1644,13 +1643,23 @@ async function main(): Promise<void> {
       version: VERSION,
       chromium: { up: browserIsUp(), launches: browserLaunchCount() },
       servers: [
-        ...mounts,
-        ...[...instances.held().values()].map((held) => held.value),
-      ].map((m) => ({
-        slug: m.slug,
-        path: m.path ?? `/${m.slug}`,
-        ...(m.degraded ? { degraded: m.degraded } : {}),
-      })),
+        ...[
+          ...mounts,
+          ...[...instances.held().values()].map((held) => held.value),
+        ].map((m) => ({
+          slug: m.slug,
+          path: m.path ?? `/${m.slug}`,
+          ...(m.degraded ? { degraded: m.degraded } : {}),
+        })),
+        // Listed by core and NOT built — its credentials could not be read, or
+        // its build threw. Reported at its path as degraded, so core's mount
+        // health sees a broken instance rather than one it has never heard of.
+        ...[...instances.unbuilt()].map(([slug, { tree, reason }]) => ({
+          slug,
+          path: instancePath(tree, slug),
+          degraded: `not built: ${reason}`,
+        })),
+      ],
     });
   });
 

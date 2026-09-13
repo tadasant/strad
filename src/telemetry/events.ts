@@ -349,7 +349,9 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
     /**
      * A bundle read a store-served INSTANCE's credentials through core
      * (src/http/instances.ts) — the record a runtime-created mount would
-     * otherwise not leave, since nothing about it is in a rendered spec.
+     * otherwise not leave, since nothing about it is in a rendered spec. It
+     * fires on EVERY sync, once per instance, so it is a heartbeat per instance
+     * as much as a record; the sync floor is what bounds its volume.
      *
      * `slug` and `tree` come from the CONFIG (the entry's own slug and the tree
      * its path names), never from the URL; `variables` is how many usable

@@ -1359,11 +1359,11 @@ entry that went away removes it. A list core could not answer, or answered in a
 protocol the host does not know, changes nothing: only core answering readably
 without an instance removes it.
 
-| What changed                             | Reaches the instance                                                |
-| ---------------------------------------- | ------------------------------------------------------------------- |
-| A slug created or removed at runtime     | on the next request for it, or the next sync                        |
-| A value seeded or rotated in the console | on the next sync — the console's write drops core's reading at once |
-| A value written from outside strad       | on the next sync after core's reading ages out, within `ttlSeconds` |
+| What changed                                                             | Reaches the instance                                                                                   |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| A slug created or removed at runtime                                     | on the next request for it, or the next sync                                                           |
+| A value seeded or rotated in the console                                 | on the next sync — the console's write drops core's reading at once                                    |
+| A value written outside the console — the `secrets` MCP server, `gcloud` | on the next sync after core's reading ages out (within `ttlSeconds`), or right after `refresh_gateway` |
 
 Both routes are core-only, behind `STRAD_INTERNAL_TOKEN`, and compose the
 namespace from the config's own slug rather than the URL's. The env route gives

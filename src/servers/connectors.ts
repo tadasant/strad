@@ -181,8 +181,11 @@ const WRITE_TOOLS: Tool[] = [
       INSTANCE_PATH_PREFIX +
       "/{tree}/{its own slug}` with `params: true`, for " +
       INSTANCE_TREES.join(", ") +
-      ". An instance is credentialed from that slug's own namespace, so seed its values " +
-      "through the secrets surface first; it is served on its first request. For a slug " +
+      ". An instance is credentialed from that slug's own namespace: seed its values through " +
+      "the secrets surface first, then call `refresh_gateway`, because core serves an " +
+      "instance out of its reading of the store and a write made outside the console " +
+      "otherwise reaches it only within `gateway.secrets.ttlSeconds`. It is served on its " +
+      "next request. For a slug " +
       "the CHECKED-IN config declares, `entitlements:` and `tools:` cannot be changed " +
       "here at all: those decide who reaches that server and which of its tools they " +
       "get, and for a server the deploy authorised they stay with the deploy.",

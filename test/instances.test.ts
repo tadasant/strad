@@ -691,14 +691,58 @@ describe("the reconciler's failure posture", () => {
       now: () => clock,
       missFloorMs: 5_000,
     });
+    // Two syncs share one pass. The miss waits for it and then syncs AGAIN:
+    // that pass may have listed before the write that created the slug.
     await Promise.all([r.sync(), r.sync(), r.syncOnMiss()]);
-    expect(s.lists()).toBe(1);
+    expect(s.lists()).toBe(2);
+    // An interval sync does not use up the miss floor...
+    await r.sync();
+    expect(s.lists()).toBe(3);
+    // ...but a second miss inside it is refused, and one at the floor is not.
     clock = 4_999;
     await r.syncOnMiss();
-    expect(s.lists()).toBe(1);
+    expect(s.lists()).toBe(3);
     clock = 5_000;
     await r.syncOnMiss();
-    expect(s.lists()).toBe(2);
+    expect(s.lists()).toBe(4);
+  });
+
+  it("reports what it could not build, and rebuilds a slug whose tree changed", async () => {
+    let tree: InstanceTree = "telegram";
+    let envOk = false;
+    const s = scripted({
+      list: () => ({ ok: true, instances: [{ slug: "a", tree }] }),
+      env: () =>
+        envOk
+          ? { ok: true, env: { K: "v" } }
+          : { ok: false, reason: "core answered HTTP 502" },
+    });
+    const disposed: string[] = [];
+    const r = createInstanceReconciler<string>({
+      client: s.client,
+      build: async (t) => t,
+      dispose: (value) => {
+        disposed.push(value);
+      },
+    });
+
+    await r.sync();
+    expect(r.unbuilt().get("a")).toEqual({
+      tree: "telegram",
+      reason: "core answered HTTP 502",
+    });
+
+    envOk = true;
+    await r.sync();
+    expect(r.unbuilt().size).toBe(0);
+    expect(r.held().get("a")?.value).toBe("telegram");
+
+    tree = "grafana";
+    const outcome = await r.sync();
+    expect(outcome.removed).toEqual(["a"]);
+    expect(outcome.added).toEqual(["a"]);
+    expect(disposed).toEqual(["telegram"]);
+    expect(r.held().get("a")?.value).toBe("grafana");
   });
 
   it("treats an answer on an unfamiliar protocol as unreadable, not as empty", async () => {
