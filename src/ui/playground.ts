@@ -370,6 +370,9 @@ async function withSession(
     surface: "playground",
     selected: [decision.server.slug],
     principalId: consolePrincipal(res).id,
+    // The signed-in human's own roles, so a write made through the playground is
+    // bounded by exactly what the same human's write through /connectors is.
+    principalRoles: consolePrincipal(res).roles,
     log: event,
     // The console named this server, so an upstream that cannot be listed is an
     // ERROR rather than an empty tool list. That is the whole point of being

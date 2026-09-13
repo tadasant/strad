@@ -90,6 +90,17 @@ export interface GatewayServerOptions {
   selected: string[];
   /** Principal id, for log lines. Never a credential. */
   principalId: string;
+  /**
+   * The roles that principal holds, for a server whose ANSWER depends on who is
+   * asking rather than only on whether they may ask.
+   *
+   * The roster editor is the one: its writes are bounded by what their author
+   * can already reach (`assertWithinReach`), so it needs the roles the
+   * entitlement intersection was computed from — not a second derivation of
+   * them. Every other builtin ignores it, and it authorizes nothing: `selected`
+   * has already decided which slugs this session may touch at all.
+   */
+  principalRoles?: readonly string[];
   log: (event: Record<string, unknown>) => void;
   clientCapabilities?: ClientCapabilities;
   /**
@@ -123,6 +134,7 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
     explicit,
   } = opts;
   const surface: Surface = opts.surface ?? "mcp";
+  const principal = { roles: opts.principalRoles ?? [] };
 
   const server = new Server(
     { name: config.gateway.name, version: "0.1.0" },
@@ -255,7 +267,10 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
         () =>
           isTroubleshoot
             ? troubleshoot(adapter, policies.get(parsed.slug))
-            : adapter.callTool(parsed.tool, args, { clientCapabilities }),
+            : adapter.callTool(parsed.tool, args, {
+                clientCapabilities,
+                principal,
+              }),
       );
 
       const shape = resultShape(result);

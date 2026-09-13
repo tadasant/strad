@@ -63,6 +63,7 @@ export class BuiltinServerAdapter implements ServerAdapter {
       component: this.component,
       ...(this.runtime ? { runtime: this.runtime } : {}),
       clientCapabilities: ctx?.clientCapabilities,
+      principal: ctx?.principal,
     });
   }
 

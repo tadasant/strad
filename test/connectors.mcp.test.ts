@@ -69,6 +69,8 @@ const gatewayDoc = parseYamlDocument(GATEWAY_YAML);
 const gatewayConfig = parseConfig(GATEWAY_YAML);
 
 const mcpToken = mintToken({ env: "test", label: "admin", roles: ["admin"] });
+/** A narrow role, for the one suite that asks what a write is worth to one. */
+const fleetToken = mintToken({ env: "test", label: "fleet", roles: ["fleet"] });
 const upstreamToken = mintToken({
   env: "test",
   label: "upstream",
@@ -76,7 +78,7 @@ const upstreamToken = mintToken({
 });
 
 const env: NodeJS.ProcessEnv = {
-  STRAD_TOKENS: JSON.stringify([mcpToken.record]),
+  STRAD_TOKENS: JSON.stringify([mcpToken.record, fleetToken.record]),
   // What a deploy binds for a rendered bundle. Only the re-point suite below
   // declares one; without it a supplementary write is refused as unreachable
   // before it is ever judged on its path.
@@ -204,11 +206,15 @@ afterAll(() => {
   upstream?.close();
 });
 
-async function connect(base: string, servers: string): Promise<Client> {
+async function connect(
+  base: string,
+  servers: string,
+  token: string = mcpToken.plaintext,
+): Promise<Client> {
   const url = new URL(`${base}/mcp`);
   url.searchParams.set("servers", servers);
   const transport = new StreamableHTTPClientTransport(url, {
-    requestInit: { headers: { authorization: `Bearer ${mcpToken.plaintext}` } },
+    requestInit: { headers: { authorization: `Bearer ${token}` } },
   });
   const client = new Client(
     { name: "test", version: "1" },
@@ -763,6 +769,7 @@ auth:
   staticTokens: { enabled: true }
 roles:
   admin: { servers: ["*"] }
+  fleet: { servers: [connectors, shop] }
 bundles:
   - name: bundle
 servers:
@@ -770,13 +777,13 @@ servers:
     kind: builtin
     module: "./servers/connectors.js"
     bundle: core
-    entitlements: [admin]
+    entitlements: [admin, fleet]
   - slug: shop
     kind: supplementary-image
     image: ghcr.io/example/bundle:latest
     bundle: bundle
     path: /shop
-    entitlements: [admin]
+    entitlements: [admin, fleet]
   - slug: vault
     kind: supplementary-image
     image: ghcr.io/example/bundle:latest
@@ -880,5 +887,66 @@ servers:
       "vault-copy",
     );
     await client.close();
+  });
+
+  /**
+   * The same bound, through the whole `/mcp` stack rather than against
+   * `RuntimeConfig` directly.
+   *
+   * This is the part a unit test cannot show: the bound reads the principal that
+   * AUTHENTICATED the request, so it is only real if that principal survives
+   * router -> buildGatewayServer -> the adapter -> the builtin's call context. A
+   * bound that silently received `undefined` here would refuse nothing and every
+   * test against `assertAcceptable` would still pass.
+   */
+  describe("and the bound reads the principal the request authenticated", () => {
+    it("REFUSES a narrow role's create onto the mount it cannot reach", async () => {
+      const client = await connect(
+        booted.url,
+        "connectors",
+        fleetToken.plaintext,
+      );
+      const refused = await call(client, "save_connector", {
+        entry: {
+          slug: "fleet-vault",
+          kind: "supplementary-image",
+          image: "ghcr.io/example/bundle:latest",
+          bundle: "bundle",
+          path: "/vault",
+          entitlements: ["fleet"],
+        },
+      });
+      expect(refused.isError).toBe(true);
+      expect(String(refused.body.error)).toContain("bundle/vault");
+      // Nothing was written, and the roster did not move.
+      expect(
+        booted.runtime.config().servers.map((srv) => srv.slug),
+      ).not.toContain("fleet-vault");
+      await client.close();
+    });
+
+    it("ALLOWS the same role onto the mount the checked-in config gave it", async () => {
+      const client = await connect(
+        booted.url,
+        "connectors",
+        fleetToken.plaintext,
+      );
+      const created = await call(client, "save_connector", {
+        entry: {
+          slug: "fleet-shop",
+          kind: "supplementary-image",
+          image: "ghcr.io/example/bundle:latest",
+          bundle: "bundle",
+          path: "/shop",
+          entitlements: ["fleet"],
+        },
+      });
+      expect(created.isError).toBe(false);
+      expect(booted.runtime.config().servers.map((srv) => srv.slug)).toContain(
+        "fleet-shop",
+      );
+      await call(client, "remove_connector", { slug: "fleet-shop" });
+      await client.close();
+    });
   });
 });

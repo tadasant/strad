@@ -167,7 +167,13 @@ All four server kinds are unified behind a single `ServerAdapter` interface
 
 Adapters are built **once at boot** — they hold long-lived upstream connections.
 Only the _toolset_ is resolved per request, from the caller's entitlements
-intersected with `?servers=`. Per-hop upstream timeouts are set explicitly to
+intersected with `?servers=`. A tool call also carries a small per-request
+`CallContext` — the client's advertised capabilities, and the principal that
+authenticated the request. It grants nothing, since whether this caller may reach
+these slugs was settled before any adapter ran; it is there for an in-process
+server whose _answer_ depends on who is asking. One does: the roster editor
+bounds a write by what its author already reaches
+([runtime config](/operate/runtime-config/#a-runtime-write-reaches-no-mount-its-author-cannot-already-reach)). Per-hop upstream timeouts are set explicitly to
 `120_000` ms, because the MCP SDK defaults to 60s at every hop and would silently
 kill long tool calls.
 

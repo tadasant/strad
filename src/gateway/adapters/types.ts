@@ -5,6 +5,7 @@ import type {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Request, Response } from "express";
 import type { RuntimeConfig } from "../../config/runtime.ts";
+import type { WritingPrincipal } from "../../config/overlay.ts";
 import type { ServerKind } from "../../config/schema.ts";
 import type { ClientCapabilities } from "../clientCapabilities.ts";
 import type { LocalHost } from "../troubleshoot.ts";
@@ -84,6 +85,16 @@ export interface ServerAdapter {
  */
 export interface CallContext {
   clientCapabilities?: ClientCapabilities;
+  /**
+   * Who authenticated this request, reduced to what a bound reads of them.
+   *
+   * Threaded for the roster editor (src/servers/connectors.ts), whose writes are
+   * bounded by what their author can already reach — `assertWithinReach` in
+   * src/config/overlay.ts. Nothing else reads it, and it grants nothing: the
+   * question "may this caller reach these slugs" was answered before this
+   * request reached an adapter at all.
+   */
+  principal?: WritingPrincipal;
 }
 
 export interface CallToolResult {
@@ -162,6 +173,14 @@ export interface BuiltinContext {
    * session-less endpoint, is every request except `initialize`.
    */
   clientCapabilities?: ClientCapabilities;
+  /**
+   * Who authenticated the request this call is serving. See {@link CallContext}.
+   *
+   * Optional in the type and supplied by both doors in practice: `/mcp`
+   * (src/gateway/router.ts) and the console playground (src/ui/playground.ts)
+   * each build their gateway server with the principal they authenticated.
+   */
+  principal?: WritingPrincipal;
 }
 
 /** The separator between a server slug and its tool name: `good-eggs__search`. */

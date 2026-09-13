@@ -2929,19 +2929,44 @@ window still lose one, silently, and the loser is whichever wrote first. What
 bounds it is that writes are rare and come from one component: core is the only
 thing holding the admin credential, whichever door the write arrived through.
 
-**Neither gap means a runtime write is unbounded.** Three rules bound what a
+**Neither gap means a runtime write is unbounded.** Four rules bound what a
 write may reach, as distinct from who may make one: a runtime-authored entry's
 `${NAME}` refs resolve against that slug's own `/strad/{env}/mcp/{slug}/static/`
 namespace and nothing else, so a connector `url:` cannot read core's process
-environment and send it off-box; a runtime write may not change `entitlements:`
-or `tools:` on a slug the checked-in document declares; and a runtime write may
+environment and send it off-box; a runtime write may not change `entitlements:`,
+`tools:` or the slug's upstream identity (`kind:`, and a supplementary `bundle:`
+and `path:`) on a slug the checked-in document declares; a runtime write reaches
+no mount its **author** does not already reach, so a new supplementary slug may
+only land on a mount the writing principal reaches through a checked-in slug and
+a checked-in slug's credential destinations — `url:`, `oauthRefresh.tokenUrl` and
+a connector's two `oauth:` endpoints — may only be moved by an author it admits;
+and a runtime write may
 name a credential but never carry one, so a literal in `headers:`, in `url:`'s
 userinfo or in an `oauthRefresh:` grant is refused rather than stored in the
 clear. Disabling a connector that carries one is refused too, because disable
-re-upserts the entry; removing it is always allowed. All three are in [Who may write, and what a write may
+re-upserts the entry; removing it is always allowed. All four are in [Who may write, and what a write may
 reach](/operate/runtime-config/#who-may-write-and-what-a-write-may-reach).
 
-**The third rule has two positions it does not cover.** A **URL query
+**The reach rule is measured in mounts, not in tools.** A writer that already
+reaches a mount may create a second slug on it with a **wider** tool surface than
+the checked-in slug it reaches that mount through, so a role given read-only
+access to a container can hand itself that container's write tools. Closing it
+would narrow the role that reaches everything in the same motion — on any mount
+whose only checked-in slug is the narrow one, it could no longer create the wider
+half of a `-ro` / `-rw` pair without a deploy — so it is a workflow traded
+against a residual widening rather than a free tightening, and it is left to the
+operator as the open half of phase 2 in [the runtime-config
+plan](/operate/runtime-config-plan/).
+
+**And it bounds what a write reaches, not what a writer stops.** Disable, remove
+and restore compose no entry, so no bound here touches them: a writer holding the
+write tools can disable or remove any connector in the roster, including one it
+cannot reach. That is availability rather than disclosure, and deliberate in the
+other direction — refusing a removal is what would leave a broken connector
+nobody can switch off, and a removal of a checked-in slug is a standing
+instruction the console shows and Restore undoes.
+
+**The name-a-credential rule has two positions it does not cover.** A **URL query
 parameter** — `https://api.example.com/mcp?key=abc` — is a literal credential
 and is accepted, because nothing can tell it from `?version=2` without refusing
 every URL that carries a query at all; userinfo is refused because

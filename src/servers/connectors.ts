@@ -11,6 +11,7 @@ import {
   ImmutableFieldChanged,
   NotRuntimeCreatable,
   RUNTIME_CREATABLE_KINDS,
+  ReachExceeded,
   SlugCollision,
   assertNoCollision,
   immutableFields,
@@ -18,6 +19,7 @@ import {
   withRemoval,
   withRestore,
   withUpsert,
+  type WritingPrincipal,
 } from "../config/overlay.ts";
 import {
   CREDENTIAL_SCHEMES,
@@ -404,7 +406,11 @@ const mod: BuiltinModule = {
       case "set_connector_enabled":
       case "remove_connector":
       case "restore_connector":
-        return write(runtime, name, args);
+        // `ctx.principal` is who authenticated the /mcp request this call is
+        // serving. It is what bounds the write to what its author can already
+        // reach — the console hands `RuntimeConfig.assertAcceptable` the signed-in
+        // human for the same reason (src/ui/servers.ts).
+        return write(runtime, name, args, ctx.principal);
 
       default:
         return FAILURE(`connectors server has no tool "${name}".`);
@@ -420,6 +426,7 @@ async function write(
   runtime: RuntimeConfig,
   name: string,
   args: Record<string, unknown>,
+  principal: WritingPrincipal | undefined,
 ): Promise<CallToolResult> {
   if (!runtime.writable) {
     return FAILURE(
@@ -504,7 +511,7 @@ async function write(
       // `replacing` is that slug. What it refuses is a RENAME that lands on a
       // third entry — the accident the console refuses on create too.
       assertNoCollision(runtime.config(), subject, previousSlug ?? subject);
-      runtime.assertAcceptable(candidate, before);
+      runtime.assertAcceptable(candidate, before, principal);
 
       next = withUpsert(overlay, candidate, {
         ...(previousSlug && previousSlug !== subject ? { previousSlug } : {}),
@@ -518,6 +525,7 @@ async function write(
       err instanceof ImmutableFieldChanged ||
       err instanceof SlugCollision ||
       err instanceof AccessControlChanged ||
+      err instanceof ReachExceeded ||
       err instanceof LiteralCredential
     ) {
       return FAILURE(err.message);

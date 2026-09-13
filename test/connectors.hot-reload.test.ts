@@ -507,3 +507,125 @@ describe("the editor is absent when the deployment did not ask for it", () => {
     }
   });
 });
+
+/**
+ * The console door, asked the question the `/mcp` door is asked in
+ * test/connectors.mcp.test.ts: is a write bounded by what its AUTHOR reaches?
+ *
+ * strad has two front doors, and a bound behind only one of them is not a bound
+ * — a narrow role withheld from the console form would simply write through
+ * `save_connector` instead. Both call `RuntimeConfig.assertAcceptable`, so this
+ * proves the console hands it the signed-in principal rather than proving the
+ * rule again.
+ */
+describe("the console door bounds a write by its author too", () => {
+  const NARROW_BYPASS = "strad_console_bootstrap_token_for_the_narrow_role";
+
+  const YAML = `
+version: 1
+gateway: { name: strad, env: test }
+auth:
+  staticTokens: { enabled: true }
+  consoleDevBypass: { enabled: true, roles: [fleet] }
+roles:
+  admin: { servers: ["*"] }
+  fleet: { servers: [shop] }
+bundles:
+  - name: bundle
+servers:
+  - slug: shop
+    kind: supplementary-image
+    image: ghcr.io/example/bundle:latest
+    bundle: bundle
+    path: /shop
+    entitlements: [admin, fleet]
+  - slug: vault
+    kind: supplementary-image
+    image: ghcr.io/example/bundle:latest
+    bundle: bundle
+    path: /vault
+    entitlements: [admin]
+`;
+
+  let url: string;
+  let server: Server;
+  let holder: RuntimeConfig;
+
+  beforeAll(async () => {
+    const doc = parseYamlDocument(YAML);
+    const config = parseConfig(YAML);
+    const narrowEnv: NodeJS.ProcessEnv = {
+      ALLOW_DEV_AUTH: "true",
+      ADMIN_BOOTSTRAP_TOKEN: NARROW_BYPASS,
+      STRAD_BUNDLE_URL_BUNDLE: "http://bundle.internal:8080",
+    };
+    const ref: { current: RuntimeConfig | null } = { current: null };
+    const app = createApp({
+      config,
+      registry: await Registry.build({
+        config,
+        secrets: sharedSecretProviders(new EnvSecretProvider(narrowEnv)),
+        mode: "core",
+        env: narrowEnv,
+      }),
+      tokenStore: tokenStoreFromConfig(config, narrowEnv),
+      mode: "core",
+      env: narrowEnv,
+      runtimeConfig: () => ref.current,
+    });
+    holder = new RuntimeConfig({
+      baseDocument: doc,
+      config,
+      overlay: EMPTY_OVERLAY,
+      store: new MemoryConfigStore(),
+      rebuild: () => Promise.resolve(),
+      env: narrowEnv,
+    });
+    ref.current = holder;
+    server = createServer(app);
+    url = await listen(server);
+  });
+
+  afterAll(() => server?.close());
+
+  /** A create of a supplementary slug on `path`, as the form posts one. */
+  function post(slug: string, path: string): Promise<Response> {
+    return fetch(`${url}/connectors/save`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${NARROW_BYPASS}`,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        revision: String(holder.overlay().revision),
+        kind: "supplementary-image",
+        slug,
+        image: "ghcr.io/example/bundle:latest",
+        bundle: "bundle",
+        path,
+        "entitlement:fleet": "on",
+        enabled: "on",
+      }),
+      redirect: "manual",
+    });
+  }
+
+  it("REFUSES a create onto the mount this session cannot reach", async () => {
+    const res = await post("console-vault", "/vault");
+    // 400, not 409: nothing about the roster moved underneath the form, so
+    // re-reading it would not change the answer.
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("bundle/vault");
+    expect(holder.config().servers.map((s) => s.slug)).not.toContain(
+      "console-vault",
+    );
+  });
+
+  it("ALLOWS one onto the mount the checked-in config gave this session", async () => {
+    const res = await post("console-shop", "/shop");
+    expect(res.status).toBe(200);
+    expect(holder.config().servers.map((s) => s.slug)).toContain(
+      "console-shop",
+    );
+  });
+});
