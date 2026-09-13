@@ -120,6 +120,14 @@ auth:
   consoleDevBypass:
     enabled: true
     roles: [admin]
+  # The automated actor's way into the console: POST /console/tokens with the
+  # bootstrap token mints a single-use, 10-minute login token, and the actor
+  # exchanges it for a 30-minute, view-only session — so a CI job or a
+  # Playwright agent never holds ADMIN_BOOTSTRAP_TOKEN itself. It cannot reveal,
+  # write or delete a stored value, or call a tool. The routes exist only where
+  # gateway.env is dev, local, test or staging, never in prod.
+  consoleTokenLogin:
+    enabled: true
 
 roles:
   admin:

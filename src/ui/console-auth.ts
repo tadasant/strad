@@ -1,4 +1,10 @@
-import type { NextFunction, Request, Response } from "express";
+import type { NextFunction, Request, RequestHandler, Response } from "express";
+import {
+  TOKEN_SESSION_COOKIE,
+  tokensIn,
+  type ConsoleTokenStore,
+  type LiveTokenSession,
+} from "../auth/console-tokens.ts";
 import { bearerToken } from "../auth/credential.ts";
 import { authenticateConsoleBypass, consoleDenial } from "../auth/dev.ts";
 import type { Principal } from "../auth/index.ts";
@@ -12,6 +18,7 @@ import {
   type ConsoleSessions,
 } from "../auth/session.ts";
 import type { StradConfig } from "../config/schema.ts";
+import { event } from "../telemetry/index.ts";
 import { renderSignIn } from "./render.ts";
 
 /**
@@ -21,7 +28,7 @@ import { renderSignIn } from "./render.ts";
  * a human surface on the open internet, exactly like /console, and must never be
  * a softer door than it.
  *
- * Two credentials resolve to a Principal here, and the middleware only ever
+ * Three credentials resolve to a Principal here, and the middleware only ever
  * trusts the Principal, never the credential:
  *
  *   1. A Google session — a signed, expiring cookie minted by
@@ -31,9 +38,16 @@ import { renderSignIn } from "./render.ts";
  *   2. The console dev bypass — ADMIN_BOOTSTRAP_TOKEN, itself triple-guarded
  *      (src/auth/dev.ts). It is what keeps staging and an unprovisioned prod
  *      enterable, and it goes away once Google sign-in is verified in prod.
+ *   3. A token session — the cookie POST /console/token-login sets when a
+ *      single-use login token is exchanged (src/auth/console-tokens.ts). The
+ *      automated actor's door: 30 minutes, the minter's roles, look-only, never
+ *      in prod. Last, because the two above are standing credentials and a
+ *      request carrying one must not be demoted to it. It lives here rather
+ *      than beside the bypass because it has to outlive the bypass
+ *      (tadasant/strad#6).
  *
  * /mcp is untouched by any of this. That endpoint accepts static system tokens
- * and nothing else (src/auth/index.ts); neither console credential is ever read
+ * and nothing else (src/auth/index.ts); no console credential is ever read
  * there — the invariant HACKS.md #2 states for /console.
  *
  * What a console session CAN do is mint one, on a deployment that configures
@@ -67,12 +81,19 @@ export interface ConsoleAuthDeps {
    * into a redirect that dead-ends at Google.
    */
   googleReady?: boolean;
+  /**
+   * The console login token store, when token login is live on this
+   * deployment. Null means no token session can exist here — in production it
+   * always is (src/auth/console-tokens.ts).
+   */
+  consoleTokens?: ConsoleTokenStore | null;
 }
 
 export function requireConsoleUi(deps: ConsoleAuthDeps) {
   const { config, env } = deps;
   const sessions = deps.sessions ?? null;
   const googleReady = deps.googleReady ?? false;
+  const consoleTokens = deps.consoleTokens ?? null;
 
   return function gate(req: Request, res: Response, next: NextFunction): void {
     const fromQuery =
@@ -96,11 +117,18 @@ export function requireConsoleUi(deps: ConsoleAuthDeps) {
         return;
       }
     }
-
-    // A Google session, first: it is the real credential.
+    // A Google session, first: it is the real credential. Then the bypass,
+    // because a STANDING credential outranks a token session — a browser
+    // holding both must not be demoted to the look-only one, and a token cookie
+    // tossed in by a sibling subdomain must not shadow a human's real session.
+    // (A login token in `?token=` never gets this far as a credential: it was
+    // burned on arrival, see burnFromUrl.) Only the Google session renews
+    // below; a token session keeps its absolute thirty minutes.
     const google = googleSession(cookies, sessions, config);
     const principal =
-      google?.principal ?? bypassPrincipal(cookies, fromHeader, config, env);
+      google?.principal ??
+      bypassPrincipal(cookies, fromHeader, config, env) ??
+      tokenSession(cookies, consoleTokens)?.principal;
 
     if (principal) {
       // An active human is not signed out on a fixed clock: past half its
@@ -185,6 +213,129 @@ export function googleSession(
     if (principal) return { principal, payload };
   }
   return null;
+}
+
+/** The first token session cookie that is live, or null. */
+export function tokenSession(
+  cookieHeader: string | undefined,
+  consoleTokens: ConsoleTokenStore | null,
+): LiveTokenSession | null {
+  if (!consoleTokens) return null;
+  for (const value of readCookies(cookieHeader, TOKEN_SESSION_COOKIE)) {
+    const live = consoleTokens.session(value);
+    if (live) return live;
+  }
+  return null;
+}
+
+/**
+ * Burn every console login token anywhere in a URL: `?token=`, a parameter of
+ * another name or shape (`?t=`, `?token[a]=`), a path segment. A token that has
+ * been in a URL has been in an access log and a `Referer`, so it must not be
+ * exchangeable afterwards. The URL is scanned raw and percent-decoded, so an
+ * encoding cannot hide one.
+ *
+ * Run on EVERY request core receives, ahead of the body parser
+ * (src/http/app.ts), so it does not depend on which route the URL names or
+ * whether that route answers.
+ *
+ * A verified token is reported as a tripwire whether or not this call was what
+ * burned it: somebody holding the real secret put it in a URL. A match that does
+ * not verify is ignored — it is not a login token, or not one this process
+ * holds — and costs one hash, because a regex found its shape first.
+ */
+export function burnFromUrl(
+  consoleTokens: ConsoleTokenStore | null,
+  url: string,
+): { burned: number; seen: number } {
+  if (!consoleTokens) return { burned: 0, seen: 0 };
+  let decoded = url;
+  try {
+    decoded = decodeURIComponent(url);
+  } catch {
+    // A stray `%` is the caller's; the raw scan below still runs.
+  }
+  const candidates = new Set([...tokensIn(url), ...tokensIn(decoded)]);
+  let burned = 0;
+  let seen = 0;
+  for (const value of candidates) {
+    const result = consoleTokens.burn(value);
+    if (!result) continue;
+    seen++;
+    if (result.burned) burned++;
+    event({
+      evt: "console.token_exchange_failed",
+      jti: result.record.jti,
+      state: result.burned
+        ? "burned_in_query"
+        : `token_${result.record.status}`,
+    });
+  }
+  return { burned, seen };
+}
+
+/**
+ * The line a token session does not cross: it may LOOK at every console page,
+ * and it may not make the console act for it.
+ *
+ * Mounted after `gate` on every route that reads a stored value (`reveal`),
+ * writes the store (`create`, `rotate`, `note`, `delete`), begins a connector
+ * consent, or calls an upstream (the playground's `tools/call`). A 403, and the
+ * handler never runs.
+ *
+ * The reason is the token's whole premise. A login token is meant to be a
+ * credential whose leak is over in minutes, and each of those routes can turn
+ * minutes into forever: reveal reads ADMIN_BOOTSTRAP_TOKEN or a third party's
+ * key out of the store, and rotate writes a `STRAD_TOKENS` record whose secret
+ * the writer chose. Narrowing a token's roles would not help — the secret
+ * actions are behind the gate alone, and read no role. So the rule is on the
+ * principal's KIND, and it holds whatever roles the token carries.
+ *
+ * `refresh` is not on the list: it drops this process's cached store reading
+ * and reads nothing back, and the playground's `tools/list` returns tool
+ * metadata only. Both are looking.
+ */
+export const refuseTokenSession: RequestHandler = (req, res, next) => {
+  const p = res.locals.principal as Principal | undefined;
+  if (p?.kind !== "console-token") {
+    next();
+    return;
+  }
+  const message =
+    "A console login token's session can view the console but not act " +
+    "through it: it cannot reveal, write or delete a stored value, begin a " +
+    "connector, or call a tool. Sign in with a standing console credential " +
+    "for that.";
+  if (req.is("application/json")) {
+    res.status(403).json({ ok: false, error: message });
+    return;
+  }
+  res.status(403).type("text/plain").send(message);
+};
+
+/**
+ * A STANDING console credential: a Google session, or the dev bypass as a
+ * cookie or a bearer header. What may mint and revoke a console login token.
+ *
+ * Deliberately narrower than the gate. A token session is not here, so a
+ * session cannot mint its own successor and outlive its 30 minutes one hop at a
+ * time. `?token=` is not here either: a credential in a URL lands in access logs,
+ * and these are POST routes a script calls, not pages a browser navigates to.
+ */
+export function standingPrincipal(
+  cookieHeader: string | undefined,
+  authorization: string | undefined,
+  deps: Pick<ConsoleAuthDeps, "config" | "env" | "sessions">,
+): Principal | null {
+  return (
+    googlePrincipal(cookieHeader, deps.sessions ?? null, deps.config) ??
+    bypassPrincipal(
+      cookieHeader,
+      bearerToken(authorization) ?? undefined,
+      deps.config,
+      deps.env,
+    )
+  );
 }
 
 /**

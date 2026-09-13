@@ -1,4 +1,9 @@
 import express, { type Express } from "express";
+import {
+  ConsoleTokenStore,
+  consoleTokenLoginStatus,
+  TOKEN_SESSION_COOKIE,
+} from "../auth/console-tokens.ts";
 import { bearerToken } from "../auth/credential.ts";
 import { authenticateConsoleBypass, consoleDenial } from "../auth/dev.ts";
 import {
@@ -16,6 +21,7 @@ import {
   OAUTH_TX_COOKIE,
   sanitizeNext,
   sessionKeyProblem,
+  readCookies,
   sessionWindows,
   stateMatches,
   unsealCookie,
@@ -36,7 +42,12 @@ import {
 } from "../auth/mcp-oauth/index.ts";
 import { MCP_SCOPE } from "../auth/mcp-oauth/metadata.ts";
 import { mountMcpOAuth } from "./oauth.ts";
-import { BYPASS_COOKIE, googlePrincipal } from "../ui/console-auth.ts";
+import {
+  burnFromUrl,
+  BYPASS_COOKIE,
+  googlePrincipal,
+  tokenSession,
+} from "../ui/console-auth.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { createMcpHandler } from "../gateway/router.ts";
 import type { Mode, Registry } from "../gateway/registry.ts";
@@ -47,6 +58,11 @@ import { mountConsoleUi } from "../ui/index.ts";
 import type { GcsLister } from "../ui/gcs-client.ts";
 import type { ConsoleUiOptions } from "../ui/index.ts";
 import { asyncRoute, jsonFailure, streamFailure } from "./async-route.ts";
+import {
+  mountConsoleTokens,
+  TOKEN_LOGIN_PATH,
+  tokenLoginUrlGuard,
+} from "./console-tokens.ts";
 import { createReadinessHandler } from "./readiness.ts";
 import { createPresenceHandler } from "./presence.ts";
 import { PRESENCE_ROUTE } from "../secrets/presence.ts";
@@ -118,6 +134,12 @@ export interface AppOptions {
    * stub that returns an already-verified identity.
    */
   googleProvider?: ConsoleOAuthProvider | null;
+  /**
+   * Test seam: the console login token store, so a test can drive its clock.
+   * Used only where token login is live (`consoleTokenLoginStatus()`); a
+   * deployment where it is not gets no store and no routes, whatever is passed.
+   */
+  consoleTokens?: ConsoleTokenStore;
   /**
    * Test seam: substitute the Google leg of the `/mcp` OAuth flow.
    *
@@ -262,6 +284,20 @@ export function createApp(opts: AppOptions): Express {
       ),
     ),
   );
+
+  // Resolved here, ahead of the body parser, for one reason: a login token
+  // anywhere in ANY URL core receives is burned before a route — or a
+  // malformed body the parser refuses — can answer first and leave it live.
+  // See burnFromUrl (src/ui/console-auth.ts) and src/http/console-tokens.ts.
+  const consoleTokens =
+    opts.mode === "core" ? resolveConsoleTokens(opts) : null;
+  if (consoleTokens) {
+    app.use((req, res, next) => {
+      res.locals.urlTokens = burnFromUrl(consoleTokens, req.originalUrl);
+      next();
+    });
+    app.use(TOKEN_LOGIN_PATH, tokenLoginUrlGuard());
+  }
   app.use(express.json({ limit: "4mb" }));
 
   // --- health -------------------------------------------------------------
@@ -477,7 +513,15 @@ export function createApp(opts: AppOptions): Express {
     // /ui verifies it. Two independent readings of "is Google usable?" is how
     // you get a gate that redirects into a flow that cannot complete.
     const auth = resolveConsoleAuth(opts, env);
-    mountConsole(app, opts, env, auth);
+    mountConsole(app, opts, env, auth, consoleTokens);
+    if (consoleTokens) {
+      mountConsoleTokens(app, {
+        config: opts.config,
+        env,
+        sessions: auth.sessions,
+        store: consoleTokens,
+      });
+    }
     // The human, SSO-gated surfaces: the landing page at "/" and the resource
     // browser at /ui. Same gate as /console; not /mcp.
     mountConsoleUi(app, {
@@ -494,6 +538,7 @@ export function createApp(opts: AppOptions): Express {
       diagnosticStore: opts.diagnosticStore,
       sessions: auth.sessions,
       googleReady: auth.ready,
+      consoleTokens,
       connectorFetch: opts.connectorFetch,
       runtimeConfig: opts.runtimeConfig,
     });
@@ -600,6 +645,33 @@ export function resolveConsoleAuth(
 }
 
 /**
+ * The console login token store, or null where token login is not live.
+ *
+ * Null is what keeps the routes unmounted and the gate from ever resolving a
+ * token session — so on a production deployment there is no store to reach,
+ * not merely a route that refuses. See src/auth/console-tokens.ts.
+ */
+export function resolveConsoleTokens(
+  opts: Pick<AppOptions, "config" | "consoleTokens">,
+  log: (msg: string) => void = console.warn,
+): ConsoleTokenStore | null {
+  const status = consoleTokenLoginStatus(opts.config);
+  if (!status.active) {
+    // Only worth a line when somebody asked for it and did not get it.
+    if (opts.config.auth.consoleTokenLogin.enabled) {
+      log(`[strad] console token login is enabled but off: ${status.reason}.`);
+    }
+    return null;
+  }
+  log(
+    "[strad] console token login is live: POST /console/tokens mints a " +
+      "single-use console login token with a standing console credential. " +
+      "It opens a 30-minute console session and cannot reach /mcp.",
+  );
+  return opts.consoleTokens ?? new ConsoleTokenStore();
+}
+
+/**
  * The human path.
  *
  * Google OAuth when credentials exist; otherwise the bootstrap-token bypass.
@@ -612,12 +684,18 @@ export function resolveConsoleAuth(
  *   GET /console/login          — start a Google login, with `?next=`
  *   GET /console/oauth/callback — finish it: verify, mint the session, redirect
  *   GET /console/logout         — drop the session
+ *
+ * And, where console token login is live, src/http/console-tokens.ts:
+ *   POST /console/tokens              — mint a single-use login token
+ *   POST /console/token-login         — exchange it for a 30-minute session
+ *   POST /console/tokens/:jti/revoke  — revoke it, ending any session it opened
  */
 function mountConsole(
   app: Express,
   opts: AppOptions,
   env: NodeJS.ProcessEnv,
   auth: ConsoleAuth,
+  consoleTokens: ConsoleTokenStore | null,
 ) {
   const cfg = opts.config;
   const { google, sessions } = auth;
@@ -684,6 +762,23 @@ function mountConsole(
         via: "google",
         hd: cfg.auth.google?.hostedDomain,
         roles: signedIn.roles,
+        servers: cfg.servers.map((s) => ({
+          slug: s.slug,
+          kind: s.kind,
+          enabled: s.enabled,
+        })),
+      });
+      return;
+    }
+
+    // A token session: an automated actor asking "did my exchange take".
+    const viaToken = tokenSession(req.headers.cookie, consoleTokens);
+    if (viaToken) {
+      res.json({
+        signedInAs: viaToken.principal.label,
+        via: "token-login",
+        roles: viaToken.principal.roles,
+        expiresAt: new Date(viaToken.expiresAt).toISOString(),
         servers: cfg.servers.map((s) => ({
           slug: s.slug,
           kind: s.kind,
@@ -772,9 +867,20 @@ function mountConsole(
     }, jsonFailure("console_oauth_callback")),
   );
 
-  app.get("/console/logout", (_req, res) => {
+  app.get("/console/logout", (req, res) => {
     clearSessionCookie(res, env);
     clearOauthTxCookie(res, env);
+    // A token session is ENDED, not just forgotten by this browser: the record
+    // is server-side, so a copy of the cookie held elsewhere dies with it.
+    for (const v of readCookies(req.headers.cookie, TOKEN_SESSION_COOKIE)) {
+      consoleTokens?.endSession(v);
+    }
+    res.clearCookie(TOKEN_SESSION_COOKIE, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: env.NODE_ENV === "production",
+      path: "/",
+    });
     // The bypass cookie too, or "sign out" leaves every human who entered with
     // the bootstrap token — which is all of staging — still signed in.
     res.clearCookie(BYPASS_COOKIE, {

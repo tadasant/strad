@@ -339,6 +339,7 @@ the process, and for each one the exact fields that may go with it.
 | `strad.param_written` / `_write_failed` / `_refused`                                   | a server persisting a credential that rotated under it                                                                                                                                                                                                                                                      |
 | `strad.param_read`                                                                     | a server reading one of its own parameters live — a `paramsWritable:` boot read, or a `paramsRefresh:` poll. The deploy record a runtime rotation would otherwise not leave                                                                                                                                 |
 | `strad.upstream_token_refreshed` / `_refresh_failed`                                   | a `remote-http` server with `oauthRefresh:` minting an upstream access token: the slug, whether the refresh token rotated, and on failure one of four reason words                                                                                                                                          |
+| `console.token_minted` / `_exchanged` / `_revoked` / `_exchange_failed`                | a console login token's life, by its public `jti`. `_exchange_failed` is a refusal of a token whose secret verified — replayed after use, revoked, expired, or put in a URL — and it is the tripwire, at ERROR                                                                                              |
 | `strad.connector_begin` / `_connected` / `_refused`                                    | a human consenting, in the console, for one slug                                                                                                                                                                                                                                                            |
 | `strad.connector_connect_failed`                                                       | the deployment could not carry a connect through, at `begin` or `callback` — the config slug and a closed `reason`, at ERROR. On an OAuth client the console could not read, also the config `variable`, a closed `failure` word and the store's HTTP `status` as a number                                  |
 | `strad.config_applied` / `strad.config_reloaded`                                       | the runtime server roster changed — the resulting slug list and the overlay `revision`. The first is a write through a door, the second is this process picking up another's. WHO made the change is deliberately absent: it is a person's email, and the stored overlay already carries it for the console |
@@ -388,10 +389,12 @@ mint metric series at will.
 Every exportable event a client can drive — `mcp.list_tools_failed`,
 `mcp.list_resources_failed`, `mcp.local_machine_offline`,
 `mcp.server_unconfigured`, `mcp.policy_unmatched_tools`, `mcp.unavailable`,
-`mcp.tool_denied` and `strad.route_failed` — is throttled to one exported record per bucket per minute,
+`mcp.tool_denied`, `strad.route_failed` and `console.token_exchange_failed` — is throttled to one exported record per bucket per minute,
 for the same queue-starvation reason. The bucket is the slug, except for
 `strad.route_failed`, which carries none and buckets on the route instead, so a
-flood on one route cannot hide another route's first record. A repeated fault is
+flood on one route cannot hide another route's first record, and
+`console.token_exchange_failed`, which buckets on the token's `jti` and the
+refusal's `state`. A repeated fault is
 therefore under-reported by up to a minute in the ingestor; the streams are never
 throttled, and `strad.mcp.tool_surface` carries the same fact continuously. Fault events export at `SeverityNumber.ERROR`, so
 `severity >= ERROR` finds them.
@@ -401,10 +404,11 @@ throttled, and `strad.mcp.tool_surface` carries the same fact continuously. Faul
 An empty slot in a deny-by-default allowlist reads the same whether it is a
 verdict or nobody looking, and those are not the same fact. So `EXPORTABLE` has a
 counterpart in the same file: **`NOT_EXPORTED`**, keyed the same way, whose values
-are the reason. Seven events are on it.
+are the reason. Eight events are on it.
 
 | Event                                           | Why it stays on the stream                                                                                                                                                                                                                                                                                                                                                                |
 | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `console.token_login_refused`                   | the unauthenticated half of the console token exchange — a garbled or unknown token, or none. `reason` is a closed set, but anyone who can reach the route produces one record per request: `mcp.auth_failed`'s argument, on the console door. A refusal of a token whose secret verified is `console.token_exchange_failed`, and that one ships                                          |
 | `mcp.auth_failed`                               | its fields are safe, but it fires before authentication succeeds, so anyone who can POST `/mcp` could fill the batch queue and evict the signals that matter. `strad.mcp.auth_failures` counts the same thing by the same `reason`, in a channel with no queue to starve                                                                                                                  |
 | `mcp.request`                                   | it fires on every authenticated request, which is `mcp.auth_failed`'s queue-starvation argument one token further in. Its fields would pass the field test — by that line `resolveSelection` has matched every requested slug against the entitled set — but the volume is the objection. The `mcp.request` span carries requested and selected; `strad.mcp.requests` counts the outcomes |
 | `ui.playground.tool_call`                       | two of its three fields are ours, and `tool` is a string a human typed into a console text field. That leaves a slug-only shape — which `strad.mcp.tool_calls` with `strad.surface=playground` and `mcp.server` already carries, so an export minus `tool` would add nothing but a second spelling                                                                                        |

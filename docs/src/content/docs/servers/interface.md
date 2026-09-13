@@ -1004,6 +1004,30 @@ model is in [Auth](/auth/overview/#mcp--static-system-tokens-agents), and the
 console page in [Managing
 tokens](/auth/overview/#managing-tokens-the-tokens-console).
 
+## `auth.consoleTokenLogin`
+
+Lets a standing console credential mint a single-use login token that an
+automated actor exchanges for a 30-minute console session.
+
+```yaml
+auth:
+  consoleTokenLogin:
+    enabled: false # default
+```
+
+Two locks: this flag, and a `gateway.env` that is exactly `dev`, `local`, `test`
+or `staging`. With either one shut, `POST /console/tokens`,
+`POST /console/token-login` and `POST /console/tokens/:jti/revoke` are not
+mounted at all, and no token session can open the console. Nothing in the config
+reopens it in production.
+
+It has no `roles:` of its own. A token carries its minter's roles, or a subset the
+mint asks for, and the session it opens can view the console but not reveal,
+write or delete a stored value, begin a connector, or call a tool. Turning this on
+grants nobody anything a standing credential did not already hold, and it never
+reaches `/mcp`. See
+[Auth](/auth/overview/#console-login-tokens-the-automated-actors-door).
+
 ## `auth.google.session`
 
 How long a Google sign-in keeps the console open. Both fields are optional.

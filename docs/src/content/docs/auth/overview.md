@@ -17,7 +17,7 @@ they never cross:
 
 Which door accepts which credential is enforced **in code**, not config. The MCP
 authenticator accepts exactly those two — not a console session, not the dev
-bypass, and emphatically not "no header means dev mode." The prefix on the
+bypass, not a console login token, and emphatically not "no header means dev mode." The prefix on the
 presented credential decides which, and it decides exclusively: an `strad_oat_…`
 token is never offered to the static store, and a `strad_<env>_…` token never
 reaches the OAuth verifier.
@@ -644,9 +644,9 @@ dead the next morning. The cap is 7 days because it is the number that bounds
 the case renewal makes worse, below.
 
 Stateless is a deliberate choice over a server-side session table. strad has no
-datastore, and the console component may run more than one replica: a table breaks
-on both — a login begun on replica A cannot be finished on replica B, and a
-redeploy signs everyone out. An HMAC has neither problem. The **same** primitive
+datastore, and a human's session should not depend on core staying one replica: a
+table breaks on both — a login begun on replica A cannot be finished on replica
+B, and a redeploy signs everyone out. An HMAC has neither problem. The **same** primitive
 carries the in-flight OAuth transaction, so no login state lives on the server at
 all.
 
@@ -709,8 +709,10 @@ gate keeps its honest `401` sign-in page and strad warns at boot. The alternativ
 is worse than the `401`: a half-configured deployment that redirects to Google and
 dead-ends there is a console reachable by nobody, with nothing to point at.
 
-`GET /console/logout` drops both console cookies — the Google session and the dev
-bypass's — so "sign out" means signed out however the human got in.
+`GET /console/logout` drops every console cookie — the Google session, the dev
+bypass's, and a [token session](#console-login-tokens-the-automated-actors-door)'s,
+which it also ends on the server — so "sign out" means signed out however the
+caller got in.
 
 ### What the gate checks, and what it does not
 
@@ -917,11 +919,163 @@ console session and cannot authenticate `/mcp`.**
 
 It sits **alongside** Google sign-in rather than behind it: the gate resolves a
 Google session first and falls back to the bypass, so a deployment can have both.
-Staging depends on the bypass, and it is the only way an automated actor reaches
-the console at all (see [Known limitations](/limitations/)). Deleting it is a
+Staging depends on the bypass, and it is the only STANDING credential an
+automated actor can hold for the console — which is why a
+[console login token](#console-login-tokens-the-automated-actors-door) exists, so
+the actor holds something that dies in minutes instead (see
+[Known limitations](/limitations/)). Deleting it is a
 separate change, after Google sign-in is verified working in prod — in that order,
 because `src/ui/console-auth.ts` imports from `src/auth/dev.ts` and removing the
 module first leaves `/ui` with no fallback authenticator.
+
+### Console login tokens: the automated actor's door
+
+A CI job or an agent driving `/ui` with Playwright needs a console session, and
+handing it the bootstrap token puts a standing console credential in a job log,
+a transcript or a browser profile, where it outlives the task. So the standing
+credential **mints** a single-use token and the actor **exchanges** it:
+
+| Route                              | Takes                                                              | Answers                                                                                                |
+| ---------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `POST /console/tokens`             | a standing credential; optional JSON `{"roles": [...]}`            | `201` with `token` (`<jti>.<secret>`, shown once), `jti`, `roles`, `expiresAt`                         |
+| `POST /console/token-login`        | `{"token": "…"}` as an `application/json` **body**                 | `200` and the `strad_console_token` cookie, or a refusal and **no** cookie                             |
+| `POST /console/tokens/:jti/revoke` | a standing credential, **or** the token itself as `{"token": "…"}` | `200` with the token's `status` and whether a live session was ended; `404` for a jti it does not hold |
+
+```sh
+# In the job that holds the standing credential:
+curl -s -X POST https://staging.strad.tadasant.com/console/tokens \
+  -H "Authorization: Bearer $ADMIN_BOOTSTRAP_TOKEN"
+# → {"token":"3f2a…c9.Xk…","jti":"3f2a…c9","roles":["admin"],"expiresAt":"…",…}
+
+# In the actor, which only ever sees the token:
+curl -s -c jar -X POST https://staging.strad.tadasant.com/console/token-login \
+  -H 'content-type: application/json' -d '{"token":"3f2a…c9.Xk…"}'
+curl -s -b jar https://staging.strad.tadasant.com/ui
+```
+
+A Playwright actor does the same thing with `context.request.post(…)`, which
+puts the cookie in the browser context the page then navigates in.
+
+**A standing credential** is a Google session or the bootstrap token (as a
+`Bearer` header or the bypass cookie). A token session is **not** one, so it
+cannot mint its own successor and outlive its thirty minutes one hop at a time.
+Nor is `?token=`: these are `POST` routes a script calls, not pages a browser
+lands on.
+
+**JSON only, wherever a cookie is involved.** The exchange sets a cookie, and a
+mint or revoke may be authenticated by one, so each takes an `application/json`
+body (`415 json_required` otherwise). A cross-origin page can POST a form with a
+human's cookies attached, but it cannot send JSON without a CORS preflight, and
+strad answers none. That is what stops a cross-origin page — a sibling
+subdomain included — from minting with a human's session, or making strad set a
+token session in a human's browser. (A sibling subdomain can still toss a cookie
+of its own at the parent domain. The gate ranks a token session last, below both
+standing credentials, so such a cookie can never shadow a human's real sign-in.)
+A mint body
+with a field other than `roles` is a `400`, because the alternative is a
+misspelled narrowing that quietly mints the minter's full roles.
+
+**Single use is the point.** The token is `<jti>.<secret>` — a 16-hex-character
+lookup key and 32 random bytes, of which only the SHA-256 is kept. The exchange
+is a compare-and-set from `active` to `consumed`, and it is atomic because it is
+**synchronous**: nothing between the check and the write yields to the event
+loop, so two exchanges racing in on two sockets are ordered and exactly one of
+them sees `active`. `test/console-tokens.test.ts` races 25 of them over
+pre-opened sockets. That makes a failed exchange mean something. An actor whose
+fresh, unused token comes back `token_consumed` has learned that somebody else
+spent it. The right response is to revoke it — the actor posts the same token,
+as a JSON body, to `/console/tokens/<jti>/revoke`, which needs no standing
+credential and ends the session the other party got — raise the alarm, and mint
+once more. Retrying the same token is never right. The price of revoking by
+possession is that anyone who later reads a spent token out of a job log can end
+the session it opened; that is a denial of service, never an entry, and it is
+why the token belongs nowhere that outlives the run. Any standing credential can
+revoke any token, whoever minted it — the console's roles are not an ACL (see
+[what the gate checks](#what-the-gate-checks-and-what-it-does-not)).
+
+| The refusal      | Status | When                                                                                        |
+| ---------------- | ------ | ------------------------------------------------------------------------------------------- |
+| `invalid_token`  | `401`  | Garbled, unknown, or the secret half is wrong. Nothing is disclosed.                        |
+| `token_expired`  | `401`  | Real, but not exchanged within ten minutes of the mint.                                     |
+| `token_consumed` | `409`  | Real, and already exchanged. The tripwire.                                                  |
+| `token_revoked`  | `409`  | Real, and revoked — including by having been put in a URL.                                  |
+| `token_in_query` | `400`  | The token arrived as `?token=`, with any method and any body. It is revoked if it was live. |
+| `json_required`  | `415`  | The body was not `application/json`.                                                        |
+
+A caller only learns a token's state if it holds the secret. A wrong secret
+against a real jti is `invalid_token`, and it does not spend the token: knowing
+the public half is not enough to burn it.
+
+**A token in any URL is burned.** A URL lands in access logs and `Referer`, so
+core scans the URL of every request it receives — raw and percent-decoded, path
+and query, whatever the route and whatever the parameter is called — for
+anything shaped like a login token, and revokes each one whose secret verifies.
+That runs before any route and before the body parser, so neither a 404 nor a
+malformed body can leave one live, and a token in a URL opens nothing. The
+exchange route also refuses such a request outright, with `token_in_query`.
+`/ui?token=` is the bypass's sign-in, which makes it the likeliest place for one
+to be pasted by mistake.
+
+**The session** the exchange opens is thirty minutes, absolute, never renewed.
+Its cookie, `strad_console_token`, is HttpOnly, `SameSite=Lax`, `Secure` under
+`NODE_ENV=production`, scoped to `/`, and its `Max-Age` is the session's lifetime,
+so the browser drops it when the server stops honouring it. The roles are the
+minter's, fixed at mint — narrowed if the mint asked for a subset, and a request
+for a role the minter does not hold is a `403`. Unlike the Google session, this
+one is a server-side record, so revoking the token or signing out ends it for
+every copy of the cookie.
+
+**It can look, and it cannot act.** A token session loads every console page —
+the roster, each server's parameters, the playground and its tool lists — and may
+re-read the store. It is refused with a `403` on everything that reads a stored
+value, writes the store, or makes an upstream act: `reveal`, `create`, `rotate`,
+`note` and `delete` under `/ui/:server`, a connector's `connect`, the
+playground's `tools/call`, minting, revoking or forgetting an `/mcp` token on
+`/tokens` — which hands out a standing credential for the agent door, the
+widest write the console has — and every runtime roster write under
+`/connectors`, since an entry may name a stored credential by reference. The
+rule is enforced by structure, not by review: `test/console-tokens.test.ts`
+walks every mounted route and fails on any write behind the console gate that
+does not refuse a token session, so a console write added later cannot quietly
+skip it. That is a rule on the principal's kind, not its roles,
+because the secret actions read no role and the token's whole premise is a
+credential whose leak is over in minutes. Thirty minutes of `reveal` would read
+the bootstrap token out of the store, and thirty minutes of `rotate` would plant a
+`STRAD_TOKENS` record whose secret the writer chose — either one outlives the
+session by as long as anyone likes. Driving the console's write forms therefore
+still takes a standing credential.
+
+**Where the records live, and why that is enough.** In core's memory. Core is one
+process — it is rendered with `instance_count: 1` — and every config change is a
+deploy, which is a restart, which empties the store. Each way that premise can
+break fails closed: a restart turns an unexchanged token into `invalid_token` and
+a session into the sign-in wall, and a second replica would answer a mint made on
+the other one with `invalid_token` and a revoke with `404`. None of them issues a
+session that should not exist. What a shared store would add is availability, and
+it is written down as [a known limitation](/limitations/).
+
+**It never exists in production.** The routes are mounted only when
+`auth.consoleTokenLogin.enabled` is true **and** `gateway.env` is one of `dev`,
+`local`, `test` or `staging` — an allowlist, matched exactly, so a production
+deployment called `prod`, `production` or anything nobody wrote down fails
+closed. There is no acknowledgement that turns them on there. Such a deployment
+answers all three paths with the same `404` as a path strad never heard of, and
+its gate never consults a token session. The test is `gateway.env`, not
+`NODE_ENV`: staging runs `NODE_ENV=production`, and staging is where this is for.
+`gateway.env` is also what binds every `/mcp` token (`strad_<env>_…`), so a
+production deployment claiming to be `staging` would reject its own agents — the
+claim cannot be wrong quietly. It does not depend on the dev bypass either, so it
+outlives it: after [#6](https://github.com/tadasant/strad/issues/6), a Google
+session is what mints.
+
+`/mcp` is untouched. It reads the `Authorization` header against the static token
+store and never a cookie; the login token and the session cookie are both a `401`
+there.
+
+Every mint, exchange and revoke is an event, and a refusal of a token whose secret
+verified is `console.token_exchange_failed` — exported at ERROR, throttled per jti
+and state — because it is a broken automation or a stolen token. See
+[Telemetry](/operate/telemetry/).
 
 ### The two ways console auth says no
 

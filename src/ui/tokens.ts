@@ -21,7 +21,7 @@ import {
   type TokenRecord,
 } from "../auth/tokens.ts";
 import { errorSummary } from "../util/error-text.ts";
-import { signedInLabel } from "./console-auth.ts";
+import { refuseTokenSession, signedInLabel } from "./console-auth.ts";
 import { esc, formatTime, layout } from "./render.ts";
 import { COPY_SCRIPT } from "./landing.ts";
 
@@ -95,6 +95,11 @@ export function mountTokensConsole(
   app.post(
     "/tokens/mint",
     gate,
+    // Minting an /mcp token is the widest write the console has: it hands out a
+    // standing credential for the agent door. A console login token's session
+    // may not, or a 30-minute look-only session would be one POST away from a
+    // credential that outlives it. See refuseTokenSession.
+    refuseTokenSession,
     form,
     asyncRoute(async (req, res) => {
       const body = req.body as Record<string, unknown>;
@@ -123,6 +128,7 @@ export function mountTokensConsole(
     app.post(
       `/tokens/${action}`,
       gate,
+      refuseTokenSession,
       form,
       asyncRoute(async (req, res) => {
         const body = req.body as Record<string, unknown>;

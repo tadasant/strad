@@ -1,4 +1,5 @@
 import express, { type Express, type Request, type Response } from "express";
+import type { ConsoleTokenStore } from "../auth/console-tokens.ts";
 import type { ConsoleSessions } from "../auth/session.ts";
 import type { RuntimeConfig } from "../config/runtime.ts";
 import { mountServersUi } from "./servers.ts";
@@ -7,6 +8,7 @@ import { asyncRoute } from "../http/async-route.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import {
   consolePrincipal,
+  refuseTokenSession,
   requireConsoleUi,
   signedInLabel,
 } from "./console-auth.ts";
@@ -171,6 +173,8 @@ export interface ConsoleUiOptions {
   sessions?: ConsoleSessions | null;
   /** Whether Google sign-in can complete end to end. See resolveConsoleAuth(). */
   googleReady?: boolean;
+  /** The console login token store, where token login is live. See resolveConsoleTokens(). */
+  consoleTokens?: ConsoleTokenStore | null;
   /** Test seam: the transport a connector's token exchange uses. See ConnectorUiOptions. */
   connectorFetch?: typeof fetch;
   /**
@@ -191,6 +195,7 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     env: opts.env,
     sessions: opts.sessions,
     googleReady: opts.googleReady,
+    consoleTokens: opts.consoleTokens,
   });
   const gcsList = opts.gcsList ?? createGcsLister();
 
@@ -317,6 +322,9 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     app.post(
       `${SERVER_ROUTE}/${action}`,
       gate,
+      // Every action but `refresh` reads a stored value or writes the store,
+      // which a login token's session may not do. See refuseTokenSession.
+      ...(action === "refresh" ? [] : [refuseTokenSession]),
       form,
       asyncRoute(
         (req, res) => handleSecretAction(action, req, res, opts),

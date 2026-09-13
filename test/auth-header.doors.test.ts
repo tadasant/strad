@@ -400,10 +400,12 @@ describe("no door parses or compares a credential by hand", () => {
   /**
    * The names a request's `Authorization` header may be handed to. Every one
    * reads it with `bearerToken`; a file that reads the header and names none
-   * of them is reading it some other way.
+   * of them is reading it some other way. `standingPrincipal` is the console
+   * token routes' door (src/ui/console-auth.ts): it takes the header whole and
+   * parses it with `bearerToken`, exactly as the gate beside it does.
    */
   const GATES =
-    /\b(?:bearerToken|authenticateMcp|authorizePresence|presenceResponse|requireInternalToken|internalAuthRefusal)\b/;
+    /\b(?:bearerToken|authenticateMcp|authorizePresence|presenceResponse|requireInternalToken|internalAuthRefusal|standingPrincipal)\b/;
 
   const sources = ROOTS.flatMap((root) =>
     readdirSync(root, { recursive: true })

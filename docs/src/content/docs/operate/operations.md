@@ -1477,6 +1477,18 @@ fails CI on the PR rather than the deploy after it.
   verifier, the CSRF `state`, the return path — is a signed 10-minute cookie, not
   a server-side map, so the console survives a restart and spans replicas. See
   [Auth](/auth/overview/#the-sign-in-round-trip).
+- **`POST /console/tokens`**, **`POST /console/token-login`** and
+  **`POST /console/tokens/:jti/revoke`** — mint, exchange and revoke a
+  single-use console login token, for an automated actor that must not hold the
+  bootstrap token. Core-only, and mounted only where
+  `auth.consoleTokenLogin.enabled` is true and `gateway.env` is `dev`, `local`,
+  `test` or `staging`; everywhere else they are an ordinary `404`. Mint takes a
+  standing console credential, revoke takes one or the token itself, and the
+  exchange takes the token as a JSON body, never the URL, and sets a 30-minute
+  `strad_console_token` cookie. That session can view the console and not act
+  through it. Unlike the rest of the console's state these records live in
+  core's memory, so a restart ends every outstanding token and token session.
+  See [Auth](/auth/overview/#console-login-tokens-the-automated-actors-door).
 - **`/ui`** and `/ui/:server`, also core-only, are the human-facing server console,
   behind the same gate as `/`. `/ui` carries the secret roster — a `READY` or
   `ISSUE` badge per entry — and `/secrets` 302s to it. An entry carries up to two

@@ -5,7 +5,11 @@ import express, {
   type Response,
 } from "express";
 import { asyncRoute } from "../http/async-route.ts";
-import { consolePrincipal, signedInLabel } from "./console-auth.ts";
+import {
+  consolePrincipal,
+  refuseTokenSession,
+  signedInLabel,
+} from "./console-auth.ts";
 import { renderMessage } from "./render.ts";
 import {
   CONNECTORS_PREFIX,
@@ -96,6 +100,10 @@ export function mountServersUi(
   app.post(
     connectorsPath("save"),
     gate,
+    // A roster write adds or re-points a server, and an entry may name a stored
+    // credential by reference — a console login token's session may not make
+    // one. See refuseTokenSession.
+    refuseTokenSession,
     form,
     asyncRoute((req, res) => handleSave(req, res, opts), renderUnexpected),
   );
@@ -110,6 +118,7 @@ export function mountServersUi(
     app.post(
       `${CONNECTORS_PREFIX}/:slug/${action}`,
       gate,
+      refuseTokenSession,
       form,
       asyncRoute(
         (req, res) => handleMutate(action, req, res, opts),

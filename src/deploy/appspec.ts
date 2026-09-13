@@ -1499,6 +1499,10 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       name: "core",
       image: opts.image,
       instance_size_slug: opts.coreInstanceSizeSlug ?? "apps-s-1vcpu-1gb",
+      // ONE, and not configurable. Console login tokens and their sessions are
+      // records in this process's memory (src/auth/console-tokens.ts); a second
+      // replica fails them closed — a mint on one is unknown to the other — but
+      // it does fail them. HACKS.md #98 has the shared-store upgrade.
       instance_count: 1,
       // The ONE public component. http_port is what mints the public route.
       http_port: PORT,

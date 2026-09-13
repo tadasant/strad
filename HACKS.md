@@ -5051,6 +5051,53 @@ tokens rather than built twice: each renewal checks a revocation list, and the
 console lists and ends individual sessions. That is the issue's option C, deferred
 until per-session revocation is a requirement on its own.
 
+---
+
+## 98. Console login tokens live in core's memory
+
+**What.** A console login token (`POST /console/tokens`, `src/auth/console-tokens.ts`)
+and the 30-minute session it is exchanged for are records in a `Map` inside the
+core process. Nothing persists them and nothing shares them. A restart — every
+deploy is one — ends every outstanding token and every token session.
+
+**Why.** Single-use and revocable both need server-side state: a stateless HMAC
+has nowhere to write "used" or "revoked". strad has no datastore (hack #6), and core
+is exactly one process — `renderAppSpec` hard-codes its `instance_count: 1` — so
+the process's memory is a complete store for it. The compare-and-set is atomic
+because `exchange()` is synchronous and Node runs one turn at a time; a store
+that lived across a network hop would need a real conditional write instead.
+
+Every way the one-process premise can break fails closed:
+
+- a restart between mint and exchange makes the token `invalid_token` — no
+  cookie, and the actor re-mints;
+- a restart mid-session makes the cookie stop resolving — the sign-in wall;
+- a second core replica makes a mint on one unknown to the other (`401`, no
+  cookie), and makes a revoke that lands on the wrong one answer `404
+unknown_token` rather than claim a revocation. A token is consumed where it
+  lives, so single use still holds.
+
+What is lost is availability, never safety: nothing here can issue a session
+that should not exist, or let a token be spent twice.
+
+**Scope.** The routes exist only where `auth.consoleTokenLogin.enabled` is true
+and `gateway.env` is exactly `dev`, `local`, `test` or `staging`. A token
+session can view the console and cannot act through it — no reveal, no store
+write, no connector, no playground tool call — so an automated actor cannot drive
+the console's write forms at all; that would need a mint-time capability, which
+is not built. Minting takes a standing console credential: `ADMIN_BOOTSTRAP_TOKEN`
+(through the bypass, hack #2) or a Google session. When tadasant/strad#6 deletes
+the bypass, a Google session is the only minter, so a CI job that mints for
+itself needs a standing credential that survives it; choosing one is that
+issue's decision, not this one.
+
+**Undo.** Move the records to the same shared store as hack #6's
+database-backed `TokenStore` (tadasant/strad#10), with the compare-and-set as a conditional write
+there (`UPDATE … SET status='consumed' WHERE jti=$1 AND status='active'`,
+checking the row count). Do it before core runs more than one replica, not after.
+
+---
+
 ## 99. An `oauth:` connector reads its OAuth client through the console, which is the one read production's console is set up not to have
 
 **What.** The connector flow (`src/ui/connector.ts`) reads a slug's client id and

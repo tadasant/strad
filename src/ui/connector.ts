@@ -4,7 +4,11 @@ import { asyncRoute } from "../http/async-route.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import type { ConsoleSessions } from "../auth/session.ts";
 import { sanitizeNext, stateMatches } from "../auth/session.ts";
-import { consolePrincipal, signedInLabel } from "./console-auth.ts";
+import {
+  consolePrincipal,
+  refuseTokenSession,
+  signedInLabel,
+} from "./console-auth.ts";
 import { esc, layout, renderMessage } from "./render.ts";
 import { SERVER_ROUTE, serverConsolePath } from "./paths.ts";
 import { event } from "../telemetry/index.ts";
@@ -121,6 +125,10 @@ export function mountConnector(
   app.get(
     CONNECTOR_CALLBACK_PATH,
     gate,
+    // It writes the store. A token session could never have begun the flow —
+    // `connect` refuses it and the transaction is bound to the principal — so
+    // this is the second lock, not the first. See refuseTokenSession.
+    refuseTokenSession,
     asyncRoute((req, res) => handleCallback(req, res, opts), renderUnexpected),
   );
 
@@ -131,6 +139,7 @@ export function mountConnector(
   app.post(
     `${SERVER_ROUTE}/connect`,
     gate,
+    refuseTokenSession,
     asyncRoute((req, res) => handleConnect(req, res, opts), renderUnexpected),
   );
 }

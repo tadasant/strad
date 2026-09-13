@@ -380,8 +380,10 @@ Google sign-in is complete in code — the `hd` claim check, the session it
 mints, and the gate that accepts it — and the bypass sits **alongside** it, not
 behind it. What is left is provisioning: an OAuth client for
 `https://strad.tadasant.com/console/oauth/callback` and its two secrets. Staging
-also depends on the bypass, and it is the only way an automated actor reaches the
-console (see #43 in the repo).
+also depends on the bypass, and it is the only standing credential an automated
+actor can hold for the console. A single-use
+[console login token](/auth/overview/#console-login-tokens-the-automated-actors-door)
+it mints is what the actor should hold instead.
 
 **Undo, in this order:** provide `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, set
 `auth.google.enabled: true`, verify a real sign-in in prod, then set
@@ -529,6 +531,37 @@ console, or `POST /oauth/revoke`.
 first, second and fourth together, and gives the console page something to read.
 The third stays Google's shape unless strad mints its own grant identity, which
 it should not.
+
+### 98. Console login tokens live in core's memory
+
+A [console login token](/auth/overview/#console-login-tokens-the-automated-actors-door)
+and the 30-minute session it opens are records in core's memory. A restart ends
+every one of them, and every deploy is a restart. That is sound only because core
+is a single process, which is hard-coded in the app spec. If that ever changes,
+it fails closed. A mint on one replica is `invalid_token` on the other, and a
+revoke that lands on the wrong replica is a `404` rather than a false "revoked".
+A lost token or session is the whole cost: a token can never be spent twice, and
+no session is issued that should not exist.
+
+An automated actor has to treat a failed exchange as "mint again once, then
+stop", never "retry the same token", and a deploy in the middle of a run looks
+exactly like that.
+
+A token session can view the console and cannot act through it: no reveal, no
+store write, no connector, no playground tool call. That is what keeps a leaked
+session from reading or planting a durable credential. It also means an automated
+actor cannot drive the console's write forms. Doing that would take a mint-time
+capability, which is not built.
+
+Minting takes a standing console credential: the bootstrap token (through the
+bypass, [#2](#2-the-console-dev-bypass-stands-in-for-google-oauth)) or a Google
+session. When the bypass goes, a Google session is the only minter left, so a
+CI job that mints for itself will need a standing credential that survives it.
+
+**Undo:** keep these records in the same shared store as a database-backed
+[#6](#6-token-records-live-in-an-env-var-not-a-database), with the
+compare-and-set as a conditional write there, before core runs more than one
+replica.
 
 ### 64. A Google Sheets credential is minted by a human, and expires in 7 days in testing mode
 
