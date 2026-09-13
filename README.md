@@ -166,7 +166,7 @@ involved) opens its MCP session inside the core process rather than presenting a
 token to `/mcp`. See
 [the console playground](https://strad.tadasant.com/auth/overview/#the-console-playground).
 
-The console at `/ui` is an installable PWA. Its service worker caches a fixed list
+The console at `/connectors` is an installable PWA. Its service worker caches a fixed list
 of brand assets and one offline page — never an authenticated response, never a
 revealed secret. See [the console as an installed
 app](https://docs.strad.tadasant.com/operate/console-pwa/).

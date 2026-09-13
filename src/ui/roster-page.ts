@@ -1,5 +1,7 @@
 import type { Principal } from "../auth/index.ts";
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
+import type { EntrySource, ServerOverlay } from "../config/overlay.ts";
+import { RUNTIME_CREATABLE_KINDS } from "../config/overlay.ts";
 import { connectorFor } from "../connectors/index.ts";
 import { entitledServers } from "../gateway/entitlements.ts";
 import {
@@ -14,8 +16,9 @@ import {
   type StoreDiagnostics,
 } from "../secrets/store-diagnostics.ts";
 import { esc, layout } from "./render.ts";
-import { serverConsolePath } from "./paths.ts";
+import { connectorsPath, serverConsolePath } from "./paths.ts";
 import { serverLooksGcs, serverLooksSecrets } from "./resolve.ts";
+import { flashHtml, kindBlurb, type Flash } from "./servers-page.ts";
 import {
   fixTargets,
   isActionable,
@@ -34,15 +37,31 @@ import {
 } from "./secret-status.ts";
 
 /**
- * `/ui` — the console index: every configured MCP server, what it is scoped to,
- * and whether the secrets it needs are actually there.
+ * `/connectors` — the console's one view of the servers this gateway serves:
+ * every entry, what it is scoped to, whether the secrets it needs are actually
+ * there, and — where the deployment keeps its roster in a store — the controls
+ * to add, edit, disable and remove one.
  *
- * ## Why the roster is here and not on a page of its own
+ * ## Why it is one page and not three
  *
- * It was two destinations: `/ui` listed the servers and `/secrets` said whether
- * each one's secrets resolved. Nobody wants the second question in isolation —
- * it is asked ABOUT a server, standing in front of the list of servers — so the
- * answer belongs on the entry, not one navigation away.
+ * Split three ways, the first two are the same list of servers answering
+ * different questions: one listing every slug as a directory tile, one listing
+ * every slug again with its scope and secret status, one listing every slug a
+ * third time with the editor controls. Nobody wants any of those in isolation —
+ * you read a status in order to decide what to change, and you change an entry
+ * whose status you are looking at. So the status is on the entry, the editor is
+ * on the entry, and `/` is a splash carrying the one thing that is about no
+ * particular server: the endpoint to paste into a client. `/ui` and `/secrets`
+ * redirect here, because both URLs were published.
+ *
+ * ## It answers on every deployment
+ *
+ * `gateway.configStore.enabled` gates the EDITOR, never the view. A deployment
+ * whose roster comes from the checked-in document still gets every row, every
+ * badge and every popout; what it loses is the Edit / Disable / Remove controls
+ * and the "add a connector" menu, and the page says which of the two it is.
+ * Making the whole page conditional would mean a deployment without a config
+ * store had nowhere to read a secret status at all.
  *
  * ## What the two badges claim, exactly
  *
@@ -62,11 +81,11 @@ import {
  * `src/ui/secret-status.ts` exists to prevent, and this page's whole claim is
  * that a green badge means something was observed.
  *
- * ## Why it prints secret names and the landing page does not
+ * ## Why it prints secret names and the splash does not
  *
- * `/` is deliberately narrow — no `env:` keys, no urls, no headers
- * (test/landing.test.ts asserts each absence) — because it is a directory and a
- * directory needs none of that. Naming the missing secret and the exact path it
+ * `/` is deliberately narrow — no slugs, no `env:` keys, no urls, no headers
+ * (test/landing.test.ts asserts each absence) — because it is a splash and a
+ * splash needs none of that. Naming the missing secret and the exact path it
  * goes at is this page's entire job, so it prints NAMES and PATHS. It is behind
  * `requireConsoleUi`, and the line it holds instead is the one that matters:
  * **no secret VALUE is ever rendered.** Not revealed, not excerpted, not
@@ -76,7 +95,19 @@ import {
  * any.
  */
 
-export interface ConsoleIndexOptions {
+/**
+ * The roster half: what the runtime holder says about the entries, and what may
+ * be done to them. Absent when this deployment keeps no roster in a store —
+ * which takes the controls away and leaves everything else standing.
+ */
+export interface RosterState {
+  overlay: ServerOverlay;
+  sources: Map<string, EntrySource>;
+  /** False when this gateway holds no admin credential to write the overlay. */
+  writable: boolean;
+}
+
+export interface ConnectorsPageOptions {
   config: StradConfig;
   /** Per-server secret status, for every ENABLED server. */
   statuses: ServerSecretStatus[];
@@ -92,10 +123,10 @@ export interface ConsoleIndexOptions {
   /**
    * The console identity this page is being rendered for.
    *
-   * Roles are not a console ACL — every signed-in principal sees every card. It
+   * Roles are not a console ACL — every signed-in principal sees every row. It
    * is here for the ONE control that issues MCP calls rather than rendering
    * config: the playground icon, which is offered only where the playground
-   * opens. See cardIcons().
+   * opens. See rowIcons().
    */
   principal: Principal;
   signedInAs?: string;
@@ -115,6 +146,10 @@ export interface ConsoleIndexOptions {
    * because there is nothing whose age it would be describing.
    */
   storeDiagnosis?: StoreDiagnostics | null;
+  /** The roster editor's state, absent on a deployment with no config store. */
+  roster?: RosterState;
+  /** The outcome of the write that redirected here, if this is one. */
+  flash?: Flash;
 }
 
 /** The two badges an entry can carry, and nothing in between. */
@@ -132,7 +167,7 @@ export function badgeFor(state: ServerState): EntryBadge {
   return state === "ready" || state === "no-secrets" ? "READY" : "ISSUE";
 }
 
-/** One entry on the index: a server, and what is known about its secrets. */
+/** One entry on the roster: a server, and what is known about its secrets. */
 export interface Entry {
   server: ServerConfig;
   /** Absent for a DISABLED server, which is not on the secret roster at all. */
@@ -151,7 +186,7 @@ export type ConsoleView = "connector" | "secrets" | "gcs" | "overview";
 /**
  * Asked in the order `handleServerView` in `src/ui/index.ts` asks it: an
  * enabled `oauth:` connector first, then the parameter store, then the bucket.
- * A card that reads a slug differently from the route labels a working page as
+ * A row that reads a slug differently from the route labels a working page as
  * something else, so this is the one reading both use.
  */
 export function consoleView(
@@ -165,23 +200,78 @@ export function consoleView(
 }
 
 /**
- * READY before ISSUE; within each group, entries with a dedicated view first.
+ * Which heading an entry is drawn under — asked ONCE, by both halves that care.
  *
- * A DISABLED server carries no badge — strad does not mount it, so it needs no
- * secrets and `deriveServerStatuses` skips it — and sorts last. Reporting it
- * READY would be a green for a server that answers nothing.
+ * The sort and the grouping are the same question and must not be able to
+ * disagree about it: a partition the sort does not follow interleaves rows under
+ * the wrong heading, and — worse — a partition with a hole DROPS an entry off
+ * the page entirely, silently, while the counts above it keep saying it is
+ * there. So this is total by construction: three values, `enabled` decides one
+ * of them and the badge decides the other two.
+ *
+ * `undefined` lands in `attention` rather than `ready`, and that is the case
+ * worth stating. `deriveServerStatuses` returns a status for every enabled
+ * server today, so a badgeless enabled entry is a shape nothing produces — but
+ * if one ever appears, nothing was established about it, which is precisely what
+ * ISSUE means everywhere else on this page. Green would be the false green
+ * `src/ui/secret-status.ts` exists to prevent.
  */
-export function sortEntries(entries: Entry[]): Entry[] {
-  const rank = (e: Entry): number => {
-    if (!e.server.enabled) return 4;
-    return (e.badge === "READY" ? 0 : 2) + (e.view === "overview" ? 1 : 0);
-  };
-  // Array.prototype.sort is stable, so config order survives inside a rank.
-  return [...entries].sort((a, b) => rank(a) - rank(b));
+type GroupKey = "attention" | "ready" | "disabled";
+
+function groupOf(entry: Entry): GroupKey {
+  // A DISABLED server carries no badge — strad does not mount it, so it needs no
+  // secrets and `deriveServerStatuses` skips it. Reporting it READY would be a
+  // green for a server that answers nothing.
+  if (!entry.server.enabled) return "disabled";
+  return entry.badge === "READY" ? "ready" : "attention";
 }
 
-export function renderIndex(opts: ConsoleIndexOptions): string {
-  const { config, statuses } = opts;
+/**
+ * Needs attention before READY; within each group, entries with a dedicated view
+ * first, and config order breaks the remaining ties.
+ *
+ * Sorting the greens to the top would be pleasant and backwards: this is a
+ * working surface, the entries that need something done to them are the reason
+ * anyone opens it, and on a 35-entry roster the ones that do not fit on the
+ * first screen would be precisely the ones worth reading.
+ */
+export function sortEntries(entries: Entry[]): Entry[] {
+  // Array.prototype.sort is stable, so config order survives inside a rank.
+  return [...entries].sort((a, b) => entryRank(a) - entryRank(b));
+}
+
+const GROUP_RANK: Record<GroupKey, number> = {
+  attention: 0,
+  ready: 2,
+  disabled: 4,
+};
+
+function entryRank(e: Entry): number {
+  if (!e.server.enabled) return GROUP_RANK.disabled;
+  return GROUP_RANK[groupOf(e)] + (e.view === "overview" ? 1 : 0);
+}
+
+/** The three groups the rows are drawn under, worst first. */
+const GROUPS: { key: GroupKey; label: string; note: string }[] = [
+  {
+    key: "attention",
+    label: "Needs attention",
+    note: "a secret does not resolve, or could not be checked",
+  },
+  {
+    key: "ready",
+    label: "Ready",
+    note: "every ${NAME} this entry references was observed to resolve",
+  },
+  {
+    key: "disabled",
+    label: "Disabled",
+    note: "declared and not mounted — no badge, because nothing is asked of it",
+  },
+];
+
+export function renderConnectors(opts: ConnectorsPageOptions): string {
+  const { config, statuses, roster } = opts;
   const bySlug = new Map(statuses.map((s) => [s.server.slug, s]));
 
   const sorted = sortEntries(
@@ -200,41 +290,57 @@ export function renderIndex(opts: ConsoleIndexOptions): string {
   const issues = sorted.filter((e) => e.badge === "ISSUE");
   const { project, guessed } = storeProject(config, opts.env);
   // Where this gateway lives, for the copy icon. Config first, then the origin
-  // the request arrived on — see ConsoleIndexOptions.requestOrigin.
+  // the request arrived on — see ConnectorsPageOptions.requestOrigin.
   const base = originFor(config, opts.requestOrigin);
-  // Once for the whole grid, not once per card: every icon is a question about
+  // Once for the whole roster, not once per row: every icon is a question about
   // the same principal, and `entitledServers` walks every server for each call.
   const entitled = entitledServers(opts.principal, config);
+  const editable = roster !== undefined;
+  const writable = roster?.writable === true;
+
+  const rows = GROUPS.map((group) => {
+    const members = sorted.filter((e) => groupOf(e) === group.key);
+    if (members.length === 0) return "";
+    return `  <tbody>
+    <tr class="conn-group"><td colspan="4"><span class="conn-group-l">${esc(group.label)}</span><span class="conn-group-n">${members.length}</span><span class="conn-group-note">${esc(group.note)}</span></td></tr>
+${members
+  .map((e) =>
+    serverRow(e, {
+      base,
+      playable: playgroundAccess(config, entitled, e.server.slug).ok,
+      source: roster?.sources.get(e.server.slug),
+      editable,
+      writable,
+    }),
+  )
+  .join("\n")}
+  </tbody>`;
+  })
+    .filter(Boolean)
+    .join("\n");
 
   const body = `
+${flashHtml(opts.flash)}
 <section class="intro">
-  <h1>Servers <span class="env-badge">${esc(config.gateway.env)}</span></h1>
-  <p class="lede">Every MCP server on this gateway: what it is scoped to, and whether the
-    secrets it needs are seeded. A <span class="chip chip-ok chip-badge">READY</span> entry
-    has every <code>\${NAME}</code> it references resolving — which is not a claim that the
-    upstream accepts the credential. An <span class="chip chip-bad chip-badge">ISSUE</span>
-    entry opens the exact path to fix.</p>
+  <h1>Connectors <span class="env-badge">${esc(config.gateway.env)}</span></h1>
+  <p class="lede">Every MCP server this gateway serves, what it is scoped to, and whether
+    its secrets are seeded. A badge claims <em>presence</em> and never that an upstream still
+    accepts a credential — open one for the detail, or Help for the rest.</p>
 </section>
 
-${summaryBar(readyCount, issues.length, statuses.length)}
+${summaryBar(readyCount, issues.length, statuses.length, roster)}
 
 ${banner(issues, statuses.length)}
+${editorNote(editable, writable)}
 
-<div class="card-grid">
-${
-  sorted.length
-    ? sorted
-        .map((e) =>
-          serverCard(
-            e,
-            base,
-            playgroundAccess(config, entitled, e.server.slug).ok,
-          ),
-        )
-        .join("\n")
-    : `<p class="empty">No servers are configured on this gateway.</p>`
-}
-</div>
+<table class="conn-table">
+  <thead><tr>
+    <th>Server</th><th>Scope</th><th>Secrets</th><th></th>
+  </tr></thead>
+${rows || `  <tbody><tr><td colspan="4" class="empty">No servers are configured on this gateway.</td></tr></tbody>`}
+</table>
+${removedSection(roster)}
+${addMenu(writable)}
 
 <section class="panel">
   <div class="panel-head">
@@ -245,7 +351,9 @@ ${
     <code>STRAD_TOKENS</code> every <code>/mcp</code> request is rejected and no amount of
     per-server <code>READY</code> above means anything. That one is a roster rather than a
     value: <a href="/tokens">the tokens console</a> shows which credentials are live, mints
-    one, and revokes one.</p>
+    one, and revokes one. A key marked <code>not set · optional</code> is absent and not
+    required: nothing on this deployment reads it unless the feature it belongs to is
+    turned on.</p>
   <div class="listing">
 ${opts.boot.map((o) => bootRow(o)).join("\n")}
   </div>
@@ -267,17 +375,18 @@ ${sorted
   .join("\n")}
 ${FIX_DIALOG_SCRIPT}
 ${COPY_SCRIPT}
-${INDEX_CSS}`;
+${ROSTER_CSS}`;
 
   return layout({
-    title: "Servers",
+    title: "Connectors",
+    wide: true,
     body,
     signedInAs: opts.signedInAs,
-    nav: "servers",
+    nav: "connectors",
     brandHref: "/",
     brandSub: "console",
     footNote: "status and guidance · never values",
-    helpTitle: "Console guide",
+    helpTitle: "Connectors guide",
     help: GUIDE,
   });
 }
@@ -345,12 +454,61 @@ function diagnosisNote(
 // The header: a count, and a claim that has to survive a store outage
 // ---------------------------------------------------------------------------
 
-function summaryBar(ready: number, issues: number, total: number): string {
+/**
+ * Three numbers, and — where there is a runtime holder — where the roster came
+ * from and when it last moved.
+ *
+ * The revision is on the same bar as the counts rather than in a line of its own
+ * because it is the same kind of fact: a small, current number describing the
+ * list below it.
+ */
+function summaryBar(
+  ready: number,
+  issues: number,
+  total: number,
+  roster: RosterState | undefined,
+): string {
+  const meta = roster
+    ? `<div class="conn-rev">runtime roster · revision ${esc(
+        String(roster.overlay.revision),
+      )}${roster.overlay.updatedBy ? ` · ${esc(roster.overlay.updatedBy)}` : ""}${
+        roster.overlay.updatedAt ? ` · ${esc(roster.overlay.updatedAt)}` : ""
+      }</div>`
+    : `<div class="conn-rev">roster from the checked-in config</div>`;
+
   return `<div class="browse-head">
   <div class="stat"><span class="stat-n">${total}</span><span class="stat-l">enabled server${total === 1 ? "" : "s"}</span></div>
   <div class="stat"><span class="stat-n stat-ready">${ready}</span><span class="stat-l">ready</span></div>
   <div class="stat"><span class="stat-n stat-missing">${issues}</span><span class="stat-l">issue${issues === 1 ? "" : "s"}</span></div>
+  ${meta}
 </div>`;
+}
+
+/**
+ * Which half of this page the deployment has, said once and near the top.
+ *
+ * Three states rather than two. An editable, writable roster says nothing — the
+ * controls on every row are the statement. A gateway with a store it cannot
+ * WRITE is the loud one: the rows look editable and a save has nowhere to go. A
+ * gateway with no store at all is neither broken nor editable, and the note is
+ * what keeps a reader from hunting for controls that were never going to be
+ * there.
+ */
+function editorNote(editable: boolean, writable: boolean): string {
+  if (writable) return "";
+  if (editable) {
+    return `<div class="flash flash-error">
+    <div>This gateway cannot write the roster.</div>
+    <ul class="ex-why"><li>It holds no admin parameter credential
+    (<code>SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON</code>), so a change here
+    would have nowhere to go. The roster below is what the deployment is
+    serving; editing it needs that credential on this component.</li></ul>
+  </div>`;
+  }
+  return `<p class="posture">This gateway sets no <code>gateway.configStore:</code>, so its
+    roster comes from the checked-in document and changes with a deploy. Everything below is
+    still live — the entries, their scope, and the secret status of each — there is just
+    nothing here to edit.</p>`;
 }
 
 /**
@@ -365,15 +523,15 @@ function summaryBar(ready: number, issues: number, total: number): string {
  *
  * FOUR-way, in fact, because of the empty roster. The core ships with zero
  * servers (src/config/schema.ts), so a fresh install's very first screen is this
- * one — and "Every server is READY" over an empty grid is an unearned green of
+ * one — and "Every server is READY" over an empty table is an unearned green of
  * exactly the kind this module refuses everywhere else. Nothing was checked
  * because there was nothing to check, and that is what it says.
  */
 function banner(issues: Entry[], enabled: number): string {
   if (enabled === 0) {
     return `<p class="posture">No servers are enabled on this gateway, so there is nothing
-      to seed and nothing to report. Add one to <code>servers:</code> in the config, and its
-      secrets appear here.</p>`;
+      to seed and nothing to report. Add one below or to <code>servers:</code> in the config,
+      and its secrets appear here.</p>`;
   }
 
   if (issues.length === 0) {
@@ -416,63 +574,215 @@ function banner(issues: Entry[], enabled: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// One entry
+// The roster editor's own sections
 // ---------------------------------------------------------------------------
 
 /**
- * The badge occupies the slot the slug used to.
+ * The slugs the checked-in config declares and the overlay subtracts.
  *
- * On the majority of entries the config declares no `title:`, so the heading IS
- * the slug and printing it again in the foot was pure duplication — the badge is
- * what deserves that space. Where a `title:` does differ from the slug, the slug
- * still renders beside the badge, because there it is information rather than an
- * echo.
+ * Without this the table iterates `config.servers`, which by definition no
+ * longer holds them — so a removed server is not shown as removed, it is shown
+ * as nothing at all, and the only clue that the file's entry is not serving is
+ * its absence. A standing instruction to subtract something should be visible to
+ * the person who has to reason about the file.
  */
-function serverCard(entry: Entry, base: string, playable: boolean): string {
-  const { server, status, view } = entry;
-  const title = server.title ?? server.slug;
-  const desc = server.description ?? VIEW_BLURB[view];
-  const href = serverConsolePath(server.slug);
+function removedSection(roster: RosterState | undefined): string {
+  if (!roster || roster.overlay.servers.removals.length === 0) return "";
+  const rows = roster.overlay.servers.removals
+    .map(
+      (slug) => `    <tr>
+      <td class="conn-slug"><span class="conn-name conn-name-off">${esc(slug)}</span>
+        <p class="conn-desc">Declared in the checked-in config, removed here.</p></td>
+      <td class="conn-scope"><span class="chip chip-off">removed</span></td>
+      <td></td>
+      <td>${
+        roster.writable
+          ? `<div class="conn-acts"><form method="post" action="${esc(connectorsPath(slug, "restore"))}">
+             <button class="btn-ghost" type="submit">Restore</button>
+           </form></div>`
+          : ""
+      }</td>
+    </tr>`,
+    )
+    .join("\n");
 
-  // EVERY title is a link, and it is the only thing in the head that is one: the
-  // playground and copy icons are controls of their own in the foot, so nothing
-  // interactive ends up nested inside this anchor.
-  return `  <div class="card server-card">
-    <div class="card-head">
-      <span class="card-title"><a class="card-title-link" href="${href}">${esc(title)}</a></span>
-      <span class="chip chip-${esc(server.kind)}">${esc(server.kind)}</span>
-      ${server.enabled ? "" : `<span class="chip chip-off">disabled</span>`}
-    </div>
-    <p class="card-desc">${esc(desc)}</p>
-    ${status ? `<p class="card-status">${esc(status.summary)}</p>` : ""}
-    <div class="card-foot">
-      <span class="card-badges">${badgeMarkup(entry)}${
-        title === server.slug
-          ? ""
-          : `<code class="card-slug">${esc(server.slug)}</code>`
-      }</span>
-      <span class="card-actions">${cardIcons(server, base, playable)}<a class="card-cta" href="${href}">${VIEW_CTA[view]}</a></span>
-    </div>
-  </div>`;
+  return `
+<section class="panel">
+  <div class="panel-head">
+    <h2>Removed</h2>
+    <span class="panel-note">${roster.overlay.servers.removals.length} subtracted from the file</span>
+  </div>
+  <p class="copy-note">These are declared in the checked-in config and subtracted here. The
+    removal stands until somebody deletes the entry from the file or restores it.</p>
+  <table class="conn-table">
+    <tbody>
+${rows}
+    </tbody>
+  </table>
+</section>`;
 }
 
-/** The card's call to action, named for what `/ui/<slug>` does for this view. */
+/** The three kinds a runtime write may create, each with what it can and cannot do. */
+function addMenu(writable: boolean): string {
+  if (!writable) return "";
+  return `
+<section class="panel">
+  <div class="panel-head">
+    <h2>Add a connector</h2>
+    <span class="panel-note">applied without a deploy</span>
+  </div>
+  <div class="card-grid card-grid-tight addmenu">
+${RUNTIME_CREATABLE_KINDS.map(
+  (kind) => `    <a class="card card-link" href="${esc(
+    `${connectorsPath("new")}?kind=${encodeURIComponent(kind)}`,
+  )}">
+      <div class="card-head"><span class="card-title">${esc(kind)}</span></div>
+      <p class="card-desc">${esc(kindBlurb(kind))}</p>
+      <span class="card-cta">Add →</span>
+    </a>`,
+).join("\n")}
+  </div>
+</section>`;
+}
+
+// ---------------------------------------------------------------------------
+// One entry
+// ---------------------------------------------------------------------------
+
+/** Everything about a row that is not the entry itself. */
+interface RowContext {
+  /** The origin the MCP URL is built from; empty when none is known. */
+  base: string;
+  /** `playgroundAccess(...).ok` for this console identity. */
+  playable: boolean;
+  /** Where this slug came from, when there is a runtime holder to ask. */
+  source: EntrySource | undefined;
+  /**
+   * Whether there is a roster in a store at all, i.e. whether
+   * `/connectors/<slug>` is a page rather than the "editor is off" 404. It
+   * gates the door; `writable` gates the controls, and the two come apart on a
+   * gateway that holds a store it cannot write.
+   */
+  editable: boolean;
+  /** Whether a change made here would actually go anywhere. */
+  writable: boolean;
+}
+
+/**
+ * One entry, as a row.
+ *
+ * A row rather than a card in a three-across grid: 35 cards are two and a half
+ * screens of prose you read in a zig-zag. A row puts the one thing that varies —
+ * the badge — in the same place on every line, and lets the kind and the roles
+ * line up into columns you can scan down instead of hunting across. The
+ * description and the status summary are clamped to one line each, so a row's
+ * height does not depend on how talkative its `description:` is.
+ *
+ * EVERY name is a link to `/ui/<slug>`, and it is the only link in the first
+ * cell: the playground and copy icons are controls of their own in the last one,
+ * so nothing interactive ends up nested inside this anchor.
+ */
+function serverRow(entry: Entry, ctx: RowContext): string {
+  const { server, status, view } = entry;
+  const title = server.title ?? server.slug;
+  const href = serverConsolePath(server.slug);
+  // AT MOST TWO SECONDARY LINES, and each has to earn its line. A `description:`
+  // is per-entry prose somebody wrote, so it always shows. The status summary
+  // shows on an ISSUE row, where it is the sentence that says what is wrong —
+  // and NOT on a READY one, where it restates the badge in more words on every
+  // row at once. The popout has it either way.
+  const desc = server.description ?? "";
+  const summary = status && entry.badge === "ISSUE" ? status.summary : "";
+
+  return `    <tr>
+      <td class="conn-slug">
+        <a class="conn-name" href="${href}">${esc(title)}</a>${
+          // Most entries declare no `title:`, so the heading IS the slug.
+          // Printing it again beside itself is noise on the majority of rows.
+          title === server.slug
+            ? ""
+            : `<code class="conn-alt">${esc(server.slug)}</code>`
+        }${sourceChip(ctx.source)}${
+          server.enabled ? "" : `<span class="chip chip-off">disabled</span>`
+        }
+${
+  desc
+    ? `
+        <p class="conn-desc" title="${esc(desc)}">${esc(desc)}</p>`
+    : ""
+}${
+    summary
+      ? `
+        <p class="conn-status" title="${esc(summary)}">${esc(summary)}</p>`
+      : ""
+  }
+      </td>
+      <td class="conn-scope">
+        <span class="chip chip-${esc(server.kind)}">${esc(server.kind)}</span>
+        <span class="conn-roles">${esc(server.entitlements.join(", ") || "no roles")}</span>
+      </td>
+      <td class="conn-badge">${badgeMarkup(entry)}</td>
+      <td>
+        <div class="conn-acts">${rowIcons(server, ctx.base, ctx.playable)}<a class="card-cta" href="${href}">${VIEW_CTA[view]}</a>${editControls(server, ctx)}</div>
+      </td>
+    </tr>`;
+}
+
+/**
+ * Where this entry is declared, which is the one fact only the runtime holder
+ * knows. Omitted entirely when there is no holder: on such a deployment every
+ * entry comes from the file, and a chip that says the same thing on every row is
+ * a column of noise.
+ */
+function sourceChip(source: EntrySource | undefined): string {
+  if (source === undefined) return "";
+  return source === "store"
+    ? `<span class="chip chip-ok" title="Added or edited through this console — stored in the runtime overlay, applied without a deploy">console</span>`
+    : `<span class="chip chip-plain" title="Declared in the checked-in config document">config file</span>`;
+}
+
+/**
+ * The entry's own page, and — where a write would land — the controls on it.
+ *
+ * THREE STATES, not two, because `editable` and `writable` come apart. A
+ * gateway with a store it cannot write still SERVES `/connectors/<slug>`:
+ * `handleEdit` gates on `editable` (src/ui/servers.ts), and that page is the
+ * only place a human sees an entry's full declaration — every field, not the
+ * handful the row has room for. So it keeps a read-only `View` door and loses
+ * the controls. A gateway with no store at all answers that route with the
+ * "editor is off" 404, so offering the door would send a reader from a working
+ * page to a dead one; the roster is the whole of what it has.
+ *
+ * Nothing is drawn disabled. The page has already said which of the three this
+ * deployment is, once, at the top (see editorNote) — repeating that answer 35
+ * times down the roster is not a clearer way to say it.
+ *
+ * Remove is destructive and gets the danger styling rather than a confirm step,
+ * because the act is recoverable: the removal is a stored subtraction over the
+ * checked-in document, and `Restore` on the row below puts a file entry back.
+ */
+function editControls(server: ServerConfig, ctx: RowContext): string {
+  const slug = server.slug;
+  if (!ctx.writable) {
+    return ctx.editable
+      ? `<a class="btn-ghost" href="${esc(connectorsPath(slug))}">View</a>`
+      : "";
+  }
+  return `<a class="btn-ghost" href="${esc(connectorsPath(slug))}">Edit</a>
+          <form method="post" action="${esc(connectorsPath(slug, "toggle"))}">
+            <button class="btn-ghost" type="submit">${server.enabled ? "Disable" : "Enable"}</button>
+          </form>
+          <form method="post" action="${esc(connectorsPath(slug, "remove"))}">
+            <button class="btn-ghost btn-danger" type="submit">Remove</button>
+          </form>`;
+}
+
+/** The row's call to action, named for what `/ui/<slug>` does for this view. */
 const VIEW_CTA: Record<ConsoleView, string> = {
   connector: "Manage →",
   secrets: "Manage →",
   gcs: "Browse →",
   overview: "Details →",
-};
-
-/** The card's description when the config declares none. */
-const VIEW_BLURB: Record<ConsoleView, string> = {
-  connector:
-    "Authorize the account this server acts as, and see where its credential is stored.",
-  secrets:
-    "Add, rotate, reveal and delete the non-secret and secret parameters this server manages.",
-  gcs: "Browse the object store this server is scoped to.",
-  overview:
-    "No dedicated view for this server kind yet. Its page is a read-only overview.",
 };
 
 /**
@@ -508,7 +818,7 @@ const VIEW_BLURB: Record<ConsoleView, string> = {
  * a relative path — `"/mcp?servers=gcs"` on the clipboard is a working link for
  * nobody.
  */
-function cardIcons(
+function rowIcons(
   server: ServerConfig,
   base: string,
   playable: boolean,
@@ -1059,16 +1369,22 @@ function bootRow(entry: {
   const optionalAbsent = state === "missing" && !entry.required;
   const chip = optionalAbsent ? "chip-plain" : SECRET_CHIP_CLASS[state];
   const label = optionalAbsent ? "not set · optional" : SECRET_LABEL[state];
-  const text = optionalAbsent
-    ? "Not set, and not required. Nothing on this deployment reads it unless the feature it belongs to is turned on."
-    : detail;
+
+  // THE PROSE IS FOR A ROW THAT NEEDS IT, and two kinds of row do not.
+  //
+  // A `plumbed` key's sentence restates its chip in two sentences. An absent
+  // OPTIONAL key's says the same thing as every other absent optional key, and
+  // a deployment with no console has six of them in a row — so that one is said
+  // ONCE, above the listing, rather than six times inside it. Both are stated
+  // where they belong; neither is dropped.
+  const detailed = state !== "present" && !optionalAbsent;
 
   return `    <div class="row secret-row">
       <span class="row-name">${esc(requirement.name)}</span>
       <span class="chip ${chip} chip-route">${esc(label)}</span>
       ${sourceBadge(entry.observation.source)}
       ${entry.required ? `<span class="chip chip-warnish">required</span>` : ""}
-      <span class="sec-detail sec-detail-inline">${esc(text)}</span>
+      ${detailed ? `<span class="sec-detail sec-detail-inline">${esc(detail)}</span>` : ""}
     </div>`;
 }
 
@@ -1183,12 +1499,45 @@ const GUIDE = `
     </div>
   </details>
   <details class="acc">
-    <summary>How the entries are ordered</summary>
+    <summary>How the rows are grouped and ordered</summary>
     <div class="acc-body">
-      <p>READY first, then ISSUE. Within each group, servers with a dedicated console view come
-        before servers that only have the overview, and config order breaks the remaining ties. Disabled servers sort
-        last and carry no badge — strad does not mount them, so they need no secrets, and a
-        green would be a claim about a server that answers nothing.</p>
+      <p><b>Needs attention</b> first, then <b>Ready</b>, then <b>Disabled</b>. This is a
+        working surface: the entries something has to be done about are why anyone opens it,
+        and on a 35-entry roster sorting the greens to the top put exactly the wrong rows
+        below the fold.</p>
+      <p>Within each group, servers with a dedicated console view come before servers that
+        only have the overview, and config order breaks the remaining ties. A disabled server
+        carries no badge — strad does not mount it, so it needs no secrets, and a green would
+        be a claim about a server that answers nothing.</p>
+    </div>
+  </details>
+  <details class="acc">
+    <summary>Editing the roster, and what a change reaches</summary>
+    <div class="acc-body">
+      <p>Where this gateway sets <code>gateway.configStore:</code> and holds the admin
+        credential to write it, every row carries <b>Edit</b>, <b>Disable</b> and
+        <b>Remove</b>, and the menu below the table adds one. A change is stored in the
+        parameter store and applied to the running process — no deploy, no restart.</p>
+      <ul>
+        <li><b>remote-http</b> and <b>local-tunnel</b> — addable in full. Nothing of strad's
+          runs for them, so an entry saved here is routable on the next request.</li>
+        <li><b>supplementary-image</b> — a new slug pointed at a mount this deployment is
+          <em>already running</em>. Its credentials are baked onto the container by the
+          deploy, so an entry added here reuses what the mount already has. That is how one
+          upstream becomes a read-only and a read-write slug.</li>
+        <li><b>builtin</b> — never. The module is imported out of the running image, so it
+          has to ship with a build.</li>
+      </ul>
+      <p>The checked-in config stays authoritative for everything nobody has touched. This
+        page stores a <em>diff</em> over it: entries added, entries overridden, entries
+        removed. Remove a console entry and the file's version comes back; remove a file
+        entry and the removal is remembered — and listed under <b>Removed</b> — until
+        somebody re-adds it.</p>
+      <p>No secret is typed into the entry form. Anything credential-shaped is a
+        <code>\${NAME}</code> ref, created on the server's own secrets page and resolved from
+        the store on every call, which is what lets it rotate without a deploy. A save is
+        validated against the whole merged config, so a refusal can name a rule about a
+        <em>different</em> entry; nothing is written until it passes.</p>
     </div>
   </details>
   <details class="acc">
@@ -1275,35 +1624,73 @@ const GUIDE = `
  * Page-local styles.
  *
  * Scoped here rather than added to the shared theme because every class below is
- * for this index and nothing else renders one. The tokens (<code>--g*</code>,
+ * for this page and nothing else renders one — with the exception of
+ * `.conn-table`, which the entry form's sibling markup shares and which
+ * therefore lives in the theme. The tokens (<code>--g*</code>,
  * <code>--accent</code>) come from the shared theme, so the page cannot drift
  * from the rest of the console.
  */
-const INDEX_CSS = `<style>
+const ROSTER_CSS = `<style>
 .chip-bad{color:#e8776b;border-color:color-mix(in srgb,#e8776b 45%,var(--g5))}
 .chip-ok{color:var(--text-accent);border-color:color-mix(in srgb,var(--accent) 45%,var(--g5))}
 .stat-ready{color:var(--text-accent)}
 .stat-missing{color:#e8776b}
-/* The entry badge sits where the duplicated slug used to. Loud on purpose: on a
-   27-entry grid it is the one thing that varies from card to card. */
+/* The revision sits at the far end of the same bar as the counts. */
+.conn-rev{margin-left:auto;font-family:var(--font-mono);font-size:.72rem;color:var(--g4);
+  text-align:right}
+/* The lede is prose and keeps a prose measure even on the wide frame. */
+.intro .lede{max-width:46rem}
+/* Three cards, not five columns' worth of room for three cards. */
+.addmenu{grid-template-columns:repeat(auto-fill,minmax(19rem,1fr))}
+/* The entry badge. Loud on purpose: on a 35-row roster it is the one thing that
+   varies from line to line. */
 .chip-badge{font-weight:600;letter-spacing:.08em}
 .chip-button{cursor:pointer;background:none;font-family:var(--font-mono);
   display:inline-flex;align-items:center;gap:.3rem}
 .chip-button:hover{border-color:#e8776b;background:color-mix(in srgb,#e8776b 12%,transparent)}
 .chip-button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .chip-caret{font-size:.6rem;opacity:.75}
-.server-card{gap:.55rem}
-.card-title-link{color:inherit;text-decoration:none}
-.card-title-link:hover{color:var(--text-accent)}
-.card-status{color:var(--g3);font-size:.78rem;margin:0;line-height:1.5}
-/* Two more controls landed in the foot, so it wraps rather than squeezing a
-   long slug into two lines beside them. */
-.server-card .card-foot{flex-wrap:wrap;gap:.5rem}
-.card-badges{display:flex;align-items:center;gap:.4rem}
-.card-slug{font-size:.72rem;color:var(--g4);white-space:nowrap}
-/* The two icons and the CTA share the foot's right-hand side. Quiet until
-   hovered: on a 27-card grid two loud glyphs per card is a wall of teal. */
-.card-actions{display:flex;align-items:center;gap:.5rem}
+
+/* One entry, as a row. The first cell is the only one that grows; everything
+   else is a short fact that wants to line up down the column. */
+.conn-table tr:hover td{background:color-mix(in srgb,var(--accent) 5%,transparent)}
+.conn-table td{vertical-align:top}
+.conn-table td.conn-slug{width:42%;font-family:var(--font-sans);font-size:.86rem}
+.conn-name{color:var(--white);font-weight:600;font-size:.92rem}
+.conn-name:hover{color:var(--text-accent)}
+.conn-name-off{color:var(--g3)}
+.conn-alt{margin-left:.45rem;font-size:.74rem;color:var(--g4)}
+.conn-slug .chip{margin-left:.45rem;vertical-align:2px}
+/* Both clamped to one line: a row's height must not depend on how talkative a
+   description: is, or the column alignment the table buys is spent again. */
+.conn-desc,.conn-status{margin:.2rem 0 0;max-width:30rem;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.conn-desc{color:var(--g2);font-size:.8rem;font-family:var(--font-sans)}
+.conn-status{color:var(--g3);font-size:.76rem;font-family:var(--font-sans)}
+.conn-badge{white-space:nowrap}
+/* Kind and roles are the same question — what this entry is scoped to — so they
+   are one cell stacked rather than two columns, which is 7rem of table width
+   back for the controls that needed it. */
+.conn-scope{white-space:nowrap;line-height:1.35}
+.conn-roles{display:block;margin-top:.25rem;color:var(--g4);font-size:.74rem;
+  font-family:var(--font-mono)}
+.conn-table tbody tr:not(.conn-group) td:last-child{text-align:right}
+/* The group headings. A table row rather than a heading between tables, so the
+   columns below them stay one grid. */
+.conn-group td{background:var(--g6);border-top:1px solid var(--g5);padding:.45rem .8rem}
+.conn-group-l{font-size:.7rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--g2)}
+.conn-group-n{margin-left:.5rem;font-family:var(--font-mono);font-size:.72rem;color:var(--g4)}
+.conn-group-note{margin-left:.7rem;font-size:.74rem;color:var(--g4)}
+/* The icons, the CTA and the editor controls share the last cell. Quiet until
+   hovered: on a 35-row roster two loud glyphs per line is a wall of teal. */
+/* One line, always. Wrapping the controls onto three rows per entry costs more
+   height than the whole rest of the row; below 46rem the media query turns the
+   table into a stack and lets them wrap again. */
+.conn-acts{display:flex;align-items:center;gap:.35rem;justify-content:flex-end;
+  flex-wrap:nowrap;white-space:nowrap}
+.conn-acts .btn-ghost{padding:.25rem .45rem;font-size:.72rem}
+.conn-acts form{display:inline}
 .card-icon{display:inline-flex;align-items:center;justify-content:center;
   width:1.7rem;height:1.7rem;padding:0;border:1px solid var(--g5);border-radius:.35rem;
   background:none;color:var(--g3);cursor:pointer;text-decoration:none}
@@ -1311,6 +1698,35 @@ const INDEX_CSS = `<style>
 .card-icon:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .card-icon.is-copied{color:var(--text-accent);
   border-color:color-mix(in srgb,var(--accent) 70%,var(--g5))}
+.conn-acts .card-cta{white-space:nowrap;margin:0 .1rem}
+.conn-acts .btn-ghost{display:inline-block;text-decoration:none;line-height:1.4}
+/* Quiet until you reach for it. Thirteen red buttons down a roster point the
+   eye at the one control nobody came here to press. */
+.btn-danger:hover{border-color:#e8776b;color:#e8776b;
+  background:color-mix(in srgb,#e8776b 12%,transparent)}
+/* Below this the table stops being a grid and each row becomes a stack — five
+   columns of short facts do not survive a 34rem viewport. */
+@media (max-width:46rem){
+  /* Every part of the table stops being a table: a display:table element sizes
+     itself from its cells' min-content, so leaving the table itself alone makes
+     the PAGE scroll sideways however the rows are laid out. */
+  .conn-table,.conn-table tbody{display:block}
+  .conn-table thead{display:none}
+  .conn-table tr{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;
+    padding:.55rem .3rem;border-top:1px solid var(--g6)}
+  .conn-table td{display:block;border:none;padding:.1rem .5rem}
+  .conn-table td.conn-slug{flex:1 1 100%;width:auto}
+  /* The one-line clamp is a column-alignment device and there are no columns
+     here. Wrapping is what a phone has room for. */
+  .conn-desc,.conn-status{white-space:normal;max-width:none;overflow:visible}
+  .conn-scope,.conn-roles{white-space:normal}
+  .conn-roles{display:inline;margin:0 0 0 .5rem}
+  .conn-acts{justify-content:flex-start;flex-wrap:wrap;white-space:normal}
+  .conn-group td{flex:1 1 100%}
+  .conn-group-note{display:none}
+  .conn-rev{margin:.4rem 0 0;text-align:left;flex:1 1 100%}
+}
+
 .fixdlg{border:1px solid var(--g5);border-radius:.7rem;background:var(--g7);color:var(--g1);
   max-width:46rem;width:calc(100% - 2rem);padding:0}
 .fixdlg::backdrop{background:rgba(0,0,0,.6)}

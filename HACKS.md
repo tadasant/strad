@@ -77,7 +77,7 @@ different product; a classic client is Cloud Console only). Provide
 `auth.google.enabled: true`, and **verify a real sign-in in prod**. Only then set
 `auth.consoleDevBypass.enabled: false` (or unset `ALLOW_DEV_AUTH`), and only then
 delete `src/auth/dev.ts` and its call sites — `src/ui/console-auth.ts` imports
-from it, so deleting it earlier leaves `/ui` with no fallback authenticator.
+from it, so deleting it earlier leaves the console with no fallback authenticator.
 Staging depends on the bypass too. Upstream: tadasant/strad#6.
 
 ---
@@ -936,7 +936,7 @@ plus `CORE_BOOT_ENV_KEYS` — and of the boot keys counts as missing only the tw
 deployment cannot work without. So a namespace can be missing most of what a real
 config needs and still deploy green: the optional boot keys are reported and never
 counted (`GOOGLE_CLIENT_ID` among them, which with `auth.google.enabled: true` is
-a front-door outage on `/ui`, not a dormant one), and a `supplementary-image`
+a front-door outage on the whole console, not a dormant one), and a `supplementary-image`
 server's `env:` names are outside the check entirely. `scripts/check-store.ts`
 (`npm run store:check -- --config <path>`) is the pre-flip counterpart: it counts
 every name the deployment reads from the store, names the ones that are absent,
@@ -1023,7 +1023,7 @@ job and the `config:check` script. Nothing at runtime depends on any of it.
 
 ## 29. The console's secret badges prove presence, not that a credential works
 
-**What.** `/ui` lists every configured MCP server and whether the secrets it
+**What.** `/connectors` lists every configured MCP server and whether the secrets it
 requires resolve, and `GET /api/secrets/readiness` returns the same derivation as
 JSON. Neither establishes that a credential is still accepted — strad makes no
 upstream call to check. So the good badge is `READY` ("everything it needs is
@@ -1095,8 +1095,8 @@ builds the real `SyntaxError` and asserts the value is absent from the rendered
 detail, and asserts the same of the deadline's own exit.
 
 **Undo.** Delete `src/ui/secret-status.ts`, `src/http/readiness.ts`,
-`test/ui.secret-status.test.ts`, `test/ui.console-index.test.ts`,
-`test/readiness.test.ts`, the badge/popout half of `src/ui/index-page.ts`, the
+`test/ui.secret-status.test.ts`, `test/ui.connectors-roster.test.ts`,
+`test/readiness.test.ts`, the badge/popout half of `src/ui/roster-page.ts`, the
 `/api/secrets/readiness` route in `src/http/app.ts`, the `/secrets` redirect in
 `src/ui/index.ts`, and the `secretProvider` option threaded through
 `src/http/app.ts` and `src/index.ts`. Nothing else reads any of it.
@@ -1358,7 +1358,7 @@ blocks on it.
 
 ## 35. The presence probe asserts about the process, and the process can lie by being old
 
-**What.** `/ui` and `/api/secrets/readiness` now make a POSITIVE claim about a
+**What.** `/connectors` and `/api/secrets/readiness` now make a POSITIVE claim about a
 secret that lives on a component core is not: `POST /_strad/presence` asks each
 bundle what it holds, and the bundle answers with one of five words — `absent`,
 `empty`, `unexpanded`, `placeholder`, `present` — and nothing else. That is what
@@ -1388,7 +1388,7 @@ spec rather than the process.
 
 **Why it is not an oracle.** The key roster core sends is derived from the config
 core is running, plus whatever the component reports under `STRAD_PARAM_KEYS`.
-There is no path from a request parameter on `/ui` or `/api/secrets/readiness` to
+There is no path from a request parameter on `/connectors` or `/api/secrets/readiness` to
 a probed name, so no caller can ask strad whether a name of its choosing exists.
 The defence is structural, not a filter — which matters, because prod's `/mcp`
 credential structurally cannot read a value and prod's console credential is
@@ -1424,7 +1424,7 @@ exactly as it does today, with a sentence naming the pin bump as the reason.
 **ON A `params: true` SERVER THE GAP IS TOTAL, NOT PARTIAL.** Such a server may
 declare no `${NAME}` references at all, and then a component that cannot answer
 leaves its entry with ZERO requirement rows — not a row reading `unverified`, but
-no rows. That is the state `/ui` explains least well by construction, and it
+no rows. That is the state `/connectors` explains least well by construction, and it
 produced a DEAD CONTROL in prod (#259, on `craigslist`): `badgeMarkup()` rendered
 an `ISSUE` button and the dialog list, filtered on `requirements.length > 0`,
 emitted no `<dialog>` for it, so `FIX_DIALOG_SCRIPT` found no element and
@@ -1892,11 +1892,11 @@ than the problem justifies.
 ## 42. The installed console's sign-in leaves the app window, and iOS is untested
 
 **What.** The console is installable (`display: standalone`, scope `/`). Open the
-installed app on an expired session and `requireConsoleUi` answers `/ui` with a
+installed app on an expired session and `requireConsoleUi` answers `/connectors` with a
 302 to `/console/login`, which redirects on to `accounts.google.com`. That host
 is outside the app's scope, so the browser takes the navigation out of the app
 window and into a tab or an in-app browser; the trip returns through
-`/console/oauth/callback` and lands back on `/ui`.
+`/console/oauth/callback` and lands back on `/connectors`.
 
 **Why it matters.** It is the one user-visible flow installing actually changes,
 and it depends on the standalone window and the browser sharing a cookie jar.
@@ -3619,8 +3619,8 @@ removes the thing that used to guarantee somebody dealt with it — a red deploy
 hard to ignore, and a warning in a run log is not.
 
 The state is visible in four places: `/healthz` (`servers[].state` and a top-level
-`unconfigured` list), the console index (chip `awaiting credential`, counted as
-actionable), `/api/secrets/readiness`, and one `strad.tool_surface_unconfigured`
+`unconfigured` list), the connectors roster (chip `awaiting credential`, counted
+as actionable), `/api/secrets/readiness`, and one `strad.tool_surface_unconfigured`
 log line per boot and per state change. What none of them do is ESCALATE. A slug
 waiting a week looks exactly like a slug waiting ten minutes, and no alert fires
 either way — deliberately, because the same event at ERROR severity would page a
@@ -3965,7 +3965,7 @@ role next to the other principals on that page.
 
 ---
 
-## 77. The console index still describes a multi-store slug by its FIRST store
+## 77. The console roster still describes a multi-store slug by its FIRST store
 
 **✅ RESOLVED.** The roster asks which store's namespaces COVER a path instead of
 reading a project off the config: `storeProjectForPath()` in
@@ -3983,7 +3983,7 @@ deploy reads out of its own `GCP_PROJECT_ID`. That route names no project at all
 #86, and not this entry.
 
 **What.** `consoleStores:` puts N parameter stores on one `/ui/<slug>` page. The
-console INDEX at `/ui` did not change with it: it still renders one card per
+console ROSTER did not change with it: it still renders one row per
 secrets slug, and `storeProject()` in `src/ui/secret-status.ts` answers "which
 GCP project holds the parameter store" with a single id. The order is: the
 RESOLVER's own `STRAD_PARAMS_PROJECT_ID` if this process holds one, else the

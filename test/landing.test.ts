@@ -9,19 +9,21 @@ import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
 import { NAV_DESTINATIONS } from "../src/ui/nav.ts";
 
 /**
- * The front door at `/`.
+ * The front door at `/` — a splash carrying the endpoint and the doors.
  *
  * The first thing to hold is the gate: strad requires identity before exposing
- * anything, and an index of what this gateway fronts is something. `/` is behind
- * the SAME `requireConsoleUi` as `/ui` and `/console` — never a softer door — and
- * the first test here is that an anonymous request gets a sign-in wall and no
- * content, not a 200.
+ * anything, and even the count of what this gateway fronts is something. `/` is
+ * behind the SAME `requireConsoleUi` as `/connectors` and `/console` — never a
+ * softer door — and the first test here is that an anonymous request gets a
+ * sign-in wall and no content, not a 200.
  *
  * The leak assertions are defence in depth behind that gate, and they are what
- * would have to be revisited before this page could ever be opened up. Each is
- * written against what the renderer could actually emit, not against a bare word
- * that also appears in the inlined stylesheet — a loose toContain() on this page
- * passes for the wrong reason more often than it catches anything.
+ * would have to be revisited before this page could ever be opened up. They got
+ * STRONGER when the per-server directory came off this page: there is no slug on
+ * it now, and therefore no title, description or browser-view hint either. Each
+ * is written against what the renderer could actually emit, not against a bare
+ * word that also appears in the inlined stylesheet — a loose toContain() on this
+ * page passes for the wrong reason more often than it catches anything.
  */
 
 const CONFIG = parseConfig(`
@@ -166,12 +168,12 @@ describe("GET / SSO gate", () => {
     expect(res.status).toBe(401);
   });
 
-  it("is the SAME gate as /ui — neither is a softer door", async () => {
-    const [root, ui] = await Promise.all([
+  it("is the SAME gate as /connectors — neither is a softer door", async () => {
+    const [root, roster] = await Promise.all([
       fetch(`${baseUrl}/`, { redirect: "manual" }),
-      fetch(`${baseUrl}/ui`, { redirect: "manual" }),
+      fetch(`${baseUrl}/connectors`, { redirect: "manual" }),
     ]);
-    expect(root.status).toBe(ui.status);
+    expect(root.status).toBe(roster.status);
   });
 
   it("accepts the session cookie the /ui sign-in flow sets", async () => {
@@ -190,7 +192,7 @@ describe("GET / SSO gate", () => {
       redirect: "manual",
     });
     expect(res.status).toBe(200);
-    expect(await res.text()).toContain("deepwiki");
+    expect(await res.text()).toContain("<h2>Endpoint</h2>");
   });
 });
 
@@ -212,58 +214,55 @@ describe("GET /", () => {
     expect(html).toContain("<title>test gateway · strad</title>");
   });
 
-  it("lists every ENABLED server slug", () => {
-    for (const slug of ["gcs", "echo", "deepwiki"]) {
-      expect(html).toContain(slug);
+  it("names NO server at all — the directory is on /connectors now", () => {
+    // The page carried a tile per slug, which was the third rendering of the
+    // same list and the reason the front page ran to three screens. Every one of
+    // those strings is now absent, which is both the point of the change and a
+    // strictly narrower disclosure than the page made before.
+    for (const slug of ["gcs", "echo", "deepwiki", "retired"]) {
+      expect(html, slug).not.toContain(`servers=${slug}`);
+      expect(html, slug).not.toContain(`/ui/${slug}`);
     }
+    expect(html).not.toContain("Object store");
+    expect(html).not.toContain("Screenshots and uploads.");
   });
 
-  it("offers a tile for every destination the shared nav bar names", () => {
-    // The bar is chrome; these tiles are a sentence each about what the page is
+  it("counts the ENABLED servers, and only those", () => {
+    // The one number it does print. `Registry.build` skips a disabled server, so
+    // it is absent from /healthz too, and counting it here would be the single
+    // net-new fact on the page.
+    expect(html).toContain("One MCP endpoint in front of 3 servers.");
+  });
+
+  it("offers a door for every destination the shared nav bar names", () => {
+    // The bar is chrome; these doors are a sentence each about what the page is
     // for, so they are written separately. This is what keeps a destination
     // added to src/ui/nav.ts from silently going missing from the front door.
     for (const dest of NAV_DESTINATIONS) {
-      // `gateway` is this page. Every other destination is a tile on it.
+      // `gateway` is this page. Every other destination is a door on it.
       if (dest.key === "gateway") continue;
-      expect(html, `no tile for ${dest.href}`).toContain(
-        `<a class="card card-link" href="${dest.href}">`,
+      expect(html, `no door for ${dest.href}`).toContain(
+        `<a class="card card-link card-door" href="${dest.href}">`,
       );
     }
   });
 
-  it("shows a title and description when the config gives one", () => {
-    expect(html).toContain("Object store");
-    expect(html).toContain("Screenshots and uploads.");
-  });
-
-  it("gives a copyable per-server connect URL built from publicUrl", () => {
-    expect(html).toContain(
-      'data-url="https://staging.strad.example.com/mcp?servers=echo"',
-    );
+  it("gives a copyable endpoint URL built from publicUrl", () => {
     expect(html).toContain(
       'value="https://staging.strad.example.com/mcp" aria-label=',
     );
-  });
-
-  it("links the browser view only for a server that has one", () => {
-    // gcs resolves to a GCS view; echo has no viewer and must not pretend to.
-    expect(html).toContain('href="/ui/gcs"');
-    expect(html).not.toContain('href="/ui/echo"');
+    expect(html).toContain(
+      'value="https://staging.strad.example.com/mcp?servers=&lt;slug&gt;"',
+    );
   });
 
   it("links the consoles, so the page does its actual job", () => {
-    expect(html).toContain('href="/ui"');
+    expect(html).toContain('href="/connectors"');
     expect(html).toContain('href="/console"');
     expect(html).toContain('href="/healthz"');
-  });
-
-  it("omits DISABLED servers entirely, since /healthz never lists them", () => {
-    // The page's whole claim to being publishable is that it discloses no set
-    // that was private. Registry.build skips disabled servers, so they are
-    // absent from /healthz — rendering them here would be net-new disclosure,
-    // plus a connect URL the gateway would reject.
-    expect(html).not.toContain("retired");
-    expect(html).toContain('<span class="panel-note">3 enabled</span>');
+    // The two URLs the roster used to live at are redirects, not destinations.
+    expect(html).not.toContain('href="/ui"');
+    expect(html).not.toContain('href="/secrets"');
   });
 
   // --- the part that keeps it publishable ---------------------------------
@@ -278,7 +277,18 @@ describe("GET /", () => {
   it("leaks NO upstream url, header, image, or env map", () => {
     // A remote-http server's url is how you'd bypass the gateway entirely.
     expect(html).not.toContain("mcp.deepwiki.example.com");
-    expect(html).not.toContain("Authorization");
+    // The HEADER NAME on its own is not the assertion any more: the endpoint
+    // panel tells a human, in prose, that the client sends its own
+    // `Authorization: Bearer …`, which is advice rather than disclosure. What
+    // must never appear is the header map this config declares — the name
+    // spliced to a value, or the reference it is written as.
+    expect(html).not.toContain("Bearer ${DEEPWIKI_TOKEN}");
+    expect(html).not.toContain("DEEPWIKI_TOKEN");
+    // The page says "Bearer token required" and "Authorization: Bearer …". A
+    // `Bearer` followed by a ${ref} or a value is what a rendered `headers:` map
+    // would look like, and neither belongs here.
+    expect(html).not.toMatch(/Bearer \$\{/);
+    expect(html).not.toMatch(/Bearer [A-Za-z0-9_-]{6,}/);
     // Every env key AND value of the gcs server.
     for (const s of [
       "demo-bucket",
@@ -307,14 +317,31 @@ describe("GET /", () => {
     expect(html).not.toContain("delete_file");
   });
 
-  it("ESCAPES config-supplied strings, which are the whole input surface", () => {
-    // Nothing here is attacker-controlled today, but every string on this page
-    // comes from free-form YAML and the page is public. This is the guard
-    // against a future refactor dropping an esc().
+  it("ESCAPES the config-supplied strings it still prints", async () => {
+    // The hostile `title:` and `description:` belong to a SERVER and this page
+    // no longer prints either, so the guard has moved to what it does print:
+    // `gateway.name` and `gateway.env`, which are free-form YAML too.
     expect(html).not.toContain("<script>alert");
     expect(html).not.toContain('" onmouseover="');
-    expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
-    expect(html).toContain("&amp; &quot;quoted&quot;");
+    expect(html).not.toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+
+    const hostile = parseConfig(`
+version: 1
+gateway:
+  name: '<script>alert(1)</script>'
+  env: '& "quoted" </span>'
+auth:
+  staticTokens: { enabled: true }
+  consoleDevBypass: { enabled: true, roles: [admin] }
+roles: { admin: { servers: ["*"] } }
+servers: []
+`);
+    const { url, close } = await boot(hostile);
+    const body = await (await fetch(url, { headers: AUTH })).text();
+    expect(body).not.toContain("<script>alert(1)</script>");
+    expect(body).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(body).toContain("&amp; &quot;quoted&quot;");
+    close();
   });
 });
 
@@ -337,14 +364,14 @@ servers:
     const body = await (await fetch(url, { headers: AUTH })).text();
     // The host header the request actually arrived on.
     const origin = url.replace(/\/$/, "");
-    expect(body).toContain(`data-url="${origin}/mcp?servers=echo"`);
+    expect(body).toContain(`value="${origin}/mcp" aria-label=`);
     expect(body).not.toContain('value="/mcp"');
     close();
   });
 });
 
 describe("GET / with no enabled servers", () => {
-  it("renders an empty state rather than an empty grid", async () => {
+  it("counts zero rather than claiming a gateway with something behind it", async () => {
     const cfg = parseConfig(`
 version: 1
 gateway: { name: strad, env: test }
@@ -361,8 +388,7 @@ servers:
 `);
     const { url, close } = await boot(cfg);
     const body = await (await fetch(url, { headers: AUTH })).text();
-    expect(body).toContain("No servers are enabled on this gateway.");
-    expect(body).toContain('<span class="panel-note">0 enabled</span>');
+    expect(body).toContain("One MCP endpoint in front of 0 servers.");
     expect(body).not.toContain("off-server");
     close();
   });

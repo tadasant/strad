@@ -80,8 +80,8 @@ export interface ConsoleDenial {
  * They are opposite diagnoses with opposite fixes, and answering both with one
  * body costs real time: `invalid_bootstrap_token` means the door is there and
  * the key is wrong, `console_unavailable` means there is no door on this
- * deployment at all. Both surfaces — the `/console` JSON and the `/ui` sign-in
- * wall — resolve it here so they cannot drift into disagreeing.
+ * deployment at all. Both surfaces — the `/console` JSON and the console's
+ * sign-in wall — resolve it here so they cannot drift into disagreeing.
  *
  * **The disclosure this makes, deliberately.** Naming the first case tells an
  * unauthenticated caller that a dev bypass is live here. That is acceptable,

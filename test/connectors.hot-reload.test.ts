@@ -241,6 +241,16 @@ describe("adding a connector through the console", () => {
     const html = await res.text();
     expect(html).toContain("live on this gateway now");
 
+    // THE RESPONSE TO THE WRITE ITSELF, not a later GET. A roster write applies
+    // by REBUILDING the app, and this POST is still running inside the closure
+    // of the app it replaced — so the page it re-renders has to read the LIVE
+    // document rather than the config its own app was built with. Asserting
+    // only the flash passes while the table underneath it still shows the
+    // pre-write roster: "added saved, it is live on this gateway now" over a
+    // table with no `added` row in it.
+    expect(html).toContain("Added from the console");
+    expect(html).toContain('href="/ui/added"');
+
     // The process never restarted, and this is the same listening socket.
     const client = await connect("added");
     const tools = await client.listTools();
@@ -480,7 +490,7 @@ describe("the gate", () => {
 });
 
 describe("the editor is absent when the deployment did not ask for it", () => {
-  it("404s with a reason rather than a bare Express 404", async () => {
+  it("serves the roster and says the editor is off, rather than 404ing", async () => {
     const plain = createApp({
       config: gatewayConfig,
       registry: await Registry.build({
@@ -496,12 +506,27 @@ describe("the editor is absent when the deployment did not ask for it", () => {
     const server = createServer(plain);
     const base = await listen(server);
     try {
+      // The ROSTER does not depend on a config store: what each server is
+      // scoped to and whether its secrets resolve are questions about the
+      // deployment, not about the overlay. Only the editor needs the store, and
+      // the page says so in place of the controls.
       const res = await fetch(`${base}/connectors`, {
         headers: { authorization: `Bearer ${BOOTSTRAP}` },
         redirect: "manual",
       });
-      // Not mounted at all: no runtimeConfig was passed.
-      expect(res.status).toBe(404);
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain("sets no <code>gateway.configStore:</code>");
+      expect(html).not.toContain('action="/connectors/');
+
+      // The per-entry form is the half that IS absent, and it answers with
+      // strad's own 404 rather than Express's bare one.
+      const form = await fetch(`${base}/connectors/anything`, {
+        headers: { authorization: `Bearer ${BOOTSTRAP}` },
+        redirect: "manual",
+      });
+      expect(form.status).toBe(404);
+      expect(await form.text()).toContain("The roster editor is not enabled");
     } finally {
       server.close();
     }

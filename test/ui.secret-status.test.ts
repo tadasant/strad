@@ -7,7 +7,7 @@ import { resolverFromEnv } from "../src/secrets/parameters/index.ts";
 import type { BundleProbeOutcome } from "../src/gateway/bundle-presence.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
-import { badgeFor, renderIndex } from "../src/ui/index-page.ts";
+import { badgeFor, renderConnectors } from "../src/ui/roster-page.ts";
 import {
   EnvSecretProvider,
   type SecretProvider,
@@ -1202,14 +1202,14 @@ beforeAll(async () => {
   const booted = await boot(CONFIG, new EnvSecretProvider(SECRETS), SECRETS);
   baseUrl = booted.url;
   server = { close: booted.close } as unknown as Server;
-  html = await (await fetch(`${baseUrl}/ui`, { headers: AUTH })).text();
+  html = await (await fetch(`${baseUrl}/connectors`, { headers: AUTH })).text();
 });
 
 afterAll(() => server?.close());
 
-describe("GET /ui gate", () => {
+describe("GET /connectors gate", () => {
   it("401s an anonymous request and leaks no secret NAME", async () => {
-    const res = await fetch(`${baseUrl}/ui`, { redirect: "manual" });
+    const res = await fetch(`${baseUrl}/connectors`, { redirect: "manual" });
     expect(res.status).toBe(401);
     const body = await res.text();
     expect(body).toContain("Sign in required");
@@ -1217,37 +1217,51 @@ describe("GET /ui gate", () => {
       expect(body).not.toContain(name);
     }
   });
-
-  it("gates the retired /secrets URL too, rather than redirecting anonymously", async () => {
-    // The redirect sits BEHIND the gate. An open redirect to a gated page is not
-    // a leak, but a door that answers differently to an anonymous caller is one
-    // fewer thing to have to reason about.
-    const res = await fetch(`${baseUrl}/secrets`, { redirect: "manual" });
-    expect(res.status).toBe(401);
-  });
 });
 
-describe("GET /secrets", () => {
-  it("redirects to the index that absorbed it", async () => {
-    // The roster was a destination of its own and is not one any more. The URL
-    // was published — bookmarks, the AIR catalog, the docs — so it redirects
-    // rather than 404s: a page whose content simply moved teaches nobody
-    // anything by disappearing.
-    const res = await fetch(`${baseUrl}/secrets`, {
+describe("the two published URLs the roster used to live at", () => {
+  // Both were destinations of their own and neither is one any more. Both were
+  // published — bookmarks, the AIR catalog, the docs, the PWA's old start_url —
+  // so both redirect rather than 404: a page whose content simply moved teaches
+  // nobody anything by disappearing.
+  //
+  // Straight to `/connectors`, not through one another. `/secrets` pointed at
+  // `/ui` while `/ui` was the roster; now that `/ui` is itself a redirect,
+  // leaving it that way would make one bookmark cost two round trips.
+  for (const from of ["/secrets", "/ui"]) {
+    it(`sends ${from} to /connectors in one hop`, async () => {
+      const res = await fetch(`${baseUrl}${from}`, {
+        headers: AUTH,
+        redirect: "manual",
+      });
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("/connectors");
+    });
+
+    it(`gates ${from} rather than redirecting an anonymous caller`, async () => {
+      const res = await fetch(`${baseUrl}${from}`, { redirect: "manual" });
+      expect(res.status).toBe(401);
+    });
+  }
+
+  it("leaves /ui/<slug> alone — the per-server pages did not move", async () => {
+    // `/ui/oauth/callback` is a Google-registered redirect URI and `/ui/:server`
+    // is where every link on the roster points. The redirect is EXACT-path for
+    // exactly that reason.
+    const res = await fetch(`${baseUrl}/ui/slack`, {
       headers: AUTH,
       redirect: "manual",
     });
-    expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe("/ui");
+    expect(res.status).toBe(200);
   });
 });
 
-describe("GET /ui", () => {
+describe("GET /connectors", () => {
   it("serves HTML to a signed-in human", async () => {
-    const res = await fetch(`${baseUrl}/ui`, { headers: AUTH });
+    const res = await fetch(`${baseUrl}/connectors`, { headers: AUTH });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
-    expect(html).toContain("<title>Servers · strad</title>");
+    expect(html).toContain("<title>Connectors · strad</title>");
   });
 
   it("lists EVERY server, healthy ones included", () => {
@@ -1267,14 +1281,15 @@ describe("GET /ui", () => {
     ]) {
       expect(html).toContain(`href="/ui/${slug}">${slug}</a>`);
     }
-    // Every title is a link to its own page; a declared `title:` keeps the slug in the foot.
+    // Every name is a link to its own page; a declared `title:` keeps the slug
+    // beside it, because there it is information rather than an echo.
     expect(html).toContain(">Object store</a>");
-    expect(html).toContain('<code class="card-slug">gcs</code>');
+    expect(html).toContain('<code class="conn-alt">gcs</code>');
     expect(html).toContain(">secrets</a>");
     expect(html).toContain('<span class="stat-l">enabled servers</span>');
-    // A disabled server is still on the INDEX — /ui always listed every
-    // configured server — but it carries no badge. It is the secret ROSTER that
-    // omits it, because strad does not mount it.
+    // A disabled server is still on the page — the roster has always listed
+    // every configured server — but it carries no badge. It is the secret
+    // ROSTER that omits it, because strad does not mount it.
     expect(html).toContain('<span class="chip chip-off">disabled</span>');
   });
 
@@ -1400,7 +1415,7 @@ describe("GET /ui", () => {
       invalidate: () => {},
     };
     const { url, close } = await boot(STORE_CONFIG, angry, {});
-    const res = await fetch(`${url}/ui`, { headers: AUTH });
+    const res = await fetch(`${url}/connectors`, { headers: AUTH });
     expect(res.status).toBe(200);
     const body = await res.text();
     expect(body).toContain("granola");
@@ -1448,7 +1463,9 @@ servers:
       invalidate: () => {},
     };
     const { url, close } = await boot(gatewayOnly, angry, {});
-    const body = await (await fetch(`${url}/ui`, { headers: AUTH })).text();
+    const body = await (
+      await fetch(`${url}/connectors`, { headers: AUTH })
+    ).text();
     expect(body).toContain("could not be checked");
     expect(body).toContain("That is not the same as healthy");
     expect(body).not.toContain("Every server&#39;s secrets resolve");
@@ -1481,7 +1498,9 @@ servers:
       RFS_GCS_BUCKET: "a-literal-bucket"
 `);
     const { url, close } = await boot(managed, new EnvSecretProvider({}), {});
-    const body = await (await fetch(`${url}/ui`, { headers: AUTH })).text();
+    const body = await (
+      await fetch(`${url}/connectors`, { headers: AUTH })
+    ).text();
     expect(body).not.toContain(
       '<span class="chip chip-plain chip-route">no secrets</span>',
     );
@@ -1507,7 +1526,9 @@ servers:
     entitlements: [admin]
 `);
     const { url, close } = await boot(hostile, new EnvSecretProvider({}), {});
-    const body = await (await fetch(`${url}/ui`, { headers: AUTH })).text();
+    const body = await (
+      await fetch(`${url}/connectors`, { headers: AUTH })
+    ).text();
     expect(body).not.toContain("<script>alert");
     expect(body).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
     close();
@@ -2170,7 +2191,7 @@ servers:
       [observation("present")],
       unreachable,
     );
-    const html = renderIndex({
+    const html = renderConnectors({
       config,
       statuses: [status!],
       principal: {
@@ -2220,7 +2241,7 @@ servers:
       greeting: "\${SOME_REF}"
 `);
     const [status] = deriveServerStatuses(builtin, [observation("present")]);
-    const html = renderIndex({
+    const html = renderConnectors({
       config: builtin,
       statuses: [status!],
       principal: {
@@ -2251,7 +2272,7 @@ servers:
 // The builtin's panel, as MARKUP (#264)
 // ---------------------------------------------------------------------------
 
-describe("renderIndex — the `params: true` builtin's popout", () => {
+describe("renderConnectors — the `params: true` builtin's popout", () => {
   // A CONFIDENTLY WRONG PANEL IS WORSE THAN NO PANEL, so this asserts the exact
   // prose rather than that a block was emitted. Every sentence here is a claim
   // about how a builtin's managed parameters actually resolve, and the
@@ -2313,7 +2334,7 @@ servers:
             ]),
           };
     const [status] = deriveServerStatuses(config, [], presence, env);
-    const html = renderIndex({
+    const html = renderConnectors({
       config,
       statuses: [status!],
       principal: {
@@ -2333,7 +2354,7 @@ servers:
   };
 
   it("opens on a panel at all, rather than rendering an inert chip", () => {
-    const html = renderIndex({
+    const html = renderConnectors({
       config: cfg("builtin"),
       statuses: [
         deriveServerStatuses(cfg("builtin"), [], undefined, RESOLVING)[0]!,
@@ -2641,7 +2662,7 @@ servers:
       [ref("missing")],
       manifesting("absent"),
     );
-    const html = renderIndex({
+    const html = renderConnectors({
       config: cfg,
       statuses: [status!],
       principal: {
@@ -2670,7 +2691,7 @@ servers:
       [ref("present")],
       manifesting("absent"),
     );
-    const html = renderIndex({
+    const html = renderConnectors({
       config: cfg,
       statuses: [status!],
       principal: {
@@ -2696,14 +2717,15 @@ servers:
   });
 });
 
-describe("the console cards on /", () => {
-  it("offers ONE console card, not a second one for the secrets", async () => {
+describe("the console doors on /", () => {
+  it("offers ONE door onto the roster, and it is the consolidated one", async () => {
     const body = await (await fetch(`${baseUrl}/`, { headers: AUTH })).text();
-    // The roster is on /ui now, so a second card pointing at /secrets would be
-    // a second door onto the same page.
+    // The roster, the secret status and the editor are one page, so neither of
+    // the two URLs it absorbed may be offered as a door of its own.
     expect(body).not.toContain('href="/secrets"');
-    expect(body).toContain('href="/ui"');
-    expect(body).toContain("whether the secrets it needs are seeded");
+    expect(body).not.toContain('href="/ui"');
+    expect(body).toContain('href="/connectors"');
+    expect(body).toContain("whether its secrets are seeded");
     // The other two must not have been displaced.
     for (const href of ['href="/console"', 'href="/healthz"']) {
       expect(body).toContain(href);

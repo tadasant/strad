@@ -15,12 +15,13 @@ import {
  * service worker, and all three are static text this module hands to Express.
  * Nothing here is compiled, bundled or generated at deploy time.
  *
- * WHAT IS INSTALLABLE. `/ui`, the SSO-gated console, is the `start_url`. That is
- * the surface a human returns to — the server roster, the secret states, the
- * parameter forms — and the one worth a home-screen icon and a window without an
- * address bar. The scope is `/`, so the landing page at `/` is inside the
- * installed app too; an install that dumped you back into a browser tab the
- * moment you clicked the brand mark would be a worse experience than no install.
+ * WHAT IS INSTALLABLE. `/connectors`, the SSO-gated console's working surface,
+ * is the `start_url`. That is where a human returns to — every server, what it
+ * is scoped to, whether its secrets are seeded, and the controls to change the
+ * roster — and the one worth a home-screen icon and a window without an address
+ * bar. The scope is `/`, so the splash at `/` is inside the installed app too;
+ * an install that dumped you back into a browser tab the moment you clicked the
+ * brand mark would be a worse experience than no install.
  *
  * The docs site is NOT part of this. It is a separate Astro build deployed to
  * Cloudflare Pages, on a different origin, and a service worker cannot cross an
@@ -42,7 +43,7 @@ import {
  *
  * There is exactly one cache write in the worker (`addAll(SHELL)`, during
  * install) and exactly one cache read (`match()`, for a request whose pathname
- * is in `SHELL`). A response from `/ui`, `/ui/:server`, `/console` or
+ * is in `SHELL`). A response from `/connectors`, `/ui/:server`, `/console` or
  * `/ui/:server/reveal` cannot reach either, because no code path puts one there.
  * That is a property you can check by reading the worker, and
  * `test/pwa.worker.test.ts` checks it by running the worker.
@@ -58,8 +59,8 @@ const MANIFEST_PATH = "/manifest.webmanifest";
  * Everything the service worker is permitted to cache.
  *
  * A path may be added here only if it is static, identical for every visitor,
- * and served in front of the SSO gate. Nothing under `/ui`, `/console`, `/mcp`
- * or `/api` can ever satisfy that.
+ * and served in front of the SSO gate. Nothing under `/ui`, `/connectors`,
+ * `/console`, `/mcp` or `/api` can ever satisfy that.
  */
 export const SHELL_PATHS = [
   "/pwa/offline",
@@ -89,13 +90,16 @@ export const THEME_COLOR = "#0f1116";
 function manifest(): Record<string, unknown> {
   return {
     // `id` is what the browser keys the installed app on. Pinning it means the
-    // app survives a change of `start_url` instead of installing a second time.
+    // app survives a change of `start_url` instead of installing a second time —
+    // which is exactly what happened when the console's working surface moved
+    // from `/ui` to `/connectors`. It stays `/ui` for that reason and is not a
+    // path anything fetches.
     id: "/ui",
     name: "strad console",
     short_name: "strad",
     description:
       "The human console for a strad gateway: every configured server, what it is scoped to, and whether its secrets are seeded.",
-    start_url: "/ui",
+    start_url: "/connectors",
     scope: "/",
     display: "standalone",
     orientation: "any",
@@ -126,7 +130,7 @@ function manifest(): Record<string, unknown> {
  * Registration is deliberately unconditional across the console, including the
  * 401 sign-in wall: the worker caches nothing that depends on being signed in,
  * so there is no state to get wrong, and an install begun from the sign-in page
- * lands on `/ui` once the gate opens.
+ * lands on `/connectors` once the gate opens.
  *
  * `.catch()` swallows the failure because a browser that refuses the
  * registration — an insecure context, a disabled worker, a private window —
@@ -278,7 +282,7 @@ export interface PwaOptions {
  * reason it is safe to precache — it is the same document for everyone, and it
  * says nothing except that the network is gone.
  *
- * The gated surfaces are unchanged. `/`, `/ui`, `/ui/:server` and every POST
+ * The gated surfaces are unchanged. `/`, `/connectors`, `/ui/:server` and every POST
  * still sit behind `requireConsoleUi`.
  */
 export function mountPwa(app: Express, opts: PwaOptions): void {

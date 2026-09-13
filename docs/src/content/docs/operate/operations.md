@@ -1432,19 +1432,25 @@ fails CI on the PR rather than the deploy after it.
 
 ## Health and console surface
 
-- **`/`** is the front door: a server-rendered directory of the gateway's
-  endpoint, its consoles, and every **enabled** server, with a copy button for
-  each server's `?servers=` URL. Core-only — a bundle component is internal and
-  has no front door. It sits behind the **same SSO gate as `/ui` and `/console`**,
-  never a softer door: strad requires identity before exposing anything, and an
-  index of what the gateway fronts is something. Today that means the bootstrap
-  token; once `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` land it is Google sign-in
-  restricted to the configured `auth.google.hostedDomain`, with no code change.
-  Behind the gate it still withholds anything credential-shaped — a `remote-http`
-  server's upstream `url`, `headers:`, the `env:` map, the `image` ref, `bundle`,
-  `path`, `module`, `tools:` policy, and `entitlements` — as defence in depth.
-  **Disabled** servers are omitted: the page answers "what can I connect to", and
-  a connect URL for a disabled server is one the gateway would reject.
+- **`/`** is the front door, and it is a **splash**: the gateway's name and
+  environment, the `/mcp` endpoint and its `?servers=` form as copyable fields,
+  and a card per door — every nav destination except this page, plus `/console`
+  and `/healthz`, which the bar deliberately does not carry. Core-only — a bundle
+  component is
+  internal and has no front door. It sits behind the **same SSO gate as
+  `/connectors` and `/console`**, never a softer door: strad requires identity
+  before exposing anything, and even the count of what the gateway fronts is
+  something. Today that means the bootstrap token; once
+  `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` land it is Google sign-in restricted
+  to the configured `auth.google.hostedDomain`, with no code change.
+  It carried a directory tile per **enabled** server until that became the third
+  rendering of the same list; the roster lives on `/connectors` now, and `/`
+  names **no slug at all** — and therefore no title, description, upstream `url`,
+  `headers:`, `env:` map, `image` ref, `bundle`, `path`, `module`, `tools:`
+  policy or `entitlements`. `test/landing.test.ts` asserts each absence. The one
+  number it prints is how many servers are **enabled**; a disabled server is
+  absent from `/healthz` too, so counting it here would be the page's only
+  net-new fact.
 - **`/healthz`** is dependency-free and returns `mode`, `bundle`, `env`, and
   `servers` — used by the App Platform health check and the deploy smoke test. It
   also carries `toolSurfaces`, `degraded` and `unconfigured`: the last
@@ -1489,11 +1495,19 @@ fails CI on the PR rather than the deploy after it.
   through it. Unlike the rest of the console's state these records live in
   core's memory, so a restart ends every outstanding token and token session.
   See [Auth](/auth/overview/#console-login-tokens-the-automated-actors-door).
-- **`/ui`** and `/ui/:server`, also core-only, are the human-facing server console,
-  behind the same gate as `/`. `/ui` carries the secret roster — a `READY` or
-  `ISSUE` badge per entry — and `/secrets` 302s to it. An entry carries up to two
-  controls, on two different rules: a link to that server's playground, on the
-  entries this console identity may actually open (see
+- **`/connectors`** and `/ui/:server`, also core-only, are the human-facing
+  server console, behind the same gate as `/`. `/connectors` is the roster: every
+  configured server with its scope, a `READY` or `ISSUE` secret badge, a link to
+  its own `/ui/<slug>` page, and — where `gateway.configStore.enabled` is set and
+  the store is writable — Edit / Disable / Remove and an "add a connector" menu.
+  The roster and the badges are served whether or not there is a store; only the
+  editor half depends on one. `/ui` and `/secrets` both `302` to it, because both
+  URLs were published. The `/ui` redirect is **exact-path**: `/ui/:server` and
+  `/ui/oauth/callback` — the latter registered with Google as a redirect URI —
+  are untouched by it.
+  A row carries up to two controls beyond the editor's, on two different rules: a
+  link to that server's playground, on the entries this console identity may
+  actually open (see
   [the console playground](/auth/overview/#the-console-playground)), and a copy
   button for its `${publicUrl}/mcp?servers=<slug>` URL, which contains no
   credential, on every **enabled** entry whatever the reader's roles. A disabled

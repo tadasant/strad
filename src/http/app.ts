@@ -90,7 +90,7 @@ export interface AppOptions {
    */
   secrets?: SecretBag;
   /**
-   * The runtime secret provider, for the secret roster on `/ui` and the
+   * The runtime secret provider, for the secret roster on `/connectors` and the
    * machine-readable one at `/api/secrets/readiness`.
    *
    * Optional, and the fallback is not a degradation under the default `env`

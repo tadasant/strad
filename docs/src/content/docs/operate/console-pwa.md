@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-The strad console is installable. Open `/ui` in a browser that offers it, install,
+The strad console is installable. Open `/connectors` in a browser that offers it, install,
 and you get a home-screen or dock icon that opens the console in its own window
 with no address bar.
 
@@ -15,12 +15,12 @@ client framework, no bundle. A Progressive Web App needs three things on top of
 that — a manifest, icons, a service worker — plus, in strad's case, one page of
 its own. All of it is static text Express hands out:
 
-| Path                               | What it is                                         |
-| ---------------------------------- | -------------------------------------------------- |
-| `/manifest.webmanifest`            | The app manifest: name, icons, colours, start URL. |
-| `/sw.js`                           | The service worker. Scope `/`.                     |
-| `/pwa/icon.svg`, `/pwa/icon-*.png` | The mark, at the sizes an installer asks for.      |
-| `/pwa/offline`                     | One static page, shown when the gateway is gone.   |
+| Path                               | What it is                                               |
+| ---------------------------------- | -------------------------------------------------------- |
+| `/manifest.webmanifest`            | The app manifest: name, icons, colours, start URL, `id`. |
+| `/sw.js`                           | The service worker. Scope `/`.                           |
+| `/pwa/icon.svg`, `/pwa/icon-*.png` | The mark, at the sizes an installer asks for.            |
+| `/pwa/offline`                     | One static page, shown when the gateway is gone.         |
 
 They are built by `src/ui/pwa.ts` and the icons are inlined in
 `src/ui/pwa-icons.ts` as base64 PNG. That is not squeamishness about binaries: the
@@ -30,10 +30,16 @@ container.
 
 ## What is installable, and what is not
 
-**The console is.** `start_url` is `/ui` and `scope` is `/`, so the server
-roster, every per-server view and the landing page at `/` are all inside the
+**The console is.** `start_url` is `/connectors` and `scope` is `/`, so the
+server roster, every per-server view and the splash at `/` are all inside the
 installed window. Clicking the brand mark stays in the app instead of throwing you
 back into a browser tab.
+
+**`id` is pinned to `/ui`, and it is not a path anything fetches.** It is the
+string a browser keys the installed app on, so pinning it is what lets `start_url`
+move without an already-installed console re-installing itself as a second app
+beside the first. Leaving it to default would make it track `start_url`, which is
+the one thing it must not do. `test/pwa.test.ts` asserts both values together.
 
 **These docs are not.** This site is a separate Astro build on a different origin,
 deployed to Cloudflare Pages. A service worker cannot cross an origin, and there
@@ -70,7 +76,7 @@ slug, an identity, a bucket, a config value or a hostname.
 
 The worker has exactly one cache write, `cache.addAll(SHELL)` during install, and
 exactly one cache read, a `match()` for a request whose pathname is in that list.
-A response from `/ui`, `/ui/:server`, `/console` or a reveal cannot reach either,
+A response from `/connectors`, `/ui/:server`, `/console` or a reveal cannot reach either,
 because there is no code path that would put one there.
 
 Every other request is declined outright:
@@ -126,22 +132,23 @@ the bare path. Renaming the cache is the remedy.
 
 Sign-out is unchanged: `GET /console/logout` drops every console cookie. The
 service worker is left registered, which is harmless — it holds no authenticated
-response, so there is nothing for a purge to remove. The next visit to `/ui` hits
+response, so there is nothing for a purge to remove. The next visit to `/connectors` hits
 the network, finds no session, and gets the sign-in wall like any other browser.
 
 The registration script runs on the sign-in wall too, so an install can be started
-before signing in. It lands on `/ui`, which is gated, and the gate does its job.
+before signing in. It lands on `/connectors`, which is gated, and the gate does its job.
 
 Signing in is the one flow the install genuinely changes, and it is worth knowing
 about before you install.
 
 :::caution[Sign-in leaves the app window]
 With Google sign-in live, opening the installed app on an expired session does
-not show a sign-in page inside the app. `requireConsoleUi` answers `/ui` with a
-302 to `/console/login`, which redirects on to `accounts.google.com` — an
-**out-of-scope** navigation from a `display: standalone` window, so the browser
-hands it to a tab or an in-app browser and the app window is left behind. You come
-back through `/console/oauth/callback` and land on `/ui`.
+not show a sign-in page inside the app. `requireConsoleUi` answers
+`/connectors` with a 302 to `/console/login`, which redirects on to
+`accounts.google.com` — an **out-of-scope** navigation from a
+`display: standalone` window, so the browser hands it to a tab or an in-app
+browser and the app window is left behind. You come back through
+`/console/oauth/callback` and land on `/connectors`.
 
 That round trip is ordinary on Chrome and Android. It has **not** been exercised
 on iOS, where a standalone window has historically had its own storage partition —

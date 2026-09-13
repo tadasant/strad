@@ -411,12 +411,13 @@ plus two that shape how this server gets its values:
 
 - **`consoleEnv`** — env for the **core gateway only**, the human console's half of
   this server. `env:` lands on the component that answers `/mcp`; `consoleEnv:`
-  lands on core, which serves the SSO-gated `/ui` and nothing an agent can reach.
+  lands on core, which serves the SSO-gated console and nothing an agent can reach.
   That asymmetry is what lets the `secrets` server hold a viewer key on the bundle
   and a stronger admin key on core, with the two never meeting. See [Adding a
   server](/servers/adding/#4b-a-credential-the-agent-must-not-hold--consoleenv).
 
-  It has a second, duller use: if this server has a **browser view** in `/ui`, that
+  It has a second, duller use: if this server has a **browser view** at
+  `/ui/<slug>`, that
   view renders in core and needs the credential too. Repeat the same `${REF}` under
   `consoleEnv:` — the same value in both scopes, not a stronger one. Omit it and you
   get a confusing pair of symptoms: the MCP tools work fine while the console reports

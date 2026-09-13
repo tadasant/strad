@@ -249,7 +249,7 @@ export interface SecretsPageSummary {
 /**
  * Every secrets page on this gateway, in config order.
  *
- * Three things have to agree: the index's `Manage →` link, the page it points
+ * Three things have to agree: the roster's `Manage →` link, the page it points
  * at, and this list. `declaredEnv` keeps the link from being narrower than the
  * page; this keeps a page's list of its SIBLINGS from disagreeing with either.
  * (The console's one declaration that outranks detection — a connector's

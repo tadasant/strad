@@ -395,7 +395,8 @@ function setSessionCookie(
 ): void {
   res.cookie(SESSION_COOKIE, sealer.seal(payload), {
     ...cookieFlags(env),
-    // Scoped to "/" because the gate covers the landing page as well as /ui.
+    // Scoped to "/" because the gate covers the splash at "/" as well as the
+    // console's own pages.
     // It therefore rides along to /mcp, which is inert: /mcp authenticates the
     // Authorization header against the static token store and never reads a
     // cookie (HACKS.md #2).
@@ -439,7 +440,7 @@ export function clearOauthTxCookie(
  * SameSite=Lax, not Strict: the browser arrives back from accounts.google.com as
  * a top-level GET navigation, and Strict would withhold the transaction cookie
  * on exactly that request, breaking every login. Lax sends it there and still
- * withholds it from cross-site POSTs, which is what protects the `/ui` writes.
+ * withholds it from cross-site POSTs, which is what protects the console writes.
  */
 function cookieFlags(env: NodeJS.ProcessEnv) {
   return {
@@ -468,10 +469,10 @@ export function stateMatches(a: string, b: string): boolean {
  *
  * Only a same-origin, absolute path survives. Anything else — a scheme-relative
  * `//evil.example`, a full URL, a backslash the browser normalises to a slash —
- * becomes `/ui`. An open redirect on a login callback is how a phishing page
- * borrows your domain's trust.
+ * becomes `/connectors`, the console's working surface. An open redirect on a
+ * login callback is how a phishing page borrows your domain's trust.
  */
-export function sanitizeNext(raw: unknown, fallback = "/ui"): string {
+export function sanitizeNext(raw: unknown, fallback = "/connectors"): string {
   if (typeof raw !== "string" || raw === "") return fallback;
   if (!raw.startsWith("/")) return fallback;
   if (raw.startsWith("//") || raw.startsWith("/\\")) return fallback;

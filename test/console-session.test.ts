@@ -225,18 +225,21 @@ describe("principalFromSession", () => {
 
 describe("sanitizeNext", () => {
   it("keeps same-origin paths and refuses everything else", () => {
+    // The fallback is the console's working surface. It was `/ui`, which is a
+    // redirect now — landing a refused sign-in on a 302 would work and would
+    // cost a round trip on the one request a human is already waiting through.
     expect(sanitizeNext("/ui/secrets")).toBe("/ui/secrets");
-    expect(sanitizeNext("/ui?x=1")).toBe("/ui?x=1");
-    expect(sanitizeNext("//evil.example/x")).toBe("/ui");
-    expect(sanitizeNext("https://evil.example")).toBe("/ui");
-    expect(sanitizeNext("/\\evil.example")).toBe("/ui");
-    expect(sanitizeNext("/ui\r\nSet-Cookie: x=1")).toBe("/ui");
+    expect(sanitizeNext("/connectors?x=1")).toBe("/connectors?x=1");
+    expect(sanitizeNext("//evil.example/x")).toBe("/connectors");
+    expect(sanitizeNext("https://evil.example")).toBe("/connectors");
+    expect(sanitizeNext("/\\evil.example")).toBe("/connectors");
+    expect(sanitizeNext("/ui\r\nSet-Cookie: x=1")).toBe("/connectors");
     // A browser strips TAB while parsing, so this would resolve as
     // "//evil.example" — the guard must not lean on Express escaping it.
-    expect(sanitizeNext("/\t/evil.example")).toBe("/ui");
-    expect(sanitizeNext("/ui\f")).toBe("/ui");
-    expect(sanitizeNext(undefined)).toBe("/ui");
-    expect(sanitizeNext(42)).toBe("/ui");
+    expect(sanitizeNext("/\t/evil.example")).toBe("/connectors");
+    expect(sanitizeNext("/ui\f")).toBe("/connectors");
+    expect(sanitizeNext(undefined)).toBe("/connectors");
+    expect(sanitizeNext(42)).toBe("/connectors");
   });
 });
 
@@ -548,9 +551,9 @@ describe("the callback mints a session", () => {
 });
 
 describe("the session is a first-class console principal", () => {
-  it("reaches /ui and /ui/secrets, labelled with the Google identity", async () => {
+  it("reaches the roster and a per-server page, labelled with the Google identity", async () => {
     const { cookie } = await signIn();
-    for (const path of ["/", "/ui", "/ui/echo"]) {
+    for (const path of ["/", "/connectors", "/ui/echo"]) {
       const res = await fetch(`${baseUrl}${path}`, {
         headers: { cookie },
         redirect: "manual",
@@ -688,7 +691,7 @@ describe("the session is a first-class console principal", () => {
     // with a longer Path, and RFC 6265 sends that one FIRST. Reading only the
     // first value would turn that into a lockout.
     const { cookie } = await signIn();
-    const res = await fetch(`${baseUrl}/ui`, {
+    const res = await fetch(`${baseUrl}/connectors`, {
       headers: { cookie: `strad_console_session=garbage; ${cookie}` },
       redirect: "manual",
     });
@@ -699,6 +702,9 @@ describe("the session is a first-class console principal", () => {
 
 describe("the dev bypass still works alongside Google", () => {
   it("accepts the bootstrap token and still moves it into a cookie", async () => {
+    // `/ui?token=` is the documented sign-in URL and stays one: the gate strips
+    // the token and redirects to the cleaned path, which is `/ui` — and `/ui` is
+    // now itself a redirect to the roster. Two hops, both of them strad's.
     const res = await fetch(`${baseUrl}/ui?token=${BOOTSTRAP}`, {
       redirect: "manual",
     });
@@ -706,8 +712,16 @@ describe("the dev bypass still works alongside Google", () => {
     expect(res.headers.get("location")).toBe("/ui");
     expect(setCookieFor(res, "strad_console")).toBeTruthy();
 
-    const page = await fetch(`${baseUrl}/ui`, {
-      headers: { cookie: cookieJar(res) },
+    const jar = cookieJar(res);
+    const hop = await fetch(`${baseUrl}/ui`, {
+      headers: { cookie: jar },
+      redirect: "manual",
+    });
+    expect(hop.status).toBe(302);
+    expect(hop.headers.get("location")).toBe("/connectors");
+
+    const page = await fetch(`${baseUrl}/connectors`, {
+      headers: { cookie: jar },
       redirect: "manual",
     });
     expect(page.status).toBe(200);

@@ -5,7 +5,7 @@ import { bearerToken, constantTimeEquals } from "../secrets/presence.ts";
  * How a door of the gateway reads a credential, and how it compares one.
  *
  * Two primitives, and every door uses both: the public `/mcp` and the
- * readiness route (`authenticateMcp`), the console's `/ui` gate and `/console`
+ * readiness route (`authenticateMcp`), the console gate and `/console`
  * (the bootstrap token, from a header), a bundle's `/mcp` in the strad image
  * (`authenticateInternal`), and the internal-token routes under `/_strad/`.
  * One of each because every copy is another place to get the scheme or a

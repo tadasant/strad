@@ -220,7 +220,7 @@ export interface CachedDiagnosticsOptions extends ReadDiagnosticsOptions {
 /**
  * `readStoreDiagnostics`, behind a short TTL.
  *
- * `/ui` and `/api/secrets/readiness` both derive their verdict from this one
+ * `/connectors` and `/api/secrets/readiness` both derive their verdict from this one
  * pair of reads, and the pass is not nominal: `resolveDetailed()` renders each
  * parameter under its own try/catch rather than ending at the first failure, so
  * a namespace-wide refusal costs a full pass at a fan-out of ten. Performed per

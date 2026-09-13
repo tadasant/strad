@@ -511,7 +511,7 @@ describe("the console gate renews on an ordinary request", () => {
   it("answers a half-spent session's page with a fresh Set-Cookie, and the same sign-in", async () => {
     const now = Date.now();
     const signedIn = now - 3 * DAY;
-    const res = await fetch(`${baseUrl}/ui`, {
+    const res = await fetch(`${baseUrl}/connectors`, {
       headers: {
         cookie: cookieHeader(
           payload({ iat: now - 25 * HOUR, authAt: signedIn }),
@@ -551,7 +551,7 @@ describe("the console gate renews on an ordinary request", () => {
 
   it("sends a session past the cap back through Google, however recently it was renewed", async () => {
     const now = Date.now();
-    const res = await fetch(`${baseUrl}/ui`, {
+    const res = await fetch(`${baseUrl}/connectors`, {
       headers: {
         cookie: cookieHeader(
           payload({ iat: now - 25 * HOUR, authAt: now - 7 * DAY - 1000 }),
@@ -580,7 +580,7 @@ describe("the console gate renews on an ordinary request", () => {
     const now = Date.now();
     const legacy = payload({ iat: now - 7 * HOUR, exp: now + 5 * HOUR });
     delete legacy.authAt;
-    const res = await fetch(`${baseUrl}/ui`, {
+    const res = await fetch(`${baseUrl}/connectors`, {
       headers: { cookie: cookieHeader(legacy) },
       redirect: "manual",
     });

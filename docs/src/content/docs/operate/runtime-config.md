@@ -537,32 +537,47 @@ writer may **stop**.
 ## The console flow
 
 `/connectors`, behind the same Google Workspace SSO gate as the rest of the
-console, and one of the five destinations on its [shared nav
+console, and one of the four destinations on its [shared nav
 bar](/auth/overview/#what-the-console-serves-and-how-you-get-between-the-pages).
 It is at the top level rather than under `/ui` because `/ui/:server` is a
-wildcard — `/ui/servers` would be one config entry away from being shadowed by a
-server that happens to be called `servers`.
+wildcard — `/ui/connectors` would be one config entry away from being shadowed by
+a server that happens to be called `connectors`.
 
-The prefix is served on every deployment, including one that sets no
-`gateway.configStore:`. There it answers with the page that says the editor is
-off and that this gateway's roster comes from the checked-in document — an honest
-answer for a link every console page draws, which a framework `404` would not be.
+**It is also the console's only view of the servers.** The roster, each entry's
+scope, and whether the secrets it needs are seeded are all on this page; `/ui` and
+`/secrets`, which used to carry the second and third renderings of that same list,
+are `302`s to it. What that means for this page is that the roster half is served
+on **every** deployment, including one that sets no `gateway.configStore:` — every
+row, every badge, every popout. Only the **editor** needs a store, and where there
+is none the page says so in place of the controls rather than withholding the
+whole view.
 
-1. **`/connectors`** lists every entry the gateway is serving: slug, kind, a
-   source chip (`console` or `config file`), title, roles, and the current
-   revision with who last changed it. Edit, Enable/Disable and Remove sit on each
-   row.
-2. **Add a connector** offers the three creatable kinds, each with what it can
+1. **`/connectors`** lists every entry the gateway is serving, grouped **needs
+   attention**, then **ready**, then **disabled** — issues first, because the
+   entries something has to be done about are why anyone opens it. A row carries
+   the name (linking to that server's own `/ui/<slug>` page), the slug where a
+   `title:` differs from it, a source chip (`console` or `config file`, and only
+   where there is a runtime holder to ask), the kind and roles it is scoped to,
+   its `READY` / `ISSUE` [secret badge](/operate/secrets/) with the popout behind
+   it, and a playground and copy-URL icon where each is offered. Edit,
+   Enable/Disable and Remove join them **only** where the store exists and can be
+   written. Above the table, beside the ready/issue counts, sits the roster's
+   provenance: `runtime roster · revision N` with who last changed it and when,
+   or `roster from the checked-in config` where there is no store.
+2. **Removed** lists the slugs the checked-in config declares and the overlay
+   subtracts, each with a Restore. A standing instruction to subtract something
+   has to be visible to whoever reasons about the file.
+3. **Add a connector** offers the three creatable kinds, each with what it can
    and cannot do.
-3. **Copy from an existing entry of the same kind** is optional and is a GET, so
+4. **Copy from an existing entry of the same kind** is optional and is a GET, so
    the prefilled form is a bookmarkable URL and a reload re-posts nothing. It
    copies every field except the slug, which is how a second account or a
    narrower tool policy starts from one that already works.
-4. **Fill in the form.** Fields are read and written **raw** — what somebody
+5. **Fill in the form.** Fields are read and written **raw** — what somebody
    wrote, not what Zod filled in around it. Fields the form does not render are
    carried through untouched, so "change the title" never means "delete four
    fields".
-5. **Save.** Validated, rebuilt, stored, adopted. A refusal redraws the form with
+6. **Save.** Validated, rebuilt, stored, adopted. A refusal redraws the form with
    what you typed still in it and the reason above it.
 
 No secret is typed into this form. Anything credential-shaped is a `${NAME}` ref,

@@ -8,17 +8,24 @@ import {
   EnvSecretProvider,
   sharedSecretProviders,
 } from "../src/secrets/provider/index.ts";
-import { consoleView } from "../src/ui/index-page.ts";
+import { consoleView } from "../src/ui/roster-page.ts";
 import { renderServerOverview } from "../src/ui/server-overview.ts";
 
 /**
- * Every card on `/ui` links to `/ui/<slug>`, and every such link lands on a page.
+ * Every row on `/connectors` links to `/ui/<slug>`, and every such link lands on
+ * a page.
  *
- * The case that found it: six `oauth:` connector slugs whose cards said "No
- * view" while their Connect page answered on `/ui/<slug>`, because the card
+ * The case that found it: six `oauth:` connector slugs whose entries said "No
+ * view" while their Connect page answered on `/ui/<slug>`, because the entry
  * asked a narrower question than the route answers. The other half is the kinds
  * with no dedicated view at all, whose link has to land on something better than
  * a 404 — the read-only overview.
+ *
+ * `/ui/<slug>` is the half of the console that did NOT move when the roster and
+ * the front page were consolidated, and this file is what says so: the roster
+ * moved to `/connectors`, every link on it still points here, and
+ * `/ui/oauth/callback` — a Google-registered redirect URI — is under the same
+ * prefix.
  */
 
 const YAML = `
@@ -115,7 +122,7 @@ beforeAll(async () => {
   const addr = server.address();
   if (typeof addr === "string" || !addr) throw new Error("no port");
   baseUrl = `http://127.0.0.1:${addr.port}`;
-  index = await (await get("/ui")).text();
+  index = await (await get("/connectors")).text();
 });
 
 afterAll(() => server?.close());
@@ -201,6 +208,7 @@ servers:
   const html = renderServerOverview({
     server: config.servers[0]!,
     playable: false,
+    editable: false,
     base: "",
   });
 
@@ -219,14 +227,29 @@ servers:
     expect(html).not.toContain("mcp?servers=");
     expect(html).toContain("The playground is not open");
   });
+
+  it("does not offer the per-entry form on a gateway with no runtime roster", () => {
+    // `/connectors/<slug>` answers with the "editor is off" 404 where there is
+    // no store to edit, so offering it as a door would send a reader from a
+    // working page to a dead one. The roster itself answers either way, and
+    // that is what the overview points at instead.
+    expect(html).not.toContain('href="/connectors/plain-image"');
+    expect(html).toContain('href="/connectors"');
+
+    const editable = renderServerOverview({
+      server: config.servers[0]!,
+      playable: false,
+      editable: true,
+      base: "",
+    });
+    expect(editable).toContain('href="/connectors/plain-image"');
+  });
 });
 
-describe("GET /ui — every card links to its own page", () => {
-  it("links the title and the CTA of EVERY configured server", () => {
+describe("GET /connectors — every row links to its own page", () => {
+  it("links the name and the CTA of EVERY configured server", () => {
     for (const { slug } of CONFIG.servers) {
-      expect(index, slug).toContain(
-        `<a class="card-title-link" href="/ui/${slug}">`,
-      );
+      expect(index, slug).toContain(`<a class="conn-name" href="/ui/${slug}">`);
       expect(index, slug).toContain(`<a class="card-cta" href="/ui/${slug}">`);
     }
     expect(index).not.toContain("No view");
@@ -243,9 +266,9 @@ describe("GET /ui — every card links to its own page", () => {
     expect(cta("retired")).toBe("Details →");
   });
 
-  it("nests no control inside a title link", () => {
+  it("nests no control inside a name link", () => {
     for (const m of index.matchAll(
-      /<a class="card-title-link"[^>]*>([\s\S]*?)<\/a>/g,
+      /<a class="conn-name"[^>]*>([\s\S]*?)<\/a>/g,
     )) {
       expect(m[1]).not.toMatch(/<(a|button)\b/);
     }
@@ -269,7 +292,10 @@ describe("GET /ui/<slug> — the page each link opens", () => {
     // The host, never the path: a vendor that keys by URL keys the path.
     expect(html).not.toContain("key-in-the-path");
     expect(html).toContain(`href="/playground/deepwiki"`);
-    expect(html).toContain(`href="/connectors/deepwiki"`);
+    // No runtime roster on this gateway, so the door offered is the roster
+    // itself rather than a per-entry form that would answer 404.
+    expect(html).toContain(`href="/connectors"`);
+    expect(html).not.toContain(`href="/connectors/deepwiki"`);
     expect(html).toContain("https://console.example.com/mcp?servers=deepwiki");
     // The same badge the index draws for this entry.
     expect(html).toMatch(/chip-badge">(READY|ISSUE)</);
@@ -294,5 +320,45 @@ describe("GET /ui/<slug> — the page each link opens", () => {
 
   it("still 404s a slug that names nothing", async () => {
     expect((await get("/ui/nope")).status).toBe(404);
+  });
+});
+
+describe("the /ui prefix survived the roster moving off it", () => {
+  it("redirects /ui itself, and ONLY /ui itself", async () => {
+    const root = await fetch(`${baseUrl}/ui`, {
+      headers: AUTH,
+      redirect: "manual",
+    });
+    expect(root.status).toBe(302);
+    expect(root.headers.get("location")).toBe("/connectors");
+
+    // The exact-path redirect is what keeps every one of these answering.
+    for (const slug of ["deepwiki", "echo", "object-store"]) {
+      const res = await fetch(`${baseUrl}/ui/${slug}`, {
+        headers: AUTH,
+        redirect: "manual",
+      });
+      expect(res.status, slug).toBe(200);
+    }
+  });
+
+  it("still routes /ui/oauth/callback, which Google holds as a redirect URI", async () => {
+    // THE ONE PATH IN THIS CONSOLE THAT CANNOT MOVE. It is registered with
+    // Google as an authorized redirect URI for the production OAuth client, and
+    // a change here surfaces as `redirect_uri_mismatch` on a human's screen
+    // rather than as a failing test — so this is the test.
+    //
+    // Asserted as "strad answered", not as a status: the callback with no
+    // transaction cookie is a refusal by design. What must never happen is
+    // Express's own 404, or the `/ui` redirect swallowing it.
+    const res = await fetch(`${baseUrl}/ui/oauth/callback?code=x&state=y`, {
+      headers: AUTH,
+      redirect: "manual",
+    });
+    expect(res.status).not.toBe(302);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).not.toContain("Cannot GET");
+    expect(body).toContain('<nav class="mainnav"');
   });
 });

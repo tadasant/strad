@@ -60,8 +60,19 @@ export interface LayoutOptions {
    * every link in the bar would answer 401.
    */
   nav?: NavKey | false;
-  /** Where the brand mark links. Defaults to the console index. */
+  /** Where the brand mark links. Defaults to the consolidated servers view. */
   brandHref?: string;
+  /**
+   * Widen the page frame — header, content and footer together.
+   *
+   * 60rem is the measure for PROSE, and every console page but one is mostly
+   * prose. The connectors roster is a table of short facts per slug, and at
+   * 60rem its last column wraps its own controls onto three lines — which costs
+   * more vertical space than the extra width ever does. All three bars move
+   * together, because widening only the content leaves the nav and the footer
+   * visibly out of register with it.
+   */
+  wide?: boolean;
   /** The word beside the brand mark. Defaults to "console". */
   brandSub?: string;
   /**
@@ -105,10 +116,10 @@ ${PWA_HEAD}
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;650&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
 <style>${THEME_CSS}</style>
 </head>
-<body>
+<body${opts.wide ? ` class="wide"` : ""}>
 <header class="topbar">
   <div class="topbar-inner">
-    <a class="brand" href="${esc(opts.brandHref ?? "/ui")}">
+    <a class="brand" href="${esc(opts.brandHref ?? "/connectors")}">
       ${LOGO_SVG}
       <span class="brand-name">strad</span>
       <span class="brand-sub">${esc(opts.brandSub ?? "console")}</span>
@@ -288,7 +299,7 @@ ${listing}`;
     serverSlug: slug,
     signedInAs: opts.signedInAs,
     body,
-    nav: "servers",
+    nav: "connectors",
   });
 }
 
@@ -497,7 +508,7 @@ export function renderSecrets(opts: SecretsViewOptions): string {
   const secretCount = parameters.filter((p) => p.secret).length;
 
   const body = `
-<nav class="breadcrumb" aria-label="Breadcrumb"><a href="/ui" class="crumb">servers</a><span class="crumb-sep">/</span><span class="crumb crumb-current">${esc(slug)}</span></nav>
+<nav class="breadcrumb" aria-label="Breadcrumb"><a href="/connectors" class="crumb">connectors</a><span class="crumb-sep">/</span><span class="crumb crumb-current">${esc(slug)}</span></nav>
 ${siblingStrip(opts.siblingPages)}
 
 <section class="browse-head">
@@ -589,7 +600,7 @@ ${comboBoxScript()}`;
     serverSlug: slug,
     signedInAs: opts.signedInAs,
     body,
-    nav: "servers",
+    nav: "connectors",
     helpTitle: "Parameters guide",
     help: secretsGuide(
       config,
@@ -1505,7 +1516,7 @@ export function renderOffline(): string {
     server roster, the secret states and the parameter forms are all read from it
     on request, so there is nothing useful to show while it is unreachable.</p>
   <p class="state-detail">Reconnect and reload. You may need to sign in again.</p>
-  <p><a class="btn" href="/ui">Retry</a></p>
+  <p><a class="btn" href="/connectors">Retry</a></p>
 </div>`;
   return layout({
     title: "Offline",
@@ -1644,12 +1655,19 @@ code{font-family:var(--font-mono);font-size:.84em;background:var(--bg-code);
 ${NAV_CSS}
 /* Page */
 .page{max-width:60rem;margin:0 auto;padding:1.9rem 1.5rem 3rem;width:100%;flex:1}
+/* One measure for the whole frame. See LayoutOptions.wide. */
+body.wide .page,body.wide .topbar-inner,body.wide .mainnav-inner,body.wide .foot{max-width:76rem}
 
 .intro h1{font-size:2rem;font-weight:650;letter-spacing:-.02em;color:var(--white);margin:0 0 .5rem}
 .intro .lede{color:var(--g2);font-size:1.02rem;max-width:40rem;margin:0 0 1.6rem}
 
 /* Server cards */
 .card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(16.5rem,1fr));gap:1rem}
+/* Same grid, for a set of short doors rather than a set of paragraphs. */
+.card-grid-tight{grid-template-columns:repeat(auto-fill,minmax(14rem,1fr));gap:.7rem}
+.card-grid-tight .card{padding:.8rem .95rem;gap:.35rem}
+.card-grid-tight .card-title{font-size:.95rem}
+.card-grid-tight .card-desc{font-size:.82rem;line-height:1.5}
 .card{border:1px solid var(--g5);border-radius:.6rem;background:var(--g7);padding:1.05rem 1.15rem;
   display:flex;flex-direction:column;gap:.55rem;transition:border-color .15s ease,transform .15s ease}
 .card-link:hover{border-color:color-mix(in srgb,var(--accent) 50%,var(--g5));transform:translateY(-1px)}
@@ -1905,9 +1923,10 @@ form.inline{display:flex;align-items:center;gap:.25rem;margin:0}
 .tile-actions{display:flex;align-items:center;justify-content:space-between;gap:.6rem;
   margin-top:auto;padding-top:.2rem}
 
-/* The connector roster (src/ui/servers-page.ts). A real table, because the
+/* The connectors roster (src/ui/roster-page.ts). A real table, because the
    roster is a grid of short facts per slug rather than the variable-length
-   rows .listing is shaped for. */
+   rows .listing is shaped for. It lives in the theme rather than on that page
+   because the entry form's sibling markup (src/ui/servers-page.ts) shares it. */
 .conn-table{width:100%;border-collapse:collapse;margin-top:1rem;
   border:1px solid var(--g5);border-radius:.6rem;overflow:hidden;background:var(--g7)}
 .conn-table th{text-align:left;padding:.6rem .8rem;font-size:.7rem;font-weight:600;
@@ -1916,14 +1935,8 @@ form.inline{display:flex;align-items:center;gap:.25rem;margin:0}
 .conn-table td{padding:.65rem .8rem;border-top:1px solid var(--g6);vertical-align:middle;
   font-size:.86rem}
 .conn-table tr:first-child td{border-top:none}
-.conn-table td.conn-slug{font-family:var(--font-mono);font-size:.84rem;white-space:nowrap}
-.conn-table td.conn-title{color:var(--g2);max-width:18rem;overflow:hidden;
-  text-overflow:ellipsis;white-space:nowrap}
-.conn-table td.conn-roles{color:var(--g3);font-size:.8rem;white-space:nowrap}
 .conn-acts{display:flex;gap:.35rem;justify-content:flex-end;flex-wrap:wrap}
 .conn-acts form{display:inline}
-.conn-head{display:flex;align-items:baseline;justify-content:space-between;gap:1rem;flex-wrap:wrap}
-.conn-meta{font-family:var(--font-mono);font-size:.74rem;color:var(--g4)}
 .conn-form{max-width:42rem}
 .conn-form .field{margin-bottom:1.1rem}
 .conn-sub{font-size:.95rem;font-weight:600;color:var(--white);margin:1.6rem 0 .3rem}

@@ -190,7 +190,12 @@ async function signedIn(): Promise<string> {
   return cookieOf(res);
 }
 
-async function ui(cookie?: string, path = "/ui") {
+/**
+ * A gated console page. `/connectors` rather than `/ui`, because `/ui` is a
+ * redirect now — asking it would answer 302 for a signed-in session and 401 for
+ * an anonymous one, which is not the distinction any caller here is making.
+ */
+async function ui(cookie?: string, path = "/connectors") {
   return fetch(`${base}${path}`, {
     headers: cookie ? { cookie } : {},
     redirect: "manual",
@@ -920,7 +925,7 @@ describe("hard-off in production", () => {
     if (!result.ok) throw new Error("exchange failed");
     const { srv, url } = await listen(config("prod", true), tokens);
     try {
-      const res = await fetch(`${url}/ui`, {
+      const res = await fetch(`${url}/connectors`, {
         headers: { cookie: `${TOKEN_SESSION_COOKIE}=${result.cookie}` },
         redirect: "manual",
       });

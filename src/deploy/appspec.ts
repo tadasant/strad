@@ -366,8 +366,8 @@ function sharedConsoleAdminCredential(config: StradConfig): string[] {
  * in `storeProject()`. See the call site.
  *
  * `storeProject()` (src/ui/secret-status.ts) answers "which project holds the
- * store" for the DEPLOYMENT — the console index's header note and `store.project`
- * on `/api/secrets/readiness`. Its order
+ * store" for the DEPLOYMENT — the connectors roster's footnote and
+ * `store.project` on `/api/secrets/readiness`. Its order
  * is: the RESOLVER's own project id if this process holds one, else the FIRST
  * enabled supplementary server that declares a project at all — and within that
  * server, `consoleEnv.`, then `env.`, then `consoleStores[0]`, then
@@ -420,7 +420,7 @@ function consoleProjectDisagreement(config: StradConfig): string[] {
     if (!declared || refsIn(declared).length > 0) continue;
 
     // THE FIRST CANDIDATE, and the only one. Whatever this server answers is
-    // what the index shows; a later server's disagreement is unobservable.
+    // what the roster shows; a later server's disagreement is unobservable.
     const projects = server.consoleStores.map((store) => store.project);
     if (!scope || projects.length === 0 || declared === projects[0]) return [];
 
@@ -433,7 +433,7 @@ function consoleProjectDisagreement(config: StradConfig): string[] {
           : ` and does not list "${declared}" at all`) +
         `. storeProject() prefers SECRETS_PROJECT_ID over this server's ` +
         `consoleStores:, and this is the first server it asks — so the console ` +
-        `index header and /api/secrets/readiness describe "${declared}" while ` +
+        `roster and /api/secrets/readiness describe "${declared}" while ` +
         `the store page defaults to "${projects[0]}". (A deployment whose ` +
         `resolver sets STRAD_PARAMS_PROJECT_ID overrides both. The roster's ` +
         `per-path gcloud commands follow neither: each resolves to the store ` +
@@ -542,7 +542,8 @@ function storesWithNoConsole(config: StradConfig): string[] {
     messages.push(
       `server "${server.slug}": mcpStores: names ${blind.map((p) => `"${p}"`).join(", ")}, ` +
         `which no console page fronts. An agent can create, rotate and delete ` +
-        `parameters there; a human cannot see or undo them in /ui. Add a matching ` +
+        `parameters there; a human cannot see or undo them in the console. Add a ` +
+        `matching ` +
         `consoleStores: entry (with its own admin credential), or leave it if the ` +
         `store is deliberately agent-only.`,
     );

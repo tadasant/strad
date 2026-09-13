@@ -26,7 +26,7 @@ reaches the OAuth verifier.
 
 Different doors take different credentials, but every one that reads an
 `Authorization` header reads it by one rule: `/mcp` and `/api/secrets/readiness`
-(a static token), the console's `/ui` gate and `/console` (the bootstrap token,
+(a static token), the console gate and `/console` (the bootstrap token,
 when it comes as a header rather than `?token=`), and the shared
 `STRAD_INTERNAL_TOKEN` wherever a component asks for it — a strad-image bundle's
 `/mcp`, every `strad-bundle` mount (`/<slug>` and `/<slug>/upload/:token`),
@@ -610,7 +610,8 @@ of every verifier refusal on that route rather than of the deadline in
 particular.
 
 `next` is sanitised to a same-origin absolute path. A scheme-relative `//host`, a
-full URL, a backslash, or **any** C0 control character or DEL falls back to `/ui`
+full URL, a backslash, or **any** C0 control character or DEL falls back to
+`/connectors`
 — not just CR/LF, because a browser also strips TAB and FF while parsing a URL, so
 `/<TAB>/host` would resolve as `//host`. The callback cannot be turned into an
 open redirect.
@@ -618,8 +619,8 @@ open redirect.
 ### The console session
 
 A verified identity becomes a **signed, expiring, stateless cookie**
-(`strad_console_session`), and that cookie is what `/`, `/ui` and `/ui/:server`
-accept. It is HttpOnly, `SameSite=Lax`, `Secure` under `NODE_ENV=production`,
+(`strad_console_session`), and that cookie is what `/`, `/connectors` and
+`/ui/:server` accept. It is HttpOnly, `SameSite=Lax`, `Secure` under `NODE_ENV=production`,
 and scoped to `/`. Re-authenticating is a redirect, not a password.
 
 It runs on two clocks, both set under `auth.google.session`
@@ -719,7 +720,7 @@ caller got in.
 The console gate asks whether a request resolves to a **Principal**, not what that
 principal may do. Any verified member of `hostedDomain` therefore reaches every
 console surface — `/ui/secrets` and the [secret roster](/operate/secrets/) on
-`/ui` included — whatever `auth.google.roles` says: a
+`/connectors` included — whatever `auth.google.roles` says: a
 `roles: []` that reads like "signed in, no permissions" grants the same console as
 `roles: [admin]`. Roles are carried on the Principal and consumed by
 `entitledServers()` for the `/mcp` selection; they are not a console ACL, and the
@@ -730,40 +731,49 @@ clears it tight.
 One decision reads those roles, and it is the one that issues MCP calls rather
 than rendering config: [the playground](#the-console-playground) resolves what it
 may reach through `entitledServers()`, so `roles: []` reaches every console page
-and no server's tools. The icon on `/ui` that opens it is the same decision, so a
-card whose playground would refuse does not offer one.
+and no server's tools. The icon on `/connectors` that opens it is the same
+decision, so a row whose playground would refuse does not offer one.
 
 ### What the console serves, and how you get between the pages
 
-Five destinations, and every page draws the same bar naming all five. That bar is
+Four destinations, and every page draws the same bar naming all four. That bar is
 one definition — `NAV_DESTINATIONS` in `src/ui/nav.ts`, rendered by `layout()` —
 so a page cannot disagree with its siblings about what this console can do, and a
 destination added there appears everywhere at once.
 
-| Destination  | Path          | What it is for                                                                      |
-| ------------ | ------------- | ----------------------------------------------------------------------------------- |
-| `gateway`    | `/`           | The `/mcp` endpoint to paste into a client, and a directory of what sits behind it. |
-| `servers`    | `/ui`         | Each server's scope, and whether the secrets it needs are seeded.                   |
-| `connectors` | `/connectors` | Add, edit or remove a server entry without a deploy.                                |
-| `playground` | `/playground` | Open a server by hand: list the tools it serves you, and call one.                  |
-| `tokens`     | `/tokens`     | Mint and revoke the credentials `/mcp` accepts.                                     |
+| Destination  | Path          | What it is for                                                                                      |
+| ------------ | ------------- | --------------------------------------------------------------------------------------------------- |
+| `gateway`    | `/`           | A splash: the `/mcp` endpoint to paste into a client, and the doors into the console.               |
+| `connectors` | `/connectors` | Every server — its scope, whether its secrets are seeded, and the roster editor where there is one. |
+| `playground` | `/playground` | Open a server by hand: list the tools it serves you, and call one.                                  |
+| `tokens`     | `/tokens`     | Mint and revoke the credentials `/mcp` accepts.                                                     |
 
-A per-server or per-action route is **not** a sixth destination — it marks the
+A per-server or per-action route is **not** a fifth destination — it marks the
 destination it belongs to. `/ui/slack` and `/ui/slack/connect` both light up
-`servers`; `/playground/slack` lights up `playground`; `/connectors/slack` and
-`/connectors/new` light up `connectors`. The bar's mark is a section, not a URL,
-and it is carried by `aria-current="page"` as well as by colour.
+`connectors`; `/playground/slack` lights up `playground`; `/connectors/slack` and
+`/connectors/new` light up `connectors` too. The bar's mark is a section, not a
+URL, and it is carried by `aria-current="page"` as well as by colour.
+
+Split five ways, three of those were the same list of servers: `/` as a directory
+tile per slug, `/ui` as the same slugs again with their scope and secret status,
+and `/connectors` as the same slugs a third time with the editor controls. Nobody
+wants any of those in isolation — you read a status in order to decide what to
+change — so the status is on the entry, the editor is on the entry, and `/` keeps
+only the thing that is about no particular server. `/ui` and `/secrets` are both
+`302`s to `/connectors`; both URLs were published, and a `404` for a page whose
+content moved teaches nobody anything.
 
 `/connectors` is served on **every** deployment, whether or not
-`gateway.configStore.enabled` is set. With a store it is the roster editor; with
-none it is the page that says the editor is off and that this gateway's roster
-comes from the checked-in document. A nav item that resolved to a framework `404`
-on the deployments that most need the explanation would be worse than no item.
+`gateway.configStore.enabled` is set, and it renders the same roster and the same
+badges either way. What the flag gates is the **editor**: the Edit / Disable /
+Remove controls on each row, the "add a connector" menu, and the "removed"
+section. Without a store the page says so in place of them, so nobody goes
+hunting for controls that were never going to be there.
 
 The bar is omitted on exactly the pages reached **without** a console session: the
 `401` sign-in refusal, the precached offline page, and the `/mcp` OAuth consent
 and refusal screens. Every link in it is gated, so drawing it there would
-advertise five doors that answer `401`. `/console`, `/console/login` and
+advertise four doors that answer `401`. `/console`, `/console/login` and
 `/console/logout` are not in it either — they are the session endpoints, not
 pages.
 
@@ -774,7 +784,7 @@ tools and calls them with arguments a human types. `/playground` with no server 
 the picker: every configured slug, with the ones this console session may open as
 links and the ones it may not named with the reason — `disabled` is a config
 change, `not entitled` is a role change. It is derived from the same
-`playgroundAccess()` the `/ui` cards ask, so the two cannot disagree about which
+`playgroundAccess()` the `/connectors` rows ask, so the two cannot disagree about which
 slugs open. That makes it the one console
 surface that has to answer an MCP question, and the two doors share no credential
 — a browser holding a console session cannot present a bearer token to `/mcp`,
@@ -808,14 +818,14 @@ deployment whose `auth.google.roles` is empty gets a console whose playground
 opens on nothing. That is fail-closed and intended — the playground is the console
 session's own entitlement rendered, not a privileged view of the registry.
 
-**The icon that offers it runs the same decision.** `/ui` draws a playground icon
-on a card only where `playgroundAccess()` — the function the page itself decides
-on — says this session may open it. Two things put that beyond "is the server
-enabled": `entitledServers()` intersects role→servers with the server's own
-`entitlements:`, so a server can be mounted and still be one the console's role
-does not reach, and both console role arrays default to `[]`. On either, the card
-renders and the icon does not. The card stays because roles are not a console ACL.
-The control that would land on a `424` is what is withheld.
+**The icon that offers it runs the same decision.** `/connectors` draws a
+playground icon on a row only where `playgroundAccess()` — the function the page
+itself decides on — says this session may open it. Two things put that beyond "is
+the server enabled": `entitledServers()` intersects role→servers with the server's
+own `entitlements:`, so a server can be mounted and still be one the console's
+role does not reach, and both console role arrays default to `[]`. On either, the
+row renders and the icon does not. The row stays because roles are not a console
+ACL. The control that would land on a `424` is what is withheld.
 
 The **copy** icon beside it is deliberately not gated this way. What it copies is
 `/mcp?servers=<slug>`, addressed to a token principal — a different identity — so
@@ -823,7 +833,7 @@ an operator copying the URL an agent's token will use is doing something their o
 console roles say nothing about. It is withheld only for a `disabled` server,
 which is mounted for nobody and refused whatever token presents it.
 
-**CSRF** rests on the same `SameSite=Lax` cookie as the `/ui` writes: a cross-site
+**CSRF** rests on the same `SameSite=Lax` cookie as every other console write: a cross-site
 `POST` arrives without it and the gate `401`s. Both routes additionally require
 `Content-Type: application/json`, which a cross-site `<form>` cannot send and
 which puts any scripted attempt behind a CORS preflight this app answers for
@@ -877,7 +887,8 @@ property, not an authorization one.
 
 **It cannot be turned into a presence oracle.** The names core asks about come
 from the config core is running plus what the component itself reports under
-`STRAD_PARAM_KEYS`. No request parameter on `/ui` or `/api/secrets/readiness`
+`STRAD_PARAM_KEYS`. No request parameter on `/connectors` or
+`/api/secrets/readiness`
 reaches a probed name, so no caller — however privileged — can ask strad whether a
 name of its own choosing exists. That matters because prod's `/mcp` credential
 structurally cannot read a secret value and prod's console credential is
@@ -903,7 +914,7 @@ category, and it takes no arguments so it cannot accidentally leave that
 category. `test/pwa.test.ts` asserts each absence against what an anonymous
 caller can actually pull.
 
-Nothing else moved. `/`, `/ui`, `/ui/:server` and every console `POST` still sit
+Nothing else moved. `/`, `/connectors`, `/ui/:server` and every console `POST` still sit
 behind `requireConsoleUi`, and the worker declines to cache or even observe any
 of them. See [The console as an installed
 app](/operate/console-pwa/#what-the-service-worker-caches).
@@ -926,11 +937,11 @@ the actor holds something that dies in minutes instead (see
 [Known limitations](/limitations/)). Deleting it is a
 separate change, after Google sign-in is verified working in prod — in that order,
 because `src/ui/console-auth.ts` imports from `src/auth/dev.ts` and removing the
-module first leaves `/ui` with no fallback authenticator.
+module first leaves the console with no fallback authenticator.
 
 ### Console login tokens: the automated actor's door
 
-A CI job or an agent driving `/ui` with Playwright needs a console session, and
+A CI job or an agent driving the console with Playwright needs a session, and
 handing it the bootstrap token puts a standing console credential in a job log,
 a transcript or a browser profile, where it outlives the task. So the standing
 credential **mints** a single-use token and the actor **exchanges** it:
@@ -950,7 +961,7 @@ curl -s -X POST https://staging.strad.tadasant.com/console/tokens \
 # In the actor, which only ever sees the token:
 curl -s -c jar -X POST https://staging.strad.tadasant.com/console/token-login \
   -H 'content-type: application/json' -d '{"token":"3f2a…c9.Xk…"}'
-curl -s -b jar https://staging.strad.tadasant.com/ui
+curl -s -b jar https://staging.strad.tadasant.com/connectors
 ```
 
 A Playwright actor does the same thing with `context.request.post(…)`, which
@@ -1081,7 +1092,7 @@ and state — because it is a broken automation or a stolen token. See
 
 A caller who is turned away is in one of exactly two situations, and they need
 opposite fixes. `consoleDenial()` in `src/auth/dev.ts` decides which, and both
-`/console` (JSON) and the `/ui` sign-in wall (HTML) render its answer, so the two
+`/console` (JSON) and the console's sign-in wall (HTML) render its answer, so the two
 surfaces cannot drift into disagreeing.
 
 | The 401                   | What it means                                                                           | The fix             |

@@ -6,14 +6,14 @@ import { parseConfig } from "../src/config/load.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
-import { badgeFor, sortEntries, type Entry } from "../src/ui/index-page.ts";
+import { badgeFor, sortEntries, type Entry } from "../src/ui/roster-page.ts";
 import type { ServerConfig } from "../src/config/schema.ts";
 
 /**
- * `/ui` — the badges, the ordering, and the popout.
+ * `/connectors` — the badges, the grouping, and the popout.
  *
  * `test/ui.secret-status.test.ts` covers the derivation; this file covers what
- * the index does WITH it. Three claims, and each one is a decision that could
+ * the roster does WITH it. Four claims, and each one is a decision that could
  * have gone the other way:
  *
  *   1. READY means OBSERVED. "Could not be checked" is an ISSUE, not a quiet
@@ -23,6 +23,13 @@ import type { ServerConfig } from "../src/config/schema.ts";
  *   3. THE ISSUE BADGE IS A CONTROL. It opens a popout naming the secret, the
  *      store, the project and the exact path — not a generic "something is
  *      wrong".
+ *   4. THE ENTRIES THAT NEED SOMETHING COME FIRST. This is a working surface,
+ *      not a scoreboard; sorting the greens to the top put the rows worth
+ *      reading below the fold on a 35-entry roster.
+ *
+ * `test/connectors.render.test.ts` covers the OTHER half of the same page — the
+ * editor controls, the source chips and the escaping — which needs a runtime
+ * roster holder and is therefore driven through the renderer rather than HTTP.
  */
 
 // ---------------------------------------------------------------------------
@@ -141,7 +148,7 @@ const boot = async (yaml: string): Promise<string> => {
   const addr = s.address();
   if (typeof addr === "string" || !addr) throw new Error("no port");
   const body = await (
-    await fetch(`http://127.0.0.1:${addr.port}/ui`, { headers: AUTH })
+    await fetch(`http://127.0.0.1:${addr.port}/connectors`, { headers: AUTH })
   ).text();
   s.close();
   return body;
@@ -170,7 +177,7 @@ beforeAll(async () => {
   if (typeof addr === "string" || !addr) throw new Error("no port");
   server = s;
   html = await (
-    await fetch(`http://127.0.0.1:${addr.port}/ui`, { headers: AUTH })
+    await fetch(`http://127.0.0.1:${addr.port}/connectors`, { headers: AUTH })
   ).text();
 });
 
@@ -217,18 +224,22 @@ describe("sortEntries", () => {
     view: dedicated ? "gcs" : "overview",
   });
 
-  it("puts READY before ISSUE, and a dedicated view before the overview", () => {
+  it("puts ISSUE before READY, and a dedicated view before the overview", () => {
+    // The order runs the other way from the one the roster shipped with, and
+    // deliberately: the entries something has to be done about are why anyone
+    // opens this page, and sorting the greens to the top is what pushed them
+    // below the fold.
     const sorted = sortEntries([
-      entry("issue-no-view", "ISSUE", false),
       entry("ready-no-view", "READY", false),
-      entry("issue-view", "ISSUE", true),
+      entry("issue-no-view", "ISSUE", false),
       entry("ready-view", "READY", true),
+      entry("issue-view", "ISSUE", true),
     ]);
     expect(sorted.map((e) => e.server.slug)).toEqual([
-      "ready-view",
-      "ready-no-view",
       "issue-view",
       "issue-no-view",
+      "ready-view",
+      "ready-no-view",
     ]);
   });
 
@@ -237,7 +248,7 @@ describe("sortEntries", () => {
     // secrets, and a green would be a claim about a server that answers nothing.
     const sorted = sortEntries([
       entry("off", undefined, true, false),
-      entry("on", "ISSUE", false),
+      entry("on", "READY", false),
     ]);
     expect(sorted.map((e) => e.server.slug)).toEqual(["on", "off"]);
   });
@@ -256,7 +267,7 @@ describe("sortEntries", () => {
 // The rendered page
 // ---------------------------------------------------------------------------
 
-describe("GET /ui — badges", () => {
+describe("GET /connectors — badges", () => {
   it("badges the two entries whose secrets resolve READY", () => {
     // Two READY badges, two ISSUE badges, and no badge at all on the disabled
     // entry — five servers, four badges.
@@ -288,17 +299,17 @@ describe("GET /ui — badges", () => {
     expect(html).toContain('aria-haspopup="dialog"');
   });
 
-  it("puts the badge where the DUPLICATED slug was", () => {
-    // `beta` declares no `title:`, so the heading IS the slug — printing it
-    // again in the foot was the duplication this replaces.
-    expect(html).not.toContain('<code class="card-slug">beta</code>');
-    expect(html).not.toContain('<code class="card-slug">alpha</code>');
+  it("prints the slug beside the name only where a title: differs from it", () => {
+    // `beta` declares no `title:`, so the name IS the slug — printing it again
+    // beside itself was the duplication this replaces.
+    expect(html).not.toContain('<code class="conn-alt">beta</code>');
+    expect(html).not.toContain('<code class="conn-alt">alpha</code>');
     // Where a `title:` genuinely differs, the slug is information rather than an
-    // echo, and it still renders beside the badge.
-    expect(html).toContain('<code class="card-slug">object-store-bad</code>');
+    // echo, and it still renders beside the name.
+    expect(html).toContain('<code class="conn-alt">object-store-bad</code>');
   });
 
-  it("orders the grid READY-first, then by whether the entry has a view", () => {
+  it("orders the rows ISSUE-first, then by whether the entry has a view", () => {
     // The config declares them in the WRONG order on purpose — beta,
     // object-store-bad, alpha, object-store, retired — so a page that simply
     // echoed config order would fail this.
@@ -307,20 +318,35 @@ describe("GET /ui — badges", () => {
       expect(i, `${needle} is on the page`).toBeGreaterThan(-1);
       return i;
     };
-    const objectStore = at(">object-store</a>"); // READY + view
-    const alpha = at(">alpha</a>"); // READY, overview only
     const bad = at(">Broken bucket</a>"); // ISSUE + view
     const beta = at(">beta</a>"); // ISSUE, overview only
+    const objectStore = at(">object-store</a>"); // READY + view
+    const alpha = at(">alpha</a>"); // READY, overview only
     const retired = at(">retired</a>"); // disabled
 
-    expect(alpha).toBeGreaterThan(objectStore);
-    expect(bad).toBeGreaterThan(alpha);
     expect(beta).toBeGreaterThan(bad);
-    expect(retired).toBeGreaterThan(beta);
+    expect(objectStore).toBeGreaterThan(beta);
+    expect(alpha).toBeGreaterThan(objectStore);
+    expect(retired).toBeGreaterThan(alpha);
+  });
+
+  it("draws a heading over each group, with its count", () => {
+    // The grouping is what makes the order legible rather than merely correct:
+    // "three of these need something" is a claim a reader can act on, where a
+    // silently reordered list is one they have to infer.
+    for (const [label, count] of [
+      ["Needs attention", 2],
+      ["Ready", 2],
+      ["Disabled", 1],
+    ] as const) {
+      expect(html).toContain(
+        `<span class="conn-group-l">${label}</span><span class="conn-group-n">${count}</span>`,
+      );
+    }
   });
 });
 
-describe("GET /ui — the store diagnosis is cached, and the page says so", () => {
+describe("GET /connectors — the store diagnosis is cached, and the page says so", () => {
   /** Boot with a counting store and render `/ui` twice on the one process. */
   const render = async (
     opts: { renderThrows?: boolean } = {},
@@ -375,7 +401,9 @@ describe("GET /ui — the store diagnosis is cached, and the page says so", () =
     if (typeof addr === "string" || !addr) throw new Error("no port");
     const get = async (): Promise<string> =>
       (
-        await fetch(`http://127.0.0.1:${addr.port}/ui`, { headers: AUTH })
+        await fetch(`http://127.0.0.1:${addr.port}/connectors`, {
+          headers: AUTH,
+        })
       ).text();
     const first = await get();
     const second = await get();
@@ -421,7 +449,7 @@ describe("GET /ui — the store diagnosis is cached, and the page says so", () =
   });
 });
 
-describe("GET /ui with nothing enabled", () => {
+describe("GET /connectors with nothing enabled", () => {
   const EMPTY = `
 version: 1
 gateway: { name: strad, env: test }
@@ -442,13 +470,13 @@ servers: []
     expect(body).not.toContain("Every server is READY");
     expect(body).toContain("No servers are enabled on this gateway");
     expect(body).toContain(
-      `<p class="empty">No servers are configured on this gateway.</p>`,
+      `class="empty">No servers are configured on this gateway.`,
     );
   });
 
   it("says the same when every server is DISABLED, not just when there are none", async () => {
-    // `sorted.length` is non-zero here and `statuses.length` is not — the grid
-    // renders a card and the roster is still empty.
+    // `sorted.length` is non-zero here and `statuses.length` is not — the table
+    // renders a row and the secret roster is still empty.
     const body = await boot(
       EMPTY.replace(
         "servers: []",
@@ -467,7 +495,7 @@ servers: []
   });
 });
 
-describe("GET /ui — the ISSUE popout", () => {
+describe("GET /connectors — the ISSUE popout", () => {
   const popout = () => {
     const at = html.indexOf('<dialog class="fixdlg" id="fix-beta"');
     expect(at).toBeGreaterThan(-1);
@@ -588,7 +616,7 @@ servers:
     entitlements: [admin]
 `;
 
-describe("GET /ui — an ISSUE badge is never a dead control", () => {
+describe("GET /connectors — an ISSUE badge is never a dead control", () => {
   let managed: string;
   beforeAll(async () => {
     managed = await boot(MANAGED_YAML);
@@ -715,7 +743,7 @@ const playIcon = (slug: string) =>
   `aria-label="Open the playground for ${slug}"`;
 const copyIcon = (slug: string) => `aria-label="Copy the MCP URL for ${slug}"`;
 
-describe("GET /ui — the playground icon", () => {
+describe("GET /connectors — the playground icon", () => {
   it("offers it only where THIS console identity may open the playground", async () => {
     // The icon and the page are one decision (`playgroundAccess`). `theirs` is
     // ENABLED and reached by `console: { servers: ["*"] }`, and its own
@@ -728,7 +756,7 @@ describe("GET /ui — the playground icon", () => {
     // Still a disabled server, still no icon: the assertion that held before.
     expect(body).not.toContain(playIcon("retired"));
 
-    // The CARD is there either way — roles are not a console ACL, and hiding an
+    // The ROW is there either way — roles are not a console ACL, and hiding an
     // entry would be a different (and wrong) change. Only the control is gone.
     expect(body).toContain('href="/ui/theirs">theirs</a>');
   });
