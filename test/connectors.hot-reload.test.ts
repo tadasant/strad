@@ -241,6 +241,16 @@ describe("adding a connector through the console", () => {
     const html = await res.text();
     expect(html).toContain("live on this gateway now");
 
+    // THE RESPONSE TO THE WRITE ITSELF, not a later GET. A roster write applies
+    // by REBUILDING the app, and this POST is still running inside the closure
+    // of the app it replaced — so the page it re-renders has to read the LIVE
+    // document rather than the config its own app was built with. Asserting
+    // only the flash passes while the table underneath it still shows the
+    // pre-write roster: "added saved, it is live on this gateway now" over a
+    // table with no `added` row in it.
+    expect(html).toContain("Added from the console");
+    expect(html).toContain('href="/ui/added"');
+
     // The process never restarted, and this is the same listening socket.
     const client = await connect("added");
     const tools = await client.listTools();

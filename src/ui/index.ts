@@ -406,8 +406,23 @@ async function handleConnectors(
   flash?: Flash,
   status = 200,
 ): Promise<void> {
+  // Absent when this deployment keeps no roster in a store, which takes the
+  // editor away and leaves every other half of the page standing.
+  const runtime = opts.runtimeConfig?.() ?? null;
+
+  // THE LIVE DOCUMENT, not the one this app was built with. A roster write
+  // applies by REBUILDING the app (`gateway.reload()`), and the POST that
+  // caused it is still running inside the closure of the app it replaced — so
+  // `opts.config` here is the roster as it was BEFORE the write. Rendering that
+  // under the write's own flash is the page contradicting itself: "added saved,
+  // it is live on this gateway now" over a table with no `added` row, a Disable
+  // button on the entry you just disabled, and a removed slug listed as serving
+  // and as subtracted at once. The overlay half is read live a few lines down,
+  // which is what makes the mismatch visible rather than merely stale.
+  const config = runtime?.config() ?? opts.config;
+
   const { statuses, boot, storeDiagnosis } = await readDeploymentSecretStatus({
-    config: opts.config,
+    config,
     bag: opts.secrets,
     env: opts.env,
     secretProvider: opts.secretProvider,
@@ -422,16 +437,13 @@ async function handleConnectors(
   // copied `?servers=` URL pasteable on a deployment that declares no publicUrl
   // — the same fallback the landing page takes.
   const host = req.get("host");
-  // Absent when this deployment keeps no roster in a store, which takes the
-  // editor away and leaves every other half of the page standing.
-  const runtime = opts.runtimeConfig?.() ?? null;
 
   res
     .status(status)
     .type("html")
     .send(
       renderConnectors({
-        config: opts.config,
+        config,
         statuses,
         boot,
         storeDiagnosis,

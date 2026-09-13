@@ -147,6 +147,19 @@ describe("escaping", () => {
       expect(html).not.toContain('action="/connectors/alpha/remove"');
       expect(html).not.toContain('href="/connectors/new?kind=remote-http"');
     }
+
+    // THE MIDDLE STATE KEEPS THE DOOR AND LOSES THE CONTROLS, and that is the
+    // half worth pinning: `handleEdit` gates on `editable`, not `writable`, so
+    // `/connectors/alpha` is a page on a gateway that holds a store it cannot
+    // write — and that page is the only place an entry's FULL declaration is
+    // shown. Dropping the link with the buttons would take it away from a
+    // reader the route would have served.
+    expect(readOnly).toContain(
+      '<a class="btn-ghost" href="/connectors/alpha">View</a>',
+    );
+    // With no store at all the route answers the "editor is off" 404, so the
+    // door would lead from a working page to a dead one.
+    expect(none).not.toContain('href="/connectors/alpha"');
     expect(writable).toContain('action="/connectors/alpha/remove"');
     expect(writable).toContain('action="/connectors/alpha/toggle"');
     expect(writable).toContain('href="/connectors/alpha"');

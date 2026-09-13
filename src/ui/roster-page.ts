@@ -309,6 +309,7 @@ ${members
       base,
       playable: playgroundAccess(config, entitled, e.server.slug).ok,
       source: roster?.sources.get(e.server.slug),
+      editable,
       writable,
     }),
   )
@@ -350,7 +351,9 @@ ${addMenu(writable)}
     <code>STRAD_TOKENS</code> every <code>/mcp</code> request is rejected and no amount of
     per-server <code>READY</code> above means anything. That one is a roster rather than a
     value: <a href="/tokens">the tokens console</a> shows which credentials are live, mints
-    one, and revokes one.</p>
+    one, and revokes one. A key marked <code>not set · optional</code> is absent and not
+    required: nothing on this deployment reads it unless the feature it belongs to is
+    turned on.</p>
   <div class="listing">
 ${opts.boot.map((o) => bootRow(o)).join("\n")}
   </div>
@@ -654,6 +657,13 @@ interface RowContext {
   playable: boolean;
   /** Where this slug came from, when there is a runtime holder to ask. */
   source: EntrySource | undefined;
+  /**
+   * Whether there is a roster in a store at all, i.e. whether
+   * `/connectors/<slug>` is a page rather than the "editor is off" 404. It
+   * gates the door; `writable` gates the controls, and the two come apart on a
+   * gateway that holds a store it cannot write.
+   */
+  editable: boolean;
   /** Whether a change made here would actually go anywhere. */
   writable: boolean;
 }
@@ -713,7 +723,7 @@ ${
       </td>
       <td class="conn-badge">${badgeMarkup(entry)}</td>
       <td>
-        <div class="conn-acts">${rowIcons(server, ctx.base, ctx.playable)}<a class="card-cta" href="${href}">${VIEW_CTA[view]}</a>${editControls(server, ctx.writable)}</div>
+        <div class="conn-acts">${rowIcons(server, ctx.base, ctx.playable)}<a class="card-cta" href="${href}">${VIEW_CTA[view]}</a>${editControls(server, ctx)}</div>
       </td>
     </tr>`;
 }
@@ -732,20 +742,32 @@ function sourceChip(source: EntrySource | undefined): string {
 }
 
 /**
- * Edit, Disable and Remove — only where a write would land.
+ * The entry's own page, and — where a write would land — the controls on it.
  *
- * On `writable: false` the row is not merely missing its controls, it is missing
- * them for a reason the page has already given at the top (see editorNote): the
- * deployment either keeps no roster in a store or holds no credential to write
- * one. Drawing a disabled button per row would repeat that answer 35 times.
+ * THREE STATES, not two, because `editable` and `writable` come apart. A
+ * gateway with a store it cannot write still SERVES `/connectors/<slug>`:
+ * `handleEdit` gates on `editable` (src/ui/servers.ts), and that page is the
+ * only place a human sees an entry's full declaration — every field, not the
+ * handful the row has room for. So it keeps a read-only `View` door and loses
+ * the controls. A gateway with no store at all answers that route with the
+ * "editor is off" 404, so offering the door would send a reader from a working
+ * page to a dead one; the roster is the whole of what it has.
+ *
+ * Nothing is drawn disabled. The page has already said which of the three this
+ * deployment is, once, at the top (see editorNote) — repeating that answer 35
+ * times down the roster is not a clearer way to say it.
  *
  * Remove is destructive and gets the danger styling rather than a confirm step,
  * because the act is recoverable: the removal is a stored subtraction over the
  * checked-in document, and `Restore` on the row below puts a file entry back.
  */
-function editControls(server: ServerConfig, writable: boolean): string {
-  if (!writable) return "";
+function editControls(server: ServerConfig, ctx: RowContext): string {
   const slug = server.slug;
+  if (!ctx.writable) {
+    return ctx.editable
+      ? `<a class="btn-ghost" href="${esc(connectorsPath(slug))}">View</a>`
+      : "";
+  }
   return `<a class="btn-ghost" href="${esc(connectorsPath(slug))}">Edit</a>
           <form method="post" action="${esc(connectorsPath(slug, "toggle"))}">
             <button class="btn-ghost" type="submit">${server.enabled ? "Disable" : "Enable"}</button>
@@ -1347,13 +1369,14 @@ function bootRow(entry: {
   const optionalAbsent = state === "missing" && !entry.required;
   const chip = optionalAbsent ? "chip-plain" : SECRET_CHIP_CLASS[state];
   const label = optionalAbsent ? "not set · optional" : SECRET_LABEL[state];
-  const text = optionalAbsent
-    ? "Not set, and not required. Nothing on this deployment reads it unless the feature it belongs to is turned on."
-    : detail;
 
-  // The prose is for a row that needs it. On a `plumbed` key it restated the
-  // chip in two sentences, and nine of those is most of a screen between a
-  // reader and the two rows that are actually about something.
+  // THE PROSE IS FOR A ROW THAT NEEDS IT, and two kinds of row do not.
+  //
+  // A `plumbed` key's sentence restates its chip in two sentences. An absent
+  // OPTIONAL key's says the same thing as every other absent optional key, and
+  // a deployment with no console has six of them in a row — so that one is said
+  // ONCE, above the listing, rather than six times inside it. Both are stated
+  // where they belong; neither is dropped.
   const detailed = state !== "present" && !optionalAbsent;
 
   return `    <div class="row secret-row">
@@ -1361,7 +1384,7 @@ function bootRow(entry: {
       <span class="chip ${chip} chip-route">${esc(label)}</span>
       ${sourceBadge(entry.observation.source)}
       ${entry.required ? `<span class="chip chip-warnish">required</span>` : ""}
-      ${detailed ? `<span class="sec-detail sec-detail-inline">${esc(text)}</span>` : ""}
+      ${detailed ? `<span class="sec-detail sec-detail-inline">${esc(detail)}</span>` : ""}
     </div>`;
 }
 

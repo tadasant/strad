@@ -1923,9 +1923,10 @@ form.inline{display:flex;align-items:center;gap:.25rem;margin:0}
 .tile-actions{display:flex;align-items:center;justify-content:space-between;gap:.6rem;
   margin-top:auto;padding-top:.2rem}
 
-/* The connector roster (src/ui/servers-page.ts). A real table, because the
+/* The connectors roster (src/ui/roster-page.ts). A real table, because the
    roster is a grid of short facts per slug rather than the variable-length
-   rows .listing is shaped for. */
+   rows .listing is shaped for. It lives in the theme rather than on that page
+   because the entry form's sibling markup (src/ui/servers-page.ts) shares it. */
 .conn-table{width:100%;border-collapse:collapse;margin-top:1rem;
   border:1px solid var(--g5);border-radius:.6rem;overflow:hidden;background:var(--g7)}
 .conn-table th{text-align:left;padding:.6rem .8rem;font-size:.7rem;font-weight:600;
@@ -1934,11 +1935,8 @@ form.inline{display:flex;align-items:center;gap:.25rem;margin:0}
 .conn-table td{padding:.65rem .8rem;border-top:1px solid var(--g6);vertical-align:middle;
   font-size:.86rem}
 .conn-table tr:first-child td{border-top:none}
-.conn-table td.conn-roles{color:var(--g3);font-size:.8rem;white-space:nowrap}
 .conn-acts{display:flex;gap:.35rem;justify-content:flex-end;flex-wrap:wrap}
 .conn-acts form{display:inline}
-.conn-head{display:flex;align-items:baseline;justify-content:space-between;gap:1rem;flex-wrap:wrap}
-.conn-meta{font-family:var(--font-mono);font-size:.74rem;color:var(--g4)}
 .conn-form{max-width:42rem}
 .conn-form .field{margin-bottom:1.1rem}
 .conn-sub{font-size:.95rem;font-weight:600;color:var(--white);margin:1.6rem 0 .3rem}
