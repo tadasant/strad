@@ -209,15 +209,15 @@ describe("sortEntries", () => {
   const entry = (
     slug: string,
     badge: "READY" | "ISSUE" | undefined,
-    hasView: boolean,
+    dedicated: boolean,
     enabled = true,
   ): Entry => ({
     server: { slug, enabled } as ServerConfig,
     badge,
-    view: hasView ? "gcs" : "overview",
+    view: dedicated ? "gcs" : "overview",
   });
 
-  it("puts READY before ISSUE, and a browsable entry before one with no view", () => {
+  it("puts READY before ISSUE, and a dedicated view before the overview", () => {
     const sorted = sortEntries([
       entry("issue-no-view", "ISSUE", false),
       entry("ready-no-view", "READY", false),

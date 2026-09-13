@@ -9,6 +9,7 @@ import {
   sharedSecretProviders,
 } from "../src/secrets/provider/index.ts";
 import { consoleView } from "../src/ui/index-page.ts";
+import { renderServerOverview } from "../src/ui/server-overview.ts";
 
 /**
  * Every card on `/ui` links to `/ui/<slug>`, and every such link lands on a page.
@@ -133,9 +134,9 @@ describe("consoleView", () => {
     expect(view("echo")).toBe("overview");
   });
 
-  it("gives a DISABLED connector the overview, as the route does", () => {
+  it("gives a DISABLED connector with no other view the overview, as the route does", () => {
     // connectorFor answers only for an enabled server, so /ui/<slug> for a
-    // disabled one falls through to the overview. The card has to agree.
+    // disabled one falls through to env detection. The card has to agree.
     const disabled = parseConfig(
       YAML.replace(
         "path: /sheets-connector\n",
@@ -145,6 +146,78 @@ describe("consoleView", () => {
     const s = disabled.servers.find((x) => x.slug === "sheets-connector")!;
     expect(s.enabled).toBe(false);
     expect(consoleView(disabled, s)).toBe("overview");
+  });
+
+  it("puts a declared connector ahead of a bucket, and only while it is enabled", () => {
+    const both = (enabled: boolean) => {
+      const config = parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+bundles:
+  - name: bundle
+servers:
+  - slug: both
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /both
+    enabled: ${enabled}
+    env:
+      GCS_BUCKET: "demo-bucket"
+    oauth:
+      provider: generic
+      authorizeUrl: https://linear.app/oauth/authorize
+      tokenUrl: https://api.linear.app/oauth/token
+      scopes: [read]
+      clientIdVariable: BOTH_OAUTH_CLIENT_ID
+      clientSecretVariable: BOTH_OAUTH_CLIENT_SECRET
+      refreshTokenVariable: BOTH_OAUTH_TOKEN
+`);
+      return consoleView(config, config.servers[0]!);
+    };
+    expect(both(true)).toBe("connector");
+    // Disabled, the route skips the connector and resolves the bucket.
+    expect(both(false)).toBe("gcs");
+  });
+});
+
+describe("renderServerOverview", () => {
+  const config = parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+bundles:
+  - name: bundle
+servers:
+  - slug: plain-image
+    kind: supplementary-image
+    title: '<b>"Plain"</b>'
+    description: "<script>alert(1)</script>"
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /plain
+`);
+  const html = renderServerOverview({
+    server: config.servers[0]!,
+    playable: false,
+    base: "",
+  });
+
+  it("escapes a declared title and description", () => {
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain("&lt;script&gt;");
+    expect(html).not.toContain('<b>"Plain"</b>');
+  });
+
+  it("shows a supplementary image's bundle and path", () => {
+    expect(html).toMatch(/scope-l">bundle<\/span><code>bundle</);
+    expect(html).toMatch(/scope-l">path<\/span><code>\/plain</);
+  });
+
+  it("offers no MCP URL without an origin, and says why the playground is not offered", () => {
+    expect(html).not.toContain("mcp?servers=");
+    expect(html).toContain("The playground is not open");
   });
 });
 
@@ -186,7 +259,7 @@ describe("GET /ui/<slug> — the page each link opens", () => {
     expect(await res.text()).toContain("What this authorization grants");
   });
 
-  it("serves a read-only overview for a kind that had no view", async () => {
+  it("serves a read-only overview for a kind with no dedicated view", async () => {
     const res = await get("/ui/deepwiki");
     expect(res.status).toBe(200);
     const html = await res.text();

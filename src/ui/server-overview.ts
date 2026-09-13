@@ -13,14 +13,15 @@ import { connectorsPath } from "./servers-page.ts";
  * worth landing on. Three kinds of server get a dedicated view (a connector's
  * Connect page, a parameter store, a bucket browser); everything else gets this:
  * what the entry is, whether it is mounted, what its badge says, and the doors
- * that lead somewhere from here. A richer per-kind view can replace it later
- * without moving the link.
+ * that lead somewhere from here. A per-kind view that lands in `handleServerView`
+ * takes the slug over without moving the link.
  *
- * READ-ONLY, and declared config only. It renders nothing the index does not
- * already show for the same entry — no value, no credential, no parameter path —
- * so it adds no reach to the console and nothing an agent lacks through `/mcp`.
- * The upstream URL is reduced to its host: a remote server's path is where a
- * vendor puts a key when it puts one in the URL at all.
+ * READ-ONLY, and declared, non-credential config only: the index's badge and
+ * summary, plus the kind, bundle and path, or the upstream host. No value, no
+ * credential, no parameter path, no env — `/connectors/<slug>` already shows the
+ * full declaration behind the same gate, so this adds no reach to the console and
+ * nothing an agent lacks through `/mcp`. The upstream URL is reduced to its host:
+ * a remote server's path is where a vendor puts a key when it puts one in the URL.
  */
 export interface ServerOverviewOptions {
   server: ServerConfig;
@@ -53,7 +54,7 @@ export function renderServerOverview(opts: ServerOverviewOptions): string {
       ? `<p class="ov-badge"><span class="chip ${badge === "READY" ? "chip-ok" : "chip-bad"} chip-badge">${badge}</span>
     <span class="ov-summary">${esc(status.summary)}</span></p>
   <p class="ov-note">The <a href="${UI_PREFIX}">servers index</a> has the per-secret detail behind this badge.</p>`
-      : "";
+      : `<p class="ov-note">No secret status is recorded for this server.</p>`;
 
   const connectorNote =
     server.oauth && !server.enabled

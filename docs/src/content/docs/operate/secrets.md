@@ -1669,11 +1669,14 @@ The overview is what every other kind gets until it has a view of its own: the
 kind, the slug, whether it is enabled, its bundle and path or its upstream host
 (the host only, never the URL's path), the same badge and summary the index
 draws, its MCP URL, and links to its playground and its entry in the connectors
-editor. It shows declared config and nothing else, and it has no form on it.
+editor. It shows declared, non-credential config and nothing else, and it has no
+form on it.
 
-A disabled `oauth:` server gets the overview, not the Connect page: the console
-answers a connector only while it is enabled. A server that somehow declared both
-a parameters project and a bucket gets the parameter store.
+A disabled `oauth:` server is not answered as a connector — the console answers a
+connector only while it is enabled — so it gets whatever the rest of its config
+declares: the parameter store or the bucket browser if it declares one, the
+overview otherwise. A server that somehow declared both a parameters project and a
+bucket gets the parameter store.
 
 "Declares" means the same thing here as everywhere else the console reads config —
 a `supplementary-image`'s `env:` and `consoleEnv:` together, a `builtin`'s

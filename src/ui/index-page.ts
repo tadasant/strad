@@ -149,11 +149,10 @@ export interface Entry {
 export type ConsoleView = "connector" | "secrets" | "gcs" | "overview";
 
 /**
- * Asked in the order `handleServerView` in `src/ui/index.ts` asks it: a
- * declared `oauth:` connector first, then the parameter store, then the bucket.
- * A card that labelled a slug by a different reading than the route renders it
- * by is how six connector slugs came to say "No view" above a working Connect
- * page — the check skipped the connector branch the route answers first.
+ * Asked in the order `handleServerView` in `src/ui/index.ts` asks it: an
+ * enabled `oauth:` connector first, then the parameter store, then the bucket.
+ * A card that reads a slug differently from the route labels a working page as
+ * something else, so this is the one reading both use.
  */
 export function consoleView(
   config: StradConfig,
@@ -1186,8 +1185,8 @@ const GUIDE = `
   <details class="acc">
     <summary>How the entries are ordered</summary>
     <div class="acc-body">
-      <p>READY first, then ISSUE. Within each group, servers with a console view come before
-        servers without one, and config order breaks the remaining ties. Disabled servers sort
+      <p>READY first, then ISSUE. Within each group, servers with a dedicated console view come
+        before servers that only have the overview, and config order breaks the remaining ties. Disabled servers sort
         last and carry no badge — strad does not mount them, so they need no secrets, and a
         green would be a claim about a server that answers nothing.</p>
     </div>

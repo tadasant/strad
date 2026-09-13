@@ -1658,7 +1658,6 @@ ${NAV_CSS}
 .card-desc{color:var(--g2);font-size:.9rem;margin:0;flex:1}
 .card-foot{display:flex;align-items:center;justify-content:space-between;margin-top:.2rem}
 .card-cta{color:var(--text-accent);font-weight:600;font-size:.86rem}
-.card-muted{color:var(--g4);font-size:.82rem}
 .chip{font-size:.68rem;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.04em;
   border:1px solid var(--g5);border-radius:4px;padding:.1rem .4rem;color:var(--g3)}
 .chip-off{color:var(--g4);border-style:dashed}
