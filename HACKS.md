@@ -4944,22 +4944,27 @@ The MCP door inherits that window rather than widening it: `save_connector`
 takes `expectedRevision` optionally, so a caller that read the roster first gets
 the same refusal, and one that did not gets the same last-writer-wins.
 
-**Neither gap means a runtime write is unbounded.** Three rules bound what one
+**Neither gap means a runtime write is unbounded.** Four rules bound what one
 may reach, as distinct from who may make one. A runtime-authored entry's
 `${NAME}` refs resolve against that slug's own `/strad/{env}/mcp/{slug}/static/`
 namespace and nothing else (`forServerIsolated`, `src/secrets/provider/index.ts`),
 so a connector `url:` cannot read core's process environment and send it off-box.
-A runtime write may not change `entitlements:` or `tools:` on a slug the
+A runtime write may not change `entitlements:`, `tools:` or the slug's upstream
+identity — `kind:`, and a supplementary `bundle:` and `path:` — on a slug the
 checked-in document declares (`assertNoAccessControlChange`,
 `src/config/overlay.ts`), keyed on the document so remove-then-recreate is bound
-too. And a runtime write may NAME a credential and may not CARRY one
+too. A runtime write reaches no mount its AUTHOR does not already reach
+(`assertWithinReach`, same file): a new supplementary slug may only land on a
+`bundle:` + `path:` the writing principal reaches through a checked-in slug, and
+`url:` on a checked-in unhosted slug may only be moved by an author that slug's
+`entitlements:` admit. And a runtime write may NAME a credential and may not CARRY one
 (`assertSecretsByReference`, `src/config/secret-position.ts`): the overlay is a
 non-secret parameter, so a literal saved into `headers:`, into `url:`'s userinfo
 or into `oauthRefresh:`'s grant would be a credential at rest in the clear. Disabling a connector that carries one is refused too, because disable
 re-upserts the entry; removing it is always allowed.
-`docs/src/content/docs/operate/runtime-config.md` has all three.
+`docs/src/content/docs/operate/runtime-config.md` has all four.
 
-**THE THIRD RULE HAS TWO POSITIONS IT DOES NOT COVER**, and the reason is the
+**THE NAME-A-CREDENTIAL RULE HAS TWO POSITIONS IT DOES NOT COVER**, and the reason is the
 same in both: a ref-only rule there would refuse the ordinary case. A **URL
 query parameter** — `https://api.example.com/mcp?key=abc` — is a literal
 credential and is accepted, because nothing can tell it from `?version=2`
@@ -4972,6 +4977,20 @@ at runtime. Closing either needs a typed statement of which fields carry a
 credential, per kind and per builtin, which is a schema change rather than a
 rule. `docs/src/content/docs/operate/runtime-config-plan.md` carries it as a
 later phase.
+
+**AND THE REACH RULE IS MEASURED IN MOUNTS, NOT IN TOOLS.** A writer that already
+reaches a mount may create a second slug on it with a WIDER tool surface than the
+checked-in slug it reaches that mount through — so a role the deploy gave
+read-only access to a container can hand itself that container's write tools.
+Closing it means a created slug may serve no more than its author already
+reaches there, and that trades a workflow rather than being free: it narrows the
+wildcard role too, on any mount whose only checked-in slug is the narrow one —
+three of production's 27, the `google-sheets-*-ro` mounts — where it could no
+longer create the wider half of a `-ro` / `-rw` pair without a deploy. Left open
+deliberately, as a posture decision for the operator rather than a defect;
+`docs/src/content/docs/operate/runtime-config-plan.md` carries it as the open
+half of phase 2, and `test/connectors.isolation.test.ts` asserts what strad does
+today so that closing it must update the record.
 
 **Why.** The first is physics, not policy: nothing in a running App Platform
 container can be handed a new environment variable, and a feature that pretended

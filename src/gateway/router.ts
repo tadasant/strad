@@ -382,6 +382,7 @@ export function createMcpHandler(opts: McpHandlerOptions) {
       surface: "mcp",
       selected,
       principalId: principal.id,
+      principalRoles: principal.roles,
       log,
       clientCapabilities,
       // Did the CALLER name these servers, or is this "everything I'm entitled
