@@ -740,8 +740,8 @@ function sourceChip(source: EntrySource | undefined): string {
  * one. Drawing a disabled button per row would repeat that answer 35 times.
  *
  * Remove is destructive and gets the danger styling rather than a confirm step,
- * which is the same trade the roster made before this page absorbed it: the
- * removal is a stored subtraction and `Restore` puts a file entry back.
+ * because the act is recoverable: the removal is a stored subtraction over the
+ * checked-in document, and `Restore` on the row below puts a file entry back.
  */
 function editControls(server: ServerConfig, writable: boolean): string {
   if (!writable) return "";
