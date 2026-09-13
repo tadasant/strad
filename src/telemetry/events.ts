@@ -362,10 +362,38 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      * stops. `strad.connector_refused` on a rising edge is the operational
      * signal (a token that will not rotate is a server about to go dark), and the
      * reason is enough to tell "wrong account" from "the store is down".
+     *
+     * `_connect_failed` is the POST that BEGINS a flow refusing before anyone
+     * reaches the provider: no public URL, no session key, a connector that is
+     * not ready, or an OAuth client the console could not read. `reason` is one
+     * of those, from a closed set in src/ui/connector.ts. It ends `_failed`, and
+     * so ships at ERROR, because the POST carries no fields — the human did
+     * nothing wrong in any branch, so every one is the deployment failing.
+     *
+     * On a client read — `reason: client_unreadable` on either event —
+     * `variable` is the config's name for the value that could not be read,
+     * `failure` is a closed word (`denied`, `not_found`, `unreadable`,
+     * `timeout`, `store`, `unexpected`) and `status` is the store's HTTP
+     * status as a NUMBER, never its status text. The store's own summary names
+     * the Secret Manager resource, and it rides under `error`, which is on no
+     * list: it stays on stderr beside the rest of the payload.
      */
     "strad.connector_begin": ["slug"],
     "strad.connector_connected": ["slug", "variable"],
-    "strad.connector_refused": ["slug", "reason"],
+    "strad.connector_refused": [
+      "slug",
+      "reason",
+      "variable",
+      "failure",
+      "status",
+    ],
+    "strad.connector_connect_failed": [
+      "slug",
+      "reason",
+      "variable",
+      "failure",
+      "status",
+    ],
     /**
      * The runtime server roster changed, and the two ways it can.
      *

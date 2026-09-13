@@ -1200,6 +1200,37 @@ project IAM admin, which no strad process holds, so it is a human step and is no
 applied yet. Removing `setIamPolicy` instead is not an option: it would remove the
 console's ability to create a secret parameter at all.
 
+### 98. An `oauth:` connector needs the console to read its OAuth client
+
+A [connector](/operate/connectors/) reads the slug's client id and client secret
+with the console's own credential, and for a secret parameter that read is Secret
+Manager's `versions.access`: the permission the
+[write-never-read console](/operate/secrets-iam/#1-prod-console-write-but-never-read)
+withholds. So production's connectors need a hand-applied grant,
+`roles/secretmanager.secretAccessor` for the console's service account, **on each
+slug's two client secrets and nothing else**. The command is in
+[Secrets IAM](/operate/secrets-iam/#an-oauth-connector-reads-its-own-oauth-client).
+It needs project IAM admin, which no strad process holds, so it is a human step
+per slug, outside the deploy.
+
+Without it, **Connect** refuses. It says so on the page, at 409, naming the
+permission and the exact resource, and it emits `strad.connector_connect_failed`
+with `reason: client_unreadable` and `status: 403`. That refusal used to be a 503
+that the App Platform ingress replaced with its own edge page, and a bare
+`catch {}` kept no trace of it.
+
+Two costs are worth stating. The per-secret grant is a real, narrow exception to
+write-never-read: two values, per connector, never the refresh tokens the flow
+writes. And it does not survive the deny policy from #31. Deny beats allow, and a
+deny rule's conditions can match resource tags but not resource names, so a
+deployment has to choose, or tag its connector secrets and exempt that tag, which
+strad has not built or tested.
+
+**Undo:** a connector that never reads its client through the console. Seeding
+the client id as a non-secret parameter halves the grant. Running the code
+exchange in the slug's own container, which already has both values in its
+environment, removes it. `HACKS.md` #98 has both.
+
 ### 33. Secret values are base64url in Secret Manager, and only the boundary is unverified
 
 A secret parameter is created with `parameter-format=JSON`, and `:render` does not
@@ -2940,6 +2971,9 @@ The one-time steps that clear most of the list above:
   provisioned; `/strad/staging/mcp/` holds nothing, so set the
   `remote-filesystem-tmp-public` values in `/ui/secrets` — clears **#26**. Prod
   needs the whole set of its own.
+- For each `oauth:` connector in production, `roles/secretmanager.secretAccessor`
+  for the console's service account on that slug's client-id and client-secret
+  secrets — per secret, never on the project — clears the refusal in **#98**.
 - An OAuth client for `https://strad.tadasant.com/console/oauth/callback`, and its
   `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — clears **#2** and **#20**.
 - Delete the DigitalOcean Container Registry named `strad`. Staging and prod pull

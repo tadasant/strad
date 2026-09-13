@@ -41,7 +41,9 @@ import {
 import { CONNECTOR_CALLBACK_PATH } from "../connectors/index.ts";
 import { errorSummary } from "../util/error-text.ts";
 import {
+  ParameterStoreError,
   staticNamespace,
+  UnreadablePayloadError,
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
 
@@ -136,6 +138,20 @@ export function mountConnector(
 // POST /ui/:server/connect
 // ---------------------------------------------------------------------------
 
+/**
+ * Why the connect POST refused, as one word from a closed set strad wrote.
+ *
+ * The four readiness words are `ConnectorState` kinds, shipped as they are, so
+ * the event and the panel under the flash agree on what state the connector was
+ * in. `no_session_key` and `client_unreadable` are the two refusals the state
+ * cannot see: one is about the console's own key, the other only surfaces when
+ * the value is actually read.
+ */
+type ConnectRefusal =
+  | Exclude<ConnectorState["kind"], "ready" | "connected">
+  | "no_session_key"
+  | "client_unreadable";
+
 async function handleConnect(
   req: Request,
   res: Response,
@@ -145,6 +161,9 @@ async function handleConnect(
   const signedInAs = signedInLabel(res);
   const entry = connectorFor(opts.config, slug);
 
+  // NO EVENT. There is no connector here to have failed, and `slug` is the
+  // caller's own path segment rather than a config value, so it may not reach
+  // the ingestor (see `EXPORTABLE` in src/telemetry/events.ts).
   if (!entry) {
     res
       .status(404)
@@ -162,21 +181,56 @@ async function handleConnect(
     return;
   }
 
-  const sealer = opts.sessions?.connector;
-  const redirectUri = connectorRedirectUri(opts.config);
-  if (!sealer || !redirectUri) {
+  // EVERY REFUSAL BELOW IS A 409, NEVER A 5xx. The App Platform ingress treats
+  // an upstream 5xx as its own failure and replaces the body with its generic
+  // edge page (the trap src/http/readiness.ts is shaped around), so a 503 here
+  // delivered "Error code: 503" and none of the sentence that said why. 409 is
+  // what this handler already answered for a connector that is not ready, and
+  // rendering in place — rather than redirecting with `?error=` — keeps the
+  // specific reason off the URL, where the page accepts only a closed set of
+  // codes.
+  //
+  // And every one is an event. A human pressed Connect and did nothing wrong in
+  // any of these branches — the POST carries no fields — so each is the
+  // deployment failing to begin a flow, which is why the name ends `_failed`
+  // and ships at ERROR. Every field is the config's or a word from a closed set;
+  // `error` is on no allowlist, so the store's own summary reaches stderr only.
+  const refuse = async (
+    reason: ConnectRefusal,
+    message: string,
+    state?: ConnectorState,
+    detail: Record<string, string | number> = {},
+  ): Promise<void> => {
+    event({
+      evt: "strad.connector_connect_failed",
+      slug: entry.server.slug,
+      reason,
+      ...detail,
+    });
     await renderConnectorPage(res, opts, entry, {
       signedInAs,
-      status: 503,
-      flash: {
-        tone: "error",
-        message: !redirectUri
-          ? "This deployment declares no gateway.publicUrl, so strad cannot " +
-            "build the exact redirect URI the provider requires."
-          : "This deployment has no console session key, so strad cannot seal " +
-            "an authorization transaction. Set CONSOLE_SESSION_SECRET.",
-      },
+      status: 409,
+      state,
+      flash: { tone: "error", message },
     });
+  };
+
+  const sealer = opts.sessions?.connector;
+  const redirectUri = connectorRedirectUri(opts.config);
+  if (!redirectUri) {
+    await refuse(
+      "no_redirect_uri",
+      "This deployment declares no gateway.publicUrl, so strad cannot " +
+        "build the exact redirect URI the provider requires.",
+    );
+    return;
+  }
+  if (!sealer) {
+    await refuse(
+      "no_session_key",
+      "This deployment has no console session key, so strad cannot seal " +
+        "an authorization transaction. Set CONSOLE_SESSION_SECRET.",
+    );
     return;
   }
 
@@ -185,27 +239,17 @@ async function handleConnect(
   // cannot exchange, having granted access for nothing.
   const state = await readConnectorState(opts, entry);
   if (state.kind !== "ready" && state.kind !== "connected") {
-    await renderConnectorPage(res, opts, entry, {
-      signedInAs,
-      status: 409,
+    await refuse(
+      state.kind,
+      "This connector is not ready to authorize. See the setup below.",
       state,
-      flash: {
-        tone: "error",
-        message:
-          "This connector is not ready to authorize. See the setup below.",
-      },
-    });
+    );
     return;
   }
 
   const resolved = connectorStore(opts, entry);
   if (!resolved.store) {
-    await renderConnectorPage(res, opts, entry, {
-      signedInAs,
-      status: 503,
-      state,
-      flash: { tone: "error", message: resolved.reason },
-    });
+    await refuse("no_store", resolved.reason, state);
     return;
   }
 
@@ -216,6 +260,7 @@ async function handleConnect(
   // 500 — and so the message describes the OPERATION. `renderUnexpected` is the
   // catch of last resort, not the handler for the one call here that talks to a
   // third party.
+  const clientIdVariable = entry.oauth.clientIdVariable;
   let clientId: string;
   try {
     clientId = await readOwnVariable(
@@ -223,20 +268,31 @@ async function handleConnect(
       resolved.store,
       entry,
       state.presence,
-      entry.oauth.clientIdVariable,
+      clientIdVariable,
     );
-  } catch {
-    await renderConnectorPage(res, opts, entry, {
-      signedInAs,
-      status: 503,
+  } catch (err) {
+    const read = clientReadFailure(
+      err,
+      clientIdVariable,
+      connectorVariablePath(
+        opts.config,
+        entry,
+        state.presence,
+        clientIdVariable,
+      ),
+    );
+    await refuse(
+      "client_unreadable",
+      `strad cannot read this server's OAuth client, so it cannot begin an ` +
+        `authorization: ${read.sentence} Nothing was written.`,
       state,
-      flash: {
-        tone: "error",
-        message:
-          "strad could not read this server's OAuth client id from its own " +
-          "namespace, so it cannot begin an authorization. Nothing was written.",
+      {
+        variable: clientIdVariable,
+        failure: read.failure,
+        ...(read.status === undefined ? {} : { status: read.status }),
+        error: errorSummary(err),
       },
-    });
+    );
     return;
   }
 
@@ -285,6 +341,9 @@ async function handleCallback(
   // re-enter the flow, and the verifier should live no longer than one attempt.
   clearConnectorTx(res, opts.env);
 
+  // A 4xx whatever the cause, including strad's own setup: the App Platform
+  // ingress rewrites an upstream 5xx into its own edge page, and the sentence
+  // saying why would never reach the human. See `handleConnect`.
   const refuse = (heading: string, sub: string, status = 400): void => {
     res
       .status(status)
@@ -405,7 +464,7 @@ async function handleCallback(
         ? (resolved as { reason: string }).reason
         : "This deployment declares no gateway.publicUrl, so strad cannot " +
             "present the exact redirect URI the provider requires.",
-      503,
+      409,
     );
     return;
   }
@@ -424,7 +483,7 @@ async function handleCallback(
             `namespace while the authorization was in progress. Nothing was written.`
         : "strad cannot reach the parameter store this connector writes to. " +
             "Nothing was written.",
-      state.kind === "incomplete" ? 409 : 503,
+      409,
     );
     return;
   }
@@ -433,24 +492,55 @@ async function handleCallback(
     res.redirect(302, `${sanitizeNext(tx.next)}${query}`);
   };
 
+  // The OAuth client, read BEFORE the exchange and outside its `try`. Inside it,
+  // a read the store refused was reported as `store_failed` — "the
+  // authorization succeeded but the parameter store refused the write" — which
+  // sends an operator to the write grants when it was the client secret the
+  // console could not read. The connect POST read only the client id, so a
+  // deployment that can read that one secret and not this one gets exactly here.
+  let client: { clientId: string; clientSecret: string };
+  let reading = entry.oauth.clientIdVariable;
+  try {
+    const clientId = await readOwnVariable(
+      opts,
+      store,
+      entry,
+      state.presence,
+      reading,
+    );
+    reading = entry.oauth.clientSecretVariable;
+    const clientSecret = await readOwnVariable(
+      opts,
+      store,
+      entry,
+      state.presence,
+      reading,
+    );
+    client = { clientId, clientSecret };
+  } catch (err) {
+    const read = clientReadFailure(
+      err,
+      reading,
+      connectorVariablePath(opts.config, entry, state.presence, reading),
+    );
+    event({
+      evt: "strad.connector_refused",
+      slug: entry.server.slug,
+      reason: "client_unreadable",
+      variable: reading,
+      failure: read.failure,
+      ...(read.status === undefined ? {} : { status: read.status }),
+      error: errorSummary(err),
+    });
+    back(`?error=client_unreadable`);
+    return;
+  }
+
   try {
     const grant = await completeAuthorization(
       entry,
       {
-        clientId: await readOwnVariable(
-          opts,
-          store,
-          entry,
-          state.presence,
-          entry.oauth.clientIdVariable,
-        ),
-        clientSecret: await readOwnVariable(
-          opts,
-          store,
-          entry,
-          state.presence,
-          entry.oauth.clientSecretVariable,
-        ),
+        ...client,
         redirectUri,
         code: String(req.query.code ?? ""),
         verifier: tx.verifier,
@@ -530,6 +620,114 @@ function readOwnVariable(
   return store.reveal(
     connectorVariablePath(opts.config, entry, presence, variable),
   );
+}
+
+/** What went wrong reading the OAuth client, as a word from a closed set. */
+type ClientReadFailure =
+  "denied" | "not_found" | "unreadable" | "timeout" | "store" | "unexpected";
+
+/**
+ * `projects/<project>/secrets/<id>`, when the refused call was Secret Manager's.
+ *
+ * Read off a `ParameterStoreError`'s message, which the store builds from a
+ * method and a resource and nothing else (`call()` in
+ * src/secrets/parameters/gcp.ts): the one error shape on this path known not to
+ * carry a value, which is why `errorSummary` already passes it through.
+ * `test/connector.refusals.test.ts` drives the real client, so a change to that
+ * shape fails there rather than quietly dropping the resource from the page.
+ */
+const SECRET_ACCESS = /^GET (projects\/[^/\s]+\/secrets\/[^/\s]+)\/versions\//;
+
+/**
+ * Why a `reveal()` of one of this slug's OAuth client variables failed, in a
+ * sentence an operator can act on — plus the closed word and the status the
+ * event carries.
+ *
+ * The case this exists for is a secret client variable on a deployment whose
+ * console credential holds no `secretmanager.versions.access`, which is how
+ * docs/operate/secrets-iam.md §1 tells prod to run the console. Parameter
+ * Manager lists the variable happily, the connector reads as ready, and the
+ * reveal is refused. The sentence names the permission and the exact resource
+ * rather than the role, because the grant it points at is per secret — see
+ * that page's section on connectors.
+ *
+ * NO MESSAGE BUT THE STORE'S OWN. Anything that is not a `ParameterStoreError`
+ * is reduced to its class, for the reason `errorSummary` gives: an exception
+ * raised while reading a payload can quote a window of it, and here the payload
+ * is an OAuth client secret.
+ */
+function clientReadFailure(
+  err: unknown,
+  variable: string,
+  path: string,
+): { sentence: string; failure: ClientReadFailure; status?: number } {
+  if (err instanceof UnreadablePayloadError) {
+    return {
+      failure: "unreadable",
+      status: err.status,
+      sentence:
+        `the current version of ${path} is not a strad envelope, so the ` +
+        `console cannot read ${variable}. Rotating it writes a fresh version.`,
+    };
+  }
+  if (err instanceof ParameterStoreError) {
+    const secret = SECRET_ACCESS.exec(err.message)?.[1];
+    if (err.status === 403 && secret) {
+      return {
+        failure: "denied",
+        status: 403,
+        sentence:
+          `the console's credential lacks secretmanager.versions.access on ` +
+          `${secret}, the secret behind ${path}, so reading ${variable} was ` +
+          `refused (403). An oauth: connector reads its client through the ` +
+          `console, so that service account needs ` +
+          `roles/secretmanager.secretAccessor on this slug's own client-id ` +
+          `and client-secret secrets — on those secrets only, never on the ` +
+          `project. The Secrets IAM page has the exact grant.`,
+      };
+    }
+    if (err.status === 403) {
+      return {
+        failure: "denied",
+        status: 403,
+        sentence:
+          `the store refused the console's credential reading ${path} ` +
+          `(${err.message}).`,
+      };
+    }
+    if (err.status === 404) {
+      return {
+        failure: "not_found",
+        status: 404,
+        sentence:
+          `the store has no readable value for ${variable} at ${path} ` +
+          `(${err.message}). It was listed a moment ago, so it was deleted, ` +
+          `moved, or has no version yet — reload this page.`,
+      };
+    }
+    return {
+      failure: "store",
+      status: err.status,
+      sentence: `the store refused reading ${path} (${err.message}).`,
+    };
+  }
+  if (
+    err instanceof Error &&
+    (err.name === "TimeoutError" || err.name === "AbortError")
+  ) {
+    return {
+      failure: "timeout",
+      sentence:
+        `the store did not answer in time reading ${path}. This is the store ` +
+        `being slow or unreachable rather than a refusal; try again.`,
+    };
+  }
+  return {
+    failure: "unexpected",
+    sentence:
+      `reading ${path} hit an unexpected ${errorSummary(err)}. Its message is ` +
+      `withheld: an error raised while reading this value can quote it.`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -840,6 +1038,17 @@ function refusalMessage(code: string, terms: ConnectorTerms): string {
         `Refused: ${terms.label} would not exchange the authorization code. It ` +
         `may have expired or been issued for a different OAuth client than the ` +
         `one this server's namespace holds. Nothing was written.`
+      );
+    case "client_unreadable":
+      return (
+        `Refused: ${terms.label} completed the consent, but strad could not ` +
+        `read this server's OAuth client from its own namespace to exchange ` +
+        `the code, so nothing was exchanged and nothing was written. The usual ` +
+        `cause is the console's service account lacking ` +
+        `secretmanager.versions.access on the client-secret secret — an ` +
+        `oauth: connector needs roles/secretmanager.secretAccessor on this ` +
+        `slug's own client-id and client-secret secrets. strad's logs name ` +
+        `the variable and the status under strad.connector_refused.`
       );
     case "store_failed":
       return (

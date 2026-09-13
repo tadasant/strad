@@ -5012,3 +5012,41 @@ cannot say when its sign-in was is refused rather than uncapped.
 tokens rather than built twice: each renewal checks a revocation list, and the
 console lists and ends individual sessions. That is the issue's option C, deferred
 until per-session revocation is a requirement on its own.
+
+## 98. An `oauth:` connector reads its OAuth client through the console, which is the one read production's console is set up not to have
+
+**What.** The connector flow (`src/ui/connector.ts`) reads a slug's client id and
+client secret with the console admin store's `reveal()`. For a secret parameter
+that is Secret Manager's `versions/latest:access`, which needs
+`secretmanager.versions.access`: the permission
+`docs/operate/secrets-iam.md` §1 tells production to withhold. So on a console
+run the way that page says, a connector whose client values are secret parameters
+lists as ready and refuses at **Connect**. Making it work takes a human IAM step:
+`roles/secretmanager.secretAccessor` for the console's service account, bound on
+that slug's two client secrets and nothing else. It is a `gcloud` command per
+slug, outside the deploy, and no strad process holds the project IAM admin it
+needs. It conflicts with the §1 deny policy (#31), which overrides any allow and
+whose conditions can match tags but not resource names.
+
+**Why it ships anyway.** Core has no other credential that reaches one slug's
+namespace. The per-secret grant is the narrowest one IAM can express, and it
+exposes two values the flow has to read anyway, never the refresh tokens the flow
+writes under `oauth/`. Before this entry, the failure was also invisible: the
+connect POST answered 503, the App Platform ingress replaced the page with its own,
+and a bare `catch {}` dropped the error. Both are fixed. The refusal is a 409 that
+names the permission and the resource, and it emits
+`strad.connector_connect_failed`. The grant itself is what stays manual.
+
+**Undo.** A connector that never needs the console to read its client. Two
+options, and choosing between them is a posture decision rather than a code one:
+
+1. Seed the client id as a non-secret parameter. It is public by design (it goes
+   out in every authorization URL), so the connect POST then needs no Secret
+   Manager read. That halves the grant and does not remove it.
+2. Run the code exchange where the client secret already is. The slug's own
+   container has both values in its environment, baked at deploy. Core would hand
+   the bundle host the code and the PKCE verifier over the internal route the
+   parameter write-back already uses, and the host would return the refresh token
+   for core to store. Core then never reads a client secret at all, and §1's
+   write-without-read holds with no exceptions. The cost is a new internal route,
+   and a second thing an internal-token holder (#63) can drive.

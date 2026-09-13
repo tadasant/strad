@@ -340,6 +340,7 @@ the process, and for each one the exact fields that may go with it.
 | `strad.param_read`                                                                     | a server reading one of its own parameters live — a `paramsWritable:` boot read, or a `paramsRefresh:` poll. The deploy record a runtime rotation would otherwise not leave                                                                                                                                 |
 | `strad.upstream_token_refreshed` / `_refresh_failed`                                   | a `remote-http` server with `oauthRefresh:` minting an upstream access token: the slug, whether the refresh token rotated, and on failure one of four reason words                                                                                                                                          |
 | `strad.connector_begin` / `_connected` / `_refused`                                    | a human consenting, in the console, for one slug                                                                                                                                                                                                                                                            |
+| `strad.connector_connect_failed`                                                       | **Connect** refused before anyone reached the provider — the config slug and a closed `reason`, at ERROR. On an OAuth client the console could not read, also the config `variable`, a closed `failure` word and the store's HTTP `status` as a number                                                      |
 | `strad.config_applied` / `strad.config_reloaded`                                       | the runtime server roster changed — the resulting slug list and the overlay `revision`. The first is a write through a door, the second is this process picking up another's. WHO made the change is deliberately absent: it is a person's email, and the stored overlay already carries it for the console |
 | `strad.config_reload_failed`                                                           | a roster the process would not adopt — `reason` is one of `unreadable` / `invalid` / `rebuild_failed`, computed here rather than taken from an exception                                                                                                                                                    |
 | `telemetry.started`                                                                    | the event name only — the strad image's exporter came up. Its own fields are already resource attributes of the record carrying it                                                                                                                                                                          |
@@ -368,7 +369,10 @@ out of that server's `oauth:` block, never from a request — and `reason` on a
 refusal is a `ConnectorErrorCode`: a closed set of strad's own words
 (`account_mismatch`, `scope_not_granted`, `no_refresh_token`, …). Google's own
 error bodies are read for nothing at all, not even for a message, so there is no
-upstream text on this path to redact. Nothing derived from the credential — no
+upstream text on this path to redact. When the console cannot read the slug's
+OAuth client, the record also carries a closed `failure` word and the store's
+HTTP `status` as a number, never its status text. The store's summary names the
+Secret Manager resource, and it rides under `error`, which is on no list. Nothing derived from the credential — no
 length, no prefix, no digest — exists anywhere in the flow to be exported. See
 [Connectors](/operate/connectors/).
 
