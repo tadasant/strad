@@ -1,5 +1,6 @@
 import type { Principal } from "../auth/index.ts";
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
+import { connectorFor } from "../connectors/index.ts";
 import { entitledServers } from "../gateway/entitlements.ts";
 import {
   connectUrl,
@@ -137,12 +138,34 @@ export interface Entry {
   /** Absent for a DISABLED server, which is not on the secret roster at all. */
   status?: ServerSecretStatus;
   badge?: EntryBadge;
-  /** Whether `/ui/<slug>` renders something. Part of the sort key. */
-  hasView: boolean;
+  /** What `/ui/<slug>` renders for this server. Part of the sort key. */
+  view: ConsoleView;
 }
 
 /**
- * READY before ISSUE; within each group, entries with a console view first.
+ * What `/ui/<slug>` renders for a server. Every slug has a page; three kinds of
+ * server have a DEDICATED one, and everything else gets the read-only overview.
+ */
+export type ConsoleView = "connector" | "secrets" | "gcs" | "overview";
+
+/**
+ * Asked in the order `handleServerView` in `src/ui/index.ts` asks it: an
+ * enabled `oauth:` connector first, then the parameter store, then the bucket.
+ * A card that reads a slug differently from the route labels a working page as
+ * something else, so this is the one reading both use.
+ */
+export function consoleView(
+  config: StradConfig,
+  server: ServerConfig,
+): ConsoleView {
+  if (connectorFor(config, server.slug)) return "connector";
+  if (serverLooksSecrets(server)) return "secrets";
+  if (serverLooksGcs(server)) return "gcs";
+  return "overview";
+}
+
+/**
+ * READY before ISSUE; within each group, entries with a dedicated view first.
  *
  * A DISABLED server carries no badge — strad does not mount it, so it needs no
  * secrets and `deriveServerStatuses` skips it — and sorts last. Reporting it
@@ -151,7 +174,7 @@ export interface Entry {
 export function sortEntries(entries: Entry[]): Entry[] {
   const rank = (e: Entry): number => {
     if (!e.server.enabled) return 4;
-    return (e.badge === "READY" ? 0 : 2) + (e.hasView ? 0 : 1);
+    return (e.badge === "READY" ? 0 : 2) + (e.view === "overview" ? 1 : 0);
   };
   // Array.prototype.sort is stable, so config order survives inside a rank.
   return [...entries].sort((a, b) => rank(a) - rank(b));
@@ -168,7 +191,7 @@ export function renderIndex(opts: ConsoleIndexOptions): string {
         server,
         status,
         badge: status ? badgeFor(status.state) : undefined,
-        hasView: hasConsoleView(server),
+        view: consoleView(config, server),
       };
     }),
   );
@@ -406,25 +429,17 @@ function banner(issues: Entry[], enabled: number): string {
  * echo.
  */
 function serverCard(entry: Entry, base: string, playable: boolean): string {
-  const { server, status, hasView } = entry;
-  const hasSecrets = serverLooksSecrets(server);
+  const { server, status, view } = entry;
   const title = server.title ?? server.slug;
-  const desc =
-    server.description ??
-    (hasSecrets
-      ? "Add, rotate, reveal and delete the non-secret and secret parameters this server manages."
-      : serverLooksGcs(server)
-        ? "Browse the object store this server is scoped to."
-        : "No browser view for this server kind yet.");
+  const desc = server.description ?? VIEW_BLURB[view];
   const href = serverConsolePath(server.slug);
 
+  // EVERY title is a link, and it is the only thing in the head that is one: the
+  // playground and copy icons are controls of their own in the foot, so nothing
+  // interactive ends up nested inside this anchor.
   return `  <div class="card server-card">
     <div class="card-head">
-      <span class="card-title">${
-        hasView
-          ? `<a class="card-title-link" href="${href}">${esc(title)}</a>`
-          : esc(title)
-      }</span>
+      <span class="card-title"><a class="card-title-link" href="${href}">${esc(title)}</a></span>
       <span class="chip chip-${esc(server.kind)}">${esc(server.kind)}</span>
       ${server.enabled ? "" : `<span class="chip chip-off">disabled</span>`}
     </div>
@@ -436,14 +451,29 @@ function serverCard(entry: Entry, base: string, playable: boolean): string {
           ? ""
           : `<code class="card-slug">${esc(server.slug)}</code>`
       }</span>
-      <span class="card-actions">${cardIcons(server, base, playable)}${
-        hasView
-          ? `<a class="card-cta" href="${href}">${hasSecrets ? "Manage →" : "Browse →"}</a>`
-          : `<span class="card-muted">No view</span>`
-      }</span>
+      <span class="card-actions">${cardIcons(server, base, playable)}<a class="card-cta" href="${href}">${VIEW_CTA[view]}</a></span>
     </div>
   </div>`;
 }
+
+/** The card's call to action, named for what `/ui/<slug>` does for this view. */
+const VIEW_CTA: Record<ConsoleView, string> = {
+  connector: "Manage →",
+  secrets: "Manage →",
+  gcs: "Browse →",
+  overview: "Details →",
+};
+
+/** The card's description when the config declares none. */
+const VIEW_BLURB: Record<ConsoleView, string> = {
+  connector:
+    "Authorize the account this server acts as, and see where its credential is stored.",
+  secrets:
+    "Add, rotate, reveal and delete the non-secret and secret parameters this server manages.",
+  gcs: "Browse the object store this server is scoped to.",
+  overview:
+    "No dedicated view for this server kind yet. Its page is a read-only overview.",
+};
 
 /**
  * The two icons an entry can carry: poke at it, or take its URL. Each one is
@@ -718,11 +748,7 @@ function fixDialog(
     <p class="sec-detail">${esc(status.summary)}</p>
 ${worstFirst.map((o) => requirementBlock(o, config, env, slug)).join("\n")}
 ${unobservableBlock(status, config, env)}
-${
-  entry.hasView
-    ? `    <p class="acc-foot"><a href="${serverConsolePath(slug)}">Open this server's console view →</a></p>`
-    : ""
-}
+    <p class="acc-foot"><a href="${serverConsolePath(slug)}">Open this server's console page →</a></p>
   </div>
 </dialog>`;
 }
@@ -904,11 +930,6 @@ function evidenceLine(evidence: SecretEvidence): string {
     case "none":
       return "Established by: nothing. No process was able to answer for this name.";
   }
-}
-
-/** Whether `/ui/<slug>` renders something, so the link is worth offering. */
-function hasConsoleView(server: ServerConfig): boolean {
-  return serverLooksGcs(server) || serverLooksSecrets(server);
 }
 
 function requirementBlock(
@@ -1164,8 +1185,8 @@ const GUIDE = `
   <details class="acc">
     <summary>How the entries are ordered</summary>
     <div class="acc-body">
-      <p>READY first, then ISSUE. Within each group, servers with a console view come before
-        servers without one, and config order breaks the remaining ties. Disabled servers sort
+      <p>READY first, then ISSUE. Within each group, servers with a dedicated console view come
+        before servers that only have the overview, and config order breaks the remaining ties. Disabled servers sort
         last and carry no badge — strad does not mount them, so they need no secrets, and a
         green would be a claim about a server that answers nothing.</p>
     </div>

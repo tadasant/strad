@@ -209,15 +209,15 @@ describe("sortEntries", () => {
   const entry = (
     slug: string,
     badge: "READY" | "ISSUE" | undefined,
-    hasView: boolean,
+    dedicated: boolean,
     enabled = true,
   ): Entry => ({
     server: { slug, enabled } as ServerConfig,
     badge,
-    hasView,
+    view: dedicated ? "gcs" : "overview",
   });
 
-  it("puts READY before ISSUE, and a browsable entry before one with no view", () => {
+  it("puts READY before ISSUE, and a dedicated view before the overview", () => {
     const sorted = sortEntries([
       entry("issue-no-view", "ISSUE", false),
       entry("ready-no-view", "READY", false),
@@ -308,10 +308,10 @@ describe("GET /ui — badges", () => {
       return i;
     };
     const objectStore = at(">object-store</a>"); // READY + view
-    const alpha = at('<span class="card-title">alpha</span>'); // READY, no view
+    const alpha = at(">alpha</a>"); // READY, overview only
     const bad = at(">Broken bucket</a>"); // ISSUE + view
-    const beta = at('<span class="card-title">beta</span>'); // ISSUE, no view
-    const retired = at('<span class="card-title">retired</span>'); // disabled
+    const beta = at(">beta</a>"); // ISSUE, overview only
+    const retired = at(">retired</a>"); // disabled
 
     expect(alpha).toBeGreaterThan(objectStore);
     expect(bad).toBeGreaterThan(alpha);
@@ -730,7 +730,7 @@ describe("GET /ui — the playground icon", () => {
 
     // The CARD is there either way — roles are not a console ACL, and hiding an
     // entry would be a different (and wrong) change. Only the control is gone.
-    expect(body).toContain('<span class="card-title">theirs</span>');
+    expect(body).toContain('href="/ui/theirs">theirs</a>');
   });
 
   it("keeps the copy icon on a server this identity is not entitled to", async () => {
@@ -755,7 +755,7 @@ describe("GET /ui — the playground icon", () => {
 
     expect(body).not.toContain('aria-label="Open the playground for');
     // The page is otherwise unchanged: the cards, and the copy icons, remain.
-    expect(body).toContain('<span class="card-title">mine</span>');
+    expect(body).toContain('href="/ui/mine">mine</a>');
     expect(body).toContain(copyIcon("mine"));
   });
 });

@@ -727,7 +727,7 @@ describe("the console and the readiness report, with a probe", () => {
   it("renders READY for a server whose secret only the bundle can see", () => {
     // The headline claim of the whole change: without the probe this row is a
     // shrug.
-    expect(html).toContain('<span class="card-title">slack</span>');
+    expect(html).toContain('href="/ui/slack">slack</a>');
     expect(html).not.toContain("Nothing here is known to be broken");
   });
 

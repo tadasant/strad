@@ -1265,9 +1265,9 @@ describe("GET /ui", () => {
       "google-flights",
       "params-server",
     ]) {
-      expect(html).toContain(`<span class="card-title">${slug}</span>`);
+      expect(html).toContain(`href="/ui/${slug}">${slug}</a>`);
     }
-    // `gcs` and `secrets` have console views, so their titles are links.
+    // Every title is a link to its own page; a declared `title:` keeps the slug in the foot.
     expect(html).toContain(">Object store</a>");
     expect(html).toContain('<code class="card-slug">gcs</code>');
     expect(html).toContain(">secrets</a>");
