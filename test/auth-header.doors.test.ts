@@ -298,10 +298,10 @@ const DOORS: Door[] = [
     admitted: 200,
   },
   {
-    door: "core /ui (bootstrap token, header path)",
+    door: "core /connectors (bootstrap token, header path)",
     credential: BOOTSTRAP,
     ask: (authorization) =>
-      fetch(`${coreUrl}/ui`, {
+      fetch(`${coreUrl}/connectors`, {
         headers: { authorization },
         redirect: "manual",
       }),

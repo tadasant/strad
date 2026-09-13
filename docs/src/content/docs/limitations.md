@@ -256,10 +256,10 @@ every theme tweak evicts more often than the problem warrants.
 ### 42. The installed console's sign-in leaves the app window
 
 The console is [installable](/operate/console-pwa/) as a `display: standalone`
-app. Open it on an expired session and the gate answers `/ui` with a 302 to
+app. Open it on an expired session and the gate answers `/connectors` with a 302 to
 `/console/login`, which redirects on to `accounts.google.com` — outside the app's
 scope, so the browser takes the navigation out of the app window and into a tab.
-You return through `/console/oauth/callback` and land back on `/ui`.
+You return through `/console/oauth/callback` and land back on `/connectors`.
 
 That is ordinary on Chrome and Android, and it depends on the standalone window
 and the browser sharing a cookie jar. **It has not been exercised on iOS**, where
@@ -389,7 +389,7 @@ it mints is what the actor should hold instead.
 `auth.google.enabled: true`, verify a real sign-in in prod, then set
 `consoleDevBypass.enabled: false`, and only then delete `src/auth/dev.ts` and its
 call sites. `src/ui/console-auth.ts` imports from that module; deleting it before
-Google sign-in is verified leaves `/ui` with no fallback authenticator. See
+Google sign-in is verified leaves the console with no fallback authenticator. See
 [Auth](/auth/overview/#console-dev-bypass-temporary).
 
 ### 20. The dev-bypass "session" is the bootstrap token in a cookie
@@ -401,7 +401,7 @@ gate moves it into an HttpOnly, `SameSite=Lax`, Secure-in-prod cookie
 (`strad_console`) and redirects to a clean URL, so the token isn't left in the
 address bar or in screenshots — but the cookie **is** the standing credential,
 re-validated on every request rather than a session in its own right. It is scoped
-to `/` rather than `/ui`, since the gate covers the landing page too; it therefore
+to `/` rather than a console subtree, since the gate covers the splash too; it therefore
 rides along to `/mcp`, where it is inert — that endpoint reads the `Authorization`
 header via the static token store and never looks at cookies.
 
@@ -808,7 +808,7 @@ config before promising it; the table is in
 The deploy preflight is a deploy gate and does not make the flip safe: of the boot
 keys it counts only the two a deployment cannot work without, so a namespace
 missing the optional ones — `GOOGLE_CLIENT_ID` among them, which with
-`auth.google.enabled: true` is a front-door outage on `/ui` — deploys green.
+`auth.google.enabled: true` is a front-door outage on the console — deploys green.
 [`store:check`](/operate/secrets/#is-the-namespace-complete-store-check) is the
 pre-flip counterpart: it counts every name the deployment reads from the store,
 names what is absent, and has a report mode for a migration that moves one server
@@ -994,7 +994,7 @@ merge. The cost is that a red deploy used to be what guaranteed somebody dealt
 with it, and a warning in a run log is not.
 
 The state is visible in four places — `/healthz` (`servers[].state`, plus a
-top-level `unconfigured` list), the console index (chip `awaiting credential`,
+top-level `unconfigured` list), the connectors roster (chip `awaiting credential`,
 counted as actionable), `/api/secrets/readiness`, and a
 `strad.tool_surface_unconfigured` log line per boot and per state change. None of
 them **escalate**. A slug waiting a week looks exactly like one waiting ten
@@ -1023,7 +1023,7 @@ variable and reads as whatever its own server says about itself. See
 
 ### 29. The console's secret badges prove presence, not that a credential works
 
-`/ui` lists every configured MCP server and whether the secrets it requires
+`/connectors` lists every configured MCP server and whether the secrets it requires
 resolve. What it cannot do is tell you a credential is still _accepted_: strad
 never calls an upstream to check, so the good badge is named `READY` ("everything
 it needs is present") and never "healthy". A server whose token was revoked
@@ -1060,12 +1060,13 @@ tooltips so the coupling shows up in a diff; nothing can make it automatic from
 inside this repo.
 
 **Undo:** delete `src/ui/secret-status.ts` and `src/http/readiness.ts`, drop the
-`/secrets` redirect in `src/ui/index.ts`, and revert `src/ui/index-page.ts` to the
-plain server grid it renders around. Nothing else reads any of it.
+`/secrets` and `/ui` redirects in `src/ui/index.ts`, and revert
+`src/ui/roster-page.ts` to the plain roster it renders around. Nothing else reads
+any of it.
 
 ### 35. The presence probe asserts about the process, and the process can lie by being old
 
-`/ui` and `/api/secrets/readiness` now make a positive claim about a secret that
+`/connectors` and `/api/secrets/readiness` now make a positive claim about a secret that
 lives on a component core is not: `POST /_strad/presence` asks each bundle what it
 holds, and the bundle answers with one of five words — `absent`, `empty`,
 `unexpanded`, `placeholder`, `present` — and nothing else. That is what turned
@@ -1106,7 +1107,7 @@ actually answers until `ghcr.io/tadasant/strad-bundle` is rebuilt with
 **On a `params: true` server that gap is total rather than partial.** Such a
 server may declare no `${NAME}` references at all, and then a component that
 cannot answer leaves its entry with **zero** requirement rows — not a row reading
-`unverified`, but no rows. That is the state `/ui` explains least well by
+`unverified`, but no rows. That is the state `/connectors` explains least well by
 construction, and it is the one that produced a **dead control** in production:
 the entry rendered an `ISSUE` button over a `<dialog>` that was never emitted, so
 the click did nothing at all ([#259](https://github.com/tadasant/strad/issues/259),
@@ -1158,7 +1159,7 @@ one.
 **The diagnosis is as old as the process's reading of the store, and says so.**
 It is answered from the same reading the gateway resolves `${NAME}` through,
 held for `gateway.secrets.ttlSeconds` (an hour by default), and the pass over it
-is reused for up to a minute, so a `/ui` reload and a hard poller on
+is reused for up to a minute, so a `/connectors` reload and a hard poller on
 `/api/secrets/readiness` cost no store read at all inside the TTL. The cost of
 that is freshness: a value written by anything other than this console can take
 up to the TTL to change a row, and a store that breaks can look healthy for that

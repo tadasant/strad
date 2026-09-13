@@ -103,6 +103,8 @@ afterAll(() => {
 interface ManifestShape {
   name: string;
   short_name: string;
+  /** What the browser keys the install on. Pinned, so `start_url` may move. */
+  id: string;
   start_url: string;
   scope: string;
   display: string;
@@ -131,7 +133,12 @@ describe("the manifest", () => {
 
     expect(m.name).toBe("strad console");
     expect(m.short_name).toBe("strad");
-    expect(m.start_url).toBe("/ui");
+    // The console's working surface, which is where an installed app should
+    // open. `id` stays `/ui` on purpose — it is what the browser keys the
+    // install on, so pinning it is what let `start_url` move without every
+    // installed copy becoming a second app.
+    expect(m.start_url).toBe("/connectors");
+    expect(m.id).toBe("/ui");
     expect(m.scope).toBe("/");
     expect(m.display).toBe("standalone");
 

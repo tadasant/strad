@@ -251,14 +251,14 @@ describe("/ui/:server GCS browse", () => {
     expect(html).toContain(`href="/ui/gcs"`);
   });
 
-  it("renders an index of every server, each carrying a secret badge", async () => {
-    const res = await fetch(`${baseUrl}/ui`, { headers: auth });
+  it("renders a roster of every server, each carrying a secret badge", async () => {
+    const res = await fetch(`${baseUrl}/connectors`, { headers: auth });
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toContain("<title>Servers · strad</title>");
+    expect(html).toContain("<title>Connectors · strad</title>");
     expect(html).toContain("gcs");
     expect(html).toContain("echo");
-    // The badge is the point of the index now: every enabled entry carries one.
+    // The badge is the point of the roster: every enabled entry carries one.
     expect(html).toMatch(/>READY</);
   });
 
@@ -308,7 +308,7 @@ describe("the 424's authorize_url resolves to a console route", () => {
     expect(html).toContain("No such server");
     // The console page, with the server list one click away — the whole reason
     // a per-slug link beats a flat one for a slug that names nothing.
-    expect(html).toContain(`href="/ui"`);
+    expect(html).toContain(`href="/connectors"`);
     expect(html).not.toContain("Cannot GET");
   });
 });

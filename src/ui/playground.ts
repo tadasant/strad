@@ -786,7 +786,7 @@ ${PLAYGROUND_INDEX_CSS}`;
     body,
     signedInAs: opts.signedInAs,
     nav: "playground",
-    brandHref: "/ui",
+    brandHref: "/",
     brandSub: "console",
     footNote: "human MCP client · no model involved",
   });
@@ -816,7 +816,7 @@ export function renderPlayground(opts: PlaygroundPageOptions): string {
 
   const body = `
 <section class="intro">
-  <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/ui" class="crumb">servers</a><span class="crumb-sep">/</span><span class="crumb crumb-current">${esc(title)}</span></nav>
+  <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/connectors" class="crumb">connectors</a><span class="crumb-sep">/</span><span class="crumb crumb-current">${esc(title)}</span></nav>
   <h1>Playground <span class="env-badge">${esc(slug)}</span></h1>
   <p class="lede">A human MCP client for this one server. It lists the tools this server
     actually serves you, and calls them with the arguments you type.
@@ -875,7 +875,7 @@ ${playgroundScript(server)}`;
     body,
     signedInAs: opts.signedInAs,
     nav: "playground",
-    brandHref: "/ui",
+    brandHref: "/",
     brandSub: "console",
     footNote: "human MCP client · no model involved",
     helpTitle: "Playground guide",

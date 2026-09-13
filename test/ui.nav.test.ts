@@ -15,8 +15,7 @@ import {
   renderDomainRefusal,
 } from "../src/ui/oauth-consent.ts";
 import { renderOffline, renderSignIn } from "../src/ui/render.ts";
-import { EMPTY_OVERLAY } from "../src/config/overlay.ts";
-import { renderForm, renderRoster } from "../src/ui/servers-page.ts";
+import { renderForm } from "../src/ui/servers-page.ts";
 
 /**
  * The shared nav bar — src/ui/nav.ts, rendered by `layout()`.
@@ -32,7 +31,7 @@ import { renderForm, renderRoster } from "../src/ui/servers-page.ts";
  *      than by colour alone.
  *   4. THE PAGES WITH NO SESSION DO NOT CARRY IT. Every link in the bar is
  *      gated, so on a sign-in refusal or an OAuth consent screen the bar would
- *      be five doors that answer 401.
+ *      be four doors that answer 401.
  */
 
 const YAML = `
@@ -115,12 +114,11 @@ function activeHref(html: string): string | undefined {
 
 describe("the bar names every destination, on every page", () => {
   // Path -> the section it belongs to. The sub-pages are in here on purpose:
-  // `/ui/echo` is not a sixth destination, it marks "servers".
+  // `/ui/echo` is not a fifth destination, it marks "connectors".
   const PAGES: [string, NavKey][] = [
     ["/", "gateway"],
-    ["/ui", "servers"],
-    ["/ui/echo", "servers"],
     ["/connectors", "connectors"],
+    ["/ui/echo", "connectors"],
     ["/playground", "playground"],
     ["/playground/echo", "playground"],
     ["/tokens", "tokens"],
@@ -128,9 +126,9 @@ describe("the bar names every destination, on every page", () => {
 
   for (const [path, section] of PAGES) {
     it(`${path} draws all ${HREFS.length} links and marks ${section}`, async () => {
-      // `/connectors` answers 404 on a gateway with no config store — with a
-      // page that explains the editor is off, which is still a console page and
-      // still carries the bar.
+      // `/connectors` answers on every deployment, this one included: the roster
+      // and the secret status do not need a config store, and only the editor
+      // controls do.
       const res = await fetch(`${baseUrl}${path}`, { headers: auth });
       const html = await res.text();
       expect(navHrefs(html)).toEqual(HREFS);
@@ -156,8 +154,7 @@ describe("every destination is a page this app serves", () => {
   // The guard against the failure mode a nav bar introduces: a link to a route
   // nobody registered. Express answers an unregistered path with its own stock
   // 404, whose body is not HTML — so "did strad render this" is the assertion,
-  // not the status code. `/connectors` is deliberately included: it is 404 on a
-  // gateway with no config store, and it is strad's own 404, with the bar on it.
+  // not the status code.
   for (const dest of NAV_DESTINATIONS) {
     it(`${dest.href} is answered by the console, not by Express`, async () => {
       const res = await fetch(`${baseUrl}${dest.href}`, {
@@ -183,7 +180,7 @@ describe("every destination is a page this app serves", () => {
 
 describe("the pages reached without a console session carry no bar", () => {
   it("omits it from the sign-in refusal", async () => {
-    const res = await fetch(`${baseUrl}/ui`, { redirect: "manual" });
+    const res = await fetch(`${baseUrl}/connectors`, { redirect: "manual" });
     expect(res.status).toBe(401);
     expect(await res.text()).not.toContain('class="mainnav"');
   });
@@ -219,16 +216,8 @@ describe("the pages reached without a console session carry no bar", () => {
   });
 });
 
-describe("the roster pages, which need a config store to reach over HTTP", () => {
-  it("marks connectors on the roster and on the entry form", () => {
-    const roster = renderRoster({
-      config: CONFIG,
-      overlay: EMPTY_OVERLAY,
-      sources: new Map([["echo", "file"]]),
-      writable: true,
-    });
-    expect(activeHref(roster)).toBe("/connectors");
-
+describe("the entry form, which needs a config store to reach over HTTP", () => {
+  it("marks connectors on it, so a form is not a fifth place to be", () => {
     const form = renderForm({
       config: CONFIG,
       kind: "remote-http",
@@ -238,4 +227,20 @@ describe("the roster pages, which need a config store to reach over HTTP", () =>
     });
     expect(activeHref(form)).toBe("/connectors");
   });
+});
+
+describe("the two paths the bar no longer names", () => {
+  // Both were destinations and both are redirects now. A redirect carries no
+  // bar, which is fine — what matters is that it lands somewhere the bar knows.
+  for (const from of ["/ui", "/secrets"]) {
+    it(`${from} redirects to a destination the bar does name`, async () => {
+      const res = await fetch(`${baseUrl}${from}`, {
+        headers: auth,
+        redirect: "manual",
+      });
+      expect(res.status).toBe(302);
+      const to = res.headers.get("location");
+      expect(HREFS).toContain(to);
+    });
+  }
 });

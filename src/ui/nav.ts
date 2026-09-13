@@ -1,4 +1,4 @@
-import { UI_PREFIX } from "./paths.ts";
+import { CONNECTORS_PREFIX } from "./paths.ts";
 
 /**
  * The console's shared navigation bar — every top-level destination, in one
@@ -8,7 +8,7 @@ import { UI_PREFIX } from "./paths.ts";
  *
  * A console whose pages each link only to themselves is a console you can only
  * use by knowing its URLs, and a human who bookmarks one page has no way to
- * discover the other four. The cure is a bar every page draws from the SAME
+ * discover the other three. The cure is a bar every page draws from the SAME
  * list: a destination added here appears everywhere at once, and no page can
  * quietly disagree with its siblings about what this console can do.
  *
@@ -16,25 +16,36 @@ import { UI_PREFIX } from "./paths.ts";
  *
  * Top-level destinations only — a page a human would bookmark. A per-server or
  * per-action route (`/ui/:server`, `/playground/:server`, `/connectors/:slug`,
- * `/tokens/mint`, the `/console/*` auth endpoints, the `/secrets` redirect) is
- * NOT one: it is a page you arrive at from a destination, and it marks that
- * destination active rather than adding a sixth item. `active` is therefore a
- * SECTION, not a URL — `/ui/slack` and `/ui` both light up "servers".
+ * `/tokens/mint`, the `/console/*` auth endpoints, the `/ui` and `/secrets`
+ * redirects) is NOT one: it is a page you arrive at from a destination, and it
+ * marks that destination active rather than adding a fifth item. `active` is
+ * therefore a SECTION, not a URL — `/ui/slack` and `/connectors` both light up
+ * "connectors".
+ *
+ * ## Why there is one servers destination and not two
+ *
+ * There were two, and they were the same list of servers answering different
+ * questions: `/ui` said what each server is scoped to and whether its secrets
+ * resolve, `/connectors` added, edited and removed the entries. Nobody wants
+ * either in isolation — you read the status in order to decide what to change —
+ * so the status is on the entry now and `/ui` is a redirect. `/` keeps its place
+ * as the front door and is a splash: the endpoint to paste into a client, and
+ * the doors into the console.
  *
  * ## Why it is not conditional
  *
- * `/connectors` answers on every deployment: with the roster when
- * `gateway.configStore.enabled` is set, and with the page that says the editor
- * is off when it is not (src/ui/servers.ts). Shaping the bar around that flag
- * would mean threading it into every render function — including the message and
- * error pages, which hold no config — to buy a bar that is one item shorter on
- * some deployments and, on the pages that could not be told, wrong. A bar with a
- * fixed shape is one a reader can learn.
+ * `/connectors` answers on every deployment: with the roster, the per-server
+ * secret status and the editor when `gateway.configStore.enabled` is set, and
+ * with the roster and the status alone when it is not (src/ui/servers.ts).
+ * Shaping the bar around that flag would mean threading it into every render
+ * function — including the message and error pages, which hold no config — to
+ * buy a bar that is one item shorter on some deployments and, on the pages that
+ * could not be told, wrong. A bar with a fixed shape is one a reader can learn.
  *
  * The bar is omitted entirely on the pages reached WITHOUT a console session —
  * the sign-in refusal, the offline shell, and the `/mcp` OAuth consent and
  * refusal screens (src/ui/oauth-consent.ts). Every link in it is gated, so on
- * those pages it would advertise five doors that answer 401.
+ * those pages it would advertise four doors that answer 401.
  *
  * No `esc()` here on purpose: every label and href below is a literal in this
  * module, and keeping it free of `src/ui/render.ts` is what lets render.ts
@@ -42,8 +53,7 @@ import { UI_PREFIX } from "./paths.ts";
  */
 
 /** A top-level console destination. The page it names marks itself active. */
-export type NavKey =
-  "gateway" | "servers" | "connectors" | "playground" | "tokens";
+export type NavKey = "gateway" | "connectors" | "playground" | "tokens";
 
 export interface NavDestination {
   key: NavKey;
@@ -57,28 +67,21 @@ export interface NavDestination {
  * Every top-level destination, in reading order.
  *
  * `gateway` first because it is the front door — the endpoint to paste into a
- * client and the directory of what sits behind it. The four working surfaces
- * follow in the order a human meets them: what is configured, how to change it,
- * how to try it, and what may call it.
+ * client. The three working surfaces follow in the order a human meets them:
+ * what is configured and how to change it, how to try it, and what may call it.
  */
 export const NAV_DESTINATIONS: readonly NavDestination[] = [
   {
     key: "gateway",
     href: "/",
     label: "gateway",
-    hint: "The endpoint, and every server behind it",
-  },
-  {
-    key: "servers",
-    href: UI_PREFIX,
-    label: "servers",
-    hint: "Each server's scope, and whether its secrets are seeded",
+    hint: "The endpoint to paste into an MCP client",
   },
   {
     key: "connectors",
-    href: "/connectors",
+    href: CONNECTORS_PREFIX,
     label: "connectors",
-    hint: "Add, edit or remove a server without a deploy",
+    hint: "Every server: its scope, whether its secrets are seeded, and the roster editor",
   },
   {
     key: "playground",
@@ -94,14 +97,6 @@ export const NAV_DESTINATIONS: readonly NavDestination[] = [
   },
 ];
 
-/**
- * The bar, with one destination marked.
- *
- * `aria-current="page"` alongside the colour, because "which page am I on" is
- * exactly the question a screen reader user cannot answer from an accent
- * border. The active item is still a link — re-clicking it reloads, which is
- * what a reader expects from a tab that is already open.
- */
 export function renderNav(active?: NavKey): string {
   const links = NAV_DESTINATIONS.map((d) => {
     const on = d.key === active;
@@ -118,10 +113,11 @@ export function renderNav(active?: NavKey): string {
  * kept as a second stylesheet — the console has one theme and one place it is
  * written down.
  *
- * It scrolls horizontally rather than wrapping: five items fit a 360px phone
- * only just, and a bar that reflows to two rows moves the page content down by a
- * different amount on every device. The scrollbar is hidden because the items
- * are legible enough to show there is more to the right.
+ * It scrolls horizontally rather than wrapping: a bar that reflows to two rows
+ * moves the page content down by a different amount on every device, and the
+ * labels are long enough that four of them can still overflow a 360px phone.
+ * The scrollbar is hidden because the items are legible enough to show there is
+ * more to the right.
  */
 export const NAV_CSS = `
 .mainnav{border-top:1px solid var(--g5)}

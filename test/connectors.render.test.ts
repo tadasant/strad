@@ -6,7 +6,9 @@ import {
   withUpsert,
 } from "../src/config/overlay.ts";
 import { entryFromForm } from "../src/ui/servers.ts";
-import { renderForm, renderRoster } from "../src/ui/servers-page.ts";
+import { renderForm } from "../src/ui/servers-page.ts";
+import { renderConnectors } from "../src/ui/roster-page.ts";
+import type { Principal } from "../src/auth/index.ts";
 
 /**
  * The console renders with template literals and one `esc()`, so escaping is a
@@ -14,11 +16,42 @@ import { renderForm, renderRoster } from "../src/ui/servers-page.ts";
  * pins it: a regression here is a stored XSS on an admin console that can edit
  * the server list, which is about as bad as this product gets.
  *
+ * The roster half is driven through `renderConnectors` rather than over HTTP,
+ * because the editor controls only exist when there is a runtime holder and a
+ * writable store — which over HTTP would mean a parameter store. The renderer
+ * takes the same `roster` shape the route builds from that holder, so what is
+ * exercised here is the markup the route emits.
+ *
  * And `entryFromForm` — the most intricate pure function in this surface — is
  * exercised directly rather than only through HTTP, because its
  * owned-vs-carried rule is exactly the kind of thing an end-to-end test passes
  * over without noticing.
  */
+
+/** A signed-in console identity entitled to nothing, which is enough here: the
+ * only control roles decide is the playground icon, and these tests are about
+ * the editor controls and the escaping. */
+const PRINCIPAL: Principal = {
+  kind: "console-bypass",
+  id: "test",
+  label: "test",
+  roles: [],
+};
+
+/** The roster as the route renders it, with whatever roster state is passed. */
+function roster(
+  config: Parameters<typeof renderConnectors>[0]["config"],
+  rosterState?: Parameters<typeof renderConnectors>[0]["roster"],
+): string {
+  return renderConnectors({
+    config,
+    statuses: [],
+    boot: [],
+    env: {},
+    principal: PRINCIPAL,
+    ...(rosterState ? { roster: rosterState } : {}),
+  });
+}
 
 const BASE_YAML = `
 version: 1
@@ -41,41 +74,39 @@ const CONFIG = parseConfig(BASE_YAML);
 const NASTY = `"><script>alert(1)</script>`;
 
 describe("escaping", () => {
-  it("escapes a hostile title on the roster", () => {
+  it("escapes a hostile title and description on the roster", () => {
     const hostile = parseConfig(
       BASE_YAML.replace(
         "    entitlements: [admin]",
-        `    title: '${NASTY}'\n    entitlements: [admin]`,
+        `    title: '${NASTY}'\n    description: '${NASTY}'\n    entitlements: [admin]`,
       ),
     );
-    const html = renderRoster({
-      config: hostile,
+    const html = roster(hostile, {
       overlay: EMPTY_OVERLAY,
       sources: new Map([["alpha", "file"]]),
       writable: true,
     });
     expect(html).not.toContain("<script>alert(1)</script>");
-    expect(html).toContain("&lt;script&gt;");
+    expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    // The description lands in a `title=` attribute as well as in the body, and
+    // an attribute is the place an unescaped quote breaks out cheapest.
+    expect(html).not.toMatch(/title="[^"]*"><script/);
   });
 
   it("escapes a hostile slug everywhere the roster puts one", () => {
     // A slug cannot actually be this — the schema forbids it — but the roster
-    // must not be the thing standing between a bad slug and an injection.
-    const html = renderRoster({
-      config: {
-        ...CONFIG,
-        servers: [{ ...CONFIG.servers[0]!, slug: NASTY }],
-      },
-      overlay: EMPTY_OVERLAY,
-      sources: new Map(),
-      writable: true,
-    });
+    // must not be the thing standing between a bad slug and an injection. It
+    // reaches the name, the href, the popout ids and the four form actions.
+    const html = roster(
+      { ...CONFIG, servers: [{ ...CONFIG.servers[0]!, slug: NASTY }] },
+      { overlay: EMPTY_OVERLAY, sources: new Map(), writable: true },
+    );
     expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).not.toMatch(/action="[^"]*"><script/);
   });
 
   it("escapes the author and timestamp the overlay carries", () => {
-    const html = renderRoster({
-      config: CONFIG,
+    const html = roster(CONFIG, {
       overlay: {
         version: 1,
         revision: 2,
@@ -87,6 +118,78 @@ describe("escaping", () => {
       writable: true,
     });
     expect(html).not.toContain("<script>alert(1)</script>");
+  });
+
+  it("offers the editor controls only where a write would land", () => {
+    // Three states, and the page has to tell them apart: no runtime holder at
+    // all, a holder with nothing to write through, and a writable one. The
+    // roster, the badges and the links are the same in all three — it is only
+    // the controls that come and go.
+    const none = roster(CONFIG);
+    const readOnly = roster(CONFIG, {
+      overlay: EMPTY_OVERLAY,
+      sources: new Map([["alpha", "file"]]),
+      writable: false,
+    });
+    const writable = roster(CONFIG, {
+      overlay: EMPTY_OVERLAY,
+      sources: new Map([["alpha", "file"]]),
+      writable: true,
+    });
+
+    for (const html of [none, readOnly, writable]) {
+      // The half that must never depend on the store.
+      expect(html).toContain('<a class="conn-name" href="/ui/alpha">alpha</a>');
+      expect(html).toContain("<h1>Connectors");
+    }
+
+    for (const html of [none, readOnly]) {
+      expect(html).not.toContain('action="/connectors/alpha/remove"');
+      expect(html).not.toContain('href="/connectors/new?kind=remote-http"');
+    }
+    expect(writable).toContain('action="/connectors/alpha/remove"');
+    expect(writable).toContain('action="/connectors/alpha/toggle"');
+    expect(writable).toContain('href="/connectors/alpha"');
+    expect(writable).toContain('href="/connectors/new?kind=remote-http"');
+
+    // And each of the three says which one it is, rather than leaving a reader
+    // to work out why the buttons are missing.
+    expect(none).toContain("sets no <code>gateway.configStore:</code>");
+    expect(readOnly).toContain("cannot write the roster");
+    expect(writable).not.toContain("cannot write the roster");
+  });
+
+  it("draws every entry, including one nothing derived a status for", () => {
+    // The grouping is a PARTITION and it has to be total. A group set with a
+    // hole does not render a row out of place, it drops it: the entry vanishes
+    // from the table while the counts above keep claiming it is there. An
+    // enabled entry with no badge is the shape that finds it, and it belongs
+    // under "needs attention" — nothing was established about it, which is what
+    // ISSUE means everywhere else on this page.
+    const html = roster(CONFIG, {
+      overlay: EMPTY_OVERLAY,
+      sources: new Map([["alpha", "file"]]),
+      writable: true,
+    });
+    expect(html).toContain('<a class="conn-name" href="/ui/alpha">alpha</a>');
+    expect(html).toContain(
+      '<span class="conn-group-l">Needs attention</span><span class="conn-group-n">1</span>',
+    );
+    expect(html).not.toContain("No servers are configured on this gateway.");
+  });
+
+  it("shows where an entry is declared only when something can say", () => {
+    // The source chip is the one fact only the runtime holder knows. Without a
+    // holder every entry comes from the file, and a chip repeating that on every
+    // row is a column of noise.
+    expect(roster(CONFIG)).not.toContain(">config file<");
+    expect(
+      roster(CONFIG, {
+        overlay: EMPTY_OVERLAY,
+        sources: new Map([["alpha", "store"]]),
+        writable: true,
+      }),
+    ).toContain(">console<");
   });
 
   it("escapes every value the edit form puts back into an input", () => {

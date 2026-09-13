@@ -468,10 +468,10 @@ export function stateMatches(a: string, b: string): boolean {
  *
  * Only a same-origin, absolute path survives. Anything else — a scheme-relative
  * `//evil.example`, a full URL, a backslash the browser normalises to a slash —
- * becomes `/ui`. An open redirect on a login callback is how a phishing page
- * borrows your domain's trust.
+ * becomes `/connectors`, the console's working surface. An open redirect on a
+ * login callback is how a phishing page borrows your domain's trust.
  */
-export function sanitizeNext(raw: unknown, fallback = "/ui"): string {
+export function sanitizeNext(raw: unknown, fallback = "/connectors"): string {
   if (typeof raw !== "string" || raw === "") return fallback;
   if (!raw.startsWith("/")) return fallback;
   if (raw.startsWith("//") || raw.startsWith("/\\")) return fallback;

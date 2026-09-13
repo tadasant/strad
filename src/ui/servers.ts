@@ -11,13 +11,8 @@ import {
   signedInLabel,
 } from "./console-auth.ts";
 import { renderMessage } from "./render.ts";
-import {
-  CONNECTORS_PREFIX,
-  connectorsPath,
-  renderForm,
-  renderRoster,
-  type Flash,
-} from "./servers-page.ts";
+import { CONNECTORS_PREFIX, connectorsPath } from "./paths.ts";
+import { renderForm, type Flash } from "./servers-page.ts";
 import type { RuntimeConfig } from "../config/runtime.ts";
 import { ConfigRejected } from "../config/runtime.ts";
 import {
@@ -43,12 +38,22 @@ import { errorSummary } from "../util/error-text.ts";
  * The console's connector editor: create, edit, disable and remove a server
  * entry without a deploy.
  *
+ * ## What is here and what is not
+ *
+ * The WRITES and the entry form. The roster they land back on — every server,
+ * its scope, its secret status and these controls — is rendered by
+ * src/ui/roster-page.ts and mounted by src/ui/index.ts, which is the half of
+ * the console that holds the secret-status reading. This file is handed that
+ * render as `renderRoster`, so a refusal re-draws the same page a human was
+ * looking at rather than a second, thinner roster that would drift from it.
+ *
  * ## Where it is mounted, and why not under /ui
  *
  * `/connectors`, at the top level. `/ui/:server` is a wildcard — the per-server
- * resource browser takes any slug — so `/ui/servers` would be one config entry
- * away from being shadowed by a server that happens to be called `servers`.
- * A separate prefix has no such collision and no ordering rule to remember.
+ * resource browser takes any slug — so `/ui/connectors` would be one config
+ * entry away from being shadowed by a server that happens to be called
+ * `connectors`. A separate prefix has no such collision and no ordering rule to
+ * remember.
  *
  * ## The same posture as every other console write
  *
@@ -75,6 +80,19 @@ import { errorSummary } from "../util/error-text.ts";
 export interface ServersUiOptions {
   runtimeConfig: () => RuntimeConfig | null;
   env: NodeJS.ProcessEnv;
+  /**
+   * Draw the consolidated roster at `/connectors`, with an optional flash.
+   *
+   * Injected rather than imported because the page needs the deployment's
+   * secret-status reading, which `mountConsoleUi` owns — see src/ui/index.ts.
+   * Every POST here ends in one of these, so the page a write returns to is
+   * byte-for-byte the page the write was started from.
+   */
+  renderRoster: (
+    res: Response,
+    flash?: Flash,
+    status?: number,
+  ) => Promise<void>;
 }
 
 export function mountServersUi(
@@ -84,12 +102,10 @@ export function mountServersUi(
 ): void {
   const form = express.urlencoded({ extended: false, limit: "256kb" });
 
-  app.get(
-    CONNECTORS_PREFIX,
-    gate,
-    asyncRoute((req, res) => handleRoster(req, res, opts), renderUnexpected),
-  );
-
+  // `GET /connectors` itself is registered by src/ui/index.ts: the page is the
+  // consolidated servers view and needs the secret-status reading that lives
+  // there. Everything under the prefix is this file's.
+  //
   // BEFORE `/connectors/:slug`, or a server could not be called `new`.
   app.get(
     connectorsPath("new"),
@@ -181,42 +197,6 @@ function notFound(res: Response, slug: string): void {
     );
 }
 
-function roster(
-  res: Response,
-  runtime: RuntimeConfig,
-  flash?: Flash,
-  status = 200,
-): void {
-  res
-    .status(status)
-    .type("html")
-    .send(
-      renderRoster({
-        config: runtime.config(),
-        overlay: runtime.overlay(),
-        sources: runtime.sources(),
-        writable: runtime.writable,
-        signedInAs: signedInLabel(res),
-        flash,
-      }),
-    );
-}
-
-function handleRoster(
-  req: Request,
-  res: Response,
-  opts: ServersUiOptions,
-): Promise<void> {
-  void req;
-  const runtime = opts.runtimeConfig();
-  if (!runtime?.editable) {
-    unavailable(res);
-    return Promise.resolve();
-  }
-  roster(res, runtime);
-  return Promise.resolve();
-}
-
 /** The entries a new one may be copied from: same kind, anything else goes. */
 function copyable(
   runtime: RuntimeConfig,
@@ -241,14 +221,13 @@ function handleNew(
 
   const kind = String(req.query.kind ?? "");
   if (!(RUNTIME_CREATABLE_KINDS as readonly string[]).includes(kind)) {
-    roster(res, runtime, {
+    return opts.renderRoster(res, {
       tone: "error",
       message: `A ${kind || "server"} cannot be added from the console.`,
       detail: [
         `Choose one of: ${RUNTIME_CREATABLE_KINDS.join(", ")}. A builtin has to ship with a build.`,
       ],
     });
-    return Promise.resolve();
   }
 
   // "Copy from" is a GET so the prefilled form is a bookmarkable URL and a
@@ -472,7 +451,7 @@ async function handleSave(
     return redraw(refusal(err));
   }
 
-  roster(res, runtime, {
+  return opts.renderRoster(res, {
     tone: "ok",
     message: `${String(entry.slug)} saved. It is live on this gateway now — no deploy, no restart.`,
   });
@@ -504,9 +483,9 @@ async function handleMutate(
         consoleIdentity(res),
       );
     } catch (err) {
-      return roster(res, runtime, refusal(err), 400);
+      return opts.renderRoster(res, refusal(err), 400);
     }
-    return roster(res, runtime, {
+    return opts.renderRoster(res, {
       tone: "ok",
       message: `${slug} restored. The checked-in config's entry is serving again.`,
     });
@@ -534,10 +513,10 @@ async function handleMutate(
   try {
     await runtime.apply(next, consoleIdentity(res));
   } catch (err) {
-    return roster(res, runtime, refusal(err), 400);
+    return opts.renderRoster(res, refusal(err), 400);
   }
 
-  roster(res, runtime, {
+  return opts.renderRoster(res, {
     tone: "ok",
     message:
       action === "remove"

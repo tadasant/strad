@@ -451,7 +451,9 @@ describe("a secrets page on a gateway with one", () => {
     expect(html).not.toContain("secrets pages on this gateway");
     // The page itself is intact: its own scope and the way back to the index.
     expect(html).toContain(`<code>${STRAD_PROJECT}</code>`);
-    expect(html).toContain('<a href="/ui" class="crumb">servers</a>');
+    expect(html).toContain(
+      '<a href="/connectors" class="crumb">connectors</a>',
+    );
   });
 
   it("still agrees with the index, which offers exactly this one", async () => {

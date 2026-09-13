@@ -3,6 +3,7 @@ import type { ConsoleTokenStore } from "../auth/console-tokens.ts";
 import type { ConsoleSessions } from "../auth/session.ts";
 import type { RuntimeConfig } from "../config/runtime.ts";
 import { mountServersUi } from "./servers.ts";
+import type { Flash } from "./servers-page.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { asyncRoute } from "../http/async-route.ts";
 import type { SecretBag } from "../secrets/index.ts";
@@ -43,13 +44,18 @@ import {
 } from "./resolve.ts";
 import { resolverConfigured } from "./param-routing.ts";
 import { revealPosture } from "./reveal.ts";
-import { renderIndex } from "./index-page.ts";
+import { renderConnectors } from "./roster-page.ts";
 import { renderServerOverview } from "./server-overview.ts";
 import { originFor, playgroundAccess } from "./playground.ts";
 import { entitledServers } from "../gateway/entitlements.ts";
 import { storeFor } from "./store-client.ts";
 import { mountTokensConsole } from "./tokens.ts";
-import { SERVER_ROUTE, serverConsolePath, UI_PREFIX } from "./paths.ts";
+import {
+  CONNECTORS_PREFIX,
+  SERVER_ROUTE,
+  serverConsolePath,
+  UI_PREFIX,
+} from "./paths.ts";
 import {
   connectorFlash,
   mountConnector,
@@ -73,10 +79,19 @@ import { mountPwa } from "./pwa.ts";
  * Mount the human, SSO-gated console.
  *
  * Routes:
- *   GET  /ui                    — the index: every configured server, what it is
- *                                 scoped to, and whether its secrets are seeded
- *   GET  /secrets               — 302 to /ui. The secret roster was a page of its
- *                                 own; it is now part of the index it describes.
+ *   GET  /connectors            — the consolidated servers view: every configured
+ *                                 server, what it is scoped to, whether its
+ *                                 secrets are seeded, and — where the roster is
+ *                                 editable — the controls to change it. Rendered
+ *                                 here because it needs the deployment-wide
+ *                                 secret-status reading; everything else under
+ *                                 the prefix is src/ui/servers.ts.
+ *   GET  /ui                    — 302 to /connectors. The roster and the secret
+ *                                 status were a destination of their own; they
+ *                                 are on the entries now.
+ *   GET  /secrets               — 302 to /connectors, same reasoning, one move
+ *                                 earlier: it was the secret roster's own page
+ *                                 before the roster absorbed it.
  *   GET  /ui/:server            — the per-server page (connector, GCS browser,
  *                                 parameters manager, or the read-only overview
  *                                 every other kind gets — src/ui/server-overview.ts). The
@@ -215,11 +230,13 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
   // is allowed to cache, which is these paths and nothing else.
   mountPwa(app, { offlineHtml: renderOffline() });
 
-  // The front door. Behind the SAME gate as every other console surface: strad
-  // requires Google identity before exposing anything, and the index of what
-  // this gateway fronts is something. Once GOOGLE_CLIENT_ID/SECRET land, this
-  // is tadasant.com-only SSO with no further change here — the gate resolves a
-  // Principal and this route only ever asks whether it got one.
+  // The front door: a splash carrying the endpoint to paste into an MCP client
+  // and the doors into the console. Behind the SAME gate as every other console
+  // surface: strad requires Google identity before exposing anything, and even
+  // the count of what this gateway fronts is something. Once
+  // GOOGLE_CLIENT_ID/SECRET land, this is tadasant.com-only SSO with no further
+  // change here — the gate resolves a Principal and this route only ever asks
+  // whether it got one.
   app.get("/", gate, (req, res) => {
     const host = req.get("host");
     res.type("html").send(
@@ -234,17 +251,45 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     );
   });
 
-  // `asyncRoute` (src/http/async-route.ts), here and on every other console
-  // route: Express 4 does not catch a rejected async handler, so an unexpected
-  // error becomes a 500 page rather than a hung request — and, in this process,
-  // rather than an exit. `renderUnexpected` is passed in rather than reached
-  // for, which is what keeps this page's wording separate from the connector's
-  // (see the note on that function).
+  // The consolidated servers view. `asyncRoute` (src/http/async-route.ts), here
+  // and on every other console route: Express 4 does not catch a rejected async
+  // handler, so an unexpected error becomes a 500 page rather than a hung
+  // request — and, in this process, rather than an exit. `renderUnexpected` is
+  // passed in rather than reached for, which is what keeps this page's wording
+  // separate from the connector's (see the note on that function).
+  //
+  // It is registered here rather than in src/ui/servers.ts because the page is
+  // the secret roster as much as it is the connector roster, and the reading
+  // behind that is this module's. `renderRoster` below is the same render, handed
+  // to the write paths so a refusal re-draws the page it was made from.
+  const renderRoster = (
+    req: Request,
+    res: Response,
+    flash?: Flash,
+    status = 200,
+  ): Promise<void> => handleConnectors(req, res, opts, flash, status);
+
   app.get(
-    UI_PREFIX,
+    CONNECTORS_PREFIX,
     gate,
-    asyncRoute((req, res) => handleIndex(req, res, opts), renderUnexpected),
+    asyncRoute((req, res) => renderRoster(req, res), renderUnexpected),
   );
+
+  // The roster and the per-server secret status were their own destination here
+  // and are on `/connectors` now, on the entries they describe. The redirect
+  // stays because the URL was published — bookmarks, the PWA's old `start_url`,
+  // the docs — and a 404 for a page whose content simply moved teaches nobody
+  // anything. Exact-path, so `/ui/:server` and `/ui/oauth/callback` are
+  // untouched: the per-server pages did not move and the OAuth redirect URI is
+  // registered with Google.
+  //
+  // Behind the gate rather than in front of it so an anonymous request still
+  // 401s: an open redirect to a gated page is not a leak, but a door that
+  // answers differently to an anonymous caller is one fewer thing to reason
+  // about.
+  app.get(UI_PREFIX, gate, (_req, res) => {
+    res.redirect(302, CONNECTORS_PREFIX);
+  });
 
   // `/playground/:server` and its two POST routes. Same gate, same process, and
   // deliberately NOT under `/ui/:server` — that path is the per-server resource
@@ -282,28 +327,27 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
   // the wrong home for it.
   //
   // ALWAYS mounted, including when there is no runtime holder to edit through.
-  // The routes already answer a store-less gateway with the page that says the
-  // editor is off (`unavailable()` there), and the shared nav bar links
-  // `/connectors` from every page — so leaving the prefix unregistered would
-  // turn one item in that bar into Express's own stock 404 on exactly the
-  // deployments that most need telling why. A thunk that returns null is the
-  // shape of "no store", and the handlers already read it that way.
+  // `GET /connectors` answers on every deployment — the roster and the secret
+  // status do not depend on a store — and the routes under it answer a
+  // store-less gateway with the page that says the editor is off
+  // (`unavailable()` there). A thunk that returns null is the shape of "no
+  // store", and the handlers already read it that way.
   mountServersUi(app, gate, {
     runtimeConfig: opts.runtimeConfig ?? (() => null),
     env: opts.env,
+    // A write re-draws the page it was made from. Passing the render rather
+    // than a second, thinner roster is what keeps the flash from landing on a
+    // page that disagrees with the one the human was looking at.
+    renderRoster: (res, flash, status) =>
+      renderRoster(res.req, res, flash, status),
   });
 
   // The secret roster used to live here, as its own destination. It does not any
-  // more — it is on `/ui`, on the entry it describes. The redirect stays because
-  // the URL was published (bookmarks, the AIR catalog, docs), and a 404 for a
-  // page whose content simply moved teaches nobody anything.
-  //
-  // It is behind the gate rather than in front of it so an anonymous request to
-  // `/secrets` still 401s: an open redirect to a gated page is not a leak, but a
-  // door that answers differently to an anonymous caller is one fewer thing to
-  // reason about.
+  // more — it is on `/connectors`, on the entry it describes. Sent straight
+  // there rather than through `/ui`: a redirect to a redirect is a hop nobody
+  // needs. Same gate, same reasoning as above.
   app.get("/secrets", gate, (_req, res) => {
-    res.redirect(302, UI_PREFIX);
+    res.redirect(302, CONNECTORS_PREFIX);
   });
 
   app.get(
@@ -339,7 +383,7 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
 }
 
 // ---------------------------------------------------------------------------
-// GET /ui — the console index
+// GET /connectors — the consolidated servers view
 // ---------------------------------------------------------------------------
 
 /**
@@ -350,11 +394,18 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
  * makes. A badge here and a JSON field there derived by two different code paths
  * would eventually disagree, and the endpoint's whole value is that a platform
  * app can trust it says what this page says.
+ *
+ * `flash` and `status` are what make this the same function the write paths in
+ * src/ui/servers.ts return through: a refused save re-renders THIS page with the
+ * reason on top, rather than a second roster that would have to be kept in step
+ * with it.
  */
-async function handleIndex(
+async function handleConnectors(
   req: Request,
   res: Response,
   opts: ConsoleUiOptions,
+  flash?: Flash,
+  status = 200,
 ): Promise<void> {
   const { statuses, boot, storeDiagnosis } = await readDeploymentSecretStatus({
     config: opts.config,
@@ -372,21 +423,37 @@ async function handleIndex(
   // copied `?servers=` URL pasteable on a deployment that declares no publicUrl
   // — the same fallback the landing page takes.
   const host = req.get("host");
+  // Absent when this deployment keeps no roster in a store, which takes the
+  // editor away and leaves every other half of the page standing.
+  const runtime = opts.runtimeConfig?.() ?? null;
 
-  res.type("html").send(
-    renderIndex({
-      config: opts.config,
-      statuses,
-      boot,
-      storeDiagnosis,
-      env: opts.env,
-      // The console identity, for the one control on the page that is not a
-      // rendering of config: the playground icon. See cardIcons().
-      principal: consolePrincipal(res),
-      signedInAs: signedInLabel(res),
-      requestOrigin: host ? `${req.protocol}://${host}` : undefined,
-    }),
-  );
+  res
+    .status(status)
+    .type("html")
+    .send(
+      renderConnectors({
+        config: opts.config,
+        statuses,
+        boot,
+        storeDiagnosis,
+        env: opts.env,
+        // The console identity, for the one control on the page that is not a
+        // rendering of config: the playground icon. See rowIcons().
+        principal: consolePrincipal(res),
+        signedInAs: signedInLabel(res),
+        requestOrigin: host ? `${req.protocol}://${host}` : undefined,
+        ...(runtime?.editable
+          ? {
+              roster: {
+                overlay: runtime.overlay(),
+                sources: runtime.sources(),
+                writable: runtime.writable,
+              },
+            }
+          : {}),
+        ...(flash ? { flash } : {}),
+      }),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -439,7 +506,7 @@ async function handleServerView(
           heading: "No such server",
           sub: `No server named "${slug}" is configured on this gateway.`,
           tone: "warn",
-          nav: "servers",
+          nav: "connectors",
         }),
       );
     return;
@@ -463,6 +530,10 @@ async function handleServerView(
       renderServerOverview({
         server: view.server,
         status: statuses.find((s) => s.server.slug === slug),
+        // `/connectors/<slug>` answers only where there is a roster to edit; on
+        // a deployment without one it is the "editor is off" 404, so the
+        // overview must not offer it as a door.
+        editable: opts.runtimeConfig?.()?.editable === true,
         playable: playgroundAccess(
           opts.config,
           entitledServers(consolePrincipal(res), opts.config),
@@ -514,7 +585,7 @@ async function handleServerView(
           view.accountReason ??
           "This server is scoped to a GCS bucket, but the console cannot resolve its credentials.",
         tone: "warn",
-        nav: "servers",
+        nav: "connectors",
       }),
     );
     return;
@@ -548,7 +619,7 @@ async function handleServerView(
           heading: "Could not list this bucket",
           sub: `GCS rejected the request. This is usually a credential or bucket-permission problem. Detail: ${detail}`,
           tone: "error",
-          nav: "servers",
+          nav: "connectors",
         }),
       );
   }
@@ -606,7 +677,7 @@ async function handleSecretAction(
           heading: "No such secrets server",
           sub: `"${slug}" is not a parameters-backed server on this gateway.`,
           tone: "warn",
-          nav: "servers",
+          nav: "connectors",
         }),
       );
     return;
@@ -646,7 +717,7 @@ async function handleSecretAction(
             `nothing was written. Configured stores: ` +
             `${view.stores.map((st) => st.projectId).join(", ")}.`,
           tone: "warn",
-          nav: "servers",
+          nav: "connectors",
         }),
       );
     return;
@@ -931,7 +1002,7 @@ async function renderSecretsPage(
           `"/strad/${opts.config.gateway.env}/mcp/" — under this store's namespaces: (or, on a ` +
           `single-store config, SECRETS_NAMESPACES under this server's consoleEnv:).`,
         tone: "warn",
-        nav: "servers",
+        nav: "connectors",
         otherStores,
         siblingPages,
       }),
@@ -954,7 +1025,7 @@ async function renderSecretsPage(
           `fall back to another store's key: each store on this page carries its OWN admin ` +
           `credential, by design. Store: ${selected.label}. Detail: ${selected.accountReason ?? "no credential"}`,
         tone: "warn",
-        nav: "servers",
+        nav: "connectors",
         otherStores,
         siblingPages,
       }),
@@ -1070,7 +1141,7 @@ function renderNoStores(
         `Add at least one entry under consoleStores: (project, namespaces, adminKeyVar), or ` +
         `set SECRETS_PROJECT_ID under this server's consoleEnv:.`,
       tone: "warn",
-      nav: "servers",
+      nav: "connectors",
     }),
   );
 }
@@ -1340,7 +1411,7 @@ function renderUnexpected(res: Response, err: unknown): void {
         heading: "Something went wrong",
         sub: describe(err),
         tone: "error",
-        nav: "servers",
+        nav: "connectors",
       }),
     );
 }

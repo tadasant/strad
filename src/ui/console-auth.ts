@@ -19,6 +19,7 @@ import {
 } from "../auth/session.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { event } from "../telemetry/index.ts";
+import { CONNECTORS_PREFIX } from "./paths.ts";
 import { renderSignIn } from "./render.ts";
 
 /**
@@ -391,10 +392,10 @@ function cleanUrl(req: Request): string {
 
 /**
  * Where to return after sign-in. Only GET is worth resuming — a POST cannot be
- * replayed through a redirect, and /ui's writes are the POSTs, so an expired
- * session mid-write lands the human back on the index rather than silently
- * re-submitting anything.
+ * replayed through a redirect, and the console's writes are the POSTs, so an
+ * expired session mid-write lands the human back on the roster rather than
+ * silently re-submitting anything.
  */
 function here(req: Request): string {
-  return req.method === "GET" ? cleanUrl(req) : "/ui";
+  return req.method === "GET" ? cleanUrl(req) : CONNECTORS_PREFIX;
 }

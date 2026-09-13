@@ -75,15 +75,16 @@ it is deployed nowhere.
 ### Signing in
 
 `http://localhost:<port>/ui?token=<ADMIN_BOOTSTRAP_TOKEN>` is the entry point: it
-moves the token into an `HttpOnly` cookie and redirects to the console.
-`/console?token=…` authenticates the same way but answers JSON — it is the
-session endpoint, not the screen.
+moves the token into an `HttpOnly` cookie and redirects to the console, landing
+on `/connectors`. `/console?token=…` authenticates the same way but answers
+JSON — it is the session endpoint, not the screen.
 
 From there the [nav
 bar](/auth/overview/#what-the-console-serves-and-how-you-get-between-the-pages)
-carries the other four destinations — `/`, `/connectors`, `/playground` and
-`/tokens` — so the one URL above reaches the whole console. `/connectors` says the
-roster editor is off on this config, which is correct: the dev config sets no
+carries the other three destinations — `/`, `/playground` and `/tokens` — so the
+one URL above reaches the whole console. `/connectors` renders the full roster on
+this config: every server, its scope and its secret badge. What it says is off is
+the roster **editor**, which is correct — the dev config sets no
 `gateway.configStore:`.
 
 ### Signing in as an automated actor
@@ -100,7 +101,7 @@ curl -s -X POST "http://localhost:$PORT/console/tokens" \
 
 The agent posts `{"token": "…"}` to `/console/token-login` from its browser
 context (`context.request.post(…)` in Playwright), which sets the
-`strad_console_token` cookie, then navigates to `/ui`. The token works once, and
+`strad_console_token` cookie, then navigates to `/connectors`. The token works once, and
 only within ten minutes of the mint, and the session it opens can view the
 console but not reveal, write or delete a stored value. See
 [Auth architecture](/auth/overview/#console-login-tokens-the-automated-actors-door).

@@ -172,7 +172,7 @@ stale and nobody knows which.
 Env for the **core gateway only** — the human console's half of a
 `supplementary-image` server. `env:` lands on the component that answers `/mcp`, so
 anything in it is a credential the agent path holds. `consoleEnv:` lands on core,
-which serves the SSO-gated `/ui` and nothing an agent can reach. The asymmetry is
+which serves the SSO-gated console and nothing an agent can reach. The asymmetry is
 the point: the `secrets` server's viewer key (which cannot read a secret value) is
 in `env:`, and its admin key (which can) is in `consoleEnv:`, so the two never meet.
 The deploy layer keeps `consoleEnv:` off every other component — a broadcast SECRET

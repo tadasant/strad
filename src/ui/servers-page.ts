@@ -1,12 +1,17 @@
 import { esc, layout } from "./render.ts";
-import { serverConsolePath } from "./paths.ts";
+import { CONNECTORS_PREFIX, connectorsPath } from "./paths.ts";
 import { SLUG_PATTERN, type StradConfig } from "../config/schema.ts";
-import type { EntrySource, ServerOverlay } from "../config/overlay.ts";
-import { RUNTIME_CREATABLE_KINDS, immutableFields } from "../config/overlay.ts";
+import type { EntrySource } from "../config/overlay.ts";
+import { immutableFields } from "../config/overlay.ts";
 import { CREDENTIAL_SCHEMES } from "../config/secret-position.ts";
 
 /**
- * The connector editor's pages.
+ * The connector ENTRY FORM — `/connectors/new` and `/connectors/<slug>`.
+ *
+ * The roster it belongs to is src/ui/roster-page.ts: one page listing every
+ * server with its scope, its secret status and these controls. This file is the
+ * form you land on from a row, and the two shared pieces the roster needs from
+ * it — the flash markup and the per-kind blurb.
  *
  * Rendering only: every decision about what may be saved lives in
  * src/config/overlay.ts, and every decision about what to do with a POST lives
@@ -21,12 +26,6 @@ import { CREDENTIAL_SCHEMES } from "../config/secret-position.ts";
  * them look up the docs is a form they will fill in wrong.
  */
 
-export const CONNECTORS_PREFIX = "/connectors";
-
-export function connectorsPath(...rest: string[]): string {
-  return [CONNECTORS_PREFIX, ...rest.map(encodeURIComponent)].join("/");
-}
-
 export interface Flash {
   tone: "ok" | "error";
   message: string;
@@ -34,17 +33,12 @@ export interface Flash {
   detail?: string[];
 }
 
-export interface RosterOptions {
-  config: StradConfig;
-  overlay: ServerOverlay;
-  sources: Map<string, EntrySource>;
-  /** False when this gateway holds no credential that can write the overlay. */
-  writable: boolean;
-  signedInAs?: string;
-  flash?: Flash;
-}
-
-function flashHtml(flash: Flash | undefined): string {
+/**
+ * The flash the write paths hand back, shown at the top of whichever page
+ * re-renders. Exported because the roster it lands on is rendered by
+ * src/ui/roster-page.ts, which is where the servers view lives.
+ */
+export function flashHtml(flash: Flash | undefined): string {
   if (!flash) return "";
   const detail =
     flash.detail && flash.detail.length > 0
@@ -55,17 +49,6 @@ function flashHtml(flash: Flash | undefined): string {
   return `<div class="flash flash-${flash.tone === "ok" ? "ok" : "error"}"><div>${esc(
     flash.message,
   )}</div>${detail}</div>`;
-}
-
-function readOnlyBanner(writable: boolean): string {
-  if (writable) return "";
-  return `<div class="flash flash-error">
-    <div>This gateway cannot write the roster.</div>
-    <ul class="ex-why"><li>It holds no admin parameter credential
-    (<code>SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON</code>), so a change here
-    would have nowhere to go. The roster below is what the deployment is
-    serving; editing it needs that credential on this component.</li></ul>
-  </div>`;
 }
 
 const KIND_BLURB: Record<string, string> = {
@@ -86,149 +69,12 @@ const KIND_BLURB: Record<string, string> = {
  * and friends out of `Object.prototype` — so a POST with `kind=toString`
  * renders a native-function body as the page's subtitle. Escaped, so it is
  * cosmetic rather than an injection; still not something to ship.
+ *
+ * Exported because the "add a connector" menu is on the roster page, which is
+ * src/ui/roster-page.ts, and one blurb per kind is one blurb per kind.
  */
-function blurb(kind: string): string {
+export function kindBlurb(kind: string): string {
   return Object.hasOwn(KIND_BLURB, kind) ? (KIND_BLURB[kind] ?? "") : "";
-}
-
-function kindChip(kind: string): string {
-  return `<span class="chip chip-plain">${esc(kind)}</span>`;
-}
-
-function sourceChip(source: EntrySource | undefined): string {
-  return source === "store"
-    ? `<span class="chip chip-ok" title="Added or edited through this console">console</span>`
-    : `<span class="chip chip-plain" title="Declared in the checked-in config">config file</span>`;
-}
-
-/** `GET /connectors` — every entry the gateway is serving, and what to do to it. */
-export function renderRoster(opts: RosterOptions): string {
-  const { config, sources } = opts;
-
-  const rows = config.servers
-    .map((server) => {
-      const source = sources.get(server.slug);
-      const controls = opts.writable
-        ? `<div class="conn-acts">
-             <a class="btn btn-ghost" href="${esc(connectorsPath(server.slug))}">Edit</a>
-             <form method="post" action="${esc(connectorsPath(server.slug, "toggle"))}">
-               <button class="btn btn-ghost" type="submit">${server.enabled ? "Disable" : "Enable"}</button>
-             </form>
-             <form method="post" action="${esc(connectorsPath(server.slug, "remove"))}">
-               <button class="btn btn-danger" type="submit">Remove</button>
-             </form>
-           </div>`
-        : `<div class="conn-acts"><a class="btn btn-ghost" href="${esc(connectorsPath(server.slug))}">View</a></div>`;
-
-      return `<tr>
-        <td class="conn-slug"><a href="${esc(serverConsolePath(server.slug))}">${esc(server.slug)}</a>${
-          server.enabled ? "" : ` <span class="chip chip-off">disabled</span>`
-        }</td>
-        <td>${kindChip(server.kind)}</td>
-        <td>${sourceChip(source)}</td>
-        <td class="conn-title">${esc(server.title ?? server.description ?? "")}</td>
-        <td class="conn-roles">${esc(server.entitlements.join(", ") || "—")}</td>
-        <td>${controls}</td>
-      </tr>`;
-    })
-    .join("\n");
-
-  /**
-   * The slugs the checked-in config declares and the overlay subtracts.
-   *
-   * Without this the roster iterates `config.servers`, which by definition no
-   * longer holds them — so a removed server is not shown as removed, it is
-   * shown as nothing at all, and the only clue that the file's entry is not
-   * serving is its absence. A standing instruction to subtract something should
-   * be visible to the person who has to reason about the file.
-   */
-  const removals = opts.overlay.servers.removals
-    .map(
-      (slug) => `<tr>
-        <td class="conn-slug">${esc(slug)}</td>
-        <td><span class="chip chip-off">removed</span></td>
-        <td>${sourceChip("file")}</td>
-        <td class="conn-title">Declared in the config file, removed here.</td>
-        <td class="conn-roles">—</td>
-        <td>${
-          opts.writable
-            ? `<form method="post" action="${esc(connectorsPath(slug, "restore"))}">
-                 <button class="btn btn-ghost" type="submit">Restore</button>
-               </form>`
-            : ""
-        }</td>
-      </tr>`,
-    )
-    .join("\n");
-
-  const removedSection =
-    opts.overlay.servers.removals.length > 0
-      ? `<section class="panel">
-           <h2 class="state-title">Removed</h2>
-           <p class="state-sub">These are declared in the checked-in config and
-           subtracted here. The removal stands until somebody deletes the entry
-           from the file or restores it.</p>
-           <table class="conn-table">
-             <thead><tr>
-               <th>Slug</th><th></th><th>Source</th><th></th><th></th><th></th>
-             </tr></thead>
-             <tbody>${removals}</tbody>
-           </table>
-         </section>`
-      : "";
-
-  const addMenu = opts.writable
-    ? `<section class="addbox">
-         <h2 class="addbox-title">Add a connector</h2>
-         <div class="card-grid">
-           ${RUNTIME_CREATABLE_KINDS.map(
-             (kind) => `<a class="card" href="${esc(
-               `${connectorsPath("new")}?kind=${encodeURIComponent(kind)}`,
-             )}">
-               <div class="card-head"><span class="card-title">${esc(kind)}</span></div>
-               <p class="card-desc">${esc(blurb(kind))}</p>
-               <span class="card-cta">Add →</span>
-             </a>`,
-           ).join("\n")}
-         </div>
-       </section>`
-    : "";
-
-  const body = `
-${flashHtml(opts.flash)}
-${readOnlyBanner(opts.writable)}
-<section class="panel">
-  <div class="conn-head">
-    <h1 class="state-title">Connectors</h1>
-    <span class="conn-meta">revision ${esc(String(opts.overlay.revision))}${
-      opts.overlay.updatedBy ? ` · ${esc(opts.overlay.updatedBy)}` : ""
-    }${opts.overlay.updatedAt ? ` · ${esc(opts.overlay.updatedAt)}` : ""}</span>
-  </div>
-  <p class="state-sub">Every MCP server this gateway serves. An entry marked
-  <em>console</em> lives in the runtime store and takes effect without a deploy;
-  one marked <em>config file</em> comes from the checked-in document.</p>
-  <table class="conn-table">
-    <thead><tr>
-      <th>Slug</th><th>Kind</th><th>Source</th><th>Title</th><th>Roles</th><th></th>
-    </tr></thead>
-    <tbody>${rows || `<tr><td colspan="6" class="empty">No servers.</td></tr>`}</tbody>
-  </table>
-</section>
-${removedSection}
-${addMenu}
-`;
-
-  return layout({
-    title: "Connectors",
-    body,
-    signedInAs: opts.signedInAs,
-    nav: "connectors",
-    brandHref: "/ui",
-    brandSub: "connectors",
-    footNote: "runtime roster · takes effect without a deploy",
-    helpTitle: "Connector guide",
-    help: GUIDE,
-  });
 }
 
 export interface FormOptions {
@@ -719,7 +565,7 @@ ${flashHtml(opts.flash)}
     creating ? `new ${opts.kind}` : (opts.slug ?? ""),
   )}</span></div>
   <h1 class="state-title">${esc(creating ? `Add a ${opts.kind} connector` : `Edit ${opts.slug ?? ""}`)}</h1>
-  <p class="state-sub">${esc(blurb(opts.kind))}</p>
+  <p class="state-sub">${esc(kindBlurb(opts.kind))}</p>
   ${frozenNote}
   ${
     !creating && opts.source === "file"
@@ -761,7 +607,7 @@ ${copyForm}
     body,
     signedInAs: opts.signedInAs,
     nav: "connectors",
-    brandHref: "/ui",
+    brandHref: "/",
     brandSub: "connectors",
     serverSlug: opts.slug,
     footNote: "runtime roster · takes effect without a deploy",

@@ -200,7 +200,9 @@ instead when it should not be listed, entitled or mounted at all yet:
 ```
 
 `enabled: false` is skipped everywhere it matters: `render-spec` never demands the
-name, the registry never mounts the slug, and the front door never lists it. The
+name, the registry never mounts the slug, and the connectors roster sorts it last
+with no badge — strad asks nothing of it, so a green would be a claim about a
+server that answers nothing. The
 mount is still in the image and the entry still documents itself, so turning the
 server on later is a one-line diff and a redeploy.
 
@@ -217,7 +219,7 @@ there in the same PR.
 Anything in it is a credential the agent path holds. That is usually what you want.
 
 Sometimes it is exactly what you do not. `consoleEnv:` is the scope that lands on
-the **core gateway only** — the component that serves the SSO-gated `/ui`, and
+the **core gateway only** — the component that serves the SSO-gated console, and
 nothing an agent can reach:
 
 ```yaml

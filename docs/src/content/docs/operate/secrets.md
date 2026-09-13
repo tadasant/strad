@@ -151,7 +151,7 @@ A process reads the store **once**, and holds that reading for `ttlSeconds`.
 Every namespace it serves — the gateway's own, each server's
 `/mcp/{slug}/static/`, a `params: true` builtin's, the one the console's
 diagnosis asks about — is a slice of the same reading. Nothing re-reads the
-store on its own cadence: not the reachability poller, not a `/ui` reload, not
+store on its own cadence: not the reachability poller, not a `/connectors` reload, not
 a poll of `/api/secrets/readiness`. The store is read again when the reading
 has aged past the TTL and something asks, when a write goes through the console
 or the parameter write-back route, when the console's **Re-read the store**
@@ -1599,21 +1599,29 @@ seeded as a secret parameter, it renders, and because a store-backed spec does
 not bake the boot keys the staging gateway has no other copy to fall back on. A
 `/mcp` request authenticating against that deployment is an end-to-end read of it.
 
-## The console index: every server, and whether its secrets are there
+## The connectors roster: every server, and whether its secrets are there
 
-`/ui` is the console, and it answers two questions about the same list: what is
-each server scoped to, and **is the strad side of this connector broken?**
+`/connectors` is the console's one view of the servers, and it answers three
+questions about the same list: what is each server scoped to, **is the strad side
+of this connector broken?**, and — where the roster is editable — what do I change
+about it.
 
-The two live on one page because nobody wants the second question in isolation: it
-is asked _about_ a server, standing in front of the list of servers, so the answer
-belongs on the entry rather than one navigation away. `/secrets` is a 302 to
-`/ui` — the URL was published, and a page whose content moved teaches nobody
-anything by 404ing.
+They live on one page because nobody wants any of them in isolation: the second is
+asked _about_ a server, standing in front of the list of servers, and the third is
+what you do having read the second. So the answer is on the entry rather than one
+navigation away. `/ui` and `/secrets` are both 302s to `/connectors` — both URLs
+were published, and a page whose content moved teaches nobody anything by 404ing.
+
+**The roster does not depend on `gateway.configStore:`.** Every row, every badge
+and every popout is served on a deployment that keeps its roster in the
+checked-in document; what such a deployment loses is the editor controls, and the
+page says which of the two it is. See [the console
+flow](/operate/runtime-config/#the-console-flow) for the editing half.
 
 The preflight above is honest but late. A `${NAME}` that is not seeded is
 discoverable at exactly one moment — the deploy, when `render-spec` refuses to
 render — and that is no help at all to someone standing in front of a connector
-returning 401 and wondering whose fault it is. The index derives the same answer
+returning 401 and wondering whose fault it is. This page derives the same answer
 from the running config, before and independently of any deploy.
 
 It is a **roster**, not an error log. Every server is on it, healthy ones
@@ -1624,10 +1632,11 @@ It is behind `requireConsoleUi`, the same gate as `/console`.
 
 ### Two badges, and where they sit
 
-Every enabled entry carries exactly one of two badges, in the slot the duplicated
-slug used to occupy. Most servers declare no `title:`, so the heading _is_ the
-slug and printing it again underneath was pure duplication; where a `title:` does
-differ, the slug still renders beside the badge, because there it is information
+Every enabled entry carries exactly one of two badges, in a column of its own, so
+that on a 35-row roster the one thing that varies from line to line is in the same
+place every time. Most servers declare no `title:`, so the name _is_ the slug and
+printing it again beside itself was pure duplication; where a `title:` does
+differ, the slug still renders beside the name, because there it is information
 rather than an echo.
 
 | Badge   | What it claims                                                                                                                                   |
@@ -1644,32 +1653,47 @@ genuinely invisible to core and may well be fine — but `READY` has to mean
 observed, or a total store outage renders a fleet of reassuring badges over an
 unusable gateway. The popout carries the distinction; the badge does not pretend.
 
-### Ordering
+### Grouping and ordering
 
-`READY` first, then `ISSUE`. Within each group, servers with a dedicated console
-view come before servers that only have the overview, and config order breaks the
-remaining ties. Disabled servers sort last and carry no badge at all — strad does
-not mount them, so they need no secrets, and a green would be a claim about a
-server that answers nothing.
+Three headings, worst first: **needs attention**, then **ready**, then
+**disabled**, each with its count. This is a working surface rather than a
+scoreboard — the entries something has to be done about are why anyone opens it —
+and sorting the greens to the top is what put exactly the wrong rows below the
+fold on a 35-entry roster.
+
+Within each group, servers with a dedicated console view come before servers that
+only have the overview, and config order breaks the remaining ties. A disabled
+server carries no badge at all — strad does not mount it, so it needs no secrets,
+and a green would be a claim about a server that answers nothing.
+
+The grouping is a **partition**, and the code derives both it and the sort from
+one function (`groupOf` in `src/ui/roster-page.ts`). A partition with a hole does
+not render a row out of place, it drops the row off the page while the counts
+above it keep claiming it is there — so an enabled entry nothing derived a status
+for lands under **needs attention**, which is what "nothing was established" means
+everywhere else here.
 
 ### Which servers have a console view
 
-**Every card links to `/ui/<slug>`**, its title and its call to action both, and
-every slug answers there. What the page is depends on what the **config
+**Every row links to `/ui/<slug>`**, its name and its call to action both, and
+every slug answers there. These per-server pages did **not** move when the roster
+did: `/ui/:server` is unchanged, and so is `/ui/oauth/callback`, which Google
+holds as a registered redirect URI. The redirect on `/ui` is exact-path for
+exactly that reason. What the page is depends on what the **config
 declares**, not on the slug, asked in this order:
 
-| The server declares                                                | `/ui/<slug>` is                          | The card says |
-| ------------------------------------------------------------------ | ---------------------------------------- | ------------- |
-| `oauth:`, and is enabled                                           | the [Connect page](/operate/connectors/) | `Manage →`    |
-| `SECRETS_PROJECT_ID`                                               | the parameter store for that project     | `Manage →`    |
-| `GCS_BUCKET`, `GCS_SERVICE_ACCOUNT_KEY_JSON` or `GCS_CLIENT_EMAIL` | the object browser for that bucket       | `Browse →`    |
-| none of these                                                      | a read-only overview                     | `Details →`   |
+| The server declares                                                | `/ui/<slug>` is                          | The row says |
+| ------------------------------------------------------------------ | ---------------------------------------- | ------------ |
+| `oauth:`, and is enabled                                           | the [Connect page](/operate/connectors/) | `Manage →`   |
+| `SECRETS_PROJECT_ID`                                               | the parameter store for that project     | `Manage →`   |
+| `GCS_BUCKET`, `GCS_SERVICE_ACCOUNT_KEY_JSON` or `GCS_CLIENT_EMAIL` | the object browser for that bucket       | `Browse →`   |
+| none of these                                                      | a read-only overview                     | `Details →`  |
 
 The overview is what every other kind gets until it has a view of its own: the
 kind, the slug, whether it is enabled, its bundle and path or its upstream host
-(the host only, never the URL's path), the same badge and summary the index
-draws, its MCP URL, and links to its playground and its entry in the connectors
-editor. It shows declared, non-credential config and nothing else, and it has no
+(the host only, never the URL's path), the same badge and summary the roster
+draws, its MCP URL, and links to its playground and — where there is a runtime
+roster to edit — its entry in the connectors editor. It shows declared, non-credential config and nothing else, and it has no
 form on it.
 
 A disabled `oauth:` server is not answered as a connector — the console answers a
@@ -1701,7 +1725,7 @@ The index link and the page are **one decision**: `serverLooksGcs` and
 narrowly than its resolver is how you get a working page nothing links to, so
 there is only the one reading.
 
-The card's playground icon is the second instance of that shape, failing the
+The row's playground icon is the second instance of that shape, failing the
 other way round: it is offered through `playgroundAccess()` in
 `src/ui/playground.ts`, the same function the playground page decides on. A
 detector WIDER than its resolver is how you get an icon that lands on a `424`.
@@ -1728,7 +1752,7 @@ came to the page for. Only a server with no secrets at all has nothing behind it
 badge.
 
 **No badge is ever a control that does nothing.** The button and the `<dialog>`
-are rendered by two different pieces of `src/ui/index-page.ts`, and they ask one
+are rendered by two different pieces of `src/ui/roster-page.ts`, and they ask one
 predicate — `hasFixDialog()` — rather than each deciding for itself. It is
 derived from what the popout will actually render, requirement rows or an
 unobservable scope, so the two cannot disagree about a state neither anticipated,
@@ -2034,7 +2058,7 @@ this page.
 
 **It cannot be turned into an oracle.** The key roster core sends is derived from
 the config core is running, plus whatever the component itself reports under
-`STRAD_PARAM_KEYS`. There is no path from a request parameter — on `/ui` or on
+`STRAD_PARAM_KEYS`. There is no path from a request parameter — on `/connectors` or on
 `/api/secrets/readiness` — to a probed name, so no caller can ask strad whether a
 name of its choosing exists. The defence is structural rather than a filter.
 
@@ -2488,7 +2512,7 @@ wrong about.
 
 A gateway can carry more than one secrets page — `/ui/secrets` and
 `/ui/zimmer-secrets` in the [layout below](#two-stores-one-gateway), one per slug.
-The `/ui` index lists all of them, but a page you reach directly (a bookmark, the
+The `/connectors` roster lists all of them, but a page you reach directly (a bookmark, the
 link `open_secrets_manager` hands you) shows only its own namespaces. A namespace
 that is not there is usually on another page, and without a pointer "where is
 it?" looks like "it is gone".
@@ -2506,7 +2530,7 @@ exist. It describes each sibling the way that page resolves itself. The one slug
 it leaves out is one that also declares [`oauth:`](/operate/connectors/): the
 console answers a connector before it looks at env, so that slug's `/ui/<slug>` is
 a consent page, not a secrets page. It is
-navigation, not authorization: the `/ui` gate never reads `entitlements:`, so a
+navigation, not authorization: the console gate never reads `entitlements:`, so a
 console-only slug with `entitlements: []` has a page and is listed. It shows
 declared config only — slug, project, namespaces — and never a parameter, a value,
 a status or a credential. `test/ui.secrets.sibling-pages.test.ts` pins all of it.
@@ -2810,10 +2834,10 @@ without the config rule the first symptom would be a create or rotate failing on
 path a human just typed, in a deployment that rendered and deployed clean.
 
 **A leftover `SECRETS_PROJECT_ID` is warned about.** `storeProject()` — the
-DEPLOYMENT-wide default, which the index header and
+DEPLOYMENT-wide default, which the roster footnote and
 [`/api/secrets/readiness`](#get-apisecretsreadiness--the-same-answer-for-a-machine)
 report — prefers it over a server's own `consoleStores:`, so on a multi-store page
-a stale one (the single-store shape this list replaced) makes the console index
+a stale one (the single-store shape this list replaced) makes the roster
 name a different project from the one the store page defaults to. The annotation
 fires only for the server that default would actually answer from, since
 `storeProject()` consults the first candidate and stops; a deployment whose
@@ -3021,7 +3045,7 @@ Splitting reach between two sets of parameters still means two slugs.
 different credentials, and the console's list may legitimately be the wider one.
 The **reverse** is worth a word from the renderer: a store on `mcpStores:` with no
 console page behind it is managed parameter state an agent can create, rotate and
-delete, and which a human cannot inspect or undo through `/ui`. `check-config`
+delete, and which a human cannot inspect or undo through the console. `check-config`
 and `render-spec` emit a `::warning::` naming it — a warning and not a failure,
 because an agent-only store is a posture a deployment may choose.
 

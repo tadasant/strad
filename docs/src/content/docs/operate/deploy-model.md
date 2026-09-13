@@ -586,7 +586,7 @@ Six checks, in order:
 5. **Console scope.** Two things a rendered spec can prove, and nothing else can:
    every key a server declares under `consoleEnv:` reaches the `core` component,
    and no two servers claim one key with different values. The first is the
-   invariant `/ui` depends on. The second matters because `consoleEnvVars()` merges
+   invariant the console depends on. The second matters because `consoleEnvVars()` merges
    every enabled server's map into one flat environment, so a collision means the
    last declaration silently wins and the other server's console runs as the wrong
    identity.
@@ -622,7 +622,7 @@ rather than a failure. It has a legitimate form — one service account on
 which the `mcpStores:` equivalent below does not, so this is the one place the two
 halves deliberately differ. A `SECRETS_PROJECT_ID` still declared alongside
 `consoleStores:` and naming a different project warns for the same reason: it
-outvotes the list in the console index, so the roster's `gcloud` commands would
+outvotes the list on the connectors roster, so its `gcloud` commands would
 name a project the store page does not default to. Both reach the run as
 annotations and leave the exit code alone, the way a legacy instance size does.
 

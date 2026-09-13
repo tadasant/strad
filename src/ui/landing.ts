@@ -1,41 +1,50 @@
-import type { ServerConfig, StradConfig } from "../config/schema.ts";
+import type { StradConfig } from "../config/schema.ts";
 import { esc, layout } from "./render.ts";
-import { serverConsolePath } from "./paths.ts";
-import { serverLooksGcs } from "./resolve.ts";
+import { NAV_DESTINATIONS } from "./nav.ts";
 
 /**
  * The front door: `/`.
  *
  * strad's addressable surface is one endpoint plus a query string, which is
  * exactly the property that makes it hard to remember. `/mcp?servers=slack-readonly`
- * is not discoverable by looking at it, and neither is the fact that `gcs` has a
- * browser view while `deepwiki` does not. This page is the index that makes the
- * gateway navigable from a bookmark of its own hostname.
+ * is not discoverable by looking at it. This page is the splash that makes that
+ * one fact findable from a bookmark of the gateway's own hostname, plus the
+ * doors into the console — and nothing else.
+ *
+ * ## Why there is no directory of servers on it
+ *
+ * There was, and it was the third rendering of the same list. `/connectors` now
+ * carries every entry with its scope, its secret status and its controls
+ * (src/ui/roster-page.ts), so a tile per slug here was a second, weaker answer
+ * to a question one page already answers well — and it was the thing that made
+ * the front page three screens long. What is left is what is NOT about any
+ * particular server: the endpoint, and where to go next.
  *
  * IT IS GATED, like every other human surface. strad's model is that Google
- * identity comes before anything is exposed, and an index of what this gateway
- * fronts — the slugs, what each is, which have a browser view — is something.
- * The route sits behind `requireConsoleUi` in `src/ui/index.ts`, the same gate as
- * `/ui` and `/console`: today the bootstrap-token wall, and `hostedDomain`-checked
- * Google SSO (tadasant.com) the moment the OAuth credentials land, with no change
+ * identity comes before anything is exposed, and the endpoint of a gateway plus
+ * the count of what sits behind it is something. The route sits behind
+ * `requireConsoleUi` in `src/ui/index.ts`, the same gate as `/connectors` and
+ * `/console`: today the bootstrap-token wall, and `hostedDomain`-checked Google
+ * SSO (tadasant.com) the moment the OAuth credentials land, with no change
  * needed here. This page only ever asks whether the gate resolved a Principal.
  *
- * That gate is the security boundary, so the tile contents are a UX decision
- * rather than a disclosure one. They are still kept narrow, because there is no
- * reason for a directory to carry credentials: no `url`, `headers:`, `env:`,
- * `image`, `bundle`, `path`, `module`, `tools:` policy, or `entitlements`.
- * test/landing.test.ts asserts each absence — defence in depth behind the gate,
- * and the thing that would have to be revisited before this could ever be opened
- * up.
+ * That gate is the security boundary, so what this page carries is a UX decision
+ * rather than a disclosure one. It is still kept narrow, and narrower than it
+ * was: no SLUG, and therefore no `url`, `headers:`, `env:`, `image`, `bundle`,
+ * `path`, `module`, `tools:` policy, `entitlements`, title or description
+ * either. test/landing.test.ts asserts each absence — defence in depth behind
+ * the gate, and the thing that would have to be revisited before this could ever
+ * be opened up.
  *
- * DISABLED servers are not rendered. Not for secrecy — the gate handles that —
- * but because this page answers "what can I connect to", and a connect URL for a
- * disabled server is one the gateway would reject.
+ * The one number it prints is how many servers are ENABLED. Disabled ones are
+ * not counted: `Registry.build` does not mount them, so they are absent from
+ * `/healthz` too, and counting them here would be the one net-new fact on the
+ * page.
  */
 
 export interface LandingOptions {
   config: StradConfig;
-  /** Whether the console UI is mounted, i.e. whether `/ui` is worth linking. */
+  /** Whether the console UI is mounted, i.e. whether its doors are worth naming. */
   consoleMounted: boolean;
   /**
    * Origin the request arrived on, e.g. "https://staging.strad.example.com".
@@ -59,21 +68,18 @@ export function renderLanding(opts: LandingOptions): string {
     "",
   );
   const mcpUrl = `${base}/mcp`;
-
-  // Disabled servers are omitted — see the header comment. A connect URL for
-  // one is a URL the gateway would reject.
-  const enabled = config.servers.filter((s) => s.enabled);
+  const enabled = config.servers.filter((s) => s.enabled).length;
 
   const body = `
-<section class="intro">
+<section class="intro intro-splash">
   <h1>${esc(gateway.name)} <span class="env-badge">${esc(gateway.env)}</span></h1>
-  <p class="lede">One MCP endpoint in front of ${enabled.length} server${
-    enabled.length === 1 ? "" : "s"
-  }. Point a client at the endpoint below and select
-    servers with <code>?servers=</code>, or browse the human consoles.</p>
+  <p class="lede">One MCP endpoint in front of ${enabled} server${
+    enabled === 1 ? "" : "s"
+  }. Point a client at it and select
+    servers with <code>?servers=</code>.</p>
 </section>
 
-<section class="panel">
+<section class="panel panel-first">
   <div class="panel-head">
     <h2>Endpoint</h2>
     <span class="panel-note">Bearer token required</span>
@@ -81,31 +87,20 @@ export function renderLanding(opts: LandingOptions): string {
   ${copyRow(mcpUrl, "The whole gateway — every server you are entitled to.")}
   ${copyRow(
     `${mcpUrl}?servers=<slug>`,
-    "A subset. Comma-separate slugs to pick several.",
+    "A subset. Comma-separate slugs to pick several; the slugs are on the connectors page.",
   )}
+  <p class="copy-note">No credential goes in the URL. The client sends
+    <code>Authorization: Bearer …</code>, minted on the tokens page.</p>
 </section>
 
 <section class="panel">
-  <div class="panel-head"><h2>Consoles</h2></div>
-  <div class="card-grid">
-${consoleCards(opts.consoleMounted, gateway.configStore.enabled).join("\n")}
+  <div class="panel-head"><h2>Console</h2></div>
+  <div class="card-grid card-grid-tight">
+${doorCards(opts.consoleMounted).join("\n")}
   </div>
 </section>
-
-<section class="panel">
-  <div class="panel-head">
-    <h2>Servers</h2>
-    <span class="panel-note">${enabled.length} enabled</span>
-  </div>
-${
-  enabled.length
-    ? `  <div class="card-grid">
-${enabled.map((s) => serverTile(s, mcpUrl)).join("\n")}
-  </div>`
-    : `  <p class="empty">No servers are enabled on this gateway.</p>`
-}
-</section>
-${COPY_SCRIPT}`;
+${COPY_SCRIPT}
+${LANDING_CSS}`;
 
   return layout({
     // layout() already suffixes " · strad", so passing gateway.name here would
@@ -131,73 +126,46 @@ function copyRow(url: string, note: string): string {
 }
 
 /**
- * The tiles under "Consoles".
+ * The doors.
  *
- * They cover every destination the shared nav bar names (src/ui/nav.ts) plus
- * the two the bar deliberately does not — the sign-in endpoint and `/healthz`.
- * The bar is chrome and the tile is a sentence about what the page is for, so
- * they are written separately; `test/landing.test.ts` is what keeps a
- * destination added to the bar from going missing here.
+ * One per destination the shared nav bar names (src/ui/nav.ts) except this page
+ * itself, plus the two the bar deliberately does not carry — the sign-in
+ * endpoint and `/healthz`. The bar is chrome and a tile is a sentence about what
+ * the page is for, so they are written separately; `test/landing.test.ts` is
+ * what keeps a destination added to the bar from going missing here.
  *
- * A tile is a CLAIM about a page, which is why the connector one reads the
- * config: the bar can name `/connectors` on any deployment because a tooltip
- * promises nothing, and a paragraph promising a roster editor cannot.
+ * One SENTENCE each, not a paragraph. The long-form descriptions were written
+ * when this page was the only index of anything; the page they describe now says
+ * all of it in its own words, one click away, and a splash whose tiles need
+ * scrolling is not a splash.
  */
-function consoleCards(
-  consoleMounted: boolean,
-  rosterEditable: boolean,
-): string[] {
+const DOOR_BLURB: Record<string, string> = {
+  "/connectors":
+    "Every server: what it is scoped to, whether its secrets are seeded, and — where the roster is editable — how to change it.",
+  "/playground":
+    "A human MCP client, one server at a time. No model is involved, and a call runs for real.",
+  "/tokens":
+    "The credentials /mcp accepts: mint one, see which are live, revoke one that should not be.",
+};
+
+function doorCards(consoleMounted: boolean): string[] {
   const cards = [
-    {
-      // One console entry, not two. The secret roster used to be a second card
-      // pointing at /secrets, and it was the same list of servers answering a
-      // second question about them — so it is on the entries now.
-      href: "/ui",
-      title: "Console",
-      desc: "Every server: what it is scoped to, and whether the secrets it needs are seeded — with the exact GCP path to fix what is not. Names and status only, never values.",
-      cta: "Open →",
+    ...NAV_DESTINATIONS.filter((d) => d.key !== "gateway").map((d) => ({
+      href: d.href,
+      title: d.label,
+      desc: DOOR_BLURB[d.href] ?? d.hint,
       show: consoleMounted,
-    },
-    {
-      href: "/connectors",
-      // The tile is always offered, because the bar offers it and a front door
-      // that lists four of five destinations is the problem this set solves.
-      // What it CLAIMS depends on the deployment: a two-sentence promise of an
-      // editor that answers "not enabled" is worse than no tile, where the
-      // bar's one-line tooltip is chrome a reader forgives.
-      title: "Connectors",
-      desc: rosterEditable
-        ? "The server roster itself: add an entry, edit one, take one out. A change here is stored and applied to the running process — no deploy, no restart."
-        : "The server roster. This gateway sets no gateway.configStore:, so its roster comes from the checked-in document and changes with a deploy — the page says so and lists nothing to edit.",
-      cta: rosterEditable ? "Edit →" : "Open →",
-      show: consoleMounted,
-    },
-    {
-      href: "/playground",
-      title: "Playground",
-      desc: "A human MCP client, one server at a time: list the tools it serves you and call one with the arguments you type. No model is involved, and a call runs for real.",
-      cta: "Open →",
-      show: consoleMounted,
-    },
-    {
-      href: "/tokens",
-      title: "Tokens",
-      desc: "The credentials /mcp accepts: mint one, see which are live, revoke one that should not be. The plaintext is shown once; only its hash is ever stored.",
-      cta: "Manage →",
-      show: consoleMounted,
-    },
+    })),
     {
       href: "/console",
-      title: "Sign in",
+      title: "sign in",
       desc: "The console session endpoint. Google SSO when configured, bootstrap token otherwise.",
-      cta: "Sign in →",
       show: consoleMounted,
     },
     {
       href: "/healthz",
-      title: "Health",
+      title: "health",
       desc: "Liveness, mode, environment, and the list of servers this process actually mounted.",
-      cta: "Check →",
       show: true,
     },
   ];
@@ -205,62 +173,18 @@ function consoleCards(
   return cards
     .filter((c) => c.show)
     .map(
-      (c) => `    <a class="card card-link" href="${c.href}">
-      <div class="card-head"><span class="card-title">${esc(c.title)}</span></div>
+      (c) => `    <a class="card card-link card-door" href="${c.href}">
+      <div class="card-head"><span class="card-title">${esc(c.title)}</span><span class="card-cta">→</span></div>
       <p class="card-desc">${esc(c.desc)}</p>
-      <div class="card-foot"><code>${esc(c.href)}</code><span class="card-cta">${esc(c.cta)}</span></div>
     </a>`,
     );
 }
 
 /**
- * One server.
- *
- * The connect URL is NOT rendered as a visible field here. It is the same 40-odd
- * characters on every tile with only the slug varying, so showing it 27 times
- * both drowns the page and — at tile width — truncates to `https://staging.st…`,
- * hiding the one part that differs. The slug is displayed; the full URL rides on
- * the button's data attribute and arrives on the clipboard, which is what anyone
- * actually wants from it.
- */
-function serverTile(server: ServerConfig, mcpUrl: string): string {
-  const title = server.title ?? server.slug;
-  const desc = server.description ?? "";
-  const browsable = serverLooksGcs(server);
-  const selectUrl = `${mcpUrl}?servers=${encodeURIComponent(server.slug)}`;
-
-  return `    <div class="card server-tile">
-      <div class="card-head">
-        <span class="card-title">${esc(title)}</span>
-        <span class="chip chip-${esc(server.kind)}">${esc(server.kind)}</span>
-      </div>
-      ${desc ? `<p class="card-desc">${esc(desc)}</p>` : ""}
-      ${
-        // Most servers declare no `title:`, so the heading IS the slug. Printing
-        // it again underneath is noise on the majority of tiles.
-        title === server.slug
-          ? ""
-          : `<div class="tile-slug"><code>${esc(server.slug)}</code></div>`
-      }
-      <div class="tile-actions">
-        <button class="btn-ghost" type="button" data-copy data-url="${esc(selectUrl)}"
-          title="${esc(selectUrl)}">Copy URL</button>
-        ${
-          browsable
-            ? `<a class="card-cta" href="${serverConsolePath(server.slug)}">Browse →</a>`
-            : ""
-        }
-      </div>
-    </div>`;
-}
-
-/**
  * Progressive enhancement, not an SPA.
  *
- * Without JS the endpoint fields are still readable and selectable, and each
- * tile's button still carries the URL in its `title` tooltip — degraded, but not
- * broken. With JS, one click copies. Two sources because the endpoint panel
- * shows its URL in an input and a tile keeps it in `data-url`.
+ * Without JS the endpoint fields are still readable and selectable — degraded,
+ * but not broken. With JS, one click copies.
  */
 export const COPY_SCRIPT = `<script>
 document.addEventListener("click", function (e) {
@@ -282,3 +206,21 @@ document.addEventListener("click", function (e) {
   }
 });
 </script>`;
+
+/**
+ * Page-local styles: the splash's own proportions.
+ *
+ * Everything here narrows or tightens something the shared theme sets for pages
+ * that carry a working surface. The tokens are the theme's, so the splash cannot
+ * drift from the rest of the console.
+ */
+const LANDING_CSS = `<style>
+.intro-splash .lede{margin-bottom:.9rem}
+/* The ?servers= token reads as two when it breaks across a line. */
+.intro-splash .lede code,.copy-note code{white-space:nowrap}
+/* The first panel sits under the lede rather than a screen below it: on this
+   page the endpoint IS the content, and .panel's 2.1rem is spacing between
+   sections of a long page. */
+.panel-first{margin-top:.4rem}
+.card-door .card-head{justify-content:space-between}
+</style>`;
