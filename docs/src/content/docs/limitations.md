@@ -2904,7 +2904,8 @@ environment and send it off-box; a runtime write may not change `entitlements:`,
 and `path:`) on a slug the checked-in document declares; a runtime write reaches
 no mount its **author** does not already reach, so a new supplementary slug may
 only land on a mount the writing principal reaches through a checked-in slug and
-a checked-in unhosted slug's `url:` may only be moved by an author it admits;
+a checked-in slug's credential destinations — `url:`, `oauthRefresh.tokenUrl` and
+a connector's two `oauth:` endpoints — may only be moved by an author it admits;
 and a runtime write may
 name a credential but never carry one, so a literal in `headers:`, in `url:`'s
 userinfo or in an `oauthRefresh:` grant is refused rather than stored in the
@@ -2922,6 +2923,14 @@ half of a `-ro` / `-rw` pair without a deploy — so it is a workflow traded
 against a residual widening rather than a free tightening, and it is left to the
 operator as the open half of phase 2 in [the runtime-config
 plan](/operate/runtime-config-plan/).
+
+**And it bounds what a write reaches, not what a writer stops.** Disable, remove
+and restore compose no entry, so no bound here touches them: a writer holding the
+write tools can disable or remove any connector in the roster, including one it
+cannot reach. That is availability rather than disclosure, and deliberate in the
+other direction — refusing a removal is what would leave a broken connector
+nobody can switch off, and a removal of a checked-in slug is a standing
+instruction the console shows and Restore undoes.
 
 **The name-a-credential rule has two positions it does not cover.** A **URL query
 parameter** — `https://api.example.com/mcp?key=abc` — is a literal credential

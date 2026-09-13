@@ -705,17 +705,49 @@ export function assertNoAccessControlChange(
 /**
  * Who is making a runtime write, reduced to what a bound needs of them.
  *
- * `roles` is the entitlement-resolving set — the same strings `entitledServers`
- * intersects against a slug's `entitlements:`. `id` is for a message, never a
- * credential. Both doors have a full `Principal`; this is the slice the reach
- * bounds read, kept free of the auth layer so this module stays dependency-light.
+ * `roles` and nothing else: it is the entitlement-resolving set, the same
+ * strings `entitledServers` intersects against a slug's `entitlements:`. Both
+ * doors hold a full `Principal` and hand over this slice, which keeps the module
+ * free of the auth layer — and keeps an identifier nothing reads out of a
+ * refusal message that is rendered into an HTML page and returned over `/mcp`.
  */
 export interface WritingPrincipal {
-  id: string;
   roles: readonly string[];
 }
 
 export class ReachExceeded extends Error {}
+
+/**
+ * Every field on an entry that names a HOST strad sends a credential to.
+ *
+ * Not the fields that CARRY a credential — `src/config/secret-position.ts` owns
+ * those, and its rule is that they must be references. These are the other half
+ * of the same question: a reference resolves to a value, and the value is sent
+ * somewhere. This list is where.
+ *
+ * Kept as data rather than as four comparisons, because the failure of missing
+ * one is silent and identical each time: the write is accepted, the slug becomes
+ * overlay-authored, and the next resolution posts a credential to a host the
+ * write chose. `oauth:` lives on `ServerBase`, so two of these can appear on any
+ * kind — including one the deploy renders a container for.
+ */
+export const CREDENTIAL_DESTINATIONS = [
+  "url:",
+  "oauthRefresh.tokenUrl:",
+  "oauth.tokenUrl:",
+  "oauth.authorizeUrl:",
+] as const;
+
+/** One destination's value, as a comparable string. Absent reads as empty. */
+function destination(
+  entry: Record<string, unknown> | undefined,
+  field: (typeof CREDENTIAL_DESTINATIONS)[number],
+): string {
+  if (field === "url:") return String(entry?.url ?? "");
+  const [block, key] = field.slice(0, -1).split(".") as [string, string];
+  const held = entry?.[block];
+  return isPlainObject(held) ? String(held[key] ?? "") : "";
+}
 
 /**
  * Does `principal` reach `server` under the checked-in config's two-way rule?
@@ -758,12 +790,24 @@ function principalReachesSlug(
  *      container. Bound: a new supplementary slug may only land on a bundle +
  *      `path:` the writer ALREADY REACHES through a checked-in slug.
  *
- *   B. RE-POINT. `url:` is not in `assertNoAccessControlChange`'s frozen set, so
- *      a checked-in `remote-http` / `local-tunnel` can be pointed at a host the
- *      writer chose, and that slug's credential follows. Bound: `url:` may change
- *      only on a slug the writer is entitled to — which is exactly what
+ *   B. RE-POINT. No frozen set covers the fields naming a HOST this slug sends a
+ *      credential to, so a checked-in entry can be pointed at one the writer
+ *      chose and its credential follows. Bound: a credential destination may
+ *      move only on a slug the writer is entitled to — which is exactly what
  *      re-pointing one's own quick tunnel needs, and what reaching a credential
  *      one was never granted does not have.
+ *
+ *      There are FOUR such fields, not one, and they are listed in
+ *      `CREDENTIAL_DESTINATIONS`. `url:` is the obvious one. The other three are
+ *      OAuth endpoints, and they matter for the same reason with a different
+ *      credential on the wire: `oauthRefresh.tokenUrl` is POSTed the client
+ *      secret AND the long-lived refresh token every time strad mints a bearer
+ *      (`src/gateway/adapters/oauth-refresh.ts`), and a connector's
+ *      `oauth.tokenUrl` / `oauth.authorizeUrl` carry the console's consent
+ *      exchange (`src/connectors/index.ts`). A bound that watched `url:` alone
+ *      would be one field wide: the same write, aimed one key over, still walks
+ *      the credential off-box. `oauth:` lives on `ServerBase`, so this is NOT
+ *      scoped to the unhosted kinds — a `supplementary-image` can declare one.
  *
  * Both are measured in MOUNTS, not in tools, and that boundary is deliberate. A
  * writer that already reaches a mount may still create a second slug there with
@@ -787,43 +831,52 @@ function principalReachesSlug(
  * against what the deploy authorised; an overlay slug's own `entitlements:` were
  * themselves runtime-written and cannot vouch for reach.
  *
- * A checked-in supplementary slug is NOT bound here — `assertNoAccessControlChange`
- * already freezes its `path:`, `entitlements:` and `tools:`, so it can reach
- * nothing new. This bounds the slug the overlay ALONE declares (a create, and an
- * edit of one), and the `url:` of a checked-in unhosted slug.
+ * `before` present means an EDIT, and bound A does not apply to one: the mount an
+ * entry serves is `bundle:` + `path:`, `immutableFields` refuses both on every
+ * supplementary edit, so an edit cannot move a mount and re-asking the reach
+ * question can only produce a false refusal. It would be a real one — a checked-in
+ * mount that later leaves the file, or narrows, would otherwise make an overlay
+ * entry created legitimately against it uneditable by anyone, including `admin`,
+ * with a message about creating it. A create is where a mount is chosen, so a
+ * create is where it is judged; remove-then-recreate is structurally a create and
+ * is judged there too.
  */
 export function assertWithinReach(
   baseConfig: StradConfig,
   entry: Record<string, unknown>,
   principal: WritingPrincipal,
+  before?: Record<string, unknown>,
 ): void {
   const slug = String(entry.slug ?? "");
   const declared = baseConfig.servers.find((s) => s.slug === slug);
 
-  // Bound B — re-pointing a checked-in unhosted slug.
-  if (
-    declared &&
-    (declared.kind === "remote-http" || declared.kind === "local-tunnel")
-  ) {
-    const urlChanged = String(entry.url ?? "") !== String(declared.url ?? "");
+  // Bound B — moving a credential's destination on a slug the file declares.
+  // Every kind, because `oauth:` lives on `ServerBase`.
+  if (declared) {
+    const moved = CREDENTIAL_DESTINATIONS.filter(
+      (field) => destination(entry, field) !== destination(declared, field),
+    );
     if (
-      urlChanged &&
+      moved.length > 0 &&
       !principalReachesSlug(baseConfig, principal.roles, declared)
     ) {
       throw new ReachExceeded(
-        `url: on ${slug} cannot be changed by this write: the checked-in config ` +
-          `declares ${slug} and you are not entitled to reach it, so re-pointing ` +
-          `it would send the credential the deploy gave it to a host you chose. ` +
-          `Re-point a slug you already reach, or add it to the checked-in config ` +
-          `and deploy.`,
+        `${moved.join(", ")} cannot be changed at runtime on ${slug} by this ` +
+          `write: the checked-in config declares ${slug} and does not entitle you ` +
+          `to reach it, and ${moved.length > 1 ? "those fields name hosts" : "that field names a host"} ` +
+          `strad sends its credential to — so moving ` +
+          `${moved.length > 1 ? "them" : "it"} would hand a credential the deploy ` +
+          `gave somebody else to a host you chose. Re-point a slug you already ` +
+          `reach, or change it in the checked-in config and deploy.`,
       );
     }
+    // Nothing below applies to a slug the file declares: its mount is frozen by
+    // `assertNoAccessControlChange`.
     return;
   }
 
-  // Bound A — a NEW supplementary slug (a checked-in one is handled above / by
-  // assertNoAccessControlChange).
-  if (entry.kind !== "supplementary-image" || declared) return;
+  // Bound A — a NEW supplementary slug. Creates only; see the header.
+  if (before || entry.kind !== "supplementary-image") return;
 
   const bundle = String(entry.bundle ?? "");
   const path = String(entry.path ?? "/mcp");

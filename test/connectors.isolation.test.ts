@@ -1,3 +1,5 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer, type Server } from "node:http";
 import { describe, expect, it } from "vitest";
 import { parseConfig, parseYamlDocument } from "../src/config/load.ts";
@@ -14,6 +16,7 @@ import {
 import { RuntimeConfig } from "../src/config/runtime.ts";
 import { MemoryConfigStore } from "../src/config/store.ts";
 import { entitledServers } from "../src/gateway/entitlements.ts";
+import { buildGatewayServer } from "../src/gateway/mcpServer.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import {
   buildSecretProviders,
@@ -484,6 +487,17 @@ servers:
     entitlements: [admin]
     headers:
       Authorization: "Bearer \${PRIVATE_TOKEN}"
+  # The other credential destination: strad mints this upstream's bearers
+  # itself, POSTing the client secret and the refresh token to tokenUrl.
+  - slug: minted-feed
+    kind: remote-http
+    url: https://minted.example.com/mcp
+    entitlements: [admin]
+    oauthRefresh:
+      tokenUrl: https://auth.minted.example.com/oauth2/token
+      clientId: strad
+      clientSecret: "\${MINTED_CLIENT_SECRET}"
+      refreshToken: "\${MINTED_REFRESH_TOKEN}"
 `;
 
 const REACH_DOC = parseYamlDocument(REACH_YAML);
@@ -495,9 +509,9 @@ const REACH_ENV = {
   STRAD_BUNDLE_URL_OTHER_BUNDLE: "http://other:8080",
 };
 
-const ADMIN: WritingPrincipal = { id: "admin-token", roles: ["admin"] };
-const FLEET: WritingPrincipal = { id: "fleet-token", roles: ["fleet"] };
-const WILDCARD: WritingPrincipal = { id: "wild-token", roles: ["wildcard"] };
+const ADMIN: WritingPrincipal = { roles: ["admin"] };
+const FLEET: WritingPrincipal = { roles: ["fleet"] };
+const WILDCARD: WritingPrincipal = { roles: ["wildcard"] };
 
 function reachRuntime(overlay = EMPTY_OVERLAY): RuntimeConfig {
   return new RuntimeConfig({
@@ -671,23 +685,75 @@ describe("a runtime write cannot create a slug on a mount its author cannot reac
     ).not.toThrow();
   });
 
-  it("binds an EDIT of an overlay slug too, not only its creation", () => {
-    // Otherwise the bound is one call away from nothing: create the slug on a
-    // mount you reach, then edit its path: onto one you do not.
-    const created = {
-      slug: "shop-ro",
-      kind: "supplementary-image",
-      image: "ghcr.io/example/bundle:latest",
-      bundle: "bundle",
-      path: "/shop",
-      entitlements: ["fleet"],
-    };
+  /**
+   * An EDIT cannot move a mount, so it is not asked the reach question — and
+   * that is load-bearing in both directions.
+   *
+   * It closes nothing to ask: `immutableFields("supplementary-image")` refuses
+   * `bundle:` and `path:` on every edit, so the mount an entry serves is fixed
+   * at creation. Asking anyway costs something real, because the answer can
+   * change underneath an entry that was created legitimately: a checked-in mount
+   * that later leaves the file, or narrows its `entitlements:`, would make its
+   * overlay-authored neighbour uneditable by anyone — `admin` included — with a
+   * refusal about CREATING a slug that already exists.
+   */
+  const overlaySlug = {
+    slug: "shop-ro",
+    kind: "supplementary-image",
+    image: "ghcr.io/example/bundle:latest",
+    bundle: "bundle",
+    path: "/shop",
+    entitlements: ["fleet"],
+  };
+
+  it("refuses an edit that moves the mount — through assertEditable", () => {
     const runtime = reachRuntime(
-      withUpsert(EMPTY_OVERLAY, created, { fileSlugs: new Set() }),
+      withUpsert(EMPTY_OVERLAY, overlaySlug, { fileSlugs: new Set() }),
     );
     expect(() =>
-      runtime.assertAcceptable({ ...created, path: "/vault" }, created, FLEET),
+      runtime.assertAcceptable(
+        { ...overlaySlug, path: "/vault" },
+        overlaySlug,
+        FLEET,
+      ),
+    ).toThrow(/path/);
+  });
+
+  it("STILL lets an overlay slug be edited after the file stops declaring its mount", () => {
+    // `ledger-ro` is the only checked-in slug on /ledger. A roster where the
+    // file no longer declares it stands in for the deploy that removed it.
+    const orphaned = { ...overlaySlug, slug: "ledger-copy", path: "/ledger" };
+    const doc = {
+      ...(REACH_DOC as Record<string, unknown>),
+      servers: (
+        REACH_DOC as { servers: Record<string, unknown>[] }
+      ).servers.filter((s) => s.slug !== "ledger-ro"),
+    };
+    const runtime = new RuntimeConfig({
+      baseDocument: doc,
+      config: parseConfig(JSON.stringify(doc)),
+      overlay: withUpsert(EMPTY_OVERLAY, orphaned, { fileSlugs: new Set() }),
+      store: new MemoryConfigStore(),
+      rebuild: () => Promise.resolve(),
+      env: REACH_ENV,
+    });
+    // Creating it now would be refused — nothing checked-in serves that mount.
+    expect(() =>
+      runtime.assertAcceptable(
+        { ...orphaned, slug: "ledger-copy-2" },
+        undefined,
+        ADMIN,
+      ),
     ).toThrow(ReachExceeded);
+    // Editing the one that already exists is not the same question, and a title
+    // change must not be the thing that strands it.
+    expect(() =>
+      runtime.assertAcceptable(
+        { ...orphaned, title: "The ledger" },
+        orphaned,
+        ADMIN,
+      ),
+    ).not.toThrow();
   });
 
   it("measures reach against the CHECKED-IN config, not the merged roster", () => {
@@ -871,6 +937,147 @@ describe("a runtime write cannot re-point a checked-in slug it cannot reach", ()
     ).not.toThrow();
   });
 
+  /**
+   * `url:` is not the only host a credential goes to, and a bound that watched
+   * it alone would be one field wide.
+   *
+   * `oauthRefresh.tokenUrl` is POSTed the client secret AND the long-lived
+   * refresh token on every mint (src/gateway/adapters/oauth-refresh.ts), so
+   * moving it walks a credential off-box exactly the way moving `url:` does —
+   * with a better credential on the wire, since a refresh token outlives the
+   * bearer it mints. The connector block's `oauth.tokenUrl` / `oauth.authorizeUrl`
+   * are the same shape for the console's consent exchange, and `oauth:` lives on
+   * `ServerBase`, so they ride a `supplementary-image` too.
+   */
+  const minted = {
+    slug: "minted-feed",
+    kind: "remote-http",
+    url: "https://minted.example.com/mcp",
+    entitlements: ["admin"],
+    oauthRefresh: {
+      tokenUrl: "https://auth.minted.example.com/oauth2/token",
+      clientId: "strad",
+      clientSecret: "${MINTED_CLIENT_SECRET}",
+      refreshToken: "${MINTED_REFRESH_TOKEN}",
+    },
+  };
+
+  it("refuses moving oauthRefresh.tokenUrl, not just url", () => {
+    expect(() =>
+      reachRuntime().assertAcceptable(
+        {
+          ...minted,
+          oauthRefresh: {
+            ...minted.oauthRefresh,
+            tokenUrl: "https://attacker.example.com/token",
+          },
+        },
+        minted,
+        FLEET,
+      ),
+    ).toThrow(ReachExceeded);
+    expect(() =>
+      reachRuntime().assertAcceptable(
+        {
+          ...minted,
+          oauthRefresh: {
+            ...minted.oauthRefresh,
+            tokenUrl: "https://attacker.example.com/token",
+          },
+        },
+        minted,
+        FLEET,
+      ),
+    ).toThrow(/oauthRefresh\.tokenUrl/);
+  });
+
+  it("refuses it through remove-and-recreate too", () => {
+    const runtime = reachRuntime(
+      withRemoval(EMPTY_OVERLAY, "minted-feed", {
+        fileSlugs: new Set(["minted-feed"]),
+      }),
+    );
+    expect(() =>
+      runtime.assertAcceptable(
+        {
+          ...minted,
+          oauthRefresh: {
+            ...minted.oauthRefresh,
+            tokenUrl: "https://attacker.example.com/token",
+          },
+        },
+        undefined,
+        FLEET,
+      ),
+    ).toThrow(ReachExceeded);
+  });
+
+  it("refuses moving a connector's oauth endpoints on any kind, including a mount", () => {
+    // `oauth:` is on ServerBase, so bound B cannot be scoped to the unhosted
+    // kinds: a supplementary entry can declare one, and the console posts its
+    // client secret to whatever tokenUrl says.
+    const withConnector = {
+      slug: "shop",
+      kind: "supplementary-image",
+      image: "ghcr.io/example/bundle:latest",
+      bundle: "bundle",
+      path: "/shop",
+      entitlements: ["admin", "fleet", "wildcard"],
+      oauth: {
+        provider: "generic",
+        label: "Shop",
+        authorizeUrl: "https://shop.example.com/authorize",
+        tokenUrl: "https://shop.example.com/token",
+        clientIdVariable: "SHOP_OAUTH_CLIENT_ID",
+        clientSecretVariable: "SHOP_OAUTH_CLIENT_SECRET",
+        refreshTokenVariable: "SHOP_OAUTH_REFRESH_TOKEN",
+      },
+    };
+    const doc = {
+      ...(REACH_DOC as Record<string, unknown>),
+      servers: (
+        REACH_DOC as { servers: Record<string, unknown>[] }
+      ).servers.map((entry) => (entry.slug === "shop" ? withConnector : entry)),
+    };
+    const runtime = new RuntimeConfig({
+      baseDocument: doc,
+      config: parseConfig(JSON.stringify(doc)),
+      overlay: EMPTY_OVERLAY,
+      store: new MemoryConfigStore(),
+      rebuild: () => Promise.resolve(),
+      env: REACH_ENV,
+    });
+    // `narrow` reaches nothing on this roster, so it is the un-entitled writer.
+    const stranger: WritingPrincipal = { roles: ["narrow"] };
+    expect(() =>
+      runtime.assertAcceptable(
+        {
+          ...withConnector,
+          oauth: {
+            ...withConnector.oauth,
+            tokenUrl: "https://attacker.example.com/token",
+          },
+        },
+        withConnector,
+        stranger,
+      ),
+    ).toThrow(/oauth\.tokenUrl/);
+    // And the role the checked-in entry does admit keeps the workflow.
+    expect(() =>
+      runtime.assertAcceptable(
+        {
+          ...withConnector,
+          oauth: {
+            ...withConnector.oauth,
+            tokenUrl: "https://shop.example.com/token2",
+          },
+        },
+        withConnector,
+        ADMIN,
+      ),
+    ).not.toThrow();
+  });
+
   it("leaves every other field on a slug the writer cannot reach alone", () => {
     // The bound is on the credential's destination, not on the entry. A title
     // change is not a re-point and is not refused.
@@ -1046,5 +1253,65 @@ describe("what phase 2 leaves open, recorded rather than implied", () => {
     ).toEqual({
       allow: ["read_ledger"],
     });
+  });
+});
+
+describe("the principal reaches a builtin through the machinery both doors share", () => {
+  /**
+   * `buildGatewayServer` is the one MCP server both doors build — `/mcp` per
+   * request (src/gateway/router.ts) and the console playground over an in-memory
+   * transport (src/ui/playground.ts). The reach bound is only real if the
+   * principal survives it, and a bound handed `undefined` refuses nothing while
+   * every test against `assertAcceptable` still passes.
+   *
+   * The two door-level tests that drive a whole gateway live in
+   * `test/connectors.mcp.test.ts` and `test/connectors.hot-reload.test.ts`. This
+   * one covers the seam itself, which is what the playground shares with `/mcp`
+   * and is otherwise exercised by neither.
+   */
+  it("hands a builtin the roles the session was authenticated with", async () => {
+    let seen: WritingPrincipal | undefined;
+    const adapter = {
+      slug: "probe",
+      kind: "builtin" as const,
+      listTools: () =>
+        Promise.resolve([{ name: "look", inputSchema: { type: "object" } }]),
+      callTool: (
+        _tool: string,
+        _args: unknown,
+        ctx?: { principal?: WritingPrincipal },
+      ) => {
+        seen = ctx?.principal;
+        return Promise.resolve({ content: [] });
+      },
+      close: () => Promise.resolve(),
+    };
+    const server = buildGatewayServer({
+      config: REACH_CONFIG,
+      registry: { get: () => adapter } as unknown as Registry,
+      policies: new Map(),
+      mode: "core",
+      selected: ["probe"],
+      principalId: "whoever",
+      principalRoles: ["fleet", "wildcard"],
+      log: () => {},
+    });
+
+    const client = new Client(
+      { name: "t", version: "1" },
+      { capabilities: {} },
+    );
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+    try {
+      await client.callTool({ name: "probe__look", arguments: {} });
+    } finally {
+      await client.close();
+    }
+    expect(seen?.roles).toEqual(["fleet", "wildcard"]);
   });
 });

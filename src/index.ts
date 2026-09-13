@@ -282,6 +282,9 @@ async function main(): Promise<void> {
 
   const runtime = new RuntimeConfig({
     baseDocument,
+    // Parsed once, here, rather than again on the first roster write: the reach
+    // bound measures against what the deploy authorised, and this is it.
+    baseConfig,
     config,
     overlay: boot.overlay,
     store: configStore,

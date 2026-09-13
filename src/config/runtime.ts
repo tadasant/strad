@@ -4,6 +4,7 @@ import {
   assertEditable,
   assertNoAccessControlChange,
   assertWithinReach,
+  ReachExceeded,
   fileSlugs,
   mergeOverlay,
   sourcesFor,
@@ -66,6 +67,13 @@ export interface RuntimeConfigOptions {
    * actually reachable from here (`STRAD_BUNDLE_URL_<BUNDLE>`).
    */
   env?: NodeJS.ProcessEnv;
+  /**
+   * The checked-in document, PARSED — what the deploy authorised, before any
+   * overlay. Boot already has it (`loadConfigDocument` in src/index.ts), so
+   * handing it over keeps the reach bound off a second run of the schema.
+   * Omitted, it is parsed on first use.
+   */
+  baseConfig?: StradConfig;
 }
 
 export class ConfigRejected extends Error {
@@ -80,9 +88,9 @@ export class RuntimeConfig {
   private currentOverlay: ServerOverlay;
   private readonly base: unknown;
   /**
-   * The CHECKED-IN config, parsed once. `undefined` until first asked; `null`
-   * if the base document does not parse — which a booted process's does, so the
-   * null branch only skips the reach bound rather than failing a write.
+   * The CHECKED-IN config, parsed once. Seeded by boot, which already has it.
+   * `undefined` until first asked; `null` if the base document does not parse,
+   * which fails a principal-carrying write closed rather than unbounded.
    */
   private baseConfigCache: StradConfig | null | undefined;
   private readonly rebuild: (config: StradConfig) => Promise<void>;
@@ -94,6 +102,7 @@ export class RuntimeConfig {
 
   constructor(opts: RuntimeConfigOptions) {
     this.base = opts.baseDocument;
+    this.baseConfigCache = opts.baseConfig;
     this.currentConfig = opts.config;
     this.currentOverlay = opts.overlay;
     this.store = opts.store;
@@ -117,9 +126,10 @@ export class RuntimeConfig {
    * `principal` is who is making the write, threaded from whichever door called
    * (the console session, or the `connectors` MCP caller). It is what the reach
    * bound needs and the one thing `assertAcceptable` did not have — see
-   * `assertWithinReach`. Both doors supply it; a write that reaches here without
-   * one skips only the reach bound, degrading to the pre-phase-2 behaviour
-   * (which was admin-only), never to something wider.
+   * `assertWithinReach`. Both doors supply it — `src/ui/servers.ts` hands over
+   * the signed-in console session, `src/servers/connectors.ts` the principal
+   * that authenticated the `/mcp` request — so an absent one is a caller that
+   * is neither door.
    */
   assertAcceptable(
     entry: Record<string, unknown>,
@@ -138,14 +148,26 @@ export class RuntimeConfig {
     // the entry the human is looking at, before anything else is judged.
     assertSecretsByReference(entry);
 
-    // And a runtime write may not reach a credential or a tool surface its
-    // author cannot already reach — the bound that lets the write tools be
-    // granted to a role narrower than admin. Keyed on the checked-in config for
+    // And a runtime write may not reach a credential its author cannot already
+    // reach — the bound that lets the write tools be granted to a role narrower
+    // than the one that reaches everything. Keyed on the checked-in config for
     // the same reason as access control: an overlay slug's own entitlements
     // cannot vouch for reach.
-    const baseConfig = this.baseConfig();
-    if (principal && baseConfig)
-      assertWithinReach(baseConfig, entry, principal);
+    if (principal) {
+      const baseConfig = this.baseConfig();
+      // FAIL CLOSED. A booted process's checked-in document parses — boot reads
+      // it through `loadConfigDocument` and dies otherwise (src/index.ts) — so
+      // this is unreachable rather than merely unlikely. Refusing anyway is the
+      // difference between a bound with no off switch and one with a silent one.
+      if (!baseConfig) {
+        throw new ReachExceeded(
+          "This write cannot be judged: the checked-in config does not parse, " +
+            "so there is no record of what the deploy authorised you to reach. " +
+            "Fix the checked-in config and deploy.",
+        );
+      }
+      assertWithinReach(baseConfig, entry, principal, before);
+    }
 
     if (before) {
       assertEditable(before, entry);

@@ -143,8 +143,14 @@ what its author already reaches:
 
 - A new `supplementary-image` slug may only land on a `bundle:` + `path:` its
   author reaches through a checked-in slug.
-- `url:` on a checked-in unhosted slug may only be moved by an author that slug's
-  `entitlements:` admit — which is what re-pointing one's own quick tunnel needs.
+- A **credential destination** on a checked-in slug may only be moved by an
+  author that slug's `entitlements:` admit — which is what re-pointing one's own
+  quick tunnel needs. There are four such fields rather than the one #349's
+  comment names: `url:`, `oauthRefresh.tokenUrl`, and a connector's
+  `oauth.tokenUrl` / `oauth.authorizeUrl`. The OAuth endpoints carry a better
+  credential than the bearer they mint — the client secret and the long-lived
+  refresh token — and `oauth:` is declared on every kind, so the bound is not
+  scoped to the unhosted ones.
 
 Alongside them, the slug's **upstream identity** — `kind:`, and a supplementary
 `bundle:` and `path:` — is now bound on both write paths rather than only on the
@@ -162,8 +168,13 @@ granting `[zimmer]` never exceeded its roles), and "may not land on a `path:` a
 checked-in slug declares" forbids the `gmail-ro` / `gmail-rw` create outright.
 The reach bound costs nothing instead of costing a workflow, because a role
 written `servers: ["*"]` whose slugs all name it reaches every mount the
-deployment declares — 27 of 27 in prod — so it never fires for the role that has
-the write tools today. The identity freeze costs nothing because all three fields
+deployment declares — every one of the **27 distinct `bundle:` + `path:` mounts**
+the production roster declared on 2026-09-13, counted with the same caveat as the
+table at the top of this page: a dated read of `strad/infra/strad.prod.yaml` in
+the private `tadasant/tadasant-internal`, which this repo cannot re-derive. A
+mount is not a slug — prod declares more slugs than mounts, which is what a
+`-ro` / `-rw` pair on one path is. So the bound never fires for the role that
+holds the write tools today. The identity freeze costs nothing because all three fields
 were already immutable on the edit path; it makes a move refused as one call
 refused as two.
 
@@ -172,10 +183,11 @@ bounds are measured in mounts, so a writer that already reaches a mount may
 create a second slug on it with a wider tool surface than the checked-in slug it
 reaches that mount through. Closing that means a created slug may serve no more
 than its author already reaches on that mount — and that one **does** trade a
-workflow, because it narrows the wildcard role too. Three of production's 27
-mounts are reachable by it only through a `tools.allow` slug (the three
-`google-sheets-*-ro` mounts), and on those it could no longer create the wider
-half of a `-ro` / `-rw` pair without a deploy. Whether that residual widening is
+workflow, because it narrows the wildcard role too. Three of those 27 mounts are
+reachable by it only through a `tools.allow` slug — the three
+`google-sheets-*-ro` mounts, which are prod-only and are in neither this repo's
+staging config nor anything else a reader here can check — and on those it could
+no longer create the wider half of a `-ro` / `-rw` pair without a deploy. Whether that residual widening is
 worth that is the posture decision this page reserved, and it is still
 [a human's](#what-only-a-human-can-do).
 
@@ -324,7 +336,7 @@ what decides whether it can ever be automated away.
    serving more than its author already reaches on that mount closes a writer
    widening its own read-only access to a container, and takes the wider half of
    a `-ro` / `-rw` pair out of the runtime roster on any mount whose only
-   checked-in slug is the narrow one — three of production's 27. Capability
+   checked-in slug is the narrow one — three of production's 27 mounts. Capability
    against blast radius, with no reading of the requirements that settles it.
 3. **Grant the IAM the host-side credential path needs** (phase 3). Reading a
    parameter from a container that holds no cloud credential means core serving

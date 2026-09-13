@@ -470,13 +470,27 @@ tool surface under the credential the deploy baked onto the container.
 `assertWithinReach` in `src/config/overlay.ts` bounds it, in two places:
 
 - **A new supplementary slug** may only land on a `bundle:` + `path:` its author
-  **already reaches** through a slug the checked-in config declares.
-- **`url:` on a checked-in `remote-http` or `local-tunnel`** may only be changed
-  by an author that slug's `entitlements:` admit. `url:` cannot simply be frozen
+  **already reaches** through a slug the checked-in config declares. It is asked
+  on a create, which is where a mount is chosen; an edit cannot move a mount,
+  because `immutableFields` freezes `bundle:` and `path:` on every supplementary
+  edit.
+- **A credential's destination on a checked-in slug** may only be moved by an
+  author that slug's `entitlements:` admit. These fields cannot simply be frozen
   — re-pointing a quick tunnel without a deploy is a reason the roster is
-  editable at all — but the credential in that slug's `headers:` follows the URL
-  to whatever host the write names, so re-pointing a slug you were never granted
-  reaches a credential you were never given.
+  editable at all — but what they name is a host strad sends a credential to, so
+  moving one on a slug you were never granted reaches a credential you were never
+  given.
+
+There are **four** destination fields, not one, and the difference matters:
+`url:`, `oauthRefresh.tokenUrl`, and a connector's `oauth.tokenUrl` and
+`oauth.authorizeUrl`. `url:` is the obvious one — the slug's `headers:` follow it.
+The OAuth endpoints carry a better credential than the bearer they mint:
+`oauthRefresh.tokenUrl` is POSTed the **client secret and the long-lived refresh
+token** on every mint, and a connector's endpoints carry the console's consent
+exchange. A bound that watched `url:` alone would be one field wide — the same
+write, aimed one key over, still walks the credential off-box. `oauth:` is
+declared on every server kind, so this bound is **not** scoped to the unhosted
+ones: a `supplementary-image` can carry a connector too.
 
 Reach is measured against the **checked-in** config, not the merged roster: an
 overlay entry's own `entitlements:` were written by a runtime write, so letting
@@ -497,16 +511,28 @@ mount and re-pointing a quick tunnel both work exactly as before. What it remove
 is the case the bound exists for: a **narrower** writer reaching past what the
 checked-in config gave it.
 
-**What it deliberately does not do** is carry the `tools:` policy along. The
-bounds are measured in mounts, so a writer that already reaches a mount may
-create a second slug on it with a **wider** tool surface than the checked-in slug
-it reaches that mount through — a role given read-only access to a container can
-hand itself the write tools on it. Closing that would also narrow the role that
-reaches everything, on any mount whose only checked-in slug is the narrow one:
-it could no longer create the wider half of a `-ro` / `-rw` pair without a
-deploy. That is a workflow traded against a residual widening rather than a free
-tightening, so it is an operator's decision — [the runtime-config
-plan](/operate/runtime-config-plan/) carries it as the open half of phase 2.
+**What it deliberately does not do**, in two places.
+
+It does not carry the `tools:` policy along. The bounds are measured in mounts,
+so a writer that already reaches a mount may create a second slug on it with a
+**wider** tool surface than the checked-in slug it reaches that mount through — a
+role given read-only access to a container can hand itself the write tools on it.
+Closing that would also narrow the role that reaches everything, on any mount
+whose only checked-in slug is the narrow one: it could no longer create the wider
+half of a `-ro` / `-rw` pair without a deploy. That is a workflow traded against a
+residual widening rather than a free tightening, so it is an operator's decision —
+[the runtime-config plan](/operate/runtime-config-plan/) carries it as the open
+half of phase 2.
+
+And it does not bound **disable and remove**. Those two tools compose no entry,
+so they never reach `assertAcceptable` at all: a writer holding them can disable
+or remove any connector in the roster, including one it cannot reach. That is
+availability rather than disclosure — nothing is served that was not served
+before, a removal of a checked-in slug is a standing instruction the console
+shows and `restore_connector` undoes, and refusing a removal is what would leave
+a broken connector nobody can switch off. Worth knowing before the write tools
+are granted to a narrow role: it bounds what a write may **reach**, not what a
+writer may **stop**.
 
 ## The console flow
 

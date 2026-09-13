@@ -4956,8 +4956,12 @@ checked-in document declares (`assertNoAccessControlChange`,
 too. A runtime write reaches no mount its AUTHOR does not already reach
 (`assertWithinReach`, same file): a new supplementary slug may only land on a
 `bundle:` + `path:` the writing principal reaches through a checked-in slug, and
-`url:` on a checked-in unhosted slug may only be moved by an author that slug's
-`entitlements:` admit. And a runtime write may NAME a credential and may not CARRY one
+a CREDENTIAL DESTINATION on a checked-in slug may only be moved by an author that
+slug's `entitlements:` admit. There are four of those and not one — `url:`,
+`oauthRefresh.tokenUrl`, and a connector's `oauth.tokenUrl` / `oauth.authorizeUrl`
+— because the OAuth endpoints are POSTed the client secret and the long-lived
+refresh token, which outlive the bearer they mint; a bound that watched `url:`
+alone would be one field wide. And a runtime write may NAME a credential and may not CARRY one
 (`assertSecretsByReference`, `src/config/secret-position.ts`): the overlay is a
 non-secret parameter, so a literal saved into `headers:`, into `url:`'s userinfo
 or into `oauthRefresh:`'s grant would be a credential at rest in the clear. Disabling a connector that carries one is refused too, because disable
@@ -4985,12 +4989,27 @@ read-only access to a container can hand itself that container's write tools.
 Closing it means a created slug may serve no more than its author already
 reaches there, and that trades a workflow rather than being free: it narrows the
 wildcard role too, on any mount whose only checked-in slug is the narrow one —
-three of production's 27, the `google-sheets-*-ro` mounts — where it could no
-longer create the wider half of a `-ro` / `-rw` pair without a deploy. Left open
+three of the 27 distinct `bundle:` + `path:` mounts the prod roster declared on
+2026-09-13, the `google-sheets-*-ro` ones — where it could no longer create the
+wider half of a `-ro` / `-rw` pair without a deploy. (A mount is not a slug, and
+that count is a dated read of `strad/infra/strad.prod.yaml` in the private
+`tadasant/tadasant-internal`, not something this repo can re-derive.) Left open
 deliberately, as a posture decision for the operator rather than a defect;
 `docs/src/content/docs/operate/runtime-config-plan.md` carries it as the open
 half of phase 2, and `test/connectors.isolation.test.ts` asserts what strad does
 today so that closing it must update the record.
+
+**AND IT BOUNDS WHAT A WRITE REACHES, NOT WHAT A WRITER STOPS.**
+`set_connector_enabled`, `remove_connector` and `restore_connector` compose no
+entry, so they never reach `assertAcceptable` and no bound here touches them: a
+narrow writer holding the write tools can disable or remove any connector in the
+roster, including one it cannot reach. Availability rather than disclosure, and
+deliberate in the other direction — refusing a removal is what would leave a
+broken connector nobody can switch off, a removal of a checked-in slug is a
+standing instruction the console shows and `restore_connector` undoes, and
+nothing is SERVED that was not served before. Stated here because the reach bound
+is easy to read as "the write tools are now safe for a narrow role", and this is
+the half it does not cover.
 
 **Why.** The first is physics, not policy: nothing in a running App Platform
 container can be handed a new environment variable, and a feature that pretended

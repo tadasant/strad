@@ -134,7 +134,7 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
     explicit,
   } = opts;
   const surface: Surface = opts.surface ?? "mcp";
-  const principal = { id: principalId, roles: opts.principalRoles ?? [] };
+  const principal = { roles: opts.principalRoles ?? [] };
 
   const server = new Server(
     { name: config.gateway.name, version: "0.1.0" },
