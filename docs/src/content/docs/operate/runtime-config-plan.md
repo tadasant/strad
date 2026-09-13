@@ -87,15 +87,16 @@ a description of existing practice rather than a migration.
 
 A fifth thing is not on that list and belongs on this one.
 
-5. **Reaching the write tools is worth more than it looks.** The fields a
+5. **Reaching the write tools was worth more than it looked.** The fields a
    runtime write may still move on an entry — a new slug's `path:`, and fields
-   the access-control rules do not bind on a checked-in one — let a writer reach
+   the access-control rules did not bind on a checked-in one — let a writer reach
    credentials that belong to other slugs. The mechanisms and their
    reproductions are tracked in the private
    [strad#349](https://github.com/tadasant/strad/issues/349) rather than on
-   this page. They are bounded by the one thing outside the roster — the
-   `connectors` slug being `admin`-only — and stop being bounded the moment that
-   changes. See [phase 2](#phase-2--bound-what-the-write-tools-are-worth).
+   this page. They were bounded only by the one thing outside the roster — the
+   `connectors` slug being `admin`-only — and would have stopped being bounded
+   the moment that changed. [Phase 2](#phase-2--bound-what-the-write-tools-are-worth-shipped-with-one-half-left-open)
+   bounds them inside strad instead, with one half of the question left open.
 
 ## The phases
 
@@ -126,22 +127,82 @@ storage at rest and not only about tidiness.
 parameter, and a **builtin's `options:`**. Both in
 [Known limitations](/limitations/) #96, both closed by phase 6.
 
-### Phase 2 — bound what the write tools are worth
+### Phase 2 — bound what the write tools are worth (shipped, with one half left open)
 
 The `connectors` write tools let a writer reach mounts and credentials that
 belong to slugs other than the one being written. strad#349 has the mechanisms,
-verified, and the candidate bounds. None is a patch: every candidate trades a
-workflow the roster exists to serve — re-pointing a quick tunnel without a
-deploy, adding a second slug onto an already-deployed mount — against how much
-a write can reach, and one of them needs the writing principal threaded into
-`RuntimeConfig.assertAcceptable`, which does not have it.
+verified. The expectation on this page was that **every** candidate bound trades
+a workflow the roster exists to serve — re-pointing a quick tunnel without a
+deploy, adding a second slug onto an already-deployed mount — so that none could
+be picked without a posture decision. Measured against the production roster,
+that turned out to be true of one candidate and false of the others.
 
-**Owner.** `strad` — this repo. The _choice_ is a posture decision (see
-[below](#what-only-a-human-can-do)).
+**What changed.** `RuntimeConfig.assertAcceptable` takes the **writing
+principal**, supplied by both doors, and `assertWithinReach` bounds a write by
+what its author already reaches:
 
-**Evidence.** A test in `test/connectors.isolation.test.ts` for each mechanism
-strad#349 names, in the shape the existing three bounds use: the attack, then
-the bound, then the legitimate case that must keep working.
+- A new `supplementary-image` slug may only land on a `bundle:` + `path:` its
+  author reaches through a checked-in slug.
+- A **credential destination** on a checked-in slug may only be moved by an
+  author that slug's `entitlements:` admit — which is what re-pointing one's own
+  quick tunnel needs. There are four such fields rather than the one #349's
+  comment names: `url:`, `oauthRefresh.tokenUrl`, and a connector's
+  `oauth.tokenUrl` / `oauth.authorizeUrl`. The OAuth endpoints carry a better
+  credential than the bearer they mint — the client secret and the long-lived
+  refresh token — and `oauth:` is declared on every kind, so the bound is not
+  scoped to the unhosted ones.
+
+Alongside them, the slug's **upstream identity** — `kind:`, and a supplementary
+`bundle:` and `path:` — is now bound on both write paths rather than only on the
+edit path. That closes a third mechanism, found while bounding the first two and
+the only one of the three that lands against production's shape: a narrow role
+reaches exactly the slugs its `roles:` entry NAMES and the overlay cannot write
+`roles:`, so a create under a new name is unreachable to it — but removing a
+checked-in `local-tunnel` and re-creating it as a `supplementary-image` on
+another mount keeps the name, and with it the reach the deploy granted.
+
+**Why these needed no choice.** Each candidate was measured against the roster
+rather than argued about. The two issue candidates failed: "may not carry roles
+beyond the principal's" does not stop the attack at all (a `zimmer` writer
+granting `[zimmer]` never exceeded its roles), and "may not land on a `path:` a
+checked-in slug declares" forbids the `gmail-ro` / `gmail-rw` create outright.
+The reach bound costs nothing instead of costing a workflow, because a role
+written `servers: ["*"]` whose slugs all name it reaches every mount the
+deployment declares — every one of the **27 distinct `bundle:` + `path:` mounts**
+the production roster declared on 2026-09-13, counted with the same caveat as the
+table at the top of this page: a dated read of `strad/infra/strad.prod.yaml` in
+the private `tadasant/tadasant-internal`, which this repo cannot re-derive. A
+mount is not a slug — prod declares more slugs than mounts, which is what a
+`-ro` / `-rw` pair on one path is. So the bound never fires for the role that
+holds the write tools today. The identity freeze costs nothing because all three fields
+were already immutable on the edit path; it makes a move refused as one call
+refused as two.
+
+**The half that is still a choice: carrying the `tools:` policy along.** The
+bounds are measured in mounts, so a writer that already reaches a mount may
+create a second slug on it with a wider tool surface than the checked-in slug it
+reaches that mount through. Closing that means a created slug may serve no more
+than its author already reaches on that mount — and that one **does** trade a
+workflow, because it narrows the wildcard role too. Three of those 27 mounts are
+reachable by it only through a `tools.allow` slug — the three
+`google-sheets-*-ro` mounts, which are prod-only and are in neither this repo's
+staging config nor anything else a reader here can check — and on those it could
+no longer create the wider half of a `-ro` / `-rw` pair without a deploy. Whether that residual widening is
+worth that is the posture decision this page reserved, and it is still
+[a human's](#what-only-a-human-can-do).
+
+**Owner.** `strad` — this repo.
+
+**Evidence.** `test/connectors.isolation.test.ts` carries one suite per mechanism
+in the shape the existing three bounds use — the attack, the bound, the
+legitimate case that must keep working — including an end-to-end probe showing a
+re-pointed slug's credential arriving at a sink, and the `admin` cases asserted
+as still passing. The principal is proved to survive each door end to end rather
+than asserted: `test/connectors.mcp.test.ts` drives a narrow-role token through a
+real MCP client, `test/connectors.hot-reload.test.ts` drives a narrow-role console
+session through a real form post, and both fail if either door stops passing it.
+The open half is recorded as a test of what strad does today, so that closing it
+must update the record.
 
 ### Phase 3 — a mount reads its own credentials instead of receiving them
 
@@ -189,9 +250,14 @@ grant editor. `assertNoAccessControlChange`'s argument still holds on the other
 side: a role the checked-in file declares is the deploy's, and what the overlay
 adds is grants, not redefinitions.
 
-**Blocked on phase 2.** Until the write tools cost less than admin, adding a
-grant editor to them adds nothing an attacker did not already have — and makes
-that fact harder to see.
+**Was blocked on phase 2**, which has shipped its bounds: a write now reaches no
+mount its author does not already reach, so the write tools cost less than admin
+and a grant editor added to them is worth something narrower than everything.
+Read the residual [phase 2](#phase-2--bound-what-the-write-tools-are-worth-shipped-with-one-half-left-open)
+leaves open before designing this one, because a grant editor changes the roles
+side of the intersection and the reach bound is measured from it — a phase where
+`roles:` is writable is a phase where "what its author already reaches" is a
+thing the author can move.
 
 **Owner.** `strad`.
 
@@ -263,9 +329,15 @@ what decides whether it can ever be automated away.
    2026-09-12 a separate change was granting the `zimmer` role reach to the
    `connectors` slug, and whether a grant like that includes the write half is
    exactly this decision.
-2. **Choose phase 2's bound** among the candidates strad#349 lists. Same
-   character: each trades a workflow the roster exists for against how much a
-   write can reach, and there is no reading of the requirements that settles it.
+2. **Decide whether a runtime write may widen a mount's tool surface** — the
+   half of [phase 2](#phase-2--bound-what-the-write-tools-are-worth-shipped-with-one-half-left-open)
+   that is still open. The bounds that shipped cost no workflow, so they needed
+   no decision and did not get one. This one does: forbidding a created slug from
+   serving more than its author already reaches on that mount closes a writer
+   widening its own read-only access to a container, and takes the wider half of
+   a `-ro` / `-rw` pair out of the runtime roster on any mount whose only
+   checked-in slug is the narrow one — three of production's 27 mounts. Capability
+   against blast radius, with no reading of the requirements that settles it.
 3. **Grant the IAM the host-side credential path needs** (phase 3). Reading a
    parameter from a container that holds no cloud credential means core serving
    it a value over the private network, and whatever principal ends up
@@ -279,9 +351,17 @@ what decides whether it can ever be automated away.
    exists precisely because an agent cannot do it: it returns the URL a human
    opens and the parameter path the credential lands at.
    `docs/src/content/docs/operate/connectors.md` has the flow.
-5. **Merge every PR.** `main` is protected in both repos, and the runtime-config
-   surface is the one an escalation would arrive through. That is the review gate
-   working as intended.
+5. **Merge every PR.** The runtime-config surface is the one an escalation would
+   arrive through, and a human decides when a change to it lands.
+
+   Worth being exact about what enforces that, because it is **not** GitHub.
+   Neither repository's `main` is protected: both are private repositories on a
+   plan where the feature is unavailable, so `branches/main` reports
+   `"protected": false` and both the branch-protection and the rulesets APIs
+   answer `403`. The gate is the convention that an agent never merges its own
+   PR, plus the merge gate that rates one — which is a gate a human operates,
+   not a branch rule. Treat "protected" as a description of the practice rather
+   than of the repository.
 
 Everything else in this plan is agent-executable: the code, the tests, the docs,
 the staging verification, the prod roster edits in `infra/strad.prod.yaml`, and

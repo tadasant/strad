@@ -296,8 +296,10 @@ an authorization, everyone the re-pointed slug's roles name can reach it. Point
 a **new** slug at the mount you want instead; that is the `gmail-ro` /
 `gmail-rw` pattern and it still works.
 
-For a slug the checked-in document declares, `path:` is bound however the write
-arrives — see [below](#a-runtime-write-cannot-move-access-control-the-deploy-authorised).
+For a slug the checked-in document declares, the three fields that decide WHICH
+UPSTREAM it is — `kind:`, and a supplementary `bundle:` and `path:` — are bound
+however the write arrives — see
+[below](#a-runtime-write-cannot-move-access-control-the-deploy-authorised).
 
 ### Removing
 
@@ -315,7 +317,7 @@ all, the `tools:` policy on the slug that carries the write tools, and that
 slug's `entitlements:`. They are described [below](#three-layers-decide-what-a-caller-can-reach),
 and all three gate the door. None of them says anything about the **content** of
 a write that comes through it, and the content is chosen by the caller: the
-field names, the URL they are interpolated into, the roles on the entry. Three
+field names, the URL they are interpolated into, the roles on the entry. Four
 bounds cover that half.
 
 ### A runtime-authored entry reads only its own namespace
@@ -413,14 +415,22 @@ refusal says so.
 ### A runtime write cannot move access control the deploy authorised
 
 `entitlements:` and `tools:` are strad's two access-control decisions: who
-reaches a server, and which of its tools they get there. A supplementary
-`path:` is the third, because it decides the same thing from the far end —
+reaches a server, and which of its tools they get there. The slug's **upstream
+identity** is the third, because it decides the same thing from the far end —
 which upstream, and so which of the container's credentials, the slug's roles
-actually reach. On a slug the checked-in document declares, a runtime write may
-not move any of the three. `assertNoAccessControlChange` in
+actually reach. That is `kind:` on any entry, plus `bundle:` and `path:` on a
+supplementary one. On a slug the checked-in document declares, a runtime write
+may not move any of them. `assertNoAccessControlChange` in
 `src/config/overlay.ts` refuses it, and both doors refuse it the same way — a
 `409` in the console, an error result from `save_connector` — because both call
 `RuntimeConfig.assertAcceptable`.
+
+`kind:` is in that set because a checked-in `local-tunnel`, re-created as a
+`supplementary-image`, is the `path:` move wearing a different field: the slug
+name keeps the reach the deploy granted it while the thing on the other end
+becomes a mount nobody granted. All three identity fields were already frozen on
+the **edit** path by `immutableFields`, so binding them here costs no workflow —
+it makes a move that is refused as one call refused as two.
 
 For a server the deploy authorised, that authority stays with the deploy. The
 rule is keyed on the checked-in document rather than on edit-versus-create,
@@ -442,6 +452,87 @@ with the reason beside them; on any supplementary edit, so are `image:`,
 `bundle:` and `path:`. A disabled input submits nothing, so the save hands those
 fields back to the entry being carried rather than reading an empty form as "the
 human cleared the roles".
+
+### A runtime write reaches no mount its author cannot already reach
+
+The three bounds above are about the **content** of a write. This one is about
+its **author**, and it is what lets the write tools be granted to a role narrower
+than the one that may reach everything.
+
+Without it, the write tools are worth admin access to every mount in a declared
+bundle, whatever narrower `entitlements:` and `tools:` the writer's own slugs
+carry. A slug only the overlay declares is unbound by design — giving a connector
+you just created a role is the feature — so one `save_connector` call creates a
+`supplementary-image` entry on the `path:` of an admin-only mount, entitled to the
+writer's own role, carrying no `tools:` of its own. It serves that mount's whole
+tool surface under the credential the deploy baked onto the container.
+
+`assertWithinReach` in `src/config/overlay.ts` bounds it, in two places:
+
+- **A new supplementary slug** may only land on a `bundle:` + `path:` its author
+  **already reaches** through a slug the checked-in config declares. It is asked
+  on a create, which is where a mount is chosen; an edit cannot move a mount,
+  because `immutableFields` freezes `bundle:` and `path:` on every supplementary
+  edit.
+- **A credential's destination on a checked-in slug** may only be moved by an
+  author that slug's `entitlements:` admit. These fields cannot simply be frozen
+  — re-pointing a quick tunnel without a deploy is a reason the roster is
+  editable at all — but what they name is a host strad sends a credential to, so
+  moving one on a slug you were never granted reaches a credential you were never
+  given.
+
+There are **four** destination fields, not one, and the difference matters:
+`url:`, `oauthRefresh.tokenUrl`, and a connector's `oauth.tokenUrl` and
+`oauth.authorizeUrl`. `url:` is the obvious one — the slug's `headers:` follow it.
+The OAuth endpoints carry a better credential than the bearer they mint:
+`oauthRefresh.tokenUrl` is POSTed the **client secret and the long-lived refresh
+token** on every mint, and a connector's endpoints carry the console's consent
+exchange. A bound that watched `url:` alone would be one field wide — the same
+write, aimed one key over, still walks the credential off-box. `oauth:` is
+declared on every server kind, so this bound is **not** scoped to the unhosted
+ones: a `supplementary-image` can carry a connector too.
+
+Reach is measured against the **checked-in** config, not the merged roster: an
+overlay entry's own `entitlements:` were written by a runtime write, so letting
+them vouch for what the next write reaches would be circular. It is the same
+two-way intersection `/mcp` computes — a role names the slug, and the slug's
+`entitlements:` name the role — minus the `enabled` filter, because the question
+is what the deploy **authorised** rather than what is switched on today.
+
+Both doors supply the author: the console hands over the signed-in session, and
+the `connectors` builtin hands over the principal that authenticated the `/mcp`
+request. That is what `RuntimeConfig.assertAcceptable` gained a third argument
+for.
+
+**This narrows nobody who could already reach everything.** A role written
+`servers: ["*"]` whose slugs all name it reaches every mount a deployment
+declares, so neither half ever fires for it — adding a second slug to a deployed
+mount and re-pointing a quick tunnel both work exactly as before. What it removes
+is the case the bound exists for: a **narrower** writer reaching past what the
+checked-in config gave it.
+
+**What it deliberately does not do**, in two places.
+
+It does not carry the `tools:` policy along. The bounds are measured in mounts,
+so a writer that already reaches a mount may create a second slug on it with a
+**wider** tool surface than the checked-in slug it reaches that mount through — a
+role given read-only access to a container can hand itself the write tools on it.
+Closing that would also narrow the role that reaches everything, on any mount
+whose only checked-in slug is the narrow one: it could no longer create the wider
+half of a `-ro` / `-rw` pair without a deploy. That is a workflow traded against a
+residual widening rather than a free tightening, so it is an operator's decision —
+[the runtime-config plan](/operate/runtime-config-plan/) carries it as the open
+half of phase 2.
+
+And it does not bound **disable and remove**. Those two tools compose no entry,
+so they never reach `assertAcceptable` at all: a writer holding them can disable
+or remove any connector in the roster, including one it cannot reach. That is
+availability rather than disclosure — nothing is served that was not served
+before, a removal of a checked-in slug is a standing instruction the console
+shows and `restore_connector` undoes, and refusing a removal is what would leave
+a broken connector nobody can switch off. Worth knowing before the write tools
+are granted to a narrow role: it bounds what a write may **reach**, not what a
+writer may **stop**.
 
 ## The console flow
 
@@ -544,8 +635,9 @@ None of them is new machinery.
    not want an agent editing its roster does not mount it.
 
 All three gate the door. What a write that comes through it may reach is bounded
-separately, by the two rules in [Who may write, and what a write may
-reach](#who-may-write-and-what-a-write-may-reach).
+separately, by the four bounds in [Who may write, and what a write may
+reach](#who-may-write-and-what-a-write-may-reach) — and the last of those is the
+one that reads WHO came through the door, rather than only what they sent.
 
 ### One set of rules, both doors
 

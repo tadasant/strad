@@ -28,6 +28,16 @@ typed. See [the two kinds](/operate/secrets/#the-two-kinds-static-and-oauth).
    /strad/{env}/mcp/<slug>/static/GOOGLE_SHEETS_OAUTH_CLIENT_SECRET
    ```
 
+   On a deployment whose console credential withholds
+   `secretmanager.versions.access` (production, per
+   [Secrets IAM](/operate/secrets-iam/#1-prod-console-write-but-never-read)), a
+   client value stored as a secret parameter also needs
+   `roles/secretmanager.secretAccessor` for the console's service account, **on
+   those two secrets only**. The connector reads its OAuth client through the
+   console, and without that grant **Connect** refuses. The command, and why a
+   project-wide grant is the wrong fix, are in
+   [An `oauth:` connector reads its own OAuth client](/operate/secrets-iam/#an-oauth-connector-reads-its-own-oauth-client).
+
 2. Open `/ui/<slug>` in the console. It states which provider, which account the
    slug is pinned to (or that strad cannot check one), whether the grant is
    read-only or read-write, and the exact scopes it is about to request.
@@ -302,6 +312,25 @@ never silently overstates how narrow the stored credential is.
   `/strad/{env}/gateway/static/`, or under a sibling slug, does not make a
   connector ready. This flow reads that slug's namespace and no other.
 
+### When strad itself cannot begin
+
+Some refusals are about the deployment rather than the consent, and **Connect**
+answers them before anyone is sent to the provider: no `gateway.publicUrl`, no
+`CONSOLE_SESSION_SECRET`, a connector that is not ready (the OAuth application
+missing, or the store not answering), or an OAuth client the console could not
+read. The last is the one production hits: the console's credential lacks
+`secretmanager.versions.access` on a client value stored as a secret parameter.
+See [the grant it needs](/operate/secrets-iam/#an-oauth-connector-reads-its-own-oauth-client).
+
+Each one renders the slug's own page with the reason in a flash, at **409**, never
+a 5xx. The App Platform ingress treats an upstream 5xx as its own failure and
+swaps the body for its generic edge page, so a refusal answered 503 would reach
+the human as "Error code: 503" and nothing else. A store failure names the permission
+and the resource it was refused on, and never the value: a message the store
+did not write is reduced to its error class. The callback applies the same rule
+to its own setup refusals, and a client it cannot read comes back to the page
+as `client_unreadable` rather than as a failed write.
+
 ### Security posture
 
 - PKCE with `S256`. The verifier travels in the sealed cookie and never in a URL.
@@ -361,10 +390,31 @@ signal is a real call, and the console does not make one.
 
 ## Telemetry
 
-Three events, all fields from the config: `strad.connector_begin`,
-`strad.connector_connected` (slug, variable) and `strad.connector_refused` (slug,
-reason). `reason` is the closed set of refusal codes. Nothing derived from a
-credential is exported — see [Telemetry](/operate/telemetry/).
+Four events. Every field comes from the config or from a closed set of strad's
+own words:
+
+- `strad.connector_begin` (slug) and `strad.connector_connected` (slug,
+  variable): a flow that started, and one that stored a credential.
+- `strad.connector_refused` (slug, reason): the callback refused the consent.
+  `reason` is a refusal code (`account_mismatch`, `scope_not_granted`,
+  `store_failed`, …).
+- `strad.connector_connect_failed` (slug, stage, reason): the **deployment**
+  could not carry a connect through. `stage` is `begin` (the Connect POST) or
+  `callback` (the return from the provider), and `reason` is one of
+  `no_redirect_uri`, `no_session_key`, `incomplete`, `store_error`, `no_store`
+  or `client_unreadable`. The name ends `_failed`, so it ships at **ERROR** and
+  goes to stderr. The human did nothing wrong in any of these branches, so every
+  one of them is the deployment failing. It is throttled to one exported record
+  a minute per slug; stderr gets every one.
+
+On `client_unreadable` it also carries `variable` (the config's name for the
+value that could not be read), `failure` (`denied`, `not_found`, `unreadable`,
+`timeout`, `store`, `credential` or `unexpected`) and `status`, the store's HTTP
+status as a number. So `slug=google-sheets-tadas412-ro reason=client_unreadable
+failure=denied status=403` is enough to know which grant is missing. The store's
+own one-line summary, which names the Secret Manager resource, rides in the same
+payload on stderr and is not exported.
+Nothing derived from a credential is exported — see [Telemetry](/operate/telemetry/).
 
 ## Limits
 

@@ -164,6 +164,17 @@ console; the rest happen in strad's own.
    /strad/{env}/mcp/<slug>/static/GOOGLE_SHEETS_OAUTH_CLIENT_SECRET
    ```
 
+   **In production, also grant the console read on those two secrets, and only
+   those two.** The Connect flow reads the client through the console's own
+   credential, and production's withholds `secretmanager.versions.access`. So a
+   client value seeded as a secret parameter needs
+   `roles/secretmanager.secretAccessor` for the console's service account, bound
+   on that secret alone. Without it, **Connect Google** refuses and names the
+   permission and the resource. Do not grant it on the project: that hands the
+   console every secret value in the project, which is the thing production's
+   console is set up not to have. The `gcloud` is in
+   [Secrets IAM](/operate/secrets-iam/#an-oauth-connector-reads-its-own-oauth-client).
+
 4. **Click Connect Google** on `/ui/<slug>` in strad's console, once per slug, and
    consent as the account that slug is pinned to. strad writes the refresh token
    into the third parameter itself — see [Connectors](/operate/connectors/).

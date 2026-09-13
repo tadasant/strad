@@ -1233,6 +1233,40 @@ project IAM admin, which no strad process holds, so it is a human step and is no
 applied yet. Removing `setIamPolicy` instead is not an option: it would remove the
 console's ability to create a secret parameter at all.
 
+### 99. An `oauth:` connector needs the console to read its OAuth client
+
+A [connector](/operate/connectors/) reads the slug's client id and client secret
+with the console's own credential, and for a secret parameter that read is Secret
+Manager's `versions.access`: the permission the
+[write-never-read console](/operate/secrets-iam/#1-prod-console-write-but-never-read)
+withholds. So production's connectors need a hand-applied grant,
+`roles/secretmanager.secretAccessor` for the console's service account, **on each
+slug's two client secrets and nothing else**. The command is in
+[Secrets IAM](/operate/secrets-iam/#an-oauth-connector-reads-its-own-oauth-client).
+It is a human step per slug, outside the deploy, and deliberately so. The
+console's own credential holds `secretmanager.secrets.setIamPolicy`, so strad
+could make the binding itself, but the console granting itself read is exactly
+the escalation #31 describes, and doing it routinely would erase the audit signal
+that makes it conspicuous.
+
+Without it, **Connect** refuses. It says so on the page, at 409, naming the
+permission and the exact resource, and it emits `strad.connector_connect_failed`
+with `reason: client_unreadable` and `status: 403`. It is a 409 because the App
+Platform ingress replaces an upstream 5xx with its own edge page, which would
+drop the sentence that says why.
+
+Two costs are worth stating. The per-secret grant is a real, narrow exception to
+write-never-read: two values, per connector, never the refresh tokens the flow
+writes. And it does not survive the deny policy from #31. Deny beats allow, and a
+deny rule's conditions can match resource tags but not resource names, so a
+deployment has to choose, or tag its connector secrets and exempt that tag, which
+strad has not built or tested.
+
+**Undo:** a connector that never reads its client through the console. Seeding
+the client id as a non-secret parameter halves the grant. Running the code
+exchange in the slug's own container, which already has both values in its
+environment, removes it. `HACKS.md` #99 has both.
+
 ### 33. Secret values are base64url in Secret Manager, and only the boundary is unverified
 
 A secret parameter is created with `parameter-format=JSON`, and `:render` does not
@@ -2928,19 +2962,44 @@ window still lose one, silently, and the loser is whichever wrote first. What
 bounds it is that writes are rare and come from one component: core is the only
 thing holding the admin credential, whichever door the write arrived through.
 
-**Neither gap means a runtime write is unbounded.** Three rules bound what a
+**Neither gap means a runtime write is unbounded.** Four rules bound what a
 write may reach, as distinct from who may make one: a runtime-authored entry's
 `${NAME}` refs resolve against that slug's own `/strad/{env}/mcp/{slug}/static/`
 namespace and nothing else, so a connector `url:` cannot read core's process
-environment and send it off-box; a runtime write may not change `entitlements:`
-or `tools:` on a slug the checked-in document declares; and a runtime write may
+environment and send it off-box; a runtime write may not change `entitlements:`,
+`tools:` or the slug's upstream identity (`kind:`, and a supplementary `bundle:`
+and `path:`) on a slug the checked-in document declares; a runtime write reaches
+no mount its **author** does not already reach, so a new supplementary slug may
+only land on a mount the writing principal reaches through a checked-in slug and
+a checked-in slug's credential destinations — `url:`, `oauthRefresh.tokenUrl` and
+a connector's two `oauth:` endpoints — may only be moved by an author it admits;
+and a runtime write may
 name a credential but never carry one, so a literal in `headers:`, in `url:`'s
 userinfo or in an `oauthRefresh:` grant is refused rather than stored in the
 clear. Disabling a connector that carries one is refused too, because disable
-re-upserts the entry; removing it is always allowed. All three are in [Who may write, and what a write may
+re-upserts the entry; removing it is always allowed. All four are in [Who may write, and what a write may
 reach](/operate/runtime-config/#who-may-write-and-what-a-write-may-reach).
 
-**The third rule has two positions it does not cover.** A **URL query
+**The reach rule is measured in mounts, not in tools.** A writer that already
+reaches a mount may create a second slug on it with a **wider** tool surface than
+the checked-in slug it reaches that mount through, so a role given read-only
+access to a container can hand itself that container's write tools. Closing it
+would narrow the role that reaches everything in the same motion — on any mount
+whose only checked-in slug is the narrow one, it could no longer create the wider
+half of a `-ro` / `-rw` pair without a deploy — so it is a workflow traded
+against a residual widening rather than a free tightening, and it is left to the
+operator as the open half of phase 2 in [the runtime-config
+plan](/operate/runtime-config-plan/).
+
+**And it bounds what a write reaches, not what a writer stops.** Disable, remove
+and restore compose no entry, so no bound here touches them: a writer holding the
+write tools can disable or remove any connector in the roster, including one it
+cannot reach. That is availability rather than disclosure, and deliberate in the
+other direction — refusing a removal is what would leave a broken connector
+nobody can switch off, and a removal of a checked-in slug is a standing
+instruction the console shows and Restore undoes.
+
+**The name-a-credential rule has two positions it does not cover.** A **URL query
 parameter** — `https://api.example.com/mcp?key=abc` — is a literal credential
 and is accepted, because nothing can tell it from `?version=2` without refusing
 every URL that carries a query at all; userinfo is refused because
@@ -2973,6 +3032,9 @@ The one-time steps that clear most of the list above:
   provisioned; `/strad/staging/mcp/` holds nothing, so set the
   `remote-filesystem-tmp-public` values in `/ui/secrets` — clears **#26**. Prod
   needs the whole set of its own.
+- For each `oauth:` connector in production, `roles/secretmanager.secretAccessor`
+  for the console's service account on that slug's client-id and client-secret
+  secrets — per secret, never on the project — clears the refusal in **#99**.
 - An OAuth client for `https://strad.tadasant.com/console/oauth/callback`, and its
   `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — clears **#2** and **#20**.
 - Delete the DigitalOcean Container Registry named `strad`. Staging and prod pull

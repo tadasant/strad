@@ -58,6 +58,12 @@ boundary on its own, because a secret create also needs
 `secretmanager.secrets.setIamPolicy`, and that permission can grant read back to
 its holder — see [the danger note below](#1-prod-console-write-but-never-read).
 
+One console feature is a reveal under another name: an `oauth:` connector reads
+its own OAuth client through it, so a connector needs `versions.access` on its two
+client secrets and nowhere else. That is the one exception to §1, granted per
+secret — see
+[An `oauth:` connector reads its own OAuth client](#an-oauth-connector-reads-its-own-oauth-client).
+
 **`parameterVersions.get` is safe to keep.** It reads the parameter's raw
 envelope, and for a secret parameter that envelope holds a `__REF__` pointer, not
 a value. Listing keeps working; nothing in it dereferences.
@@ -144,7 +150,10 @@ own reporting stays honest about which path is open.
 ## 1. Prod console: write, but never read
 
 **Goal.** `strad-secrets-admin@strad-secrets-prod.iam.gserviceaccount.com` can
-add, rotate, note and delete secrets, and cannot read one back.
+add, rotate, note and delete secrets, and cannot read one back. The one exception
+is an `oauth:` connector's own OAuth client, which the console has to read to run
+the consent. It is granted secret by secret, never here at project level — see
+[An `oauth:` connector reads its own OAuth client](#an-oauth-connector-reads-its-own-oauth-client).
 
 **Bonus, and it is a real one.** This service account's key
 (`SECRETS_ADMIN_KEY_JSON`) is among the credentials exposed in
@@ -311,6 +320,82 @@ A `403` from either command is not an answer about the grant. It means the Cloud
 Resource Manager API is not enabled on the project — the `gcloud services enable`
 line above — or that this credential has no access to the project at all. It is the
 same 403 the runtime probe reports as "capability unverified".
+
+## An `oauth:` connector reads its own OAuth client
+
+A server with an [`oauth:` connector](/operate/connectors/) has a **Connect**
+button, and the flow behind it reads the slug's own OAuth client — the client id
+and client secret seeded under `/strad/{env}/mcp/<slug>/static/`. It reads them
+through the console's store, with the console's credential, using `reveal()`. The
+connect POST reads the client id before it sends anyone to the provider, and the
+callback reads both to exchange the code.
+
+For a **secret** parameter, `reveal()` is Secret Manager's
+`versions/latest:access`, and that needs `secretmanager.versions.access`: the
+permission §1 withholds. So on a console run the way §1 says, a connector whose
+client values are secret parameters lists as ready, and pressing **Connect**
+refuses. The page names the permission and the exact Secret Manager resource, and
+`strad.connector_connect_failed` records `reason: client_unreadable` with
+`status: 403` (see [Connectors](/operate/connectors/#telemetry)).
+
+**The grant.** `roles/secretmanager.secretAccessor` for the console's service
+account, bound on **that slug's own client-id and client-secret secrets only**:
+
+```bash
+PROJECT=strad-secrets-prod
+SA=strad-secrets-admin@${PROJECT}.iam.gserviceaccount.com
+SLUG=google-sheets-tadas412-ro
+ENV=prod
+
+for VAR in GOOGLE_SHEETS_OAUTH_CLIENT_ID GOOGLE_SHEETS_OAUTH_CLIENT_SECRET; do
+  # A secret's id is the parameter id: strad's fold of the canonical path. Past
+  # 63 characters the fold keeps a 54-character head and appends a hash, so the
+  # two ids share a head and differ only in the hash — compute them, don't guess.
+  SECRET=$(node --experimental-transform-types --no-warnings -e \
+    'import("./src/secrets/parameters/wire.ts").then((w) => console.log(w.parameterId(process.argv[1])))' \
+    "/strad/${ENV}/mcp/${SLUG}/static/${VAR}")
+  gcloud secrets add-iam-policy-binding "${SECRET}" --project "${PROJECT}" \
+    --member="serviceAccount:${SA}" --role=roles/secretmanager.secretAccessor
+done
+```
+
+Run it from a checkout of this repo, since the fold is strad's. The refusal page
+names the client id's resource verbatim (`projects/<project>/secrets/<id>`), and
+the `node` line is how to get the client secret's, because nothing reads that one
+until the callback — after the human has already consented. Grant both before
+anyone presses **Connect**. If the client id is seeded as a **non-secret**
+parameter, it has no secret to grant on, and the loop needs only the second name.
+A client id is not a secret: it goes out in every authorization URL.
+
+**Why not a project-wide accessor.** `roles/secretmanager.secretAccessor` on the
+project gives the console every secret value in it: every other slug's
+credentials, every refresh token a connector has stored, strad's own. Removing
+exactly that is what §1 is for. The per-secret binding gives the console two
+values it has to read anyway, for one slug, and nothing else. The tokens a
+connector writes under `oauth/` stay unreadable to it, and those are the
+credentials worth protecting.
+
+Four consequences to know:
+
+- **The §1 audit cannot see this grant, in either direction.**
+  `projects:testIamPermissions` answers at project level, so it still prints `{}`
+  after a per-secret binding. Audit the binding on the secret itself:
+  `gcloud secrets get-iam-policy "${SECRET}" --project "${PROJECT}"`.
+- **The deny policy in §1 overrides it.** Deny is evaluated before allow, so with
+  `strad-console-no-read` applied, this binding grants nothing and **Connect**
+  refuses with the same 403. A deny rule's condition can match resource tags but
+  not resource names. Keeping both means tagging the connector's client secrets
+  and exempting that tag in the rule's `denialCondition`, and strad has neither
+  built nor tested that. Decide which one a deployment wants before applying the
+  deny policy. [Known limitations](/limitations/) #99 has the trade.
+- **The console's reveal control reaches the same two values.** The grant is on
+  the console's credential, and reveal uses that credential too. With
+  `SECRETS_REVEAL_ENABLED` on, a signed-in session could display this slug's
+  client id and secret. It is off in production, and the flag is what keeps
+  those two values off a screen.
+- **The binding lives on the secret, not the version.** Rotating the client
+  secret adds a version and keeps it. Deleting the parameter deletes its secret
+  and the binding with it, so re-seeding from scratch means granting again.
 
 ## Why a parameter must be granted access to its own secret
 

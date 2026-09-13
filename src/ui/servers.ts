@@ -25,6 +25,7 @@ import {
   ImmutableFieldChanged,
   NotRuntimeCreatable,
   RUNTIME_CREATABLE_KINDS,
+  ReachExceeded,
   SlugCollision,
   assertNoCollision,
   immutableFields,
@@ -432,13 +433,19 @@ async function handleSave(
     assertNoCollision(runtime.config(), String(entry.slug), original);
     // The SAME call the `connectors` MCP tools make (src/servers/connectors.ts).
     // Two copies of "may I add this" is two answers, and the one the human sees
-    // and the one the agent sees would eventually differ.
-    runtime.assertAcceptable(entry, before);
+    // and the one the agent sees would eventually differ. The signed-in human is
+    // handed over for the same reason the MCP door hands over its caller: a write
+    // is bounded by what its author can already reach.
+    runtime.assertAcceptable(entry, before, consolePrincipal(res));
   } catch (err) {
     if (
       err instanceof NotRuntimeCreatable ||
       err instanceof ImmutableFieldChanged ||
       err instanceof LiteralCredential ||
+      // 400 rather than 409, unlike the two below: nothing about the roster has
+      // moved underneath this form. The write asks for reach this session does
+      // not have, and re-reading the roster would not change that.
+      err instanceof ReachExceeded ||
       err instanceof BadInput
     ) {
       return redraw({ tone: "error", message: err.message });

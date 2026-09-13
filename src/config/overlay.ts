@@ -598,13 +598,23 @@ export class AccessControlChanged extends Error {}
 const ACCESS_FIELDS: Record<string, string> = {
   entitlements: "who reaches this server",
   tools: "which of its tools they get",
+  kind: "what kind of upstream it is, and so which credential it is handed",
+  bundle:
+    "which container it reaches, and so which credentials are on the far end",
   path: "which mount inside the container it reaches, and so which credential",
 };
 
 /**
  * The bound fields of an entry, compared without caring about order or absence.
  *
- * `withPath` is decided by the CHECKED-IN entry's kind rather than the
+ * Two groups. `entitlements:` and `tools:` are the access-control decisions
+ * themselves. `kind:`, and for a supplementary entry `bundle:` and `path:`, are
+ * the UPSTREAM IDENTITY — which credential is on the far end of this slug — and
+ * they are here because `immutableFields` already freezes all three on the EDIT
+ * path, so leaving them out of this comparison would mean the same move is
+ * refused as one call and allowed as two (remove, then re-create).
+ *
+ * `withMount` is decided by the CHECKED-IN entry's kind rather than the
  * candidate's, so re-creating a supplementary slug as some other kind is
  * compared too rather than slipping out of the comparison by dropping the
  * field. `/mcp` is the schema's own default for an absent `path`, applied here
@@ -612,7 +622,7 @@ const ACCESS_FIELDS: Record<string, string> = {
  */
 function accessShape(
   entry: Record<string, unknown> | undefined,
-  withPath: boolean,
+  withMount: boolean,
 ): Record<string, string> {
   const list = (v: unknown) =>
     JSON.stringify(Array.isArray(v) ? [...v].map(String).sort() : []);
@@ -620,7 +630,13 @@ function accessShape(
   return {
     entitlements: list(entry?.entitlements),
     tools: JSON.stringify({ allow: list(tools.allow), deny: list(tools.deny) }),
-    ...(withPath ? { path: String(entry?.path ?? "/mcp") } : {}),
+    kind: String(entry?.kind ?? ""),
+    ...(withMount
+      ? {
+          bundle: String(entry?.bundle ?? ""),
+          path: String(entry?.path ?? "/mcp"),
+        }
+      : {}),
   };
 }
 
@@ -635,24 +651,28 @@ function accessShape(
  * authorised, that authority belongs to the deploy: a human wrote those lines
  * and a human reviewed them.
  *
- * A supplementary `path:` is the third, because it decides the same thing from
- * the far end. Several mounts share one container, each with the credential the
- * deploy baked in for it, and each fronted by its own slug with its own
- * `entitlements:` and `tools:`. Re-pointing a slug's `path:` at a neighbouring
+ * The slug's UPSTREAM IDENTITY is the third, because it decides the same thing
+ * from the far end: `kind:` on any entry, plus `bundle:` and `path:` on a
+ * supplementary one. Several mounts share one container, each with the
+ * credential the deploy baked in for it, and each fronted by its own slug with
+ * its own `entitlements:` and `tools:`. Re-pointing a slug at a neighbouring
  * mount inherits NEITHER of that neighbour's protections — the narrow policy
  * stays attached to the slug that declares it, while the credential on the
  * other end does not. Since `?servers=` is a filter and not an authorization, a
  * widely-entitled slug that could be re-pointed at a narrowly-entitled mount is
- * that mount's access control undone.
+ * that mount's access control undone. `kind:` carries it because a `local-tunnel`
+ * the file declares, re-created as a `supplementary-image`, is that same move
+ * wearing a different field: the slug name keeps the reach the deploy granted it
+ * while the thing on the other end becomes a mount nobody granted.
  *
  * Keyed on the checked-in document rather than on "is this an edit", because
  * the alternative has an obvious way around it. Removing a file-declared slug
  * and re-creating it through the overlay is, structurally, a create — so a rule
  * that only bound edits would be bypassed by two calls instead of one. A slug
  * the file names is bound however the write arrives, and stays bound while a
- * removal is standing. (`immutableFields` binds `path:` on the EDIT path for
- * every supplementary entry, this binds it on both paths for a file-declared
- * one, and it is this one that closes remove-then-recreate.)
+ * removal is standing. (`immutableFields` binds all three identity fields on the
+ * EDIT path, this binds them on both paths for a file-declared one, and it is
+ * this one that closes remove-then-recreate.)
  *
  * A slug only the OVERLAY declares is unbound: nothing in the checked-in
  * document is being overruled, and giving a connector you just created a role
@@ -665,9 +685,9 @@ export function assertNoAccessControlChange(
   const declared = rawEntry(baseDoc, String(entry.slug));
   if (!declared) return;
 
-  const withPath = declared.kind === "supplementary-image";
-  const before = accessShape(declared, withPath);
-  const after = accessShape(entry, withPath);
+  const withMount = declared.kind === "supplementary-image";
+  const before = accessShape(declared, withMount);
+  const after = accessShape(entry, withMount);
   const moved = Object.keys(before).filter((f) => before[f] !== after[f]);
   if (moved.length === 0) return;
 
@@ -680,6 +700,202 @@ export function assertNoAccessControlChange(
       `${moved.length > 1 ? "them" : "it"} in the checked-in config, or point a ` +
       `NEW slug at the upstream you want.`,
   );
+}
+
+/**
+ * Who is making a runtime write, reduced to what a bound needs of them.
+ *
+ * `roles` and nothing else: it is the entitlement-resolving set, the same
+ * strings `entitledServers` intersects against a slug's `entitlements:`. Both
+ * doors hold a full `Principal` and hand over this slice, which keeps the module
+ * free of the auth layer — and keeps an identifier nothing reads out of a
+ * refusal message that is rendered into an HTML page and returned over `/mcp`.
+ */
+export interface WritingPrincipal {
+  roles: readonly string[];
+}
+
+export class ReachExceeded extends Error {}
+
+/**
+ * Every field on an entry that names a HOST strad sends a credential to.
+ *
+ * Not the fields that CARRY a credential — `src/config/secret-position.ts` owns
+ * those, and its rule is that they must be references. These are the other half
+ * of the same question: a reference resolves to a value, and the value is sent
+ * somewhere. This list is where.
+ *
+ * Kept as data rather than as four comparisons, because the failure of missing
+ * one is silent and identical each time: the write is accepted, the slug becomes
+ * overlay-authored, and the next resolution posts a credential to a host the
+ * write chose. `oauth:` lives on `ServerBase`, so two of these can appear on any
+ * kind — including one the deploy renders a container for.
+ */
+export const CREDENTIAL_DESTINATIONS = [
+  "url:",
+  "oauthRefresh.tokenUrl:",
+  "oauth.tokenUrl:",
+  "oauth.authorizeUrl:",
+] as const;
+
+/** One destination's value, as a comparable string. Absent reads as empty. */
+function destination(
+  entry: Record<string, unknown> | undefined,
+  field: (typeof CREDENTIAL_DESTINATIONS)[number],
+): string {
+  if (field === "url:") return String(entry?.url ?? "");
+  const [block, key] = field.slice(0, -1).split(".") as [string, string];
+  const held = entry?.[block];
+  return isPlainObject(held) ? String(held[key] ?? "") : "";
+}
+
+/**
+ * Does `principal` reach `server` under the checked-in config's two-way rule?
+ *
+ * The same intersection `src/gateway/entitlements.ts` computes — a role names
+ * the slug (or `*`) AND the slug's `entitlements:` names the role — but WITHOUT
+ * the `enabled` filter. The question a reach bound asks is "did the deploy
+ * authorise this principal to this mount", which a disabled slug still answers
+ * yes to: enabling it is a separate write, and a mount the deploy credentialed
+ * for a role is one that role may point a second slug at.
+ */
+function principalReachesSlug(
+  config: StradConfig,
+  roles: readonly string[],
+  server: ServerConfig,
+): boolean {
+  const roleNamesSlug = roles.some((r) => {
+    // `Object.hasOwn`, for the same reason entitledServers uses it: a role named
+    // "__proto__" must not resolve to Object.prototype.
+    if (!Object.hasOwn(config.roles, r)) return false;
+    const role = config.roles[r];
+    return !!role && role.servers.some((e) => e === "*" || e === server.slug);
+  });
+  if (!roleNamesSlug) return false;
+  return server.entitlements.some((r) => roles.includes(r));
+}
+
+/**
+ * A runtime write may not reach a credential its author cannot already reach.
+ *
+ * This is the bound that makes granting the write tools to a NARROWER role than
+ * `admin` mean something. Two mechanisms in strad#349 walk around the other
+ * bounds, and both reach a mount's baked credential or tool surface through a
+ * slug the checked-in config never gave the writer:
+ *
+ *   A. CREATE. A new `supplementary-image` slug carries no `tools:` of its own
+ *      and any `entitlements:` it likes. `assertCreatable` never looks at
+ *      `path:`, so one create points a narrow role at `/onepassword` and serves
+ *      that mount's full surface, under the credential the deploy baked onto the
+ *      container. Bound: a new supplementary slug may only land on a bundle +
+ *      `path:` the writer ALREADY REACHES through a checked-in slug.
+ *
+ *   B. RE-POINT. No frozen set covers the fields naming a HOST this slug sends a
+ *      credential to, so a checked-in entry can be pointed at one the writer
+ *      chose and its credential follows. Bound: a credential destination may
+ *      move only on a slug the writer is entitled to — which is exactly what
+ *      re-pointing one's own quick tunnel needs, and what reaching a credential
+ *      one was never granted does not have.
+ *
+ *      There are FOUR such fields, not one, and they are listed in
+ *      `CREDENTIAL_DESTINATIONS`. `url:` is the obvious one. The other three are
+ *      OAuth endpoints, and they matter for the same reason with a different
+ *      credential on the wire: `oauthRefresh.tokenUrl` is POSTed the client
+ *      secret AND the long-lived refresh token every time strad mints a bearer
+ *      (`src/gateway/adapters/oauth-refresh.ts`), and a connector's
+ *      `oauth.tokenUrl` / `oauth.authorizeUrl` carry the console's consent
+ *      exchange (`src/connectors/index.ts`). A bound that watched `url:` alone
+ *      would be one field wide: the same write, aimed one key over, still walks
+ *      the credential off-box. `oauth:` lives on `ServerBase`, so this is NOT
+ *      scoped to the unhosted kinds — a `supplementary-image` can declare one.
+ *
+ * Both are measured in MOUNTS, not in tools, and that boundary is deliberate. A
+ * writer that already reaches a mount may still create a second slug there with
+ * a WIDER tool surface than the checked-in slug it reaches it through — so a
+ * role the deploy gave read-only access to a mount can give itself the write
+ * tools on that same mount. Carrying the `tools:` policy along would close that,
+ * and would also narrow `admin`: it would forbid creating a slug wider than the
+ * widest checked-in slug the writer reaches there, which is the `gmail-ro` /
+ * `gmail-rw` create on a mount whose checked-in slug is the narrow one. That is a
+ * trade between a workflow and a residual widening rather than a pure
+ * tightening, so it is a posture decision and not one this module makes. See
+ * phase 2 in `docs/operate/runtime-config-plan.md`.
+ *
+ * What IS a pure tightening is the mount bound above: `admin` reaches every mount
+ * a deployment declares (its role is `["*"]` and every slug's `entitlements:`
+ * names it), so neither bound fires for `admin` — the gmail-ro / gmail-rw create
+ * and the quick-tunnel re-point both still work — and only a narrower writer is
+ * bounded, which is the point.
+ *
+ * `baseConfig` is the CHECKED-IN config, not the merged one. Reach is measured
+ * against what the deploy authorised; an overlay slug's own `entitlements:` were
+ * themselves runtime-written and cannot vouch for reach.
+ *
+ * `before` present means an EDIT, and bound A does not apply to one: the mount an
+ * entry serves is `bundle:` + `path:`, `immutableFields` refuses both on every
+ * supplementary edit, so an edit cannot move a mount and re-asking the reach
+ * question can only produce a false refusal. It would be a real one — a checked-in
+ * mount that later leaves the file, or narrows, would otherwise make an overlay
+ * entry created legitimately against it uneditable by anyone, including `admin`,
+ * with a message about creating it. A create is where a mount is chosen, so a
+ * create is where it is judged; remove-then-recreate is structurally a create and
+ * is judged there too.
+ */
+export function assertWithinReach(
+  baseConfig: StradConfig,
+  entry: Record<string, unknown>,
+  principal: WritingPrincipal,
+  before?: Record<string, unknown>,
+): void {
+  const slug = String(entry.slug ?? "");
+  const declared = baseConfig.servers.find((s) => s.slug === slug);
+
+  // Bound B — moving a credential's destination on a slug the file declares.
+  // Every kind, because `oauth:` lives on `ServerBase`.
+  if (declared) {
+    const moved = CREDENTIAL_DESTINATIONS.filter(
+      (field) => destination(entry, field) !== destination(declared, field),
+    );
+    if (
+      moved.length > 0 &&
+      !principalReachesSlug(baseConfig, principal.roles, declared)
+    ) {
+      throw new ReachExceeded(
+        `${moved.join(", ")} cannot be changed at runtime on ${slug} by this ` +
+          `write: the checked-in config declares ${slug} and does not entitle you ` +
+          `to reach it, and ${moved.length > 1 ? "those fields name hosts" : "that field names a host"} ` +
+          `strad sends its credential to — so moving ` +
+          `${moved.length > 1 ? "them" : "it"} would hand a credential the deploy ` +
+          `gave somebody else to a host you chose. Re-point a slug you already ` +
+          `reach, or change it in the checked-in config and deploy.`,
+      );
+    }
+    // Nothing below applies to a slug the file declares: its mount is frozen by
+    // `assertNoAccessControlChange`.
+    return;
+  }
+
+  // Bound A — a NEW supplementary slug. Creates only; see the header.
+  if (before || entry.kind !== "supplementary-image") return;
+
+  const bundle = String(entry.bundle ?? "");
+  const path = String(entry.path ?? "/mcp");
+  const mounts = baseConfig.servers.filter(
+    (s) =>
+      s.kind === "supplementary-image" &&
+      s.bundle === bundle &&
+      (s.path ?? "/mcp") === path &&
+      principalReachesSlug(baseConfig, principal.roles, s),
+  );
+  if (mounts.length === 0) {
+    throw new ReachExceeded(
+      `${slug} cannot be created on ${bundle}${path}: no slug the checked-in ` +
+        `config authorised for you serves that mount, so pointing a new slug at ` +
+        `it would reach a credential the deploy baked in for somebody else. ` +
+        `Point it at a mount you already reach, or add the entry to the ` +
+        `checked-in config and deploy.`,
+    );
+  }
 }
 
 /**

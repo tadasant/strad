@@ -353,8 +353,9 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      * `slug` and `variable` come from the CONFIG — the flow reads the slug out
      * of sealed state and the variable out of that server's `oauth:` block, and
      * neither is ever taken from a request, so a caller cannot write a string of
-     * its choosing into the ingestor. `reason` is a ConnectorErrorCode: a closed
-     * set of strad's own words (`account_mismatch`, `scope_not_granted`, …).
+     * its choosing into the ingestor. `reason` on `_refused` is a refusal code
+     * from a closed set of strad's own words: a ConnectorErrorCode
+     * (`account_mismatch`, `scope_not_granted`, …) or `store_failed`.
      *
      * What is NOT here is the whole point. No token, no code, no client secret,
      * no email, no length, no fingerprint — and no upstream text: Google's error
@@ -362,10 +363,36 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      * stops. `strad.connector_refused` on a rising edge is the operational
      * signal (a token that will not rotate is a server about to go dark), and the
      * reason is enough to tell "wrong account" from "the store is down".
+     *
+     * `_connect_failed` is the DEPLOYMENT failing to carry a connect through, at
+     * either end — `stage` is `begin` (the POST behind the button) or `callback`
+     * — rather than a consent being refused: no public URL, no session key, a
+     * connector that is not ready, or an OAuth client the console could not
+     * read. `reason` is one of those, from a closed set in src/ui/connector.ts.
+     * It ends `_failed`, and so ships at ERROR, because the human did nothing
+     * wrong in any of those branches.
+     *
+     * On a client read (`reason: client_unreadable`), `variable` is the
+     * config's name for the value that could not be read and `failure` is a
+     * closed word (`denied`, `not_found`, `unreadable`, `timeout`, `store`,
+     * `credential`, `unexpected`). `status` is the store's HTTP status as a
+     * NUMBER, never its status text: the upstream picks it, but a bounded
+     * integer carries no text and no value, and it is the difference between a
+     * missing grant (403) and a store that is down (5xx). The store's own
+     * summary names the Secret Manager resource, and it rides under `error`,
+     * which is on no list: it stays on stderr beside the rest of the payload.
      */
     "strad.connector_begin": ["slug"],
     "strad.connector_connected": ["slug", "variable"],
     "strad.connector_refused": ["slug", "reason"],
+    "strad.connector_connect_failed": [
+      "slug",
+      "stage",
+      "reason",
+      "variable",
+      "failure",
+      "status",
+    ],
     /**
      * The runtime server roster changed, and the two ways it can.
      *
@@ -661,6 +688,10 @@ const THROTTLED = new Set([
   // Client-driven through the request path, though the minter's backoff
   // already holds it to one attempt per window per slug.
   "strad.upstream_token_refresh_failed",
+  // A signed-in console session can press Connect as often as it likes, and
+  // every press on a deployment that cannot carry it through is an ERROR
+  // record. One a minute per slug says the same thing.
+  "strad.connector_connect_failed",
   // A handler that rejects is a bug rather than a routine refusal, so this one
   // is expected to be silent — but the surface it guards is /mcp, whose input a
   // caller controls, and "a bug a client can drive on demand" is exactly the

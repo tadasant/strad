@@ -4944,22 +4944,31 @@ The MCP door inherits that window rather than widening it: `save_connector`
 takes `expectedRevision` optionally, so a caller that read the roster first gets
 the same refusal, and one that did not gets the same last-writer-wins.
 
-**Neither gap means a runtime write is unbounded.** Three rules bound what one
+**Neither gap means a runtime write is unbounded.** Four rules bound what one
 may reach, as distinct from who may make one. A runtime-authored entry's
 `${NAME}` refs resolve against that slug's own `/strad/{env}/mcp/{slug}/static/`
 namespace and nothing else (`forServerIsolated`, `src/secrets/provider/index.ts`),
 so a connector `url:` cannot read core's process environment and send it off-box.
-A runtime write may not change `entitlements:` or `tools:` on a slug the
+A runtime write may not change `entitlements:`, `tools:` or the slug's upstream
+identity — `kind:`, and a supplementary `bundle:` and `path:` — on a slug the
 checked-in document declares (`assertNoAccessControlChange`,
 `src/config/overlay.ts`), keyed on the document so remove-then-recreate is bound
-too. And a runtime write may NAME a credential and may not CARRY one
+too. A runtime write reaches no mount its AUTHOR does not already reach
+(`assertWithinReach`, same file): a new supplementary slug may only land on a
+`bundle:` + `path:` the writing principal reaches through a checked-in slug, and
+a CREDENTIAL DESTINATION on a checked-in slug may only be moved by an author that
+slug's `entitlements:` admit. There are four of those and not one — `url:`,
+`oauthRefresh.tokenUrl`, and a connector's `oauth.tokenUrl` / `oauth.authorizeUrl`
+— because the OAuth endpoints are POSTed the client secret and the long-lived
+refresh token, which outlive the bearer they mint; a bound that watched `url:`
+alone would be one field wide. And a runtime write may NAME a credential and may not CARRY one
 (`assertSecretsByReference`, `src/config/secret-position.ts`): the overlay is a
 non-secret parameter, so a literal saved into `headers:`, into `url:`'s userinfo
 or into `oauthRefresh:`'s grant would be a credential at rest in the clear. Disabling a connector that carries one is refused too, because disable
 re-upserts the entry; removing it is always allowed.
-`docs/src/content/docs/operate/runtime-config.md` has all three.
+`docs/src/content/docs/operate/runtime-config.md` has all four.
 
-**THE THIRD RULE HAS TWO POSITIONS IT DOES NOT COVER**, and the reason is the
+**THE NAME-A-CREDENTIAL RULE HAS TWO POSITIONS IT DOES NOT COVER**, and the reason is the
 same in both: a ref-only rule there would refuse the ordinary case. A **URL
 query parameter** — `https://api.example.com/mcp?key=abc` — is a literal
 credential and is accepted, because nothing can tell it from `?version=2`
@@ -4972,6 +4981,35 @@ at runtime. Closing either needs a typed statement of which fields carry a
 credential, per kind and per builtin, which is a schema change rather than a
 rule. `docs/src/content/docs/operate/runtime-config-plan.md` carries it as a
 later phase.
+
+**AND THE REACH RULE IS MEASURED IN MOUNTS, NOT IN TOOLS.** A writer that already
+reaches a mount may create a second slug on it with a WIDER tool surface than the
+checked-in slug it reaches that mount through — so a role the deploy gave
+read-only access to a container can hand itself that container's write tools.
+Closing it means a created slug may serve no more than its author already
+reaches there, and that trades a workflow rather than being free: it narrows the
+wildcard role too, on any mount whose only checked-in slug is the narrow one —
+three of the 27 distinct `bundle:` + `path:` mounts the prod roster declared on
+2026-09-13, the `google-sheets-*-ro` ones — where it could no longer create the
+wider half of a `-ro` / `-rw` pair without a deploy. (A mount is not a slug, and
+that count is a dated read of `strad/infra/strad.prod.yaml` in the private
+`tadasant/tadasant-internal`, not something this repo can re-derive.) Left open
+deliberately, as a posture decision for the operator rather than a defect;
+`docs/src/content/docs/operate/runtime-config-plan.md` carries it as the open
+half of phase 2, and `test/connectors.isolation.test.ts` asserts what strad does
+today so that closing it must update the record.
+
+**AND IT BOUNDS WHAT A WRITE REACHES, NOT WHAT A WRITER STOPS.**
+`set_connector_enabled`, `remove_connector` and `restore_connector` compose no
+entry, so they never reach `assertAcceptable` and no bound here touches them: a
+narrow writer holding the write tools can disable or remove any connector in the
+roster, including one it cannot reach. Availability rather than disclosure, and
+deliberate in the other direction — refusing a removal is what would leave a
+broken connector nobody can switch off, a removal of a checked-in slug is a
+standing instruction the console shows and `restore_connector` undoes, and
+nothing is SERVED that was not served before. Stated here because the reach bound
+is easy to read as "the write tools are now safe for a narrow role", and this is
+the half it does not cover.
 
 **Why.** The first is physics, not policy: nothing in a running App Platform
 container can be handed a new environment variable, and a feature that pretended
@@ -5057,3 +5095,51 @@ issue's decision, not this one.
 database-backed `TokenStore` (tadasant/strad#10), with the compare-and-set as a conditional write
 there (`UPDATE … SET status='consumed' WHERE jti=$1 AND status='active'`,
 checking the row count). Do it before core runs more than one replica, not after.
+
+---
+
+## 99. An `oauth:` connector reads its OAuth client through the console, which is the one read production's console is set up not to have
+
+**What.** The connector flow (`src/ui/connector.ts`) reads a slug's client id and
+client secret with the console admin store's `reveal()`. For a secret parameter
+that is Secret Manager's `versions/latest:access`, which needs
+`secretmanager.versions.access`: the permission
+`docs/operate/secrets-iam.md` §1 tells production to withhold. So on a console
+run the way that page says, a connector whose client values are secret parameters
+lists as ready and refuses at **Connect**. Making it work takes a human IAM step:
+`roles/secretmanager.secretAccessor` for the console's service account, bound on
+that slug's two client secrets and nothing else. It is a `gcloud` command per
+slug, outside the deploy. It conflicts with the §1 deny policy (#31), which
+overrides any allow and whose conditions can match tags but not resource names.
+
+**Why strad does not apply it itself.** It could. The binding is a policy edit on
+one secret, which needs `secretmanager.secrets.getIamPolicy` and `setIamPolicy`,
+and the console's credential holds both project-wide because a secret create
+needs them (`grantRenderAccess()` in `src/secrets/parameters/gcp.ts` makes the
+same edit for a parameter's own principal). But the console granting ITSELF read
+on a secret is exactly the escalation #31 describes: the thing the write-never-read
+posture treats as a conspicuous, logged act. Doing it on purpose, per connector,
+would make that act routine and blind the audit signal it is. So the grant stays a
+deliberate human step.
+
+**Why it ships anyway.** Core has no other credential that reaches one slug's
+namespace. The per-secret grant is the narrowest one IAM can express, and it
+exposes two values the flow has to read anyway, never the refresh tokens the flow
+writes under `oauth/`. And a missing grant is visible rather than silent: the
+refusal is a 409 the App Platform ingress passes through, it names the permission
+and the resource, and it emits `strad.connector_connect_failed` at ERROR. The
+grant itself is what stays manual.
+
+**Undo.** A connector that never needs the console to read its client. Two
+options, and choosing between them is a posture decision rather than a code one:
+
+1. Seed the client id as a non-secret parameter. It is public by design (it goes
+   out in every authorization URL), so the connect POST then needs no Secret
+   Manager read. That halves the grant and does not remove it.
+2. Run the code exchange where the client secret already is. The slug's own
+   container has both values in its environment, baked at deploy. Core would hand
+   the bundle host the code and the PKCE verifier over the internal route the
+   parameter write-back already uses, and the host would return the refresh token
+   for core to store. Core then never reads a client secret at all, and §1's
+   write-without-read holds with no exceptions. The cost is a new internal route,
+   and a second thing an internal-token holder (#63) can drive.

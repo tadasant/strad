@@ -3,12 +3,15 @@ import {
   assertCreatable,
   assertEditable,
   assertNoAccessControlChange,
+  assertWithinReach,
+  ReachExceeded,
   fileSlugs,
   mergeOverlay,
   sourcesFor,
   validateMerged,
   type EntrySource,
   type ServerOverlay,
+  type WritingPrincipal,
 } from "./overlay.ts";
 import { assertSecretsByReference, changedUpserts } from "./secret-position.ts";
 import { bundleUrlEnvName } from "../gateway/registry.ts";
@@ -64,6 +67,13 @@ export interface RuntimeConfigOptions {
    * actually reachable from here (`STRAD_BUNDLE_URL_<BUNDLE>`).
    */
   env?: NodeJS.ProcessEnv;
+  /**
+   * The checked-in document, PARSED — what the deploy authorised, before any
+   * overlay. Boot already has it (`loadConfigDocument` in src/index.ts), so
+   * handing it over keeps the reach bound off a second run of the schema.
+   * Omitted, it is parsed on first use.
+   */
+  baseConfig?: StradConfig;
 }
 
 export class ConfigRejected extends Error {
@@ -77,6 +87,12 @@ export class RuntimeConfig {
   private currentConfig: StradConfig;
   private currentOverlay: ServerOverlay;
   private readonly base: unknown;
+  /**
+   * The CHECKED-IN config, parsed once. Seeded by boot, which already has it.
+   * `undefined` until first asked; `null` if the base document does not parse,
+   * which fails a principal-carrying write closed rather than unbounded.
+   */
+  private baseConfigCache: StradConfig | null | undefined;
   private readonly rebuild: (config: StradConfig) => Promise<void>;
   /** Serialises apply/poll, so two console tabs cannot interleave a rebuild. */
   private queue: Promise<unknown> = Promise.resolve();
@@ -86,6 +102,7 @@ export class RuntimeConfig {
 
   constructor(opts: RuntimeConfigOptions) {
     this.base = opts.baseDocument;
+    this.baseConfigCache = opts.baseConfig;
     this.currentConfig = opts.config;
     this.currentOverlay = opts.overlay;
     this.store = opts.store;
@@ -105,10 +122,19 @@ export class RuntimeConfig {
    *
    * `before` present means an EDIT, and an edit is judged on what moved rather
    * than on what it is — `assertEditable`. Absent means a create.
+   *
+   * `principal` is who is making the write, threaded from whichever door called
+   * (the console session, or the `connectors` MCP caller). It is what the reach
+   * bound needs and the one thing `assertAcceptable` did not have — see
+   * `assertWithinReach`. Both doors supply it — `src/ui/servers.ts` hands over
+   * the signed-in console session, `src/servers/connectors.ts` the principal
+   * that authenticated the `/mcp` request — so an absent one is a caller that
+   * is neither door.
    */
   assertAcceptable(
     entry: Record<string, unknown>,
     before?: Record<string, unknown>,
+    principal?: WritingPrincipal,
   ): void {
     // Before anything else, and on BOTH paths: a runtime write never moves the
     // access control of a server the checked-in document declares. Keyed on the
@@ -121,6 +147,27 @@ export class RuntimeConfig {
     // see the note there — but doing it here is what attaches the refusal to
     // the entry the human is looking at, before anything else is judged.
     assertSecretsByReference(entry);
+
+    // And a runtime write may not reach a credential its author cannot already
+    // reach — the bound that lets the write tools be granted to a role narrower
+    // than the one that reaches everything. Keyed on the checked-in config for
+    // the same reason as access control: an overlay slug's own entitlements
+    // cannot vouch for reach.
+    if (principal) {
+      const baseConfig = this.baseConfig();
+      // FAIL CLOSED. A booted process's checked-in document parses — boot reads
+      // it through `loadConfigDocument` and dies otherwise (src/index.ts) — so
+      // this is unreachable rather than merely unlikely. Refusing anyway is the
+      // difference between a bound with no off switch and one with a silent one.
+      if (!baseConfig) {
+        throw new ReachExceeded(
+          "This write cannot be judged: the checked-in config does not parse, " +
+            "so there is no record of what the deploy authorised you to reach. " +
+            "Fix the checked-in config and deploy.",
+        );
+      }
+      assertWithinReach(baseConfig, entry, principal, before);
+    }
 
     if (before) {
       assertEditable(before, entry);
@@ -153,6 +200,25 @@ export class RuntimeConfig {
 
   baseDocument(): unknown {
     return this.base;
+  }
+
+  /**
+   * The checked-in config, PARSED — what the deploy authorised, with none of the
+   * overlay on top of it.
+   *
+   * `config()` is the merged roster and is the wrong document to measure reach
+   * against: an overlay entry's own `entitlements:` were written by a runtime
+   * write, so letting them vouch for what a writer reaches would be circular.
+   * Parsed lazily and once, non-strictly (the same leniency boot uses — an
+   * unknown key in the file must not fail a write any more than it fails a
+   * boot), and cached because a write path should not re-run the schema.
+   */
+  private baseConfig(): StradConfig | null {
+    if (this.baseConfigCache === undefined) {
+      const result = validateMerged(this.base, { strict: false });
+      this.baseConfigCache = result.ok ? result.config : null;
+    }
+    return this.baseConfigCache;
   }
 
   /** The slugs the checked-in document declares. */
