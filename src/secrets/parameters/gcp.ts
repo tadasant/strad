@@ -40,6 +40,7 @@ import {
 import {
   ParameterStoreError,
   UnreadablePayloadError,
+  type ConsoleReadGrant,
   type CreateParameterInput,
   type ParameterMeta,
   type ParameterStore,
@@ -136,6 +137,15 @@ export function createGcpParameterStore(
   const smBase = cfg.smApiBase ?? DEFAULT_SM_BASE;
   const pmParent = `projects/${cfg.projectId}/locations/${location}`;
   const smParent = `projects/${cfg.projectId}`;
+  /**
+   * This client's OWN service account, as an IAM member string.
+   *
+   * The same identity every call below authenticates as — derived from the key
+   * rather than configured separately, because a second source of truth for "who
+   * are we" would bind read access to a principal that is not the one doing the
+   * reading, and the grant would look right and do nothing.
+   */
+  const CONSOLE_MEMBER = `serviceAccount:${cfg.account.client_email}`;
   const timeoutMs = cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const budget: RetryBudget = { ...DEFAULT_RETRY_BUDGET, ...cfg.retry };
   const snapshotTtlMs = cfg.snapshotTtlMs ?? 0;
@@ -416,7 +426,10 @@ export function createGcpParameterStore(
    * — `create()` makes the secret itself, so the idempotent branch is
    * defence-in-depth here and the live path for a re-run over an existing secret.
    */
-  async function grantRenderAccess(id: string): Promise<void> {
+  async function grantRenderAccess(
+    id: string,
+    alsoConsole: boolean,
+  ): Promise<void> {
     const param = (await pm("GET", `${pmParent}/parameters/${id}`)) as {
       policyMember?: { iamPolicyUidPrincipal?: string };
     };
@@ -431,25 +444,53 @@ export function createGcpParameterStore(
       );
     }
 
-    // `requestedPolicyVersion=3` is REQUIRED, not a refinement. Without it IAM
-    // answers with a version-1 VIEW of the policy that omits every CONDITIONAL
-    // binding — and writing that view back deletes them. A read-modify-write that
-    // cannot see part of what it is rewriting is a destructive one.
+    // ONE read-modify-write for both members when both are wanted. They are the
+    // same binding on the same secret, and two round trips would be two audit
+    // entries, two etags to lose a race on, and a window in which the parameter
+    // is renderable and the connector still is not.
+    await bindSecretAccessors(
+      id,
+      alsoConsole ? [principal, CONSOLE_MEMBER] : [principal],
+    );
+  }
+
+  /**
+   * Give every one of `principals` `secretAccessor` on ONE secret, in one
+   * read-modify-write.
+   *
+   * `requestedPolicyVersion=3` on the read is REQUIRED, not a refinement.
+   * Without it IAM answers with a version-1 VIEW of the policy that omits every
+   * CONDITIONAL binding — and writing that view back deletes them. A
+   * read-modify-write that cannot see part of what it is rewriting is a
+   * destructive one.
+   *
+   * The edit itself is `write-rules.ts` — the same bytes the `secrets` server's
+   * write client applies, because both of them write parameters this policy
+   * decides the renderability of. `null` from it is "already a member", and a
+   * policy that already says everything asked for is not written back at all: a
+   * `setIamPolicy` that changes nothing is still a write, and still an audit
+   * line. The return says which it was.
+   */
+  async function bindSecretAccessors(
+    id: string,
+    principals: readonly string[],
+  ): Promise<boolean> {
     const policy = (await sm(
       "GET",
       `${smParent}/secrets/${id}:getIamPolicy?options.requestedPolicyVersion=3`,
     )) as IamPolicy;
 
-    // The edit itself is `write-rules.ts` — the same bytes the `secrets` server's
-    // write client applies, because both of them write parameters this policy
-    // decides the renderability of. `null` is "already a member": nothing to
-    // write, and a `setIamPolicy` that changes nothing is still a write.
-    const next = withSecretAccessor(policy, principal);
-    if (!next) return;
+    let next: IamPolicy | null = null;
+    for (const principal of principals) {
+      const edited = withSecretAccessor(next ?? policy, principal);
+      if (edited) next = edited;
+    }
+    if (!next) return false;
 
     await sm("POST", `${smParent}/secrets/${id}:setIamPolicy`, {
       policy: next,
     });
+    return true;
   }
 
   // --- ParameterStore surface ---------------------------------------------
@@ -658,7 +699,8 @@ export function createGcpParameterStore(
       // secret parameter exists whose reference cannot render. The grant needs
       // the parameter to exist (its principal is minted with it) and does not
       // need the version, so this is the earliest point it can be made.
-      if (input.secret) await grantRenderAccess(id);
+      if (input.secret)
+        await grantRenderAccess(id, input.consoleReadable === true);
       await addVersion(id, {
         path: input.path,
         secret: input.secret,
@@ -1066,6 +1108,54 @@ export function createGcpParameterStore(
     };
   }
 
+  /**
+   * Bind the console's own credential `secretAccessor` on ONE parameter's
+   * secret, then find out whether that actually made the value readable.
+   *
+   * The repair half of `create({ consoleReadable: true })`, for every parameter
+   * seeded before that existed. Same member, same single secret, never the
+   * project — see `CONSOLE_MEMBER`.
+   *
+   * THE READ-BACK IS THE POINT, not a belt-and-braces check. §1 of
+   * docs/operate/secrets-iam.md recommends closing the console's self-grant
+   * escalation with an IAM DENY policy, which is evaluated before any allow and
+   * cannot be granted around; on such a deployment this `setIamPolicy` returns
+   * 200 and the value stays unreadable. Reporting the write as success there
+   * would move the failure to after the consent screen, which is strictly worse
+   * than the manual grant it replaces. So the value is read and dropped, and
+   * `readable` says what actually happened.
+   *
+   * A NON-SECRET parameter has no Secret Manager secret to bind anything on, and
+   * the console can already read it. Nothing is written and `readable` is still
+   * measured — the honest answer for a store that may be refusing for some other
+   * reason entirely.
+   *
+   * The read's rejection is carried out unclassified and the VALUE is not: an
+   * error raised while reading a value can quote it, which is why the caller
+   * (`clientReadFailure`, src/ui/connector.ts) reduces it to a closed word.
+   */
+  async function grantConsoleRead(path: string): Promise<ConsoleReadGrant> {
+    const id = parameterId(path);
+    // Establish that this id names THIS path before writing an IAM binding
+    // against it. `parameterId` folds a path into a flat id and two paths can
+    // collide (see `create`), so without this a grant could be written onto a
+    // secret belonging to a different parameter entirely.
+    const cur = await currentEnvelope(id);
+    if (!cur) throw new ParameterStoreError(`no such parameter: ${path}`, 404);
+    assertSamePath(cur.envelope, path);
+
+    const changed = cur.envelope.secret
+      ? await bindSecretAccessors(id, [CONSOLE_MEMBER])
+      : false;
+
+    try {
+      await reveal(path);
+      return { changed, readable: true };
+    } catch (err) {
+      return { changed, readable: false, error: err };
+    }
+  }
+
   return {
     backend: "gcp",
     list,
@@ -1074,6 +1164,14 @@ export function createGcpParameterStore(
     setNote: writing(setNote),
     reveal,
     destroy: writing(destroy),
+    // `writing`, even though it writes no parameter: it changes whether this
+    // namespace RENDERS, and a resolver-configured client memoises a failed
+    // render for the length of its TTL (a 403 is the store's settled answer, so
+    // `renderAll` keeps it). Dropping the reading is what stops a grant landing
+    // and the next read still reporting the refusal it just fixed. The
+    // verification read inside is live either way — `reveal` never consults the
+    // snapshot.
+    grantConsoleRead: writing(grantConsoleRead),
     resolve,
     resolveDetailed,
     forget,

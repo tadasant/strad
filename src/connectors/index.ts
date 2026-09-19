@@ -1,8 +1,11 @@
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
+import type { RuntimeConfig } from "../config/runtime.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import {
   oauthParameterPath,
   serverNamespaces,
+  staticNamespace,
+  variableOf,
   type ParameterMeta,
   type ParameterStore,
   type ServerParamKind,
@@ -235,6 +238,71 @@ export function refreshTokenPath(
   );
 }
 
+/**
+ * The two variables a connector's OAuth APPLICATION is made of — and NEVER the
+ * refresh token, which is the point of naming them separately.
+ *
+ * These are the only values the console has any business reading back. The
+ * client id goes out in every authorization URL; the client secret is one the
+ * human typed in and holds a copy of. The refresh token is the one strad minted
+ * and nobody has ever seen, and it stays that way.
+ */
+export function connectorClientVariables(
+  oauth: ConnectorConfig,
+): [clientId: string, clientSecret: string] {
+  return [oauth.clientIdVariable, oauth.clientSecretVariable];
+}
+
+/**
+ * Is this store path one of a DECLARED connector's OAuth client variables?
+ *
+ * The ONE derivation behind both halves of the console's read grant: the
+ * `consoleReadable` flag a create sets, and the repair button that binds the
+ * same access after the fact. Both ask this, so there is one answer to "which
+ * secrets may the console read" and it is computed from config — the same
+ * discipline `writableTarget()`/`kindsOf()` keep for `/_strad/params`. No part
+ * of a request reaches it: the caller passes a path it composed itself, and a
+ * path that is not one an enabled server's `oauth:` block names is a no.
+ *
+ * `declared` IS THE CHECKED-IN DOCUMENT, NOT THE SERVED ONE, and that is the
+ * whole security boundary rather than a refinement. `oauth:` is not among
+ * `immutableFields()` (src/config/overlay.ts), so a runtime roster write may add
+ * or edit one — and a writer who pointed `clientIdVariable` at some other secret
+ * already in that slug's namespace would, on the merged config, be aiming this
+ * grant at a value the deploy never nominated. `assertWithinReach` fences the
+ * credential DESTINATIONS off the base document for exactly that reason; this is
+ * the same rule about the credential SOURCES. `null` — a deployment whose base
+ * document will not parse — grants nothing, because a fence that cannot be read
+ * is not a fence. `grantAuthority` is how a caller gets the right one.
+ *
+ * THE `static` KIND ONLY, and that is a rule rather than an oversight. `oauth/`
+ * is the kind strad MINTS into — a value under it is one no person has seen —
+ * and the console being unable to read it back is the whole meaning of the kind.
+ * The client id and secret are what a human types, `static/` is where the
+ * console's own "not seeded" message sends them, and a client hand-placed under
+ * `oauth/` is not granted: it would make the refresh token's own namespace a
+ * place the console can be given read access to, one variable at a time.
+ *
+ * A PREFIX MATCH ON THE NAMESPACE plus an exact match on the trailing variable,
+ * which is `presenceFrom`'s rule and `resolve()`'s: a value at
+ * `{slug}/static/extra/CLIENT_ID` really is injected as `CLIENT_ID` and really
+ * is what the connector reads, so it is what the console has to be able to read.
+ */
+export function isConnectorClientPath(
+  declared: StradConfig | null,
+  path: string,
+): boolean {
+  if (!declared) return false;
+  const variable = variableOf(path);
+  for (const server of declared.servers) {
+    if (!server.enabled || !server.oauth) continue;
+    const namespace = staticNamespace(declared.gateway.env, server.slug);
+    if (!path.startsWith(namespace)) continue;
+    if (connectorClientVariables(server.oauth).includes(variable)) return true;
+  }
+  return false;
+}
+
 /** Both of this slug's own namespaces, `oauth/` first. */
 export function connectorNamespaces(
   config: StradConfig,
@@ -339,6 +407,35 @@ export interface ConnectorDeps {
   secrets: SecretBag;
   /** Test seam, threaded through to `storeForPath`. */
   parametersStore?: Parameters<typeof storeForPath>[3]["parametersStore"];
+  /**
+   * The runtime roster holder, when this deployment has one.
+   *
+   * Read for ONE thing here: the checked-in document behind it, which is what
+   * the console's read grant is fenced on. See `grantAuthority`. Absent — most
+   * deployments — means the served config IS the checked-in one.
+   */
+  runtimeConfig?: () => RuntimeConfig | null;
+}
+
+/**
+ * The config that may NOMINATE a secret the console is allowed to read back.
+ *
+ * The served config is the wrong answer whenever a deployment keeps its roster
+ * in a store: `oauth:` is editable at runtime (it is not in `immutableFields()`),
+ * so the merged document can name a `clientIdVariable` no deploy ever approved.
+ * The checked-in one is what the deploy authorised, which is the same document
+ * `assertWithinReach` bounds a credential's destination against.
+ *
+ * Without a holder there is no overlay and the two are the same document, so the
+ * served config is returned unchanged. With one whose base will not parse, this
+ * is `null` and `isConnectorClientPath` grants nothing.
+ */
+export function grantAuthority(deps: {
+  config: StradConfig;
+  runtimeConfig?: () => RuntimeConfig | null;
+}): StradConfig | null {
+  const holder = deps.runtimeConfig?.();
+  return holder ? holder.baseConfig() : deps.config;
 }
 
 /**

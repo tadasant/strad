@@ -5111,38 +5111,59 @@ checking the row count). Do it before core runs more than one replica, not after
 
 ## 99. An `oauth:` connector reads its OAuth client through the console, which is the one read production's console is set up not to have
 
-**What.** The connector flow (`src/ui/connector.ts`) reads a slug's client id and
-client secret with the console admin store's `reveal()`. For a secret parameter
-that is Secret Manager's `versions/latest:access`, which needs
-`secretmanager.versions.access`: the permission
-`docs/operate/secrets-iam.md` §1 tells production to withhold. So on a console
-run the way that page says, a connector whose client values are secret parameters
-lists as ready and refuses at **Connect**. Making it work takes a human IAM step:
-`roles/secretmanager.secretAccessor` for the console's service account, bound on
-that slug's two client secrets and nothing else. It is a `gcloud` command per
-slug, outside the deploy. It conflicts with the §1 deny policy (#31), which
-overrides any allow and whose conditions can match tags but not resource names.
+**✅ RESOLVED — the grant is no longer a hand-run step.** Both halves of it are
+strad's now, and both are derived from config rather than from a request
+(`isConnectorClientPath()` in `src/connectors/index.ts` is the one derivation):
 
-**Why strad does not apply it itself.** It could. The binding is a policy edit on
-one secret, which needs `secretmanager.secrets.getIamPolicy` and `setIamPolicy`,
-and the console's credential holds both project-wide because a secret create
-needs them (`grantRenderAccess()` in `src/secrets/parameters/gcp.ts` makes the
-same edit for a parameter's own principal). But the console granting ITSELF read
-on a secret is exactly the escalation #31 describes: the thing the write-never-read
-posture treats as a conspicuous, logged act. Doing it on purpose, per connector,
-would make that act routine and blind the audit signal it is. So the grant stays a
-deliberate human step.
+- A secret parameter created at a declared connector's `oauth.clientIdVariable`
+  or `oauth.clientSecretVariable`, under that slug's own `static/` namespace,
+  also binds the console's own service account `secretAccessor` on that one
+  secret — `create({ consoleReadable })` → `bindSecretAccessors()` in
+  `src/secrets/parameters/gcp.ts`, the same read-modify-write that already
+  granted the parameter's own principal, with a second member in it.
+- Every connector that already exists was seeded before that, so the connector
+  page offers **Grant read on this client** beside the `client_unreadable`
+  refusal: `POST /ui/<slug>/grant-client`, which is `grantConsoleRead()` on the
+  two client paths.
 
-**Why it ships anyway.** Core has no other credential that reaches one slug's
-namespace. The per-secret grant is the narrowest one IAM can express, and it
-exposes two values the flow has to read anyway, never the refresh tokens the flow
-writes under `oauth/`. And a missing grant is visible rather than silent: the
-refusal is a 409 the App Platform ingress passes through, it names the permission
-and the resource, and it emits `strad.connector_connect_failed` at ERROR. The
-grant itself is what stays manual.
+**The grant is VERIFIED, not assumed**, and that is the whole reason the repair
+is worth having rather than a doc paragraph. The §1 deny policy (#31) is
+evaluated before any allow and cannot be granted around, so on a deployment that
+applied it the `setIamPolicy` returns 200 and the value stays unreadable. The
+store reads the value back and drops it, and the page reports what actually
+happened — reusing `clientReadFailure()`, the same sentence the refusal it
+repairs is built from, and naming `strad-console-no-read` as the likely cause. A
+button that claimed success there would move the failure from before the consent
+screen to after it, which is strictly worse than the `gcloud` loop it replaces.
 
-**Undo.** A connector that never needs the console to read its client. Two
-options, and choosing between them is a posture decision rather than a code one:
+**What the entry is still recording.** Two things.
+
+First, the fork: a deployment that applied the deny policy has decided its
+connectors need a human, and gets told so rather than handed a button that cannot
+work. Automating this is only coherent for a deployment that accepts §1's own
+posture — which §1 states plainly, under _"This role can escalate to read. Say it
+out loud."_: the console holds `setIamPolicy` at project level and is two API
+calls from granting itself read, so write-without-read there is a speed bump and
+an audit signal rather than a wall. The button changes how ergonomic that
+self-grant is, not whether it is possible.
+
+Second, the cost: the self-grant that #31 describes as a conspicuous, logged act
+is now a routine one, on two named secrets per connector. What replaces the
+conspicuousness is a record rather than its absence —
+`strad.connector_client_granted` (slug, variable, result) at the moment it
+happens, and `strad.connector_client_grant_failed` at ERROR when the binding
+landed and bought nothing.
+
+**What is still never granted.** The `oauth/` kind, for either path. The client
+id goes out in every authorization URL and the client secret is one a human typed
+and holds a copy of; the credential strad mints under `oauth/` is one no person
+has ever seen. A client hand-seeded under `oauth/` is refused by the button, with
+a sentence saying so, and keeps the manual grant — which stays documented as the
+fallback in `docs/operate/secrets-iam.md`.
+
+**Undo.** A connector that never needs the console to read its client at all,
+which would close the exception rather than automate it. Two options, and
+choosing between them is a posture decision rather than a code one:
 
 1. Seed the client id as a non-secret parameter. It is public by design (it goes
    out in every authorization URL), so the connect POST then needs no Secret

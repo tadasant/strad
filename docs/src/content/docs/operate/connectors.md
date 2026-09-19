@@ -33,10 +33,12 @@ typed. See [the two kinds](/operate/secrets/#the-two-kinds-static-and-oauth).
    [Secrets IAM](/operate/secrets-iam/#1-prod-console-write-but-never-read)), a
    client value stored as a secret parameter also needs
    `roles/secretmanager.secretAccessor` for the console's service account, **on
-   those two secrets only**. The connector reads its OAuth client through the
-   console, and without that grant **Connect** refuses. The command, and why a
-   project-wide grant is the wrong fix, are in
-   [An `oauth:` connector reads its own OAuth client](/operate/secrets-iam/#an-oauth-connector-reads-its-own-oauth-client).
+   those two secrets only** — the connector reads its OAuth client through the
+   console, and without that grant **Connect** refuses. Creating either value
+   from the console makes that binding as part of the create, so seeding a
+   connector today needs no extra step. A connector seeded before that offers
+   **Grant read on this client** on its own page, beside the refusal; see
+   [When the console cannot read the client](#when-the-console-cannot-read-the-client).
 
 2. Open `/ui/<slug>` in the console. It states which provider, which account the
    slug is pinned to (or that strad cannot check one), whether the grant is
@@ -320,7 +322,7 @@ answers them before anyone is sent to the provider: no `gateway.publicUrl`, no
 missing, or the store not answering), or an OAuth client the console could not
 read. The last is the one production hits: the console's credential lacks
 `secretmanager.versions.access` on a client value stored as a secret parameter.
-See [the grant it needs](/operate/secrets-iam/#an-oauth-connector-reads-its-own-oauth-client).
+It is also the only one of them with a button behind it — see below.
 
 Each one renders the slug's own page with the reason in a flash, at **409**, never
 a 5xx. The App Platform ingress treats an upstream 5xx as its own failure and
@@ -330,6 +332,39 @@ and the resource it was refused on, and never the value: a message the store
 did not write is reduced to its error class. The callback applies the same rule
 to its own setup refusals, and a client it cannot read comes back to the page
 as `client_unreadable` rather than as a failed write.
+
+### When the console cannot read the client
+
+`client_unreadable` is the refusal production meets first, and it is the one the
+page can repair. The console's credential can create a secret and not read one
+back — the posture
+[Secrets IAM §1](/operate/secrets-iam/#1-prod-console-write-but-never-read)
+prescribes — and an `oauth:` connector is the one thing that needs the exception,
+because the consent flow reads this slug's own client id before it redirects and
+both halves at the callback.
+
+So the refusal carries a **Grant read on this client** button. Pressing it binds
+`roles/secretmanager.secretAccessor` for the console's own service account on
+this slug's client-id and client-secret secrets, under its `static/` namespace,
+and on nothing else. Never at project level, and never on the `oauth/` kind: a
+client hand-seeded there is refused with a sentence saying so, because `oauth/`
+holds the credential strad minted and no person has seen, and the console being
+unable to read it back is the whole meaning of that kind. A create from the
+console makes the same binding on its own, so this button is for the connectors
+that predate it.
+
+**It verifies rather than assumes.** After the binding, strad reads both values
+back. An IAM deny policy — §1 recommends `strad-console-no-read` — is evaluated
+before any allow and cannot be granted around, so on a deployment that applied
+one the write succeeds and the read still fails. The page says exactly that,
+names the permission and the resource, and names the deny policy as the likely
+cause, rather than reporting success and letting **Connect** fail after the human
+has consented. A deployment that applied the deny policy has decided its
+connectors need a human, and gets told so.
+
+The button is only offered in reply to a read that failed — the refusal itself,
+or a callback that came back `client_unreadable`. A connector nobody has failed
+to connect does not show it.
 
 ### Security posture
 
@@ -390,7 +425,7 @@ signal is a real call, and the console does not make one.
 
 ## Telemetry
 
-Four events. Every field comes from the config or from a closed set of strad's
+Six events. Every field comes from the config or from a closed set of strad's
 own words:
 
 - `strad.connector_begin` (slug) and `strad.connector_connected` (slug,
@@ -414,6 +449,17 @@ status as a number. So `slug=google-sheets-tadas412-ro reason=client_unreadable
 failure=denied status=403` is enough to know which grant is missing. The store's
 own one-line summary, which names the Secret Manager resource, rides in the same
 payload on stderr and is not exported.
+
+- `strad.connector_client_granted` (slug, variable, result) and
+  `strad.connector_client_grant_failed` (slug, reason, variable, failure,
+  status): the console binding its own credential read access to one of this
+  slug's client values. `result` is `granted` (the IAM policy was written) or
+  `already`. On the failure, `reason` is `not_ready`, `no_store`, `unsupported`,
+  `not_eligible`, `write_refused` or `denied` — and `denied` is the one worth
+  alerting on, because it means the binding landed and the value still could not
+  be read, which is what a deny policy looks like. It ends `_failed`, so it ships
+  at ERROR, and it is throttled the same way.
+
 Nothing derived from a credential is exported — see [Telemetry](/operate/telemetry/).
 
 ## Limits

@@ -52,6 +52,22 @@ export interface FakeGcp {
    * regression that drops the grant fails a test instead of failing a deploy.
    */
   secretPolicies: Map<string, FakeBinding[]>;
+  /**
+   * The IAM DENY policy, modelled: permissions no allow can grant back.
+   *
+   * `docs/operate/secrets-iam.md` §1 recommends closing the console's
+   * self-grant escalation with one of these (`strad-console-no-read`), and a
+   * deny rule is evaluated BEFORE every allow — so on such a deployment a
+   * `setIamPolicy` still returns 200 and the value stays unreadable. That is the
+   * one shape in this subsystem where success and effect come apart, and it is
+   * modelled here so a console that claims success anyway fails a test.
+   *
+   * There is one account in this fake, so a permission in this set is denied to
+   * every caller. Empty by default.
+   */
+  denied: Set<string>;
+  /** The member string every client built by this fake authenticates as. */
+  callerMember: string;
   /** The principal Parameter Manager derefs a `__REF__` as, for a given parameter. */
   principalOf(parameterId: string): string;
   /**
@@ -109,19 +125,6 @@ const RENDER_PERMISSION = "parametermanager.parameterVersions.render";
 const ACCESS_PERMISSION = "secretmanager.versions.access";
 
 /**
- * Refuse a call the CALLER is not permitted to make.
- *
- * `caller === null` is the admin/resolver case and permits everything. Every
- * Parameter Manager verb goes through this, not just the two that return secret
- * bytes — otherwise the permission list would be a two-string deny-list wearing
- * an allow-list's clothes, and a test asserting "the viewer can still enumerate
- * the namespace" would pass for a credential holding nothing at all.
- */
-function must(caller: Set<string> | null, permission: string): void {
-  if (caller && !caller.has(permission)) throw new HttpError(403);
-}
-
-/**
  * `roles/parametermanager.parameterViewer`, spelled out.
  *
  * Exported so a test can build a genuinely viewer-scoped client rather than
@@ -170,6 +173,15 @@ const ACCOUNT: ServiceAccount = {
 };
 
 /**
+ * The caller, as an IAM member string.
+ *
+ * Every client this fake builds authenticates as `ACCOUNT`, so this is the
+ * member a per-secret binding has to name for the caller to gain anything from
+ * it — and the one `createGcpParameterStore` derives from the same key.
+ */
+const CALLER_MEMBER = `serviceAccount:${ACCOUNT.client_email}`;
+
+/**
  * The reference token AS IT APPEARS IN THE RAW PAYLOAD TEXT.
  *
  * Not anchored, and it tolerates the quotes being JSON-escaped, because that is
@@ -197,6 +209,47 @@ export function createFakeGcp(opts: FakeGcpOptions = {}): FakeGcp {
   const parameters = new Map<string, FakeParameter>();
   const secrets = new Map<string, string[]>();
   const secretPolicies = new Map<string, FakeBinding[]>();
+  const denied = new Set<string>();
+
+  /**
+   * Refuse a call the CALLER is not permitted to make, in IAM's own order.
+   *
+   * DENY FIRST. A deny policy is evaluated before every allow and cannot be
+   * granted around, so nothing below can recover a permission in `denied`.
+   *
+   * Then `caller === null` — the admin/resolver case — permits everything, and a
+   * narrowed credential is checked against its project-level permission set.
+   * Every Parameter Manager verb goes through this, not just the two that return
+   * secret bytes, otherwise the permission list would be a two-string deny-list
+   * wearing an allow-list's clothes and a test asserting "the viewer can still
+   * enumerate the namespace" would pass for a credential holding nothing at all.
+   *
+   * `boundHere` is the RESOURCE-level half, and it is why this is not just a
+   * project-wide set: a binding on one secret grants its members that permission
+   * on that secret and nowhere else, which is exactly the shape a connector's
+   * client grant has. A credential holding nothing at project level and named in
+   * one secret's `secretAccessor` binding can read that one secret.
+   */
+  function must(
+    caller: Set<string> | null,
+    permission: string,
+    boundHere?: () => boolean,
+  ): void {
+    if (denied.has(permission)) throw new HttpError(403);
+    if (caller === null) return;
+    if (caller.has(permission)) return;
+    if (boundHere?.()) return;
+    throw new HttpError(403);
+  }
+
+  /** Does one secret's policy name `member` in an UNCONDITIONAL accessor binding? */
+  const boundAsAccessor = (secretId: string, member: string): boolean =>
+    (secretPolicies.get(secretId) ?? []).some(
+      (b) =>
+        b.role === SECRET_ACCESSOR_ROLE &&
+        b.condition === undefined &&
+        b.members.includes(member),
+    );
   /** Policy writes per secret — the etag is derived from this, so it moves. */
   const policyWrites = new Map<string, number>();
   const etagOf = (id: string) => `etag-${policyWrites.get(id) ?? 0}`;
@@ -428,13 +481,7 @@ export function createFakeGcp(opts: FakeGcpOptions = {}): FakeGcp {
       // not-currently-satisfied, which is the pessimistic reading and the one
       // that catches a client that appended the principal to a conditional
       // binding instead of making its own.
-      const granted = (secretPolicies.get(secretId) ?? []).some(
-        (b) =>
-          b.role === SECRET_ACCESSOR_ROLE &&
-          b.condition === undefined &&
-          b.members.includes(principal),
-      );
-      if (!granted) throw new HttpError(400);
+      if (!boundAsAccessor(secretId, principal)) throw new HttpError(400);
       const value = versions[versions.length - 1]!;
       // `400 INVALID_ARGUMENT … injection detected`. A different failure from the
       // 400 above, and the fake cannot tell them apart by status — the assertion
@@ -550,7 +597,12 @@ export function createFakeGcp(opts: FakeGcpOptions = {}): FakeGcp {
       // `:render` above is the indirect one. A credential must be denied BOTH
       // to be unable to reach a secret value, which is exactly the property
       // prod's `secrets` MCP identity is supposed to have.
-      must(caller, ACCESS_PERMISSION);
+      //
+      // AND a binding ON THIS SECRET counts, which is the whole mechanism behind
+      // a connector's client grant: the console holds no project-level
+      // `versions.access`, and naming it in one secret's `secretAccessor`
+      // binding lets it read that one secret. A deny policy still beats both.
+      must(caller, ACCESS_PERMISSION, () => boundAsAccessor(id, CALLER_MEMBER));
       const versions = secrets.get(id);
       if (!versions || versions.length === 0) throw new HttpError(404);
       return json(200, {
@@ -596,6 +648,8 @@ export function createFakeGcp(opts: FakeGcpOptions = {}): FakeGcp {
     parameters,
     secrets,
     secretPolicies,
+    denied,
+    callerMember: CALLER_MEMBER,
     principalOf: principalFor,
     pmPayloads: () =>
       [...parameters.values()].flatMap((p) =>

@@ -394,6 +394,34 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
       "status",
     ],
     /**
+     * The console repairing its OWN read access to one slug's OAuth client —
+     * the button behind a `client_unreadable` refusal.
+     *
+     * `variable` is the config's name for the half being granted, and `result`
+     * is `granted` (the IAM policy was written) or `already` (it already carried
+     * the member). This is a deliberate widening of what the console's service
+     * account can read, on two named secrets, so it is a record an operator
+     * should be able to find later without reading stderr.
+     *
+     * `_grant_failed` ships at ERROR and carries `reason` from a closed set in
+     * src/ui/connector.ts. The one worth knowing is `denied`: the binding was
+     * written, the store took it, and the value still could not be read — an IAM
+     * deny policy, evaluated before allow, is what that looks like. `failure`
+     * and `status` are the SAME closed vocabulary `_connect_failed` uses for a
+     * client read, because the same function classifies both.
+     *
+     * NO VALUE, and none of the shapes of one. The store reads the client back
+     * to verify the grant and drops it; only the boolean reaches here.
+     */
+    "strad.connector_client_granted": ["slug", "variable", "result"],
+    "strad.connector_client_grant_failed": [
+      "slug",
+      "reason",
+      "variable",
+      "failure",
+      "status",
+    ],
+    /**
      * The runtime server roster changed, and the two ways it can.
      *
      * `config_applied` is a human pressing Save in the console;
@@ -692,6 +720,8 @@ const THROTTLED = new Set([
   // every press on a deployment that cannot carry it through is an ERROR
   // record. One a minute per slug says the same thing.
   "strad.connector_connect_failed",
+  // The repair button beside it, pressed the same way by the same session.
+  "strad.connector_client_grant_failed",
   // A handler that rejects is a bug rather than a routine refusal, so this one
   // is expected to be silent — but the surface it guards is /mcp, whose input a
   // caller controls, and "a bug a client can drive on demand" is exactly the

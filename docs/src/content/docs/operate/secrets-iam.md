@@ -152,8 +152,10 @@ own reporting stays honest about which path is open.
 **Goal.** `strad-secrets-admin@strad-secrets-prod.iam.gserviceaccount.com` can
 add, rotate, note and delete secrets, and cannot read one back. The one exception
 is an `oauth:` connector's own OAuth client, which the console has to read to run
-the consent. It is granted secret by secret, never here at project level — see
-[An `oauth:` connector reads its own OAuth client](#an-oauth-connector-reads-its-own-oauth-client).
+the consent. It is granted secret by secret, never here at project level, and the
+console makes that grant itself — see
+[An `oauth:` connector reads its own OAuth client](#an-oauth-connector-reads-its-own-oauth-client),
+which is also where the deny policy below stops it.
 
 **Bonus, and it is a real one.** This service account's key
 (`SECRETS_ADMIN_KEY_JSON`) is among the credentials exposed in
@@ -338,8 +340,51 @@ refuses. The page names the permission and the exact Secret Manager resource, an
 `strad.connector_connect_failed` records `reason: client_unreadable` with
 `status: 403` (see [Connectors](/operate/connectors/#telemetry)).
 
-**The grant.** `roles/secretmanager.secretAccessor` for the console's service
-account, bound on **that slug's own client-id and client-secret secrets only**:
+**strad makes this grant itself.** Both halves of it:
+
+- **On create.** Creating a secret parameter whose path is a declared
+  connector's `oauth.clientIdVariable` or `oauth.clientSecretVariable`, under
+  that slug's own `static/` namespace, also binds the console's service account
+  `secretAccessor` on that one secret. The console derives which paths qualify
+  from the config's `oauth:` blocks — no field on the create form can ask for
+  it — so a connector seeded from `/ui/<secrets-slug>` today is connectable
+  without anyone opening a terminal.
+- **On the connector's own page.** Every connector that already exists was
+  seeded before that, so a slug whose client is present and unreadable gets a
+  **Grant read on this client** button beside the refusal it just produced. It
+  binds the same member on the same two secrets, and then **reads the values
+  back** before it claims anything.
+
+**The read-back is the point, not a formality.** The deny policy in §1 is
+evaluated before any allow, so on a deployment that applied it the `setIamPolicy`
+succeeds and the read still fails. The page says exactly that — it names the
+permission, the resource and the deny policy — rather than reporting success and
+letting **Connect** fail after the human has consented. Two records say so in the
+logs: `strad.connector_client_granted` (`slug`, `variable`, `result`) when it
+worked, and `strad.connector_client_grant_failed` at ERROR with
+`reason: denied` when the binding landed and bought nothing.
+
+**This is only coherent on a deployment that accepts §1's posture.** §1 is
+explicit that write-without-read there is a speed bump and an audit signal rather
+than a wall: the console holds `setIamPolicy` at project level and is two API
+calls from granting itself read. The button changes how ergonomic that self-grant
+is, not whether it is possible. A deployment that closed the escalation properly
+with the deny policy has decided its connectors need a human, and it gets told
+that instead of a button that cannot work. What the button costs is the
+conspicuousness of the act, and what replaces it is the exported record above.
+
+**The `oauth/` kind is never granted**, for either path. The client id and client
+secret are values a human typed and holds a copy of; the credential strad mints
+and stores under `oauth/` is one no person has ever seen, and the console being
+unable to read it back is the whole meaning of the kind. A client hand-seeded
+under `oauth/` is refused by the button, with a sentence saying so, and keeps the
+manual grant below.
+
+**The fallback: the same grant by hand.** For a client under `oauth/`, for a
+store this console does not front, or for any deployment that would rather not
+press the button, it is `roles/secretmanager.secretAccessor` for the console's
+service account, bound on **that slug's own client-id and client-secret secrets
+only**:
 
 ```bash
 PROJECT=strad-secrets-prod
@@ -359,13 +404,15 @@ for VAR in GOOGLE_SHEETS_OAUTH_CLIENT_ID GOOGLE_SHEETS_OAUTH_CLIENT_SECRET; do
 done
 ```
 
-Run it from a checkout of this repo, since the fold is strad's. The refusal page
-names the client id's resource verbatim (`projects/<project>/secrets/<id>`), and
-the `node` line is how to get the client secret's, because nothing reads that one
-until the callback — after the human has already consented. Grant both before
-anyone presses **Connect**. If the client id is seeded as a **non-secret**
-parameter, it has no secret to grant on, and the loop needs only the second name.
-A client id is not a secret: it goes out in every authorization URL.
+Run it from a checkout of this repo, since the fold is strad's — which is most of
+why this is the fallback rather than the procedure. The refusal page names the
+client id's resource verbatim (`projects/<project>/secrets/<id>`), but nothing
+reads the client secret's until the callback, after the human has already
+consented, so that id has to be computed rather than read off a refusal. Grant
+both before anyone presses **Connect**. If the client id is seeded as a
+**non-secret** parameter, it has no secret to grant on, and the loop needs only
+the second name. A client id is not a secret: it goes out in every authorization
+URL.
 
 **Why not a project-wide accessor.** `roles/secretmanager.secretAccessor` on the
 project gives the console every secret value in it: every other slug's
@@ -383,11 +430,13 @@ Four consequences to know:
   `gcloud secrets get-iam-policy "${SECRET}" --project "${PROJECT}"`.
 - **The deny policy in §1 overrides it.** Deny is evaluated before allow, so with
   `strad-console-no-read` applied, this binding grants nothing and **Connect**
-  refuses with the same 403. A deny rule's condition can match resource tags but
-  not resource names. Keeping both means tagging the connector's client secrets
-  and exempting that tag in the rule's `denialCondition`, and strad has neither
-  built nor tested that. Decide which one a deployment wants before applying the
-  deny policy. [Known limitations](/limitations/) #99 has the trade.
+  refuses with the same 403 — whether the binding was written by hand or by the
+  button, which is why the button verifies instead of assuming. A deny rule's
+  condition can match resource tags but not resource names. Keeping both means
+  tagging the connector's client secrets and exempting that tag in the rule's
+  `denialCondition`, and strad has neither built nor tested that. Decide which one
+  a deployment wants before applying the deny policy.
+  [Known limitations](/limitations/) #99 has the trade.
 - **The console's reveal control reaches the same two values.** The grant is on
   the console's credential, and reveal uses that credential too. With
   `SECRETS_REVEAL_ENABLED` on, a signed-in session could display this slug's
@@ -395,7 +444,8 @@ Four consequences to know:
   those two values off a screen.
 - **The binding lives on the secret, not the version.** Rotating the client
   secret adds a version and keeps it. Deleting the parameter deletes its secret
-  and the binding with it, so re-seeding from scratch means granting again.
+  and the binding with it — and since a create now makes the grant, re-seeding
+  from scratch restores it on its own.
 
 ## Why a parameter must be granted access to its own secret
 
