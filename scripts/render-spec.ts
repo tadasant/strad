@@ -839,9 +839,9 @@ if (storeBacked && store) {
 // `supplementary-image` component does not run strad. It holds no store
 // credential (appspec.ts keeps the resolver key off it deliberately) and would
 // not know what to do with one. Under the store provider it was therefore left
-// with neither source, and the two names in BUNDLE_BOOT_ENV_KEYS both fail
-// silently when absent: telemetry keeps exporting into a 401, and the presence
-// route fails closed. See the comment on `bundleBootEnvVars` in appspec.ts.
+// with neither source, and `OTEL_EXPORTER_OTLP_HEADERS` fails silently when
+// absent: telemetry keeps exporting into a 401. (The internal token is derived
+// per component further down.) See `bundleBootEnvVars` in appspec.ts.
 //
 // Read from the STORE, never from `process.env`: the deploy environment stopped
 // being a source of gateway secrets at the flip, and reinstating it here would

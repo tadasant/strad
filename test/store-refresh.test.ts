@@ -199,6 +199,9 @@ describe("the route", () => {
     const before = invalidations;
     expect((await post(undefined)).status).toBe(401);
     expect((await post("not-the-token")).status).toBe(401);
+    // The ROOT is no component's credential, so it is refused like any other
+    // unknown string.
+    expect((await post(ROOT)).status).toBe(401);
     expect(invalidations).toBe(before);
   });
 });

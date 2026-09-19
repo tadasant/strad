@@ -663,8 +663,8 @@ const STRAD_IMAGE_ONLY_SECRET_KEYS: ReadonlySet<string> = new Set([
  *     precisely the blind spot that let a dead `secrets` slug look healthy for a
  *     week (HACKS.md #32).
  *
- * (`STRAD_INTERNAL_TOKEN` was the second, and is no longer a broadcast name at
- * all: each component is baked its OWN derived token by `componentTokenEnv`.)
+ * `STRAD_INTERNAL_TOKEN` is not a broadcast name: each component is baked its
+ * OWN derived token by `componentTokenEnv`.
  *
  * The values are read from the STORE by the renderer, not from the deploy
  * environment, so a human still manages them in exactly one place. The cost is
@@ -752,7 +752,7 @@ export function bootEnvGaps(spec: AppSpec, held: readonly string[]): string[] {
   for (const service of spec.services) {
     const keys = new Set(service.envs.map((e) => e.key));
     // The internal token is checked on EVERY non-core component, the strad
-    // image included: none of them hydrates it any more, because what a
+    // image included: none of them hydrates it, because what a
     // component holds is its own derived token and only the renderer can
     // compute that (`componentTokenEnv`).
     if (
@@ -1803,6 +1803,27 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
         `Check the registry and repository — only the tag is meant to differ.` +
         sibling,
     );
+  }
+
+  // THE ROOT STOPS AT CORE, under any name. `componentTokenEnv` replaces the
+  // one variable called STRAD_INTERNAL_TOKEN, but a server's `env:` can still
+  // spell `FOO: "\${STRAD_INTERNAL_TOKEN}"`, which would bake the root — every
+  // component's token — onto a container that should hold only its own. A
+  // failed render is the right answer; the message names the component, never
+  // the value.
+  if (internalRoot) {
+    for (const service of services) {
+      if (service.name === "core") continue;
+      const leak = service.envs.find((e) => e.value === internalRoot);
+      if (leak) {
+        throw new Error(
+          `component "${service.name}" would carry the internal-token root under ` +
+            `${leak.key}. The root stays on core; a component holds only the ` +
+            `token derived for it. Remove the \${STRAD_INTERNAL_TOKEN} reference ` +
+            `from that server's env:.`,
+        );
+      }
+    }
   }
 
   const spec: AppSpec = {

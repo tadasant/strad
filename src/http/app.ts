@@ -487,10 +487,10 @@ export function createApp(opts: AppOptions): Express {
     //
     // CORE ONLY, and for the mirror image of the presence route's reason: core
     // is the component that holds the store-admin credential, and the caller is
-    // a bundle that holds none. Authenticated with the shared
-    // STRAD_INTERNAL_TOKEN, and bounded — on every call, from the config rather
-    // than from the URL — to the names that server's own `paramsWritable:`
-    // allowlist names. See src/http/params.ts.
+    // a bundle that holds none. Authenticated with the calling component's own
+    // internal token (`internalCaller`), and bounded — on every call, from the
+    // config rather than from the URL — to the names the `paramsWritable:`
+    // allowlists of that component's own servers name. See src/http/params.ts.
     const paramsOptions = {
       config: opts.config,
       env,

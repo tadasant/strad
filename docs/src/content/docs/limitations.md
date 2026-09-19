@@ -2462,8 +2462,14 @@ costs, stated rather than hidden:
   holds the resolver key, which can read the gateway namespace, root included.
   That component runs strad's own code and is inside core's trust boundary for
   that reason — it can read every gateway value — so this narrows accidents there,
-  not attacks. Every non-core component in the Tadasant fleet is a
-  `supplementary-image`.
+  not attacks. Staging's non-core components are both `supplementary-image`s.
+- **Re-keying is not atomic.** A deploy that changes the root, or the first deploy
+  of per-component tokens, replaces core and the components as separate
+  containers. While an old one overlaps a new one, core's calls to it answer
+  `401`, a boot-time parameter read falls back to the baked value, and a
+  `paramsWritable:` write-back fails loudly — for a single-use refresh token, the
+  rotation it carried is lost and the slug needs re-seeding. The window is the
+  deploy's overlap, the same one every root rotation already had.
 
 Independent random tokens per component would isolate a leaked root, at the price
 of one secret per component per environment that only a human can create in prod.

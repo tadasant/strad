@@ -720,22 +720,19 @@ servers:
       # never holds a cloud credential, which is the whole point of the split
       # above.
       #
-      # WHAT IT BOUNDS IS THE NAMES, NOT THE CALLER, and read that before opting
-      # a server in. `STRAD_INTERNAL_TOKEN` is ONE token, on every supplementary
-      # component — it is the token core presents when it proxies /mcp to them —
-      # and nothing binds a caller to the slug it addresses. So the reachable set
-      # is the UNION of every enabled server's `paramsWritable:`: a compromised
-      # container on one bundle can read and overwrite the rotating credential of
-      # a server on another. The GET is a value read, on the component with the
-      # public route, which is a thing only the console admin key behind Google
-      # SSO could do before. Factor that into how often this token is rotated.
-      # Recorded as limitation #63; per-component tokens are the exit.
+      # IT BOUNDS THE NAMES AND THE CALLER. Each component holds its OWN
+      # `STRAD_INTERNAL_TOKEN`, derived by core from its root, and core reads the
+      # caller's component off it — so a container reaches the `paramsWritable:`
+      # names (and, for the GET alone, the `paramsRefresh:` names) of the servers
+      # on its own component, and nothing on any other. The GET is a value read,
+      # on the component with the public route, so that token is a read
+      # credential for those names. Limitation #63 has the design.
       #
-      # What it DOES bound is real and is most of the value: the union is opt-in
-      # and empty by default, nothing outside it is reachable at all (not another
-      # server's ordinary parameters, not the gateway namespace), and every name
-      # on it is by construction a credential that ROTATES — so losing one costs
-      # a re-seed rather than a durable secret. Against the alternative, a Secret
+      # What the list bounds is the rest of the value: it is opt-in and empty by
+      # default, nothing outside it is reachable at all (not another server's
+      # ordinary parameters, not the gateway namespace), and every name on it is
+      # by construction a credential that ROTATES — so losing one costs a
+      # re-seed rather than a durable secret. Against the alternative, a Secret
       # Manager credential on the container answering /mcp, this is a materially
       # smaller grant.
       #

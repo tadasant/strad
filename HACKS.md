@@ -924,7 +924,7 @@ staging is the worked example of switching it on.
 - The boot keys (`STRAD_TOKENS`, `STRAD_INTERNAL_TOKEN`, `ADMIN_BOOTSTRAP_TOKEN`,
   `GOOGLE_CLIENT_*`, `OTEL_EXPORTER_OTLP_HEADERS`) are hydrated from the store at
   startup — so they leave the app spec — but take effect on the next restart, not
-  within the TTL. A token store and a shared internal token are boot-scoped by
+  within the TTL. A token store and an internal-token root are boot-scoped by
   nature; claiming a rotation had landed while half the fleet still trusted the
   old value would be worse than saying so.
 - `consoleEnv:` is deliberately **never** hydrated and stays deploy-time baked
@@ -3264,13 +3264,21 @@ that already existed. What that costs, stated rather than hidden:
 - **Rotating one component rotates all of them.** Rotating the root is one
   redeploy, as it always was.
 - **A strad-image bundle is NOT isolated from the root.** It is baked its own
-  derived token and no longer hydrates the root, but under
+  derived token and does not hydrate the root, but under
   `gcp-parameter-store` it holds the resolver key, which can read the gateway
   namespace, root included. That component runs strad's own code and was
   already inside core's trust boundary for that reason (it can read every
-  gateway value); this change narrows accidents there, not attacks. Every
-  component in the Tadasant fleet today is a `supplementary-image`, so this
-  is a statement about a topology nobody deploys.
+  gateway value); for it, per-component tokens narrow accidents, not
+  attacks. Staging's non-core components are both `supplementary-image`s.
+- **Re-keying is not atomic.** A deploy that changes the root — or the first
+  deploy of per-component tokens, which changes what every component holds —
+  replaces core and the components as separate containers. While an old one
+  overlaps a new one, core's calls to it answer `401` and the console reports
+  that it refused the token; a boot-time parameter read falls back to the
+  baked value; and a `paramsWritable:` write-back fails loudly, which for a
+  single-use refresh token means the rotation it carried is lost and the slug
+  needs re-seeding. The window is the deploy's overlap, the same one every
+  root rotation already had.
 
 Independent random tokens per component would isolate a leaked root, at the
 price of one secret per component per environment that only a human can create
@@ -4720,8 +4728,8 @@ the resource identifier, the `header`-only bearer method and the pointer at the
 docs are all true today, and the `404`s they replace were indistinguishable, from
 outside, from an OAuth flow that is merely misconfigured.
 
-Core only. A bundle's `/mcp` is a private-network hop authenticated with the
-shared `STRAD_INTERNAL_TOKEN`, no MCP client discovers it, and a pointer from
+Core only. A bundle's `/mcp` is a private-network hop authenticated with that
+component's own `STRAD_INTERNAL_TOKEN`, no MCP client discovers it, and a pointer from
 there would name a path it does not serve — so it serves no well-known route and
 its `401` carries the two parameters it always did.
 

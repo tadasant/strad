@@ -415,8 +415,8 @@ describe("every component holds its own internal token, and none holds the root"
         provider === "env" ? INTERNAL : undefined,
       );
       // A supplementary image AND a strad-image bundle, each its own. The
-      // strad-image bundle is the one that used to get the root through the
-      // broadcast under `env`, and would hydrate it under the store.
+      // strad-image bundle is the one the `env` broadcast would hand the root,
+      // and the one that could hydrate it under the store.
       expect(
         find(envsOf(rendered, "bundle"), "STRAD_INTERNAL_TOKEN")?.value,
       ).toBe(BUNDLE_TOKEN);
@@ -461,7 +461,7 @@ describe("bootEnvGaps — the rendered-spec check", () => {
     // ...and it does not accuse the components that can fetch for themselves,
     // of anything they can fetch. The strad-image bundle is accused of the
     // internal token alone: that is derived per component at render, so no
-    // component can hydrate it any more.
+    // component can hydrate it.
     expect(gaps.some((g) => g.includes('"core"'))).toBe(false);
     const echo = gaps.filter((g) => g.includes('"bundle-echo"'));
     expect(echo).toHaveLength(1);
@@ -498,5 +498,42 @@ describe("bootEnvGaps — the rendered-spec check", () => {
     expect(gaps).toHaveLength(2);
     expect(gaps.every((g) => g.includes("STRAD_INTERNAL_TOKEN"))).toBe(true);
     expect(bootEnvGaps(render({ env: STORE_ENV }), [])).toEqual([]);
+  });
+});
+
+describe("the root reaches no component under another name", () => {
+  it("fails the render when a server's env: spells ${STRAD_INTERNAL_TOKEN}", () => {
+    const config = parseConfig(`
+version: 1
+gateway:
+  name: strad
+  env: staging
+auth:
+  staticTokens: { enabled: true }
+roles:
+  admin: { servers: ["*"] }
+bundles:
+  - name: bundle
+servers:
+  - slug: slack
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:0.1.0
+    bundle: bundle
+    entitlements: [admin]
+    env:
+      SOMETHING_ELSE: "\${STRAD_INTERNAL_TOKEN}"
+`);
+    const renderIt = () =>
+      renderAppSpec({
+        config,
+        appName: "strad-staging",
+        region: "nyc",
+        image: parseImage("ghcr.io/tadasant/strad:0.1.7"),
+        env: BAKED_ENV,
+        secrets: { STRAD_INTERNAL_TOKEN: INTERNAL },
+      });
+    expect(renderIt).toThrow(/root under SOMETHING_ELSE/);
+    // The message names the variable and the component, never the value.
+    expect(renderIt).not.toThrow(new RegExp(INTERNAL));
   });
 });
