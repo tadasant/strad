@@ -757,7 +757,7 @@ async function handleGrantClient(
           heading: "No connector on this server",
           sub: `"${slug}" does not declare an oauth: connector on this gateway.`,
           tone: "warn",
-          nav: "servers",
+          nav: "connectors",
         }),
       );
     return;
