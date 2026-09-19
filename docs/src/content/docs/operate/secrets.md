@@ -186,8 +186,12 @@ Per process: a deployment with two bundle components that host `params: true`
 builtins reads once per process on each. The bill no longer moves when a server
 is added — a new namespace is a new slice, not a new timer — and moves by one
 `GetParameterVersion` plus one `RenderParameterVersion` per TTL when a parameter
-is. At the default TTL that is inside Parameter Manager's free monthly
-allowance for most of the month and cents after it.
+is. At the default TTL that is 68 reads a day — about 2,000 a month, inside
+Parameter Manager's free allowance of 10,000. One thing multiplies it: a
+`${NAME}` the shared namespace does not hold (one still served from the
+environment behind `envFallback`, or a `mayBeUnseeded` name nobody has seeded)
+is a miss on every ask, so the reading is re-taken every `negativeTtlSeconds`
+instead — 24 a day, 1,632 reads, the hour-TTL row above.
 
 What the long default costs is the bound on a change nobody announced — a
 value seeded by hand with `gcloud`, or by a CI writer that does not call the
@@ -197,7 +201,9 @@ are the routes to rotate by — a write through either lands at once — and eac
 has an explicit re-read for a rotation made elsewhere, with no write: the
 console's **Re-read the store** button, and the MCP server's `refresh_gateway`
 tool, which reaches core over the parameter write-back wire and is held to one
-re-read per 30 seconds so an agent in a loop cannot recreate the old bill. The
+re-read per 30 seconds so an agent in a loop cannot recreate the old bill. A call
+inside those 30 seconds is not dropped: core owes it one re-read when the floor
+passes, so two writes ten seconds apart both land within the half-minute. The
 write-back route drops the reading too, so a credential a container rotated on
 use is current on core the moment it is persisted.
 

@@ -648,7 +648,7 @@ type SecretAction =
  *
  * Two things hold the old answer, and both are dropped here. The runtime
  * providers read through the resolver client, which holds ONE reading of the
- * store for `gateway.secrets.ttlSeconds` (an hour by default): without the
+ * store for `gateway.secrets.ttlSeconds` (a day by default): without the
  * `invalidate()`, a credential rotated through this console would keep being
  * served to `/mcp`, from this very process, until that reading aged out — the
  * one promise the console makes that a TTL is not allowed to break. And the

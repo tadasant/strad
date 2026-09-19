@@ -344,12 +344,13 @@ export function toolDefinitions(
           name: "refresh_gateway",
           description:
             "Make the strad gateway re-read the parameter store NOW. The gateway holds one reading of " +
-            "the store per process for gateway.secrets.ttlSeconds (an hour by default), so a value " +
+            "the store per process for gateway.secrets.ttlSeconds (a day by default), so a value " +
             "written outside strad's console — including through this server's write tools — reaches " +
             "a running server within that window on its own. This drops the reading so the next read " +
             "reaches Parameter Manager. The write tools call it for you after a successful write; call " +
             "it yourself after a rotation made elsewhere (gcloud, another tool). Nothing is written. " +
-            "The gateway refuses to re-read more than once every 30 seconds and says so.",
+            "The gateway re-reads at most once every 30 seconds; a call inside that window is answered " +
+            "as held off and picked up when the window passes.",
           inputSchema: { type: "object", properties: {} },
           annotations: { readOnlyHint: true, openWorldHint: false },
         },
@@ -375,8 +376,9 @@ async function gatewayNote(deps: ToolDeps): Promise<string> {
   const outcome = await deps.refreshGateway();
   return outcome.refreshed
     ? "Stored, and the gateway has dropped its reading of the store: the next read reaches this value."
-    : `Stored. The gateway was not made to re-read it now (${outcome.reason}); it picks the value up ` +
-        "within gateway.secrets.ttlSeconds, or call refresh_gateway.";
+    : `Stored. The gateway was not made to re-read it now (${outcome.reason}). If it held the ` +
+        "refresh off it re-reads within 30 seconds; otherwise call refresh_gateway, or the value " +
+        "lands within gateway.secrets.ttlSeconds.";
 }
 
 export function registerTools(server: Server, deps: ToolDeps): void {
@@ -705,8 +707,9 @@ export function registerTools(server: Server, deps: ToolDeps): void {
               refreshed: false,
               reason: outcome.reason,
               note:
-                "The gateway kept the reading it holds. It re-reads the store on its own within " +
-                "gateway.secrets.ttlSeconds; call again after the floor if it must be sooner.",
+                "The gateway kept the reading it holds for now. If it held this off inside its " +
+                "30-second floor it re-reads when the floor passes, with no second call; if it " +
+                "could not be reached, call again, or the value lands within gateway.secrets.ttlSeconds.",
             });
           }
           return text({

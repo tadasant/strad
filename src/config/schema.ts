@@ -1472,9 +1472,10 @@ const ConfigStoreConfig = z
      * The process that WROTE a change reloads at once and does not wait for
      * this. The poll is what carries a change to the other instances of core,
      * when there is more than one, and what picks up an edit made by a second
-     * console process. Two store reads per interval per instance — small next
-     * to the per-parameter secret reads `ttlSeconds` bounds, and the floor is
-     * there for the same reason that one has a floor.
+     * console process. Two store reads per interval per instance — at the
+     * default, 2,880 a day, which is more than the secret reads a day's
+     * `ttlSeconds` costs; it is only paid with `enabled: true`, and the floor
+     * is what keeps a typo from multiplying it.
      */
     pollSeconds: z.number().int().min(10).max(86_400).default(60),
   })

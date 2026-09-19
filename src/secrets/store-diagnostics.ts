@@ -59,9 +59,9 @@ export interface StoreDiagnostics {
    * part of the claim. Two things make it non-zero: `readStoreDiagnosticsCached`
    * holding a pass, and the store client answering the pass from the snapshot
    * it holds (`gateway.secrets.ttlSeconds`, see parameters/gcp.ts) — a pass
-   * that just ran against a fifty-minute-old snapshot is fifty minutes old, and
+   * that just ran against a twenty-hour-old snapshot is twenty hours old, and
    * says so. Every surface that prints a diagnosis prints this with it; a
-   * console that showed an hour-old "healthy" without saying so would be the
+   * console that showed a day-old "healthy" without saying so would be the
    * failure mode that holding one introduces.
    */
   ageMs: number;

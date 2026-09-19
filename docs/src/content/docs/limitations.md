@@ -1163,8 +1163,9 @@ held for `gateway.secrets.ttlSeconds` (a day by default), and the pass over it
 is reused for up to a minute, so a `/connectors` reload and a hard poller on
 `/api/secrets/readiness` cost no store read at all inside the TTL. The cost of
 that is freshness: a value written by anything other than this console can take
-up to the TTL to change a row, and a store that breaks can look healthy for that
-long. So the age is printed rather than hidden — the console says when the store
+up to the TTL to change a row, and a store that breaks — a revoked resolver key,
+lost IAM — can look healthy for that long, which at the default is a day. So the
+age is printed rather than hidden — the console says when the store
 was read, and the readiness JSON carries `store.diagnosis.ageSeconds` — and a
 write through the console drops the reading,
 so a rotation is not contradicted by the row it was performed from. A pass whose

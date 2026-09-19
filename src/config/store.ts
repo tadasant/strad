@@ -48,7 +48,7 @@ import { SECRETS_ENV } from "../ui/resolve.ts";
  * `reveal()` on a non-secret parameter is two API calls — list the versions
  * (there is no `latest` alias in Parameter Manager) and get the ranked one. It
  * deliberately does NOT go through the process snapshot the secret provider
- * slices: that snapshot is an hour old by default, and an hour-stale roster is
+ * slices: that snapshot can be a day old by default, and a day-stale roster is
  * not a roster. Two calls per poll per core instance, at the interval
  * `gateway.configStore.pollSeconds` bounds.
  */

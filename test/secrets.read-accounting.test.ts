@@ -286,10 +286,9 @@ describe("what one refresh costs the store, at production's shape", () => {
 
     // One refresh a day at the default TTL: 68 billed reads, against the
     // 558,720 the same tick cost at a minute's TTL with one reading per
-    // namespace, and 1,632 at an hour's. Inside Parameter Manager's monthly
-    // free allowance of 10,000 access operations for the whole month.
+    // namespace, and 1,632 at an hour's — about 2,000 a month, inside
+    // Parameter Manager's free allowance of 10,000 access operations.
     expect(TTL).toBe(24 * 60 * MINUTE);
-    expect(68 * 30).toBeLessThan(10_000);
   });
 });
 

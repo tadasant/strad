@@ -1292,7 +1292,7 @@ export async function readDeploymentSecretStatus(opts: {
         namespace: gatewayNamespace(opts.config.gateway.env),
         // The same number the request path already uses to mean "how stale may
         // a store read be" (`gateway.secrets.ttlSeconds`), capped inside the
-        // cache so a long rotation TTL cannot make a HEALTH signal an hour old.
+        // cache so a long rotation TTL cannot make a HEALTH signal a day old.
         ttlMs: opts.config.gateway.secrets.ttlSeconds * 1000,
       });
     })(),

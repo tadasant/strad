@@ -3572,7 +3572,9 @@ console also grew a **Re-read the store** button, the explicit signal for a
 value written elsewhere — and the `secrets` MCP server its counterpart,
 `refresh_gateway`, over the parameter write-back wire with a 30-second floor on
 core, so an agent's rotation lands at once too and an agent in a loop cannot
-recreate the bill. A render that met a transient failure is not held (the
+recreate the bill. The floor is trailing-edge: a call it holds off is owed one
+re-read when it passes, because with the TTL at a day a second write ten
+seconds after the first would otherwise be a day late. A render that met a transient failure is not held (the
 next reader renders again); a `400` is, until the TTL or a write. The console's
 diagnosis is now as old as the reading and prints that age rather than the
 pass's.

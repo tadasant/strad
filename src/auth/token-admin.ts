@@ -81,8 +81,8 @@ export interface TokenAdminOptions {
    *
    * The write goes through the admin client; `/mcp` reads through the resolver
    * client, which holds its own reading of the store for
-   * `gateway.secrets.ttlSeconds`. Without this a revocation would take effect an
-   * hour later, which is exactly the property this feature exists to fix.
+   * `gateway.secrets.ttlSeconds`. Without this a revocation would take effect up
+   * to a day later, which is exactly the property this feature exists to fix.
    */
   secretProvider?: ServerSecretProviders;
   /** Test seam, threaded to `storeForPath`. */
