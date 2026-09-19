@@ -215,7 +215,8 @@ describe("the floor is trailing-edge: a held-off call is owed, not dropped", () 
     const handler = createStoreRefreshHandler(
       {
         config: CONFIG,
-        env: { STRAD_INTERNAL_TOKEN: TOKEN },
+        // Core's environment: the ROOT. The caller presents its own token.
+        env: { STRAD_INTERNAL_TOKEN: ROOT },
         secrets: {},
         secretProvider: {
           ...runtimeProviders,
