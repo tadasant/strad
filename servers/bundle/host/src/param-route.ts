@@ -966,7 +966,7 @@ export function parseInstanceEnvResponse(
 export interface InstanceClientOptions {
   /** Core's private URL — `CORE_URL_ENV`. Absent means "not configured". */
   baseUrl: string | undefined;
-  /** The shared `STRAD_INTERNAL_TOKEN`. Absent means "not configured". */
+  /** This component's own `STRAD_INTERNAL_TOKEN`. Absent means "not configured". */
   token: string | undefined;
   /** This component's bundle name — `STRAD_COMPONENT`. Absent means "not configured". */
   bundle: string | undefined;
