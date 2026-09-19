@@ -737,16 +737,16 @@ servers:
       # `paramsWritable:` can POST a rotated credential to core, which performs
       # the write with the ADMIN key below — the container never holds one.
       #
-      # IT BOUNDS THE NAMES, NOT THE CALLER. `STRAD_INTERNAL_TOKEN` is one token,
-      # on every supplementary component, and nothing binds a caller to the slug
-      # it addresses — so the reachable set is the UNION of every enabled
-      # server's `paramsWritable:` (and, for the GET alone, every
-      # `paramsRefresh:`), and the GET is a value read on the component
-      # with the public route. Factor that into how often this token is rotated.
-      # What it does bound: the union is opt-in and empty by default, nothing
-      # outside it is reachable, and every name on it is a credential that
-      # ROTATES, so losing one costs a re-seed. See docs: /operate/secrets/ and
-      # limitation #63.
+      # IT BOUNDS THE NAMES AND THE CALLER. Each component holds its OWN
+      # `STRAD_INTERNAL_TOKEN`, derived by core from its root, and core reads the
+      # caller's component off it — so a container reaches the `paramsWritable:`
+      # names (and, for the GET alone, the `paramsRefresh:` names) of the
+      # servers on its own component, and nothing on any other. The GET is a
+      # value read on the component with the public route, so that token is a
+      # read credential for those names. What the list bounds: it is opt-in and
+      # empty by default, nothing outside it is reachable, and every name on it
+      # is a credential that ROTATES, so losing one costs a re-seed. See docs:
+      # /operate/secrets/ and limitation #63.
     consoleEnv:
       SECRETS_PROJECT_ID: "strad-secrets-staging" # non-secret: a literal, not a ${ref}
       # A LIST, and the console's may be wider than the container's above. The

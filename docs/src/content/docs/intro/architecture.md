@@ -60,10 +60,11 @@ calls **back** to core to persist a credential that rotated under it; one that
 declares
 [`paramsRefresh:`](/operate/secrets/#paramsrefresh--a-rotation-that-lands-without-a-deploy)
 calls back on an interval to re-read a credential somebody rotated in the store.
-Both go over the same private network and the same `STRAD_INTERNAL_TOKEN`,
-because core is the component that holds the store-admin credential and the
-bundle deliberately holds none. Every non-core component gets `STRAD_CORE_URL`
-for it.
+Both go over the same private network, authenticated with the component's own
+`STRAD_INTERNAL_TOKEN`, because core is the component that holds the store-admin
+credential and the bundle deliberately holds none. Core reads the caller's
+component off that token and answers only for servers on it. Every non-core
+component gets `STRAD_CORE_URL` for it.
 
 A bundle runs **one image**, and any number of servers may share it, each on its
 own `path`. strad's own deployment has one main bundle: a
@@ -118,14 +119,15 @@ is one of five words per key — `absent`, `empty`, `unexpanded`, `placeholder`,
 `present` — and never a value. It exists because a supplementary server's `env:` is
 baked onto its own component and core cannot read it, so unaided the console's only
 honest answer is that it did not check. Both the strad image in bundle mode and
-the `strad-bundle` host image serve it, both behind `STRAD_INTERNAL_TOKEN`, and both
-fail closed when that token is unset — from one handler, `presenceResponse` in
+the `strad-bundle` host image serve it, both behind the component's own
+`STRAD_INTERNAL_TOKEN`, and both fail closed when that token is unset — from one handler, `presenceResponse` in
 `src/secrets/presence.ts`, vendored into the host tree with the vocabulary it
 answers in. See
 [Secrets](/operate/secrets/#the-presence-route-a-component-answering-for-itself).
 
 When core proxies to a strad-image bundle, it calls
-`${base}/mcp?servers=<slug>` with `Authorization: Bearer ${STRAD_INTERNAL_TOKEN}`.
+`${base}/mcp?servers=<slug>` with `Authorization: Bearer <token>`, where the token
+is the one core derives for that component.
 Because that bundle is itself a strad that already namespaces its tools, the adapter
 strips and restores the inner `<slug>__` prefix so you never see
 `bundled__bundled__whoami`.
@@ -138,8 +140,12 @@ upstream's credential rather than strad's.
 <aside class="starlight-aside starlight-aside--note">
 
 **The private network is not an authorization story.** A bundle has no public
-route, but it still requires the shared `STRAD_INTERNAL_TOKEN`, compared in
-constant time — anything else in the VPC could otherwise reach it. That holds for
+route, but it still requires its own `STRAD_INTERNAL_TOKEN`, compared in constant
+time — anything else in the VPC could otherwise reach it. `STRAD_INTERNAL_TOKEN`
+on core is a **root**; every other component is baked its own token under the
+same name, `base64url(HMAC-SHA256(root, "strad-internal-token/v1:" + component))`,
+and core presents the matching one per call. So a sibling component's token, or
+the root, is refused. That holds for
 both images: the strad image checks it in `authenticateInternal`, and the
 `strad-bundle` host checks it in front of every mount, through the same comparator
 its presence route uses. Both images read the header with the same parse and
@@ -151,7 +157,7 @@ strad image calls that 401 like any other refusal, the `strad-bundle` host calls
 it 503, the same distinction its presence route already drew — and both leave
 `/healthz` open, because App Platform's prober holds no credential. See
 [Known limitations #63](/limitations/#63-one-internal-token-means-any-container-can-reach-any-writable-parameter)
-for what one shared token still does not distinguish.
+for the design and what deriving the tokens costs.
 
 </aside>
 
@@ -199,8 +205,8 @@ So two routes sit beside `/mcp`, and they are the same idea in both directions:
 | `GET /mcp-download/<slug>/<tok>` | `getRaw`       | streamed | getting bytes **out of** a mount |
 
 Both are generic: core resolves the slug to a supplementary image, forwards to
-that container's `/<mount>/upload/<tok>` or `/<mount>/download/<tok>` on the
-internal token, and otherwise stays out of the way. Nothing about either route
+that container's `/<mount>/upload/<tok>` or `/<mount>/download/<tok>` on that
+component's internal token, and otherwise stays out of the way. Nothing about either route
 knows which mount is behind it.
 
 **Neither is authenticated by a header, and that is the design.** The caller is

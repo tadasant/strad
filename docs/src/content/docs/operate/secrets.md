@@ -1030,7 +1030,7 @@ of the store:
 | A `params: true` **supplementary image's** managed parameters                                                                                    | on the next **deploy**   | Resolved at render time onto that server's own component. Unless the name is on that server's [`paramsRefresh:`](#paramsrefresh--a-rotation-that-lands-without-a-deploy) list (**within `paramRefreshSeconds`**, no deploy) or its [`paramsWritable:`](#paramswritable--a-credential-that-rotates-on-use) list (re-read at **boot**).               |
 | A `params: true` **builtin's** managed parameters                                                                                                | within `ttlSeconds`      | Resolved by **core itself**, per tool call: `optionsFor` merges the namespace over the resolved `options:` through the same TTL cache the runtime provider uses. No deploy is in the loop, which is what makes staging's `echo` a live rotation observatory.                                                                                        |
 | The core boot keys — `STRAD_TOKENS`, `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CONSOLE_SESSION_SECRET`, `SENTRY_DSN` | on the next **restart**  | Hydrated from the store once, at boot, by code with no provider in scope. **`STRAD_TOKENS` is the exception under `auth.staticTokens.store: parameter-store`**: the token store reads it through the runtime provider on the request path instead, so it rotates within `ttlSeconds` — and at once when the change is made in `/tokens`. See below. |
-| `STRAD_INTERNAL_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS`                                                                                             | on the next **deploy**   | Hydrated on core, **baked** on every supplementary component — see below. A restart moves only one side, and for the internal token both sides must agree.                                                                                                                                                                                          |
+| `STRAD_INTERNAL_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS`                                                                                             | on the next **deploy**   | Hydrated on core and **baked** on every supplementary component — see below. The internal token is baked on every non-core component, the strad image included, as that component's own token derived from core's root. A restart moves only one side, and for the internal token both sides must agree.                                            |
 | A supplementary image's `env:`                                                                                                                   | on the next **deploy**   | Environment variables on a container strad does not run.                                                                                                                                                                                                                                                                                            |
 | A `consoleEnv:` name                                                                                                                             | on the next **deploy**   | Never in the store at all: it is the console's store-_admin_ credential, baked from the deploy environment onto core.                                                                                                                                                                                                                               |
 
@@ -1047,17 +1047,18 @@ config before promising anyone a rotation that lands without a deploy.
 
 ### Which boot keys a third-party container holds
 
-The same two, whichever provider the deployment uses. The provider decides where
+The same ones, whichever provider the deployment uses. The provider decides where
 a value is read from. It never decides which names a container ends up holding.
 
-| Boot key                                                                                                                    | `core` | a `supplementary-image` component                                                           |
-| --------------------------------------------------------------------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------- |
-| `STRAD_INTERNAL_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS` — `BUNDLE_BOOT_ENV_KEYS`                                               | yes    | yes: baked from the store under `gcp-parameter-store`, carried by the broadcast under `env` |
-| `STRAD_TOKENS`, `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CONSOLE_SESSION_SECRET`, `SENTRY_DSN` | yes    | **never**                                                                                   |
+| Boot key                                                                                                                    | `core`            | a `supplementary-image` component                                                                                                          |
+| --------------------------------------------------------------------------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `OTEL_EXPORTER_OTLP_HEADERS` — `BUNDLE_BOOT_ENV_KEYS`                                                                       | yes               | yes: baked from the store under `gcp-parameter-store`, carried by the broadcast under `env`                                                |
+| `STRAD_INTERNAL_TOKEN`                                                                                                      | yes, the **root** | its **own** token under the same name, derived from the root at render time and baked as a SECRET on that component alone — never the root |
+| `STRAD_TOKENS`, `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CONSOLE_SESSION_SECRET`, `SENTRY_DSN` | yes               | **never**                                                                                                                                  |
 
 Under `env`, `render-spec` puts every boot key it has a value for in the app-level
 env as a SECRET, and app-level SECRETs are broadcast to every supplementary component. The
-broadcast drops the second row. Its exclusions, `STRAD_IMAGE_ONLY_SECRET_KEYS` in
+broadcast drops the second and third rows. Its exclusions, `STRAD_IMAGE_ONLY_SECRET_KEYS` in
 `src/deploy/appspec.ts`, are the store credential plus `CORE_ONLY_BOOT_ENV_KEYS`,
 and that set is **derived**: `CORE_BOOT_ENV_KEYS` minus `BUNDLE_BOOT_ENV_KEYS`,
 both in `src/secrets/provider/hydrate.ts`. A boot key added to
@@ -1067,7 +1068,18 @@ widens the store path's bake and the `env` path's broadcast in the same edit. Th
 coupling is intended: both paths answer one question, and they answer it from one
 array.
 
-The second row is the `/mcp` token store, the console's bypass token, its OAuth
+`STRAD_INTERNAL_TOKEN` is in `CORE_ONLY_BOOT_ENV_KEYS` because what core holds
+under it is the root. Every non-core component, the strad-image bundle included,
+holds a variable by the same name, but its value is
+`base64url(HMAC-SHA256(root, "strad-internal-token/v1:" + component))`, written by
+`componentTokenEnv` in `src/deploy/appspec.ts`. That entry is authoritative: a
+server's own `env:` cannot shadow the name. Core presents the matching token when
+it calls a component, and reads a component's identity off the token when the
+component calls it, so a container's token opens its own doors and no one
+else's. [Limitation #63](/limitations/#63-one-internal-token-means-any-container-can-reach-any-writable-parameter)
+has the design and what it costs.
+
+The last row is the `/mcp` token store, the console's bypass token, its OAuth
 client and its session-cookie key, plus the exception reporter's DSN. The sharp
 ones are the console's. `CONSOLE_SESSION_SECRET` signs the session cookie, and
 when it is unset the key is derived from `GOOGLE_CLIENT_SECRET`, so a container
@@ -1093,8 +1105,9 @@ write credential for the issue tracker, which is not a thing to broadcast to eve
 supplementary image. It reaches the core and any strad-image bundle and stops
 there, like the store credential.
 
-So the two names a bundle needs are read **from the store, by the renderer**, and
-baked onto those components. A human still manages them in exactly one place; the
+So the two names a bundle needs are produced **by the renderer** and baked onto
+those components: the OTLP header read from the store, and the internal token
+derived per component from the root, which the renderer also reads from the store. A human still manages them in exactly one place; the
 cost is that changing one is a deploy. Both fail _silently_ when absent, which is
 why the renderer refuses to emit a spec where a component holds neither the value
 nor the credential to fetch it:
@@ -1103,9 +1116,11 @@ nor the credential to fetch it:
   the ingestor rejects every batch. The component answering every supplementary
   slug goes blind about a minute after a deploy that reported success, with
   `/healthz` still 200 and every slug still listed.
-- **`STRAD_INTERNAL_TOKEN`** — the component's presence route fails closed, so
-  the console stops being able to say what that container holds and reports that
-  it refused the internal token.
+- **`STRAD_INTERNAL_TOKEN`** — the component's presence route and its mounts fail
+  closed, so the console stops being able to say what that container holds and
+  reports that the component does not hold the token core derives for it. A
+  render with any non-core component fails when the root resolves to nothing,
+  and `bootEnvGaps()` fails one where a non-core component lacks its token.
 
 A supplementary server that wants genuinely live rotation should read the store
 itself, the way `servers/secrets` does — or, for the specific case of a
@@ -1214,8 +1229,9 @@ fourth credential class to exactly the box the split exists to keep weak.
 
 So the server calls **core**, which already holds the store-admin credential and
 already owns a write path that does the hard parts correctly — the base64url
-envelope and the per-parameter `secretAccessor` grant. Two routes, both
-authenticated with the shared `STRAD_INTERNAL_TOKEN`:
+envelope and the per-parameter `secretAccessor` grant. Three routes, each
+authenticated with the calling component's own `STRAD_INTERNAL_TOKEN` — the token
+core derives for that component, from which core reads who is calling:
 
 ```
 POST /_strad/params/{slug}/{VARIABLE}   body: { value }   -> rotate
@@ -1236,9 +1252,12 @@ bindings core has always had for the reverse direction.
 The name in the URL is **not trusted**. Core looks the `{slug}`/`{VARIABLE}` pair
 up in that server's own `paramsWritable:` list and builds the store path out of
 the config's strings; the request's bytes are used for one thing, an equality
-test. Anything that does not match — an unknown slug, a disabled server, a
-variable that is not on the list — is the same 403, so the route cannot be used
-to enumerate the config either.
+test. The server must also be on the **caller's own component**: its `bundle:` has
+to name the component whose token was presented. Anything that does not match — an
+unknown slug, a disabled server, a variable that is not on the list, a server on
+another component — is the same 403, so the route cannot be used to enumerate the
+config either. A bearer that is no component's token, the root included, is a
+`401`; a core that holds no root answers `503`.
 
 ### The boot read is not optional
 
@@ -1279,23 +1298,21 @@ relaxed after, not the other way round.
 
 ### What this grants, stated plainly
 
-The allowlist bounds **which names** are reachable. It does not bound **which
-caller**, and the difference matters enough to say first.
+The allowlist bounds **which names** are reachable, and the caller's token bounds
+**which caller**.
 
-`STRAD_INTERNAL_TOKEN` is one token, broadcast to every supplementary component —
-it is the same token core presents when it proxies `/mcp` to them. A caller
-presents nothing else, so the route cannot tell one container from another. The
-reachable set is therefore the **union** of every enabled server's
-`paramsWritable:` — plus, for the `GET` alone, every
-[`paramsRefresh:`](#paramsrefresh--a-rotation-that-lands-without-a-deploy) —
-for any container holding the token: a compromised container on one bundle can
-read and overwrite the rotating credential of a server on another. The `GET` is also a value read on the public component, so that token is
-now a read credential for the names on that union — which belongs in how often
-you rotate it. Both are recorded as
-[limitation #63](/limitations/#63-one-internal-token-means-any-container-can-reach-any-writable-parameter);
-per-component tokens are the fix.
+Each component holds its own `STRAD_INTERNAL_TOKEN`, derived from core's root, and
+core reads the caller's component off it. So a container reaches the
+`paramsWritable:` names of the servers on its own component — plus, for the `GET`
+alone, their
+[`paramsRefresh:`](#paramsrefresh--a-rotation-that-lands-without-a-deploy) names —
+and nothing on any other component. The `GET` is a value read on the public
+component, so a component's token is a read credential for its own servers' names
+on those lists. The design and what it costs, including the one topology it does
+not isolate, are
+[limitation #63](/limitations/#63-one-internal-token-means-any-container-can-reach-any-writable-parameter).
 
-What the allowlist does bound is real and is most of the value. The union is
+What the allowlist bounds is real too. The list is
 **opt-in and empty by default** — a name is on it because a human wrote it in the
 config. Nothing outside it is reachable at all: not another server's ordinary
 parameters, not the gateway namespace, not a secret this deployment has not
@@ -1433,13 +1450,10 @@ unused. See [limitation #71](/limitations/#71-a-refreshed-parameter-only-reaches
 
 ### What it grants
 
-The same widening `paramsWritable:` has, and no more.
-`STRAD_INTERNAL_TOKEN` is one token broadcast to every supplementary component,
-so the reachable set is the union of every enabled server's `paramsWritable:`
-**and `paramsRefresh:`**, for any container holding it. For the refresh half that
-union is bounded by something stronger than the write half: every name on it is,
-by construction, a value already baked onto a component that holds the same
-token. Per-component tokens remain the fix, and are recorded as
+The same reach `paramsWritable:` has, and no more. A container presents its own
+component's token, so it can read the `paramsRefresh:` names of the servers on
+that component and nothing else — every one of them a value already baked onto
+that same component. The design is recorded as
 [limitation #63](/limitations/#63-one-internal-token-means-any-container-can-reach-any-writable-parameter).
 
 ## `oauthRefresh:` — a rotating refresh token on a `remote-http` server
@@ -1964,13 +1978,13 @@ outcome rather than from a row, and it answers the three questions a reader has:
 
 The reasons, which want different responses. Five are **probe outcomes** from a `supplementary-image` — three about the component, two about what it said:
 
-| Reason         | The probe outcome                                                                                                                                                | What closes it                                                                                                           |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `unwired`      | no `${<bundle>.PRIVATE_URL}` bound, so nothing was asked                                                                                                         | bind it in the app spec                                                                                                  |
-| `unsupported`  | the component answered `404` or `405` — an image predating the presence route                                                                                    | rebuild and repin that component's image                                                                                 |
-| `unreachable`  | it did not answer, or refused. Not always an outage: a `401`/`403` is core and the component holding different `STRAD_INTERNAL_TOKEN`s, and the panel says which | chase the component itself first — one core cannot talk to is not answering core's requests either                       |
-| `unmanifested` | it answered and named no managed parameters for this slug at all — no entry, not an empty list                                                                   | redeploy that component; its `STRAD_PARAM_KEYS` predates this slug's `params: true`, and it says nothing about the store |
-| `silent`       | it manifested its parameters and listed none under this slug                                                                                                     | seed the namespace — the last render found nothing beneath it                                                            |
+| Reason         | The probe outcome                                                                                                                                                                                       | What closes it                                                                                                           |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `unwired`      | no `${<bundle>.PRIVATE_URL}` bound, so nothing was asked                                                                                                                                                | bind it in the app spec                                                                                                  |
+| `unsupported`  | the component answered `404` or `405` — an image predating the presence route                                                                                                                           | rebuild and repin that component's image                                                                                 |
+| `unreachable`  | it did not answer, or refused. Not always an outage: a `401`/`403` is the component not holding the token core derives for it — rendered from a different root, or from none — and the panel says which | chase the component itself first — one core cannot talk to is not answering core's requests either                       |
+| `unmanifested` | it answered and named no managed parameters for this slug at all — no entry, not an empty list                                                                                                          | redeploy that component; its `STRAD_PARAM_KEYS` predates this slug's `params: true`, and it says nothing about the store |
+| `silent`       | it manifested its parameters and listed none under this slug                                                                                                                                            | seed the namespace — the last render found nothing beneath it                                                            |
 
 The last two look alike and want opposite first moves, which is why they are two. Telling an operator to seed a value on the strength of a stale manifest is how a working credential gets rewritten.
 
@@ -2084,9 +2098,11 @@ the config core is running, plus whatever the component itself reports under
 `/api/secrets/readiness` — to a probed name, so no caller can ask strad whether a
 name of its choosing exists. The defence is structural rather than a filter.
 
-**Authentication is the existing `STRAD_INTERNAL_TOKEN`**, the same credential
-core presents to proxy `/mcp` to that component. It is strictly stronger than
-this surface, so mounting the route widens nothing. With no token configured the
+**Authentication is the component's own `STRAD_INTERNAL_TOKEN`**, the same
+credential core presents to proxy `/mcp` to that component. Core derives it from
+its root for that component alone, so another component's token, or the root,
+gets a `401`. It is strictly stronger than this surface, so mounting the route
+widens nothing. With no token configured the
 route answers `503` rather than serving anonymously: on the private network is a
 reachability property, not an authorization one.
 
