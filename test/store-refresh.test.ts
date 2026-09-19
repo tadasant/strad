@@ -4,6 +4,7 @@ import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { parseConfig } from "../src/config/load.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
+import { createStoreRefreshHandler } from "../src/http/params.ts";
 import {
   EnvSecretProvider,
   sharedSecretProviders,
@@ -199,6 +200,104 @@ describe("the route", () => {
   });
 });
 
+describe("the floor is trailing-edge: a held-off call is owed, not dropped", () => {
+  /**
+   * The handler on its own, with the timer injected — so "when the floor
+   * passes" is a call the test makes rather than thirty seconds it waits.
+   */
+  function harness() {
+    let at = 1_700_000_000_000;
+    let count = 0;
+    const owed: { run: () => void; ms: number; cancelled: boolean }[] = [];
+    const handler = createStoreRefreshHandler(
+      {
+        config: CONFIG,
+        env: { STRAD_INTERNAL_TOKEN: TOKEN },
+        secrets: {},
+        secretProvider: {
+          ...runtimeProviders,
+          invalidate: () => {
+            count += 1;
+          },
+        },
+        now: () => at,
+      },
+      (run, ms) => {
+        const entry = { run, ms, cancelled: false };
+        owed.push(entry);
+        return () => {
+          entry.cancelled = true;
+        };
+      },
+    );
+    const call = (): { refreshed: boolean } => {
+      let body: { refreshed: boolean } | undefined;
+      const res = {
+        status: () => res,
+        json: (b: { refreshed: boolean }) => {
+          body = b;
+        },
+      };
+      handler(
+        { get: () => `Bearer ${TOKEN}` } as never,
+        res as never,
+        () => {},
+      );
+      return body!;
+    };
+    return {
+      call,
+      owed,
+      invalidations: () => count,
+      advance: (ms: number) => {
+        at += ms;
+      },
+    };
+  }
+
+  it("a second write inside the floor lands when the floor passes, with no second call", () => {
+    const h = harness();
+    expect(h.call().refreshed).toBe(true);
+    expect(h.invalidations()).toBe(1);
+
+    // CLIENT_ID, then CLIENT_SECRET ten seconds later: held off, and owed.
+    h.advance(10_000);
+    expect(h.call().refreshed).toBe(false);
+    expect(h.invalidations()).toBe(1);
+    expect(h.owed).toHaveLength(1);
+    expect(h.owed[0]!.ms).toBe(STORE_REFRESH_FLOOR_MS - 10_000);
+
+    // More calls in the same window join the one owed re-read.
+    h.advance(5_000);
+    expect(h.call().refreshed).toBe(false);
+    expect(h.owed).toHaveLength(1);
+
+    // The floor passes: exactly one more re-read.
+    h.advance(STORE_REFRESH_FLOOR_MS - 15_000);
+    h.owed[0]!.run();
+    expect(h.invalidations()).toBe(2);
+
+    // And the floor is measured from THAT re-read, so the bound holds.
+    h.advance(1_000);
+    expect(h.call().refreshed).toBe(false);
+    expect(h.invalidations()).toBe(2);
+    expect(h.owed).toHaveLength(2);
+  });
+
+  it("a refresh past the floor settles what was owed, rather than adding to it", () => {
+    const h = harness();
+    h.call();
+    h.advance(1_000);
+    h.call();
+    expect(h.owed).toHaveLength(1);
+
+    h.advance(STORE_REFRESH_FLOOR_MS);
+    expect(h.call().refreshed).toBe(true);
+    expect(h.owed[0]!.cancelled).toBe(true);
+    expect(h.invalidations()).toBe(2);
+  });
+});
+
 describe("the client the secrets server calls with", () => {
   it("reports a refresh, and a floored one, as outcomes rather than throws", async () => {
     clock += STORE_REFRESH_FLOOR_MS;
@@ -209,7 +308,7 @@ describe("the client the secrets server calls with", () => {
     const floored = await client.refresh();
     expect(floored.refreshed).toBe(false);
     if (!floored.refreshed) {
-      expect(floored.reason).toMatch(/will not again inside 30s/);
+      expect(floored.reason).toMatch(/once more when its 30s floor passes/);
     }
   });
 

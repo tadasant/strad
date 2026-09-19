@@ -35,24 +35,25 @@ gateway:
     #   be kept behind the lock it opens; that is the only exception.
     provider: env
     # A process reads the store ONCE and holds that reading for ttlSeconds; every
-    # namespace it serves is a slice of it. A change written through strad's own
-    # console lands at once. One made outside it lands within ttlSeconds (a
-    # rotation) or negativeTtlSeconds (a new name). Both are long on purpose:
-    # every read is billed per parameter and secrets change a few times a month.
-    # ttlSeconds: 3600 # max 86400
-    # negativeTtlSeconds: 600 # max 86400
+    # namespace it serves is a slice of it. A change that tells the gateway lands
+    # at once: a write through strad's own console, a write through the
+    # `secrets` MCP server (its write tools call refresh_gateway), and the
+    # console's "Re-read the store" button. The two TTLs are only the fallback
+    # for a change made any other way — a hand `gcloud` seed, say — and they are
+    # long on purpose: every read is billed per parameter and secrets change a
+    # few times a month.
 
-    # Bounds how long a ROTATION can go unnoticed. The snapshot of the namespace
-    # is refreshed on the first read after it goes stale. It also bounds how
-    # stale the console's and /api/secrets/readiness's store diagnosis may be,
-    # capped at 60s there — that answer is a health signal, and this accepts an
-    # hour. Both surfaces print how old the reading they served is.
-    ttlSeconds: 60
+    # Bounds how long an UNANNOUNCED rotation can go unnoticed. The snapshot is
+    # re-read on the first read after it goes stale. It also bounds how stale
+    # the console's and /api/secrets/readiness's store diagnosis may be, capped
+    # at 60s there — that answer is a health signal. Both surfaces print how old
+    # the reading they served is. Default a day, which is also the max.
+    ttlSeconds: 86400
 
-    # Bounds how long an ADDITION can go unnoticed. A miss forces one
+    # Bounds how long an UNANNOUNCED addition can go unnoticed. A miss forces one
     # out-of-band refresh, rate limited so an unknown ${REF} on a hot path
-    # cannot list the store once per request.
-    negativeTtlSeconds: 10
+    # cannot list the store once per request. Default an hour, max 86400.
+    negativeTtlSeconds: 3600
 
     # Keep process.env behind the store, so names can be migrated one at a time
     # with no window where a name resolves from neither. Set false once the move

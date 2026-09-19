@@ -648,7 +648,7 @@ type SecretAction =
  *
  * Two things hold the old answer, and both are dropped here. The runtime
  * providers read through the resolver client, which holds ONE reading of the
- * store for `gateway.secrets.ttlSeconds` (an hour by default): without the
+ * store for `gateway.secrets.ttlSeconds` (a day by default): without the
  * `invalidate()`, a credential rotated through this console would keep being
  * served to `/mcp`, from this very process, until that reading aged out — the
  * one promise the console makes that a TTL is not allowed to break. And the
@@ -929,7 +929,7 @@ async function handleSecretAction(
         // The explicit signal. A value written by anything OTHER than this
         // console — `gcloud`, the seed script, another deployment's console —
         // reaches this process within `gateway.secrets.ttlSeconds` on its own,
-        // which is an hour by default. This is the way to not wait: it drops
+        // which is a day by default. This is the way to not wait: it drops
         // the process's reading of the store, and the next `${NAME}` read, the
         // next tool call on a `params: true` builtin and the next `/ui` load
         // all reach Parameter Manager. Nothing is written.

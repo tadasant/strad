@@ -1751,7 +1751,7 @@ ${extra}`);
     // The three claims that make it a different panel rather than a reworded one.
     expect(scope?.detail).toContain("THIS process resolves these");
     expect(scope?.detail).toContain("EVERY TOOL CALL");
-    expect(scope?.detail).toContain("gateway.secrets.ttlSeconds (3600s)");
+    expect(scope?.detail).toContain("gateway.secrets.ttlSeconds (86400s)");
     // And the four the old panel would have made, none of which is true here.
     expect(scope?.detail).not.toContain("PRIVATE_URL");
     expect(scope?.detail).not.toContain("Rebuild that image and repin");
@@ -2383,7 +2383,7 @@ servers:
     expect(dialog).toContain(
       "THIS process resolves these, and no component holds them.",
     );
-    expect(dialog).toContain("gateway.secrets.ttlSeconds (3600s)");
+    expect(dialog).toContain("gateway.secrets.ttlSeconds (86400s)");
     expect(dialog).toContain(
       "Established by: nothing on this page. This process does resolve these values",
     );
@@ -2393,7 +2393,7 @@ servers:
       "# Console: prefix &quot;/strad/test/mcp/echo/static/&quot; — every managed parameter this server gets.",
     );
     expect(dialog).toContain(
-      "# Then nothing: this gateway process re-reads this prefix within 3600s. No redeploy.",
+      "# Then nothing: this gateway process re-reads this prefix within 86400s. No redeploy.",
     );
     // The TTL is the upper bound, not the wait: a console write calls
     // `forgetStoreReading` -> `invalidate()` -> `resolver.forget()`, and the

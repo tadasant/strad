@@ -566,7 +566,7 @@ export async function refreshParamsOnce(
  * strad's own console drops it, so a human's rotation reaches `/mcp` at once.
  * A write through the `secrets` MCP server does not: that server runs in a
  * bundle, writes through a client of its own, and core learns nothing until
- * the reading ages out — an hour, by default. The console grew a "Re-read the
+ * the reading ages out — a day, by default. The console grew a "Re-read the
  * store" button for exactly this; this is the agent's copy of that button.
  *
  * ## Why it is on this wire
@@ -585,7 +585,9 @@ export async function refreshParamsOnce(
  * prompt-injected agent, a retrying client — could re-create the per-minute
  * bill that one reading per process exists to end. With it the worst case is
  * one refresh per floor, which is a bounded number an operator can multiply
- * out.
+ * out. A call the floor holds off is not dropped: core owes it one re-read
+ * when the floor passes (src/http/params.ts), so a second write inside the
+ * floor lands within it rather than waiting out the TTL.
  */
 
 /** The route. No slug, no variable: it addresses the process, not a parameter. */
@@ -601,7 +603,10 @@ export const STORE_REFRESH_ROUTE = "/_strad/store/refresh";
  */
 export const STORE_REFRESH_FLOOR_MS = 30_000;
 
-/** What core answers. `refreshed: false` means the floor held it off. */
+/**
+ * What core answers. `refreshed: false` means the floor held it off — and that
+ * core will re-read once the floor passes, so the caller need not call again.
+ */
 export interface StoreRefreshResponse {
   protocol: number;
   ok: true;
@@ -716,8 +721,9 @@ export function createStoreRefreshClient(
           return {
             refreshed: false,
             reason:
-              `core re-read the store ${parsed.ageSeconds ?? "a few"}s ago and ` +
-              `will not again inside ${STORE_REFRESH_FLOOR_MS / 1000}s`,
+              `core re-read the store ${parsed.ageSeconds ?? "a few"}s ago; it ` +
+              `re-reads once more when its ${STORE_REFRESH_FLOOR_MS / 1000}s ` +
+              `floor passes, which picks this up`,
           };
         }
         return { refreshed: true };

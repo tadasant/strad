@@ -117,8 +117,8 @@ component that should not be editing config anyway.
 
 Reading costs two API calls per poll per core instance: Parameter Manager has no
 `latest` alias, so a read lists the versions and gets the ranked one. It
-deliberately does not go through the hour-old process snapshot the secret
-provider slices — an hour-stale roster is not a roster.
+deliberately does not go through the day-old process snapshot the secret
+provider slices — a day-stale roster is not a roster.
 
 ### It requires `gcp-parameter-store`
 

@@ -91,9 +91,10 @@ gateway:
   # docs/operate/secrets.md has the order.
   #
   # envFallback / ttlSeconds / negativeTtlSeconds are left at their defaults
-  # (true / 60 / 10) deliberately: the chain keeps the environment behind the
-  # store so a name that is not seeded yet still resolves, and the TTL is the
-  # window a rotation takes to land.
+  # (true / 86400 / 3600) deliberately: the chain keeps the environment behind
+  # the store so a name that is not seeded yet still resolves, and the TTLs are
+  # only the fallback for a write that did not refresh the gateway — the
+  # console, the `secrets` MCP server and the "Re-read the store" button all do.
   secrets:
     provider: gcp-parameter-store
 

@@ -119,7 +119,7 @@ export interface ParamsHandlerOptions {
    * The write goes through the admin client; the gateway reads through the
    * resolver client, which holds its own reading of the store for
    * `gateway.secrets.ttlSeconds`. Without this the rotated credential would
-   * reach a `${NAME}` on core, or a `params: true` builtin, an hour later.
+   * reach a `${NAME}` on core, or a `params: true` builtin, up to a day later.
    */
   secretProvider?: ServerSecretProviders;
   /**
@@ -533,6 +533,16 @@ export function createParamReadHandler(
  * performed, not from the reading's own age — the route cannot see that, and
  * a console write between two calls is not something it should be charged for.
  *
+ * ## A held-off call is OWED, not dropped
+ *
+ * The floor is trailing-edge. A call it holds off schedules ONE re-read for
+ * the moment the floor passes, and every further call inside the same window
+ * joins that one rather than adding another. Without this, an agent writing
+ * `CLIENT_ID` and then `CLIENT_SECRET` ten seconds apart would see the first
+ * refresh land and the second held off — and with the fallback TTL at a day,
+ * the second value would be a day late with nothing failing. The bound is
+ * unchanged: at most one refresh per floor, however many callers ask.
+ *
  * It is a PER-PROCESS floor, and it is global only because core runs as one
  * instance (`instance_count: 1` for the core service in
  * src/deploy/appspec.ts). A core that scaled out would hold one floor per
@@ -542,9 +552,26 @@ export function createParamReadHandler(
  */
 export function createStoreRefreshHandler(
   opts: ParamsHandlerOptions,
+  /** Injected in tests, so the owed re-read fires on the test's clock. */
+  schedule: (run: () => void, ms: number) => () => void = (run, ms) => {
+    const timer = setTimeout(run, ms);
+    timer.unref();
+    return () => clearTimeout(timer);
+  },
 ): RequestHandler {
   const now = opts.now ?? Date.now;
   let lastRefreshAt = -Infinity;
+  let cancelOwed: (() => void) | undefined;
+
+  const refresh = (): void => {
+    cancelOwed?.();
+    cancelOwed = undefined;
+    lastRefreshAt = now();
+    opts.secretProvider?.invalidate();
+    forgetDeploymentDiagnosis({ env: opts.env, store: opts.diagnosticStore });
+    event({ evt: "strad.store_refreshed", refreshed: true });
+  };
+
   return (req: Request, res: Response) => {
     const auth = authorizePresence(
       req.get("authorization"),
@@ -559,6 +586,7 @@ export function createStoreRefreshHandler(
     const at = now();
     const sinceMs = at - lastRefreshAt;
     if (sinceMs < STORE_REFRESH_FLOOR_MS) {
+      cancelOwed ??= schedule(refresh, STORE_REFRESH_FLOOR_MS - sinceMs);
       event({ evt: "strad.store_refreshed", refreshed: false });
       res.status(200).json({
         protocol: PARAM_PROTOCOL,
@@ -569,10 +597,7 @@ export function createStoreRefreshHandler(
       return;
     }
 
-    lastRefreshAt = at;
-    opts.secretProvider?.invalidate();
-    forgetDeploymentDiagnosis({ env: opts.env, store: opts.diagnosticStore });
-    event({ evt: "strad.store_refreshed", refreshed: true });
+    refresh();
     res.status(200).json({
       protocol: PARAM_PROTOCOL,
       ok: true,

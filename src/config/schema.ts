@@ -1352,39 +1352,49 @@ const AuthConfig = z.object({
  * vars at all — only the single bootstrap credential the container needs to
  * reach the store.
  *
- * Timings are honest, not aspirational (see src/secrets/provider/store.ts):
- * a rotation lands within `ttlSeconds`; a newly ADDED name lands within
- * `negativeTtlSeconds`; a change written through strad's own console is instant
- * on the process that wrote it.
+ * Timings are honest, not aspirational (see src/secrets/provider/store.ts).
+ * A change that TELLS the gateway lands at once: a write through strad's own
+ * console, a write through the `secrets` MCP server (its write tools call
+ * `refresh_gateway`), and the console's "Re-read the store" button. A change
+ * written straight into the store some other way — a hand `gcloud` seed —
+ * lands within `ttlSeconds` (a rotation) or `negativeTtlSeconds` (a newly
+ * ADDED name).
  *
- * The defaults are long on purpose. A process holds ONE reading of the whole
- * store (src/secrets/parameters/gcp.ts) and re-reads it only when that reading
- * has aged past `ttlSeconds`, when a console write drops it, or when a `${NAME}`
- * it does not hold is asked for. Every read of the store is billed per
- * parameter, secrets change a few times a month, and the production bill for
- * re-reading them once a minute was the largest line on the account. An hour
- * is the trade: a rotation made outside strad's console lands within it; one
- * made through the console lands at once.
+ * The defaults are a DAY and an HOUR, and that is the design rather than a
+ * compromise. A process holds ONE reading of the whole store
+ * (src/secrets/parameters/gcp.ts) and re-reads it only when that reading has
+ * aged past `ttlSeconds`, when a write or a refresh drops it, or when a
+ * `${NAME}` it does not hold is asked for. Every read of the store is billed
+ * per parameter, secrets change a few times a month, and the production bill
+ * for re-reading them once a minute was the largest line on the account. With
+ * the refresh paths in place the TTL is only the backstop for a writer that
+ * did not say anything, so it is paid once a day. The trade: a value seeded
+ * outside those paths waits up to a day, or a button press, instead of a
+ * minute.
  */
 const SecretsConfig = z
   .object({
     provider: z.enum(["env", "gcp-parameter-store"]).default("env"),
     /**
      * How long one reading of the store is reused, per process. Bounds how long
-     * a ROTATION made outside strad's console can go unnoticed.
+     * a ROTATION that nobody announced can go unnoticed — one made outside the
+     * console, the `secrets` MCP server and the "Re-read the store" button.
+     * A day by default, which is also the maximum.
      *
      * Also the age the console's and `/api/secrets/readiness`'s store
      * DIAGNOSIS may carry: it is answered from the same reading, and prints how
      * old that reading is. See src/secrets/store-diagnostics.ts.
      */
-    ttlSeconds: z.number().int().positive().max(86_400).default(3600),
+    ttlSeconds: z.number().int().positive().max(86_400).default(86_400),
     /**
      * Minimum interval between re-reads triggered by a MISS. Bounds how long a
-     * newly ADDED secret can go unnoticed, and stops an unknown `${REF}` on a
-     * hot path — or a slug deployed ahead of its credential — from re-reading
-     * the store once per request.
+     * newly ADDED secret nobody announced can go unnoticed, and stops an
+     * unknown `${REF}` on a hot path — or a slug deployed ahead of its
+     * credential — from re-reading the store once per request. An hour by
+     * default: a miss that persists (a name only the environment holds, behind
+     * `envFallback`) costs at most one enumeration an hour.
      */
-    negativeTtlSeconds: z.number().int().positive().max(86_400).default(600),
+    negativeTtlSeconds: z.number().int().positive().max(86_400).default(3600),
     /**
      * Keep the process environment as a FALLBACK behind the store.
      *
@@ -1413,8 +1423,8 @@ const SecretsConfig = z
   })
   .default({
     provider: "env",
-    ttlSeconds: 3600,
-    negativeTtlSeconds: 600,
+    ttlSeconds: 86_400,
+    negativeTtlSeconds: 3600,
     envFallback: true,
     paramRefreshSeconds: 300,
   });
@@ -1462,9 +1472,10 @@ const ConfigStoreConfig = z
      * The process that WROTE a change reloads at once and does not wait for
      * this. The poll is what carries a change to the other instances of core,
      * when there is more than one, and what picks up an edit made by a second
-     * console process. Two store reads per interval per instance — small next
-     * to the per-parameter secret reads `ttlSeconds` bounds, and the floor is
-     * there for the same reason that one has a floor.
+     * console process. Two store reads per interval per instance — at the
+     * default, 2,880 a day, which is more than the secret reads a day's
+     * `ttlSeconds` costs; it is only paid with `enabled: true`, and the floor
+     * is what keeps a typo from multiplying it.
      */
     pollSeconds: z.number().int().min(10).max(86_400).default(60),
   })

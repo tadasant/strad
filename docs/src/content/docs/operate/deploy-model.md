@@ -139,9 +139,10 @@ flowchart LR
 The gateway needs one credential in the spec — the service-account key it uses to
 reach the store. Everything the gateway resolves **on the request path** is read
 while it runs, so adding or rotating one of those needs no deploy: a change made
-through strad's console lands at once; a rotation made outside it lands within
-`ttlSeconds` (default 1 hour), an addition within `negativeTtlSeconds` (default
-10 minutes). A boot key is a restart and a baked one is a deploy — see
+through strad's console or the `secrets` MCP server lands at once, and so does
+anything the console's **Re-read the store** button picks up. A change made any
+other way lands on the fallback: a rotation within `ttlSeconds` (default 1 day),
+an addition within `negativeTtlSeconds` (default 1 hour). A boot key is a restart and a baked one is a deploy — see
 [what rotates live](/operate/secrets/#what-rotates-live-what-needs-a-restart-and-what-needs-a-redeploy).
 
 `render-spec` still fails loudly on a reference to a secret that does not exist —

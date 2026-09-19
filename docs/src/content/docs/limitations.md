@@ -466,7 +466,7 @@ What remains under `parameter-store`:
 2. **"Effective on the next request" assumes one core instance.** The write drops
    the reading held by the process that made it, and core runs one instance. A
    second one would keep serving a revoked token from its own snapshot for up to
-   `gateway.secrets.ttlSeconds` — an hour by default — with nothing saying so.
+   `gateway.secrets.ttlSeconds` — a day by default — with nothing saying so.
 3. **Revocation is stale for the length of a store outage.** The runtime provider
    serves its last known good reading when a re-read fails, because a store
    outage must not take `/mcp` down. So a revoke made while the store is
@@ -929,7 +929,7 @@ the store and slices it. The two deploy-time readers, `render-spec` and
 `store:check`, hold it for the run: at the shape a render actually has — one
 store-wide `list()` then fourteen namespace `resolve()`s over 56 parameters,
 counted against the in-memory fake — that is 1751 requests down to 169. The
-running gateway holds it for `gateway.secrets.ttlSeconds`, an hour by default,
+running gateway holds it for `gateway.secrets.ttlSeconds`, a day by default,
 and every namespace it serves — the providers, a `params: true` builtin, the
 console's diagnosis — is a slice of it: one enumeration plus one render per
 parameter per TTL, ~68 billed reads at production's 34 parameters, whatever the
@@ -1010,8 +1010,9 @@ somebody deferred and then forgot, not a typo.
 
 There is one asymmetry worth knowing. How fast a seeded value takes effect depends
 on where the reference is read: a `url:`, `headers:` or builtin `options:` ref
-under `gcp-parameter-store` activates within `negativeTtlSeconds` (default 10
-minutes; at once if seeded through the console) with no redeploy, while a
+under `gcp-parameter-store` activates within `negativeTtlSeconds` (default 1
+hour; at once if seeded through the console or the `secrets` MCP server) with no
+redeploy, while a
 `supplementary-image`'s `env:` — and everything under
 `provider: env` — is baked onto a container strad does not run and needs the next
 deploy. The render says which it is in the warning, but "no PR" and "no deploy"
@@ -1158,12 +1159,13 @@ one.
 
 **The diagnosis is as old as the process's reading of the store, and says so.**
 It is answered from the same reading the gateway resolves `${NAME}` through,
-held for `gateway.secrets.ttlSeconds` (an hour by default), and the pass over it
+held for `gateway.secrets.ttlSeconds` (a day by default), and the pass over it
 is reused for up to a minute, so a `/connectors` reload and a hard poller on
 `/api/secrets/readiness` cost no store read at all inside the TTL. The cost of
 that is freshness: a value written by anything other than this console can take
-up to the TTL to change a row, and a store that breaks can look healthy for that
-long. So the age is printed rather than hidden — the console says when the store
+up to the TTL to change a row, and a store that breaks — a revoked resolver key,
+lost IAM — can look healthy for that long, which at the default is a day. So the
+age is printed rather than hidden — the console says when the store
 was read, and the readiness JSON carries `store.diagnosis.ageSeconds` — and a
 write through the console drops the reading,
 so a rotation is not contradicted by the row it was performed from. A pass whose
@@ -2162,9 +2164,10 @@ differs is one where something broken was seeded under that slug.
 
 Two smaller costs of the same layer:
 
-- **A newly seeded per-server name takes up to `ttlSeconds` (1 hour)**, not
-  `negativeTtlSeconds` (10 minutes) — unless it was seeded through the console,
-  which drops the reading. The layer does not chase a miss, because a miss on it
+- **A newly seeded per-server name takes up to `ttlSeconds` (1 day)**, not
+  `negativeTtlSeconds` (1 hour) — unless it was seeded through the console or the
+  `secrets` MCP server, which drop the reading, or somebody presses **Re-read
+  the store**. The layer does not chase a miss, because a miss on it
   is the normal case and chasing one drops the process's whole reading of the
   store — chasing every miss would cost a full re-read per gateway-resolved name
   per slug. Rotating an existing per-server value is unaffected.

@@ -162,8 +162,9 @@ Where a running strad resolves `${NAME}` from, and **when**. `env` (the default)
 reads the process environment, so a secret is fixed for the life of the container
 and changing one needs a deploy. `gcp-parameter-store` reads the parameter store
 while the gateway runs — once per process, held for `ttlSeconds` — so a change
-made through strad's console lands at once, a rotation made outside it within
-`ttlSeconds`, and an addition within `negativeTtlSeconds`. No deploy. One
+made through strad's console or the `secrets` MCP server lands at once, and one
+made any other way on the fallback: a rotation within `ttlSeconds` (a day), an
+addition within `negativeTtlSeconds` (an hour). No deploy. One
 provider per deployment, because two ways to manage a credential means one is
 stale and nobody knows which.
 
