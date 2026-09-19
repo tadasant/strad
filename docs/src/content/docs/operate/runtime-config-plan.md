@@ -289,9 +289,9 @@ neither of the two namespacing rules #153 describes is either.
 is a new mount reached through no checked-in slug, so there is no narrower
 checked-in `tools:` for it to widen past, and a writer that reaches an existing
 mount reaches it exactly as before. There is no new secret-reading principal:
-core reads the namespace with the resolver it already holds. What is new is that
-core hands the values to any `STRAD_INTERNAL_TOKEN` holder —
-[Known limitations](/limitations/) #98.
+core reads the namespace with the resolver it already holds, and hands the
+values only to the component the slug is on, identified by that component's own
+internal token ([Known limitations](/limitations/) #63, #100).
 
 **Owner.** `strad` for core and the host tree; `strad-production` for the prod
 roster once a slug can migrate.
@@ -434,10 +434,9 @@ brings the question back.
 
    As shipped, phase 3 needs **no new principal**: core serves an instance's
    values out of the resolver it already holds, which already has
-   `parameterAccessor`. The decision that remains is the one
-   [Known limitations](/limitations/) #98 names — whether serving those values to
-   every holder of the internal token is acceptable, or per-component tokens
-   come first.
+   `parameterAccessor`. Per-component internal tokens came first, as that
+   decision required: core serves an instance's values only to the component
+   that runs it ([Known limitations](/limitations/) #63, #100).
 
 4. **Complete each OAuth consent** (phases 3 and 4, ongoing). Granting consent
    is a browser handshake with a third party. `describe_connector_authorization`

@@ -54,8 +54,9 @@
  * component at render time. What the GET adds is FRESHNESS — the value as of now
  * rather than as of the last deploy — which is precisely the race it exists to
  * close. The store-served instance routes at the end of this file are the one
- * exception — their values are baked nowhere — and HACKS.md #98 says what that
- * widens.
+ * exception — their values are baked nowhere — so core serves them only to the
+ * component the slug is on, read off that component's own internal token
+ * (`internalCaller` in core); HACKS.md #100 says what else they do not cover.
  *
  * This file is VENDORED into the bundle host tree (`npm run paramroute:sync`,
  * `test/vendored.sync.test.ts`), so it must stay import-free. It carries BOTH

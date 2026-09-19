@@ -1365,17 +1365,18 @@ without an instance removes it.
 | A value seeded or rotated in the console                                 | on the next sync — the console's write drops core's reading at once                                    |
 | A value written outside the console — the `secrets` MCP server, `gcloud` | on the next sync after core's reading ages out (within `ttlSeconds`), or right after `refresh_gateway` |
 
-Both routes are core-only, behind `STRAD_INTERNAL_TOKEN`, and compose the
+Both routes are core-only, behind the calling component's own
+`STRAD_INTERNAL_TOKEN`, and compose the
 namespace from the config's own slug rather than the URL's. The env route gives
 one answer — `403 instance_not_served` — for an unknown slug, a disabled one and
 one that is not an instance, so it is not an oracle for which slugs hold
 credentials.
 
 **No new credential and no new IAM.** Core reads the namespace as a slice of the
-one snapshot its resolver already holds. What is new is who it hands the values
-to: any holder of `STRAD_INTERNAL_TOKEN`, which is every supplementary component
-— so a component that does not serve a slug can still read that slug's instance
-credentials. See [Known limitations](/limitations/) #98.
+one snapshot its resolver already holds, and hands the values only to the
+component the slug is on: the list answers for the caller's own component, and
+the env route refuses a slug on any other with the same `403`. See
+[Known limitations](/limitations/) #100.
 
 ## `paramsRefresh:` — a rotation that lands without a deploy
 

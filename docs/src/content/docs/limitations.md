@@ -2994,7 +2994,7 @@ same over `/mcp` through the `connectors` builtin, live on the next request with
 no deploy. Two things it does not do, and the first is the one people expect.
 
 **A second account of an existing bundled server still needs a deploy — except
-on the three trees a [store-served instance](#98-a-store-served-instances-credentials-reach-every-supplementary-component-that-asks)
+on the three trees a [store-served instance](#100-what-a-store-served-instance-does-not-cover)
 covers.** A `supplementary-image` mount's credentials reach its container as environment
 variables the renderer bakes into the app spec, and a process's environment is
 fixed at spawn — so a new value cannot reach a running container at all. The
@@ -3078,7 +3078,7 @@ plan](/operate/runtime-config-plan/) carries it as a later phase.
 **Undo:** for the first, a credential path a running container reads rather than
 receives — what `paramsRefresh:` does for a value behind an already-listed name,
 widened to a name the spec never listed, which needs the bundle host to discover
-mounts from the store instead of from its environment. #98's store-served
+mounts from the store instead of from its environment. #100's store-served
 instances are that path for the three trees that build from an injected
 environment; the rest need a tree that does, or a process per credential. For the
 second, a stored document with an `etag`-style precondition, or one writer
@@ -3088,18 +3088,19 @@ See `HACKS.md` #96.
 
 ---
 
-### 98. A store-served instance's credentials reach every supplementary component that asks
+### 100. What a store-served instance does not cover
 
 A server on [`path: /_instance/{tree}/{slug}`](/operate/secrets/#store-served-instances--a-mount-credentialed-from-its-own-namespace)
 is credentialed at runtime: core lists it to its bundle and serves that slug's own
-namespace, and the bundle host builds the instance from the values. Seven edges.
+namespace, and the bundle host builds the instance from the values. Six edges,
+and the boundary that bounds them.
 
-**Any internal-token holder can read any instance's credentials.** The routes
-authenticate `STRAD_INTERNAL_TOKEN`, which every supplementary component holds,
-and nothing binds a caller to the bundle it names. The parameter routes have the
-same gap and disclose nothing new, because their values are already baked onto
-the caller; an instance's values are baked nowhere, so a component that does not
-serve a slug can fetch it.
+**The caller is the component that serves the slug, and no other.** Each
+component holds its own internal token ([#63](#63-one-internal-token-means-any-container-can-reach-any-writable-parameter)),
+and both routes read the caller's component off it: the list answers for that
+component only, and the env route serves a slug only when its `bundle:` is the
+caller's. Any other component gets the same `403` as a slug that is not an
+instance.
 
 **Three trees, one account per slug.** `telegram`, `google-sheets` and `grafana`
 only. `remote-filesystem-tmp-public` is not one yet, and gmail, calendar, docs and
@@ -3124,10 +3125,10 @@ strad bundle image is listed to it and never served. **Health lags the first
 sync**: before it, a component serving only instances reads as unrecognised to
 core's mount health.
 
-**Undo:** per-component internal tokens, a `close()` on the telegram tree, and an
-instance tree for remote-filesystem once its routes key on the slug.
+**Undo:** a `close()` on the telegram tree, and an instance tree for
+remote-filesystem once its routes key on the slug.
 
-See `HACKS.md` #98.
+See `HACKS.md` #100.
 
 ---
 

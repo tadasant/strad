@@ -4950,7 +4950,7 @@ next request and no deploy. Two things it does not do, and the first is the one
 somebody will expect.
 
 **A second account of an existing bundled server still needs a deploy — except
-on the three trees a store-served instance covers (#98).** "Add a second gmail
+on the three trees a store-served instance covers (#100).** "Add a second gmail
 account and use it immediately" is the shape this feature looks like it
 delivers, and for gmail it does not. A `supplementary-image` mount's credentials
 reach its container as environment variables the renderer bakes into the app
@@ -5070,7 +5070,7 @@ The second is a store limitation strad cannot fix from the client side.
 than receives — the same move `paramsRefresh:` makes, widened from "a value
 behind an already-listed name" to "a name the spec never listed", which needs the
 bundle host to discover mounts from the store instead of from `process.env`.
-#98's store-served instances are that path for the three trees that build from
+#100's store-served instances are that path for the three trees that build from
 an injected environment; the rest need a tree that does, or a process per
 credential. For the second: a stored document with an
 `etag`-style precondition, or a single writer elected per deployment.

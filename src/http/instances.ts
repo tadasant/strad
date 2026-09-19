@@ -1,8 +1,7 @@
 import type { Request, RequestHandler, Response } from "express";
 import type { StradConfig } from "../config/schema.ts";
 import { asyncRoute, jsonFailure } from "./async-route.ts";
-import { secretEquals } from "../auth/credential.ts";
-import { authorizePresence } from "../secrets/presence.ts";
+import { internalCaller } from "../auth/internal-token.ts";
 import {
   PARAM_PROTOCOL,
   parseInstancePath,
@@ -43,13 +42,15 @@ import { errorSummary } from "../util/error-text.ts";
  * the URL: the request's slug is used for an equality test, and the namespace is
  * composed from the config's copy.
  *
- * The caller is any holder of `STRAD_INTERNAL_TOKEN`, which is every
- * supplementary component. That is a WIDENING over the parameter GET, whose
- * values are already baked onto the caller: an instance's values are baked
- * nowhere, so a component that is not the one serving a slug can still read
- * that slug's credentials here. It is the same token-is-not-an-identity gap
- * HACKS.md #63 records for the parameter routes, reaching further, and the fix
- * is the one that entry names — per-component tokens. HACKS.md #98 says so.
+ * The caller is the component that serves the slug, and nothing else can be.
+ * Each component holds its own internal token, derived by core from the root
+ * (src/auth/internal-token.ts), and both routes read the caller's component off
+ * the token it presents: the list answers for that component only, and the env
+ * route serves a slug only when its `bundle:` is the caller's. So an instance's
+ * values reach exactly the container that runs it — `bundle-zimmer-secrets`, a
+ * third-party image or any other component asking for another's slug gets the
+ * same 403 as a slug that is not an instance. HACKS.md #63 is the mechanism,
+ * HACKS.md #100 the rest of what an instance does not cover.
  *
  * ## One answer for every "no"
  *
@@ -101,24 +102,21 @@ function instanceOf(
   return { slug: server.slug, tree: parsed.tree };
 }
 
-function authorized(
+/** The calling component, read off its own token — or null, having answered. */
+function caller(
   req: Request,
   res: Response,
   opts: InstancesHandlerOptions,
-): boolean {
+): string | null {
   // Every answer from both routes, refusals included: none of them describes
   // anything a cache may hold, and the 200 of one of them is credentials.
   res.set("cache-control", "no-store");
-  const auth = authorizePresence(
-    req.get("authorization"),
-    opts.env.STRAD_INTERNAL_TOKEN,
-    secretEquals,
-  );
-  if (!auth.ok) {
-    res.status(auth.status).json({ error: auth.error });
-    return false;
+  const found = internalCaller(req.get("authorization"), opts.config, opts.env);
+  if (!found.ok) {
+    res.status(found.status).json({ error: found.error });
+    return null;
   }
-  return true;
+  return found.component;
 }
 
 /** `GET /_strad/instances?bundle=` — which instances this component should run. */
@@ -126,10 +124,18 @@ export function createInstanceListHandler(
   opts: InstancesHandlerOptions,
 ): RequestHandler {
   return (req: Request, res: Response) => {
-    if (!authorized(req, res, opts)) return;
+    const component = caller(req, res, opts);
+    if (component === null) return;
     const bundle = typeof req.query.bundle === "string" ? req.query.bundle : "";
     if (!bundle) {
       res.status(400).json({ error: "bundle_required" });
+      return;
+    }
+    // The query names the bundle; the token says which one is asking. A
+    // component may list its own instances and nobody else's.
+    if (bundle !== component) {
+      event({ evt: "strad.instance_refused" });
+      res.status(403).json({ error: "instance_not_served" });
       return;
     }
     // No event: every component calls this every sync interval, and a record
@@ -146,12 +152,14 @@ export function createInstanceEnvHandler(
   opts: InstancesHandlerOptions,
 ): RequestHandler {
   return asyncRoute(async (req: Request, res: Response) => {
-    if (!authorized(req, res, opts)) return;
+    const component = caller(req, res, opts);
+    if (component === null) return;
 
     const requested = req.params.slug ?? "";
-    const found = opts.config.servers
-      .map(instanceOf)
-      .find((i): i is InstanceDescriptor => i !== null && i.slug === requested);
+    // Served only to the component the slug is on — the one that runs it.
+    const found = instancesFor(opts.config, component).find(
+      (i) => i.slug === requested,
+    );
     if (!found) {
       event({ evt: "strad.instance_refused" });
       res.status(403).json({ error: "instance_not_served" });

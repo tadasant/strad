@@ -937,6 +937,17 @@ export function assertWithinReach(
   // tree code inside a container, and a writer the deploy gave no slug on that
   // container has no business placing one there. That is a weaker question than
   // bound A's and it is the right one — the mount is new, the container is not.
+  //
+  // Why "some checked-in slug on the component" adds no reach over bound A:
+  // what the instance can touch is (1) the six non-credential process names
+  // `INSTANCE_PROCESS_ENV_NAMES` lets through, which a served value cannot
+  // override; (2) its OWN slug's namespace, which core serves only to the
+  // component the slug is on, identified by that component's own internal
+  // token (`src/http/instances.ts`, HACKS.md #63); and (3) fixed tree code —
+  // telegram, google-sheets or grafana — never the author's. None of the three
+  // is a credential of any existing mount, so the choice of component decides
+  // only which container runs it. Who may CALL it is the entitlement bound
+  // above, unchanged.
   if (parseInstancePath(path)?.slug === slug) {
     const reachesComponent = baseConfig.servers.some(
       (s) =>

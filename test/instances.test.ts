@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { componentToken } from "../src/auth/internal-token.ts";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { parseConfig, parseYamlDocument } from "../src/config/load.ts";
 import {
@@ -57,7 +58,9 @@ import {
  * learned from core.
  */
 
-const TOKEN = "InternalTokenValueNeverShown";
+/** The ROOT core holds, and the `bundle` component's own token derived from it. */
+const ROOT = "InternalTokenValueNeverShown";
+const TOKEN = componentToken(ROOT, "bundle");
 const IMAGE = "ghcr.io/tadasant/strad-bundle:latest";
 
 const YAML = `
@@ -114,7 +117,7 @@ const NOBODY: WritingPrincipal = { roles: ["nobody"] };
 
 const ENV: NodeJS.ProcessEnv = {
   STRAD_MODE: "core",
-  STRAD_INTERNAL_TOKEN: TOKEN,
+  STRAD_INTERNAL_TOKEN: ROOT,
   STRAD_BUNDLE_URL_BUNDLE: "http://bundle:8080",
   STRAD_BUNDLE_URL_BUNDLE_OTHER: "http://bundle-other:8080",
   // In CORE's environment, where a runtime-authored entry must never reach it.
@@ -220,7 +223,11 @@ function host(bundle = "bundle") {
   const built: Built[] = [];
   let clock = 0;
   const reconciler = createInstanceReconciler<Built>({
-    client: createInstanceClient({ baseUrl, token: TOKEN, bundle }),
+    client: createInstanceClient({
+      baseUrl,
+      token: componentToken(ROOT, bundle),
+      bundle,
+    }),
     build: async (tree, slug, env) => {
       const instance = { tree, slug, env, closed: false };
       built.push(instance);
@@ -371,6 +378,34 @@ describe("the instance routes", () => {
     expect(
       (await get("/_strad/instances/telegram-work", "wrong")).status,
     ).not.toBe(200);
+  });
+
+  it("refuse the ROOT, which no component holds", async () => {
+    expect((await get("/_strad/instances?bundle=bundle", ROOT)).status).toBe(
+      401,
+    );
+    expect((await get("/_strad/instances/telegram-work", ROOT)).status).toBe(
+      401,
+    );
+  });
+
+  // The merge gate's H2 on #357: a component that does not serve a slug must
+  // not be able to read its credentials. `bundle-other` holds a VALID token —
+  // its own — and asks for `bundle`'s instance and `bundle`'s list.
+  it("serve another component nothing of this component's", async () => {
+    const other = componentToken(ROOT, "bundle-other");
+    const env = await get("/_strad/instances/telegram-work", other);
+    expect(env.status).toBe(403);
+    expect(await env.json()).toEqual({ error: "instance_not_served" });
+    const list = await get("/_strad/instances?bundle=bundle", other);
+    expect(list.status).toBe(403);
+    expect(await list.json()).toEqual({ error: "instance_not_served" });
+    // ...and the same token still reaches its own component's instance.
+    expect(
+      (await get("/_strad/instances/grafana-elsewhere", other)).status,
+    ).toBe(200);
+    // While `bundle`'s own token cannot read `bundle-other`'s.
+    expect((await get("/_strad/instances/grafana-elsewhere")).status).toBe(403);
   });
 
   it("need the asking bundle named", async () => {
