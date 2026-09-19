@@ -478,10 +478,10 @@ describe("boot-time hydration", () => {
   it("gives a BUNDLE strictly less than core", async () => {
     const env: NodeJS.ProcessEnv = {};
     const hydrated = await hydrateBootEnv(provider, "bundle", env);
-    expect(hydrated).toEqual([
-      "OTEL_EXPORTER_OTLP_HEADERS",
-      "STRAD_INTERNAL_TOKEN",
-    ]);
+    expect(hydrated).toEqual(["OTEL_EXPORTER_OTLP_HEADERS"]);
+    // Nor the internal-token ROOT: a bundle holds its own derived token, baked
+    // by the renderer, and the root would be every component's.
+    expect(env.STRAD_INTERNAL_TOKEN).toBeUndefined();
     // A bundle serves no console and no public route, so it is handed neither
     // the token store nor the OAuth client.
     expect(env.STRAD_TOKENS).toBeUndefined();

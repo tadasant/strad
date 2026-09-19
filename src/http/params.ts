@@ -3,8 +3,7 @@ import type { StradConfig } from "../config/schema.ts";
 import { asyncRoute, jsonFailure } from "./async-route.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import type { ServerSecretProviders } from "../secrets/provider/index.ts";
-import { secretEquals } from "../auth/credential.ts";
-import { authorizePresence } from "../secrets/presence.ts";
+import { internalCaller } from "../auth/internal-token.ts";
 import {
   parseParamWriteRequest,
   PARAM_PROTOCOL,
@@ -81,22 +80,16 @@ import { errorSummary } from "../util/error-text.ts";
  * config-enumeration oracle for a credential that is otherwise only good for the
  * thing it is scoped to.
  *
- * ## WHAT THE ALLOWLIST DOES NOT BOUND: which caller
+ * ## Which caller: the credential says
  *
- * `STRAD_INTERNAL_TOKEN` is ONE token, broadcast to every supplementary
- * component (`BUNDLE_BOOT_ENV_KEYS` in appspec.ts). Nothing here binds a caller
- * to the slug it addresses, and nothing can: the token is the only thing the
- * caller presents, and every container holds the same one. So the union of every
- * server's `paramsWritable:` is reachable by any container that holds it, not
- * just by the server that owns the name.
- *
- * That is a real widening and it is stated in the docs rather than papered over
- * — see HACKS.md #63. What bounds it is that the union is an OPT-IN list of
- * names a human wrote in the config, empty by default, and that every one of
- * them is a rotating credential rather than a durable one. A component-identity
- * header would narrow the accident and not the attack, because the caller would
- * be choosing its own identity; per-component tokens are the fix, and they are a
- * change to the presence route as much as to this one.
+ * Each component holds its OWN internal token, derived by core from the root
+ * (src/auth/internal-token.ts). The caller's component is read off the token it
+ * presents, never off anything it claims, and a slug is only addressable by
+ * the component that serves it: `server.bundle` must be the caller's. So the
+ * reach of a container is its own servers' `paramsWritable:` /
+ * `paramsRefresh:`, not the union of every server's. A slug on another
+ * component gets the same 403 as a name on no list — the same one answer, for
+ * the same reason. HACKS.md #63 is what this closed.
  */
 
 export interface ParamsHandlerOptions {
@@ -323,21 +316,35 @@ function target(
   opts: ParamsHandlerOptions,
   lookup: typeof writableTarget,
 ): (ParamTarget & { paths: string[] }) | null {
-  const auth = authorizePresence(
+  const caller = internalCaller(
     req.get("authorization"),
-    opts.env.STRAD_INTERNAL_TOKEN,
-    secretEquals,
+    opts.config,
+    opts.env,
   );
-  if (!auth.ok) {
-    res.status(auth.status).json({ error: auth.error });
+  if (!caller.ok) {
+    res.status(caller.status).json({ error: caller.error });
     return null;
   }
 
-  const found = lookup(
+  const listed = lookup(
     opts.config,
     req.params.slug ?? "",
     req.params.variable ?? "",
   );
+  // The caller's own component, or nothing. `lookup` already matched the one
+  // enabled supplementary server by this slug; its `bundle:` is the component
+  // that serves it, and only that component's token may address it.
+  const found =
+    listed &&
+    opts.config.servers.some(
+      (s) =>
+        s.enabled &&
+        s.kind === "supplementary-image" &&
+        s.slug === listed.slug &&
+        s.bundle === caller.component,
+    )
+      ? listed
+      : null;
   if (!found) {
     // ONE answer for every shape of "no". See the header.
     //
@@ -352,8 +359,9 @@ function target(
     event({ evt: "strad.param_refused" });
     console.warn(
       `[strad] refused ${req.method} /_strad/params for ` +
-        `${req.params.slug}/${req.params.variable}: no enabled ` +
-        `supplementary-image server names it under ` +
+        `${req.params.slug}/${req.params.variable} from component ` +
+        `"${caller.component}": no enabled supplementary-image server on that ` +
+        `component names it under ` +
         `${req.method === "GET" ? "paramsWritable: or paramsRefresh:" : "paramsWritable:"}`,
     );
     res.status(403).json({ error: "parameter_not_writable" });
@@ -573,13 +581,16 @@ export function createStoreRefreshHandler(
   };
 
   return (req: Request, res: Response) => {
-    const auth = authorizePresence(
+    // ANY component's own token, and deliberately not narrowed further: the
+    // route names no slug and writes nothing, and the floor below is what
+    // bounds a caller. The root is not a component's credential and is refused.
+    const caller = internalCaller(
       req.get("authorization"),
-      opts.env.STRAD_INTERNAL_TOKEN,
-      secretEquals,
+      opts.config,
+      opts.env,
     );
-    if (!auth.ok) {
-      res.status(auth.status).json({ error: auth.error });
+    if (!caller.ok) {
+      res.status(caller.status).json({ error: caller.error });
       return;
     }
 

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
+import { componentToken } from "../src/auth/internal-token.ts";
 import {
   bakedSecretNames,
   preflightSecrets,
@@ -542,7 +543,11 @@ describe("render-spec, store-backed", () => {
       "Authorization=Bearer otlp-from-the-store",
     );
     expect(at("OTEL_EXPORTER_OTLP_HEADERS")?.type).toBe("SECRET");
-    expect(at("STRAD_INTERNAL_TOKEN")?.value).toBe("internal-shared");
+    // Its OWN token, derived from the stored root — never the root itself.
+    expect(at("STRAD_INTERNAL_TOKEN")?.value).toBe(
+      componentToken("internal-shared", "bundle"),
+    );
+    expect(at("STRAD_INTERNAL_TOKEN")?.type).toBe("SECRET");
     // Not the deploy environment's stale copy, which is sitting right there.
     expect(JSON.stringify(result.spec)).not.toContain("STALE-ENV-VALUE");
     // And the credential that reads the store still stops at the strad image.
@@ -556,6 +561,9 @@ describe("render-spec, store-backed", () => {
     expect(result.stderr).toContain("STRAD_INTERNAL_TOKEN");
     expect(result.stderr).not.toContain("otlp-from-the-store");
     expect(result.stderr).not.toContain("internal-shared");
+    expect(result.stderr).not.toContain(
+      componentToken("internal-shared", "bundle"),
+    );
   });
 
   /**
@@ -601,7 +609,8 @@ describe("render-spec, store-backed", () => {
     expect(result.stderr).toContain("/strad/emptyboot/gateway/static/");
     // The RESOLVABILITY check, not preflight's presence check — the two have
     // different fixes, so the deploy has to say which one it hit.
-    expect(result.stderr).toContain("cannot read the store for itself");
+    expect(result.stderr).toContain("derived from it at render time");
+    expect(result.stderr).toContain("presence is not resolvability");
     expect(result.stderr).not.toContain("missing from");
   });
 
@@ -735,7 +744,17 @@ describe("render-spec, env-backed (the default)", () => {
         .filter((k) => (CORE_BOOT_ENV_KEYS as readonly string[]).includes(k))
         .sort();
 
-    expect(boot(keysOf("bundle"))).toEqual([...BUNDLE_BOOT_ENV_KEYS].sort());
+    // The bundle's keys, plus a variable named STRAD_INTERNAL_TOKEN holding its
+    // OWN derived token — the value check below is what proves it is not the
+    // root, which is `env-STRAD_INTERNAL_TOKEN` here.
+    expect(boot(keysOf("bundle"))).toEqual(
+      [...BUNDLE_BOOT_ENV_KEYS, "STRAD_INTERNAL_TOKEN"].sort(),
+    );
+    expect(
+      spec.services
+        .find((s) => s.name === "bundle")!
+        .envs.find((e) => e.key === "STRAD_INTERNAL_TOKEN")?.value,
+    ).toBe(componentToken("env-STRAD_INTERNAL_TOKEN", "bundle"));
     expect(boot(keysOf("core"))).toEqual([...CORE_BOOT_ENV_KEYS].sort());
     // The component's own credential and an ordinary broadcast ref still land.
     expect(keysOf("bundle")).toContain("SLACK_BOT_TOKEN");

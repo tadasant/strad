@@ -173,23 +173,32 @@ and it holds no store credential, because that key reaches the strad image and
 stops there. It cannot hydrate, and giving it the credential would not change
 that, since nothing inside it knows how to ask.
 
-So `render-spec` reads that component's two boot keys — `STRAD_INTERNAL_TOKEN`
-and `OTEL_EXPORTER_OTLP_HEADERS` — **from the store** and bakes them onto it,
-exactly as it already does for that component's `env:`. One place to manage them;
-a redeploy to change them. Those two are `BUNDLE_BOOT_ENV_KEYS`, and they are all
-of strad's boot keys such a component gets under `provider: env` too. Everything
-else in `CORE_BOOT_ENV_KEYS` stays off it on both paths.
+So `render-spec` bakes that component's two boot values onto it, exactly as it
+already does for that component's `env:`. `OTEL_EXPORTER_OTLP_HEADERS` is read
+**from the store** and baked as is; it is the one member of `BUNDLE_BOOT_ENV_KEYS`.
+`STRAD_INTERNAL_TOKEN` is baked as that component's **own** token,
+`base64url(HMAC-SHA256(root, "strad-internal-token/v1:" + component))`, derived
+from the root the renderer reads from the store — and the same derivation runs
+under `provider: env`, from the root in the deploy environment, for every non-core
+component including a strad-image bundle. The root itself is core-only. One place
+to manage them; a redeploy to change them. Everything else in
+`CORE_BOOT_ENV_KEYS` stays off such a component on both paths. See
+[limitation #63](/limitations/#63-one-internal-token-means-any-container-can-reach-any-writable-parameter).
 
 Both of those keys fail silently when absent — a bundle with no OTLP header
 exports into rejection about a minute after a green deploy, with `/healthz` still
-200 — so the render checks rather than trusts, in three places that answer
-different questions:
+200 — so the render checks rather than trusts, in four places that answer
+different questions. Under the store provider the root check reads the gateway
+namespace whenever the config has any non-core component, a strad-image bundle
+alone included, so such a render inherits that read's blast radius (a broken
+parameter anywhere in the namespace fails it).
 
-| Check                                        | Fails the deploy when                                                                                                                                                                                  |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `preflightSecrets()`                         | **no namespace** holds a required name — neither the gateway's nor that of every server referencing it. It reads metadata, so it cannot tell whether the value renders.                                |
-| the required-boot-key check in `render-spec` | a required boot key resolves to **nothing** — the parameter is there, `list()` reports a value, and `:render` returns empty. Presence is not resolvability, and this is the half preflight cannot see. |
-| `bootEnvGaps()`                              | a component in the **rendered spec** holds neither a boot key it needs nor the credential to fetch it. A cross-check on the renderer itself.                                                           |
+| Check                                          | Fails the deploy when                                                                                                                                                                                                                                  |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `preflightSecrets()`                           | **no namespace** holds a required name — neither the gateway's nor that of every server referencing it. It reads metadata, so it cannot tell whether the value renders.                                                                                |
+| the internal-token root check in `render-spec` | the `STRAD_INTERNAL_TOKEN` root resolves to **nothing** while any non-core component exists — the parameter is there, `list()` reports a value, and `:render` returns empty. Presence is not resolvability, and this is the half preflight cannot see. |
+| `bootEnvGaps()`                                | a component in the **rendered spec** holds neither a boot key it needs nor the credential to fetch it, or a non-core component lacks its derived internal token. A cross-check on the renderer itself.                                                 |
+| the root-placement check in `renderAppSpec`    | any non-core component would carry the root's value under **any** name — a server's `env:` spelling `${STRAD_INTERNAL_TOKEN}` — since that would hand one container every component's token.                                                           |
 
 The OTLP header is deliberately not on the **required** list: an ingestor that
 needs no auth is ordinary, and demanding a header would fail correct deploys. (It

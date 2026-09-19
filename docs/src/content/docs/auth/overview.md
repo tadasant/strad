@@ -27,8 +27,8 @@ reaches the OAuth verifier.
 Different doors take different credentials, but every one that reads an
 `Authorization` header reads it by one rule: `/mcp` and `/api/secrets/readiness`
 (a static token), the console gate and `/console` (the bootstrap token,
-when it comes as a header rather than `?token=`), and the shared
-`STRAD_INTERNAL_TOKEN` wherever a component asks for it — a strad-image bundle's
+when it comes as a header rather than `?token=`), and a component's own
+`STRAD_INTERNAL_TOKEN` wherever one is asked for — a strad-image bundle's
 `/mcp`, every `strad-bundle` mount (`/<slug>` and `/<slug>/upload/:token`),
 `/_strad/presence` on either image, and core's `/_strad/params` and
 `/_strad/store/refresh`.
@@ -39,7 +39,9 @@ when it comes as a header rather than `?token=`), and the shared
 - **A header that is only the credential is refused.** `Authorization: <token>`
   gets the door's ordinary `401`, and so does another scheme or a `Bearer` with
   nothing after it. A hand-rolled `curl` against a component needs the scheme too:
-  `curl -H "Authorization: Bearer $STRAD_INTERNAL_TOKEN" …`.
+  `curl -H "Authorization: Bearer $STRAD_INTERNAL_TOKEN" …`, run where the
+  variable holds that component's token — core holds the root, which no component
+  accepts.
 - **One comparator.** Every compare is constant-time over utf-8 bytes, and a
   length mismatch is a plain no rather than a throw. What it compares differs by
   door: the bootstrap and internal tokens directly, and a static token by the
@@ -226,7 +228,7 @@ WWW-Authenticate: Bearer realm="strad", error="invalid_token",
 those two reads exactly what it always did.
 
 Both are **core only**. A bundle component's `/mcp` is a private-network hop
-authenticated with the shared `STRAD_INTERNAL_TOKEN`; no MCP client discovers it,
+authenticated with that component's own `STRAD_INTERNAL_TOKEN`; no MCP client discovers it,
 so it serves no well-known path and its `401` carries no pointer.
 
 ### `authorization_servers` names strad itself, when strad is running one
@@ -877,8 +879,9 @@ serves it: the `strad-bundle` host image, and the strad image in
 vendored across the npm-tree boundary with the presence vocabulary — so the
 fail-closed rule below is one rule and not two copies of one.
 
-It takes the shared **`STRAD_INTERNAL_TOKEN`**, the same credential core already
-presents to proxy `/mcp` to that component, and that choice is the security
+It takes the component's own **`STRAD_INTERNAL_TOKEN`**, the token core derives
+from its root for that component and already presents to proxy `/mcp` to it, so
+another component's token, or the root, is a `401`. That choice is the security
 argument rather than a convenience: the token is strictly stronger than the
 surface — a holder can already proxy `/mcp` to every server on the component — so
 mounting the route widens nothing. With the token unset the route answers `503`

@@ -307,7 +307,7 @@ refuses to re-read more than once every 30 seconds** and says so; the tool
 reports that as an error rather than a refresh, and the TTL lands the value
 regardless.
 
-How it reaches core: over the same private-network wire and the same shared
+How it reaches core: over the same private-network wire and the component's own
 `STRAD_INTERNAL_TOKEN` as the parameter write-back (`src/secrets/param-route.ts`
 in strad, vendored into the bundle host), which the bundle host builds and hands
 to this tree — this tree holds no URL and no token of its own. It is the mirror

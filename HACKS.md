@@ -420,9 +420,10 @@ remember the block, and the one that forgot would be silently open.
 `/healthz` stays open deliberately — App Platform's prober holds no credential,
 and a 401 there is a component taken out of service.
 
-**What remains.** The token is ONE shared secret broadcast to every supplementary
-component (#63), so the gate authenticates "a strad container" rather than
-"core". Per-component tokens are that entry's exit, not this one's.
+**What remains.** Nothing of the shape this entry had. Each component holds its
+own token, derived by core (#63), so a sibling container's token is refused here
+and the gate authenticates "core, or something holding the root" rather than "a
+strad container".
 
 ---
 
@@ -923,7 +924,7 @@ staging is the worked example of switching it on.
 - The boot keys (`STRAD_TOKENS`, `STRAD_INTERNAL_TOKEN`, `ADMIN_BOOTSTRAP_TOKEN`,
   `GOOGLE_CLIENT_*`, `OTEL_EXPORTER_OTLP_HEADERS`) are hydrated from the store at
   startup — so they leave the app spec — but take effect on the next restart, not
-  within the TTL. A token store and a shared internal token are boot-scoped by
+  within the TTL. A token store and an internal-token root are boot-scoped by
   nature; claiming a rotation had landed while half the fleet still trusted the
   old value would be worse than saying so.
 - `consoleEnv:` is deliberately **never** hydrated and stays deploy-time baked
@@ -3227,46 +3228,79 @@ any credential that is not single-use at the upstream. Worth doing when a second
 consumer appears; not worth doing for a token whose upstream has already made the
 concurrency decision for us.
 
-## 63. One internal token means any container can reach any writable parameter
+## 63. One internal token means any container can reach any writable parameter — RESOLVED, except on a strad-image bundle
+
+**✅ RESOLVED for every `supplementary-image` component.** The exit below is
+built. `STRAD_INTERNAL_TOKEN` is a ROOT that stays on core; every other
+component is baked its OWN token, derived from it,
+
+    token(component) = base64url(HMAC-SHA256(root, "strad-internal-token/v1:" + component))
+
+under the same variable name, so nothing on the component side changed
+(`src/auth/internal-token.ts`, `componentTokenEnv` in `src/deploy/appspec.ts`).
+Core presents the matching token when it proxies `/mcp` and when it asks a
+component's presence route (`internalHeaders(env, component)`), and every
+`/_strad/` route core serves reads the caller's component OFF the credential
+(`internalCaller`) and refuses a slug whose `bundle:` is another component's,
+with the same 403 a name on no allowlist gets. The root is refused by every
+door: no component holds it. So:
+
+- A container on component A cannot read or rotate a `paramsWritable:` /
+  `paramsRefresh:` name of a server on component B. It reaches its own
+  servers' names and nothing else. (`test/param-route.test.ts`, "a caller on
+  another component".)
+- A component cannot ask ANOTHER component's presence route, or reach its `/mcp`
+  mounts: each verifies only its own token. (`test/bundle.test.ts`.)
+- `POST /_strad/store/refresh` accepts any component's own token and is not
+  narrowed further: it names no slug, writes nothing, and is floored.
+
+**How the tokens come into existence: DERIVED, not seeded.** Chosen because it
+adds no secret and no human step in any environment — a component added to the
+config is issued its token by the next render, and the only secret is the root
+that already existed. What that costs, stated rather than hidden:
+
+- **A leaked root is every component's token.** The root is on core only; a
+  supplementary image never holds it under either provider.
+- **Rotating one component rotates all of them.** Rotating the root is one
+  redeploy, as it always was.
+- **A strad-image bundle is NOT isolated from the root.** It is baked its own
+  derived token and does not hydrate the root, but under
+  `gcp-parameter-store` it holds the resolver key, which can read the gateway
+  namespace, root included. That component runs strad's own code and was
+  already inside core's trust boundary for that reason (it can read every
+  gateway value); for it, per-component tokens narrow accidents, not
+  attacks. Staging's non-core components are both `supplementary-image`s.
+- **Re-keying is not atomic.** A deploy that changes the root — or the first
+  deploy of per-component tokens, which changes what every component holds —
+  replaces core and the components as separate containers. While an old one
+  overlaps a new one, core's calls to it answer `401` and the console reports
+  that it refused the token; a boot-time parameter read falls back to the
+  baked value; and a `paramsWritable:` write-back fails loudly, which for a
+  single-use refresh token means the rotation it carried is lost and the slug
+  needs re-seeding. The window is the deploy's overlap, the same one every
+  root rotation already had.
+
+Independent random tokens per component would isolate a leaked root, at the
+price of one secret per component per environment that only a human can create
+in prod. Switching to that later is a renderer change: `componentTokenEnv` reads
+a seeded value instead of deriving one, and `internalCaller` compares against
+the same list.
+
+The original entry, kept because it is the reasoning the design answers:
 
 **What.** The parameter write-back routes (`/_strad/params/{slug}/{VARIABLE}`,
-#62) authenticate with `STRAD_INTERNAL_TOKEN`. That is ONE token, and
-`BUNDLE_BOOT_ENV_KEYS` broadcasts it to every supplementary component, because it
-is the same token core presents to proxy `/mcp` to each of them. Nothing binds a
-caller to the slug it addresses.
-
-So the reachable set is not "this server's allowlist" — it is the UNION of every
-enabled server's `paramsWritable:`, for any container holding the token. Three
-concrete consequences, and the docs must not claim otherwise:
-
-- A compromised container on bundle A can READ and OVERWRITE the rotating
-  credential of a server on bundle B, which it could not do before.
-- The `GET` is a value read on the PUBLIC component. Before this, reading a
-  stored value took the console admin key behind Google SSO. `STRAD_INTERNAL_TOKEN`
-  is now also a read credential for the names on that union, which belongs in how
-  often it is rotated.
-- A connector's variable listed under `paramsWritable:` is in that union too, so
-  the rotating credential a human consented to in the console is reachable the same
-  way. The route can only `rotate()` it, never create it.
-
-**Why anyway.** The union is opt-in, empty by default, and every name in it is by
-construction a credential that ROTATES — the thing `paramsWritable` exists for.
-Losing one costs a re-seed, not a durable secret. Against that, the alternative
-designs are worse: a per-container cloud credential is the thing the
-viewer/admin/resolver split exists to prevent, and it would be strictly stronger
-than this.
+#62) authenticated with `STRAD_INTERNAL_TOKEN`. That was ONE token, and
+`BUNDLE_BOOT_ENV_KEYS` broadcast it to every supplementary component, because it
+was the same token core presented to proxy `/mcp` to each of them. Nothing bound
+a caller to the slug it addressed — the reachable set was the UNION of every
+enabled server's `paramsWritable:`, for any container holding the token, and the
+presence route had the same shape.
 
 **What does NOT fix it.** A component-identity header checked against
 `server.bundle`. The caller would be choosing its own identity, so it narrows the
 ACCIDENT (a mount asking for the wrong name) and not the ATTACK, while reading in
-the code like a boundary. Shipping a check that looks stronger than it is would be
-worse than the honest statement.
-
-**Exit.** Per-component internal tokens: core mints one per bundle, presents the
-matching one when it proxies, and each component holds only its own. That makes
-the caller's identity a property of the credential rather than a claim, and it
-narrows the presence route by the same stroke. It is a change to the boot-env
-plumbing, not to this route, which is why it is not in #62's PR.
+the code like a boundary. That is why the identity is a property of the
+credential: a caller cannot present a token for a component it is not.
 
 ## What the human still needs to provision
 
@@ -4694,8 +4728,8 @@ the resource identifier, the `header`-only bearer method and the pointer at the
 docs are all true today, and the `404`s they replace were indistinguishable, from
 outside, from an OAuth flow that is merely misconfigured.
 
-Core only. A bundle's `/mcp` is a private-network hop authenticated with the
-shared `STRAD_INTERNAL_TOKEN`, no MCP client discovers it, and a pointer from
+Core only. A bundle's `/mcp` is a private-network hop authenticated with that
+component's own `STRAD_INTERNAL_TOKEN`, no MCP client discovers it, and a pointer from
 there would name a path it does not serve — so it serves no well-known route and
 its `401` carries the two parameters it always did.
 

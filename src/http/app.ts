@@ -191,7 +191,7 @@ export function createApp(opts: AppOptions): Express {
   // get a `401` naming an issuer whose `/authorize` is a 404.
   //
   // CORE ONLY, like every other public surface here: a bundle's `/mcp` is a
-  // private-network hop on the shared internal token and no MCP client
+  // private-network hop on its own internal token and no MCP client
   // discovers it.
   const mcpOAuth: McpOAuth | null =
     opts.mode === "core"
@@ -398,7 +398,7 @@ export function createApp(opts: AppOptions): Express {
     // things already in the request — and no secret, no slug and no roster.
     //
     // CORE ONLY, because core is the door on the open internet. A bundle's
-    // `/mcp` is a private-network hop authenticated with the shared internal
+    // `/mcp` is a private-network hop authenticated with its own internal
     // token; no MCP client discovers it, and claiming otherwise would publish a
     // resource identifier nothing can reach.
     //
@@ -487,10 +487,10 @@ export function createApp(opts: AppOptions): Express {
     //
     // CORE ONLY, and for the mirror image of the presence route's reason: core
     // is the component that holds the store-admin credential, and the caller is
-    // a bundle that holds none. Authenticated with the shared
-    // STRAD_INTERNAL_TOKEN, and bounded — on every call, from the config rather
-    // than from the URL — to the names that server's own `paramsWritable:`
-    // allowlist names. See src/http/params.ts.
+    // a bundle that holds none. Authenticated with the calling component's own
+    // internal token (`internalCaller`), and bounded — on every call, from the
+    // config rather than from the URL — to the names the `paramsWritable:`
+    // allowlists of that component's own servers name. See src/http/params.ts.
     const paramsOptions = {
       config: opts.config,
       env,

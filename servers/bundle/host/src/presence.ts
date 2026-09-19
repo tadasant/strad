@@ -343,8 +343,11 @@ export function parsePresenceRequest(body: unknown): PresenceRequest {
 /**
  * Is this caller allowed to ask?
  *
- * The shared internal token, the same one core presents to proxy `/mcp` to this
- * component. FAIL CLOSED when it is not configured: a component with no token
+ * This component's own internal token, the same one core presents to proxy
+ * `/mcp` to it — derived for this component alone, so a token another
+ * component holds is refused here.
+ *
+ * FAIL CLOSED when it is not configured: a component with no token
  * cannot distinguish core from anything else in the VPC, and "the network is
  * private" is a reachability property, not an authorization one.
  *

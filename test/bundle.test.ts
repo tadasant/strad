@@ -1,6 +1,7 @@
 import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { componentToken } from "../src/auth/internal-token.ts";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { mintToken } from "../src/auth/tokens.ts";
 import { parseConfig } from "../src/config/load.ts";
@@ -44,8 +45,11 @@ let coreServer: Server;
 let coreUrl: string;
 
 beforeAll(async () => {
-  // --- the bundle component: internal-only, authenticated by STRAD_INTERNAL_TOKEN
-  const bundleEnv: NodeJS.ProcessEnv = { STRAD_INTERNAL_TOKEN: INTERNAL };
+  // --- the bundle component: internal-only, authenticated by ITS OWN token —
+  //     what the renderer bakes onto it, derived from the root core holds.
+  const bundleEnv: NodeJS.ProcessEnv = {
+    STRAD_INTERNAL_TOKEN: componentToken(INTERNAL, "bundle-api"),
+  };
   const bundleRegistry = await Registry.build({
     config: CONFIG,
     secrets: sharedSecretProviders(new EnvSecretProvider({})),
@@ -163,5 +167,32 @@ describe("core -> bundle over the private network", () => {
       method: "POST",
     });
     expect(res.status).toBe(401);
+  });
+
+  // HACKS.md #63. A token is valid at exactly one component: the one it was
+  // derived for. Another component's token — a VALID credential, for a
+  // different container — and the root itself are both refused here.
+  it("the bundle rejects another component's token, and the root", async () => {
+    const addr = bundleServer.address();
+    if (typeof addr === "string" || !addr) throw new Error("no port");
+    for (const presented of [
+      componentToken(INTERNAL, "bundle-zimmer-secrets"),
+      INTERNAL,
+    ]) {
+      const res = await fetch(`http://127.0.0.1:${addr.port}/mcp`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${presented}`,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/list",
+        }),
+      });
+      expect(res.status).toBe(401);
+    }
   });
 });

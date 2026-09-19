@@ -78,10 +78,7 @@ import {
   specSizeReport,
   LARGEST_ACCEPTED_SPEC_BYTES,
 } from "../src/deploy/spec-size.ts";
-import {
-  BUNDLE_BOOT_ENV_KEYS,
-  REQUIRED_BOOT_ENV_KEYS,
-} from "../src/secrets/provider/hydrate.ts";
+import { BUNDLE_BOOT_ENV_KEYS } from "../src/secrets/provider/hydrate.ts";
 import {
   gatewayNamespace,
   gatewayParameterPath,
@@ -330,7 +327,10 @@ if (storeBacked) {
   }
 } else {
   secret("STRAD_TOKENS", true); // without this, /mcp rejects everything
-  secret("STRAD_INTERNAL_TOKEN", true); // core <-> bundle auth
+  // The ROOT every component's own internal token is derived from. It lands on
+  // core only; each other component is baked its derived token by
+  // renderAppSpec (`componentTokenEnv` in src/deploy/appspec.ts).
+  secret("STRAD_INTERNAL_TOKEN", true);
   secret("ADMIN_BOOTSTRAP_TOKEN"); // console dev bypass
   secret("GOOGLE_CLIENT_ID"); // console real auth, when it exists
   secret("GOOGLE_CLIENT_SECRET");
@@ -839,9 +839,9 @@ if (storeBacked && store) {
 // `supplementary-image` component does not run strad. It holds no store
 // credential (appspec.ts keeps the resolver key off it deliberately) and would
 // not know what to do with one. Under the store provider it was therefore left
-// with neither source, and the two names in BUNDLE_BOOT_ENV_KEYS both fail
-// silently when absent: telemetry keeps exporting into a 401, and the presence
-// route fails closed. See the comment on `bundleBootEnvVars` in appspec.ts.
+// with neither source, and `OTEL_EXPORTER_OTLP_HEADERS` fails silently when
+// absent: telemetry keeps exporting into a 401. (The internal token is derived
+// per component further down.) See `bundleBootEnvVars` in appspec.ts.
 //
 // Read from the STORE, never from `process.env`: the deploy environment stopped
 // being a source of gateway secrets at the flip, and reinstating it here would
@@ -861,25 +861,9 @@ if (storeBacked && hasSupplementary) {
       `${Object.keys(bootSecrets).sort().join(", ") || "(none)"}.`,
   );
 
-  // A REQUIRED boot key that resolved to nothing fails the deploy here.
-  //
-  // Preflight already demands these by NAME, and it asks `list()` — so a
-  // parameter that exists, reports a value, and renders to nothing passes it and
-  // arrives here empty. Under the `env` provider the same name is
-  // `secret(key, required)` and a missing one fails the render; this is that
-  // line, held on the store path, for the component that cannot go and look for
-  // itself.
-  for (const key of REQUIRED_BOOT_ENV_KEYS) {
-    if (!(BUNDLE_BOOT_ENV_KEYS as readonly string[]).includes(key)) continue;
-    if (bootSecrets[key]) continue;
-    console.error(
-      `::error::${key} resolved to no value in ` +
-        `${gatewayNamespace(config.gateway.env)}, and a supplementary component ` +
-        `cannot read the store for itself. Seed or repair that parameter — ` +
-        `presence is not resolvability, so store:check --resolve is what says which.`,
-    );
-    process.exit(1);
-  }
+  // The one REQUIRED boot key a component is handed is the internal token,
+  // and that is derived per component from the root, below — where a root that
+  // resolves to nothing fails the deploy.
 
   // The OTLP header is OPTIONAL — an ingestor that needs no auth is ordinary —
   // so this warns rather than failing. But an ENDPOINT with no header is the
@@ -899,14 +883,67 @@ if (storeBacked && hasSupplementary) {
   }
 }
 
+// THE INTERNAL-TOKEN ROOT, which every non-core component's own token is
+// derived from at render time (src/auth/internal-token.ts).
+//
+// Under the `env` provider it is `secret("STRAD_INTERNAL_TOKEN", true)` above
+// and renderAppSpec reads it from `env`. Under the store provider core hydrates
+// it at boot, but the DERIVED tokens can only be computed here — no component
+// is handed the root to derive its own from — so a render with any non-core
+// component reads it from the store, and fails if it is not there: a component
+// with no token fails closed on every call core makes to it.
+const renderedComponents = [
+  ...new Set(
+    config.servers.flatMap((s) =>
+      s.enabled &&
+      (s.kind === "supplementary-image" || s.kind === "builtin") &&
+      s.bundle !== "core"
+        ? [s.bundle]
+        : [],
+    ),
+  ),
+].sort();
+const hasComponents = renderedComponents.length > 0;
+let internalTokenRoot: string | undefined;
+if (storeBacked && hasComponents) {
+  internalTokenRoot = (await storeValues()).STRAD_INTERNAL_TOKEN || undefined;
+  if (!internalTokenRoot) {
+    console.error(
+      `::error::STRAD_INTERNAL_TOKEN resolved to no value in ` +
+        `${gatewayNamespace(config.gateway.env)}. Every non-core component's ` +
+        `internal token is derived from it at render time, so without it none ` +
+        `of them can authenticate core. Seed or repair that parameter — ` +
+        `presence is not resolvability, so store:check --resolve is what says which.`,
+    );
+    process.exit(1);
+  }
+}
+if (
+  hasComponents &&
+  (storeBacked ? internalTokenRoot : process.env.STRAD_INTERNAL_TOKEN)
+) {
+  // Component names only — the tokens themselves are values.
+  console.error(
+    `[render-spec] STRAD_INTERNAL_TOKEN derived per component, root kept on ` +
+      `core: ${renderedComponents.join(", ")}.`,
+  );
+}
+
 /**
  * The boot keys this render actually has a value for, from whichever source
  * this deployment uses. A key nobody configured cannot be a gap — a deployment
  * with no OTLP ingestor has no header, and that is a supported state.
  */
-const heldBootKeys = BUNDLE_BOOT_ENV_KEYS.filter((key) =>
-  storeBacked ? bootSecrets[key] !== undefined : Boolean(process.env[key]),
-);
+const heldBootKeys = [
+  ...BUNDLE_BOOT_ENV_KEYS.filter((key) =>
+    storeBacked ? bootSecrets[key] !== undefined : Boolean(process.env[key]),
+  ),
+  // Held when there is a root to derive from; `bootEnvGaps` then asserts every
+  // non-core component carries its own derived token.
+  ...((storeBacked ? internalTokenRoot : process.env.STRAD_INTERNAL_TOKEN)
+    ? ["STRAD_INTERNAL_TOKEN"]
+    : []),
+];
 
 // A supplementary server with `params: true` gets its managed parameters —
 // everything under /strad/{env}/mcp/{slug}/static/* — resolved from the secrets
@@ -993,6 +1030,7 @@ const spec = renderAppSpec({
   // whole render, which is the fleet-wide failure this feature removes.
   unseededRefs: unseededBaked,
   bootSecrets,
+  internalTokenRoot,
   resolvedParams,
   domains: resolveDomains(),
   // Names and paths only — the renderer never hands a value to this.
@@ -1015,8 +1053,9 @@ if (gaps.length > 0) {
   console.error(
     `::error::${gaps.length} component(s) would boot without env they cannot ` +
       `fetch for themselves:\n  ${gaps.join("\n  ")}\n` +
-      `A supplementary image does not run strad, so it never hydrates: the ` +
-      `renderer has to bake these. See src/deploy/appspec.ts.`,
+      `A supplementary image does not run strad, so it never hydrates, and no ` +
+      `component hydrates its own internal token, which is derived per ` +
+      `component: the renderer has to bake these. See src/deploy/appspec.ts.`,
   );
   process.exit(1);
 }

@@ -23,6 +23,7 @@ import {
 } from "./adapters/oauth-refresh.ts";
 import type { ServerAdapter } from "./adapters/types.ts";
 import { resolvingFor } from "./unconfigured.ts";
+import { componentToken } from "../auth/internal-token.ts";
 
 /** Shared empty waiver set — most slugs declare none. */
 const EMPTY: ReadonlySet<string> = new Set<string>();
@@ -347,6 +348,7 @@ export class Registry {
                       providerFor(server.slug),
                     ),
                     env,
+                    server.bundle,
                   ),
                 })),
               timeoutMs: server.timeoutMs,
@@ -381,12 +383,13 @@ export class Registry {
                 slug: server.slug,
                 kind: "supplementary-image",
                 // core <-> bundle auth is a deploy-injected env var on BOTH
-                // sides, so it cannot rotate without a redeploy of the pair
-                // anyway. Read it per call regardless — one env lookup, and it
-                // keeps every endpoint on the same code path.
+                // sides — the root here, this component's derived token there —
+                // so it cannot rotate without a redeploy of the pair anyway.
+                // Read it per call regardless — one env lookup, and it keeps
+                // every endpoint on the same code path.
                 endpoint: async () => ({
                   url,
-                  headers: internalHeaders(env),
+                  headers: internalHeaders(env, server.bundle),
                 }),
                 timeoutMs: server.timeoutMs,
                 // The upstream is another strad, so its tools arrive already
@@ -438,15 +441,23 @@ function privateUrlFor(bundle: string, env: NodeJS.ProcessEnv): string {
 }
 
 /**
- * Bundle components authenticate the core with a shared secret. They are on the
- * private network and have no public route, but "internal network" is not an
- * authorization story — anything else in the VPC could reach them.
+ * The credential core presents to ONE component: that component's own internal
+ * token, derived from the root core holds (src/auth/internal-token.ts).
+ *
+ * Bundle components are on the private network and have no public route, but
+ * "internal network" is not an authorization story — anything else in the VPC
+ * could reach them. Each one verifies the token in its own environment, which
+ * the renderer set to its derived token and no other, so the header built for
+ * component A is refused at component B.
  */
 export function internalHeaders(
   env: NodeJS.ProcessEnv,
+  component: string,
 ): Record<string, string> {
-  const token = env.STRAD_INTERNAL_TOKEN;
-  return token ? { authorization: `Bearer ${token}` } : {};
+  const root = env.STRAD_INTERNAL_TOKEN;
+  return root
+    ? { authorization: `Bearer ${componentToken(root, component)}` }
+    : {};
 }
 
 /**
@@ -464,11 +475,14 @@ export function internalHeaders(
 export function withInternalToken(
   headers: Record<string, string>,
   env: NodeJS.ProcessEnv,
+  component: string,
 ): Record<string, string> {
   const declared = Object.keys(headers).some(
     (name) => name.toLowerCase() === "authorization",
   );
-  return declared ? headers : { ...internalHeaders(env), ...headers };
+  return declared
+    ? headers
+    : { ...internalHeaders(env, component), ...headers };
 }
 
 /**

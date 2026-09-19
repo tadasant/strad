@@ -33,9 +33,10 @@
  * the leak that rule exists to prevent. The name is served in
  * `Content-Disposition` on the response instead, where no log keeps it.
  *
- * THE KEY IS DERIVED, NOT SEEDED. `STRAD_INTERNAL_TOKEN` is already on every
- * bundle component — the deploy refuses to render one without it — so there is
- * no new secret to place by hand and no operational step outside a deploy.
+ * THE KEY IS DERIVED, NOT SEEDED. A `STRAD_INTERNAL_TOKEN` (the component's
+ * own) is already on every bundle component — the deploy refuses to render one
+ * without it — so there is no new secret to place by hand and no operational
+ * step outside a deploy.
  */
 
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -83,7 +84,8 @@ export type VerifyResult =
  * `workspaceToken` is the Slack bot token, folded in as a SHA-256 fingerprint
  * and never stored. It is what makes two workspaces two trust domains rather
  * than one: prod runs this image twice against two different Slack workspaces,
- * and both containers hold the SAME `STRAD_INTERNAL_TOKEN`. Slug alone would not
+ * and two mounts on one component hold the SAME `STRAD_INTERNAL_TOKEN` (each
+ * component holds its own, derived by core). Slug alone would not
  * separate them — a deployment that forgot to set `SLACK_PUBLIC_SLUG` has both
  * mounts deriving from the default `slack`, so a link minted by one would verify
  * at the other and then fail obscurely against a file id that workspace has

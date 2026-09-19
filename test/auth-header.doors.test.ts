@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import type { Server } from "node:http";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { componentToken } from "../src/auth/internal-token.ts";
 import { bearerToken, secretEquals } from "../src/auth/credential.ts";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { stateMatches } from "../src/auth/session.ts";
@@ -152,6 +153,10 @@ auth:
   consoleDevBypass: { enabled: true, roles: [admin] }
 roles:
   admin: { servers: ["*"] }
+# Declared so core knows the component whose token the internal doors below
+# present; no server on it, so core never dials it.
+bundles:
+  - name: bundle-api
 servers:
   - slug: echo
     kind: builtin
@@ -178,7 +183,9 @@ servers:
 
 const STATIC = mintToken({ env: "test", label: "admin", roles: ["admin"] });
 const BOOTSTRAP = "bootstrap-token-value";
-const INTERNAL = "internal-token-value";
+/** The ROOT core holds, and the `bundle-api` component's own token. */
+const ROOT = "internal-token-value";
+const INTERNAL = componentToken(ROOT, "bundle-api");
 
 let coreServer: Server;
 let bundleServer: Server;
@@ -200,7 +207,7 @@ beforeAll(async () => {
     STRAD_TOKENS: JSON.stringify([STATIC.record]),
     ADMIN_BOOTSTRAP_TOKEN: BOOTSTRAP,
     ALLOW_DEV_AUTH: "true",
-    STRAD_INTERNAL_TOKEN: INTERNAL,
+    STRAD_INTERNAL_TOKEN: ROOT,
   };
   [coreServer, coreUrl] = await listen(
     createApp({
@@ -403,9 +410,11 @@ describe("no door parses or compares a credential by hand", () => {
    * of them is reading it some other way. `standingPrincipal` is the console
    * token routes' door (src/ui/console-auth.ts): it takes the header whole and
    * parses it with `bearerToken`, exactly as the gate beside it does.
+   * `internalCaller` is core's internal-token door (src/auth/internal-token.ts):
+   * the same parse, then which component's derived token it is.
    */
   const GATES =
-    /\b(?:bearerToken|authenticateMcp|authorizePresence|presenceResponse|requireInternalToken|internalAuthRefusal|standingPrincipal)\b/;
+    /\b(?:bearerToken|authenticateMcp|authorizePresence|presenceResponse|requireInternalToken|internalAuthRefusal|standingPrincipal|internalCaller)\b/;
 
   const sources = ROOTS.flatMap((root) =>
     readdirSync(root, { recursive: true })

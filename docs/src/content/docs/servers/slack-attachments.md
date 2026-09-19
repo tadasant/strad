@@ -61,15 +61,17 @@ properties follow, and each closes a specific hole:
   one mount **fails to verify** at another instead of being honoured somewhere
   confusing.
 
-The key is derived from `STRAD_INTERNAL_TOKEN`, which every bundle component
-already holds, so there is no new secret to seed and no step outside a deploy.
-The credential is in there because the internal token alone would not separate
-two workspaces: strad runs this image twice — `slack` and `slack-readonly`
-against one workspace, `slack-zimmer` against another — and **both containers
-hold the same internal token**. Binding the credential is what makes them two
-trust domains rather than one.
+The key is derived from the component's own `STRAD_INTERNAL_TOKEN`, which every
+bundle component already holds — each its own, derived by core from its root — so
+there is no new secret to seed and no step outside a deploy. The credential is in
+there because the internal token alone would not separate two workspaces: strad
+runs this image twice — `slack` and `slack-readonly` against one workspace,
+`slack-zimmer` against another — and **two mounts on one component hold the same
+internal token**. Binding the credential is what makes them two trust domains
+rather than one.
 
-Rotating either token invalidates outstanding links, which at a fifteen-minute
+Rotating either token invalidates outstanding links — and the internal token
+rotates whenever core's root does, which at a fifteen-minute
 life is not a thing anyone notices.
 
 ## Sensitivity and retention

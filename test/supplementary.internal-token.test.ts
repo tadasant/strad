@@ -1,6 +1,7 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { componentToken } from "../src/auth/internal-token.ts";
 
 import { parseConfig } from "../src/config/load.ts";
 import { bundleUrlEnvName, Registry } from "../src/gateway/registry.ts";
@@ -24,7 +25,9 @@ import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
  * identical to a fix from inside the registry.
  */
 
+/** The ROOT core holds; the component is presented its own token from it. */
 const INTERNAL = "internal-shared-secret";
+const OWN = componentToken(INTERNAL, "bundle");
 
 /** Records the headers of every request, and answers nothing useful. */
 function recorder(): {
@@ -108,7 +111,7 @@ describe("core -> a supplementary-image component", () => {
   it("presents the internal token, with no `headers:` entry in the config", async () => {
     const seen = await reach(configFor(""));
     expect(seen?.path).toBe("/gmail");
-    expect(seen?.authorization).toBe(`Bearer ${INTERNAL}`);
+    expect(seen?.authorization).toBe(`Bearer ${OWN}`);
   });
 
   it("sends exactly one Authorization header, not two spellings of it", async () => {
@@ -128,7 +131,7 @@ describe("core -> a supplementary-image component", () => {
 
   it("still sends other configured headers alongside the internal token", async () => {
     const seen = await reach(configFor('    headers:\n      X-Trace: "abc"'));
-    expect(seen?.authorization).toBe(`Bearer ${INTERNAL}`);
+    expect(seen?.authorization).toBe(`Bearer ${OWN}`);
   });
 
   // Not a fail-closed on this side: the REFUSAL belongs to the bundle host,

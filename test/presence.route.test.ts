@@ -2,6 +2,7 @@ import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
 import { timingSafeEqual } from "node:crypto";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { componentToken } from "../src/auth/internal-token.ts";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { parseConfig } from "../src/config/load.ts";
 import { Registry } from "../src/gateway/registry.ts";
@@ -546,7 +547,7 @@ describe("probeBundles", () => {
     expect(asked).not.toContain("SLACK_TOKEN");
   });
 
-  it("presents the shared internal token", async () => {
+  it("presents the component's own internal token, derived from the root", async () => {
     let auth: string | null = null;
     await probeBundles({
       config: CONFIG,
@@ -559,7 +560,10 @@ describe("probeBundles", () => {
         return new Response("{}", { status: 404 });
       }) as unknown as typeof fetch,
     });
-    expect(auth).toBe(`Bearer ${TOKEN}`);
+    expect(auth).toBe(`Bearer ${componentToken(TOKEN, "bundle")}`);
+    // Never the root: no component holds it, so presenting it would be
+    // refused — and would hand a component every other component's token.
+    expect(auth).not.toBe(`Bearer ${TOKEN}`);
   });
 
   it("calls a 404 UNSUPPORTED — a pin bump, not an outage", async () => {
