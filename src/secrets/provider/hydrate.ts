@@ -10,8 +10,10 @@ import type { SecretProvider } from "./types.ts";
  * later:
  *
  *   - `STRAD_TOKENS`        the static token store, built once at boot
- *   - `STRAD_INTERNAL_TOKEN` core <-> bundle auth; both sides must agree, so a
- *                            live rotation would need a coordinated rollout
+ *   - `STRAD_INTERNAL_TOKEN` the ROOT core derives every component's internal
+ *                            token from (src/auth/internal-token.ts); both sides
+ *                            must agree, so a live rotation would need a
+ *                            coordinated rollout
  *   - `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
  *     `CONSOLE_SESSION_SECRET`  console sign-in and the key that signs its
  *                            session cookie, read when the auth layer is built
@@ -56,12 +58,13 @@ import type { SecretProvider } from "./types.ts";
  * The trade is stated plainly rather than hidden: **a hydrated value is read
  * once, at boot.** Rotating one of these names takes effect on the next restart,
  * not within the TTL — and on a component that was BAKED instead, on the next
- * deploy. That is not a shortcut — a token store and a shared internal token are
+ * deploy. That is not a shortcut — a token store and an internal-token root are
  * boot-scoped by nature, and pretending otherwise would mean claiming a rotation
  * had landed when half the fleet still trusted the old value. The consequence
  * that follows: rotating `STRAD_INTERNAL_TOKEN` is a REDEPLOY, not a restart,
- * because core hydrates it and its supplementary components are handed it — and
- * a restart of core alone would leave the two disagreeing. The table in
+ * because core hydrates the root and every other component is baked the token
+ * derived from it — and a restart of core alone would leave the two
+ * disagreeing. The table in
  * docs/operate/secrets.md says which names land where.
  *
  * An existing env var is never overwritten. A value injected by the platform is
@@ -127,11 +130,15 @@ export const REQUIRED_BOOT_ENV_KEYS = [
  * — answered for a container that has to be handed it rather than fetching it.
  * Adding a name here therefore widens what a third-party image is given, under
  * EITHER provider; that is the review this array deserves.
+ *
+ * `STRAD_INTERNAL_TOKEN` is NOT here, though every bundle holds a variable by
+ * that name. What a bundle holds under it is its OWN token, derived from the
+ * root by the renderer (`componentTokenEnv` in deploy/appspec.ts); the root
+ * itself is core's alone. Hydrating it here would put the root — every
+ * component's token — into a bundle process, and it would never be used: the
+ * baked derived value is already set, and hydration does not overwrite.
  */
-export const BUNDLE_BOOT_ENV_KEYS = [
-  "STRAD_INTERNAL_TOKEN",
-  "OTEL_EXPORTER_OTLP_HEADERS",
-] as const;
+export const BUNDLE_BOOT_ENV_KEYS = ["OTEL_EXPORTER_OTLP_HEADERS"] as const;
 
 /**
  * The boot keys that stop at strad's own process: every `CORE_BOOT_ENV_KEYS`

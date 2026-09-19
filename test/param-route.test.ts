@@ -1,6 +1,7 @@
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
+import { componentToken } from "../src/auth/internal-token.ts";
 import { parseConfig } from "../src/config/load.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
@@ -83,7 +84,11 @@ servers:
 `;
 
 const CONFIG = parseConfig(YAML);
-const TOKEN = "InternalTokenValueNeverShown";
+/** The ROOT core holds, and the token the `bundle` component is baked from it. */
+const ROOT = "InternalTokenValueNeverShown";
+const TOKEN = componentToken(ROOT, "bundle");
+/** Another component's own token: valid, and not x-twitter's component. */
+const OTHER = componentToken(ROOT, "bundle-secrets");
 const VARIABLE = "X_OAUTH_REFRESH_TOKEN";
 const PATH = parameterPath("test", "x-twitter", VARIABLE);
 
@@ -130,7 +135,7 @@ beforeAll(async () => {
 
   const env: NodeJS.ProcessEnv = {
     STRAD_MODE: "core",
-    STRAD_INTERNAL_TOKEN: TOKEN,
+    STRAD_INTERNAL_TOKEN: ROOT,
     // Core proxies /mcp to both bundles, so the registry demands their private
     // URLs at build time. Nothing in this file calls /mcp; they only have to
     // exist.
@@ -356,6 +361,26 @@ describe("an unauthenticated caller", () => {
     expect(await fake.store.reveal(PATH)).toBe(ROTATED);
   });
 
+  it("is refused with the ROOT, which no component holds", async () => {
+    for (const method of ["GET", "POST"]) {
+      const res = await fetch(
+        `${baseUrl}${paramRoutePath("x-twitter", VARIABLE)}`,
+        {
+          method,
+          headers: {
+            authorization: `Bearer ${ROOT}`,
+            "content-type": "application/json",
+          },
+          ...(method === "POST"
+            ? { body: JSON.stringify({ value: "nope" }) }
+            : {}),
+        },
+      );
+      expect(res.status).toBe(401);
+    }
+    expect(await fake.store.reveal(PATH)).toBe(ROTATED);
+  });
+
   it("refuses BEFORE it decides whether the name is writable", async () => {
     // Order matters: an unauthenticated caller that got 403 for one name and 401
     // for another would learn the allowlist without holding the token.
@@ -522,6 +547,46 @@ roles: { admin: { servers: ["*"] } }
     const chosen = storeForPath(bare, {}, PATH, {});
     expect(chosen.store).toBeNull();
     expect((chosen as { reason: string }).reason).toMatch(/no secrets/);
+  });
+});
+
+describe("a caller on another component (HACKS.md #63)", () => {
+  // A VALID internal token — core accepts it as bundle-secrets' own — asking
+  // for a name x-twitter's allowlist names. Before per-component tokens every
+  // container held the one token and this was a 200 on both verbs.
+  it("cannot read or rotate a slug its component does not serve", async () => {
+    for (const method of ["GET", "POST"]) {
+      const res = await fetch(
+        `${baseUrl}${paramRoutePath("x-twitter", VARIABLE)}`,
+        {
+          method,
+          headers: {
+            authorization: `Bearer ${OTHER}`,
+            "content-type": "application/json",
+          },
+          ...(method === "POST"
+            ? { body: JSON.stringify({ value: "stolen" }) }
+            : {}),
+        },
+      );
+      // The SAME refusal as a name on no list, so the answer does not say
+      // which component a slug lives on.
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toBe(
+        "parameter_not_writable",
+      );
+    }
+    expect(await fake.store.reveal(PATH)).toBe(ROTATED);
+  });
+
+  it("through the host's own client, too", async () => {
+    // The read degrades to the baked value, as a 403 always has.
+    expect(await client({ token: OTHER }).get(VARIABLE)).toBeUndefined();
+    await expect(client({ token: OTHER }).put(VARIABLE, "x")).rejects.toThrow(
+      /403/,
+    );
+    // And the owner, on the same route, still reads it.
+    expect(await client().get(VARIABLE)).toBe(ROTATED);
   });
 });
 

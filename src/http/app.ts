@@ -191,7 +191,7 @@ export function createApp(opts: AppOptions): Express {
   // get a `401` naming an issuer whose `/authorize` is a 404.
   //
   // CORE ONLY, like every other public surface here: a bundle's `/mcp` is a
-  // private-network hop on the shared internal token and no MCP client
+  // private-network hop on its own internal token and no MCP client
   // discovers it.
   const mcpOAuth: McpOAuth | null =
     opts.mode === "core"
@@ -398,7 +398,7 @@ export function createApp(opts: AppOptions): Express {
     // things already in the request — and no secret, no slug and no roster.
     //
     // CORE ONLY, because core is the door on the open internet. A bundle's
-    // `/mcp` is a private-network hop authenticated with the shared internal
+    // `/mcp` is a private-network hop authenticated with its own internal
     // token; no MCP client discovers it, and claiming otherwise would publish a
     // resource identifier nothing can reach.
     //

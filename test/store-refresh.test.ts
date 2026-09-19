@@ -1,5 +1,6 @@
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { componentToken } from "../src/auth/internal-token.ts";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { parseConfig } from "../src/config/load.ts";
 import { Registry } from "../src/gateway/registry.ts";
@@ -57,7 +58,9 @@ servers:
       SECRETS_NAMESPACES: "/strad/test/mcp/"
 `);
 
-const TOKEN = "InternalTokenValueNeverShown";
+/** The ROOT core holds, and the `bundle-secrets` component's own token derived from it. */
+const ROOT = "InternalTokenValueNeverShown";
+const TOKEN = componentToken(ROOT, "bundle-secrets");
 const GATEWAY_NS = "/strad/test/gateway/static/";
 
 const fake = createFakeGcp();
@@ -95,7 +98,7 @@ let baseUrl: string;
 beforeAll(async () => {
   const env: NodeJS.ProcessEnv = {
     STRAD_MODE: "core",
-    STRAD_INTERNAL_TOKEN: TOKEN,
+    STRAD_INTERNAL_TOKEN: ROOT,
     STRAD_BUNDLE_URL_BUNDLE_SECRETS: "http://bundle-secrets:8080",
   };
   const app = createApp({

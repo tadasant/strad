@@ -41,8 +41,9 @@ import { presenceResponse } from "../secrets/presence.ts";
  * prefix or a hash — `secrets/presence.ts` is where that line is drawn and
  * `test/presence.test.ts` is what holds it.
  *
- * The credential is the shared `STRAD_INTERNAL_TOKEN`, which core already
- * presents to proxy `/mcp` to this component. That is deliberate: the token is
+ * The credential is this component's own `STRAD_INTERNAL_TOKEN`, which core
+ * already presents to proxy `/mcp` to it. Each component holds only its own
+ * (src/auth/internal-token.ts), so a sibling container cannot ask this one. That is deliberate: the token is
  * strictly stronger than this surface, so mounting it widens nothing. Without
  * the token configured the route answers 503 rather than serving anonymously —
  * "on the private network" is a reachability property, not an authorization one.

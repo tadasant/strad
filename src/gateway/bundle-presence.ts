@@ -168,7 +168,7 @@ async function probeBundle(
       method: "POST",
       headers: {
         "content-type": "application/json",
-        ...internalHeaders(opts.env),
+        ...internalHeaders(opts.env, bundle),
       },
       body: JSON.stringify({ keys }),
       signal: controller.signal,
@@ -188,8 +188,9 @@ async function probeBundle(
         kind: "unreachable",
         detail:
           `the component REFUSED the internal token (${res.status}). That is a ` +
-          `configuration fault rather than an outage: core and that component do not ` +
-          `hold the same STRAD_INTERNAL_TOKEN, or the component holds none at all.`,
+          `configuration fault rather than an outage: the component does not hold the ` +
+          `token core derives for it from STRAD_INTERNAL_TOKEN — a render from a ` +
+          `different root, or a component that holds none at all.`,
       };
     }
     if (!res.ok) {

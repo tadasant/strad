@@ -1525,8 +1525,8 @@ async function main(): Promise<void> {
   const app = express();
   app.disable("x-powered-by");
 
-  // The gate every MCP mount below sits behind: the shared STRAD_INTERNAL_TOKEN
-  // core presents on each proxied request, compared the way `/_strad/presence`
+  // The gate every MCP mount below sits behind: this component's own
+  // STRAD_INTERNAL_TOKEN, which core presents on each proxied request, compared the way `/_strad/presence`
   // already compares it, fail-closed when the token is unset. See
   // `internal-auth.ts` for why "internal_ports: [8080]" was never the answer.
   const internalOnly = requireInternalToken(process.env, timingSafeEqual);

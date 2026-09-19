@@ -254,7 +254,7 @@ export function createMcpHandler(opts: McpHandlerOptions) {
         // pointer and the route cannot spell the path differently.
         //
         // CORE ONLY. A bundle's `/mcp` is reached over strad's private network
-        // with the shared `STRAD_INTERNAL_TOKEN` and serves no well-known path,
+        // with its own `STRAD_INTERNAL_TOKEN` and serves no well-known path,
         // so a pointer from there would be a `404` waiting to happen. Its `401`
         // is the two parameters it always carried.
         res
@@ -431,8 +431,9 @@ export function createMcpHandler(opts: McpHandlerOptions) {
 
 /**
  * Bundle components sit on the private network with no public route, but that
- * is a reachability property, not an authorization one. Require the shared
- * internal token anyway.
+ * is a reachability property, not an authorization one. Require the internal
+ * token anyway — this component's own, which the renderer derived for it and
+ * core presents to it (src/auth/internal-token.ts).
  */
 function authenticateInternal(
   header: string | undefined,

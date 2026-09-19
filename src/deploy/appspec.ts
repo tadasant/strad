@@ -17,6 +17,7 @@ import {
   CORE_ONLY_BOOT_ENV_KEYS,
 } from "../secrets/provider/hydrate.ts";
 import { CORE_URL_ENV } from "../secrets/param-route.ts";
+import { componentToken } from "../auth/internal-token.ts";
 
 /**
  * Render a DigitalOcean App Platform spec from strad.config.yaml.
@@ -145,6 +146,17 @@ export interface RenderOptions {
    * set as "every bundle".
    */
   bootSecrets?: Readonly<Record<string, string>>;
+  /**
+   * The ROOT `STRAD_INTERNAL_TOKEN`, which every non-core component's own
+   * internal token is derived from (src/auth/internal-token.ts).
+   *
+   * A store-backed render reads it from the store and passes it here; under the
+   * `env` provider it is omitted and taken from the `STRAD_INTERNAL_TOKEN`
+   * entry in `env`. The root lands on core and nowhere else — see
+   * `componentTokenEnv`. Absent from both, no component is given a token, and
+   * each fails closed exactly as it did with no shared token.
+   */
+  internalTokenRoot?: string;
   /**
    * Where a non-fatal finding goes. Absent means "nowhere" — the renderer is
    * usable as a pure function in tests and in the console.
@@ -650,10 +662,9 @@ const STRAD_IMAGE_ONLY_SECRET_KEYS: ReadonlySet<string> = new Set([
  *     success, while `/healthz` stays 200 with every slug listed. That is
  *     precisely the blind spot that let a dead `secrets` slug look healthy for a
  *     week (HACKS.md #32).
- *   - `STRAD_INTERNAL_TOKEN` — the component's presence route
- *     (`src/secrets/presence.ts`) fails closed, so the console stops being able
- *     to say whether that container holds its credentials and reports that the
- *     component "REFUSED the internal token" instead.
+ *
+ * (`STRAD_INTERNAL_TOKEN` was the second, and is no longer a broadcast name at
+ * all: each component is baked its OWN derived token by `componentTokenEnv`.)
  *
  * The values are read from the STORE by the renderer, not from the deploy
  * environment, so a human still manages them in exactly one place. The cost is
@@ -682,6 +693,44 @@ function bundleBootEnvVars(
 }
 
 /**
+ * The internal token ONE non-core component holds: its own, derived from the
+ * root, under the name every component-side reader already looks for.
+ *
+ * This is the whole of HACKS.md #63's exit on the render side. The root is a
+ * core-only boot key (`CORE_ONLY_BOOT_ENV_KEYS` via `STRAD_IMAGE_ONLY_SECRET_KEYS`
+ * keeps it out of every supplementary component, and the strad-image bundle
+ * branch below filters it out of the broadcast by name), so what a component
+ * holds is a credential that verifies at that component and is refused at
+ * every other — core presents the matching one per call (`internalHeaders` in
+ * src/gateway/registry.ts) — and that core reads as that component's identity
+ * when it is presented back (`internalCaller` in src/auth/internal-token.ts).
+ *
+ * AUTHORITATIVE over any other entry by the name: a server's own `env:` that
+ * happened to spell `STRAD_INTERNAL_TOKEN` would otherwise shadow the one
+ * credential core can verify, and the component would refuse every proxied
+ * call. The caller filters that entry out; this returns the replacement.
+ *
+ * Deterministic, so the spec only diffs when the root or the component name
+ * changes.
+ */
+function componentTokenEnv(
+  component: string,
+  root: string | undefined,
+): EnvVar[] {
+  if (!root) return [];
+  return [
+    {
+      key: INTERNAL_TOKEN_ENV,
+      value: componentToken(root, component),
+      scope: "RUN_TIME",
+      type: "SECRET",
+    },
+  ];
+}
+
+const INTERNAL_TOKEN_ENV = "STRAD_INTERNAL_TOKEN";
+
+/**
  * Components that will boot without a boot key they need and with no way to get
  * it — the rendered-spec check for the failure above.
  *
@@ -698,11 +747,26 @@ function bundleBootEnvVars(
  */
 export function bootEnvGaps(spec: AppSpec, held: readonly string[]): string[] {
   const wanted = BUNDLE_BOOT_ENV_KEYS.filter((k) => held.includes(k));
-  if (wanted.length === 0) return [];
 
   const problems: string[] = [];
   for (const service of spec.services) {
     const keys = new Set(service.envs.map((e) => e.key));
+    // The internal token is checked on EVERY non-core component, the strad
+    // image included: none of them hydrates it any more, because what a
+    // component holds is its own derived token and only the renderer can
+    // compute that (`componentTokenEnv`).
+    if (
+      held.includes(INTERNAL_TOKEN_ENV) &&
+      service.name !== "core" &&
+      !keys.has(INTERNAL_TOKEN_ENV)
+    ) {
+      problems.push(
+        `component "${service.name}" is missing ${INTERNAL_TOKEN_ENV}: it is ` +
+          `derived per component at render time, and the spec does not carry ` +
+          `this component's`,
+      );
+    }
+    if (wanted.length === 0) continue;
     // Holding the STORE CREDENTIAL is the ability to hydrate: it reaches the
     // strad image and stops there, and the strad image is what runs
     // hydrateBootEnv. Named explicitly rather than asking whether the component
@@ -931,6 +995,9 @@ const EMPTY_REFS: ReadonlySet<string> = new Set<string>();
 export function renderAppSpec(opts: RenderOptions): AppSpec {
   const { config } = opts;
   const unseeded = opts.unseededRefs ?? EMPTY_REFS;
+  const internalRoot =
+    opts.internalTokenRoot ??
+    opts.env.find((e) => e.key === INTERNAL_TOKEN_ENV)?.value;
 
   const overrides = (opts.supplementaryImages ?? []).map((ref) => ({
     ref,
@@ -1604,7 +1671,10 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
         new Set(envs.map((e) => e.key)),
       ),
     );
-    return envs;
+    return [
+      ...envs.filter((e) => e.key !== INTERNAL_TOKEN_ENV),
+      ...componentTokenEnv(name, internalRoot),
+    ];
   };
 
   for (const name of bundleNames) {
@@ -1700,7 +1770,13 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
               componentImage.tag,
               config.gateway.publicUrl,
             ),
-            ...opts.env,
+            // The broadcast, minus the ROOT: this component is given its own
+            // token instead. It still holds the store resolver under a
+            // store-backed render, which can read the root — a strad-image
+            // bundle is inside core's trust boundary either way, and HACKS.md
+            // #63 says so. The derived token is what core presents to it.
+            ...opts.env.filter((e) => e.key !== INTERNAL_TOKEN_ENV),
+            ...componentTokenEnv(name, internalRoot),
           ],
     });
   }

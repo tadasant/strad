@@ -35,10 +35,11 @@
  * Every authenticated call before this one is core → bundle (`internalHeaders`,
  * gateway/registry.ts). This is the first bundle → core call, so the bundle
  * needs core's private URL in its environment — `CORE_URL_ENV` below, bound to
- * `${core.PRIVATE_URL}` by appspec.ts. The credential is the shared
- * `STRAD_INTERNAL_TOKEN`, which the bundle already holds
- * (`BUNDLE_BOOT_ENV_KEYS`), authorised with the same `authorizePresence`
- * comparator the presence route uses.
+ * `${core.PRIVATE_URL}` by appspec.ts. The credential is the component's OWN
+ * `STRAD_INTERNAL_TOKEN` — the token core derives for that component from the
+ * root it holds, and the one it presents when it proxies to it — and core reads
+ * the caller's component back off it, so a caller reaches its own component's
+ * slugs and no other's (`internalCaller`, src/auth/internal-token.ts).
  *
  * ## What a caller can reach, and why it is not an oracle
  *
@@ -226,7 +227,7 @@ export interface ParamClientOptions {
   slug: string;
   /** Core's private URL — `CORE_URL_ENV`. Absent means "not configured". */
   baseUrl: string | undefined;
-  /** The shared `STRAD_INTERNAL_TOKEN`. Absent means "not configured". */
+  /** This component's own `STRAD_INTERNAL_TOKEN`. Absent means "not configured". */
   token: string | undefined;
   /** Injectable for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch;
@@ -571,10 +572,10 @@ export async function refreshParamsOnce(
  *
  * ## Why it is on this wire
  *
- * The bundle already reaches core here — `CORE_URL_ENV`, the shared
- * `STRAD_INTERNAL_TOKEN`, the same `authorizePresence` gate — for the parameter
- * write-back. The re-read is the same direction, the same credential and the
- * same trust: an internal token holder may make core spend one enumeration
+ * The bundle already reaches core here — `CORE_URL_ENV`, its own
+ * `STRAD_INTERNAL_TOKEN`, the same door — for the parameter write-back. The
+ * re-read is the same direction, the same credential and the same trust: any
+ * component's own token may make core spend one enumeration
  * plus one render per parameter, and nothing more. It carries no path and no
  * value, so there is nothing to validate beyond the token.
  *
@@ -652,7 +653,7 @@ export type StoreRefreshOutcome =
 export interface StoreRefreshClientOptions {
   /** Core's private URL — `CORE_URL_ENV`. Absent means "not configured". */
   baseUrl: string | undefined;
-  /** The shared `STRAD_INTERNAL_TOKEN`. Absent means "not configured". */
+  /** This component's own `STRAD_INTERNAL_TOKEN`. Absent means "not configured". */
   token: string | undefined;
   /** Injectable for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch;
