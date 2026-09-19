@@ -3562,8 +3562,8 @@ enumerations and 388 billed reads before, and now costs one enumeration and 68 �
 once per TTL rather than once per minute: 1,632 reads a day at an hour's TTL, 68
 at the default day's, instead of 558,720 per core process.
 
-**What that costs.** A rotation nobody announced — a hand `gcloud` seed, a CI
-writer that does not call the refresh route — lands within a day, not a minute,
+**What that costs.** A rotation nobody announced — written straight into the
+parameter store some other way, by hand with `gcloud` say — lands within a day, not a minute,
 or when somebody presses the button. A write through the console, or through the parameter write-back route,
 drops the reading and lands at once — which it did NOT before this change: the
 console only ever dropped the diagnosis cache, so the "instant on the process

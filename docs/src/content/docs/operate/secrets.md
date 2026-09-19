@@ -194,8 +194,8 @@ is a miss on every ask, so the reading is re-taken every `negativeTtlSeconds`
 instead — 24 a day, 1,632 reads, the hour-TTL row above.
 
 What the long default costs is the bound on a change nobody announced — a
-value seeded by hand with `gcloud`, or by a CI writer that does not call the
-refresh route: a day (an hour for a newly added gateway-namespace name), not a
+value written straight into the parameter store some other way, by hand with
+`gcloud` say: a day (an hour for a newly added gateway-namespace name), not a
 minute, unless somebody presses the button. The console and the `secrets` MCP server's write tools
 are the routes to rotate by — a write through either lands at once — and each
 has an explicit re-read for a rotation made elsewhere, with no write: the

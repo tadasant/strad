@@ -1356,7 +1356,7 @@ const AuthConfig = z.object({
  * A change that TELLS the gateway lands at once: a write through strad's own
  * console, a write through the `secrets` MCP server (its write tools call
  * `refresh_gateway`), and the console's "Re-read the store" button. A change
- * made any other way — a hand `gcloud` seed, a CI writer that does not poke —
+ * written straight into the store some other way — a hand `gcloud` seed —
  * lands within `ttlSeconds` (a rotation) or `negativeTtlSeconds` (a newly
  * ADDED name).
  *
