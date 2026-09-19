@@ -173,8 +173,8 @@ this slug comes up `unconfigured`: named on `/healthz`, chipped `awaiting
 credential` in the console, and refusing a `?servers=apify` listing with a
 message naming the credential. Seed the value and — under
 `gcp-parameter-store`, for a `url:`/`headers:`/`options:` ref — it starts serving
-within `negativeTtlSeconds` (default 10 minutes; at once if you seed it through
-strad's console), with no redeploy and no second PR. A
+within `negativeTtlSeconds` (default 1 hour; at once if you seed it through
+strad's console or the `secrets` MCP server), with no redeploy and no second PR. A
 `supplementary-image`'s `env:` is baked onto its container instead, so that half
 takes the next deploy. Full behaviour is in
 [Secrets](/operate/secrets/#maybeunseeded--deploying-a-server-ahead-of-its-credential).

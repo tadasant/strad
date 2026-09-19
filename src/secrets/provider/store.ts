@@ -43,17 +43,21 @@ import type { SecretProvider } from "./types.ts";
  *
  * ## What "immediately" means, precisely
  *
- * - **Rotation** of an existing secret is visible within `ttlSeconds`: the
- *   resolver's snapshot is re-read on the first `get` after it goes stale.
- * - **Addition** of a name that was previously absent is visible within
- *   `negativeTtlMs`. A miss asks the resolver to drop its snapshot and reads
- *   again, rate limited to once per `negativeTtlMs` so a genuinely unknown
- *   `${REF}` on a hot path cannot re-read the store once per request — and
- *   skipped outright when the snapshot is younger than that, because a name
- *   the store did not hold a moment ago is not going to be found by asking
- *   again.
- * - **A change made through strad's own console** is instant on that process,
- *   because the writer calls `invalidate()`, which drops the snapshot.
+ * - **A change that tells the gateway** is instant: a write through strad's
+ *   own console, a write through the `secrets` MCP server (its write tools call
+ *   `refresh_gateway`), and the console's "Re-read the store" button all end in
+ *   `invalidate()`, which drops the snapshot. This is the path a change is
+ *   expected to take.
+ * - **Rotation** of an existing secret that nobody announced is visible within
+ *   `ttlSeconds` — a day by default: the resolver's snapshot is re-read on the
+ *   first `get` after it goes stale. That is the fallback, not the mechanism.
+ * - **Addition** of a name that was previously absent, likewise unannounced, is
+ *   visible within `negativeTtlMs` — an hour by default. A miss asks the
+ *   resolver to drop its snapshot and reads again, rate limited to once per
+ *   `negativeTtlMs` so a genuinely unknown `${REF}` on a hot path cannot
+ *   re-read the store once per request — and skipped outright when the
+ *   snapshot is younger than that, because a name the store did not hold a
+ *   moment ago is not going to be found by asking again.
  *
  * ## Failure posture
  *
@@ -68,7 +72,7 @@ import type { SecretProvider } from "./types.ts";
  * config error for what is an outage.
  */
 export interface StoreSecretProviderOptions {
-  /** Minimum interval between miss-triggered re-reads. Default 10 minutes. */
+  /** Minimum interval between miss-triggered re-reads. Default one hour. */
   negativeTtlMs?: number;
   /** Injected in tests so the clock is not the thing under test. */
   now?: () => number;
@@ -76,7 +80,7 @@ export interface StoreSecretProviderOptions {
   onWarn?: (message: string) => void;
 }
 
-export const DEFAULT_NEGATIVE_TTL_MS = 600_000;
+export const DEFAULT_NEGATIVE_TTL_MS = 3_600_000;
 
 export class StoreSecretProvider implements SecretProvider {
   readonly name: string;

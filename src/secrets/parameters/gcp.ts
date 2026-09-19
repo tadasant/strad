@@ -530,7 +530,7 @@ export function createGcpParameterStore(
    *
    * The PROMISE is held, not its result, so namespaces resolved concurrently
    * share one enumeration instead of racing to start several. A rejected
-   * enumeration is evicted — a refused read must not be the answer for an hour.
+   * enumeration is evicted — a refused read must not be the answer for the whole TTL.
    * With the TTL off, every call is a fresh snapshot, and the memo it carries
    * lives exactly as long as the call.
    */

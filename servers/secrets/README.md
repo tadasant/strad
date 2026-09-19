@@ -280,7 +280,7 @@ trailing slash on its path and a re-encoding of any query it carried.
 ## `refresh_gateway` — make the gateway re-read the store now
 
 The gateway holds **one reading of the parameter store per process**, for
-`gateway.secrets.ttlSeconds` (an hour by default), and every `${NAME}` it
+`gateway.secrets.ttlSeconds` (a day by default), and every `${NAME}` it
 resolves is a slice of it. A write through strad's own console drops that
 reading, so a human's rotation reaches `/mcp` at once. A write through THIS
 server does not on its own: it goes through a client of this server's, in a

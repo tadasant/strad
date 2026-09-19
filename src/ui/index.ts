@@ -929,7 +929,7 @@ async function handleSecretAction(
         // The explicit signal. A value written by anything OTHER than this
         // console — `gcloud`, the seed script, another deployment's console —
         // reaches this process within `gateway.secrets.ttlSeconds` on its own,
-        // which is an hour by default. This is the way to not wait: it drops
+        // which is a day by default. This is the way to not wait: it drops
         // the process's reading of the store, and the next `${NAME}` read, the
         // next tool call on a `params: true` builtin and the next `/ui` load
         // all reach Parameter Manager. Nothing is written.

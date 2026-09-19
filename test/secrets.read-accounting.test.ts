@@ -44,7 +44,6 @@ const SLUGS = ["anki", "granola", "strad-fetch", "telegram-ro", "x", "gcs"];
 const PARAMS_SLUG = "gcs";
 const GATEWAY_NAMES = Array.from({ length: 10 }, (_, i) => `GATEWAY_${i}`);
 const PER_SLUG_NAMES = ["TOKEN", "API_KEY", "CLIENT_ID", "CLIENT_SECRET"];
-const HOUR = 3_600_000;
 
 /** A clock the test moves by hand, so elapsed real time proves nothing. */
 function clock() {
@@ -155,9 +154,18 @@ gateway:
   secrets:
     provider: gcp-parameter-store
     envFallback: false
-    ttlSeconds: 3600
-    negativeTtlSeconds: 600
 `);
+
+/**
+ * The SCHEMA DEFAULTS, deliberately not spelled out above: what this file
+ * measures is what a deployment that sets neither knob pays. A day and an hour
+ * — the TTL is only the fallback for a write that did not refresh the gateway
+ * (the console, the `secrets` MCP server and the "Re-read the store" button
+ * all do), so it is paid once a day.
+ */
+const TTL = CONFIG.gateway.secrets.ttlSeconds * 1000;
+const NEGATIVE_TTL = CONFIG.gateway.secrets.negativeTtlSeconds * 1000;
+const MINUTE = 60_000;
 
 /**
  * One reachability tick, as the gateway's readers see it.
@@ -239,7 +247,7 @@ describe("what one refresh costs the store, at production's shape", () => {
 
     const c = clock();
     const { store, counts, billed, snapshot } = counting(gcp, {
-      snapshotTtlMs: HOUR,
+      snapshotTtlMs: TTL,
       now: c.now,
     });
     const providers = buildSecretProviders({
@@ -259,27 +267,29 @@ describe("what one refresh costs the store, at production's shape", () => {
     expect(billed()).toBe(2 * total);
     expect(billed()).toBe(68);
 
-    // Every tick inside the TTL is memory. The poller's cadence no longer
-    // decides the read rate; the TTL does.
+    // Every tick inside the TTL is memory — a whole day of the poller asking
+    // once a minute. The poller's cadence does not decide the read rate; the
+    // TTL does.
     const afterCold = snapshot();
-    for (let minute = 1; minute < 60; minute += 1) {
-      c.advance(60_000);
+    for (let minute = 1; minute < TTL / MINUTE; minute += 1) {
+      c.advance(MINUTE);
       await tick(store, providers, c.now);
     }
     expect(snapshot()).toEqual(afterCold);
 
     // Past the TTL, one more full refresh — and no more than one, however many
     // namespaces ask in the same minute.
-    c.advance(60_000);
+    c.advance(MINUTE);
     await tick(store, providers, c.now);
     expect(counts.listParameters).toBe(2);
     expect(billed()).toBe(2 * 68);
 
-    // 24 refreshes a day at the default TTL: 1,632 billed reads, against the
-    // 558,720 the same tick cost before. Below Parameter Manager's monthly free
-    // allowance of 10,000 access operations for the first six days of the
-    // month, and about $0.23 for the rest of it.
-    expect(68 * 24).toBe(1_632);
+    // One refresh a day at the default TTL: 68 billed reads, against the
+    // 558,720 the same tick cost at a minute's TTL with one reading per
+    // namespace, and 1,632 at an hour's. Inside Parameter Manager's monthly
+    // free allowance of 10,000 access operations for the whole month.
+    expect(TTL).toBe(24 * 60 * MINUTE);
+    expect(68 * 30).toBeLessThan(10_000);
   });
 });
 
@@ -288,7 +298,7 @@ describe("a namespace sliced from the shared reading holds exactly its own param
     const gcp = createFakeGcp();
     await seedProdShape(gcp);
     const c = clock();
-    const { store } = counting(gcp, { snapshotTtlMs: HOUR, now: c.now });
+    const { store } = counting(gcp, { snapshotTtlMs: TTL, now: c.now });
     const providers = buildSecretProviders({
       config: CONFIG,
       env: {},
@@ -332,7 +342,7 @@ describe("a namespace sliced from the shared reading holds exactly its own param
       value: "x-twitter-token",
     });
     const c = clock();
-    const { store } = counting(gcp, { snapshotTtlMs: HOUR, now: c.now });
+    const { store } = counting(gcp, { snapshotTtlMs: TTL, now: c.now });
 
     expect(await store.resolve(staticNamespace(ENV, "x"))).toEqual({
       TOKEN: "x-token",
@@ -350,7 +360,7 @@ describe("what a rotation costs, and when it lands", () => {
     await seedProdShape(gcp);
     const c = clock();
     const { store, billed } = counting(gcp, {
-      snapshotTtlMs: HOUR,
+      snapshotTtlMs: TTL,
       now: c.now,
     });
     const providers = buildSecretProviders({
@@ -366,7 +376,7 @@ describe("what a rotation costs, and when it lands", () => {
     // process about.
     await gcp.another().rotate(`${staticNamespace(ENV, "anki")}TOKEN`, "v2");
 
-    c.advance(HOUR - 1);
+    c.advance(TTL - 1);
     expect(await anki.get("TOKEN")).toBe("anki-TOKEN");
     expect(billed()).toBe(afterCold);
 
@@ -379,7 +389,7 @@ describe("what a rotation costs, and when it lands", () => {
     const gcp = createFakeGcp();
     await seedProdShape(gcp);
     const c = clock();
-    const { store } = counting(gcp, { snapshotTtlMs: HOUR, now: c.now });
+    const { store } = counting(gcp, { snapshotTtlMs: TTL, now: c.now });
     const providers = buildSecretProviders({
       config: CONFIG,
       env: {},
@@ -404,7 +414,7 @@ describe("what a rotation costs, and when it lands", () => {
   });
 
   it("a write through the same client drops its own reading", async () => {
-    const gcp = createFakeGcp({ snapshotTtlMs: HOUR });
+    const gcp = createFakeGcp({ snapshotTtlMs: TTL });
     await seedProdShape(gcp);
     expect(await gcp.store.resolve(GATEWAY_NS)).toMatchObject({
       GATEWAY_0: "gateway-GATEWAY_0",
@@ -420,7 +430,7 @@ describe("what a rotation costs, and when it lands", () => {
     await seedProdShape(gcp);
     const c = clock();
     const { store, counts } = counting(gcp, {
-      snapshotTtlMs: HOUR,
+      snapshotTtlMs: TTL,
       now: c.now,
     });
     const providers = buildSecretProviders({
@@ -439,17 +449,18 @@ describe("what a rotation costs, and when it lands", () => {
       value: "seeded",
     });
 
-    // Inside the negative TTL the miss is not chased: the reading is younger
-    // than that, and the poller asking once a minute must not re-read the
-    // project once a minute.
-    for (let minute = 1; minute < 10; minute += 1) {
-      c.advance(60_000);
+    // Inside the negative TTL — an hour, by default — the miss is not chased:
+    // the reading is younger than that, and the poller asking once a minute
+    // must not re-read the project once a minute.
+    expect(NEGATIVE_TTL).toBe(60 * MINUTE);
+    for (let minute = 1; minute < NEGATIVE_TTL / MINUTE; minute += 1) {
+      c.advance(MINUTE);
       expect(await providers.shared.get("LATER")).toBeNull();
     }
     expect(counts.listParameters).toBe(1);
 
     // Past it: one re-read, and the name is there.
-    c.advance(60_000);
+    c.advance(MINUTE);
     expect(await providers.shared.get("LATER")).toBe("seeded");
     expect(counts.listParameters).toBe(2);
   });
@@ -460,7 +471,7 @@ describe("what a rotation costs, and when it lands", () => {
     const c = clock();
     let failing = false;
     const { store, counts } = counting(gcp, {
-      snapshotTtlMs: HOUR,
+      snapshotTtlMs: TTL,
       now: c.now,
       failRender: () => failing,
     });
@@ -475,7 +486,7 @@ describe("what a rotation costs, and when it lands", () => {
     expect(counts.listParameters).toBe(1);
 
     // The store recovers. With no clock movement, the next read renders again
-    // rather than serving the failure it saw for the rest of the hour — and it
+    // rather than serving the failure it saw for the rest of the TTL — and it
     // does not enumerate again to do so.
     failing = false;
     expect(await store.resolve(GATEWAY_NS)).toMatchObject({
@@ -495,7 +506,7 @@ describe("what a rotation costs, and when it lands", () => {
     await seedProdShape(gcp);
     const c = clock();
     const { store, counts } = counting(gcp, {
-      snapshotTtlMs: HOUR,
+      snapshotTtlMs: TTL,
       now: c.now,
     });
     const providers = buildSecretProviders({
@@ -512,7 +523,7 @@ describe("what a rotation costs, and when it lands", () => {
     const diagnosis = await readStoreDiagnosticsCached({
       store,
       namespace: GATEWAY_NS,
-      ttlMs: HOUR,
+      ttlMs: TTL,
       now: c.now,
     });
     expect(diagnosis.indexRead && diagnosis.renderRead).toBe(true);

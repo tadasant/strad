@@ -199,7 +199,7 @@ narrower residuals, both stated on the limitations page:
    the reading held by the process that made it, and core runs
    `instance_count: 1` (`src/deploy/appspec.ts`). Nothing enforces that for this
    feature's sake, and a second core instance would keep serving a revoked token
-   from its own snapshot for up to `gateway.secrets.ttlSeconds` — an hour by
+   from its own snapshot for up to `gateway.secrets.ttlSeconds` — a day by
    default — with nothing saying so. The same shape `appspec.ts` already refuses
    for a bundle hosting writable params, and the fix is the same: broadcast the
    invalidation, or refuse the combination.
@@ -3149,9 +3149,9 @@ broken under that slug.
 **Two smaller costs of the same layer, recorded here rather than as entries of
 their own:**
 
-- A newly SEEDED per-server name appears within `ttlSeconds` (an hour) rather
-  than `negativeTtlSeconds` (ten minutes), unless it was seeded through the
-  console. The layer sets `negativeTtlMs: Infinity`, because a miss on it is the
+- A newly SEEDED per-server name appears within `ttlSeconds` (a day) rather
+  than `negativeTtlSeconds` (an hour), unless it was seeded through the console
+  or the `secrets` MCP server, or somebody presses **Re-read the store**. The layer sets `negativeTtlMs: Infinity`, because a miss on it is the
   normal case — most names live in the shared namespace — and chasing a miss
   drops the process's whole reading of the store (#69), so chasing every miss
   would cost a full re-read per gateway-resolved name per slug. Rotation of an
@@ -3550,8 +3550,8 @@ reachability poller kept every one of them hot. Cost was namespaces x P x 1440 a
 day: ~3.2M billed reads in August, ~665k API calls a day flat around the clock
 on September 1, the largest line on the account, and growing by P every time a
 server was added. Secrets change a few times a month. So the gateway's store
-client now holds ONE reading for `gateway.secrets.ttlSeconds` — an hour by
-default, and the schema allows a day — and every namespace slices it: the
+client now holds ONE reading for `gateway.secrets.ttlSeconds` — a day by
+default, which is also the maximum (#309) — and every namespace slices it: the
 providers, the registry's `params:` resolution and the console's diagnosis,
 which reads through the same client instance rather than one of its own. The
 provider layer's own TTL is gone (`SnapshotCache` became `NamespaceView`, a
@@ -3559,11 +3559,12 @@ single-flight, last-known-good view with no timer), because two timers over one
 value only smear the bound. Counted at production's shape
 (`test/secrets.read-accounting.test.ts`): one reachability tick cost 10
 enumerations and 388 billed reads before, and now costs one enumeration and 68 —
-once per hour rather than once per minute, 1,632 reads a day instead of 558,720
-per core process.
+once per TTL rather than once per minute: 1,632 reads a day at an hour's TTL, 68
+at the default day's, instead of 558,720 per core process.
 
-**What that costs.** A rotation made OUTSIDE strad lands within an hour, not a
-minute. A write through the console, or through the parameter write-back route,
+**What that costs.** A rotation nobody announced — a hand `gcloud` seed, a CI
+writer that does not call the refresh route — lands within a day, not a minute,
+or when somebody presses the button. A write through the console, or through the parameter write-back route,
 drops the reading and lands at once — which it did NOT before this change: the
 console only ever dropped the diagnosis cache, so the "instant on the process
 that wrote it" the docs promised was never true of the runtime provider. The

@@ -18,8 +18,8 @@ config rather than inferred.
 gateway:
   secrets:
     provider: env # or: gcp-parameter-store
-    ttlSeconds: 3600
-    negativeTtlSeconds: 600
+    ttlSeconds: 86400
+    negativeTtlSeconds: 3600
     envFallback: true
 ```
 
@@ -117,14 +117,15 @@ Not instant. The numbers, and where they come from:
 | Change                                                                                                                                                                      | Visible within                                    | Why                                                                                                                                                                                                                                                            |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | A change written through strad's own console or the `secrets` MCP server's write tools; the console's **Re-read the store** button; the MCP server's `refresh_gateway` tool | immediately                                       | The writer drops the process's reading of the store, so the next read reaches it. These are the routes to rotate by. Other components converge within the TTL.                                                                                                 |
-| **Rotating** a secret read on the request path, from outside strad                                                                                                          | `ttlSeconds` (default 1 hour)                     | The process's reading of the store is replaced on the first read after it ages past the TTL. Only request-path `${NAME}` references — a boot key or a baked one is [a restart or a deploy](#what-rotates-live-what-needs-a-restart-and-what-needs-a-redeploy). |
-| **Adding** a name that was absent, from outside strad                                                                                                                       | `negativeTtlSeconds` (default 10 minutes)         | A miss drops the reading and reads again, rate limited so an unknown `${REF}` on a hot path — or a slug deployed ahead of its credential — cannot re-read the store once per request.                                                                          |
+| **Rotating** a secret read on the request path, from outside strad                                                                                                          | `ttlSeconds` (default 1 day)                      | The process's reading of the store is replaced on the first read after it ages past the TTL. Only request-path `${NAME}` references — a boot key or a baked one is [a restart or a deploy](#what-rotates-live-what-needs-a-restart-and-what-needs-a-redeploy). |
+| **Adding** a name that was absent, from outside strad                                                                                                                       | `negativeTtlSeconds` (default 1 hour)             | A miss drops the reading and reads again, rate limited so an unknown `${REF}` on a hot path — or a slug deployed ahead of its credential — cannot re-read the store once per request.                                                                          |
 | **Seeding** a name a slug declared [`mayBeUnseeded`](#maybeunseeded--deploying-a-server-ahead-of-its-credential)                                                            | `negativeTtlSeconds`, then one reachability probe | The same mechanism as any newly-added name. The slug goes from `unconfigured` to serving with no redeploy.                                                                                                                                                     |
 | A brand-new **secret** parameter                                                                                                                                            | up to ~2 minutes                                  | Its `__REF__` resolves only once the IAM binding `create()` made has propagated. Until then `:render` answers `400 SECRET_REFERENCE_ERROR` — see the caution above; that window looks exactly like the bug.                                                    |
 
-The defaults are long on purpose, and the next section says why. A deployment
-that rotates by hand and wants a shorter bound can set either knob lower; the
-cost is stated there too.
+The defaults are a day and an hour, on purpose, and the next section says why.
+The first row is the mechanism; the TTLs are the fallback for a writer that did
+not say anything. A deployment that rotates by hand and wants a shorter bound
+can set either knob lower; the cost is stated there too.
 
 Three behaviours matter more than the numbers:
 
@@ -137,7 +138,7 @@ Three behaviours matter more than the numbers:
   error, because there is nothing to serve and reporting a config problem for
   what is an outage would be a lie. A render that failed on a throttle, a server
   error or a timeout is not remembered either: the next reader renders again,
-  rather than inheriting one bad moment for an hour.
+  rather than inheriting one bad moment for the length of the TTL.
 - **Every store read carries a 10s deadline**, and a failed read backs off for
   5s before being retried. Both exist for the same reason: a request that HANGS
   is worse than one that fails, because a never-settling read pins every
@@ -159,8 +160,8 @@ button is pressed or the `secrets` MCP server's `refresh_gateway` tool is called
 (which its write tools do for you), or when a `${NAME}` the reading does not
 hold is asked for (at most once per `negativeTtlSeconds`).
 
-That is the whole cost model, and it is why the defaults are an hour and ten
-minutes rather than a minute and ten seconds. Parameter Manager bills every
+That is the whole cost model, and it is why the defaults are a day and an hour
+rather than a minute and ten seconds. Parameter Manager bills every
 `GetParameterVersion` and every `RenderParameterVersion`; a namespace is not
 addressable, so reading one means reading a version of **every** parameter in
 the project ([limitation #69](/limitations/#69-a-namespace-is-not-addressable-so-reading-one-means-reading-the-whole-store)).
@@ -178,7 +179,8 @@ tick costs:
 | Shape                                                       | Enumerations per tick | Billed reads per tick | Billed reads per day                             |
 | ----------------------------------------------------------- | --------------------- | --------------------- | ------------------------------------------------ |
 | One reading per namespace, `ttlSeconds: 60` (what prod ran) | 10                    | 388                   | 558,720 per core process, re-driven every minute |
-| One reading per process, `ttlSeconds: 3600` (the default)   | 1                     | 68 (2 x 34)           | 1,632                                            |
+| One reading per process, `ttlSeconds: 3600`                 | 1                     | 68 (2 x 34)           | 1,632                                            |
+| One reading per process, `ttlSeconds: 86400` (the default)  | 1                     | 68 (2 x 34)           | 68                                               |
 
 Per process: a deployment with two bundle components that host `params: true`
 builtins reads once per process on each. The bill no longer moves when a server
@@ -187,8 +189,10 @@ is added — a new namespace is a new slice, not a new timer — and moves by on
 is. At the default TTL that is inside Parameter Manager's free monthly
 allowance for most of the month and cents after it.
 
-What the long default costs is the bound on a rotation made **outside** strad:
-an hour, not a minute. The console and the `secrets` MCP server's write tools
+What the long default costs is the bound on a change nobody announced — a
+value seeded by hand with `gcloud`, or by a CI writer that does not call the
+refresh route: a day (an hour for a newly added gateway-namespace name), not a
+minute, unless somebody presses the button. The console and the `secrets` MCP server's write tools
 are the routes to rotate by — a write through either lands at once — and each
 has an explicit re-read for a rotation made elsewhere, with no write: the
 console's **Re-read the store** button, and the MCP server's `refresh_gateway`
@@ -797,11 +801,11 @@ credential is one the container would try to use.
 
 That depends on where the value is read, and the two are not close.
 
-| The reference                                                         | Activates                                                                                                                                          |
-| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A `url:`, `headers:` or builtin `options:` ref, `gcp-parameter-store` | at once if seeded through strad's console; otherwise within `negativeTtlSeconds` (default 10 minutes) of the store write. No redeploy, no restart. |
-| The same, seeded in the server's own `/mcp/{slug}/static/` namespace  | at once through the console; otherwise within `ttlSeconds` (default 1 hour) — that layer does not chase a miss.                                    |
-| A `supplementary-image`'s `env:`, or anything under `provider: env`   | **next deploy.** It is baked onto a container strad does not run.                                                                                  |
+| The reference                                                         | Activates                                                                                                                                                                  |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A `url:`, `headers:` or builtin `options:` ref, `gcp-parameter-store` | at once if seeded through strad's console or the `secrets` MCP server; otherwise within `negativeTtlSeconds` (default 1 hour) of the store write. No redeploy, no restart. |
+| The same, seeded in the server's own `/mcp/{slug}/static/` namespace  | at once through the console or the `secrets` MCP server; otherwise within `ttlSeconds` (default 1 day) — that layer does not chase a miss.                                 |
+| A `supplementary-image`'s `env:`, or anything under `provider: env`   | **next deploy.** It is baked onto a container strad does not run.                                                                                                          |
 
 `/healthz` and the console follow within one reachability probe (60s) of the
 value resolving. In every case it is a store write and a wait — never a PR.

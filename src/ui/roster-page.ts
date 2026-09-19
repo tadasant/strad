@@ -1587,7 +1587,8 @@ const GUIDE = `
           from GCP Secret Manager and <code>scripts/render-spec.ts</code> bakes each referenced
           name into the app spec as a SECRET env var. A new value needs a redeploy.</li>
         <li><b>gcp-parameter-store</b> — the gateway reads the value at runtime from
-          <code>/strad/&lt;env&gt;/gateway/static/</code>. A new value lands within
+          <code>/strad/&lt;env&gt;/gateway/static/</code>. A new value lands at once through
+          this console or the <code>secrets</code> MCP server, otherwise within
           <code>negativeTtlSeconds</code>, no deploy at all — and the same path is what the
           next deploy's preflight checks.</li>
       </ul>

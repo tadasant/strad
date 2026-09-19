@@ -566,7 +566,7 @@ export async function refreshParamsOnce(
  * strad's own console drops it, so a human's rotation reaches `/mcp` at once.
  * A write through the `secrets` MCP server does not: that server runs in a
  * bundle, writes through a client of its own, and core learns nothing until
- * the reading ages out — an hour, by default. The console grew a "Re-read the
+ * the reading ages out — a day, by default. The console grew a "Re-read the
  * store" button for exactly this; this is the agent's copy of that button.
  *
  * ## Why it is on this wire
