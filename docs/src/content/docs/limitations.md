@@ -2993,8 +2993,9 @@ and remove a server entry from the console at `/connectors`, and an agent do the
 same over `/mcp` through the `connectors` builtin, live on the next request with
 no deploy. Two things it does not do, and the first is the one people expect.
 
-**A second account of an existing bundled server still needs a deploy.** A
-`supplementary-image` mount's credentials reach its container as environment
+**A second account of an existing bundled server still needs a deploy — except
+on the three trees a [store-served instance](#100-what-a-store-served-instance-does-not-cover)
+covers.** A `supplementary-image` mount's credentials reach its container as environment
 variables the renderer bakes into the app spec, and a process's environment is
 fixed at spawn — so a new value cannot reach a running container at all. The
 bundle host compounds it: it discovers the extra slugs it should mount by looking
@@ -3005,8 +3006,11 @@ Both doors refuse the fields that would lie — `env:`, `params:`,
 `mcpStores:` — rather than accept an entry the deployment cannot honour. What is
 deliverable at runtime is a second slug onto a mount that is already deployed and
 already credentialed (the `gmail-ro` / `gmail-rw` pattern, two entries on one
-`path:` differing by `tools:`), and the two unhosted kinds, `remote-http` and
-`local-tunnel`, which run in core's own process.
+`path:` differing by `tools:`), the two unhosted kinds, `remote-http` and
+`local-tunnel`, which run in core's own process — and a store-served instance on
+`/_instance/{tree}/{its own slug}` with `params: true`, for telegram,
+google-sheets or grafana, which bakes nothing and reads its own namespace through
+core.
 
 **The overlay parameter has no compare-and-swap.** Parameter Manager offers none,
 so a write is a read-modify-write. The console form carries the revision it
@@ -3074,12 +3078,57 @@ plan](/operate/runtime-config-plan/) carries it as a later phase.
 **Undo:** for the first, a credential path a running container reads rather than
 receives — what `paramsRefresh:` does for a value behind an already-listed name,
 widened to a name the spec never listed, which needs the bundle host to discover
-mounts from the store instead of from its environment
-([strad#343](https://github.com/tadasant/strad/issues/343) carries it). For the
+mounts from the store instead of from its environment. #100's store-served
+instances are that path for the three trees that build from an injected
+environment; the rest need a tree that does, or a process per credential. For the
 second, a stored document with an `etag`-style precondition, or one writer
 elected per deployment.
 
 See `HACKS.md` #96.
+
+---
+
+### 100. What a store-served instance does not cover
+
+A server on [`path: /_instance/{tree}/{slug}`](/operate/secrets/#store-served-instances--a-mount-credentialed-from-its-own-namespace)
+is credentialed at runtime: core lists it to its bundle and serves that slug's own
+namespace, and the bundle host builds the instance from the values. Six edges,
+and the boundary that bounds them.
+
+**The caller is the component that serves the slug, and no other.** Each
+component holds its own internal token ([#63](#63-one-internal-token-means-any-container-can-reach-any-writable-parameter)),
+and both routes read the caller's component off it: the list answers for that
+component only, and the env route serves a slug only when its `bundle:` is the
+caller's. Any other component gets the same `403` as a slug that is not an
+instance.
+
+**Three trees, one account per slug.** `telegram`, `google-sheets` and `grafana`
+only. `remote-filesystem-tmp-public` is not one yet, and gmail, calendar, docs and
+every tree that reads its environment once cannot be. An instance path names its
+own slug, so a `-ro` / `-rw` pair over one account is two instances seeded twice.
+
+**A telegram rebuild does not close the connection it replaces**, so any change
+to the slug's namespace leaves the previous connection open until the container
+restarts. Nothing routes to it. A grafana instance is closed properly.
+
+**A sync is a poll**: one list call per component per
+`STRAD_INSTANCE_SYNC_SECONDS` (default 60) plus one read per instance, each a
+slice of core's one reading of the store.
+
+**A namespace outlives its entry.** An instance is served whatever its slug's
+namespace holds, including values a removed slug left behind. A runtime-created
+`remote-http` entry already reads the same namespace, so this adds no reach; both
+are bounded by who holds the `connectors` write tools.
+
+**Nothing checks the image**: an instance on a component that does not run the
+strad bundle image is listed to it and never served. **Health lags the first
+sync**: before it, a component serving only instances reads as unrecognised to
+core's mount health.
+
+**Undo:** a `close()` on the telegram tree, and an instance tree for
+remote-filesystem once its routes key on the slug.
+
+See `HACKS.md` #100.
 
 ---
 

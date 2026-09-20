@@ -4949,9 +4949,10 @@ same over `/mcp` through the `connectors` builtin, with the change live on the
 next request and no deploy. Two things it does not do, and the first is the one
 somebody will expect.
 
-**A second account of an existing bundled server still needs a deploy.** "Add a
-second gmail account and use it immediately" is the shape this feature looks
-like it delivers, and it does not. A `supplementary-image` mount's credentials
+**A second account of an existing bundled server still needs a deploy — except
+on the three trees a store-served instance covers (#100).** "Add a second gmail
+account and use it immediately" is the shape this feature looks like it
+delivers, and for gmail it does not. A `supplementary-image` mount's credentials
 reach its container as environment variables the renderer bakes into the app
 spec at render time, and a process's environment is fixed at spawn — so a new
 `GMAIL_PERSONAL_*` value cannot reach a running container at all. The bundle
@@ -4965,7 +4966,11 @@ honour. What IS deliverable at runtime is a second slug onto a mount that is
 ALREADY deployed and already credentialed — the `gmail-ro` / `gmail-rw` pattern,
 two entries on one `path:` differing by `tools:` — and the two unhosted kinds,
 `remote-http` and `local-tunnel`, which run in core's own process and are
-genuinely add-and-use.
+genuinely add-and-use. The exception is a store-served instance —
+`path: /_instance/{tree}/{its own slug}` for telegram, google-sheets or grafana,
+with `params: true` — which bakes nothing: the host learns about it from core and
+reads its own namespace, so `assertCreatable` accepts `params: true` on one and
+still refuses the other six fields.
 
 **The overlay parameter has no compare-and-swap.** Parameter Manager offers
 none, so the write is a read-modify-write. The console carries the `revision` it
@@ -5065,7 +5070,9 @@ The second is a store limitation strad cannot fix from the client side.
 than receives — the same move `paramsRefresh:` makes, widened from "a value
 behind an already-listed name" to "a name the spec never listed", which needs the
 bundle host to discover mounts from the store instead of from `process.env`.
-tadasant/strad#343 carries it. For the second: a stored document with an
+#100's store-served instances are that path for the three trees that build from
+an injected environment; the rest need a tree that does, or a process per
+credential. For the second: a stored document with an
 `etag`-style precondition, or a single writer elected per deployment.
 
 ---
@@ -5209,3 +5216,66 @@ choosing between them is a posture decision rather than a code one:
    for core to store. Core then never reads a client secret at all, and §1's
    write-without-read holds with no exceptions. The cost is a new internal route,
    and a second thing an internal-token holder (#63) can drive.
+
+---
+
+## 100. What a store-served instance does not cover
+
+**What.** A `supplementary-image` server on `path: /_instance/{tree}/{slug}` is
+credentialed at runtime: core lists it to its bundle (`GET /_strad/instances`) and
+serves that slug's own namespace (`GET /_strad/instances/{slug}`), and the bundle
+host builds the instance from those values (`src/secrets/param-route.ts`,
+`src/http/instances.ts`). Six edges, and the boundary that bounds them.
+
+**The caller is the component that serves the slug, and no other.** Both
+routes read the caller's component off its own internal token (#63,
+`internalCaller` in `src/auth/internal-token.ts`): the list answers for that
+component only, and the env route serves a slug only when its `bundle:` is the
+caller's. `bundle-zimmer-secrets`, a third-party image, or any other component
+asking for a slug it does not serve gets the same 403 as a slug that is not an
+instance.
+
+**Three trees, one account per slug.** `telegram`, `google-sheets` and `grafana`
+only, because they build from an injected environment.
+`remote-filesystem-tmp-public` is not one yet (its upload and download routes key
+on the mount path), and gmail, calendar, docs and every tree that reads
+`process.env` once cannot be. An instance path must name its own slug, so two
+slugs cannot share one instance: a `-ro` / `-rw` pair over one account is two
+instances with the same values seeded twice.
+
+**A telegram rebuild does not close the connection it replaces.** A grafana
+instance is closed when it is replaced (its child process stops). telegram's
+MTProto connection is memoised inside the tree with no close, so any change to
+the slug's namespace — not only a rotated credential — leaves the previous
+connection open until the container restarts. It is a leak, not a second
+identity: nothing routes to the replaced instance.
+
+**A sync is a poll.** One list call per component per
+`STRAD_INSTANCE_SYNC_SECONDS` (default 60), plus one env call per instance, each
+a slice of core's one reading of the store rather than a store read — paid on
+every component whether or not it runs an instance.
+
+**A namespace outlives its entry.** An instance reads whatever its slug's
+namespace holds, including values a removed slug left behind or a consent
+somebody else gave. A writer who creates an instance under that slug is served
+that account. That is not a reach this change adds: a runtime-created
+`remote-http` entry already reads the same namespace through
+`forServerIsolated` and can send it to a URL of its choosing. Both are bounded by
+who holds the `connectors` write tools, and neither by the namespace itself.
+
+**Nothing checks the image.** An instance only runs on a component running the
+strad bundle image, which is the only thing with a reconciler. An instance entry
+on a component running another image is listed to it and never served.
+
+**Health lags the first sync.** The host lists a built instance on `/healthz` at
+its path, and one core listed but that could not be built as degraded with the
+reason. Before its first sync it lists neither, so a component serving only
+instances reads as unrecognised to core's mount health for up to one sync.
+
+**Why.** The alternative to the route is a credential on the container, which is
+what the viewer/admin/resolver split exists to refuse; the route is what keeps
+the container holding none. The tree limit is a property of the trees, not of
+the mechanism. The leak is the telegram tree's, and closing it is a change there.
+
+**Undo.** A `close()` on the telegram tree. An instance tree for remote-filesystem once its
+routes key on the slug.

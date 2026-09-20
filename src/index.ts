@@ -265,6 +265,10 @@ async function main(): Promise<void> {
       // already holds rather than from a second client with a reading of its
       // own. A write through the console drops both by dropping one.
       diagnosticStore: resolver,
+      // And the same one again for the store-served instance routes, which
+      // read a slug's namespace as a slice of that one snapshot rather than
+      // with a store client of their own.
+      resolver,
       toolSurfaces: () => toolSurfaces.snapshot(),
       // Late-bound on purpose: the console's roster editor needs the runtime,
       // the runtime needs a gateway to rebuild, and the gateway is what this

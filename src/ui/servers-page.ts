@@ -1,5 +1,9 @@
 import { esc, layout } from "./render.ts";
 import { CONNECTORS_PREFIX, connectorsPath } from "./paths.ts";
+import {
+  INSTANCE_PATH_PREFIX,
+  INSTANCE_TREES,
+} from "../secrets/param-route.ts";
 import { SLUG_PATTERN, type StradConfig } from "../config/schema.ts";
 import type { EntrySource } from "../config/overlay.ts";
 import { immutableFields } from "../config/overlay.ts";
@@ -542,12 +546,17 @@ ${field(
   { id: "path" },
 )}
 ${headersField}
-<p class="state-sub">Credentials for this mount come from the deploy, not from
-here: <code>env:</code>, <code>params:</code> and the store declarations are
+<p class="state-sub">Credentials for an ordinary mount come from the deploy, not
+from here: <code>env:</code>, <code>params:</code> and the store declarations are
 baked onto the container when the app spec is rendered, and a running container
 cannot be handed a new variable. An entry added here therefore reuses the
 credentials the mount already has — which is exactly what a second entry with a
 narrower <code>tools:</code> policy wants.</p>
+<p class="state-sub">The exception is a store-served instance:
+<code>path: ${INSTANCE_PATH_PREFIX}/{tree}/{this slug}</code> with
+<code>params: true</code>, for ${INSTANCE_TREES.join(", ")}. It is credentialed
+from this slug's own namespace — seed it on the slug's secrets page first — and
+served on its first request, with no deploy.</p>
 `;
 
   const frozenNote =
@@ -629,6 +638,11 @@ change here is stored in the parameter store and applied to the running process
   deployment is <em>already running</em>. Its credentials are baked onto the
   container by the deploy, so an entry added here reuses what the mount already
   has. That is how one upstream becomes a read-only and a read-write slug.</li>
+  <li><strong>supplementary-image, as a store-served instance</strong> —
+  <code>path: ${INSTANCE_PATH_PREFIX}/{tree}/{its own slug}</code> with
+  <code>params: true</code>, for ${INSTANCE_TREES.join(", ")}. It brings its
+  own credential, read from the slug's namespace, so a second account is live on
+  its first request with no deploy.</li>
   <li><strong>builtin</strong> — never. The module is imported out of the
   running image, so it has to ship with a build.</li>
 </ul>

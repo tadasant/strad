@@ -16,7 +16,7 @@ import {
   BUNDLE_BOOT_ENV_KEYS,
   CORE_ONLY_BOOT_ENV_KEYS,
 } from "../secrets/provider/hydrate.ts";
-import { CORE_URL_ENV } from "../secrets/param-route.ts";
+import { CORE_URL_ENV, isInstancePath } from "../secrets/param-route.ts";
 import { componentToken } from "../auth/internal-token.ts";
 
 /**
@@ -1103,6 +1103,24 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
     if (isUnhosted(server)) continue;
 
     if (server.kind === "supplementary-image") {
+      // A STORE-SERVED INSTANCE puts nothing on its container. Its credentials
+      // are its own namespace, read through core when the bundle host asks
+      // (src/secrets/param-route.ts), so resolving them here would bake a copy
+      // no instance reads — and a bare-named copy that the CONVENTIONAL mount
+      // of the same tree would pick up as its own. It still needs the component
+      // to exist, which is all this records.
+      if (isInstancePath(server.path)) {
+        if (!imageBundles.has(server.bundle)) {
+          imageBundles.set(server.bundle, {
+            image: server.image,
+            env: {},
+            params: {},
+            paramKeys: {},
+            paramRefresh: {},
+          });
+        }
+        continue;
+      }
       // Several supplementary servers may share one bundle image (bundle-api
       // hosts a fleet from a single image, each on its own path). The schema
       // guarantees they share the SAME image; the component's env is the union

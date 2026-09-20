@@ -16,6 +16,16 @@
  * here. The conventional path is always mounted, so a config that asks for none
  * of this sees exactly the twenty-two it saw before.
  *
+ * STORE-SERVED INSTANCES are the other way in, and the one that needs no deploy.
+ * A strad server on `path: /_instance/{tree}/{slug}` puts nothing on this
+ * container: this process asks core which instances it should run
+ * (`createInstanceReconciler`, vendored from strad's src/secrets/param-route.ts),
+ * fetches each one's own namespace through core, and builds a telegram,
+ * google-sheets or grafana instance from exactly those values. They are served
+ * at their instance path, listed on /healthz, and kept in step on an interval —
+ * and on the first request for one this process does not hold yet, which is what
+ * makes a slug created at runtime servable on that request.
+ *
  * THIRTY-ONE of those are on one component. The other one, `zimmer-secrets`,
  * runs this same image as a SECOND component, and what makes it one is the SLUG
  * rather than the store: a second entitlement and a second console page. A
@@ -68,13 +78,23 @@ import { errMessage, log, logError, logWarn } from "./log.js";
 import {
   dropInheritedNames,
   extraSlugs,
+  instanceEnv,
   missingCredentialsDegraded,
   remoteFilesystemDegraded,
   scrubCapabilityEnv,
 } from "./mounts.js";
 import { PRESENCE_ROUTE, presenceResponse } from "./presence.js";
 import { paramStoreFor, startParamRefresh } from "./param-store.js";
-import { CORE_URL_ENV, createStoreRefreshClient } from "./param-route.js";
+import {
+  CORE_URL_ENV,
+  createInstanceClient,
+  createInstanceReconciler,
+  createStoreRefreshClient,
+  INSTANCE_PATH_PREFIX,
+  instancePath,
+  instanceSyncSeconds,
+  type InstanceTree,
+} from "./param-route.js";
 import { loadFromTree, treeSdk, type TreeName } from "./trees.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -162,6 +182,16 @@ interface Mount {
    * HTTP instead. The mount decides whether the presented token is good.
    */
   download?: (token: string) => Promise<DownloadOutcome>;
+  /**
+   * Where this mount is served, when that is not `/${slug}`. Set only on a
+   * store-served instance, whose path is `/_instance/{tree}/{slug}`.
+   */
+  path?: string;
+  /**
+   * Release what the mount holds — a child process, a connection. Called when a
+   * store-served instance is replaced by a rebuild or removed.
+   */
+  close?: () => Promise<void>;
 }
 
 async function buildMounts(): Promise<Mount[]> {
@@ -613,9 +643,13 @@ async function loadGrafanaTree(): Promise<GrafanaModule> {
  * origins and two tokens, so they are two children of this process — the same
  * shape telegram and google-sheets take, for the same reason.
  */
-function loadGrafana(mod: GrafanaModule, slug: string): Mount {
-  const env = slugEnvView(process.env, slug);
-
+function loadGrafana(
+  mod: GrafanaModule,
+  slug: string,
+  // A store-served instance passes the environment core served it. Every other
+  // caller reads this slug's view of the container.
+  env: Record<string, string | undefined> = slugEnvView(process.env, slug),
+): Mount {
   // Degraded, not unmounted, and for the usual reason: the tools must still LIST
   // so the console shows the slug and an agent can see what it would offer once
   // a token lands. mcp-grafana lists its 52 tools without ever reaching Grafana,
@@ -663,6 +697,9 @@ function loadGrafana(mod: GrafanaModule, slug: string): Mount {
   });
 
   mount.register = (s) => created.registerHandlers(s);
+  // The child is this mount's; a rebuilt or removed instance must not leave it
+  // running against the credential it was replaced for.
+  mount.close = () => created.close();
   return mount;
 }
 
@@ -733,14 +770,18 @@ function loadGoogleSheets(
   sheets: GoogleSheetsModule,
   slug: string,
   perSlug: boolean,
+  // A store-served instance's environment, which holds its own namespace and no
+  // bare name at all — so there is nothing for it to inherit, and the drop below
+  // has nothing to do.
+  served?: Record<string, string | undefined>,
 ): Mount {
-  const view = slugEnvView(process.env, slug);
+  const view = served ?? slugEnvView(process.env, slug);
   // A DISCOVERED slug's ACCOUNT is its own or it has none. Everything the OAuth
   // app pair is not is the per-account half of the credential — the refresh token
   // — and a slug that has not been connected yet must not inherit a bare one from
   // whichever server put it on the box. See `dropInheritedNames`. The conventional
   // mount is the bare names' owner, so it keeps reading them.
-  if (perSlug) {
+  if (perSlug && !served) {
     const app = new Set<string>(sheets.GOOGLE_SHEETS_OAUTH_APP_ENV_NAMES);
     dropInheritedNames(
       view,
@@ -967,13 +1008,16 @@ const TELEGRAM_MARKER_NAMES = [
   "TELEGRAM_STRING_SESSION",
 ];
 
-async function loadTelegram(slug: string): Promise<Mount> {
+async function loadTelegram(
+  slug: string,
+  // A store-served instance passes the environment core served it.
+  env: Record<string, string | undefined> = slugEnvView(process.env, slug),
+): Promise<Mount> {
   const mod = (await loadFromTree("telegram", "shared/build/index.js")) as {
     createMCPServer: Factory;
     missingCredentials: (env?: NodeJS.ProcessEnv) => string[];
   };
 
-  const env = slugEnvView(process.env, slug);
   const created = mod.createMCPServer({ version: VERSION, env });
   const missing = mod.missingCredentials(env);
 
@@ -986,6 +1030,31 @@ async function loadTelegram(slug: string): Promise<Mount> {
     register: (s) => created.registerHandlers(s),
   };
 }
+
+/**
+ * How each store-served instance tree is built from what core served it.
+ *
+ * The three loaders above already take an injected environment, which is the
+ * whole qualification: an instance is a second copy of a tree inside this one
+ * process, and only a tree that reads its credential out of what it is handed
+ * can be one. `instanceEnv` is what it is handed — the served namespace plus a
+ * few non-credential process variables, and never a bare name from the
+ * container. The trees are loaded out of `/app/trees` on first use; the module
+ * cache makes every later build free.
+ *
+ * A `Record` over `InstanceTree`, so a tree added to the vendored list and not
+ * given a builder here fails the build rather than a request.
+ */
+const INSTANCE_BUILDERS: Record<
+  InstanceTree,
+  (slug: string, served: Record<string, string>) => Promise<Mount>
+> = {
+  telegram: (slug, served) => loadTelegram(slug, instanceEnv(served)),
+  grafana: async (slug, served) =>
+    loadGrafana(await loadGrafanaTree(), slug, instanceEnv(served)),
+  "google-sheets": async (slug, served) =>
+    loadGoogleSheets((await loadGoogleTree()).sheets, slug, true, instanceEnv(served)),
+};
 
 /**
  * bill-spend — strad's own BILL Spend & Expense server: re-codes card
@@ -1522,6 +1591,34 @@ async function main(): Promise<void> {
     return [];
   });
 
+  // STORE-SERVED INSTANCES — the mounts no deploy named. See the header.
+  //
+  // The first sync is NOT awaited, for the reason the refresh pass above is
+  // not: a slow core must not stand in front of `listen()` for twenty-two
+  // mounts that need nothing from it. A request that arrives before the sync
+  // lands takes the miss path in the route below, which syncs then.
+  const instances = createInstanceReconciler<Mount>({
+    client: createInstanceClient({
+      baseUrl: process.env[CORE_URL_ENV],
+      token: process.env.STRAD_INTERNAL_TOKEN,
+      // The renderer names each component after its bundle, so this is the
+      // bundle core routes this process's instances to.
+      bundle: process.env.STRAD_COMPONENT,
+    }),
+    build: async (tree, slug, served) => {
+      const mount = await INSTANCE_BUILDERS[tree](slug, served);
+      // Set on the object the loader returned rather than on a copy: grafana's
+      // loader keeps a reference and writes `degraded` onto it later.
+      mount.path = instancePath(tree, slug);
+      return mount;
+    },
+    dispose: (mount) => mount.close?.(),
+    note: (level, message) => (level === "warn" ? logWarn : log)(message),
+  });
+  void instances.sync();
+  // Unref'd: an interval must never be what keeps a container alive.
+  setInterval(() => void instances.sync(), instanceSyncSeconds(process.env) * 1000).unref();
+
   const app = express();
   app.disable("x-powered-by");
 
@@ -1545,11 +1642,24 @@ async function main(): Promise<void> {
       component: "bundle",
       version: VERSION,
       chromium: { up: browserIsUp(), launches: browserLaunchCount() },
-      servers: mounts.map((m) => ({
-        slug: m.slug,
-        path: `/${m.slug}`,
-        ...(m.degraded ? { degraded: m.degraded } : {}),
-      })),
+      servers: [
+        ...[
+          ...mounts,
+          ...[...instances.held().values()].map((held) => held.value),
+        ].map((m) => ({
+          slug: m.slug,
+          path: m.path ?? `/${m.slug}`,
+          ...(m.degraded ? { degraded: m.degraded } : {}),
+        })),
+        // Listed by core and NOT built — its credentials could not be read, or
+        // its build threw. Reported at its path as degraded, so core's mount
+        // health sees a broken instance rather than one it has never heard of.
+        ...[...instances.unbuilt()].map(([slug, { tree, reason }]) => ({
+          slug,
+          path: instancePath(tree, slug),
+          degraded: `not built: ${reason}`,
+        })),
+      ],
     });
   });
 
@@ -1692,6 +1802,43 @@ async function main(): Promise<void> {
       app.all(`/${mount.slug}`, internalOnly, jsonBody, statelessHandler(mount));
     }
   }
+
+  // The store-served instances, behind the same gate. ONE route rather than one
+  // per instance, because the set changes under a running process: the lookup
+  // happens per request, against whatever the reconciler holds now.
+  //
+  // A MISS SYNCS, bounded. Core only routes a slug here once its config names
+  // it, so a request for an instance this process does not hold is usually a
+  // slug created since the last sync — and answering it now, rather than a sync
+  // interval later, is what "created at runtime, used on the next request"
+  // means. `syncOnMiss` refuses to start a second sync inside its floor, so a
+  // caller hammering a path nothing serves costs core one list call per floor.
+  app.all(`${INSTANCE_PATH_PREFIX}/:tree/:slug`, internalOnly, jsonBody, (req, res) => {
+    const find = (): Mount | undefined => {
+      const held = instances.held().get(req.params.slug ?? "");
+      return held && held.tree === req.params.tree ? held.value : undefined;
+    };
+    void (async () => {
+      let mount = find();
+      if (!mount) {
+        await instances.syncOnMiss();
+        mount = find();
+      }
+      if (!mount) {
+        res.status(404).json({
+          error: "instance_not_served",
+          message:
+            `this component serves no store-served instance at ${req.path}. ` +
+            `Core has not routed one here, or its credentials could not be read.`,
+        });
+        return;
+      }
+      await statelessHandler(mount)(req, res);
+    })().catch((err: unknown) => {
+      logError("instance", err);
+      if (!res.headersSent) res.status(500).json({ error: "instance_failed" });
+    });
+  });
 
   // One stray rejection from one of twenty-two servers must not kill the other
   // twenty-one. The standalone images exit here (correct, when the process IS the

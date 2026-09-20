@@ -3,6 +3,13 @@ import { z } from "zod";
 import { MAX_VARIABLE_LENGTH, isEnvName, secretRefsIn } from "./env-name.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
 import { normaliseNamespace } from "../secrets/parameters/namespace.ts";
+import {
+  INSTANCE_PATH_PREFIX,
+  INSTANCE_TREES,
+  instancePath,
+  isInstancePath,
+  parseInstancePath,
+} from "../secrets/param-route.ts";
 
 /**
  * The strad configuration interface.
@@ -1701,6 +1708,85 @@ export const StradConfig = z
       }
     }
 
+    // STORE-SERVED INSTANCES.
+    //
+    // A supplementary server on `/_instance/{tree}/{slug}` is credentialed from
+    // its own namespace at REQUEST time — core serves it, the bundle host builds
+    // the instance from it, nothing is rendered onto the container (see
+    // src/secrets/param-route.ts). Five rules, and each one is what keeps an
+    // accepted entry from being a mount that is routed and not served:
+    //
+    //   - the path must parse, or the host has no tree to build;
+    //   - it must name the entry's OWN slug, or it would read another slug's
+    //     namespace — the path is the only thing that selects one;
+    //   - `params: true`, because an instance's environment IS that namespace and
+    //     the config should say so in the field that already means it;
+    //   - none of the fields that deliver through the render, which an instance
+    //     never receives;
+    //   - the store provider, because the env provider has no namespace to serve.
+    for (const s of cfg.servers) {
+      if (s.kind !== "supplementary-image" || !isInstancePath(s.path)) continue;
+      const issue = (message: string): void =>
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `server "${s.slug}" ${message}`,
+          path: ["servers"],
+        });
+
+      const parsed = parseInstancePath(s.path);
+      if (!parsed) {
+        issue(
+          `serves path "${s.path}", which is under ${INSTANCE_PATH_PREFIX}/ but is ` +
+            `not an instance path. It must be ${INSTANCE_PATH_PREFIX}/{tree}/{its own ` +
+            `slug}, where {tree} is one of: ${INSTANCE_TREES.join(", ")}.`,
+        );
+        continue;
+      }
+      if (parsed.slug !== s.slug) {
+        issue(
+          `serves the instance path "${s.path}", which names the slug ` +
+            `"${parsed.slug}". An instance is credentialed from the namespace of the ` +
+            `slug its path names, so that must be its own: ` +
+            `path: ${instancePath(parsed.tree, s.slug)}.`,
+        );
+      }
+      if (!s.params) {
+        issue(
+          `serves an instance path but does not set params: true. An instance's ` +
+            `whole environment is its own /strad/{env}/mcp/${s.slug}/ namespace, ` +
+            `served when the bundle asks rather than baked at render — params: true ` +
+            `is how the config says that.`,
+        );
+      }
+      const delivered = [
+        Object.keys(s.env).length > 0 ? "env:" : null,
+        s.paramsWritable.length > 0 ? "paramsWritable:" : null,
+        s.paramsRefresh.length > 0 ? "paramsRefresh:" : null,
+        Object.keys(s.consoleEnv).length > 0 ? "consoleEnv:" : null,
+        s.consoleStores.length > 0 ? "consoleStores:" : null,
+        s.mcpStores.length > 0 ? "mcpStores:" : null,
+      ].filter((f): f is string => f !== null);
+      if (delivered.length > 0) {
+        issue(
+          `serves an instance path and declares ${delivered.join(", ")}. Nothing ` +
+            `about an instance is rendered onto its container: env: and consoleEnv: ` +
+            `would be baked where no instance reads them, paramsRefresh: repeats ` +
+            `what every sync already does (it re-reads the whole namespace), no ` +
+            `instance tree writes a credential back, and the store declarations ` +
+            `belong to the secrets server. Seed the values under this slug's own ` +
+            `namespace instead.`,
+        );
+      }
+      if (cfg.gateway.secrets.provider !== "gcp-parameter-store") {
+        issue(
+          `serves an instance path, which needs gateway.secrets.provider: ` +
+            `gcp-parameter-store — an instance's credentials are read from the ` +
+            `store when the bundle asks, and the env provider has no per-slug ` +
+            `namespace to read them from.`,
+        );
+      }
+    }
+
     // OAUTH REFRESH on a remote-http server.
     //
     // Four rules. The first two keep a credential out of the config and give
@@ -1819,14 +1905,26 @@ export const StradConfig = z
       // the host falls back to bare names — would come up holding whatever a
       // sibling was seeded. Refusing here is what makes that unrepresentable
       // rather than merely unlikely.
-      if (s.kind === "supplementary-image" && s.path !== `/${s.slug}`) {
+      //
+      // A store-served instance on its OWN instance path meets the same bar by a
+      // different route: nothing is baked, and the host reads the slug's own
+      // namespace — `oauth/` ahead of `static/` — which is where the consent
+      // writes. The instance rules above refuse an instance path naming another
+      // slug, so accepting the shape here accepts nothing wider.
+      if (
+        s.kind === "supplementary-image" &&
+        s.path !== `/${s.slug}` &&
+        parseInstancePath(s.path)?.slug !== s.slug
+      ) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message:
             `server "${s.slug}" declares oauth: but serves path "${s.path}". A ` +
             `connector's credential is delivered under this slug's own variable ` +
             `names, and the bundle host reads those only for the server that is ` +
-            `alone on path: /${s.slug}. Set path: /${s.slug}.`,
+            `alone on path: /${s.slug}, or for a store-served instance on its own ` +
+            `${INSTANCE_PATH_PREFIX}/{tree}/${s.slug}. Set path: /${s.slug}, or ` +
+            `the instance path.`,
           path: ["servers"],
         });
       }

@@ -1,4 +1,5 @@
 import { isUnhosted, unhostedRefFields } from "../config/schema.ts";
+import { isInstancePath } from "../secrets/param-route.ts";
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
@@ -1411,6 +1412,13 @@ export interface ServerSecretStatus {
  * ARE on a component core cannot see, so it keeps the container chip and takes
  * the builtin's account of when a write lands. A confidently wrong panel is
  * worse than the dead control this replaced.
+ *
+ * `instance` stands on its own. A store-served instance
+ * (`path: /_instance/{tree}/{slug}`) is a `supplementary-image` whose parameters
+ * are on NO container — the bundle asks core for them and builds the instance
+ * from what it is served — so every probe reason would be wrong about it: there
+ * is no manifest to be missing, nothing to redeploy, and nothing to seed "and
+ * redeploy". It answers from the config alone, like a builtin does.
  */
 export interface UnobservableScope {
   /**
@@ -1428,6 +1436,7 @@ export interface UnobservableScope {
     | "unreachable"
     | "unmanifested"
     | "silent"
+    | "instance"
     | "in-process"
     | "delegated"
     | "inert";
@@ -1616,6 +1625,22 @@ function unobservableScope(
   const component = server.bundle;
   const namespace = staticNamespace(config.gateway.env, server.slug);
   const base = { component, namespace };
+  // Before the probe, because the probe has nothing to say: an instance puts no
+  // variable and no manifest on its component (src/deploy/appspec.ts), so every
+  // answer below — "unmanifested, redeploy it" first — would be confidently wrong.
+  if (isInstancePath(server.path)) {
+    return {
+      ...base,
+      reason: "instance",
+      detail:
+        `This server is a store-served instance, so nothing about it is on "${component}" — ` +
+        `no variable and no manifest — and there is nothing for that component to report. ` +
+        `Its credentials are read out of this namespace, through core, when the bundle asks; ` +
+        `a value seeded or rotated there reaches the instance on the bundle's next sync, with ` +
+        `no deploy. Whether the instance is built, and which variable it is missing, is on ` +
+        `that component's /healthz.`,
+    };
+  }
   // `expectedKeys` enumerates every bundle holding a supplementary image, so a
   // server of this kind is always probed and a missing entry means the same
   // thing the outcome does: no private URL was bound for it.

@@ -555,6 +555,22 @@ servers:
   # one path are one process holding one token, and renderAppSpec refuses that
   # outright when their values differ. See docs/servers/google-sheets.md.
   #
+  # OR, WITH NO DEPLOY: a STORE-SERVED INSTANCE. `path:
+  # /_instance/google-sheets/<its own slug>` plus `params: true` puts nothing on
+  # the container. The bundle host asks core for this slug's own
+  # /strad/{env}/mcp/{slug}/ namespace and builds the mount from it, so the entry
+  # can be created from /connectors and is served on its first request.
+  # telegram, google-sheets and grafana only; it needs the gcp-parameter-store
+  # provider. See docs/operate/secrets.md, "Store-served instances".
+  #
+  #   - slug: google-sheets-home
+  #     kind: supplementary-image
+  #     image: ghcr.io/tadasant/strad-bundle:latest
+  #     bundle: bundle
+  #     path: /_instance/google-sheets/google-sheets-home
+  #     entitlements: [admin]
+  #     params: true
+  #
   # Because the credential is per slug in that shape, a read-only slug can be
   # seeded a refresh token consented only for spreadsheets.readonly — so Google
   # refuses a write even if the gateway did not. That is a guarantee 1Password's

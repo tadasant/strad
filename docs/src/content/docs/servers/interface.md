@@ -405,6 +405,31 @@ render error — for servers that share a `path`. A slug on a path of its own
 [its own per-slug names](/operate/secrets/#what-a-servers-variables-are-called-on-the-box)
 and can hold its own value. Those names exist for every server either way.
 
+**A store-served instance** is the third shape, and the one a runtime write can
+create. Its `path:` is `/_instance/{tree}/{its own slug}`, where `{tree}` is one
+of `telegram`, `google-sheets` or `grafana` — the trees the bundle host can build
+a second copy of from an injected environment. Nothing about it is rendered onto
+the container. The bundle host asks core which instances it should run, reads
+each one's own `/strad/{env}/mcp/{slug}/` namespace through core, and builds the
+instance from exactly those values, with no fallback to the container's
+environment. The schema holds it to five rules: the path parses, it names the
+entry's own slug, `params: true` is set, none of `env:`, `paramsWritable:`,
+`paramsRefresh:`, `consoleEnv:`, `consoleStores:` or `mcpStores:` is, and
+`gateway.secrets.provider` is `gcp-parameter-store`. An `oauth:` connector is
+allowed on one, and its consent lands in the namespace the instance reads.
+
+```yaml
+- slug: telegram-personal
+  kind: supplementary-image
+  image: ghcr.io/tadasant/strad-bundle:latest
+  bundle: bundle
+  path: /_instance/telegram/telegram-personal
+  entitlements: [admin]
+  params: true
+```
+
+See [Store-served instances](/operate/secrets/#store-served-instances--a-mount-credentialed-from-its-own-namespace).
+
 Fields: `image` (required), `bundle` (required), `path` (defaults to `/mcp`, must
 start with `/`), `env` and `headers` (maps whose values may be `${NAME}` secrets),
 plus two that shape how this server gets its values:
@@ -582,6 +607,11 @@ plus two that shape how this server gets its values:
   [two servers, one variable name](/operate/secrets/#a-servers-secrets-live-in-that-servers-namespace).
   The two paths differ in what they inject: `params:` injects everything it finds,
   substitution injects only names the config already references.
+
+  On a [store-served instance](#3-supplementary-image) nothing is resolved at
+  deploy time and nothing is baked: the bundle host reads the namespace through
+  core when it syncs, and `params: true` is required there because that is what
+  the flag means.
 
   Every supplementary server's `env:` lands under `<SLUG>__<NAME>` as well as the
   bare names, unconditionally. Whether two servers on **one bundle** can hold two
@@ -966,8 +996,9 @@ What an overlay may carry is narrower than what this page documents, because a
 running process cannot be given a container variable: `remote-http` and
 `local-tunnel` fully, a `supplementary-image` slug pointed at a mount that is
 already deployed and declaring none of `env:`, `params:`, `paramsWritable:`,
-`paramsRefresh:`, `consoleEnv:`, `consoleStores:` or `mcpStores:`, and a
-`builtin` never. Full model: [Runtime config](/operate/runtime-config/).
+`paramsRefresh:`, `consoleEnv:`, `consoleStores:` or `mcpStores:`, a
+store-served instance on `/_instance/{tree}/{its own slug}` with `params: true`,
+and a `builtin` never. Full model: [Runtime config](/operate/runtime-config/).
 
 ## `auth.staticTokens`
 

@@ -255,11 +255,54 @@ process; for a third-party server that is not published as a hosted endpoint,
 the honest end state is a mount whose credential set is refreshed on a schedule
 or on a restart, and the plan should say that to whoever is expecting otherwise.
 
+**What changed — the `strad` half.** A store-served instance: a
+`supplementary-image` entry on `path: /_instance/{tree}/{its own slug}` with
+`params: true`. Core lists the instances on a component
+(`GET /_strad/instances?bundle=`) from its current config, and serves one
+instance's own namespace (`GET /_strad/instances/{slug}`). The bundle host builds
+the instance from what it is served, re-syncs on an interval and on the first
+request for an instance it does not hold, and never falls back to its own
+environment. The render bakes nothing for one. `assertCreatable` accepts
+`params: true` on an instance and still refuses the other six deploy-only fields;
+the reach bound accepts an instance on its own path when the author reaches some
+checked-in slug on that component. The client and the reconciler are in
+`src/secrets/param-route.ts`, which is already vendored.
+
+**Which mounts get which.**
+
+- `telegram`, `google-sheets`, `grafana` — **add and use, no restart.** Each
+  already builds from an injected environment, so an instance is a second copy in
+  the same process, and a rotation rebuilds it on the next sync.
+- `remote-filesystem-tmp-public` — per-slug by environment, and **not** an
+  instance tree yet: its upload and download routes key on the mount path, and
+  its variable names carry the second slug rule strad#153 is about.
+- gmail, calendar, docs, and every tree that reads `process.env` once — **still a
+  deploy.** Nothing restarts one App Platform container, and a second credential
+  for such a tree needs a second process. The honest end state above stands.
+
+**strad#153 was checked first**, as the issue gate asked. An instance's namespace
+is addressed by the slug through `serverParameterPath`, and its values reach the
+tree under their bare names. No `<SLUG>__NAME` mangling is on this path, so
+neither of the two namespacing rules #153 describes is either.
+
+**What it does not decide.** The open half of phase 2 is unchanged: an instance
+is a new mount reached through no checked-in slug, so there is no narrower
+checked-in `tools:` for it to widen past, and a writer that reaches an existing
+mount reaches it exactly as before. There is no new secret-reading principal:
+core reads the namespace with the resolver it already holds, and hands the
+values only to the component the slug is on, identified by that component's own
+internal token ([Known limitations](/limitations/) #63, #100).
+
 **Owner.** `strad` for core and the host tree; `strad-production` for the prod
 roster once a slug can migrate.
 
-**Evidence.** One prod slug created end to end at runtime, serving tools, with
-no entry in `infra/strad.prod.yaml`.
+**Evidence.** In this repo, `test/instances.test.ts`: a slug created through
+`RuntimeConfig` is listed by core, served from its own namespace (never core's
+environment, never the gateway namespace), rebuilt on a rotation and removed on
+a removal, with no deploy — plus the route refusals, the relaxed
+`assertCreatable`, the reach bound and the schema rules. Still owed by
+`strad-production`: one prod slug created end to end at runtime, serving tools,
+with no entry in `infra/strad.prod.yaml`.
 
 ### Phase 4 — `roles:` becomes part of the overlay
 
@@ -388,6 +431,13 @@ brings the question back.
    standing between `/mcp` and a production secret value, so who holds it
    is a decision only its owner can make. An agent can write the Terraform; it
    cannot decide that a new principal may deref secrets.
+
+   As shipped, phase 3 needs **no new principal**: core serves an instance's
+   values out of the resolver it already holds, which already has
+   `parameterAccessor`. Per-component internal tokens came first, as that
+   decision required: core serves an instance's values only to the component
+   that runs it ([Known limitations](/limitations/) #63, #100).
+
 4. **Complete each OAuth consent** (phases 3 and 4, ongoing). Granting consent
    is a browser handshake with a third party. `describe_connector_authorization`
    exists precisely because an agent cannot do it: it returns the URL a human
@@ -422,6 +472,8 @@ here:
 - **The `zimmer` grant on `connectors`** — with the `tools:` decision from
   [above](#what-only-a-human-can-do) applied, rather than the full surface by
   default.
-- **Migrating a slug off `env:`** once phase 3 lands: removing the `env:` block
-  from an entry in `infra/strad.prod.yaml` and letting the runtime path carry it.
+- **Migrating a slug off `env:`** now that phase 3's `strad` half has landed:
+  for a telegram, google-sheets or grafana slug, moving it to its instance path
+  with `params: true`, seeding its namespace, and removing the `env:` block from
+  its entry in `infra/strad.prod.yaml`.
 - **`envFallback: false`** (phase 7), after the nine names are confirmed present.

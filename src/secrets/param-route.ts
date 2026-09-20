@@ -53,7 +53,10 @@
  * requires `params: true`, and `params: true` bakes the whole namespace onto that
  * component at render time. What the GET adds is FRESHNESS — the value as of now
  * rather than as of the last deploy — which is precisely the race it exists to
- * close.
+ * close. The store-served instance routes at the end of this file are the one
+ * exception — their values are baked nowhere — so core serves them only to the
+ * component the slug is on, read off that component's own internal token
+ * (`internalCaller` in core); HACKS.md #100 says what else they do not cover.
  *
  * This file is VENDORED into the bundle host tree (`npm run paramroute:sync`,
  * `test/vendored.sync.test.ts`), so it must stay import-free. It carries BOTH
@@ -731,6 +734,589 @@ export function createStoreRefreshClient(
           reason: `could not reach core (${err instanceof Error ? err.message : String(err)})`,
         };
       }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// STORE-SERVED INSTANCES — a mount whose credential set is its own namespace
+// ---------------------------------------------------------------------------
+
+/**
+ * ## What this is for
+ *
+ * Everything above moves a VALUE behind a name the render already listed. This
+ * moves the NAMES too. A `supplementary-image` server whose `path:` is an
+ * instance path — `/_instance/{tree}/{slug}` — has no credential on its
+ * container at all. The bundle host learns that it exists from core (the list
+ * route), fetches that slug's own `/strad/{env}/mcp/{slug}/` namespace through
+ * core (the env route), and builds a fresh instance of `tree` from exactly those
+ * values. Nothing is baked, so nothing needs a deploy: a slug created at
+ * runtime is served on its first request, and a credential seeded or rotated
+ * under it reaches the instance on the next sync.
+ *
+ * ## Why the path carries the tree AND the slug
+ *
+ * The host cannot guess which tree a slug is for, and a guess would be a
+ * credential handed to the wrong code. So the config says, in the one field
+ * that already selects a mount. The slug is in the path too, and the schema
+ * requires it to be the entry's OWN slug: a path names exactly one namespace,
+ * two entries cannot share one, and no `-ro` slug can be pointed at a `-rw`
+ * slug's account.
+ *
+ * The prefix is one no conventional mount can have — every one of those is
+ * `/{slug}` — so an instance path can never land on a mount holding a
+ * credential the deploy baked for somebody else. That is what lets a runtime
+ * write create one without reaching anything its author was not given.
+ *
+ * ## What an instance holds
+ *
+ * Its own namespace, both kinds layered, and nothing else. No bare-name
+ * fallback to the container's environment (the host hands the tree a handful of
+ * non-credential process variables — `PATH`, `HOME` — and the served values),
+ * so a slug with nothing seeded is an instance that is degraded and says what
+ * it is missing, never one quietly running on a sibling's account.
+ *
+ * ## Which trees
+ *
+ * The ones that already take an injected environment and already run one
+ * instance per slug: telegram, google-sheets and grafana. A tree that reads
+ * `process.env` once at start-up cannot be given a second credential inside one
+ * process, and is not on this list.
+ */
+
+/** The path prefix no conventional mount can have. */
+export const INSTANCE_PATH_PREFIX = "/_instance";
+
+/** The trees the bundle host can build an instance of. */
+export const INSTANCE_TREES = ["google-sheets", "grafana", "telegram"] as const;
+
+export type InstanceTree = (typeof INSTANCE_TREES)[number];
+
+/** True when `tree` is one the host can build. */
+export function isInstanceTree(tree: string): tree is InstanceTree {
+  return (INSTANCE_TREES as readonly string[]).includes(tree);
+}
+
+/** The instance path for one slug of one tree. */
+export function instancePath(tree: InstanceTree, slug: string): string {
+  return `${INSTANCE_PATH_PREFIX}/${tree}/${slug}`;
+}
+
+/**
+ * True when `path` is under the instance prefix at all, well-formed or not.
+ *
+ * Separate from {@link parseInstancePath} so a malformed one is REFUSED by the
+ * schema as a malformed instance path, rather than accepted as an ordinary
+ * mount that nothing serves.
+ */
+export function isInstancePath(path: string): boolean {
+  return (
+    path === INSTANCE_PATH_PREFIX || path.startsWith(`${INSTANCE_PATH_PREFIX}/`)
+  );
+}
+
+/** The tree and slug an instance path names, or null when it names none. */
+export function parseInstancePath(
+  path: string,
+): { tree: InstanceTree; slug: string } | null {
+  if (!isInstancePath(path)) return null;
+  const parts = path.slice(INSTANCE_PATH_PREFIX.length + 1).split("/");
+  if (parts.length !== 2) return null;
+  const [tree, slug] = parts as [string, string];
+  if (!isInstanceTree(tree) || !isParamSlug(slug)) return null;
+  return { tree, slug };
+}
+
+/**
+ * The list route. `?bundle=` names the component asking.
+ *
+ * The bundle filter is CORRECTNESS, not authorization: every component holds
+ * the same internal token, so a caller can name any bundle. It is what stops a
+ * component building an instance core routes to a different container.
+ */
+export const INSTANCE_LIST_ROUTE = "/_strad/instances";
+
+/** The env route for one slug: `/_strad/instances/{slug}`. */
+export function instanceEnvRoutePath(slug: string): string {
+  return `${INSTANCE_LIST_ROUTE}/${encodeURIComponent(slug)}`;
+}
+
+/** One instance core routes to the asking component. */
+export interface InstanceDescriptor {
+  slug: string;
+  tree: InstanceTree;
+}
+
+export interface InstanceListResponse {
+  protocol: number;
+  instances: InstanceDescriptor[];
+}
+
+export interface InstanceEnvResponse {
+  protocol: number;
+  slug: string;
+  tree: InstanceTree;
+  /** The slug's own namespace, layered. Usable values only. */
+  env: Record<string, string>;
+}
+
+/**
+ * Validate core's list, from the CALLER's side.
+ *
+ * An unfamiliar protocol is NOT an empty list. An empty list tears down every
+ * instance this component holds; an answer the caller cannot read must change
+ * nothing, which is what `ok: false` does.
+ */
+export function parseInstanceListResponse(
+  body: unknown,
+):
+  { ok: true; instances: InstanceDescriptor[] } | { ok: false; error: string } {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return { ok: false, error: "response is not an object" };
+  }
+  const { protocol, instances } = body as Partial<InstanceListResponse>;
+  if (protocol !== PARAM_PROTOCOL) {
+    return {
+      ok: false,
+      error: `unsupported instance protocol: ${String(protocol)}`,
+    };
+  }
+  if (!Array.isArray(instances)) {
+    return { ok: false, error: "response carries no instance list" };
+  }
+  const out: InstanceDescriptor[] = [];
+  const seen = new Set<string>();
+  for (const item of instances as unknown[]) {
+    if (typeof item !== "object" || item === null) {
+      return { ok: false, error: "an instance entry is not an object" };
+    }
+    const { slug, tree } = item as Record<string, unknown>;
+    if (typeof slug !== "string" || !isParamSlug(slug)) {
+      return { ok: false, error: "an instance entry has no usable slug" };
+    }
+    if (typeof tree !== "string" || !isInstanceTree(tree)) {
+      return {
+        ok: false,
+        error: `instance "${slug}" names a tree this image cannot build`,
+      };
+    }
+    if (seen.has(slug)) {
+      return { ok: false, error: `instance "${slug}" is listed twice` };
+    }
+    seen.add(slug);
+    out.push({ slug, tree });
+  }
+  return { ok: true, instances: out };
+}
+
+/**
+ * Validate one slug's served environment.
+ *
+ * Every name must be a legal variable and every value a string — a name that is
+ * not a variable would land on the tree's view under a key nothing reads, and a
+ * truthy non-string would pass `missingCredentials()` as present. The slug and
+ * tree must be the ones asked for: an answer about a different instance is not
+ * an answer about this one.
+ */
+export function parseInstanceEnvResponse(
+  body: unknown,
+  expected: InstanceDescriptor,
+): { ok: true; env: Record<string, string> } | { ok: false; error: string } {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return { ok: false, error: "response is not an object" };
+  }
+  const { protocol, slug, tree, env } = body as Partial<InstanceEnvResponse>;
+  if (protocol !== PARAM_PROTOCOL) {
+    return {
+      ok: false,
+      error: `unsupported instance protocol: ${String(protocol)}`,
+    };
+  }
+  if (slug !== expected.slug || tree !== expected.tree) {
+    return { ok: false, error: "response is about a different instance" };
+  }
+  if (typeof env !== "object" || env === null || Array.isArray(env)) {
+    return { ok: false, error: "response carries no environment" };
+  }
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env as Record<string, unknown>)) {
+    // The NAME is safe to report — it is a variable name out of the store, the
+    // same string the console lists. The value never is.
+    if (!isParamVariable(name)) {
+      return {
+        ok: false,
+        error: "response carries a name that is not a variable",
+      };
+    }
+    if (typeof value !== "string") {
+      return {
+        ok: false,
+        error: `response carries a non-string value for ${name}`,
+      };
+    }
+    out[name] = value;
+  }
+  return { ok: true, env: out };
+}
+
+export interface InstanceClientOptions {
+  /** Core's private URL — `CORE_URL_ENV`. Absent means "not configured". */
+  baseUrl: string | undefined;
+  /** This component's own `STRAD_INTERNAL_TOKEN`. Absent means "not configured". */
+  token: string | undefined;
+  /** This component's bundle name — `STRAD_COMPONENT`. Absent means "not configured". */
+  bundle: string | undefined;
+  /** Injectable for tests; defaults to global fetch. */
+  fetchImpl?: typeof fetch;
+  /** How long either call may take. Same bound as the parameter client. */
+  timeoutMs?: number;
+}
+
+/** A failed call: the reason, which never quotes a body, and the status when there was one. */
+export type InstanceFailure = { ok: false; reason: string; status?: number };
+
+export interface InstanceClient {
+  /** Why this client cannot reach core, or null when it can. */
+  unconfigured(): string | null;
+  /** The instances core routes to this component. NEVER THROWS. */
+  list(): Promise<
+    { ok: true; instances: InstanceDescriptor[] } | InstanceFailure
+  >;
+  /** One instance's served environment. NEVER THROWS. */
+  env(
+    instance: InstanceDescriptor,
+  ): Promise<{ ok: true; env: Record<string, string> } | InstanceFailure>;
+}
+
+export function createInstanceClient(
+  opts: InstanceClientOptions,
+): InstanceClient {
+  const base = (opts.baseUrl ?? "").replace(/\/$/, "");
+  const token = opts.token ?? "";
+  const bundle = opts.bundle ?? "";
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? 5_000;
+
+  const unconfigured = (): string | null => {
+    if (!base) return `${CORE_URL_ENV} is not set`;
+    if (!token) return "STRAD_INTERNAL_TOKEN is not set";
+    if (!bundle) return "STRAD_COMPONENT is not set";
+    return null;
+  };
+
+  const get = async (
+    url: string,
+  ): Promise<{ ok: true; body: unknown } | InstanceFailure> => {
+    const why = unconfigured();
+    if (why) return { ok: false, reason: why };
+    try {
+      const res = await fetchImpl(url, {
+        method: "GET",
+        headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) {
+        return {
+          ok: false,
+          reason: `core answered HTTP ${res.status}`,
+          status: res.status,
+        };
+      }
+      return { ok: true, body: await res.json() };
+    } catch (err) {
+      // The CLASS, never the message: the env route's 200 body is credentials,
+      // and a truncated one makes `res.json()` throw a SyntaxError quoting it.
+      return {
+        ok: false,
+        reason: `could not reach core (${err instanceof Error ? err.name : "unknown error"})`,
+      };
+    }
+  };
+
+  return {
+    unconfigured,
+    async list() {
+      const got = await get(
+        `${base}${INSTANCE_LIST_ROUTE}?bundle=${encodeURIComponent(bundle)}`,
+      );
+      if (!got.ok) return got;
+      const parsed = parseInstanceListResponse(got.body);
+      return parsed.ok ? parsed : { ok: false, reason: parsed.error };
+    },
+    async env(instance) {
+      const got = await get(`${base}${instanceEnvRoutePath(instance.slug)}`);
+      if (!got.ok) return got;
+      const parsed = parseInstanceEnvResponse(got.body, instance);
+      return parsed.ok ? parsed : { ok: false, reason: parsed.error };
+    },
+  };
+}
+
+/** How often the host re-syncs, in seconds. GENERAL: a number. */
+export const INSTANCE_SYNC_SECONDS_ENV = "STRAD_INSTANCE_SYNC_SECONDS";
+
+/**
+ * The floor under the sync interval.
+ *
+ * A sync is one list call plus one env call per instance, and each env call is
+ * a slice of core's one reading of the store rather than a store read — so this
+ * is lower than the refresh floor above. It is still a floor, for the reason
+ * that one gives: the variable arrives from an environment, not from a config.
+ */
+export const MIN_INSTANCE_SYNC_SECONDS = 15;
+
+/** The interval when the variable is absent or unusable. */
+export const DEFAULT_INSTANCE_SYNC_SECONDS = 60;
+
+/** The sync interval, clamped to the floor. */
+export function instanceSyncSeconds(
+  env: Readonly<Record<string, string | undefined>>,
+): number {
+  const raw = env[INSTANCE_SYNC_SECONDS_ENV];
+  const parsed = raw === undefined ? NaN : Number(raw);
+  if (!Number.isFinite(parsed)) return DEFAULT_INSTANCE_SYNC_SECONDS;
+  return Math.max(MIN_INSTANCE_SYNC_SECONDS, Math.floor(parsed));
+}
+
+/**
+ * How soon after one sync a request for an unknown instance may trigger another.
+ *
+ * The miss path is what makes a slug created at runtime servable on its FIRST
+ * request rather than a sync interval later. Without a floor, a caller hammering
+ * a path nothing serves would turn every request into a list call against core.
+ */
+export const INSTANCE_MISS_FLOOR_MS = 5_000;
+
+/** One instance the host is serving, and the reading it was built from. */
+export interface HeldInstance<T> {
+  tree: InstanceTree;
+  value: T;
+  /**
+   * What the instance was built from, as a comparable string.
+   *
+   * It is the served environment itself, key-sorted. That is a copy of values
+   * this process already hands to the tree, held only in memory and never
+   * logged; comparing it is what decides "rebuild" versus "leave it alone".
+   */
+  reading: string;
+}
+
+export interface InstanceSyncOutcome {
+  added: string[];
+  changed: string[];
+  removed: string[];
+  /** Slugs whose env could not be read or whose build threw, with the reason. */
+  failed: { slug: string; reason: string }[];
+  /** Set when the list itself could not be read — nothing was changed. */
+  listFailed?: string;
+}
+
+export interface InstanceReconcilerOptions<T> {
+  client: InstanceClient;
+  /** Build one instance from its served environment. May throw. */
+  build: (
+    tree: InstanceTree,
+    slug: string,
+    env: Record<string, string>,
+  ) => Promise<T>;
+  /** Release an instance that is being replaced or removed. May throw; it is caught. */
+  dispose?: (value: T) => void | Promise<void>;
+  note?: (level: "info" | "warn", message: string) => void;
+  /** Injected in tests. */
+  now?: () => number;
+  /** Injected in tests. Defaults to {@link INSTANCE_MISS_FLOOR_MS}. */
+  missFloorMs?: number;
+}
+
+export interface InstanceReconciler<T> {
+  /** The instances currently served, by slug. */
+  held(): ReadonlyMap<string, HeldInstance<T>>;
+  /**
+   * Instances core listed that this process could NOT build, by slug, with the
+   * reason — its credentials could not be read, or its build threw. What the
+   * host reports as degraded, so a broken instance is not an unheard-of one.
+   */
+  unbuilt(): ReadonlyMap<string, { tree: InstanceTree; reason: string }>;
+  /** Sync now. Concurrent calls share one pass. NEVER THROWS. */
+  sync(): Promise<InstanceSyncOutcome>;
+  /**
+   * Sync because a request named an instance this process does not hold.
+   *
+   * Waits for any pass in flight FIRST and then syncs anyway, because that pass
+   * may have listed before the write that created the slug. Bounded by a floor
+   * measured from the last MISS-triggered sync, so an interval sync that just
+   * ran cannot starve a first request. NEVER THROWS.
+   */
+  syncOnMiss(): Promise<void>;
+}
+
+function readingOf(env: Record<string, string>): string {
+  return JSON.stringify(
+    Object.keys(env)
+      .sort()
+      .map((k) => [k, env[k]]),
+  );
+}
+
+/**
+ * Keep a component's instances equal to what core says it should serve.
+ *
+ * The failure posture is the boot read's, applied per instance. A list that
+ * cannot be read changes nothing — an unreachable core must not tear down every
+ * instance on the box. An env that cannot be read keeps a held instance on the
+ * reading it has, and leaves an unheld one unbuilt. A build that throws keeps
+ * the previous instance. The only thing that REMOVES an instance is core
+ * answering, readably, without it.
+ */
+export function createInstanceReconciler<T>(
+  opts: InstanceReconcilerOptions<T>,
+): InstanceReconciler<T> {
+  const held = new Map<string, HeldInstance<T>>();
+  const note = opts.note ?? (() => {});
+  const now = opts.now ?? Date.now;
+  const missFloorMs = opts.missFloorMs ?? INSTANCE_MISS_FLOOR_MS;
+  let inFlight: Promise<InstanceSyncOutcome> | null = null;
+  const unbuilt = new Map<string, { tree: InstanceTree; reason: string }>();
+  let lastMissAt = -Infinity;
+  let reportedUnconfigured = false;
+
+  const release = async (slug: string, value: T): Promise<void> => {
+    try {
+      await opts.dispose?.(value);
+    } catch (err) {
+      note(
+        "warn",
+        `${slug}: releasing the previous instance threw ` +
+          `(${err instanceof Error ? err.name : "unknown error"})`,
+      );
+    }
+  };
+
+  const pass = async (): Promise<InstanceSyncOutcome> => {
+    const outcome: InstanceSyncOutcome = {
+      added: [],
+      changed: [],
+      removed: [],
+      failed: [],
+    };
+
+    const why = opts.client.unconfigured();
+    if (why) {
+      // Said ONCE. Every image runs this loop, and a component that is not
+      // wired to core would otherwise log the same sentence every interval.
+      if (!reportedUnconfigured) {
+        note("info", `not syncing store-served instances (${why})`);
+        reportedUnconfigured = true;
+      }
+      outcome.listFailed = why;
+      return outcome;
+    }
+
+    const listed = await opts.client.list();
+    if (!listed.ok) {
+      note(
+        "warn",
+        `could not list store-served instances (${listed.reason}); keeping the ${held.size} held`,
+      );
+      outcome.listFailed = listed.reason;
+      return outcome;
+    }
+
+    const wanted = new Map(listed.instances.map((i) => [i.slug, i]));
+    for (const slug of [...unbuilt.keys()]) {
+      if (!wanted.has(slug)) unbuilt.delete(slug);
+    }
+    for (const [slug, instance] of [...held]) {
+      if (wanted.get(slug)?.tree === instance.tree) continue;
+      held.delete(slug);
+      await release(slug, instance.value);
+      outcome.removed.push(slug);
+      note(
+        "info",
+        `${slug}: no longer routed to this component; instance removed`,
+      );
+    }
+
+    for (const descriptor of listed.instances) {
+      const { slug, tree } = descriptor;
+      const current = held.get(slug);
+      const served = await opts.client.env(descriptor);
+      if (!served.ok) {
+        outcome.failed.push({ slug, reason: served.reason });
+        if (!current) unbuilt.set(slug, { tree, reason: served.reason });
+        note(
+          "warn",
+          current
+            ? `${slug}: could not read its credentials (${served.reason}); keeping the instance on the reading it has`
+            : `${slug}: could not read its credentials (${served.reason}); not built yet`,
+        );
+        continue;
+      }
+      const reading = readingOf(served.env);
+      if (current && current.reading === reading) continue;
+
+      let value: T;
+      try {
+        value = await opts.build(tree, slug, served.env);
+      } catch (err) {
+        const reason = `building the instance threw (${err instanceof Error ? err.name : "unknown error"})`;
+        outcome.failed.push({ slug, reason });
+        if (!current) unbuilt.set(slug, { tree, reason });
+        note(
+          "warn",
+          `${slug}: ${reason}; ${current ? "keeping the previous instance" : "not built"}`,
+        );
+        continue;
+      }
+      held.set(slug, { tree, value, reading });
+      unbuilt.delete(slug);
+      if (current) {
+        await release(slug, current.value);
+        outcome.changed.push(slug);
+        note(
+          "info",
+          `${slug}: its credentials changed in the store; instance rebuilt`,
+        );
+      } else {
+        outcome.added.push(slug);
+        note("info", `${slug}: serving a ${tree} instance from the store`);
+      }
+    }
+    return outcome;
+  };
+
+  const sync = (): Promise<InstanceSyncOutcome> => {
+    if (inFlight) return inFlight;
+    inFlight = pass()
+      .catch((err: unknown): InstanceSyncOutcome => {
+        // `pass` is built never to throw, but `build` and `dispose` are the
+        // caller's. One broken promise must not wedge every later sync.
+        const reason = `sync pass threw (${err instanceof Error ? err.name : "unknown error"})`;
+        note("warn", reason);
+        return {
+          added: [],
+          changed: [],
+          removed: [],
+          failed: [],
+          listFailed: reason,
+        };
+      })
+      .finally(() => {
+        inFlight = null;
+      });
+    return inFlight;
+  };
+
+  return {
+    held: () => held,
+    unbuilt: () => unbuilt,
+    sync,
+    async syncOnMiss() {
+      if (inFlight) await inFlight;
+      if (now() - lastMissAt < missFloorMs) return;
+      lastMissAt = now();
+      await sync();
     },
   };
 }

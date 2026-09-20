@@ -72,6 +72,12 @@ import {
   createStoreRefreshHandler,
 } from "./params.ts";
 import {
+  createInstanceEnvHandler,
+  createInstanceListHandler,
+  type InstancesHandlerOptions,
+} from "./instances.ts";
+import {
+  INSTANCE_LIST_ROUTE,
   PARAM_ROUTE_PREFIX,
   STORE_REFRESH_ROUTE,
 } from "../secrets/param-route.ts";
@@ -115,6 +121,12 @@ export interface AppOptions {
    * the one every TTL in the `/mcp` OAuth flow is measured on.
    */
   now?: () => number;
+  /**
+   * The resolver the runtime providers read through, for the store-served
+   * instance routes. Absent under the `env` provider — and in a test that mounts
+   * none, where the env route answers 503 rather than reading anything.
+   */
+  resolver?: InstancesHandlerOptions["resolver"];
   /** Test seam: substitute the GCS listing surface behind the console UI. */
   gcsList?: GcsLister;
   /** Test seam: substitute the parameter store behind the console UI. */
@@ -508,6 +520,21 @@ export function createApp(opts: AppOptions): Express {
     // rather than within `ttlSeconds` — the counterpart of the console's
     // "Re-read the store" button. See src/http/params.ts.
     app.post(STORE_REFRESH_ROUTE, createStoreRefreshHandler(paramsOptions));
+    // The store-served instance pair, same direction, same token: which
+    // instances a bundle should run, and one instance's own namespace. Built
+    // from THIS app's config, and the app is rebuilt on every roster change, so
+    // a slug a runtime write created is listed on the next request. See
+    // src/http/instances.ts.
+    const instancesOptions = {
+      config: opts.config,
+      env,
+      resolver: opts.resolver,
+    };
+    app.get(INSTANCE_LIST_ROUTE, createInstanceListHandler(instancesOptions));
+    app.get(
+      `${INSTANCE_LIST_ROUTE}/:slug`,
+      createInstanceEnvHandler(instancesOptions),
+    );
 
     // Resolved ONCE and shared: /console begins the login and mints the session,
     // /ui verifies it. Two independent readings of "is Google usable?" is how

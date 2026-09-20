@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   dropInheritedNames,
   extraSlugs,
+  instanceEnv,
   missingCredentialsDegraded,
   remoteFilesystemDegraded,
   scrubCapabilityEnv,
@@ -478,5 +479,38 @@ describe("the mounts that use these verdicts", () => {
     // The failure this catches: someone adds a mount, writes the ternary inline
     // because it is two lines, and the wording drifts on one console row.
     expect(host).not.toContain("not set; every tool will fail");
+  });
+});
+
+describe("instanceEnv", () => {
+  it("hands a store-served instance its served values and the process basics, and no credential from the box", () => {
+    const box = {
+      PATH: "/usr/bin",
+      HOME: "/home/app",
+      // Baked for the CONVENTIONAL telegram mount. A half-seeded instance must
+      // not complete itself out of these.
+      TELEGRAM_API_ID: "999",
+      TELEGRAM_STRING_SESSION: "the-conventional-mounts-login",
+      TELEGRAM_PERSONAL__TELEGRAM_API_HASH: "a-per-slug-alias",
+    } as NodeJS.ProcessEnv;
+
+    const env = instanceEnv({ TELEGRAM_API_ID: "2222" }, box);
+
+    expect(env).toEqual({
+      PATH: "/usr/bin",
+      HOME: "/home/app",
+      TELEGRAM_API_ID: "2222",
+    });
+  });
+
+  it("never lets a served name replace a process one", () => {
+    // A parameter called PATH is not a credential, and letting it steer which
+    // binary the grafana tree spawns would make seeding a namespace a way to
+    // run code.
+    const env = instanceEnv({ PATH: "/tmp/evil", GRAFANA_URL: "https://g" }, {
+      PATH: "/usr/bin",
+    } as NodeJS.ProcessEnv);
+    expect(env.PATH).toBe("/usr/bin");
+    expect(env.GRAFANA_URL).toBe("https://g");
   });
 });
