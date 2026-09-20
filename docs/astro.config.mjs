@@ -102,6 +102,11 @@ export default defineConfig({
             { label: "Slack attachments", slug: "servers/slack-attachments" },
             { label: "Telegram", slug: "servers/telegram" },
             { label: "BILL Spend & Expense", slug: "servers/bill-spend" },
+            { label: "AWS Device Farm", slug: "servers/aws-device-farm" },
+            {
+              label: "AWS Device Farm: first-time setup",
+              slug: "servers/aws-device-farm-setup",
+            },
             { label: "Google Sheets", slug: "servers/google-sheets" },
             { label: "strad fetch", slug: "servers/strad-fetch" },
             { label: "Grafana", slug: "servers/grafana" },

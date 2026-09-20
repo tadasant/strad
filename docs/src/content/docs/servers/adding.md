@@ -322,7 +322,7 @@ a `local-tunnel` (`anki`, which ships disabled),
 and thirty-two `supplementary-image` entries — thirty-one sharing ONE bundle
 over the private network, which resolve onto twenty paths because every
 read-only / read-write pair is two entries on one path. Nineteen of those are
-among the bundle image's twenty-two baked mounts; the twentieth,
+among the bundle image's twenty-three baked mounts; the twentieth,
 `/grafana-registry`, is a per-slug instance the host stands up because the
 container carries that slug's own Grafana credential. One of
 those, `secrets`, is also the worked example for the split `env:` / `consoleEnv:`

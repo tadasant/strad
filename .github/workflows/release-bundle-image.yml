@@ -1,6 +1,6 @@
 name: Release bundle image
 
-# Build THE strad bundle image — all twenty-two MCP servers in one container — and
+# Build THE strad bundle image — all twenty-three MCP servers in one container — and
 # push it to ghcr.
 #
 # The build itself is `release-supplementary-image.yml`, which every
@@ -23,11 +23,11 @@ name: Release bundle image
 # (`--wait-for-image`). See "which image a deploy ships" in
 # docs/operate/operations.md.
 #
-# BUILD CONTEXT IS THE REPO ROOT. This image is assembled from fourteen projects
+# BUILD CONTEXT IS THE REPO ROOT. This image is assembled from fifteen projects
 # that live in different directories (servers/bundle-api, images/bundle-google,
 # servers/onepassword, servers/remote-filesystem, servers/pulse-subregistry,
 # servers/strad-fetch, servers/grafana,
-# servers/{good-eggs,fetchpet,pointsyeah,x-twitter,telegram,bill-spend}),
+# servers/{good-eggs,fetchpet,pointsyeah,x-twitter,telegram,bill-spend,aws-device-farm}),
 # each built in its own stage with its own lockfile. So `paths:` below has to watch all of them: a
 # change to any one of those servers changes this image.
 #
@@ -66,6 +66,7 @@ on:
       - "servers/grafana/**"
       - "servers/telegram/**"
       - "servers/bill-spend/**"
+      - "servers/aws-device-farm/**"
       - "images/bundle-google/**"
       - ".github/workflows/release-bundle-image.yml"
       # A change to the shared body has to be exercised by a real release, or
@@ -92,7 +93,7 @@ jobs:
       contents: read
       packages: write
     with:
-      # The repo root, because the Dockerfile COPYs from fourteen trees.
+      # The repo root, because the Dockerfile COPYs from fifteen trees.
       context: .
       file: servers/bundle/Dockerfile
       image: ghcr.io/tadasant/strad-bundle

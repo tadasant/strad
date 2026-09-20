@@ -1,0 +1,14 @@
+{
+  "name": "aws-device-farm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "strad's AWS Device Farm MCP server — puts a build on a real iOS phone, drives it over the session's Appium endpoint, and hands back the artifacts that are evidence. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared",
+    "test": "npm run test --workspace shared"
+  }
+}

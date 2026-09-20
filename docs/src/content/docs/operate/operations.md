@@ -12,7 +12,7 @@ produce a bootable image is a failing PR.
 ## `ci.yml` — the gate on every PR
 
 Runs on PRs and pushes to `main`. Ten jobs, all `runs-on: self-hosted` — one
-of which, `servers`, is a fourteen-leg matrix over the server trees:
+of which, `servers`, is a fifteen-leg matrix over the server trees:
 
 - **`lint`** — typecheck, ESLint, `prettier --check`. The typecheck is one
   program over `src/`, `test/` and `scripts/`. `scripts/` matters because those
@@ -185,7 +185,7 @@ of which, `servers`, is a fourteen-leg matrix over the server trees:
   - **`bundle/host`** — tests, and no separate build leg, because `npm test` is
     `npm run build && vitest run` — `tsc` over `src/`, so a type error there
     still fails the PR. The host is the process every bundle container runs: it
-    mounts every tree in the image, 22 mounts, which staging's 32
+    mounts every tree in the image, 23 mounts, which staging's 32
     supplementary-image slugs resolve to. Its suite runs over its TypeScript
     sources with no `/app/trees` to mount: the per-slug environment
     discovery, the two `degraded` verdicts, the presence route's wiring and the
@@ -636,7 +636,7 @@ below for the move that publishes one.
 The walk-back rule is the one thing that differs from the core, and it is
 inverted. `release-image.yml` builds every commit except docs-only ones;
 `release-bundle-image.yml` has a `paths:` filter — one entry per thing that
-changes the image: the fourteen trees the Dockerfile bakes, the bundle host, the
+changes the image: the fifteen trees the Dockerfile bakes, the bundle host, the
 workflow itself, and the shared release body it delegates to — so **most**
 commits cut no bundle image
 and stepping past them is the normal case, not an exception. `--kind bundle` reads
@@ -1150,7 +1150,7 @@ to the value that is wrong for it: `refuse-off-main: true` because
 `strad-bundle:latest` is what live staging tracks, `cache-scope: bundle` because
 this build is large enough to evict every one-tree image out of the shared gha
 scope, and `file: servers/bundle/Dockerfile` because its `context:` is the repo
-root — fourteen trees, so the root is the only context that can `COPY` them all.
+root — fifteen trees, so the root is the only context that can `COPY` them all.
 Dropped, each of the three fails silently rather than loudly, which is why
 `test/workflow-release-callers.test.ts` asserts all three on that caller by
 name.
@@ -1349,7 +1349,7 @@ declares thirty-five server slugs:
 - thirty-one `supplementary-image` entries on the one `bundle` component running
   `ghcr.io/tadasant/strad-bundle`. They land on twenty paths, because a
   read-only and a read-write variant of one upstream are two entries sharing one
-  `path`: nineteen of the bundle image's twenty-two baked mounts, plus
+  `path`: nineteen of the bundle image's twenty-three baked mounts, plus
   `/grafana-registry`, a per-slug instance the host stands up for that slug's own
   Grafana credential. Four of them — `telegram-ro`, `telegram-rw`,
   `pulse-subregistry` and `grafana-registry` — carry `enabled: false` until their

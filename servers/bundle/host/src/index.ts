@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 /**
- * bundle — THE strad supplementary image. All 22 upstream MCP servers (22
+ * bundle — THE strad supplementary image. All 23 upstream MCP servers (23
  * mounts, see `buildMounts`), one container, one process, one Chromium, one
  * mcp-grafana child. The gateway's config names more SLUGS than that — 32
  * supplementary-image entries in infra/strad.staging.yaml — because capability
  * variants (gmail-ro, gmail-rw, …) are several slugs pointing at ONE mount here.
+ * `/aws-device-farm` is the one that runs the other way round: it is mounted
+ * here and named by no slug yet, because its credential is not seeded.
  *
- * TWENTY-TWO IS THE FLOOR, not a constant. Five trees (telegram,
+ * TWENTY-THREE IS THE FLOOR, not a constant. Five trees (telegram,
  * remote-filesystem, google-sheets, gmail, grafana) mount ONE INSTANCE PER SLUG
  * the environment carries per-slug values for — see `extraSlugs` — so a
  * container told about `telegram-ro` and `telegram-rw` separately serves
@@ -14,7 +16,7 @@
  * the cases a real deployment uses: an OAuth refresh token IS one Google account
  * and a service-account token IS one Grafana, so each extra account is another
  * mount here. The conventional path is always mounted, so a config that asks for
- * none of this sees exactly the twenty-two it saw before.
+ * none of this sees exactly the twenty-three it saw before.
  *
  * STORE-SERVED INSTANCES are the other way in, and the one that needs no deploy.
  * A strad server on `path: /_instance/{tree}/{slug}` puts nothing on this
@@ -55,8 +57,8 @@
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
  *
- * BLAST RADIUS, honestly. Twenty-two servers now share a process. A crash is a
- * 22-server outage, not a 1-server outage. Everything below that CAN be made
+ * BLAST RADIUS, honestly. Twenty-three servers now share a process. A crash is
+ * a 23-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
  * catastrophic here); a dead Chromium is relaunched on next use; an unhandled
@@ -292,6 +294,8 @@ async function buildMounts(): Promise<Mount[]> {
     deferred.push({ slug, load: () => loadTelegram(slug) });
 
   mounts.push(await loadBillSpend());
+
+  mounts.push(await loadAwsDeviceFarm());
 
   // --- bundle-google: gmail / calendar / docs --------------------------------
   // calendar and docs build per request — their factories are cheap and hold no
@@ -1071,7 +1075,7 @@ async function loadXTwitter(): Promise<Mount> {
     // The client caches its OAuth provider for the host process, so the factory
     // is built once here and memoised inside registerHandlers. Building it
     // LAZILY matters: `createXClientFromEnv` throws when no X credential is
-    // configured at all, and a throw at boot would take all twenty-two mounts down
+    // configured at all, and a throw at boot would take all twenty-three mounts down
     // over one unconfigured server.
     register: (s) =>
       created.registerHandlers(s, () =>
@@ -1209,6 +1213,44 @@ async function loadBillSpend(): Promise<Mount> {
     slug: "bill-spend",
     tree: "bill-spend",
     serverName: "strad-bill-spend",
+    capabilities: { tools: {} },
+    degraded: missingCredentialsDegraded(mod.missingCredentials(env)),
+    register: (s) => created.registerHandlers(s),
+  };
+}
+
+/**
+ * aws-device-farm — strad's own AWS Device Farm server: puts a build on a REAL
+ * iPhone, drives it over the remote-access session's Appium endpoint, and pulls
+ * back the artifacts a run records.
+ *
+ * MOUNTED EVEN WITH NO CREDENTIAL, degraded, for the same reason as bill-spend
+ * and telegram: the tool surface still lists, so the console and an agent can
+ * see what this deployment WOULD offer, and every call fails with an error
+ * naming the variable.
+ *
+ * ONE MOUNT, and the state it holds is the reason it is built once rather than
+ * per request. The module keeps one WebDriver session per live phone, and
+ * establishing one RELAUNCHES the app under test — so a mount rebuilt per
+ * request would turn an agent's sequence of taps into a sequence of cold
+ * starts.
+ */
+async function loadAwsDeviceFarm(): Promise<Mount> {
+  const mod = (await loadFromTree(
+    "aws-device-farm",
+    "shared/build/index.js",
+  )) as {
+    createMCPServer: Factory;
+    missingCredentials: (env?: NodeJS.ProcessEnv) => string[];
+  };
+
+  const env = slugEnvView(process.env, "aws-device-farm");
+  const created = mod.createMCPServer({ version: VERSION, env });
+
+  return {
+    slug: "aws-device-farm",
+    tree: "aws-device-farm",
+    serverName: "strad-aws-device-farm",
     capabilities: { tools: {} },
     degraded: missingCredentialsDegraded(mod.missingCredentials(env)),
     register: (s) => created.registerHandlers(s),
@@ -1706,7 +1748,7 @@ async function main(): Promise<void> {
   //
   // NOT AWAITED, and that is deliberate. A pass is one sequential read per
   // listed variable, each with its own timeout, so awaiting it would put a slow
-  // or unreachable core directly in front of `listen()` below — twenty-two
+  // or unreachable core directly in front of `listen()` below — twenty-three
   // mounts held off serving because one credential could not be re-read. The
   // container starting with the value the deploy baked is exactly the behaviour
   // every deployment has today, so falling back to it costs nothing; blocking
@@ -1719,7 +1761,7 @@ async function main(): Promise<void> {
   // STORE-SERVED INSTANCES — the mounts no deploy named. See the header.
   //
   // The first sync is NOT awaited, for the reason the refresh pass above is
-  // not: a slow core must not stand in front of `listen()` for twenty-two
+  // not: a slow core must not stand in front of `listen()` for twenty-three
   // mounts that need nothing from it. A request that arrives before the sync
   // lands takes the miss path in the route below, which syncs then.
   const instances = createInstanceReconciler<Mount>({
@@ -1755,7 +1797,7 @@ async function main(): Promise<void> {
   const internalOnly = requireInternalToken(process.env, timingSafeEqual);
 
   // Liveness for App Platform. Reports every mount and whether it is degraded —
-  // with 22 servers behind one health check, "ok: true" alone is not information.
+  // with 23 servers behind one health check, "ok: true" alone is not information.
   //
   // Deliberately OUTSIDE `internalOnly`. The platform's health prober holds no
   // token, and a 401 here is a component App Platform takes out of service — an
@@ -1965,7 +2007,7 @@ async function main(): Promise<void> {
     });
   });
 
-  // One stray rejection from one of twenty-two servers must not kill the other
+  // One stray rejection from one of twenty-three servers must not kill the other
   // twenty-one. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {

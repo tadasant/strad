@@ -229,7 +229,7 @@ describe("a pull request builds but never publishes", () => {
   it("refuses to retry a build that pushed nothing", () => {
     // The retry exists for a blob ghcr refused. A build-only run has no blob to
     // refuse, so a failure is the Dockerfile and rebuilding it twice more only
-    // spends a PR's wall clock — fourteen dependency trees, for the bundle.
+    // spends a PR's wall clock — fifteen dependency trees, for the bundle.
     const guardIndex = compositeSteps.findIndex(
       (s) =>
         typeof s.if === "string" &&

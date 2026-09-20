@@ -202,6 +202,7 @@ not a confession.
 | `hostd/**` — a tool, the consent gate, the kill switch, the install                    | `servers/hostd.md`, `servers/hostd-design.md`, `hostd/README.md`, `limitations.md`                                                                                                   |
 | `servers/telegram/**` — a tool, the credential model, the read/write split             | `servers/telegram.md`, `limitations.md`                                                                                                                                              |
 | `servers/bill-spend/**` — a tool, the write's body shapes, the read-back rule          | `servers/bill-spend.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                      |
+| `servers/aws-device-farm/**` — a tool, the driving wire, the cost model                | `servers/aws-device-farm.md`, `servers/aws-device-farm-setup.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                             |
 | `servers/grafana/**` — the pinned version, the read-only flags, the env allowlist      | `servers/grafana.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                         |
 | `servers/good-eggs/**` — the basket read, a cart tool, what a result may claim         | `limitations.md`, and `servers/good-eggs/FORK.md`                                                                                                                                    |
 | `servers/strad-fetch/**` — a strategy, the cache bounds, an env name, the tool         | `servers/strad-fetch.md`, `limitations.md`, and `servers/strad-fetch/FORK.md`                                                                                                        |
@@ -247,8 +248,8 @@ numbers describe "how many servers," and they count different things:
 | The number | What it counts                                                                                     |
 | ---------- | -------------------------------------------------------------------------------------------------- |
 | **3**      | App Platform components: `core`, `bundle`, `bundle-zimmer-secrets`                                 |
-| **14**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
-| **22**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
+| **15**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
+| **23**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
 | **32**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included)         |
 | **35**     | total server slugs in staging (32 + `echo` builtin + `deepwiki` remote-http + `anki` local-tunnel) |
 
@@ -304,8 +305,8 @@ slop behind when you fix a stale fact.
   "did I typo a key" is answered here, by `scripts/check-config.ts`.
 - `src/deploy/appspec.ts` — turns the config into a DigitalOcean App Platform spec.
   The server list decides the container topology.
-- `servers/bundle/` — one image, 22 mounted MCP servers, one shared Chromium,
-  assembled from FOURTEEN independently-built dependency trees.
+- `servers/bundle/` — one image, 23 mounted MCP servers, one shared Chromium,
+  assembled from FIFTEEN independently-built dependency trees.
 - `servers/remote-filesystem/` — strad's own artifact store, behind the
   `remote-filesystem-tmp-public` slug. `is_sensitive` picks the KIND of link;
   GCS's 7-day V4 ceiling is why the 14-day default is signed with V2.
@@ -322,6 +323,15 @@ slop behind when you fix a stale fact.
   markup — the markup depends on which of two basket layouts the account is
   served, and a scrape that knew one of them reported an empty cart against a
   43-item basket. `servers/good-eggs/FORK.md` has the deltas.
+- `servers/aws-device-farm/` — strad's own AWS Device Farm server: a REAL iPhone,
+  driven live. Device Farm has two modes and only one of them is interactive —
+  a remote access session publishes `endpoints.remoteDriverEndpoint`, a plain
+  W3C WebDriver URL, and that URL IS the credential (it authorises by its own
+  path), so it never leaves the server. NEITHER mode can hear audio: a device
+  farm sells the device, not the output signal, so "is it playing" has to come
+  from the app's own instrumentation, read off the screen or written to a
+  customer-artifact path. No slug points at it in any environment yet —
+  `HACKS.md` #103 and `docs/servers/aws-device-farm-setup`.
 - `servers/telegram/` — strad's own Telegram server, behind `telegram-ro` and
   `telegram-rw`. MTProto with a USER session, because the Bot API cannot read the
   history of a group its account does not administer. The credential is a

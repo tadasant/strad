@@ -18,9 +18,12 @@
 # Thirty-one of the thirty-two land on twenty upstream mounts inside the
 # one bundle image, because capability variants share a mount; the thirty-second
 # (`zimmer-secrets`) runs that same image on a component of its own. The image
-# serves twenty-two mounts: `/x-twitter`, `/google-sheets` and `/grafana` are in
-# it with no staging slug pointing at any of them — `grafana-registry` is served
-# by a per-slug instance at `/grafana-registry`, not by the conventional mount.
+# serves twenty-three mounts: `/x-twitter`, `/google-sheets`, `/grafana` and
+# `/aws-device-farm` are in it with no staging slug pointing at any of them —
+# `grafana-registry` is served by a per-slug instance at `/grafana-registry`, not
+# by the conventional mount, and `/aws-device-farm` has no slug in ANY
+# environment yet because its AWS credential has not been minted. The block to
+# paste once it has is in docs/servers/aws-device-farm-setup.
 #
 # FOUR of the thirty-two carry `enabled: false` — telegram-ro, telegram-rw,
 # pulse-subregistry and grafana-registry — because their credentials are not in
@@ -168,24 +171,24 @@ roles:
     servers: [zimmer-secrets, secrets, echo]
 
 bundles:
-  # THE bundle. One image, one component, and nineteen of the image's twenty-two
+  # THE bundle. One image, one component, and nineteen of the image's twenty-three
   # upstream MCP servers — the bundle-api fleet, the Google servers, 1Password
   # (with the `op` CLI baked in), telegram and the three browser servers, which
   # share ONE Chromium (never one per server: see
-  # servers/bundle/host/src/browser.ts). Three mounts have no slug here:
+  # servers/bundle/host/src/browser.ts). Four mounts have no slug here:
   # `/x-twitter`, `/google-sheets` — registered in prod, where its six slugs each
   # carry one Google account's OAuth token, and where `/gmail` takes the same
-  # per-slug shape beside its conventional service-account mount — and the
-  # conventional `/grafana`,
-  # since staging's Grafana is the per-slug `/grafana-registry` below. The
-  # PROCESS registers all twenty-two either way — including `/telegram`, whose
-  # two slugs are disabled until their secret is seeded — which is what the
-  # sizing below is about.
+  # per-slug shape beside its conventional service-account mount — the
+  # conventional `/grafana`, since staging's Grafana is the per-slug
+  # `/grafana-registry` below, and `/aws-device-farm`, whose AWS credential does
+  # not exist yet. The PROCESS registers all twenty-three either way — including
+  # `/telegram`, whose two slugs are disabled until their secret is seeded —
+  # which is what the sizing below is about.
   #
   # SIZE. 2GB, and the reasoning is measured, not guessed. With two browser
   # servers logging in concurrently the container's working set is ~760MB (the
   # single Chromium's process tree accounts for ~940MB RSS, most of it shared),
-  # and Node with twenty-two servers registered adds ~200MB. 0.5GB is absurd here;
+  # and Node with twenty-three servers registered adds ~200MB. 0.5GB is absurd here;
   # 1GB would be one bad page render from an OOM that takes all 27 slugs down
   # with it. The real constraint is CPU — 1 shared vCPU serialises Chromium's
   # rendering, and that box now also answers every Slack and Gmail call — so if
