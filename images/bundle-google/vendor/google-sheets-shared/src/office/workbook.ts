@@ -33,8 +33,20 @@ export interface OfficeSheet {
   /**
    * Formula text per cell, where the cell has one. Sparse and parallel to
    * {@link rows}; `undefined` everywhere else. Only `FORMULA` reads it.
+   *
+   * It may be LONGER than {@link rows}: a formula whose cached result is absent
+   * or empty leaves no value behind, and the row it is on would otherwise be
+   * trimmed away. Anything measuring the sheet's extent has to consider both.
    */
   formulas?: (string | undefined)[][];
+  /**
+   * The underlying number for a cell whose rendering replaced it — a date
+   * serial, a duration. Sparse and parallel to {@link rows}.
+   *
+   * This is what `UNFORMATTED_VALUE` serves, and it is the same thing the Sheets
+   * API serves under that option: the stored number, not the rendered date.
+   */
+  raw?: (number | undefined)[][];
 }
 
 export interface OfficeWorkbook {

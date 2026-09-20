@@ -78,7 +78,11 @@ function readNumberFormats(archive: ZipArchive): NumberFormats {
       inCellXfs = true;
       continue;
     }
-    if (tag.name === 'cellStyleXfs') {
+    // Anything that is not `cellXfs` and may contain an `<xf>` of its own ends
+    // the run. `cellStyleXfs` precedes `cellXfs` in schema order, but relying on
+    // that order alone means one generator emitting a later `<xf>` block appends
+    // bogus style ids and shifts every date detection after it.
+    if (tag.name === 'cellStyleXfs' || tag.name === 'cellStyles' || tag.name === 'dxfs') {
       inCellXfs = false;
       continue;
     }
@@ -169,6 +173,8 @@ interface CellReader {
 function readCell(cellXml: string, type: string, styleIndex: number | undefined, reader: CellReader): {
   value: OfficeCell;
   formula?: string;
+  /** Set only when rendering replaced the stored number — a date, a duration. */
+  raw?: number;
 } {
   let formula: string | undefined;
   let rawValue: string | undefined;
@@ -208,7 +214,12 @@ function readCell(cellXml: string, type: string, styleIndex: number | undefined,
     default: {
       const numeric = Number(rawValue);
       if (!Number.isFinite(numeric)) return { value: rawValue, formula };
-      return { value: renderNumber(numeric, reader.formats, styleIndex, reader.date1904), formula };
+      const rendered = renderNumber(numeric, reader.formats, styleIndex, reader.date1904);
+      return {
+        value: rendered,
+        formula,
+        raw: rendered === numeric ? undefined : numeric,
+      };
     }
   }
 }
@@ -222,7 +233,9 @@ function readWorksheet(
 ): OfficeSheet {
   const rows: OfficeCell[][] = [];
   const formulas: (string | undefined)[][] = [];
+  const raws: (number | undefined)[][] = [];
   let anyFormula = false;
+  let anyRaw = false;
 
   let rowIndex = -1;
   let columnCursor = 0;
@@ -243,7 +256,12 @@ function readWorksheet(
     columnCursor = column + 1;
 
     const styleIndex = attrs.s === undefined ? undefined : Number(attrs.s);
-    const { value, formula } = readCell(innerXml(xml, tag), attrs.t ?? 'n', styleIndex, reader);
+    const { value, formula, raw } = readCell(
+      innerXml(xml, tag),
+      attrs.t ?? 'n',
+      styleIndex,
+      reader
+    );
 
     // An empty styled cell is written out in full and carries nothing. Skipping
     // it keeps a sheet with formatted-but-blank columns from claiming a width it
@@ -263,6 +281,7 @@ function readWorksheet(
     while (rows.length <= rowIndex) {
       rows.push([]);
       formulas.push([]);
+      raws.push([]);
     }
     const row = rows[rowIndex];
     while (row.length < column) row.push(null);
@@ -273,6 +292,12 @@ function readWorksheet(
       formulaRow[column] = formula;
       anyFormula = true;
     }
+    if (raw !== undefined) {
+      const rawRow = raws[rowIndex];
+      while (rawRow.length < column) rawRow.push(undefined);
+      rawRow[column] = raw;
+      anyRaw = true;
+    }
   }
 
   return {
@@ -280,13 +305,25 @@ function readWorksheet(
     index,
     gid: entry.gid,
     hidden: entry.hidden,
+    // Only the VALUE grid is trimmed. `formulas` keeps its full length on
+    // purpose: a formula whose cached result is absent leaves no value behind,
+    // and trimming both would make that cell unreachable under FORMULA.
     rows: trimTrailingEmpties(rows),
     formulas: anyFormula ? formulas : undefined,
+    raw: anyRaw ? raws : undefined,
   };
 }
 
 /** Parse a whole .xlsx into the model the tools read. */
-export function parseXlsx(bytes: Uint8Array, options: { title: string; mimeType: string }): OfficeWorkbook {
+export function parseXlsx(
+  bytes: Uint8Array,
+  options: {
+    title: string;
+    mimeType: string;
+    /** The cell budget, shared across every tab. Defaults to {@link MAX_PARSED_CELLS}. */
+    budget?: { cells: number };
+  }
+): OfficeWorkbook {
   const archive = ZipArchive.open(bytes);
   const { sheets: entries, date1904 } = readWorkbookPart(archive);
   const relationships = readWorkbookRelationships(archive);
@@ -296,7 +333,7 @@ export function parseXlsx(bytes: Uint8Array, options: { title: string; mimeType:
     date1904,
   };
 
-  const budget = { cells: MAX_PARSED_CELLS };
+  const budget = options.budget ?? { cells: MAX_PARSED_CELLS };
   const sheets: OfficeSheet[] = [];
   for (const [index, entry] of entries.entries()) {
     const path = relationships.get(entry.relationshipId);

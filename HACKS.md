@@ -5358,10 +5358,11 @@ a provenance line saying so, because the read is not equivalent:
 - Values are **as the file was last saved**. A formula cell serves its stored
   result; `value_render_option: FORMULA` serves the formula text.
 - There is **no number formatting**. `FORMATTED_VALUE` returns `1234` where the
-  Sheets API would return `$1,234.00`. Dates are the exception — a date-formatted
-  serial is rendered as `2025-01-21`, because the raw serial carries no
-  recoverable meaning. `UNFORMATTED_VALUE` returns the serial, which is what the
-  Sheets API returns too.
+  Sheets API would return `$1,234.00`. Dates and durations are the exceptions —
+  a date-formatted serial renders as `2025-01-21` and an elapsed `[h]:mm` cell as
+  `36:00:00`, because in those two cases the raw number carries no recoverable
+  meaning. `UNFORMATTED_VALUE` returns the stored number, which is what the
+  Sheets API returns under that option too.
 - `namedRanges` is empty; an .xlsx's defined names are formulas, not grid ranges.
 - The reported `gid` is the workbook's own `sheetId`, not a Sheets gid. It is
   stable within the file and `get_spreadsheet` reports the same number
@@ -5369,9 +5370,13 @@ a provenance line saying so, because the read is not equivalent:
 - **No write tool works.** Writing one back would be a Drive WRITE scope, a
   re-encoded workbook and a last-writer-wins race against whoever has the file
   open. The four write tools refuse and name the conversion.
-- One workbook is read **whole**: 20MB downloaded, 500,000 cells parsed, both
+- One workbook is read **whole**: 20MB downloaded (bounded on the stream, since
+  Drive's `size` is optional), 500,000 cells parsed, 128MB inflated — each
   refused past that with a message. A native spreadsheet is read a range at a
   time and has no such ceiling.
+- Legacy `.xls`, `.xlsb` and `.ods` are refused by name, and so is a UTF-16
+  `.csv`: decoded as UTF-8 it is plausible-looking nonsense rather than an
+  error, which is worse than a refusal.
 
 **The scope.** The fallback needs
 `https://www.googleapis.com/auth/drive.readonly` on the slug, which is broader

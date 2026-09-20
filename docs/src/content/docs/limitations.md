@@ -3168,8 +3168,10 @@ What differs from a native spreadsheet:
 - Values are **as the file was last saved**. A formula cell serves its stored
   result; `value_render_option: FORMULA` serves the formula text.
 - There is **no number formatting**. `FORMATTED_VALUE` returns `1234` where the
-  Sheets API returns `$1,234.00`. Dates are the exception, rendered as
-  `2025-01-21`, because a raw date serial carries no recoverable meaning.
+  Sheets API returns `$1,234.00`. Dates and durations are the exceptions,
+  rendered `2025-01-21` and `36:00:00`, because in those two cases the raw number
+  carries no recoverable meaning. `UNFORMATTED_VALUE` returns the stored number,
+  as it does on a native spreadsheet.
 - `namedRanges` is empty. An `.xlsx`'s defined names are formulas, not grid
   ranges.
 - The reported `gid` is the workbook's own sheet id, not a Sheets gid. It is
@@ -3180,7 +3182,9 @@ What differs from a native spreadsheet:
 - The file is read **whole**: 20MB downloaded, 500,000 cells parsed, both
   refused past that with a message. A native spreadsheet is read a range at a
   time and has no such ceiling.
-- Legacy `.xls`, `.xlsb` and `.ods` are refused by name rather than attempted.
+- Legacy `.xls`, `.xlsb` and `.ods` are refused by name rather than attempted,
+  and so is a UTF-16 `.csv` — decoding one as UTF-8 yields plausible-looking
+  nonsense rather than an error.
 
 The fallback needs `https://www.googleapis.com/auth/drive.readonly` on the slug,
 which is **broader than the Sheets scopes beside it** — it reaches every file in

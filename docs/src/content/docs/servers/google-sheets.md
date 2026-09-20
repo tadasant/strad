@@ -260,13 +260,16 @@ the two reads are not equivalent:
 | --- | --- | --- |
 | Values | Live | As the file was last **saved** |
 | Formulas | Live result, or the formula under `FORMULA` | Stored result, or the formula text under `FORMULA` |
-| `FORMATTED_VALUE` | `$1,234.00` | `1234` — no number formatting. Dates are the exception, rendered `2025-01-21` |
+| `FORMATTED_VALUE` | `$1,234.00` | `1234` — no number formatting. Dates and durations are the exceptions, rendered `2025-01-21` and `36:00:00` |
+| `UNFORMATTED_VALUE` | The stored number | The stored number, the same way |
 | Named ranges | Reported | Empty; an `.xlsx`'s defined names are formulas, not grid ranges |
 | `gid` | The Sheets gid | The workbook's own sheet id — stable in the file, and what `sheet_gid` resolves |
 | Writes | All four write tools | **None.** They refuse and name the conversion |
 | Size | Read a range at a time | Read whole: 20MB and 500,000 cells, refused past that |
 
-Legacy `.xls`, `.xlsb` and `.ods` are refused by name rather than attempted.
+Legacy `.xls`, `.xlsb` and `.ods` are refused by name rather than attempted, and
+so is a UTF-16 `.csv` — decoding one as UTF-8 produces a workbook full of
+plausible-looking nonsense rather than an error.
 
 **The better fix, where a human can make it**, is still the conversion: open the
 file in Sheets and use **File → Save as Google Sheets**, which mints a new,

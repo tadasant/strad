@@ -63,10 +63,22 @@ export function sheetFor(workbook: OfficeWorkbook, title: string | undefined): O
   );
 }
 
+/**
+ * How far the sheet's data reaches — over the VALUE grid and the FORMULA grid.
+ *
+ * Both, because a formula whose cached result is absent or empty occupies a cell
+ * that the value grid does not know about. Measuring only values would leave
+ * `=A1` in an otherwise-blank row invisible to a `FORMULA` read, and would
+ * report a `gridProperties` a row short of the truth.
+ */
 function sheetExtent(sheet: OfficeSheet): { rows: number; columns: number } {
+  const grids = [sheet.rows, sheet.formulas ?? []];
   return {
-    rows: sheet.rows.length,
-    columns: sheet.rows.reduce((max, row) => Math.max(max, row.length), 0),
+    rows: Math.max(...grids.map((grid) => grid.length)),
+    columns: Math.max(
+      0,
+      ...grids.map((grid) => grid.reduce((max, row) => Math.max(max, row.length), 0))
+    ),
   };
 }
 
@@ -104,6 +116,17 @@ export function workbookToSpreadsheet(
   };
 }
 
+/**
+ * One cell, under the render option asked for.
+ *
+ * The three options mean here what they mean on a native spreadsheet, as far as
+ * a stored workbook can carry them. `FORMULA` is the formula text where there is
+ * one. `UNFORMATTED_VALUE` is the STORED NUMBER — the date serial rather than
+ * the rendered date, which is exactly what the Sheets API returns under that
+ * option. `FORMATTED_VALUE`, the default, is the rendered one; it is not the
+ * full render the Sheets API would do (see the provenance note), but for dates
+ * and durations, which are the values a raw number cannot express, it is.
+ */
 function renderCell(
   sheet: OfficeSheet,
   row: number,
@@ -114,6 +137,10 @@ function renderCell(
     const formula = sheet.formulas?.[row]?.[column];
     if (formula !== undefined) return formula;
   }
+  if (renderOption === 'UNFORMATTED_VALUE') {
+    const raw = sheet.raw?.[row]?.[column];
+    if (raw !== undefined) return raw;
+  }
   return sheet.rows[row]?.[column] ?? null;
 }
 
@@ -123,7 +150,9 @@ export function workbookValueRange(
   range: string,
   options?: { valueRenderOption?: ValueRenderOption }
 ): ValueRange {
-  const parsed = parseA1Range(range);
+  const parsed = parseA1Range(range, (title) =>
+    workbook.sheets.some((sheet) => sheet.title.toLowerCase() === title.toLowerCase())
+  );
   const sheet = sheetFor(workbook, parsed.title);
   const extent = sheetExtent(sheet);
 
@@ -150,10 +179,15 @@ export function workbookValueRange(
   // The echoed range is what the renderer addresses its table with, so it must
   // name the block actually returned — a caller that reads `'Q1'!B4:D9` and then
   // writes to the address the table shows depends on this being the real origin.
+  const empty = endRow < startRow || endColumn < startColumn;
   const bounded =
-    endRow < startRow || endColumn < startColumn
-      ? range
-      : `${quoteSheetTitle(sheet.title)}!${cellAddress(startRow, startColumn)}:${cellAddress(endRow, endColumn)}`;
+    `${quoteSheetTitle(sheet.title)}!${cellAddress(startRow, startColumn)}:` +
+    // An out-of-bounds window has no data to clamp to, so it echoes the window
+    // that was ASKED for rather than one clamped to nothing. Either way the
+    // start cell is real, which is what the renderer addresses its table from.
+    (empty
+      ? cellAddress(parsed.end.row ?? startRow, parsed.end.column ?? startColumn)
+      : cellAddress(endRow, endColumn));
 
   const valueRange: ValueRange = {
     range: bounded,

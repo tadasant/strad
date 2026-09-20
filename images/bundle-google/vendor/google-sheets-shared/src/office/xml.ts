@@ -36,7 +36,14 @@ export interface XmlTag {
 // suspended mid-iteration. Two walks sharing one regex would each clobber the
 // other's position, which shows up as silently dropped cells rather than as an
 // error.
-const tagPattern = () => /<([A-Za-z_][\w.:-]*)((?:[^>"']|"[^"]*"|'[^']*')*?)(\/?)>/g;
+//
+// The first alternative is the one that matters for correctness rather than for
+// reentrancy: a comment, a CDATA section and a processing instruction are
+// matched and SKIPPED WHOLE. Walking into them instead is not a cosmetic
+// failure — `<!-- <row r="9"> -->` inside a worksheet would be read as a real
+// `<row>`, resetting the row cursor and shifting every cell after it.
+const tagPattern = () =>
+  /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<!DOCTYPE[^>]*>|<([A-Za-z_][\w.:-]*)((?:[^>"']|"[^"]*"|'[^']*')*?)(\/?)>/g;
 const attributePattern = () => /([A-Za-z_][\w.:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
 
 /** Strip an OOXML namespace prefix: `r:id` -> `id`, `xdr:col` -> `col`. */
@@ -57,8 +64,10 @@ export function* tags(xml: string, from = 0): Generator<XmlTag> {
   for (;;) {
     const match = pattern.exec(xml);
     if (!match) return;
-    // `<?xml ...?>`, `<!-- -->` and `</close>` do not match the pattern's first
-    // group, so only start tags reach here.
+    // A comment, a CDATA section, a processing instruction and a doctype match
+    // the pattern's leading alternatives, which capture nothing — so they are
+    // consumed and skipped here. `</close>` does not match at all.
+    if (match[1] === undefined) continue;
     yield {
       name: localName(match[1]),
       rawName: match[1],
@@ -105,7 +114,35 @@ export function innerXml(xml: string, tag: XmlTag): string {
  * first run would silently truncate every bolded label in the workbook.
  */
 export function textContent(fragment: string): string {
-  return unescapeXml(fragment.replace(/<[^>]*>/g, ''));
+  // CDATA FIRST, and it is not a nicety: `<![CDATA[Roth IRA]]>` opens with `<`
+  // and its first `>` is the one in `]]>`, so a bare tag-strip deletes the text
+  // along with the wrapper and the cell silently becomes empty. Excel does not
+  // write CDATA, but it is legal SpreadsheetML and third-party writers do —
+  // which is exactly the population of files this path exists for. Its contents
+  // are literal, so they are NOT entity-unescaped.
+  const CDATA = /<!\[CDATA\[([\s\S]*?)\]\]>/g;
+  let out = '';
+  let cursor = 0;
+  for (;;) {
+    const match = CDATA.exec(fragment);
+    if (!match) break;
+    out += unescapeXml(fragment.slice(cursor, match.index).replace(/<[^>]*>/g, ''));
+    out += match[1];
+    cursor = match.index + match[0].length;
+  }
+  return out + unescapeXml(fragment.slice(cursor).replace(/<[^>]*>/g, ''));
+}
+
+/**
+ * A character, or undefined for a reference no character answers to.
+ *
+ * `String.fromCodePoint` THROWS past U+10FFFF, and this scanner reads bytes that
+ * came off a Drive file: `&#x110000;` is a one-line denial of a whole workbook.
+ * Every other unparseable form here degrades to the raw text, and so does this.
+ */
+function codePoint(code: number): string | undefined {
+  if (!Number.isInteger(code) || code < 0 || code > 0x10ffff) return undefined;
+  return String.fromCodePoint(code);
 }
 
 const NAMED_ENTITIES: Record<string, string> = {
@@ -130,12 +167,10 @@ export function unescapeXml(text: string): string {
   if (out.includes('&')) {
     out = out.replace(/&(#x?[0-9A-Fa-f]+|[A-Za-z]+);/g, (whole, body: string) => {
       if (body.startsWith('#x') || body.startsWith('#X')) {
-        const code = Number.parseInt(body.slice(2), 16);
-        return Number.isFinite(code) ? String.fromCodePoint(code) : whole;
+        return codePoint(Number.parseInt(body.slice(2), 16)) ?? whole;
       }
       if (body.startsWith('#')) {
-        const code = Number.parseInt(body.slice(1), 10);
-        return Number.isFinite(code) ? String.fromCodePoint(code) : whole;
+        return codePoint(Number.parseInt(body.slice(1), 10)) ?? whole;
       }
       return NAMED_ENTITIES[body] ?? whole;
     });
@@ -146,8 +181,7 @@ export function unescapeXml(text: string): string {
       .split('_x005F_')
       .join(ESCAPED_UNDERSCORE)
       .replace(/_x([0-9A-Fa-f]{4})_/g, (whole, hex: string) => {
-        const code = Number.parseInt(hex, 16);
-        return Number.isFinite(code) ? String.fromCodePoint(code) : whole;
+        return codePoint(Number.parseInt(hex, 16)) ?? whole;
       })
       .split(ESCAPED_UNDERSCORE)
       .join('_');

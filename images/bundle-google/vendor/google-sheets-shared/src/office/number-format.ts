@@ -1,7 +1,7 @@
 /**
- * Which numbers in an .xlsx are dates, and what to call them.
+ * Which numbers in an .xlsx are dates, which are durations, and what to call them.
  *
- * SpreadsheetML has no date type: 2026-09-20 is the number 46285 with a style
+ * SpreadsheetML has no date type: 2025-01-21 is the number 45678 with a style
  * whose number format happens to render it as a date. A reader that ignores
  * styles reports a financial tracker's date column as five-digit integers, which
  * is not wrong so much as unusable.
@@ -9,17 +9,24 @@
  * THIS IS NOT A NUMBER FORMATTER. `$1,234.00` comes back as `1234`, and
  * deliberately: reimplementing Excel's format language to render currency the
  * way the Sheets API's FORMATTED_VALUE would is a large amount of code to make a
- * number less useful. Dates are the one case where the raw value carries no
- * recoverable meaning, so dates are the one case handled.
+ * number less useful. Dates and durations are the cases where the raw value
+ * carries no recoverable meaning, so those are the cases handled.
  */
 
 /**
  * The built-in numFmtIds ECMA-376 assigns date and time semantics.
  *
- * 14-22 are the date and time formats; 45-47 are the elapsed-time ones. Every
- * other built-in is a number, a fraction, a percentage or text.
+ * 14-17 and 22 are dates, 18-21 are times of day, 45 (`mm:ss`) and 47
+ * (`mmss.0`) are time fragments, and 46 (`[h]:mm:ss`) is an ELAPSED duration —
+ * which is a different thing and is handled below rather than here.
  */
 const BUILTIN_DATE_FORMAT_IDS = new Set([14, 15, 16, 17, 18, 19, 20, 21, 22, 45, 46, 47]);
+
+/** Of those, the ones that show a clock and no calendar. */
+const BUILTIN_TIME_ONLY_IDS = new Set([18, 19, 20, 21, 45, 46, 47]);
+
+/** And the one built-in that is elapsed rather than a time of day. */
+const BUILTIN_ELAPSED_FORMAT_IDS = new Set([46]);
 
 /** The first id a workbook may define for itself; below this they are built in. */
 const FIRST_CUSTOM_FORMAT_ID = 164;
@@ -50,7 +57,7 @@ function formatTokens(formatCode: string): string {
     .replace(/\$-?[0-9A-Fa-f]+/g, '');
 }
 
-/** True if this format code renders its number as a date or a time. */
+/** True if this format code renders its number as a date, a time or a duration. */
 export function isDateFormatCode(formatCode: string): boolean {
   const tokens = formatTokens(formatCode);
   // A date format carries a `y` or a `d`; a time format carries an `h` or an
@@ -59,32 +66,73 @@ export function isDateFormatCode(formatCode: string): boolean {
   return /[ydhs]/i.test(tokens);
 }
 
-/** True if the cell at this style index renders as a date or a time. */
+/**
+ * True if this format code renders an ELAPSED duration rather than a clock.
+ *
+ * `[h]:mm` means "total hours", and `1.5` under it is **36:00** — a day and a
+ * half. Rendering it as a time of day gives `12:00:00`, which is off by exactly
+ * the number of whole days and says nothing about being off. A timesheet column
+ * read that way is wrong, quietly, which is the failure this whole module exists
+ * to avoid; so elapsed is its own case, not a kind of time-only.
+ */
+export function isElapsedFormatCode(formatCode: string): boolean {
+  return /\[(h+|m+|s+)\]/i.test(formatCode);
+}
+
+/** The format code a style index resolves to, built-in ids included. */
+function formatCodeFor(
+  formats: NumberFormats,
+  styleIndex: number | undefined
+): { id: number; code?: string } | undefined {
+  if (styleIndex === undefined) return undefined;
+  const id = formats.styleFormatIds[styleIndex];
+  if (id === undefined) return undefined;
+  return { id, code: id < FIRST_CUSTOM_FORMAT_ID ? undefined : formats.customFormats.get(id) };
+}
+
+/** True if the cell at this style index renders as a date, time or duration. */
 export function isDateStyle(formats: NumberFormats, styleIndex: number | undefined): boolean {
-  if (styleIndex === undefined) return false;
-  const formatId = formats.styleFormatIds[styleIndex];
-  if (formatId === undefined) return false;
-  if (formatId < FIRST_CUSTOM_FORMAT_ID) return BUILTIN_DATE_FORMAT_IDS.has(formatId);
-  const code = formats.customFormats.get(formatId);
-  return code === undefined ? false : isDateFormatCode(code);
+  const format = formatCodeFor(formats, styleIndex);
+  if (!format) return false;
+  if (format.id < FIRST_CUSTOM_FORMAT_ID) return BUILTIN_DATE_FORMAT_IDS.has(format.id);
+  return format.code === undefined ? false : isDateFormatCode(format.code);
+}
+
+/** True if the format counts elapsed time rather than showing a clock. */
+function isElapsedStyle(formats: NumberFormats, styleIndex: number | undefined): boolean {
+  const format = formatCodeFor(formats, styleIndex);
+  if (!format) return false;
+  if (format.id < FIRST_CUSTOM_FORMAT_ID) return BUILTIN_ELAPSED_FORMAT_IDS.has(format.id);
+  return format.code === undefined ? false : isElapsedFormatCode(format.code);
 }
 
 /** True if the format shows a time of day and not a date. */
 function isTimeOnly(formats: NumberFormats, styleIndex: number | undefined): boolean {
-  if (styleIndex === undefined) return false;
-  const formatId = formats.styleFormatIds[styleIndex];
-  if (formatId === undefined) return false;
-  const code =
-    formatId < FIRST_CUSTOM_FORMAT_ID
-      ? BUILTIN_TIME_ONLY_IDS.has(formatId)
-        ? 'h:mm'
-        : undefined
-      : formats.customFormats.get(formatId);
-  if (code === undefined) return false;
-  return !/[yd]/i.test(formatTokens(code));
+  const format = formatCodeFor(formats, styleIndex);
+  if (!format) return false;
+  if (format.id < FIRST_CUSTOM_FORMAT_ID) return BUILTIN_TIME_ONLY_IDS.has(format.id);
+  return format.code === undefined ? false : !/[yd]/i.test(formatTokens(format.code));
 }
 
-const BUILTIN_TIME_ONLY_IDS = new Set([18, 19, 20, 21, 45, 46, 47]);
+const pad = (n: number) => String(n).padStart(2, '0');
+
+/**
+ * An elapsed duration as `H:MM:SS`, where H may be any number of hours.
+ *
+ * `[m]` and `[s]` formats count minutes and seconds instead, and are rendered in
+ * their own unit so the number a caller reads is the number Excel shows.
+ */
+export function serialToElapsedString(serial: number, formatCode: string | undefined): string {
+  const totalSeconds = Math.round(Math.abs(serial) * 86_400);
+  const sign = serial < 0 ? '-' : '';
+  const leading = /\[(h+|m+|s+)\]/i.exec(formatCode ?? '[h]')?.[1]?.[0]?.toLowerCase() ?? 'h';
+  if (leading === 's') return `${sign}${totalSeconds}`;
+  if (leading === 'm') return `${sign}${Math.floor(totalSeconds / 60)}:${pad(totalSeconds % 60)}`;
+  return (
+    `${sign}${Math.floor(totalSeconds / 3600)}:` +
+    `${pad(Math.floor((totalSeconds % 3600) / 60))}:${pad(totalSeconds % 60)}`
+  );
+}
 
 /**
  * An Excel date serial as an ISO-ish string.
@@ -104,7 +152,6 @@ export function serialToDateString(
   const date = new Date(ms);
   if (Number.isNaN(date.getTime())) return String(serial);
 
-  const pad = (n: number, width = 2) => String(n).padStart(width, '0');
   const time =
     `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
   if (options.timeOnly) return time;
@@ -115,13 +162,16 @@ export function serialToDateString(
   return Number.isInteger(serial) ? day : `${day} ${time}`;
 }
 
-/** Render a numeric cell the way this server renders it: dates as dates. */
+/** Render a numeric cell the way this server renders it: dates and durations. */
 export function renderNumber(
   value: number,
   formats: NumberFormats,
   styleIndex: number | undefined,
   date1904: boolean
 ): string | number {
+  if (isElapsedStyle(formats, styleIndex)) {
+    return serialToElapsedString(value, formatCodeFor(formats, styleIndex)?.code);
+  }
   if (!isDateStyle(formats, styleIndex)) return value;
   return serialToDateString(value, {
     date1904,

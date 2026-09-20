@@ -54,11 +54,11 @@ function categoryPrefix(category: GoogleApiError['category']): string {
  * is `400 FAILED_PRECONDITION`, with a message that says nothing about file
  * types. It reads exactly like a broken mount.
  *
- * The four READ tools no longer surface that hint: `isOfficeFileError` in
- * `src/office/load.ts` recognises this same response and reads the file from
- * Drive instead, replacing the error with one that names the Drive scope if the
- * download is what failed. So this branch is what a WRITE hits — and what any
- * caller of the client library gets if it does not take the Office path.
+ * The four READ tools do not surface that hint. `isOfficeFileError`, in this
+ * tree's own src/office/load.ts, recognises the same response and reads the file
+ * from Drive instead, replacing the error with one that names the Drive scope if
+ * the download is what failed. So this branch is what a WRITE hits — and what
+ * any caller of the client library gets if it does not take the Office path.
  */
 function recoveryHint(status: number, detail: string): string | undefined {
   const text = detail.toLowerCase();

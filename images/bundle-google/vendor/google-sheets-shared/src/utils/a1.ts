@@ -98,7 +98,7 @@ export function unquoteSheetTitle(title: string): string {
  * `'Done`, and splitting at the last one works for that example and breaks on
  * `'A!B'` with no cell range at all.
  */
-function splitA1(range: string): { title?: string; cells: string } {
+function splitA1(range: string, isKnownTab?: (title: string) => boolean): { title?: string; cells: string } {
   if (range.startsWith("'")) {
     let i = 1;
     for (;;) {
@@ -115,9 +115,15 @@ function splitA1(range: string): { title?: string; cells: string } {
   }
   const bang = range.indexOf('!');
   if (bang === -1) {
-    // No `!` at all: either a bare tab name or a bare cell range, and only the
-    // shape tells them apart. `Ledger` is a tab; `A1:D50` is not.
-    return CELL_RANGE.test(range) ? { cells: range } : { title: range, cells: '' };
+    // No `!` at all: either a bare tab name or a bare cell range, and mostly
+    // only the shape tells them apart. `Ledger` is a tab; `A1:D50` is not.
+    //
+    // `Q1`, `H1` and `FY26` are BOTH, and a financial workbook is full of tabs
+    // named exactly that. Sheets resolves the ambiguity in favour of the sheet
+    // when one of that name exists, and here the workbook is in hand, so the
+    // same question can simply be asked rather than guessed at.
+    if (!CELL_RANGE.test(range)) return { title: range, cells: '' };
+    return isKnownTab?.(range) ? { title: range, cells: '' } : { cells: range };
   }
   return { title: range.slice(0, bang), cells: range.slice(bang + 1) };
 }
@@ -144,8 +150,16 @@ function parseCorner(cell: string): { row?: number; column?: number } {
  * Needed only on the Office path: a native spreadsheet's ranges are resolved by
  * Google, and a workbook this server parsed itself has to be sliced here.
  */
-export function parseA1Range(range: string): ParsedA1Range {
-  const { title, cells } = splitA1(range.trim());
+export function parseA1Range(
+  range: string,
+  /**
+   * Whether the workbook has a tab of this name. Optional: a caller that cannot
+   * answer gets the shape-only reading, which is what the Sheets API falls back
+   * to when no sheet matches.
+   */
+  isKnownTab?: (title: string) => boolean
+): ParsedA1Range {
+  const { title, cells } = splitA1(range.trim(), isKnownTab);
   const parsed: ParsedA1Range = {
     title: title === undefined ? undefined : unquoteSheetTitle(title),
     start: { row: 0, column: 0 },

@@ -34,8 +34,9 @@ export const GOOGLE_SHEETS_SCOPES = {
    * as before and says precisely what is missing when asked for an Office file.
    *
    * It is READ-ONLY, so a `-ro` slug carrying it is still derived as read-only
-   * by strad's connector (`src/connectors/index.ts` reads the `.readonly`
-   * suffix), but it is also BROAD: it reaches every file in the account's Drive,
+   * by strad's connector — connectorTier() at the repo root's
+   * src/connectors/index.ts reads the `.readonly` suffix — but it is also
+   * BROAD: it reaches every file in the account's Drive,
    * not only spreadsheets. Google offers no narrower alternative that can
    * download a file the app did not itself create — `drive.file` covers only
    * app-created files, and `drive.metadata.readonly` cannot read content.

@@ -67,12 +67,7 @@ export async function downloadFile(
 ): Promise<Uint8Array> {
   const declared = declaredSize === undefined ? undefined : Number(declaredSize);
   if (declared !== undefined && Number.isFinite(declared) && declared > MAX_DOWNLOAD_BYTES) {
-    throw new DriveFileTooLargeError(
-      `This Drive file is ${Math.round(declared / (1024 * 1024))}MB, past the ` +
-        `${MAX_DOWNLOAD_BYTES / (1024 * 1024)}MB this server will download and parse in one ` +
-        'call. Open it in Google Sheets and use File > Save as Google Sheets; the Sheets API ' +
-        'then reads it a range at a time rather than whole.'
-    );
+    throw new DriveFileTooLargeError(tooLarge(declared));
   }
 
   const response = await fetch(driveUrl(fileId, { alt: 'media' }), { method: 'GET', headers });
@@ -80,14 +75,46 @@ export async function downloadFile(
     await throwForGoogleApiError(response, `Download Drive file ${fileId}`);
   }
 
-  // Drive does not always send content-length on a media download, so the
-  // declared size above is a cheap pre-check and this is the real bound.
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength > MAX_DOWNLOAD_BYTES) {
-    throw new DriveFileTooLargeError(
-      `This Drive file downloaded to ${Math.round(bytes.byteLength / (1024 * 1024))}MB, past ` +
-        `the ${MAX_DOWNLOAD_BYTES / (1024 * 1024)}MB this server will parse in one call.`
-    );
+  const advertised = Number(response.headers.get('content-length'));
+  if (Number.isFinite(advertised) && advertised > MAX_DOWNLOAD_BYTES) {
+    await response.body?.cancel();
+    throw new DriveFileTooLargeError(tooLarge(advertised));
+  }
+
+  // READ IT IN CHUNKS AND STOP AT THE CAP. `arrayBuffer()` would allocate the
+  // whole body before anything could refuse it, and `size` is optional on the
+  // metadata — so on a file Drive declared no size for, a bound applied after
+  // the read is not a bound at all. This process shares 2GB with twenty-one
+  // other MCP servers.
+  const reader = response.body?.getReader();
+  if (!reader) return new Uint8Array(0);
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_DOWNLOAD_BYTES) {
+      await reader.cancel();
+      throw new DriveFileTooLargeError(tooLarge(total));
+    }
+    chunks.push(value);
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
   }
   return bytes;
+}
+
+function tooLarge(bytes: number): string {
+  return (
+    `This Drive file is at least ${Math.round(bytes / (1024 * 1024))}MB, past the ` +
+    `${MAX_DOWNLOAD_BYTES / (1024 * 1024)}MB this server will download and parse in one ` +
+    'call. Open it in Google Sheets and use File > Save as Google Sheets; the Sheets API ' +
+    'then reads it a range at a time rather than whole.'
+  );
 }

@@ -12,7 +12,7 @@ import { GoogleApiError } from '../google-sheets-client/lib/api-errors.js';
 import { downloadFile, getFileMetadata } from '../drive-client/lib/files.js';
 import { DELIMITED_MIME_TYPES, delimitedWorkbook } from './delimited.js';
 import { XLSX_MIME_TYPES, parseXlsx } from './xlsx.js';
-import type { OfficeWorkbook } from './workbook.js';
+import { MAX_PARSED_CELLS, type OfficeWorkbook } from './workbook.js';
 
 /** The Drive scope a slug needs before any of this works. */
 export const DRIVE_READONLY_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
@@ -41,6 +41,15 @@ const UNREADABLE_SPREADSHEET_FORMATS: Record<string, string> = {
     'a legacy .xls workbook (the binary BIFF format Excel used before 2007)',
   'application/vnd.oasis.opendocument.spreadsheet': 'an OpenDocument .ods spreadsheet',
   'application/vnd.ms-excel.sheet.binary.macroEnabled.12': 'a binary .xlsb workbook',
+  // This one should be unreachable: a NATIVE spreadsheet is what the Sheets API
+  // reads, so arriving here means `isOfficeFileError` matched something that was
+  // not an Office file at all. The generic refusal would then tell a reader that
+  // a Google Sheet is not a Google Sheet, which is the worst possible answer to
+  // the one failure that would mean this whole path misfired.
+  'application/vnd.google-apps.spreadsheet':
+    'a native Google Sheet, which the Sheets API reads directly — so this server ' +
+    'downloading it from Drive means the Sheets API refused a file it should have ' +
+    'served. That is a bug here, not a problem with the file',
 };
 
 export class OfficeFormatError extends Error {
@@ -78,11 +87,16 @@ export function parseOfficeFile(
   options: { title: string; mimeType: string }
 ): OfficeWorkbook {
   const { mimeType } = options;
+  // Both formats spend ONE budget of the same size. A cap the .csv path did not
+  // enforce would be a cap the docs promise and the container does not have — a
+  // 19MB file of one-character fields is ten million cells, comfortably inside
+  // the download cap and comfortably past what this process can hold.
+  const budget = { cells: MAX_PARSED_CELLS };
   if ((XLSX_MIME_TYPES as readonly string[]).includes(mimeType)) {
-    return parseXlsx(bytes, options);
+    return parseXlsx(bytes, { ...options, budget });
   }
   if ((DELIMITED_MIME_TYPES as readonly string[]).includes(mimeType)) {
-    return delimitedWorkbook(bytes, options);
+    return delimitedWorkbook(bytes, { ...options, budget });
   }
   throw unreadableFormatError(options.title, mimeType);
 }
@@ -180,11 +194,15 @@ export class OfficeWorkbookLoader {
     if (cached && Date.now() - cached.at < WORKBOOK_TTL_MS) return cached.workbook;
 
     const pending = this.fetchAndParse(spreadsheetId);
-    this.cache.set(spreadsheetId, { at: Date.now(), workbook: pending });
+    const entry: CacheEntry = { at: Date.now(), workbook: pending };
+    this.cache.set(spreadsheetId, entry);
     // A failed load must not be remembered: the next call may be made after the
-    // scope was granted, and serving it a cached rejection would report the
-    // fix as not having worked.
-    pending.catch(() => this.cache.delete(spreadsheetId));
+    // scope was granted, and serving it a cached rejection would report the fix
+    // as not having worked. Checked by IDENTITY, so a newer entry that replaced
+    // this one while it was still in flight survives.
+    pending.catch(() => {
+      if (this.cache.get(spreadsheetId) === entry) this.cache.delete(spreadsheetId);
+    });
     this.evictOldest();
     return pending;
   }
@@ -253,7 +271,7 @@ export async function readWithOfficeFallback<T>(
  * None of that belongs behind a tool called `update_sheet_values`, so the write
  * tools refuse and say what to do instead.
  */
-export function officeWriteRefusal(operation: string, spreadsheetId: string): Error {
+export function officeWriteRefusal(operation: string, spreadsheetId: string, said?: string): Error {
   return new Error(
     `${operation} cannot edit ${spreadsheetId}: it is an Office-format file (an .xlsx or ` +
       'similar uploaded to Drive rather than converted to a Google Sheet), and the Sheets ' +
@@ -261,7 +279,11 @@ export function officeWriteRefusal(operation: string, spreadsheetId: string): Er
       'tools download it from Drive and parse it, given the ' +
       `${DRIVE_READONLY_SCOPE} scope — but it will not write one back. To make this file ` +
       'editable, open it in Google Sheets and use File > Save as Google Sheets, then use ' +
-      'the new spreadsheet id.'
+      'the new spreadsheet id.' +
+      // Google's own words, kept: this diagnosis is confident and specific, and
+      // if the Sheets API ever returns this status for some other reason it
+      // would otherwise be confidently, specifically wrong with no trace left.
+      (said ? `\n\nGoogle said: ${said}` : '')
   );
 }
 
@@ -274,7 +296,13 @@ export async function writeRefusingOfficeFiles<T>(
   try {
     return await call();
   } catch (error) {
-    if (isOfficeFileError(error)) throw officeWriteRefusal(operation, spreadsheetId);
+    if (isOfficeFileError(error)) {
+      throw officeWriteRefusal(
+        operation,
+        spreadsheetId,
+        error instanceof Error ? error.message : String(error)
+      );
+    }
     throw error;
   }
 }

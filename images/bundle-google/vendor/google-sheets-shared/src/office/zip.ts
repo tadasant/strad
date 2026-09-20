@@ -170,7 +170,15 @@ export class ZipArchive {
     const compressed = buffer.subarray(start, end);
 
     if (entry.method === 0) {
-      this.charge(name, compressed.length);
+      // A stored entry is a view into a buffer this process already holds, so it
+      // allocates nothing and is already bounded by the download cap. It is
+      // still measured against MAX_ENTRY_BYTES, so that the header's claim —
+      // every part bounded, and their sum bounded — is what the code does.
+      if (compressed.length > MAX_ENTRY_BYTES) {
+        throw new ZipFormatError(
+          `ZIP entry "${name}" is ${compressed.length} bytes, past what this server reads.`
+        );
+      }
       return compressed;
     }
     if (entry.method !== 8) {
