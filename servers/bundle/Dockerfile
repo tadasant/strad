@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# bundle — THE strad supplementary image. Twenty-two MCP servers, one container.
+# bundle — THE strad supplementary image. Twenty-three MCP servers, one container.
 #
 # BUILD CONTEXT IS THE REPO ROOT (not servers/bundle/), because this image is
-# assembled from fourteen existing projects that live in different places:
+# assembled from fifteen existing projects that live in different places:
 #
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
 #                           gcs, google-flights
@@ -17,6 +17,8 @@
 #   servers/x-twitter       X
 #   servers/telegram        telegram               (MTProto, USER session)
 #   servers/bill-spend      bill-spend             (BILL Spend & Expense coding)
+#   servers/aws-device-farm aws-device-farm        (real iOS hardware, driven over
+#                                                  the session's Appium endpoint)
 #   servers/pulse-subregistry  pulse-subregistry
 #   servers/strad-fetch     strad-fetch            (web fetching; strad's own fork)
 #   servers/grafana         grafana                (proxies the pinned mcp-grafana
@@ -24,7 +26,7 @@
 #
 # Each is built in its OWN stage with its OWN lockfile and its OWN node_modules,
 # exactly as its standalone image builds it, and copied into /app/trees/<name>.
-# Nothing is merged. That is on purpose: merging fourteen dependency trees is how you
+# Nothing is merged. That is on purpose: merging fifteen dependency trees is how you
 # discover in production that two of them wanted different Playwright versions.
 # The host (servers/bundle/host) imports across them by path — Node resolves each
 # package's own imports from its own tree — and owns the one thing that MUST be
@@ -129,6 +131,19 @@ COPY servers/bill-spend/package.json servers/bill-spend/package-lock.json ./
 COPY servers/bill-spend/shared/package.json ./shared/
 RUN npm ci --no-audit --no-fund
 COPY servers/bill-spend/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
+# ---- aws-device-farm ----------------------------------------------------------
+# strad's own AWS Device Farm server: puts a build on a REAL iPhone and drives it
+# over the remote-access session's own Appium endpoint. Its dependencies are the
+# MCP SDK and the Device Farm client of the AWS SDK; the WebDriver half is plain
+# `fetch`, so no browser and no Appium client library are pulled in.
+FROM ${PW} AS build-aws-device-farm
+WORKDIR /src
+COPY servers/aws-device-farm/package.json servers/aws-device-farm/package-lock.json ./
+COPY servers/aws-device-farm/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/aws-device-farm/shared ./shared
 RUN npm run build && npm prune --omit=dev
 
 # ---- good-eggs / fetchpet / pointsyeah (browser servers) ---------------------
@@ -287,7 +302,7 @@ RUN set -eux; \
 ENV NODE_ENV=production
 WORKDIR /app
 
-# The fourteen trees, each with the node_modules it was built against.
+# The fifteen trees, each with the node_modules it was built against.
 COPY --from=build-api /src /app/trees/bundle-api
 COPY --from=build-google /src /app/trees/bundle-google
 COPY --from=build-op /src /app/trees/onepassword
@@ -299,6 +314,7 @@ COPY --from=build-pointsyeah /src /app/trees/pointsyeah
 COPY --from=build-x-twitter /src /app/trees/x-twitter
 COPY --from=build-telegram /src /app/trees/telegram
 COPY --from=build-bill-spend /src /app/trees/bill-spend
+COPY --from=build-aws-device-farm /src /app/trees/aws-device-farm
 COPY --from=build-pulse-subregistry /src /app/trees/pulse-subregistry
 COPY --from=build-strad-fetch /src /app/trees/strad-fetch
 COPY --from=build-grafana /src /app/trees/grafana

@@ -316,6 +316,10 @@ jobs:
             build: false
             test: true
             skip-browser: false
+          - tree: aws-device-farm
+            build: false
+            test: true
+            skip-browser: false
           - tree: x-twitter
             build: false
             test: true

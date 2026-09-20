@@ -391,7 +391,7 @@ one (hack #4).
 **✅ RESOLVED.** Core presents the internal token to every `supplementary-image`
 component, and the `strad-bundle` host refuses a mount request without it.
 
-**What.** The `strad-bundle` container — twenty-two mounts, and every upstream
+**What.** The `strad-bundle` container — twenty-three mounts, and every upstream
 credential behind them — serves every mount unauthenticated. Its only protection
 is the network boundary: an internal-only App Platform component
 (`internal_ports: [8080]`, no public route), reachable by core over the private
@@ -786,10 +786,10 @@ still what makes prod's read-only variants read-only.
 policies) → confirm → _then_ delete the per-server images, their workflows and the
 toggle plumbing.
 
-## 24. Twenty-two servers share one process, and one Chromium
+## 24. Twenty-three servers share one process, and one Chromium
 
-The collapsed bundle is one container running twenty-two MCP servers and one
-headless Chromium. An OOM there is a twenty-two-server outage; it used to be a
+The collapsed bundle is one container running twenty-three MCP servers and one
+headless Chromium. An OOM there is a twenty-three-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -2635,7 +2635,7 @@ both `infra/strad.staging.yaml` and `strad.config.example.yaml` — plus the cou
 in `servers/bundle/scripts/smoke.mjs`, `test/staging-config.test.ts` and
 `.github/workflows/ci.yml`.
 
-## 56. Per-slug box names are emitted for every server; two of twelve trees can read one
+## 56. Per-slug box names are emitted for every server; six of fifteen trees can read one
 
 **What.** Every enabled `supplementary-image` server's resolved `env:` is emitted
 onto its bundle TWICE: under the bare name it always had, and under
@@ -3700,7 +3700,7 @@ behaviour, which is the pre-change one.
 a listed parameter current in a supplementary container's `process.env` without a
 redeploy. What it cannot do is make the MCP server inside that container LOOK at
 the new value. That is a property of the upstream, and this image runs
-twenty-two of them, most written by other people.
+twenty-three of them, most written by other people.
 
 The split is real and it is not subtle:
 
@@ -4271,9 +4271,10 @@ from the module too. Until then the grep is cheaper than the seam.
 **What.** Every tool description in `servers/remote-filesystem/` is held at or
 under 2048 characters by `DESCRIPTION_BUDGET` in
 `servers/remote-filesystem/shared/src/tools/shared.ts`, asserted over every tool
-the server defines. `servers/bill-spend/` holds the same budget, under its own
-copy of the constant — `list_transactions` reached 2148 characters there and lost
-the paragraph saying its date filters are day-granular. Four of the seven were over that line: `upload_file` at 4111
+the server defines. `servers/bill-spend/` and `servers/aws-device-farm/` hold
+the same budget, each under its own copy of the constant — `list_transactions`
+reached 2148 characters in bill-spend and lost the paragraph saying its date
+filters are day-granular. Four of the seven were over that line: `upload_file` at 4111
 characters, `get_upload_url` at 3580, `refresh_link` at 3463 and
 `set_sensitivity` at 2589. All four were rewritten to fit.
 
@@ -5349,7 +5350,7 @@ Workspace documents and cannot touch an uploaded binary. `files.copy` with
 file in the owner's Drive every time an agent reads a spreadsheet — a write, in a
 read tier. The npm packages that read xlsx are large, and the popular one has
 been unmaintained on npm since 0.18.5 with a live prototype-pollution advisory;
-this process holds three Google accounts' refresh tokens beside twenty-one other
+this process holds three Google accounts' refresh tokens beside twenty-two other
 MCP servers.
 
 **What it costs, and what a caller is told.** Every Office-backed result carries
@@ -5391,3 +5392,53 @@ naming the scope, the config field and the Reconnect button.
 native spreadsheet, and every tool here then works against it live, formatted and
 writable. That is the better outcome in every case where a human can do it; this
 path exists for the files where nobody has.
+
+## 103. The Device Farm server is shipped whole and has never made a live call
+
+`servers/aws-device-farm/` is built, tested and baked into the bundle image at
+`/aws-device-farm`. **No environment declares a slug for it, and no AWS account
+exists.** Every line of it is written from AWS's published API and documented
+behaviour; the suite runs against injected fakes, and the first real request is a
+step in `docs/servers/aws-device-farm-setup`.
+
+**Why it shipped this way.** An unresolved `${NAME}` fails the `render-spec`
+run, and the render is the WHOLE spec — so a slug that lands before its secret
+is seeded takes every other server's deploy down with it. Shipping the mount
+without a slug costs nothing (the image carries one more tree and one more
+`degraded` mount) and keeps the seeded-credential step a paste rather than a
+second PR.
+
+**The human-owned steps this implies**, which AGENTS.md's "ops without box
+access" rule asks be written down where they are incurred: creating the AWS
+account, creating the Device Farm project, writing the IAM policy, minting the
+access key, and placing three values at `/ui/secrets`. None is a shell on a
+container — provisioning a vendor account and a first API key is a boundary an
+agent must not cross, and the rest goes through the console. The setup page is
+the runbook.
+
+**Three claims the first live call will settle,** in order of how likely they are
+to bite:
+
+1. whether the Appium endpoint accepts a session created with `platformName:
+iOS` and `appium:automationName: XCUITest` and nothing else, which is what
+   `drivers.ts` sends — Device Farm injects the installed build as `appium:app`,
+   so naming one here would override what the session installed;
+2. whether the iOS predicate `hasKeyboardFocus == 1` names the field a coordinate
+   tap just focused on a real device, which is what `type_text` relies on when it
+   is given `x`/`y` rather than a label;
+3. how long a remote access session really takes to become drivable, which
+   decides whether `start_device_session`'s 180-second default wait is generous
+   or tight.
+
+**A fourth thing that is a choice rather than an unknown:** `upload_app` BUFFERS
+the build in memory. The pre-signed S3 PUT Device Farm hands back needs a
+`Content-Length` and a source URL is not obliged to declare one, so the download
+is read with a running ceiling — `AWS_DEVICE_FARM_MAX_UPLOAD_MB`, 192 by default
+— and abandoned mid-flight if it exceeds it. On a 2 GB box shared with a Chromium
+that ceiling is a real bound, and a build larger than it cannot be uploaded
+without raising it.
+
+**Undo.** A slug in `infra/strad.staging.yaml` and in prod's config, once the
+credential is seeded; the exact block is in the setup page. The buffering goes
+away if Device Farm ever accepts a chunked PUT, or if strad grows a place to
+spool a build to disk.

@@ -15,7 +15,7 @@
  * credential-dependent. CI has no credential, the probe fails closed, and the
  * count is the read-only 4 below.
  *
- * What it is really checking is that twenty-two servers, fourteen dependency trees and
+ * What it is really checking is that twenty-three servers, fifteen dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  *
@@ -97,6 +97,12 @@ const EXPECT = {
   // card issuance and budget management. A sixth tool here is that boundary
   // moving, and this is where it gets noticed.
   "bill-spend": 5,
+  // The nineteen-tool Device Farm surface: seven reads, two stops, upload +
+  // schedule, and the nine that hold and drive a physical phone. The count is
+  // also a SPEND assertion — this is the one mount in the image whose tools
+  // bill by the minute against a card, and the two `stop_` tools are what a
+  // read-only slug is given so it can end a session it can see.
+  "aws-device-farm": 19,
   // Grafana's 65 tools minus the 13 the binary's `-disable-write` removes. Not a
   // gateway allow-list: the child process does not contain them. If this number
   // moves, either the pin moved or a flag stopped being passed — and the second
@@ -248,7 +254,7 @@ if (unchecked.length || absent.length) {
 
 // Two trees registering the SAME slug is the collision a twelve-tree single process
 // invites, and it collapses to one route — the set above cannot see it, because a
-// Set of 22 mounts' slugs is 21 entries wide and matches EXPECT exactly.
+// Set of 23 mounts' slugs is 22 entries wide and matches EXPECT exactly.
 if (health.servers.length !== mounted.size) {
   failed += 1;
   console.log(

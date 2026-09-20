@@ -1,0 +1,22 @@
+{
+  "name": "aws-device-farm-shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AWS Device Farm: build uploads, real-device runs and their artifacts, and a remote-access session driven over its own Appium endpoint.",
+  "main": "build/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-device-farm": "^3.1136.0",
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.6",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.9"
+  },
+  "license": "MIT"
+}

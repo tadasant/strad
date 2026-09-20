@@ -580,11 +580,11 @@ nothing warns beforehand. Publishing the OAuth app removes the expiry.
 
 ## The deployment
 
-### 24. Twenty-two servers share one process and one CPU
+### 24. Twenty-three servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts twenty-two MCP servers,
+The `bundle` component runs one Node process that mounts twenty-three MCP servers,
 launches one shared Chromium and supervises one `mcp-grafana` child process, on
-`apps-s-1vcpu-2gb`. A crash in the host takes all twenty-two down together, and
+`apps-s-1vcpu-2gb`. A crash in the host takes all twenty-three down together, and
 Chromium contends with every other server for the single vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -966,7 +966,7 @@ a store-wide read.
 keeps a listed parameter current in a supplementary container's environment
 without a redeploy. It cannot make the MCP server inside that container **look**
 at the new value — that is a property of the upstream, and the bundle image runs
-twenty-two of them written by other people.
+twenty-three of them written by other people.
 
 `strad-fetch` builds its scraping clients inside a factory the host invokes per
 request, so a rotated key is used by the next tool call; that is the case the
@@ -2133,7 +2133,7 @@ ever rebuilt with a rootless or hand-installed docker, where buildx lives in
 
 **Serialising the workflows was the alternative.** A `concurrency:` group would
 have ended it too, at the cost of every push taking the sum of its builds rather
-than the longest — the bundle alone is fourteen dependency trees. Isolation costs a
+than the longest — the bundle alone is fifteen dependency trees. Isolation costs a
 `mkdir`.
 
 ### 49. The Telegram MTProto library is archived upstream
@@ -2233,7 +2233,7 @@ for the telegram pair, `BILL_SPEND_API_TOKEN` for the bill-spend pair,
 then delete that entry's `enabled:` line and add each seeded name to
 `PROVISIONED_STATICS` in `test/staging-config.test.ts`.
 
-### 56. Per-slug variable names are emitted for every server; only five of the fourteen trees can read one
+### 56. Per-slug variable names are emitted for every server; only six of the fifteen trees can read one
 
 Every supplementary server's `env:` lands on its bundle twice — under the bare
 name and under `<SLUG>__<NAME>` — with no condition attached, so what a server's
@@ -2249,7 +2249,7 @@ differently is still a hard error — one process cannot hold two credentials,
 whatever the variables are called.
 
 **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
-`grafana` and `bill-spend` read an injected environment.** The other nine trees
+`grafana`, `bill-spend` and `aws-device-farm` read an injected environment.** The other nine trees
 in the bundle image are vendored upstream code that reads `process.env` directly,
 often lazily at call time, so they see the bare names only. `bill-spend` reads
 the injected view for one mount rather than one per slug: one BILL token is one
@@ -2518,7 +2518,7 @@ leak. Nothing in the cache is a credential; it is public pages someone fetched.
 
 **What the fork DID bound is the memory.** Upstream's store grows for the life of
 the process, which is fine for a subprocess the OS reclaims and an out-of-memory
-kill in a container that hosts twenty-two mounts. The cache is LRU-bounded on both
+kill in a container that hosts twenty-three mounts. The cache is LRU-bounded on both
 entry count and bytes, and the filesystem backend is gone (App Platform gives the
 container no persistent volume, so it was memory with extra steps).
 
@@ -3152,8 +3152,6 @@ The macOS halves have not run anywhere: CI is Linux. That covers the `osascript`
 
 See `HACKS.md` #101.
 
----
-
 ### 102. An Office workbook in Drive is read by strad's own parser, not by Google
 
 A `.xlsx`, `.xlsm`, `.csv` or `.tsv` **uploaded** to Drive rather than converted
@@ -3206,6 +3204,24 @@ See `HACKS.md` #102.
 
 ---
 
+### 103. The Device Farm server has never made a live call
+
+[`aws-device-farm`](/servers/aws-device-farm/) is built, tested and baked into the bundle image. **No environment declares a slug for it, and there is no AWS account behind it.** Every line is written from AWS's published API and documented behaviour, and its 141 tests run against injected fakes: an AWS SDK `send`, and a `fetch` standing in for both the build download and the phone's WebDriver endpoint.
+
+It shipped that way on purpose. An unresolved `${NAME}` fails the spec render, and the render is the whole spec — a slug that lands before its secret is seeded takes every other server's deploy down with it. The mount costs nothing while it waits: it comes up `degraded`, lists its tools, and fails every call with an error naming the variables.
+
+**Three claims the first live call will settle:** whether the Appium endpoint accepts a session created with `platformName: iOS` and nothing else; whether the iOS predicate `hasKeyboardFocus == 1` names the field a coordinate tap just focused; and how long a session really takes to become drivable, which decides whether the 180-second default wait is generous or tight.
+
+**One thing that is a choice rather than an unknown:** `upload_app` buffers the build in memory, because the pre-signed S3 PUT needs a `Content-Length` and a source URL is not obliged to declare one. The download is read with a running ceiling — `AWS_DEVICE_FARM_MAX_UPLOAD_MB`, 192 MB by default — and abandoned mid-flight past it. On a 2 GB box shared with a Chromium that is a real bound, not a formality.
+
+**How you would know.** The mount is `degraded` on `/healthz` until its variables exist, and every tool call says which are missing.
+
+**Undo:** the slug block in [the setup guide](/servers/aws-device-farm-setup/#61--strad-staging-config-tadasantstrad-this-repo), pasted once the credential is seeded.
+
+See `HACKS.md` #103.
+
+---
+
 ## What the human still needs to provision
 
 The one-time steps that clear most of the list above:
@@ -3224,6 +3240,9 @@ The one-time steps that clear most of the list above:
   working connectors. See **#99**.
 - An OAuth client for `https://strad.tadasant.com/console/oauth/callback`, and its
   `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — clears **#2** and **#20**.
+- An AWS account, a Device Farm project, a least-privilege IAM key, and three
+  values at `/ui/secrets` — clears **#103**. Every step is in
+  [the setup guide](/servers/aws-device-farm-setup/).
 - Delete the DigitalOcean Container Registry named `strad`. Staging and prod pull
   ghcr images; the registry the first deploy used is left over, and bills while it
   sits there.
