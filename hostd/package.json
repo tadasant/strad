@@ -1,0 +1,27 @@
+{
+  "name": "strad-hostd",
+  "version": "0.1.0",
+  "private": true,
+  "description": "strad's host daemon: MCP servers that operate the machine they run on (shell, the owner's live Chrome), behind an on-screen consent gate, a kill switch and a local status page. Runs behind a strad local-tunnel slug, or directly over stdio on any machine.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.4"
+  },
+  "bin": {
+    "strad-hostd": "./build/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.6",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.9"
+  }
+}

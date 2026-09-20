@@ -371,6 +371,46 @@ jobs:
         working-directory: servers/${{ matrix.tree }}
         run: npm test
 
+  # strad-hostd: the daemon that runs on a machine a person owns and serves the
+  # shell and browser MCP servers behind a consent dialog. It is NOT a leg of the
+  # `servers` matrix above — that matrix is the set of trees the bundle image
+  # bakes (test/ci-server-trees.test.ts holds it to that), and this code never
+  # runs in a strad container.
+  #
+  # It hands out a shell on a personal laptop, so its tests are the security
+  # review: nothing runs without a grant, an unanswered dialog is a denial, each
+  # server's key opens only that server, the status page answers only to loopback
+  # with a token, and ending a grant kills the process group it started.
+  #
+  # The browser suite drives a REAL Chromium, found the way the owner's Chrome is
+  # (DevToolsActivePort in its user-data directory). With CI set, a missing
+  # browser FAILS the suite rather than skipping it — a skipped suite proves
+  # nothing here. Lint and format for this tree run in the `lint` job, from the
+  # repo root.
+  hostd:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        working-directory: hostd
+        run: npm ci
+      - name: Install Chromium
+        run: npx --yes playwright@1.63.0 install chromium
+      - name: Build and test
+        working-directory: hostd
+        run: npm test
+      - name: Install script (no LaunchAgent, no tunnel)
+        working-directory: hostd
+        run: |
+          set -euo pipefail
+          export STRAD_HOSTD_HOME="$RUNNER_TEMP/hostd-state"
+          ./install/install.sh --machine "CI" --suffix ci --no-agent
+          node "$STRAD_HOSTD_HOME/app/build/cli.js" keys | awk '{ if (length($2) < 32) exit 1 }'
+          ./install/uninstall.sh --purge
+
   # THE bundle: twenty-two MCP servers, fourteen dependency trees, one Chromium and the
   # `op` CLI in one container. It is now the only supplementary component strad
   # deploys, so a PR that cannot build it — or that builds one where a server

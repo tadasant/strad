@@ -11,7 +11,7 @@ produce a bootable image is a failing PR.
 
 ## `ci.yml` — the gate on every PR
 
-Runs on PRs and pushes to `main`. Nine jobs, all `runs-on: self-hosted` — one
+Runs on PRs and pushes to `main`. Ten jobs, all `runs-on: self-hosted` — one
 of which, `servers`, is a fourteen-leg matrix over the server trees:
 
 - **`lint`** — typecheck, ESLint, `prettier --check`. The typecheck is one
@@ -194,6 +194,17 @@ of which, `servers`, is a fourteen-leg matrix over the server trees:
     so a dropped precedence inside one of the `degraded` verdicts is red here and
     green everywhere else.
 
+- **`hostd`** — `npm ci`, a Chromium, and `npm test` in `hostd/`, then the install
+  script with `--no-agent`. [strad-hostd](/servers/hostd/) is not a leg of
+  `servers`: that matrix is the set of trees the bundle image bakes, and this code
+  runs on a laptop. It hands out a shell on a personal machine, so its suite is
+  the security review: nothing runs without a grant, an unanswered dialog is a
+  denial, each server's key opens only that server, the status page answers only
+  to loopback with a token, and ending a grant kills the process group it started.
+  The browser suite drives a real Chromium, and with `CI` set a missing browser
+  fails the suite rather than skipping it. The macOS halves — the `osascript`
+  dialog, the LaunchAgent, the installer's `cloudflared` branch — run nowhere in
+  CI.
 - **`bundle_image`** — builds `servers/bundle/Dockerfile`, **boots the container**,
   and runs `scripts/smoke.mjs` against every mount of the running image, asserting
   the full-capability tool count for each (slack 13, tailscale 15, monarch-money 23,
