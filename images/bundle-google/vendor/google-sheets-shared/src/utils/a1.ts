@@ -69,3 +69,126 @@ export function rangeOrigin(range: string): { row: number; column: number } {
   const row = digits ? Number(digits) - 1 : 0;
   return { row: Math.max(0, row), column: Math.max(0, column) };
 }
+
+/** A1 range split into the tab it names and the cell window it selects. */
+export interface ParsedA1Range {
+  /** The tab, unquoted. Absent when the range names none. */
+  title?: string;
+  /** 0-based first row and column. A range naming no cells starts at A1. */
+  start: { row: number; column: number };
+  /**
+   * 0-based last row and column, INCLUSIVE. Either may be absent, which is what
+   * an open range means: `A:D` is every row of four columns, `2:10` is nine
+   * whole rows, and a bare tab is both.
+   */
+  end: { row?: number; column?: number };
+}
+
+/** Undo {@link quoteSheetTitle}: strip the quotes and halve the doubled ones. */
+export function unquoteSheetTitle(title: string): string {
+  if (!title.startsWith("'")) return title;
+  return title.slice(1, -1).split("''").join("'");
+}
+
+/**
+ * Split an A1 range at the `!` that separates its tab from its cells.
+ *
+ * Quote-aware, because a tab title may itself contain a `!` and then it is
+ * quoted — `'Done!'!A1:B2`. Splitting at the first `!` would take the tab to be
+ * `'Done`, and splitting at the last one works for that example and breaks on
+ * `'A!B'` with no cell range at all.
+ */
+function splitA1(range: string, isKnownTab?: (title: string) => boolean): { title?: string; cells: string } {
+  if (range.startsWith("'")) {
+    let i = 1;
+    for (;;) {
+      const quote = range.indexOf("'", i);
+      if (quote === -1) return { title: range, cells: '' };
+      if (range[quote + 1] === "'") {
+        i = quote + 2;
+        continue;
+      }
+      const title = range.slice(0, quote + 1);
+      const rest = range.slice(quote + 1);
+      return { title, cells: rest.startsWith('!') ? rest.slice(1) : '' };
+    }
+  }
+  const bang = range.indexOf('!');
+  if (bang === -1) {
+    // No `!` at all: either a bare tab name or a bare cell range, and mostly
+    // only the shape tells them apart. `Ledger` is a tab; `A1:D50` is not.
+    //
+    // `Q1`, `H1` and `FY26` are BOTH, and a financial workbook is full of tabs
+    // named exactly that. Sheets resolves the ambiguity in favour of the sheet
+    // when one of that name exists, and here the workbook is in hand, so the
+    // same question can simply be asked rather than guessed at.
+    if (!CELL_RANGE.test(range)) return { title: range, cells: '' };
+    return isKnownTab?.(range) ? { title: range, cells: '' } : { cells: range };
+  }
+  return { title: range.slice(0, bang), cells: range.slice(bang + 1) };
+}
+
+const CELL_RANGE = /^\$?[A-Za-z]{0,3}\$?\d*(?::\$?[A-Za-z]{0,3}\$?\d*)?$/;
+
+/** One end of a cell range: column letters, row digits, either may be absent. */
+function parseCorner(cell: string): { row?: number; column?: number } {
+  const match = /^\$?([A-Za-z]*)\$?(\d*)$/.exec(cell);
+  if (!match) return {};
+  const [, letters, digits] = match;
+  let column: number | undefined;
+  if (letters) {
+    column = 0;
+    for (const ch of letters.toUpperCase()) column = column * 26 + (ch.charCodeAt(0) - 64);
+    column -= 1;
+  }
+  return { row: digits ? Number(digits) - 1 : undefined, column };
+}
+
+/**
+ * Parse an A1 range the way the Sheets values API reads one.
+ *
+ * Needed only on the Office path: a native spreadsheet's ranges are resolved by
+ * Google, and a workbook this server parsed itself has to be sliced here.
+ */
+export function parseA1Range(
+  range: string,
+  /**
+   * Whether the workbook has a tab of this name. Optional: a caller that cannot
+   * answer gets the shape-only reading, which is what the Sheets API falls back
+   * to when no sheet matches.
+   */
+  isKnownTab?: (title: string) => boolean
+): ParsedA1Range {
+  const { title, cells } = splitA1(range.trim(), isKnownTab);
+  const parsed: ParsedA1Range = {
+    title: title === undefined ? undefined : unquoteSheetTitle(title),
+    start: { row: 0, column: 0 },
+    end: {},
+  };
+  if (!cells) return parsed;
+
+  const [left, right] = cells.includes(':') ? cells.split(':', 2) : [cells, cells];
+  const from = parseCorner(left);
+  const to = parseCorner(right);
+
+  // A range may be written either way round — `D10:A1` selects the same block as
+  // `A1:D10`, and Sheets normalises it. Each axis normalises independently.
+  const rows = [from.row, to.row].filter((n): n is number => n !== undefined).sort((a, b) => a - b);
+  const columns = [from.column, to.column]
+    .filter((n): n is number => n !== undefined)
+    .sort((a, b) => a - b);
+
+  parsed.start = { row: rows[0] ?? 0, column: columns[0] ?? 0 };
+  // An axis is bounded only when BOTH corners named it. `A1:D` bounds the
+  // columns and leaves the rows open, which is the whole point of the form.
+  parsed.end = {
+    row: rows.length === 2 ? rows[1] : undefined,
+    column: columns.length === 2 ? columns[1] : undefined,
+  };
+  return parsed;
+}
+
+/** `0, 0` -> `A1`. The inverse of {@link parseCorner} for a complete corner. */
+export function cellAddress(row: number, column: number): string {
+  return `${columnLetter(column)}${row + 1}`;
+}

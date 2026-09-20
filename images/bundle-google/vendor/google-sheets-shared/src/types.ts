@@ -56,12 +56,28 @@ export interface SpreadsheetProperties {
   [k: string]: unknown;
 }
 
+/**
+ * Where a result came from, when it did not come from the Sheets API.
+ *
+ * Present ONLY on the Office path — a Drive file strad downloaded and parsed
+ * itself because the Sheets API refuses it. Absent means the ordinary thing
+ * happened, which is why every tool prints {@link note} whenever it is there:
+ * the two reads are not equivalent, and a caller has to be able to tell.
+ */
+export interface OfficeSource {
+  /** The Drive mime type the file was parsed as. */
+  mimeType: string;
+  /** One line the tools append to their output verbatim. */
+  note: string;
+}
+
 export interface Spreadsheet {
   spreadsheetId: string;
   properties?: SpreadsheetProperties;
   sheets?: Sheet[];
   namedRanges?: NamedRange[];
   spreadsheetUrl?: string;
+  officeSource?: OfficeSource;
   [k: string]: unknown;
 }
 
@@ -78,12 +94,14 @@ export interface ValueRange {
   range?: string;
   majorDimension?: string;
   values?: unknown[][];
+  officeSource?: OfficeSource;
   [k: string]: unknown;
 }
 
 export interface BatchGetValuesResponse {
   spreadsheetId?: string;
   valueRanges?: ValueRange[];
+  officeSource?: OfficeSource;
   [k: string]: unknown;
 }
 

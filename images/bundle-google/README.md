@@ -135,6 +135,15 @@ docs the app did not create — `drive.file` is not enough).
 Scope: `https://www.googleapis.com/auth/spreadsheets` for the write tools,
 `…/spreadsheets.readonly` for a token that must not be able to write.
 
+**Optionally `https://www.googleapis.com/auth/drive.readonly`**, and only for
+one thing: an `.xlsx`/`.csv` **uploaded** to Drive is invisible to the Sheets API
+(`400 FAILED_PRECONDITION`), so the four read tools fall back to downloading it
+from Drive and parsing the workbook in-process — `src/office/` in that tree. A
+token without the scope serves native spreadsheets exactly as before and fails an
+Office file with a message naming the scope. The scope is read-only but BROAD: it
+reaches every file in the account's Drive. No write tool ever uses it. See
+`HACKS.md` #102.
+
 A refresh token is ONE Google account, which is why this server reads an injected
 env rather than `process.env`: the collapsed bundle mounts it once per strad slug,
 each with its own account. This image keeps the single conventional mount. See

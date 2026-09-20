@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
 import { parseSpreadsheetId } from '../utils/parse-spreadsheet-id.js';
 import { renderValueRange } from '../utils/format-values.js';
+import { officeNote } from '../office/to-sheets.js';
 import { logError } from '../logging.js';
 
 const PARAM_DESCRIPTIONS = {
@@ -34,7 +35,11 @@ you need — one HTTP round trip and one consistent read, rather than N.
 - value_render_option: FORMATTED_VALUE (default) | UNFORMATTED_VALUE | FORMULA
 
 **Returns:** one addressed table per range, in the order requested. Each range is
-truncated independently and says so.`;
+truncated independently and says so.
+
+**Office files too.** An .xlsx or .csv uploaded to Drive is invisible to
+the Sheets API; strad downloads and parses it instead, and says so in the
+result. Those files are read-only here and their values are as last saved.`;
 
 export function batchGetSheetValuesTool(_server: Server, clientFactory: ClientFactory) {
   return {
@@ -73,6 +78,7 @@ export function batchGetSheetValuesTool(_server: Server, clientFactory: ClientFa
           const rendered = renderValueRange(valueRange);
           output += `\n## ${valueRange.range ?? '(unnamed range)'}\n\n${rendered.text}\n`;
         }
+        output += officeNote(response.officeSource);
 
         return { content: [{ type: 'text', text: output }] };
       } catch (error) {

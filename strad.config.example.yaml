@@ -608,8 +608,18 @@ servers:
       account: someone@example.com
       # The tier is DERIVED from this, not declared: every capability scope
       # ending in `.readonly` is a read-only slug.
+      #
+      # `drive.readonly` is OPTIONAL and does one thing: an .xlsx or .csv
+      # UPLOADED to Drive is invisible to the Sheets API, so the four read tools
+      # download it from Drive and parse it instead. It is read-only, so the
+      # tier above is unchanged — but it is BROAD, reaching every file in that
+      # account's Drive. It is shown on both slugs here because both tiers READ;
+      # leave it off a slug that has no Office files to read. Without it, native
+      # spreadsheets work exactly as before and an Office file fails with a
+      # message naming the scope. No write tool ever uses it. HACKS.md #102.
       scopes:
         - https://www.googleapis.com/auth/spreadsheets.readonly
+        - https://www.googleapis.com/auth/drive.readonly
     tools:
       allow:
         - get_spreadsheet
@@ -631,6 +641,10 @@ servers:
       account: someone@example.com
       scopes:
         - https://www.googleapis.com/auth/spreadsheets
+        # Same as above, and for the same one purpose: READING an Office file
+        # out of Drive. Writing one back is not a thing this server does under
+        # any scope — the write tools refuse an Office file and say so.
+        - https://www.googleapis.com/auth/drive.readonly
 
   # THE SAME SHAPE FOR gmail, AND THE ONE FIELD THAT IS NOT OPTIONAL HERE.
   #

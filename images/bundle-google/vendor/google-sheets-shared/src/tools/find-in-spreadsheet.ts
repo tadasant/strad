@@ -4,6 +4,7 @@ import type { ClientFactory } from '../server.js';
 import { parseSpreadsheetId } from '../utils/parse-spreadsheet-id.js';
 import { sheetRange } from '../utils/a1.js';
 import { findCells } from '../utils/find-cells.js';
+import { officeNote } from '../office/to-sheets.js';
 import { logError } from '../logging.js';
 
 /** How many tabs one call will read. A workbook can have hundreds. */
@@ -48,7 +49,11 @@ call in a session.
 address you can hand to get_sheet_values or update_sheet_values unchanged.
 
 **Use it for:** locating a row label ("Roth IRA") before reading or updating the
-numbers beside it.`;
+numbers beside it.
+
+**Office files too.** An .xlsx or .csv uploaded to Drive is invisible to
+the Sheets API; strad downloads and parses it instead, and says so in the
+result. Those files are read-only here and their values are as last saved.`;
 
 export function findInSpreadsheetTool(_server: Server, clientFactory: ClientFactory) {
   return {
@@ -119,6 +124,7 @@ export function findInSpreadsheetTool(_server: Server, clientFactory: ClientFact
           output +=
             `\n_Only the first ${MAX_TABS} visible tabs were searched. Pass sheet_titles to search others._\n`;
         }
+        output += officeNote(response.officeSource);
 
         return { content: [{ type: 'text', text: output }] };
       } catch (error) {

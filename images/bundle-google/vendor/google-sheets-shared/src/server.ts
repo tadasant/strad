@@ -1,6 +1,8 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { OAuth2Client } from 'google-auth-library';
 import { createRegisterTools } from './tools.js';
+import { OfficeWorkbookLoader } from './office/load.js';
+import { withOfficeFallback } from './office/client.js';
 import type { Spreadsheet, SheetProperties, ValueRange, BatchGetValuesResponse } from './types.js';
 import type { ReadValuesOptions, ValueInputOption } from './google-sheets-client/lib/values.js';
 import type {
@@ -22,6 +24,24 @@ export const GOOGLE_SHEETS_SCOPES = {
   readwrite: 'https://www.googleapis.com/auth/spreadsheets',
   /** Read only. Enough for get_spreadsheet / get_sheet_values / batch_get_sheet_values / find_in_spreadsheet. */
   readonly: 'https://www.googleapis.com/auth/spreadsheets.readonly',
+  /**
+   * OPTIONAL, and only for reading Office-format files held in Drive.
+   *
+   * An .xlsx or .csv uploaded to Drive is invisible to the Sheets API — every
+   * call against it is `400 FAILED_PRECONDITION` — so the four read tools fall
+   * back to downloading the file from Drive and parsing it here. That fallback
+   * needs this scope, and a slug without it serves native spreadsheets exactly
+   * as before and says precisely what is missing when asked for an Office file.
+   *
+   * It is READ-ONLY, so a `-ro` slug carrying it is still derived as read-only
+   * by strad's connector — connectorTier() at the repo root's
+   * src/connectors/index.ts reads the `.readonly` suffix — but it is also
+   * BROAD: it reaches every file in the account's Drive,
+   * not only spreadsheets. Google offers no narrower alternative that can
+   * download a file the app did not itself create — `drive.file` covers only
+   * app-created files, and `drive.metadata.readonly` cannot read content.
+   */
+  driveReadonly: 'https://www.googleapis.com/auth/drive.readonly',
 } as const;
 
 /**
@@ -131,6 +151,17 @@ class OAuthGoogleSheetsClient implements IGoogleSheetsClient {
   ) {
     this.oauth2Client = new OAuth2Client(clientId, clientSecret);
     this.oauth2Client.setCredentials({ refresh_token: refreshToken });
+  }
+
+  /**
+   * Bearer headers for THIS account, for a call this class does not make.
+   *
+   * The Office path reads the file from Drive rather than from Sheets, and it
+   * has to do so as the same account — this is the only credential in the
+   * process that may read that file. Public for that one caller.
+   */
+  authorizedHeaders(): Promise<Record<string, string>> {
+    return this.getHeaders();
   }
 
   private async refreshTokenImpl(): Promise<{ token: string; expiryDate: number }> {
@@ -339,11 +370,14 @@ export function createDefaultClient(env: EnvLike = process.env): IGoogleSheetsCl
   const existing = clients.get(key);
   if (existing) return existing;
 
-  const client = new OAuthGoogleSheetsClient(
-    clientId,
-    clientSecret,
-    refreshToken,
-    reconnectUrl
+  const sheets = new OAuthGoogleSheetsClient(clientId, clientSecret, refreshToken, reconnectUrl);
+  // The Office reader is built PER CREDENTIAL, beside the token cache and for
+  // the same reason: it caches parsed workbooks by file id, and one shared
+  // across the mounts in this process would serve one Google account a workbook
+  // another account downloaded.
+  const client = withOfficeFallback(
+    sheets,
+    new OfficeWorkbookLoader(() => sheets.authorizedHeaders(), reconnectUrl)
   );
   clients.set(key, client);
   return client;

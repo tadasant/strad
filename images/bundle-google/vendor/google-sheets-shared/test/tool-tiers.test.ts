@@ -86,10 +86,23 @@ const account = (name) => ({
   GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: `refresh-${name}`,
 });
 
-/** The refresh token a client was built with, read off its OAuth2 client. */
-const credentialOf = (client) =>
-  Object.values(client).find((v) => v && typeof v === "object" && "credentials" in v)
-    ?.credentials?.refresh_token;
+/**
+ * The refresh token a client was built with, read off its OAuth2 client.
+ *
+ * Two objects deep, because what `createDefaultClient` hands back is the
+ * Office-aware DECORATOR (`src/office/client.ts`) wrapping the OAuth client,
+ * which in turn holds google-auth-library's `OAuth2Client`.
+ */
+const credentialOf = (client, depth = 3) => {
+  if (!client || typeof client !== "object") return undefined;
+  if ("credentials" in client) return client.credentials?.refresh_token;
+  if (depth === 0) return undefined;
+  for (const value of Object.values(client)) {
+    const found = credentialOf(value, depth - 1);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+};
 
 test("two slugs in one process hold two different accounts", () => {
   // The whole reason the env is injected rather than read from process.env: the

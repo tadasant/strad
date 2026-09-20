@@ -454,6 +454,15 @@ Reconnect is the answer to `invalid_grant`. Google expires a refresh token from 
 app still in "testing" after seven days, and revokes on a password change or a
 withdrawn consent.
 
+**It is also the answer to a scope that was added to the config.** A token carries
+the scopes it was minted with; editing `scopes:` and deploying changes what the
+next consent asks for and nothing about the credential already in the store. So
+widening a slug — adding `drive.readonly` to a `google-sheets` slug so it can
+[read Office files](/servers/google-sheets/#office-files-in-drive-are-read-too),
+say — is two steps: deploy, then press Reconnect once per slug and consent as that
+account. Until the second step the calls that need the new scope fail, and the
+console still reports the slug connected, because it is.
+
 ## What "connected" does and does not mean
 
 The console says _a credential is stored_, not _this works_. A stored refresh
