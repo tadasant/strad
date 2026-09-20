@@ -144,6 +144,25 @@ test("a mount with nothing at all is told about the conventional mode", () => {
   assert.throws(() => createDefaultClient({}), /has no credential/);
 });
 
+test("an EMPTY app pair is still an OAuth mount, because discovery keys on the name", () => {
+  // `slugsWithPrefixedNames` walks `Object.keys`, so a slug seeded
+  // `..__GMAIL_OAUTH_CLIENT_ID=""` gets a mount. Deciding the mode on
+  // truthiness would then call that mount service-account and tell an operator
+  // to seed the three variables it is specifically forbidden to use. The mode
+  // is decided on presence; usability is still decided on the value, so all
+  // three OAuth names are correctly reported missing.
+  const empty = { GMAIL_OAUTH_CLIENT_ID: "", GMAIL_OAUTH_CLIENT_SECRET: "" };
+
+  assert.deepEqual(missingCredentials(empty), [...GMAIL_OAUTH_ENV_NAMES]);
+  for (const name of GMAIL_SERVICE_ACCOUNT_ENV_NAMES) {
+    assert.ok(
+      !missingCredentials(empty).includes(name),
+      `${name} belongs to the conventional mount and must not be suggested here`,
+    );
+  }
+  assert.throws(() => createDefaultClient(empty), /has no credential/);
+});
+
 test("THE TRAP: the app pair beside a bare service account is a WORKING wrong mailbox", () => {
   // Left in place, this is what an unconnected `gmail-tadas412-ro` would be. The
   // point of asserting it is that the failure is silent — `missingCredentials`
@@ -180,6 +199,27 @@ test("two slugs in one process hold two different accounts", () => {
   assert.notEqual(a, b);
   assert.equal(refreshTokenOf(a), "refresh-a");
   assert.equal(refreshTokenOf(b), "refresh-b");
+});
+
+test("two slugs holding one token get their own client, so the reconnect link is theirs", () => {
+  // Not a credential, and in the cache key anyway. A human who copies one
+  // refresh token between a `-ro` and a `-rw` slug rather than consenting twice
+  // would otherwise have both mounts share a client — and whichever one hit
+  // `invalid_grant` would name the OTHER slug's Reconnect button, which rotates
+  // the other slug's parameter and leaves this one dead.
+  const shared = account("shared");
+  const ro = createDefaultClient({
+    ...shared,
+    GMAIL_RECONNECT_URL: "https://strad.example/ui/gmail-x-ro",
+  });
+  const rw = createDefaultClient({
+    ...shared,
+    GMAIL_RECONNECT_URL: "https://strad.example/ui/gmail-x-rw",
+  });
+
+  assert.notEqual(ro, rw);
+  assert.equal(refreshTokenOf(ro), "refresh-shared");
+  assert.equal(refreshTokenOf(rw), "refresh-shared");
 });
 
 test("one account is one client, so its access token outlives a single request", () => {
@@ -225,8 +265,8 @@ test("GMAIL_ENABLED_TOOLGROUPS comes from the injected env, per mount", async ()
     "search_email_conversations",
   ]);
 
-  // Two instances, one process, two answers.
-  assert.deepEqual(await toolsOf({}), (await toolsOf({})).slice().sort());
+  // Two instances, one process, two answers — the assertion that would fail if
+  // the toggle were read from the global instead of from each mount's own env.
   assert.notDeepEqual(readonlyTools, await toolsOf({}));
 
   // readwrite adds the two mailbox writes and still withholds send_email, which

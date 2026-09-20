@@ -119,19 +119,27 @@ const complete = (env: EnvLike, names: readonly string[]): boolean =>
  * The PRECEDENCE is the vendored `createDefaultClient`'s, kept deliberately: a
  * complete OAuth set wins, a complete service-account set is the fallback, and
  * either one on its own is a working mount. Only when NEITHER is complete does
- * the mode have to be guessed, and the guess is "whichever one this deployment
+ * the mode have to be decided, and the rule is "whichever one this deployment
  * has started" — a per-slug mount always holds the OAuth app pair, so it is
  * always told about its missing token rather than about a service account it is
  * forbidden to use. An environment holding no gmail variable at all is reported
  * as service-account, which is the conventional mount's mode.
+ *
+ * "HOLDS" MEANS THE NAME IS SET, NOT THAT IT IS NON-EMPTY, and that is the one
+ * subtlety here. Per-slug discovery keys on a variable EXISTING
+ * (`slugsWithPrefixedNames` walks `Object.keys`), so a slug seeded
+ * `..__GMAIL_OAUTH_CLIENT_ID=""` is a mount — and a mode decided on truthiness
+ * would then call it service-account and report the three variables this mount
+ * is forbidden to use, which is the opposite of useful. The mode is decided on
+ * presence; whether a value is USABLE is the `complete()` checks above, which
+ * gate on truthiness and correctly still report an empty pair as missing.
  */
 export function missingCredentials(env: EnvLike): string[] {
   if (complete(env, GMAIL_OAUTH_ENV_NAMES)) return [];
   if (complete(env, GMAIL_SERVICE_ACCOUNT_ENV_NAMES)) return [];
-  const names =
-    held(env, GMAIL_OAUTH_ENV_NAMES) > 0
-      ? GMAIL_OAUTH_ENV_NAMES
-      : GMAIL_SERVICE_ACCOUNT_ENV_NAMES;
+  const names = GMAIL_OAUTH_ENV_NAMES.some((name) => name in env)
+    ? GMAIL_OAUTH_ENV_NAMES
+    : GMAIL_SERVICE_ACCOUNT_ENV_NAMES;
   return names.filter((name) => !env[name]);
 }
 
@@ -220,9 +228,15 @@ export function createDefaultClient(env: EnvLike = process.env): IGmailClient {
     // link in an error message and nothing else. The bundle host composes it
     // from the gateway's public URL and this mount's slug.
     const reconnectUrl = env.GMAIL_RECONNECT_URL || undefined;
-    // The key is the credential itself, so two slugs holding the same account
-    // share one token cache and two accounts can never share one.
-    const key = `oauth\u0000${clientId}\u0000${clientSecret}\u0000${refreshToken}`;
+    // The key is the credential itself, so two accounts can never share a
+    // client. The reconnect URL is in it as well even though it is not a
+    // credential: two slugs seeded the SAME token — a human copying one between
+    // a `-ro` and `-rw` pair rather than consenting twice — would otherwise
+    // share one client, and its `invalid_grant` would send whoever hit it to
+    // the OTHER slug's Reconnect button, which rotates the other slug's
+    // parameter and leaves this one dead. A client per mount rather than per
+    // account is still a client per mount, which is all the cache is for.
+    const key = `oauth\u0000${clientId}\u0000${clientSecret}\u0000${refreshToken}\u0000${reconnectUrl ?? ""}`;
     const existing = clients.get(key);
     if (existing) return existing;
     const client = new ReconnectableOAuth2GmailClient(

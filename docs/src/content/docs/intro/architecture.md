@@ -79,14 +79,15 @@ instance** — a mount the host stands up only when the container carries that
 slug's own credential (see below). The thirty-second entry runs on the second
 bundle, below.
 
-Four of those mounts are also mounted again, once per slug, when a deployment
+Five of those mounts are also mounted again, once per slug, when a deployment
 gives a slug its own credential rather than sharing the container's: `/telegram`,
-`/remote-filesystem-tmp-public`, `/google-sheets` and `/gmail`. What counts as
-"its own" is per tree: telegram wants the whole credential, the artifact store
-wants a bucket, and google-sheets and gmail want the OAuth client id and secret —
-never the refresh token, which a human mints later on the mount's own console
-page. That is what makes six `google-sheets-*` slugs over three Google accounts
-one server rather than three — see [Google Sheets](/servers/google-sheets/).
+`/remote-filesystem-tmp-public`, `/grafana`, `/google-sheets` and `/gmail`. What
+counts as "its own" is per tree: telegram wants the whole credential, the
+artifact store wants a bucket, grafana wants an origin and a token, and
+google-sheets and gmail want the OAuth client id and secret — never the refresh
+token, which a human mints later on the mount's own console page. That is what
+makes six `google-sheets-*` slugs over three Google accounts one server rather
+than three — see [Google Sheets](/servers/google-sheets/).
 
 gmail is the one with **two** auth modes, and the collapsed bundle carries both.
 The conventional `/gmail` mount authenticates as a service account impersonating
