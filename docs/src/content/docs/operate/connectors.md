@@ -82,14 +82,14 @@ console URL for the person to open and the parameter path the token lands at.
       ]
 ```
 
-| Field                  | Meaning                                                                                               |
-| ---------------------- | ----------------------------------------------------------------------------------------------------- |
-| `provider`             | `google` or `generic`. It decides which other fields the block carries                                |
-| `account`              | The Google account this slug is pinned to. Checked against the verified `email` claim on the way back |
-| `scopes`               | The exact capability scopes to request. strad adds `openid` and `email` itself                        |
-| `clientIdVariable`     | Defaults to `GOOGLE_SHEETS_OAUTH_CLIENT_ID`                                                           |
-| `clientSecretVariable` | Defaults to `GOOGLE_SHEETS_OAUTH_CLIENT_SECRET`                                                       |
-| `refreshTokenVariable` | Defaults to `GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`. This is the one the flow writes                      |
+| Field                  | Meaning                                                                                                            |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `provider`             | `google` or `generic`. It decides which other fields the block carries                                             |
+| `account`              | The Google account this slug is pinned to. Checked against the verified `email` claim on the way back              |
+| `scopes`               | The exact capability scopes to request. strad adds `openid` and `email` itself                                     |
+| `clientIdVariable`     | The variable **this server's own tree reads** for the OAuth client id. Defaults to `GOOGLE_SHEETS_OAUTH_CLIENT_ID` |
+| `clientSecretVariable` | The same, for the secret. Defaults to `GOOGLE_SHEETS_OAUTH_CLIENT_SECRET`                                          |
+| `refreshTokenVariable` | The same, for the token — and this is the one the flow **writes**. Defaults to `GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN` |
 
 The three variables are **names, not paths**. Core composes
 `/strad/{env}/mcp/{slug}/{kind}/{VARIABLE}` from the slug, a kind and these
@@ -233,12 +233,39 @@ on the token, which would unmount every slug that has not been connected yet, an
 a slug has to be mounted before its console page can connect it. Seed one of the
 two without the other and the slug renders but does not mount.
 
-Which is also the reason to leave `clientIdVariable` and `clientSecretVariable`
-at their defaults. The host keys on the names the server's own tree reads, and
-`google-sheets` reads `GOOGLE_SHEETS_OAUTH_CLIENT_ID` and
-`GOOGLE_SHEETS_OAUTH_CLIENT_SECRET`. Renaming them in the config renames what
-core seeds and reads, not what the container looks for, so the slug renders,
-deploys, and is never mounted — with nothing in any log to say why.
+#### Name the three variables the server's own tree reads
+
+That is the whole rule, and it is not "leave them at their defaults". The bundle
+host keys discovery on the client id and secret **under the names the upstream
+itself reads**, and it reads the token under that name too. Get them wrong and
+core seeds and reads one name while the container looks for another: the slug
+renders, deploys, and is never mounted — with nothing in any log to say why.
+
+The defaults are `google-sheets`' set, because google-sheets was the first server
+to consume them. That is history, not a recommendation:
+
+| Server          | Set the three to                                                                                |
+| --------------- | ----------------------------------------------------------------------------------------------- |
+| `google-sheets` | `GOOGLE_SHEETS_OAUTH_CLIENT_ID` / `..._CLIENT_SECRET` / `..._REFRESH_TOKEN` — i.e. the defaults |
+| `gmail`         | `GMAIL_OAUTH_CLIENT_ID` / `GMAIL_OAUTH_CLIENT_SECRET` / `GMAIL_OAUTH_REFRESH_TOKEN`             |
+| anything else   | Whatever that tree reads. Check its README before writing the block                             |
+
+```yaml
+- slug: gmail-tadas412-ro
+  kind: supplementary-image
+  image: ghcr.io/tadasant/strad-bundle:latest
+  bundle: bundle
+  path: /gmail-tadas412-ro
+  entitlements: [admin]
+  oauth:
+    provider: google
+    account: tadas412@gmail.com
+    scopes:
+      - https://www.googleapis.com/auth/gmail.readonly
+    clientIdVariable: GMAIL_OAUTH_CLIENT_ID
+    clientSecretVariable: GMAIL_OAUTH_CLIENT_SECRET
+    refreshTokenVariable: GMAIL_OAUTH_REFRESH_TOKEN
+```
 
 And a mounted-but-unconnected slug reads its refresh token from **its own name or
 not at all**. The per-slug environment otherwise falls back to the bare name, and
@@ -246,6 +273,17 @@ inheriting a bare `GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN` some other server put on t
 container would quietly point one slug at another account — plausibly a working
 one, since the OAuth app is usually shared. The host drops it and says so in the
 boot log; the mount stays degraded until the slug has a token of its own.
+
+**gmail is the sharp case here**, and it is why the host drops a list of names
+rather than just the token. That server has two auth modes, and a strad bundle
+carries both: the conventional `/gmail` mount authenticates as a service account
+impersonating a Workspace user, so `GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL`,
+`GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY` and `GMAIL_IMPERSONATE_EMAIL` are on the same
+container under bare names. A per-slug gmail mount that inherited those would not
+be unconfigured — it would be **a different person's mailbox**, served under a
+slug named for the connected account, with every call succeeding. So the host
+drops every per-account name in **both** modes, and an unconnected gmail slug
+degrades naming `GMAIL_OAUTH_REFRESH_TOKEN` alone.
 
 ### The credential arrives under the slug's own variable name, and only that one
 

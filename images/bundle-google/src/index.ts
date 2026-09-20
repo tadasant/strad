@@ -33,7 +33,7 @@ import express, { type Request, type Response } from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 
-import { createMCPServer as createGmailServer } from "gmail-workspace-mcp-server-shared";
+import { createMCPServer as createGmailServer } from "./gmail.js";
 import { createMCPServer as createCalendarServer } from "google-calendar-workspace-mcp-server-shared";
 import { createMCPServer as createDocsServer } from "google-docs-workspace-mcp-server-shared";
 import { createMCPServer as createSheetsServer } from "google-sheets-workspace-mcp-server-shared";
@@ -60,6 +60,11 @@ const MOUNTS: Mount[] = [
   {
     path: "/gmail",
     slug: "gmail",
+    // Through strad's own `./gmail.js` rather than the vendored factory
+    // directly: that wrapper reads an INJECTED env, which is what lets the
+    // collapsed bundle (servers/bundle) mount this same server once per slug,
+    // one Google account each. This image keeps the single conventional mount
+    // and hands it `process.env`, so nothing about it changes.
     build: () => createGmailServer({ version: VERSION }),
   },
   {

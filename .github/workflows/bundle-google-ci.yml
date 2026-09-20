@@ -27,12 +27,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # google-sheets is the one server in this image strad WROTE rather than
-  # vendored, and the only one whose bugs would be silent: its A1 arithmetic
-  # decides which cell a write lands in, and a credential-free smoke test never
-  # addresses a cell. These are the tests for that, plus the tier lists a
-  # read-only slug's `tools: allow:` is copied from in another repository.
-  google_sheets_unit:
+  # THE CODE IN THIS IMAGE THAT STRAD WROTE, which is the code whose bugs would be
+  # silent. Two suites, and neither is in a vendored tree:
+  #
+  #   - `vendor/google-sheets-shared/test/` — the one server here strad authored
+  #     rather than vendored. Its A1 arithmetic decides which cell a write lands
+  #     in, and a credential-free smoke test never addresses a cell. Plus the tier
+  #     lists a read-only slug's `tools: allow:` is copied from in another
+  #     repository.
+  #   - `test/` — `src/gmail.ts`, strad's per-account layer over the VERBATIM
+  #     gmail tree. It decides which mailbox a mount reads, and getting that wrong
+  #     is a mount that serves the wrong account while looking healthy. A smoke
+  #     test counts tools and would never see it.
+  unit_tests:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
@@ -42,7 +49,7 @@ jobs:
       - name: Install
         working-directory: images/bundle-google
         run: npm ci
-      - name: Test (build + the A1, rendering and tool-tier suite)
+      - name: Test (build + the google-sheets and gmail suites)
         working-directory: images/bundle-google
         run: npm test
 

@@ -254,6 +254,47 @@ describe("extraSlugs", () => {
     expect(log.lines()[0]).toContain("no marker names");
   });
 
+  /**
+   * gmail's marker set, and it is the same two-of-a-larger-set shape as sheets'
+   * for the same reason: the token is minted after the deploy, on the slug's own
+   * console page.
+   *
+   * The names come from `images/bundle-google/src/gmail.ts`, and
+   * `test/env-prefix.markers.test.ts` in the core suite is what holds this copy
+   * to that one — a grep, because the two trees are on opposite sides of an npm
+   * boundary and nothing else sees both.
+   */
+  const GMAIL_MARKERS = ["GMAIL_OAUTH_CLIENT_ID", "GMAIL_OAUTH_CLIENT_SECRET"];
+
+  it("finds an UNCONNECTED gmail slug beside the conventional service-account mount", () => {
+    // The state a prod `gmail-tadas412-ro` deploys in: the OAuth app pair
+    // injected by the renderer, no token yet, and the conventional /gmail
+    // mount's service-account credential sitting on the same container under
+    // bare names. Discovery must see the slug; `dropInheritedNames` below is
+    // what keeps it from seeing the wrong mailbox.
+    const found = extraSlugs("gmail", GMAIL_MARKERS, {
+      GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL: "dwd@tadasant.iam.gserviceaccount.com",
+      GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----",
+      GMAIL_IMPERSONATE_EMAIL: "tadas@tadasant.com",
+      GMAIL_TADAS412_RO__GMAIL_OAUTH_CLIENT_ID: "id",
+      GMAIL_TADAS412_RO__GMAIL_OAUTH_CLIENT_SECRET: "secret",
+    } as NodeJS.ProcessEnv);
+
+    expect(found).toEqual(["gmail-tadas412-ro"]);
+  });
+
+  it("does not mistake the conventional gmail credential for a per-slug one", () => {
+    // Three bare service-account variables and no prefixed OAuth pair is the
+    // deployment every strad has today. It asks for no second mount.
+    expect(
+      extraSlugs("gmail", GMAIL_MARKERS, {
+        GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL: "dwd@tadasant.iam.gserviceaccount.com",
+        GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----",
+        GMAIL_IMPERSONATE_EMAIL: "tadas@tadasant.com",
+      } as NodeJS.ProcessEnv),
+    ).toEqual([]);
+  });
+
   it("does not invent a slug from a head that is not a mangled slug", () => {
     // `FOO__BAR__TELEGRAM_API_ID` would fold to a slug of `foo--bar`, which the
     // config schema forbids precisely because it destroys the name's injectivity.
@@ -331,6 +372,85 @@ describe("dropInheritedNames", () => {
     } as NodeJS.ProcessEnv);
 
     expect(view).toEqual({});
+  });
+
+  /**
+   * GMAIL IS THE CASE THAT MAKES THIS A LIST RATHER THAN A NAME.
+   *
+   * Sheets has one auth mode, so the worst a bare-name fallback can do there is
+   * hand a mount another Google account's SPREADSHEETS token. Gmail has two, and
+   * the bundle carries both at once — the conventional `/gmail` mount runs on a
+   * service account impersonating a Workspace user, so all three of those
+   * variables are on the container as bare names.
+   *
+   * Inherit them and an unconnected `gmail-tadas412-ro` is not degraded: it is
+   * SOMEBODY ELSE. Tadas's work mailbox, served under a slug named for his
+   * personal account, with every tool call succeeding and the console page still
+   * saying "not connected". Nothing about that reads as a failure.
+   */
+  const GMAIL_PER_ACCOUNT = [
+    "GMAIL_OAUTH_REFRESH_TOKEN",
+    "GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL",
+    "GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY",
+    "GMAIL_IMPERSONATE_EMAIL",
+  ];
+
+  it("drops gmail's SERVICE-ACCOUNT names too, not just its refresh token", () => {
+    const log = captureLog();
+    const box = {
+      GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL: "dwd@tadasant.iam.gserviceaccount.com",
+      GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----",
+      GMAIL_IMPERSONATE_EMAIL: "tadas@tadasant.com",
+      GMAIL_TADAS412_RO__GMAIL_OAUTH_CLIENT_ID: "id",
+      GMAIL_TADAS412_RO__GMAIL_OAUTH_CLIENT_SECRET: "secret",
+    } as NodeJS.ProcessEnv;
+    // What `slugEnvView` hands the mount: its own two, plus the bare three.
+    const view: Record<string, string | undefined> = {
+      ...box,
+      GMAIL_OAUTH_CLIENT_ID: "id",
+      GMAIL_OAUTH_CLIENT_SECRET: "secret",
+    };
+
+    dropInheritedNames(view, "gmail-tadas412-ro", GMAIL_PER_ACCOUNT, box);
+
+    // The marker pair survives — it is this slug's own, and it is what the
+    // consent flow needs to mint the token.
+    expect(view.GMAIL_OAUTH_CLIENT_ID).toBe("id");
+    expect(view.GMAIL_OAUTH_CLIENT_SECRET).toBe("secret");
+    // Every name that decides WHICH MAILBOX is gone.
+    for (const name of GMAIL_PER_ACCOUNT) expect(name in view).toBe(false);
+
+    // Three of the four were really on the box, and they are ONE line — the
+    // steady state of every gmail connector slug on a bundle that also serves
+    // the conventional /gmail mount, on every boot, forever.
+    expect(log.lines()).toHaveLength(1);
+    for (const name of [
+      "GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL",
+      "GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY",
+      "GMAIL_IMPERSONATE_EMAIL",
+      "GMAIL_TADAS412_RO__GMAIL_IMPERSONATE_EMAIL",
+    ]) {
+      expect(log.lines()[0]).toContain(name);
+    }
+    // The token was never on the box, so it is dropped without being reported:
+    // "there was nothing to inherit" is not news.
+    expect(log.lines()[0]).not.toContain("GMAIL_OAUTH_REFRESH_TOKEN");
+  });
+
+  it("keeps a gmail slug's OWN impersonation name, if a deployment ever seeds one", () => {
+    // The rule is "its own name or nothing", not "OAuth only". A slug seeded a
+    // per-slug service account is a slug that named its own mailbox, and that is
+    // exactly the case the bare-name fallback cannot distinguish on its own.
+    const view: Record<string, string | undefined> = {
+      GMAIL_IMPERSONATE_EMAIL: "mine@tadasant.com",
+    };
+
+    dropInheritedNames(view, "gmail-work-ro", GMAIL_PER_ACCOUNT, {
+      GMAIL_WORK_RO__GMAIL_IMPERSONATE_EMAIL: "mine@tadasant.com",
+      GMAIL_IMPERSONATE_EMAIL: "tadas@tadasant.com",
+    } as NodeJS.ProcessEnv);
+
+    expect(view).toEqual({ GMAIL_IMPERSONATE_EMAIL: "mine@tadasant.com" });
   });
 });
 

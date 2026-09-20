@@ -104,8 +104,22 @@ export const ToolPolicySchema = z
   });
 
 /**
- * The names of the three variables one Google connector owns, all defaulted to
- * the Google Sheets set (the first — and so far only — server that consumes them).
+ * The names of the three variables one Google connector owns.
+ *
+ * ## THE RULE IS "NAME WHAT THE SERVER'S OWN TREE READS"
+ *
+ * Not "leave them alone". Each upstream decides for itself what its OAuth
+ * variables are called, and these three have to be those names or the credential
+ * lands on the container under a name nothing looks for — a clean render, a
+ * clean deploy, and a mount that fails every call. `google-sheets` reads
+ * `GOOGLE_SHEETS_OAUTH_*`; `gmail` reads `GMAIL_OAUTH_CLIENT_ID`,
+ * `GMAIL_OAUTH_CLIENT_SECRET` and `GMAIL_OAUTH_REFRESH_TOKEN`, so a gmail
+ * connector sets all three explicitly.
+ *
+ * The DEFAULTS are the Sheets set because Sheets was the first server to consume
+ * them, and they stay that way because moving them would silently re-point every
+ * connector that relies on them. They are a historical default, not a
+ * recommendation.
  *
  * They are VARIABLE NAMES, never paths. Core composes
  * `/strad/{env}/mcp/{slug}/{kind}/{VARIABLE}` from the slug, one of the two
@@ -115,10 +129,10 @@ export const ToolPolicySchema = z
  * callback can take a slug from sealed state and still never let a browser
  * choose a target.
  *
- * These are GOOGLE's defaults, and they are defaulted only on the `google`
- * variant. A `generic` connector must name all three: a Linear credential
- * silently landing in `GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN` is a wrong answer that
- * renders, deploys and looks right.
+ * They are defaulted only on the `google` variant. A `generic` connector must
+ * name all three: a Linear credential silently landing in
+ * `GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN` is a wrong answer that renders, deploys
+ * and looks right.
  */
 const OAUTH_DEFAULTS = {
   clientIdVariable: "GOOGLE_SHEETS_OAUTH_CLIENT_ID",

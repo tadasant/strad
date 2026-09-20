@@ -966,16 +966,20 @@ a store-wide read.
 keeps a listed parameter current in a supplementary container's environment
 without a redeploy. It cannot make the MCP server inside that container **look**
 at the new value — that is a property of the upstream, and the bundle image runs
-twenty-one of them written by other people.
+twenty-two of them written by other people.
 
 `strad-fetch` builds its scraping clients inside a factory the host invokes per
 request, so a rotated key is used by the next tool call; that is the case the
 feature was built for. A server that snapshots its credential at mount time and
 memoises a connection does not: `telegram` holds one MTProto session for the life
-of the process, `grafana` and `google-sheets` build a client per mount, and
-`x-twitter` caches its OAuth provider deliberately, because its token rotates in
-memory and re-reading would fight that. For those the refreshed value sits in the
-environment, correct and unused, until the container restarts.
+of the process, `grafana`, `google-sheets` and `gmail` build a client per mount,
+and `x-twitter` caches its OAuth provider deliberately, because its token rotates
+in memory and re-reading would fight that. For those the refreshed value sits in
+the environment, correct and unused, until the container restarts.
+
+`gmail` is on that list because a snapshot is what makes per-slug mounts work at
+all: several gmail servers share one process, one per Google account, and a live
+view of `process.env` would give every one of them the last account's credential.
 
 Making every mount re-readable would mean re-running its loader when a value
 moves, and the loaders are the expensive part of that image — a Chromium page, an
@@ -2514,7 +2518,7 @@ leak. Nothing in the cache is a credential; it is public pages someone fetched.
 
 **What the fork DID bound is the memory.** Upstream's store grows for the life of
 the process, which is fine for a subprocess the OS reclaims and an out-of-memory
-kill in a container that hosts twenty-one mounts. The cache is LRU-bounded on both
+kill in a container that hosts twenty-two mounts. The cache is LRU-bounded on both
 entry count and bytes, and the filesystem backend is gone (App Platform gives the
 container no persistent volume, so it was memory with extra steps).
 

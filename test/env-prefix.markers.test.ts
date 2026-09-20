@@ -61,6 +61,48 @@ describe("the marker names the bundle host looks for", () => {
     expect(tree).toContain("export const GOOGLE_SHEETS_OAUTH_APP_ENV_NAMES");
   });
 
+  it("are gmail's OAuth app pair, and its drop set spans BOTH auth modes", () => {
+    // gmail's lists live in strad's OWN source rather than in the tree beside
+    // them: `vendor/gmail-shared` is vendored verbatim from pulsemcp/mcp-servers
+    // and reads `process.env`, which is right for one-server-per-process and
+    // impossible here. `images/bundle-google/src/gmail.ts` is the layer that
+    // injects an env.
+    const tree = readFileSync("images/bundle-google/src/gmail.ts", "utf8");
+
+    const markers = tree.match(/GMAIL_OAUTH_APP_ENV_NAMES = \[([^\]]*)\]/);
+    expect(markers).not.toBeNull();
+    expect(markers![1]).toContain("GMAIL_OAUTH_CLIENT_ID");
+    expect(markers![1]).toContain("GMAIL_OAUTH_CLIENT_SECRET");
+    expect(markers![1]).not.toContain("GMAIL_OAUTH_REFRESH_TOKEN");
+
+    // THE OTHER HALF, and the one gmail has that sheets does not. The host
+    // derives "what a discovered slug may not inherit" by subtracting the pair
+    // above from GMAIL_ENV_NAMES, so that list has to name the SERVICE-ACCOUNT
+    // variables as well. If it ever shrinks to the OAuth three, an unconnected
+    // per-slug mount silently falls back to the conventional mount's Workspace
+    // credential and serves the wrong mailbox.
+    const service = tree.match(
+      /GMAIL_SERVICE_ACCOUNT_ENV_NAMES = \[([^\]]*)\]/,
+    );
+    expect(service).not.toBeNull();
+    for (const name of [
+      "GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL",
+      "GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY",
+      "GMAIL_IMPERSONATE_EMAIL",
+    ]) {
+      expect(service![1]).toContain(name);
+    }
+    expect(tree).toContain("...GMAIL_SERVICE_ACCOUNT_ENV_NAMES");
+
+    // The host names no gmail variable of its own: it discovers on the list
+    // above, read off the built module. So the rename this catches is the
+    // CONSTANT moving, not the variables inside it.
+    expect(host).toContain("google.gmail.GMAIL_OAUTH_APP_ENV_NAMES");
+    expect(host).toContain("gmail.GMAIL_ENV_NAMES");
+    expect(tree).toContain("export const GMAIL_OAUTH_APP_ENV_NAMES");
+    expect(tree).toContain("export const GMAIL_ENV_NAMES");
+  });
+
   it("are remote-filesystem's real prefix and bucket suffix", () => {
     const config = readFileSync(
       "servers/remote-filesystem/shared/src/config.ts",

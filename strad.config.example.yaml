@@ -539,7 +539,7 @@ servers:
         - slack_get_dm
         - slack_find_user
 
-  # THE ONE SERVER WHOSE CREDENTIAL IS ONE PERSON.
+  # A SERVER WHOSE CREDENTIAL IS ONE PERSON.
   #
   # google-sheets authenticates with an OAuth refresh token, and a refresh token
   # is exactly one Google account — there is no service account and no
@@ -615,6 +615,52 @@ servers:
       account: someone@example.com
       scopes:
         - https://www.googleapis.com/auth/spreadsheets
+
+  # THE SAME SHAPE FOR gmail, AND THE ONE FIELD THAT IS NOT OPTIONAL HERE.
+  #
+  # NAME THE THREE VARIABLES THIS SERVER'S OWN TREE READS. They default to the
+  # google-sheets set because google-sheets was the first server to consume them,
+  # and gmail reads GMAIL_OAUTH_*. Leave them at their defaults on a gmail slug
+  # and core seeds and reads one name while the container looks for another: the
+  # slug renders, deploys, and is never mounted — nothing in any log says why.
+  #
+  # gmail is also the one server in the bundle with TWO auth modes. The
+  # conventional /gmail mount (see gmail-ro / gmail-rw above, if this deployment
+  # has them) is a SERVICE ACCOUNT impersonating a Workspace user, and its three
+  # variables sit on the same container under bare names. A per-slug gmail mount
+  # therefore reads EVERY per-account name from its own slug prefix or not at
+  # all — inheriting the bare service-account trio would serve a work mailbox
+  # under a slug named for a personal account, with every call succeeding. The
+  # bundle host drops them and says so in the boot log.
+  #
+  # Before consent this slug mounts, lists all eight tools and reports itself
+  # degraded naming GMAIL_OAUTH_REFRESH_TOKEN. That is the state the Connect
+  # button on its console page exists to end.
+  - slug: gmail-someone-ro
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    # Its OWN path, for the same reason google-sheets' slugs have one.
+    path: /gmail-someone-ro
+    entitlements: [admin, readonly]
+    oauth:
+      provider: google
+      account: someone@example.com
+      # The tier is DERIVED from this: a capability scope ending in `.readonly`
+      # is a read-only slug. Google then refuses a write even if the gateway did
+      # not — the guarantee a shared credential cannot have.
+      scopes:
+        - https://www.googleapis.com/auth/gmail.readonly
+      clientIdVariable: GMAIL_OAUTH_CLIENT_ID
+      clientSecretVariable: GMAIL_OAUTH_CLIENT_SECRET
+      refreshTokenVariable: GMAIL_OAUTH_REFRESH_TOKEN
+    tools:
+      allow:
+        - list_email_conversations
+        - get_email_conversation
+        - search_email_conversations
+        - download_email_attachments
+        - list_draft_emails
 
   # --- oauth: provider generic ------------------------------------------------
   # `google` is an IMPLEMENTATION — strad knows the endpoints, asks for an ID

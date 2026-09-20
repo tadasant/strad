@@ -1201,14 +1201,19 @@ the verification tag carries the run id, and the published two do not.
 
 `bundle-google-ci.yml` is the second CI workflow: it builds and smoke-tests the
 `bundle-google` image on any PR touching `images/bundle-google/`. Its
-`google_sheets_unit` job runs `npm test` in that tree — `npm run build && vitest run`,
+`unit_tests` job runs `npm test` in that tree — `npm run build && vitest run`,
 so `tsc` over every workspace runs first and a type error still fails the PR. The
 suite itself runs under Vitest against the TypeScript sources, like every other
-tree's. It covers `vendor/google-sheets-shared`, the one server in this image
-strad wrote rather than vendored: its A1 arithmetic decides which cell a write
-lands in, and a credential-free smoke test never addresses a cell. The other
-three `vendor/` packages are copies, so a test written inside one is a merge
-conflict on the next re-vendor and belongs upstream.
+tree's.
+
+It covers the code in that image strad WROTE, which is the code whose bugs would
+be silent. `vendor/google-sheets-shared` is the one server here strad authored
+rather than vendored: its A1 arithmetic decides which cell a write lands in, and
+a credential-free smoke test never addresses a cell. `src/gmail.ts` is the
+per-account layer over the verbatim gmail tree; it decides which MAILBOX a mount
+reads, and a smoke test that counts tools would never see it read the wrong one.
+The four `vendor/` packages that are copies get no tests here — one written
+inside a copy is a merge conflict on the next re-vendor and belongs upstream.
 
 <aside class="starlight-aside starlight-aside--note">
 

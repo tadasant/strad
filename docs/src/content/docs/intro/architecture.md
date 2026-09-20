@@ -79,14 +79,24 @@ instance** — a mount the host stands up only when the container carries that
 slug's own credential (see below). The thirty-second entry runs on the second
 bundle, below.
 
-Three of those mounts are also mounted again, once per slug, when a deployment
+Four of those mounts are also mounted again, once per slug, when a deployment
 gives a slug its own credential rather than sharing the container's: `/telegram`,
-`/remote-filesystem-tmp-public` and `/google-sheets`. What counts as "its own"
-is per tree: telegram wants the whole credential, the artifact store wants a
-bucket, and google-sheets wants the OAuth client id and secret — never the
-refresh token, which a human mints later on the mount's own console page. That is what makes six
-`google-sheets-*` slugs over three Google accounts one server rather than three —
-see [Google Sheets](/servers/google-sheets/).
+`/remote-filesystem-tmp-public`, `/google-sheets` and `/gmail`. What counts as
+"its own" is per tree: telegram wants the whole credential, the artifact store
+wants a bucket, and google-sheets and gmail want the OAuth client id and secret —
+never the refresh token, which a human mints later on the mount's own console
+page. That is what makes six `google-sheets-*` slugs over three Google accounts
+one server rather than three — see [Google Sheets](/servers/google-sheets/).
+
+gmail is the one with **two** auth modes, and the collapsed bundle carries both.
+The conventional `/gmail` mount authenticates as a service account impersonating
+a Workspace user — `gmail-ro`, `gmail-rw` and `gmail-rw-external` are three slugs
+over it — while a per-slug `/gmail-<account>` mount authenticates as a person,
+through an OAuth refresh token minted by that person in the console. The two sets
+of variables sit on one container, so a per-slug gmail mount reads **every**
+per-account name from its own slug prefix or not at all: inheriting the bare
+service-account trio would serve a Workspace mailbox under a slug named for a
+personal account, and nothing about that would read as broken.
 
 It has a **second** bundle, `bundle-zimmer-secrets`, and the reason is worth
 stating because it is the one thing a bundle cannot share: `process.env`. That

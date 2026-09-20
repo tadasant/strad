@@ -49,10 +49,11 @@ export function scrubCapabilityEnv(env: NodeJS.ProcessEnv = process.env): void {
  *
  * THE MARKER SET IS THE CALLER'S, and it is usually — not always — a tree's whole
  * required set. `remote-filesystem` keys on its bucket alone, and `google-sheets`
- * on the OAuth app pair rather than the refresh token that completes it, because
- * that token is minted by a human on the slug's own console page and the page is
- * the mount. Smaller is not looser: every name in whatever set is passed must be
- * present, which is what keeps one stray variable from conjuring an instance.
+ * and `gmail` on the OAuth app pair rather than the refresh token that completes
+ * it, because that token is minted by a human on the slug's own console page and
+ * the page is the mount. Smaller is not looser: every name in whatever set is
+ * passed must be present, which is what keeps one stray variable from conjuring
+ * an instance.
  */
 export function extraSlugs(
   defaultSlug: string,
@@ -99,6 +100,16 @@ export function extraSlugs(
  * it is not connected. Since one OAuth app usually serves every slug, the refresh
  * would even succeed.
  *
+ * GMAIL IS THE SHARPER CASE, and it is why this takes a list rather than a name.
+ * That tree has TWO auth modes and the bundle carries both: the conventional
+ * `/gmail` mount is a service account impersonating a Workspace user, so
+ * `GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL`, `GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY` and
+ * `GMAIL_IMPERSONATE_EMAIL` are all on the box as bare names. An unconnected
+ * `gmail-tadas412-ro` that inherited them would not be unconfigured — it would
+ * be configured as somebody ELSE, serving a work mailbox under a slug named for
+ * a personal account, with nothing failing anywhere. So every per-account name
+ * in BOTH modes is dropped, not just the refresh token.
+ *
  * So a per-slug mount reads these from its own name or not at all. Absent is the
  * honest answer: the mount degrades and names what is missing, which is the state
  * the connector flow expects to find.
@@ -106,6 +117,14 @@ export function extraSlugs(
  * Mutates the view it is handed, like {@link scrubCapabilityEnv}. Only speaks when
  * it actually dropped something, because a slug that was never going to inherit
  * anything is the ordinary case.
+ *
+ * ONE LINE PER SLUG, not one per variable, and gmail is why. Every gmail
+ * connector slug on a bundle that also serves the conventional `/gmail` refuses
+ * THREE bare names, on every boot, for as long as the deployment exists — that
+ * is the designed steady state, not an incident, and three warnings per slug
+ * saying it is how a boot log stops being read. The line names each dropped
+ * variable with the per-slug name that would have satisfied it, so it loses
+ * nothing by being one line.
  */
 export function dropInheritedNames(
   view: Record<string, string | undefined>,
@@ -113,20 +132,25 @@ export function dropInheritedNames(
   names: readonly string[],
   env: NodeJS.ProcessEnv = process.env,
 ): void {
+  const inherited: { name: string; own: string | null }[] = [];
   for (const name of names) {
     const own = prefixedEnvName(slug, name);
     if (own !== null && env[own]) continue;
-    if (!view[name]) {
-      delete view[name];
-      continue;
-    }
+    if (view[name]) inherited.push({ name, own });
     delete view[name];
-    logWarn(
-      `${slug}: not inheriting the bare ${name} — it belongs to whichever ` +
-        `account seeded it, not to this slug. Seed ${own ?? `${name} under this slug`} ` +
-        `instead; until then this mount is degraded.`,
-    );
   }
+  if (inherited.length === 0) return;
+
+  const one = inherited.length === 1;
+  logWarn(
+    `${slug}: not inheriting the bare ${inherited.map((i) => i.name).join(", ")} — ` +
+      `${one ? "it belongs" : "they belong"} to whichever account seeded ` +
+      `${one ? "it" : "them"}, not to this slug. This mount reads its account ` +
+      `under its own ${inherited
+        .map((i) => i.own ?? `${i.name} under this slug`)
+        .join(", ")} or not at all, and stays degraded until it has one. A slug ` +
+      `with an oauth: connector gets one by being connected in strad's console.`,
+  );
 }
 
 /**
