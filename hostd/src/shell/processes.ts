@@ -38,7 +38,10 @@ export function defaultShell(platform = process.platform): string {
  * Runs commands and owns their lifetimes.
  *
  * Every command is its own PROCESS GROUP (`detached`), so a kill reaches the
- * pipeline and the grandchildren rather than the shell that started them. Every
+ * pipeline and the grandchildren rather than the shell that started them. The
+ * group is the limit of it: a command that starts a NEW session (`setsid`, a
+ * launchd job, `nohup … & disown` under some shells) has left the group, and
+ * nothing here can find it again. This is an unsandboxed shell and says so. Every
  * command belongs to the grant that started it and dies with that grant — that
  * is the whole of what the owner's kill button means for this capability.
  *
@@ -131,6 +134,23 @@ export class ProcessManager {
     child.on("error", (err) => {
       output.append(`\n[failed to start: ${err.message}]\n`);
       settle(null, null);
+    });
+    // Settle on EXIT, not on "close". "close" waits for the stdout/stderr pipes
+    // to reach EOF, and a command that leaves something holding them (`server &`)
+    // never gets there: the record would sit "running" with its shell long gone,
+    // holding a concurrency slot and hanging every `await done` behind it.
+    //
+    // A command ends when its shell exits, so whatever is still in its process
+    // group is killed then. That is safe to address by number at this moment and
+    // no later: a pid is not reused while a process group with that id exists.
+    // The short delay lets output already in the pipe be read first.
+    child.on("exit", (code, signal) => {
+      this.signalGroup(record, "SIGKILL");
+      setTimeout(() => {
+        settle(code, signal);
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      }, 100);
     });
     child.on("close", settle);
 

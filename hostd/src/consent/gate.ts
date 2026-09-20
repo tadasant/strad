@@ -20,6 +20,7 @@ export type DenyCode =
   | "bad_purpose"
   | "cooldown"
   | "too_many_grants"
+  | "dialog_busy"
   | "rejected"
   | "timeout"
   | "no_display";
@@ -119,6 +120,17 @@ export class ConsentGate {
         `the owner rejected a request for this server moments ago; it accepts new requests in ${Math.ceil(cooling / 1000)}s. Do not retry in a loop — a rejection is an answer`,
       );
     }
+    // ONE dialog on screen at a time, machine-wide. The cooldown below is only
+    // written after a rejection comes back, so without this a caller firing N
+    // requests at once gets N dialogs up before the first "no" can land — and
+    // wearing the owner down with dialogs is what the cooldown exists to stop.
+    // Checked and claimed with no `await` between, so it cannot be raced.
+    if (consent.mode !== "none" && this.pending.size > 0) {
+      return deny(
+        "dialog_busy",
+        `another request's consent dialog is on ${config.machine}'s screen right now; ask again in ${consent.windowSeconds + 1}s`,
+      );
+    }
     if (
       this.grants.active().length + this.pending.size >=
       consent.maxActiveGrants
@@ -214,6 +226,22 @@ export class ConsentGate {
       }`,
     );
     return { ok: true, grant, how };
+  }
+
+  /**
+   * Bring the grants into line with the switch, and expire what has run out.
+   *
+   * The switch is a FILE so that `touch` works with everything else broken. A
+   * file thrown that way calls nothing, so something has to notice it: the
+   * daemon runs this every couple of seconds. Without it, new calls were
+   * refused but a command already running kept running.
+   */
+  enforce(): number {
+    const ended = this.deps.killSwitch.isDisabled()
+      ? this.grants.endAll("disabled")
+      : 0;
+    this.grants.sweep();
+    return ended;
   }
 
   /** The kill switch: no new grants, and every grant in force ends now. */

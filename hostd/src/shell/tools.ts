@@ -66,7 +66,9 @@ The command runs as the owner's own user, in the background of their desktop —
 - Start a long job with wait_seconds 0 and poll it
 - Run a project's own scripts or tests in its directory via cwd
 
-A non-zero exit_code is a normal result, not a tool error — read the output.`,
+A non-zero exit_code is a normal result, not a tool error — read the output.
+
+Do NOT background with "&": a command ends when its shell exits, and whatever it left running is killed then. For a long job, run it in the foreground with wait_seconds 0 and poll get_command. Everything still running when the grant ends is killed too.`,
     schema: z.object({
       command: z.string().min(1).max(20_000).describe(P.command),
       cwd: z.string().min(1).optional().describe(P.cwd),

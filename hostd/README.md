@@ -104,8 +104,10 @@ or `{ "browser": { "userDataDir": "/path/to/profile" } }`.
 
 Commands run as `$SHELL -lc "<command>"` as your user, with no stdin and no TTY.
 It is not sandboxed. A command that outlives `wait_seconds` keeps running and is
-polled with `get_command`; everything a grant started is killed when the grant
-ends.
+polled with `get_command`. A command ends when its shell exits and whatever it
+left in the background is killed then, so run a long job in the foreground with
+`wait_seconds: 0`. Everything a grant started is killed when the grant ends,
+except a command that moved itself into a new session (`setsid`).
 
 ## Configuration
 

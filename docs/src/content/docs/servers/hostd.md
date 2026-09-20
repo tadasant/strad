@@ -126,7 +126,9 @@ The machine posts a notification when a grant starts and when it ends, naming
 the server and the purpose. There is no persistent on-screen banner.
 
 Disabling ends every grant, kills what they started, stops the tunnel, and
-survives a reboot. strad then reports the slugs `offline`.
+survives a reboot. A `touch`ed file takes effect within two seconds. A command
+that moved itself into a new session (`setsid`, a launchd job) is out of reach of
+all of these: this is an unsandboxed shell. strad then reports the slugs `offline`.
 
 `~/.strad-hostd/audit.jsonl` records each request, decision and tool call,
 including the commands that ran. It stays on the machine.

@@ -114,6 +114,42 @@ describe("running commands", () => {
     expect(children.filter(alive)).toEqual([]);
   });
 
+  it("ends when its SHELL exits, even if a background child still holds the output pipe", async () => {
+    // Settling on pipe EOF left this "running" forever: it held a concurrency
+    // slot, and kill_command and daemon shutdown both hung awaiting it.
+    const marker = `hostd-bg-${process.pid}-${Date.now()}`;
+    const c = pm.start(
+      newGrant(),
+      `sh -c 'exec -a ${marker} sleep 45' & echo started`,
+    );
+    const started = Date.now();
+    await pm.wait(c, 5000);
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(c.status).toBe("exited");
+    expect(c.exitCode).toBe(0);
+    expect(c.output.toString()).toContain("started");
+    expect(pm.running()).toEqual([]);
+    // The straggler went with the shell: nothing a command started outlives it.
+    await new Promise((r) => setTimeout(r, 150));
+    expect(
+      // `[h]ostd…` cannot match the `sh -c` that carries this pattern.
+      execSync(`pgrep -f "[h]${marker.slice(1)}" || true`)
+        .toString()
+        .trim(),
+    ).toBe("");
+  });
+
+  it("does not hang kill or shutdown on a command whose pipe is held open", async () => {
+    const c = pm.start(newGrant(), "(sleep 45 &) ; sleep 45");
+    await pm.wait(c, 300);
+    const killed = await Promise.race([
+      pm.kill(c).then(() => "killed"),
+      new Promise((r) => setTimeout(() => r("hung"), 4000)),
+    ]);
+    expect(killed).toBe("killed");
+    expect(c.status).toBe("killed");
+  });
+
   it("ENDING THE GRANT kills what it started — the owner's kill button", async () => {
     const grant = newGrant();
     const c = pm.start(grant, "sleep 60");

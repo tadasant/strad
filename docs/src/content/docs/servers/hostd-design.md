@@ -170,16 +170,18 @@ all (`no_display`: nobody is logged in to the desktop).
 | --- | --- | --- |
 | lifetime | 30 min, caller may ask up to 120 | a task, not a standing permission |
 | idle | 10 min | a caller that went away gives the grant back |
-| live grants | 4 | several sessions can work; a loop cannot stack dialogs |
+| live grants | 4 | several sessions can work |
+| dialogs on screen | 1, machine-wide | the cooldown is only written when a rejection comes back, so without this a caller firing twenty requests at once gets several dialogs up before the first "no" lands. The rest are refused as `dialog_busy` |
 | after a Reject | 60 s cooldown for that server, no dialog shown | a rejection is an answer, and a caller cannot wear the owner down |
 | daemon restart | ends every grant | grants are in memory only; one that outlived the process that showed its dialog would be a permission nobody can see |
 
 ### The kill switch and the status page
 
 **Full disable is a file**, `~/.strad-hostd/DISABLED`. The status page writes it,
-`strad-hostd disable` writes it, and `touch` works with the daemon hung. It
-survives a reboot. It is read on every request rather than cached, and consulted
-again after the dialog closes in case it was thrown while the dialog was up.
+`strad-hostd disable` writes it, and `touch` works with the daemon hung. It survives a reboot. It is read on every request rather than cached, and consulted
+again after the dialog closes in case it was thrown while the dialog was up. A
+file made with `touch` calls nothing, so the daemon also checks for it every two
+seconds and ends the grants in force when it appears.
 Disabling ends every grant, kills what they started, and stops the tunnel.
 
 **The status page** at `http://127.0.0.1:7312` shows whether remote control is
@@ -193,7 +195,9 @@ or a caller routes a request to it. Three more checks hold if someone points an
 ingress at it anyway. It requires a loopback `Host`, which also defeats DNS
 rebinding. It refuses any request carrying `cf-connecting-ip`, `cf-ray` or
 `x-forwarded-for`. Every write needs a per-boot token, so a web page open in the
-owner's browser cannot post a kill, or an enable.
+owner's browser cannot post a kill, or an enable. Reads need no token:
+`/state.json` shows purposes and the audit trail to any process on the machine,
+which can already read the audit file if it runs as the owner.
 
 **The machine is told, not only asked.** When a grant starts, the OS posts a
 notification naming the server, the purpose and the status page's address, and
@@ -229,7 +233,15 @@ DevTools socket on it.
   and a tail with the dropped middle counted. A response is clipped again to
   `max_output_chars`.
 - **Process groups.** Each command is `detached`, so a kill reaches the pipeline
-  and the grandchildren.
+  and the grandchildren. The group is the limit of it. A command that starts a new
+  session (`setsid`, a launchd job) has left the group, and neither the kill
+  button nor the kill switch can find it again.
+- **A command ends when its shell exits.** Whatever is still in its group then is
+  killed, so `server &` does not leave a server behind. The record settles on the
+  shell's exit and not on its output pipes closing: a background child holding
+  the pipe would otherwise keep the command "running" with its shell long gone,
+  hold a concurrency slot, and hang `kill_command` and shutdown behind it. A long
+  job runs in the foreground with `wait_seconds: 0`.
 - **Environment.** The daemon's own `STRAD_HOSTD_*` variables are scrubbed.
 
 **Nothing is refused by pattern.** A denylist of commands is theater: `rm` has a

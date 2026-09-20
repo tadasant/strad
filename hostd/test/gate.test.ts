@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { AuditLog } from "../src/audit.js";
@@ -152,6 +153,39 @@ describe("the consent gate", () => {
       ok: false,
       code: "too_many_grants",
     });
+  });
+
+  it("shows ONE dialog at a time, so concurrent requests cannot get around the cooldown", async () => {
+    // The cooldown is written only when a rejection comes back. Twenty requests
+    // fired together used to put four dialogs up before the first "no" landed.
+    const prompter = new ScriptedPrompter(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      return "rejected";
+    });
+    const { gate } = gateWith(prompter);
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () => ask(gate)),
+    );
+    expect(prompter.seen).toHaveLength(1);
+    const codes = results.map((r) => (r.ok ? "granted" : r.code));
+    expect(codes.filter((c) => c === "rejected")).toHaveLength(1);
+    expect(codes.filter((c) => c === "dialog_busy")).toHaveLength(19);
+    // And the one rejection still starts the cooldown for whoever asks next.
+    expect(await ask(gate)).toMatchObject({ ok: false, code: "cooldown" });
+    expect(prompter.seen).toHaveLength(1);
+  });
+
+  it("ends live grants when the switch FILE appears by any means — a bare `touch` calls nothing", async () => {
+    const { gate, killSwitch } = gateWith(new ScriptedPrompter("allowed"));
+    const d = await ask(gate);
+    if (!d.ok) throw new Error("expected a grant");
+    expect(gate.enforce()).toBe(0);
+    expect(d.grant.signal.aborted).toBe(false);
+
+    writeFileSync(killSwitch.path, "touched by hand\n");
+    expect(gate.enforce()).toBe(1);
+    expect(d.grant.signal.aborted).toBe(true);
+    expect(gate.grants.active()).toEqual([]);
   });
 
   it("writes the request, the decision and the end to the audit log", async () => {

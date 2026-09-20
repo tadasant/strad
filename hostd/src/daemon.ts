@@ -15,6 +15,9 @@ import type { Capability } from "./mcp/tool.js";
 import { shellCapability } from "./shell/tools.js";
 import { TunnelSupervisor } from "./tunnel.js";
 
+/** How often grants are checked against the kill-switch file and their clocks. */
+export const ENFORCE_EVERY_MS = 2000;
+
 export interface Core {
   deps: ServerDeps;
   capabilities: Partial<Record<CapabilityId, Capability>>;
@@ -55,7 +58,7 @@ export function buildCore(
   if (shell) capabilities.shell = shell;
   if (ids.includes("browser")) capabilities.browser = browserCapability(config);
 
-  const sweep = setInterval(() => gate.grants.sweep(), 15_000);
+  const sweep = setInterval(() => gate.enforce(), ENFORCE_EVERY_MS);
   sweep.unref();
 
   return {

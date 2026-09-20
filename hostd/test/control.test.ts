@@ -1,7 +1,12 @@
+import { writeFileSync } from "node:fs";
 import http from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { startDaemon, type RunningDaemon } from "../src/daemon.js";
+import {
+  ENFORCE_EVERY_MS,
+  startDaemon,
+  type RunningDaemon,
+} from "../src/daemon.js";
 import { esc } from "../src/control/page.js";
 import { ScriptedPrompter, testConfig, tmpState } from "./helpers.js";
 
@@ -128,6 +133,29 @@ describe("the control page", () => {
     expect(res.status).toBe(303);
     expect(g.signal.aborted).toBe(true);
     expect(daemon.core.deps.gate.grants.active()).toEqual([]);
+  });
+
+  it("a hand-touched DISABLED file stops a RUNNING command within the enforce interval", async () => {
+    const g = await grant("Run something for the touch test.");
+    const shell = daemon.core.capabilities.shell as unknown as {
+      processes: {
+        start: (
+          g: unknown,
+          c: string,
+        ) => { status: string; done: Promise<void> };
+      };
+    };
+    const cmd = shell.processes.start(g, "sleep 60");
+    expect(cmd.status).toBe("running");
+
+    writeFileSync(daemon.core.deps.killSwitch.path, "touched by hand\n");
+    await Promise.race([
+      cmd.done,
+      new Promise((r) => setTimeout(r, ENFORCE_EVERY_MS + 3000)),
+    ]);
+    expect(cmd.status).toBe("killed");
+    expect(g.signal.aborted).toBe(true);
+    daemon.core.deps.killSwitch.enable();
   });
 
   it("disable ends every grant, refuses new ones, survives in a file, and enable undoes it", async () => {
