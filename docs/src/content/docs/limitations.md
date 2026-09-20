@@ -3154,6 +3154,54 @@ See `HACKS.md` #101.
 
 ---
 
+### 102. An Office workbook in Drive is read by strad's own parser, not by Google
+
+A `.xlsx`, `.xlsm`, `.csv` or `.tsv` **uploaded** to Drive rather than converted
+to a native Google Sheet is invisible to the Sheets API — every call against it
+is `400 FAILED_PRECONDITION` — so `google-sheets`'
+[four read tools](/servers/google-sheets/#office-files-in-drive-are-read-too)
+download it from Drive and parse the workbook in-process instead. That read is
+not the same read, and every result says so on its own last line.
+
+What differs from a native spreadsheet:
+
+- Values are **as the file was last saved**. A formula cell serves its stored
+  result; `value_render_option: FORMULA` serves the formula text.
+- There is **no number formatting**. `FORMATTED_VALUE` returns `1234` where the
+  Sheets API returns `$1,234.00`. Dates are the exception, rendered as
+  `2025-01-21`, because a raw date serial carries no recoverable meaning.
+- `namedRanges` is empty. An `.xlsx`'s defined names are formulas, not grid
+  ranges.
+- The reported `gid` is the workbook's own sheet id, not a Sheets gid. It is
+  stable within the file, and the same number `sheet_gid` resolves.
+- **No write tool works.** Writing one back would need a Drive write scope, a
+  re-encoded workbook and a last-writer-wins race against whoever has the file
+  open in the Sheets UI. All four write tools refuse and name the conversion.
+- The file is read **whole**: 20MB downloaded, 500,000 cells parsed, both
+  refused past that with a message. A native spreadsheet is read a range at a
+  time and has no such ceiling.
+- Legacy `.xls`, `.xlsb` and `.ods` are refused by name rather than attempted.
+
+The fallback needs `https://www.googleapis.com/auth/drive.readonly` on the slug,
+which is **broader than the Sheets scopes beside it** — it reaches every file in
+that account's Drive, not only spreadsheets. Google offers nothing narrower that
+can download a file the app did not create: `drive.file` covers app-created files
+only, and `drive.metadata.readonly` cannot read content. A slug without the scope
+serves native spreadsheets exactly as before; an Office file then fails with a
+message naming the scope, the config field and the Reconnect button, rather than
+with an opaque 403.
+
+**How you would know.** The provenance line on every Office-backed result, and
+`isError` with that message when the scope is absent.
+
+**Undo:** convert the file. **File → Save as Google Sheets** mints a native
+spreadsheet, and every tool then works against it live, formatted and writable.
+This path is for the files nobody has converted.
+
+See `HACKS.md` #102.
+
+---
+
 ## What the human still needs to provision
 
 The one-time steps that clear most of the list above:

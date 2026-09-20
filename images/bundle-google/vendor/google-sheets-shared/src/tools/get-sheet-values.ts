@@ -4,6 +4,7 @@ import type { ClientFactory } from '../server.js';
 import { parseSpreadsheetId } from '../utils/parse-spreadsheet-id.js';
 import { intendedSheetGid, resolveRange } from '../utils/resolve-range.js';
 import { renderValueRange } from '../utils/format-values.js';
+import { officeNote } from '../office/to-sheets.js';
 import { logError } from '../logging.js';
 
 const PARAM_DESCRIPTIONS = {
@@ -52,7 +53,11 @@ later has an address you can pass straight to update_sheet_values.
 Large ranges are truncated, and say so. Ask for a narrower range rather than a
 whole 20,000-row tab.
 
-**Tip:** run get_spreadsheet first if you do not know the tab names.`;
+**Tip:** run get_spreadsheet first if you do not know the tab names.
+
+**Office files too.** An .xlsx or .csv uploaded to Drive is invisible to
+the Sheets API; strad downloads and parses it instead, and says so in the
+result. Those files are read-only here and their values are as last saved.`;
 
 export function getSheetValuesTool(_server: Server, clientFactory: ClientFactory) {
   return {
@@ -101,6 +106,7 @@ export function getSheetValuesTool(_server: Server, clientFactory: ClientFactory
         const rendered = renderValueRange(valueRange);
         let output = `**Range:** ${valueRange.range ?? range}\n\n`;
         output += rendered.text;
+        output += officeNote(valueRange.officeSource);
 
         return { content: [{ type: 'text', text: output }] };
       } catch (error) {

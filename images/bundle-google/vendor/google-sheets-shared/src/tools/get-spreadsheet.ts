@@ -2,6 +2,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
 import { parseSpreadsheetId } from '../utils/parse-spreadsheet-id.js';
+import { officeNote } from '../office/to-sheets.js';
 import { logError } from '../logging.js';
 
 const PARAM_DESCRIPTIONS = {
@@ -29,7 +30,11 @@ the tab names come from. It reads no cell values, so it is cheap on a large file
 - Named ranges, if any
 
 The gid is what a browser URL carries after #gid=; get_sheet_values takes it
-directly, so a URL a human pasted is enough to read the tab they were looking at.`;
+directly, so a URL a human pasted is enough to read the tab they were looking at.
+
+**Office files too.** An .xlsx or .csv uploaded to Drive is invisible to
+the Sheets API; strad downloads and parses it instead, and says so in the
+result. Those files are read-only here and their values are as last saved.`;
 
 export function getSpreadsheetTool(_server: Server, clientFactory: ClientFactory) {
   return {
@@ -89,6 +94,8 @@ export function getSpreadsheetTool(_server: Server, clientFactory: ClientFactory
             output += '\n';
           }
         }
+
+        output += officeNote(spreadsheet.officeSource);
 
         return { content: [{ type: 'text', text: output }] };
       } catch (error) {

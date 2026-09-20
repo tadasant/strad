@@ -5330,3 +5330,59 @@ secrets per slug are seeded at `/ui/secrets`. Whether the machine is up is on
 **Undo.** A signed, notarized app with an auto-updater would take upgrades off
 the terminal and give TCC a stable identity to grant. It would not remove the
 first install, the TCC clicks or the Cloudflare login, and nothing should.
+
+---
+
+## 102. An Office workbook in Drive is read by strad's own parser, not by Google
+
+**What.** A `.xlsx`, `.xlsm`, `.csv` or `.tsv` **uploaded** to Drive rather than
+converted to a native Google Sheet is invisible to the Sheets API: every call
+against it is `400 FAILED_PRECONDITION: … The document must not be an Office
+file.` The four read tools of `google-sheets` now fall back to downloading the
+file from Drive (`files.get?alt=media`) and parsing the workbook in-process —
+`images/bundle-google/vendor/google-sheets-shared/src/office/`, a ZIP reader, an
+XML scanner and a SpreadsheetML reader written here.
+
+**Why.** The alternatives are worse. `files.export` converts only NATIVE
+Workspace documents and cannot touch an uploaded binary. `files.copy` with
+`mimeType: application/vnd.google-apps.spreadsheet` works, and leaves a second
+file in the owner's Drive every time an agent reads a spreadsheet — a write, in a
+read tier. The npm packages that read xlsx are large, and the popular one has
+been unmaintained on npm since 0.18.5 with a live prototype-pollution advisory;
+this process holds three Google accounts' refresh tokens beside twenty-one other
+MCP servers.
+
+**What it costs, and what a caller is told.** Every Office-backed result carries
+a provenance line saying so, because the read is not equivalent:
+
+- Values are **as the file was last saved**. A formula cell serves its stored
+  result; `value_render_option: FORMULA` serves the formula text.
+- There is **no number formatting**. `FORMATTED_VALUE` returns `1234` where the
+  Sheets API would return `$1,234.00`. Dates are the exception — a date-formatted
+  serial is rendered as `2025-01-21`, because the raw serial carries no
+  recoverable meaning. `UNFORMATTED_VALUE` returns the serial, which is what the
+  Sheets API returns too.
+- `namedRanges` is empty; an .xlsx's defined names are formulas, not grid ranges.
+- The reported `gid` is the workbook's own `sheetId`, not a Sheets gid. It is
+  stable within the file and `get_spreadsheet` reports the same number
+  `sheet_gid` then resolves.
+- **No write tool works.** Writing one back would be a Drive WRITE scope, a
+  re-encoded workbook and a last-writer-wins race against whoever has the file
+  open. The four write tools refuse and name the conversion.
+- One workbook is read **whole**: 20MB downloaded, 500,000 cells parsed, both
+  refused past that with a message. A native spreadsheet is read a range at a
+  time and has no such ceiling.
+
+**The scope.** The fallback needs
+`https://www.googleapis.com/auth/drive.readonly` on the slug, which is broader
+than the Sheets scopes it sits beside — it reaches every file in the account's
+Drive, not only spreadsheets. Google offers nothing narrower that can download a
+file the app did not create: `drive.file` covers app-created files only, and
+`drive.metadata.readonly` cannot read content. A slug WITHOUT the scope serves
+native spreadsheets exactly as before, and an Office file fails with a message
+naming the scope, the config field and the Reconnect button.
+
+**Undo.** Convert the file: File > Save as Google Sheets in the Sheets UI mints a
+native spreadsheet, and every tool here then works against it live, formatted and
+writable. That is the better outcome in every case where a human can do it; this
+path exists for the files where nobody has.

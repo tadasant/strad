@@ -52,8 +52,13 @@ function categoryPrefix(category: GoogleApiError['category']): string {
  * not a NATIVE Google Sheet — an .xlsx someone uploaded, which Drive happily
  * opens in the Sheets UI — is invisible to the Sheets API: every call against it
  * is `400 FAILED_PRECONDITION`, with a message that says nothing about file
- * types. It reads exactly like a broken mount. A native spreadsheet id is 44
- * characters; an uploaded binary's is 33, which is the cheap tell.
+ * types. It reads exactly like a broken mount.
+ *
+ * The four READ tools no longer surface that hint: `isOfficeFileError` in
+ * `src/office/load.ts` recognises this same response and reads the file from
+ * Drive instead, replacing the error with one that names the Drive scope if the
+ * download is what failed. So this branch is what a WRITE hits — and what any
+ * caller of the client library gets if it does not take the Office path.
  */
 function recoveryHint(status: number, detail: string): string | undefined {
   const text = detail.toLowerCase();
@@ -65,9 +70,11 @@ function recoveryHint(status: number, detail: string): string | undefined {
   ) {
     return (
       'This Drive file is probably not a native Google Sheet — an uploaded .xlsx/.csv ' +
-      'opens in the Sheets UI but the Sheets API cannot read it. Open it in Google ' +
-      'Sheets and use File > Save as Google Sheets; that mints a NEW spreadsheet id ' +
-      '(44 characters, where an uploaded file id is around 33), which this server can read.'
+      'opens in the Sheets UI but the Sheets API cannot read it, and cannot write it at ' +
+      'all. strad READS such a file by downloading it from Drive (the read tools do this ' +
+      'automatically, given the drive.readonly scope). To make it writable, open it in ' +
+      'Google Sheets and use File > Save as Google Sheets; that mints a NEW spreadsheet id ' +
+      '(44 characters, where an uploaded file id is around 33), which this server can edit.'
     );
   }
 

@@ -145,7 +145,9 @@ Four write:
 
 There is no tool that deletes a tab, and none that creates or deletes a
 spreadsheet **file**. Adding is recoverable and those are not, and a file-level
-operation would need Drive scopes this server does not ask for.
+operation would need a Drive **write** scope, which this server never asks for —
+the one Drive scope it can use is `drive.readonly`, and only to
+[read an Office file](#office-files-in-drive-are-read-too).
 
 Reads are capped and say when they truncate — a retirement model is tens of
 thousands of cells, and a whole-tab read that silently returned a prefix would be
@@ -157,7 +159,9 @@ None of it can be done by an agent. The first two steps are in the Google Cloud
 console; the rest happen in strad's own.
 
 1. **Enable the Google Sheets API** on the GCP project behind the OAuth client.
-2. **Configure the OAuth consent screen** with the Sheets scope, add each Google
+2. **Configure the OAuth consent screen** with the Sheets scope — and with
+   `drive.readonly` if any slug is to
+   [read Office files](#office-files-in-drive-are-read-too) — add each Google
    account as a **test user** while the app is unverified, and register strad's
    exact redirect URI — `https://<your gateway>/ui/oauth/callback`. Staging and
    production are different URIs; both need registering.
@@ -207,14 +211,64 @@ and revokes on a password change or a withdrawn consent. The server reports
 console page is where you do it. It rotates the stored credential, and a failed
 attempt leaves the previous one in place.
 
-## Non-native files are invisible to this API
+## Office files in Drive are read too
 
 A native Google Sheet's file id is 44 characters. A **binary uploaded to Drive** —
-an `.xlsx` or `.csv` — gets a shorter id (around 33) and opens perfectly well in
-the Sheets UI, but the Sheets API cannot read it at all: every call returns
-`400 FAILED_PRECONDITION`, with a message that says nothing about file types and
-reads exactly like a broken mount.
+an `.xlsx`, `.xlsm`, `.csv` or `.tsv` — gets a shorter id (around 33) and opens
+perfectly well in the Sheets UI, but the Sheets API cannot read it at all: every
+call returns `400 FAILED_PRECONDITION`, with a message that says nothing about
+file types and reads exactly like a broken mount.
 
-The server turns that response into a recovery hint. The fix is a human one:
-open the file in Sheets and use **File → Save as Google Sheets**, which mints a
-new, native, 44-character id.
+The four read tools handle it. When the Sheets API gives that answer — which it
+gives for exactly one reason — the server downloads the file from Drive
+(`files.get?alt=media`) and parses the workbook itself. A native spreadsheet is
+unaffected: the Sheets call is made first and unchanged, so nothing pays for this
+except a caller who needs it.
+
+### It needs a Drive scope, and it is a broad one
+
+```yaml
+oauth:
+  provider: google
+  account: someone@example.com
+  scopes:
+    - https://www.googleapis.com/auth/spreadsheets.readonly
+    - https://www.googleapis.com/auth/drive.readonly # only for Office files
+```
+
+`drive.readonly` reaches **every file in that account's Drive**, not only
+spreadsheets, which is wider than the Sheets scopes beside it. Google offers
+nothing narrower that can download a file the app did not create — `drive.file`
+covers app-created files only, and `drive.metadata.readonly` cannot read content.
+Adding it does not change a slug's tier: the tier is derived from the `.readonly`
+suffix, so a `-ro` slug carrying it is still read-only.
+
+A slug **without** the scope loses nothing it had. Native spreadsheets work
+exactly as before, and an Office file fails with a message that names the scope,
+the config field, the Reconnect button and the alternative — not with a bare 403.
+
+**A scope added to a config does not reach a token already minted.** After
+deploying the scope, press **Reconnect Google** on that slug's console page and
+consent again as that account, once per slug.
+
+### What the read is, and what it is not
+
+Every Office-backed result ends with a line saying where it came from, because
+the two reads are not equivalent:
+
+| | Native Google Sheet | Office file in Drive |
+| --- | --- | --- |
+| Values | Live | As the file was last **saved** |
+| Formulas | Live result, or the formula under `FORMULA` | Stored result, or the formula text under `FORMULA` |
+| `FORMATTED_VALUE` | `$1,234.00` | `1234` — no number formatting. Dates are the exception, rendered `2025-01-21` |
+| Named ranges | Reported | Empty; an `.xlsx`'s defined names are formulas, not grid ranges |
+| `gid` | The Sheets gid | The workbook's own sheet id — stable in the file, and what `sheet_gid` resolves |
+| Writes | All four write tools | **None.** They refuse and name the conversion |
+| Size | Read a range at a time | Read whole: 20MB and 500,000 cells, refused past that |
+
+Legacy `.xls`, `.xlsb` and `.ods` are refused by name rather than attempted.
+
+**The better fix, where a human can make it**, is still the conversion: open the
+file in Sheets and use **File → Save as Google Sheets**, which mints a new,
+native, 44-character id. That file is live, formatted and writable. This path is
+for the files nobody has converted.
