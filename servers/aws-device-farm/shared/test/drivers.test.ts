@@ -143,6 +143,40 @@ describe("a stale handle recovers once", () => {
   });
 });
 
+describe("two commands racing for a phone with no handle yet", () => {
+  it("establishes one session and shares it", async () => {
+    // Each connect RELAUNCHES the app. Two interleaved reads must not cold-start
+    // it twice and leak the handle the second `set` would overwrite.
+    const { pool, http } = poolOn([runningSession()]);
+    await Promise.all([
+      pool.with(SESSION_ARN, (d) => d.source()),
+      pool.with(SESSION_ARN, (d) => d.source()),
+    ]);
+    expect(http.calls.filter((c) => c.url.endsWith("/session"))).toHaveLength(1);
+  });
+
+  it("does not cache a connect that failed", async () => {
+    const { pool, http } = poolOn([runningSession()], {
+      "/session": () =>
+        http.calls.filter((c) => c.url.endsWith("/session")).length === 1
+          ? { status: 500, body: { value: { error: "session not created", message: "no" } } }
+          : { body: { value: { sessionId: SESSION_ID } } },
+    });
+    await expect(pool.with(SESSION_ARN, (d) => d.source())).rejects.toMatchObject({
+      code: "session not created",
+    });
+    expect(await pool.with(SESSION_ARN, (d) => d.source())).toBe("<AppiumAXDocument/>");
+  });
+
+  it("quits a stale handle rather than leaking it on the phone", async () => {
+    const { pool, http } = poolOn([runningSession()], {
+      "/source": { status: 404, body: { value: { error: "invalid session id" } } },
+    });
+    await pool.with(SESSION_ARN, (d) => d.source()).catch(() => undefined);
+    expect(http.calls.filter((c) => c.init?.method === "DELETE")).toHaveLength(1);
+  });
+});
+
 describe("releasing", () => {
   it("ends the WebDriver session and forgets it", async () => {
     const { pool, http } = poolOn([runningSession()]);

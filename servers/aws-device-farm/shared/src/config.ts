@@ -39,9 +39,10 @@ export type DeviceFarmRegion = (typeof REGIONS)[number];
  *
  * An upload is buffered rather than streamed, because the pre-signed S3 PUT
  * Device Farm hands back needs a `Content-Length` and a source URL is not
- * obliged to declare one. The bundle is a 2 GB box shared with a Chromium, so
- * the ceiling is a real bound and not a formality — see
- * `docs/limitations.md`.
+ * obliged to declare one. The transient peak is about TWICE this — the chunks
+ * and their one concatenated copy overlap for a moment — and the bundle is a
+ * 2 GB box shared with a Chromium, so the ceiling is a real bound and not a
+ * formality. See `docs/limitations.md`.
  */
 export const DEFAULT_MAX_UPLOAD_MB = 192;
 

@@ -24,7 +24,13 @@
 
 import { InputError, SourceFetchError, UploadFailedError } from "./errors.js";
 import type { DeviceFarmGateway, UploadSummary } from "./gateway.js";
-import type { FetchLike } from "./http.js";
+import { deadline, type FetchLike } from "./http.js";
+
+/**
+ * How long a download or the PUT may take. A 192 MB build over a slow link is
+ * minutes; an hour is a source that is never going to finish.
+ */
+const TRANSFER_TIMEOUT_MS = 15 * 60 * 1000;
 
 /** Upload types this server will create. Anything else is a caller's typo. */
 export const UPLOAD_TYPES = [
@@ -80,7 +86,10 @@ async function download(
 ): Promise<Uint8Array> {
   let res;
   try {
-    res = await fetchImpl(sourceUrl, { method: "GET" });
+    res = await fetchImpl(sourceUrl, {
+      method: "GET",
+      signal: deadline(TRANSFER_TIMEOUT_MS),
+    });
   } catch (err) {
     throw new SourceFetchError(
       sourceUrl,
@@ -96,6 +105,17 @@ async function download(
       `The build could not be fetched: the source answered HTTP ${res.status}. ` +
         `A 403 on a pre-signed link usually means it has expired.`,
       res.status,
+    );
+  }
+  // The scheme is checked AGAIN here, on the URL the bytes actually came from.
+  // `fetch` follows an https -> http redirect without comment, and a build
+  // that arrived over plain HTTP is exactly what refusing an http source was
+  // meant to prevent.
+  if (res.url && !/^https:\/\//i.test(res.url)) {
+    throw new SourceFetchError(
+      sourceUrl,
+      `The build's URL redirected to a non-https location, which is refused for ` +
+        `the same reason an http source is: a build is what will run on a phone.`,
     );
   }
 
@@ -142,13 +162,12 @@ async function download(
     chunks.push(value);
   }
 
-  const out = new Uint8Array(total);
-  let at = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, at);
-    at += chunk.byteLength;
-  }
-  return out;
+  // One copy, and the chunks are released as soon as it is made: the transient
+  // peak is about twice the build's size, which is the honest number the
+  // ceiling in config.ts is documented against.
+  const out = Buffer.concat(chunks, total);
+  chunks.length = 0;
+  return new Uint8Array(out.buffer, out.byteOffset, out.byteLength);
 }
 
 /** An upload status from which nothing further will happen. */
@@ -201,22 +220,27 @@ export async function uploadApp(options: UploadAppOptions): Promise<UploadResult
     // what the URL was signed with; anything else is a 403 from S3.
     headers: { "content-type": contentType },
     body: bytes,
+    signal: deadline(TRANSFER_TIMEOUT_MS),
   });
   if (!put.ok) {
-    throw new SourceFetchError(
-      created.url,
+    // Not a SourceFetchError: the source was fine, and a caller told "the
+    // source answered 403" would go and check the wrong URL. This is Device
+    // Farm's own storage refusing the bytes, most plausibly because the
+    // pre-signed URL aged out during a long download.
+    throw new Error(
       `Device Farm's pre-signed upload URL rejected the build with HTTP ` +
-        `${put.status}.`,
-      put.status,
+        `${put.status}. The download itself succeeded (${bytes.byteLength} ` +
+        `bytes); the pre-signed PUT is what failed, and it is minted per call, ` +
+        `so retrying upload_app mints a fresh one.`,
     );
   }
 
-  const deadline = Date.now() + options.timeoutMs;
+  const settleBy = Date.now() + options.timeoutMs;
   let latest = created.upload;
   for (;;) {
     latest = await gateway.getUpload(created.upload.arn);
     if (SETTLED.has(latest.status ?? "")) break;
-    if (Date.now() >= deadline) {
+    if (Date.now() >= settleBy) {
       return { ...latest, bytes: bytes.byteLength, ready: false };
     }
     await sleep(pollMs);

@@ -1,6 +1,6 @@
 name: Release bundle image
 
-# Build THE strad bundle image — all twenty-two MCP servers in one container — and
+# Build THE strad bundle image — all twenty-three MCP servers in one container — and
 # push it to ghcr.
 #
 # The build itself is `release-supplementary-image.yml`, which every
@@ -93,7 +93,7 @@ jobs:
       contents: read
       packages: write
     with:
-      # The repo root, because the Dockerfile COPYs from fourteen trees.
+      # The repo root, because the Dockerfile COPYs from fifteen trees.
       context: .
       file: servers/bundle/Dockerfile
       image: ghcr.io/tadasant/strad-bundle

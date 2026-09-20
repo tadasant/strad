@@ -1,9 +1,6 @@
 /**
- * stderr only, and NEVER the secret access key or a session's Appium URL.
- *
- * stdout is the stdio transport's wire in some hosts, and in the bundle it is a
- * stream strad deliberately does not ship — so a line here is for a human
- * reading container output, never for telemetry.
+ * What must never reach a caller: the secret access key, and a session's
+ * Appium URL.
  *
  * TWO SECRETS, NOT ONE, AND THE SECOND ONE DOES NOT LOOK LIKE A SECRET. The IAM
  * secret access key is the obvious one. The other is `remoteDriverEndpoint`:
@@ -14,8 +11,6 @@
  * server: `redact` scrubs it out of every message, and no tool result returns
  * it.
  */
-
-const PREFIX = "[aws-device-farm]";
 
 /**
  * The shapes that must not reach a caller or a log line.
@@ -43,12 +38,4 @@ export function redact(message: string): string {
     (text, shape) => text.replace(shape, "[redacted]"),
     message,
   );
-}
-
-export function logWarning(message: string): void {
-  console.error(`${PREFIX} WARN ${redact(message)}`);
-}
-
-export function logError(message: string): void {
-  console.error(`${PREFIX} ERROR ${redact(message)}`);
 }

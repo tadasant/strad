@@ -72,7 +72,7 @@ interface Caller {
  * Watching that one tree is the floor, not the whole rule, for a caller that
  * builds from the root: the bundle's fifteen are compared against the
  * Dockerfile's `COPY` stages by `test/bundle-release-paths.test.ts`, which is
- * the guard that would notice a fifteenth tree added and not watched.
+ * the guard that would notice a sixteenth tree added and not watched.
  */
 function builtTree(c: Caller): string {
   const file = c.with.file as string | undefined;

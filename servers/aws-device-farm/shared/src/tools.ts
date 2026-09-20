@@ -34,8 +34,10 @@ import type { DepsFactory, ToolDefinition } from "./tools/shared.js";
  *
  * Every other server in this repo splits its surface on what a credential can
  * DAMAGE. Here the dangerous thing is spend: an access key scoped to Device
- * Farm cannot break anything in the AWS account, and an abandoned remote-access
- * session bills $0.17 a minute for 150 minutes. So:
+ * Farm cannot break anything in the AWS account, and a remote-access session
+ * bills $0.17 a minute for as long as something keeps it alive — five minutes
+ * of silence ends it, 150 minutes is the cap, and an agent polling it in a
+ * loop is what reaches the cap. So:
  *
  *   readonly     costs nothing and changes nothing. Lists, statuses, artifacts.
  *   automation   uploads a build and schedules an unattended run. Spends.

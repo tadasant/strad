@@ -4,10 +4,10 @@
  *
  * WHY THERE IS NO APPIUM CLIENT LIBRARY HERE. The endpoint is an ordinary
  * WebDriver server reachable over HTTPS — AWS's own documentation demonstrates
- * it with `curl <endpoint>/status` — and the eight commands this server needs
- * are eight `fetch` calls. Pulling in WebdriverIO would add a large dependency
- * tree to an image that already carries fourteen of them, to spell the same
- * requests.
+ * it with `curl <endpoint>/status` — and the dozen commands this server needs
+ * are a dozen `fetch` calls. Pulling in WebdriverIO would add a large
+ * dependency tree to an image that already carries fifteen of them, to spell
+ * the same requests.
  *
  * THE URL IS THE CREDENTIAL. `remoteDriverEndpoint` authorises by the opaque
  * segment in its PATH: no signature, no header, no expiry beyond the session's
@@ -21,7 +21,7 @@
  */
 
 import { DriverError } from "./errors.js";
-import type { FetchLike, FetchResponse } from "./http.js";
+import { deadline, type FetchLike, type FetchResponse } from "./http.js";
 
 /** The W3C element-identifier key. Not an Appium invention — it is in the spec. */
 export const ELEMENT_KEY = "element-6066-11e4-a52e-4f735466cecf";
@@ -36,7 +36,6 @@ export interface WebDriverSession {
   source(): Promise<string>;
   screenshot(): Promise<string>;
   findElements(using: string, value: string): Promise<string[]>;
-  elementText(elementId: string): Promise<string>;
   click(elementId: string): Promise<void>;
   clear(elementId: string): Promise<void>;
   sendKeys(elementId: string, text: string): Promise<void>;
@@ -57,6 +56,13 @@ export interface CreateSessionOptions {
 function joinUrl(endpoint: string, path: string): string {
   return `${endpoint.replace(/\/+$/, "")}${path}`;
 }
+
+/**
+ * Just past Device Farm's own four-minute per-command ceiling, so the server's
+ * answer — a WebDriver `timeout` with a reason — arrives before this fires, and
+ * this only ever catches a connection that stopped answering at all.
+ */
+const COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
  * One WebDriver request, with its failure turned into a `DriverError`.
@@ -80,6 +86,7 @@ async function request(
       method,
       headers: { "content-type": "application/json", accept: "application/json" },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal: deadline(COMMAND_TIMEOUT_MS),
     });
   } catch (err) {
     // A transport failure, not a WebDriver one. The endpoint is reachable only
@@ -125,23 +132,6 @@ async function request(
   return value;
 }
 
-/** `GET /status` — answers before any session exists, so it is the readiness probe. */
-export async function endpointReady(
-  endpoint: string,
-  fetchImpl: FetchLike,
-): Promise<boolean> {
-  try {
-    const value = (await request(
-      { endpoint, fetchImpl, capabilities: {} },
-      "GET",
-      "/status",
-    )) as { ready?: boolean } | undefined;
-    return value?.ready !== false;
-  } catch {
-    return false;
-  }
-}
-
 export async function createWebDriverSession(
   options: CreateSessionOptions,
 ): Promise<WebDriverSession> {
@@ -180,10 +170,6 @@ export async function createWebDriverSession(
       return (found ?? [])
         .map((e) => e[ELEMENT_KEY])
         .filter((id): id is string => typeof id === "string");
-    },
-
-    async elementText(elementId) {
-      return String(await request(options, "GET", at(`/element/${elementId}/text`)));
     },
 
     async click(elementId) {

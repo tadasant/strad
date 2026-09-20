@@ -237,6 +237,12 @@ export interface StartSessionRequest {
   app_arn?: string;
   name?: string;
   skip_app_resign?: boolean;
+  /**
+   * The major Appium server version for the session's endpoint. Device Farm
+   * REQUIRES one on iOS 27 and later and rejects the request without it; on
+   * older devices it is optional and the service picks.
+   */
+  appium_version?: string;
 }
 
 /** How many pages of a paginated list this server will walk for one call. */
@@ -334,6 +340,11 @@ export function createGateway(options: CreateGatewayOptions): DeviceFarmGateway 
     },
 
     async listDevices(query) {
+      // Only what Device Farm's filter grammar can say. `IN` is allowed on ARN,
+      // OS_VERSION, MODEL, MANUFACTURER and INSTANCE_ARN and on nothing else,
+      // and a boolean attribute takes the literal TRUE / FALSE — so
+      // availability is filtered HERE, after the walk, rather than sent as an
+      // `IN` the API would answer with an ArgumentException.
       const filters: { attribute: string; operator: string; values: string[] }[] = [];
       if (query.platform)
         filters.push({ attribute: "PLATFORM", operator: "EQUALS", values: [query.platform] });
@@ -351,20 +362,18 @@ export function createGateway(options: CreateGatewayOptions): DeviceFarmGateway 
         filters.push({
           attribute: "REMOTE_ACCESS_ENABLED",
           operator: "EQUALS",
-          values: ["true"],
-        });
-      if (query.available_only)
-        filters.push({
-          attribute: "AVAILABILITY",
-          operator: "IN",
-          values: ["AVAILABLE", "HIGHLY_AVAILABLE"],
+          values: ["TRUE"],
         });
 
-      const { items, truncated } = await pages<Record<string, unknown>>(
+      // The whole fleet (up to MAX_PAGES of it) is walked BEFORE ranking, so
+      // "most available, newest OS first" is true of the fleet and not merely of
+      // whichever devices AWS happened to list first. The walk is bounded by
+      // pages, not by `limit`, for exactly that reason.
+      const { items, truncated: pagesLeft } = await pages<Record<string, unknown>>(
         async (token) => {
-          // The PROJECT ARN is what makes `filters` apply at all: Device Farm
-          // ignores them for an account-wide list, which would quietly return
-          // every Android tablet it owns to a caller that asked for iPhones.
+          // Scoped to the project rather than the account: the project is what
+          // the credential is for, and a device the project cannot use is not a
+          // device an agent can start a session on.
           const res = await api.listDevices({
             arn: projectArn,
             filters,
@@ -372,17 +381,28 @@ export function createGateway(options: CreateGatewayOptions): DeviceFarmGateway 
           });
           return { items: (res.devices ?? []) as Record<string, unknown>[], nextToken: res.nextToken };
         },
-        query.limit,
+        Number.MAX_SAFE_INTEGER,
       );
 
-      // Newest OS first, then the most available device: an agent that takes
-      // the first row should get a phone it can have NOW on a recent iOS.
-      const ranked = items.map(summarizeDevice).sort((a, b) => {
+      const usable = items
+        .map(summarizeDevice)
+        .filter(
+          (d) =>
+            !query.available_only ||
+            availabilityRank(d.availability) >= availabilityRank("AVAILABLE"),
+        );
+
+      // Most available first, then the newest OS: an agent that takes the
+      // first row should get a phone it can have NOW, on a recent iOS.
+      const ranked = usable.sort((a, b) => {
         const av = availabilityRank(b.availability) - availabilityRank(a.availability);
         if (av !== 0) return av;
         return (b.os ?? "").localeCompare(a.os ?? "", undefined, { numeric: true });
       });
-      return { devices: ranked, truncated };
+      return {
+        devices: ranked.slice(0, query.limit),
+        truncated: pagesLeft || ranked.length > query.limit,
+      };
     },
 
     async listDevicePools(type) {
@@ -456,11 +476,20 @@ export function createGateway(options: CreateGatewayOptions): DeviceFarmGateway 
     },
 
     async scheduleRun(request) {
-      if (!request.device_pool_arn && !(request.device_arns ?? []).length) {
+      const named = (request.device_arns ?? []).length > 0;
+      if (!request.device_pool_arn && !named) {
         throw new InputError(
           "A run needs devices: pass either `device_pool_arn` (from " +
             "list_device_pools) or `device_arns` (from list_devices). Device " +
             "Farm refuses a run that names neither.",
+        );
+      }
+      if (request.device_pool_arn && named) {
+        // Two answers to "which devices" is a question about which one was
+        // meant, and a run is minutes on every device it lands on.
+        throw new InputError(
+          "Pass `device_pool_arn` or `device_arns`, not both: a run on a pool " +
+            "AND a list is two different bills, and this refuses to guess which.",
         );
       }
       const res = await api.scheduleRun({
@@ -565,6 +594,9 @@ export function createGateway(options: CreateGatewayOptions): DeviceFarmGateway 
         ...(request.skip_app_resign === undefined
           ? {}
           : { skipAppResign: request.skip_app_resign }),
+        ...(request.appium_version === undefined
+          ? {}
+          : { configuration: { parameters: { "appium:version": request.appium_version } } }),
       });
       return summarizeSession((res.remoteAccessSession ?? {}) as Record<string, unknown>);
     },

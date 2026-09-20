@@ -2689,8 +2689,9 @@ DigitalOcean both times.
 
 **The edges.**
 
-- **Only `telegram` and `remote-filesystem` read an injected env.** The other
-  eight trees are vendored upstream code reading `process.env`, often lazily at
+- **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
+  `grafana`, `bill-spend` and `aws-device-farm` read an injected env.** The other
+  nine trees are vendored upstream code reading `process.env`, often lazily at
   call time (`onepassword` builds its client per call off
   `OP_SERVICE_ACCOUNT_TOKEN`). A single process cannot overlay `process.env`
   per-request without a race, so each tree needs its own seam and gets it when it
@@ -5416,7 +5417,7 @@ container — provisioning a vendor account and a first API key is a boundary an
 agent must not cross, and the rest goes through the console. The setup page is
 the runbook.
 
-**Three claims the first live call will settle,** in order of how likely they are
+**Four claims the first live call will settle,** in order of how likely they are
 to bite:
 
 1. whether the Appium endpoint accepts a session created with `platformName:
@@ -5428,7 +5429,11 @@ iOS` and `appium:automationName: XCUITest` and nothing else, which is what
    is given `x`/`y` rather than a label;
 3. how long a remote access session really takes to become drivable, which
    decides whether `start_device_session`'s 180-second default wait is generous
-   or tight.
+   or tight;
+4. whether `"2"` is the right `appium:version` to default on iOS 27 and later,
+   where Device Farm requires one and rejects the request without it — the SDK
+   documents "2 or 3" and says the service may reject a version the device does
+   not have.
 
 **A fourth thing that is a choice rather than an unknown:** `upload_app` BUFFERS
 the build in memory. The pre-signed S3 PUT Device Farm hands back needs a

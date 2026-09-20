@@ -73,7 +73,7 @@ describe("the api builds real SDK commands", () => {
     expect(names.filter((n) => /^delete/i.test(n))).toEqual([]);
     expect(names.filter((n) => /^(create|update)Project$/i.test(n))).toEqual([]);
     expect(names.filter((n) => /purchase|renew|slot/i.test(n))).toEqual([]);
-    expect(names).toHaveLength(18);
+    expect(names).toHaveLength(16);
   });
 });
 

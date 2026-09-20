@@ -72,7 +72,7 @@ console access and **no** other policy attached.
 
 ### The policy
 
-These are exactly the eighteen Device Farm actions the server's tools call, and
+These are exactly the sixteen Device Farm actions the server's tools call, and
 nothing else. It can list devices, upload a build, run it, hold a phone and stop
 either — and it cannot create or delete a project, delete a run, or **purchase an
 unmetered device slot**, which is a $250/month decision.
@@ -95,8 +95,6 @@ unmetered device slot**, which is a $250/month decision.
         "devicefarm:GetRun",
         "devicefarm:StopRun",
         "devicefarm:ListJobs",
-        "devicefarm:ListSuites",
-        "devicefarm:ListTests",
         "devicefarm:ListArtifacts",
         "devicefarm:CreateRemoteAccessSession",
         "devicefarm:GetRemoteAccessSession",
@@ -249,7 +247,8 @@ other `supplementary-image` entries:
   # own Appium endpoint. strad's own server — servers/aws-device-farm.
   #
   # THIS SPENDS MONEY BY THE MINUTE. A remote-access session bills $0.17/device-
-  # minute for up to 150 of them, so `aws-device-farm-ro` is the tier to hand
+  # minute for as long as something keeps it alive (five idle minutes end it;
+  # 150 is the cap), so `aws-device-farm-ro` is the tier to hand
   # out: it can see everything, cost nothing, and STOP anything that is running.
   # The stop tools are in the read-only allow-list deliberately — stopping only
   # ever reduces a bill.
@@ -342,7 +341,9 @@ policy, the region and the project ARN in one go — and costs nothing.
 Then, and only then:
 
 ```
-list_devices                              → pick an iPhone ARN
+list_devices                              → pick an iPhone ARN (on iOS 27+ the
+                                            session also needs appium_version,
+                                            which start_device_session defaults)
 upload_app(source_url, name: "…​.ipa")     → wait for SUCCEEDED
 start_device_session(device_arn, app_arn) → wait for drivable: true
 read_screen                               → the app's first screen
@@ -388,7 +389,7 @@ minutes it used and an estimate of what they cost.
 
 1. AWS account, **US West (Oregon)**, payment method on file.
 2. Device Farm project → copy the **ARN**.
-3. IAM user with **only** the eighteen actions above → access key.
+3. IAM user with **only** the sixteen actions above → access key.
 4. Three values into `/ui/secrets`, namespace
    `/strad/{prod,staging}/mcp/aws-device-farm/static/`.
 5. Motet CI: export a **device** `.ipa` and publish it at a **fetchable https

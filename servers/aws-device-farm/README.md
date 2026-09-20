@@ -59,8 +59,8 @@ interchangeable.
 | Tools here | `upload_app`, `schedule_run`, `get_run`, `list_run_artifacts`, `stop_run` | `start_device_session`, `read_screen`, `tap_screen`, `type_text`, `swipe_screen`, `take_screenshot`, `run_mobile_command`, `install_app`, `stop_device_session` |
 | Can assert "audio is playing" | Only through the app's own instrumentation, written to a customer-artifact path | Only through the app's own instrumentation, read off the screen |
 
-**The interactive mode is programmatically drivable, and that is recent.** A
-remote access session now publishes `endpoints.remoteDriverEndpoint` — a plain
+**The interactive mode is programmatically drivable.** A remote access session
+publishes `endpoints.remoteDriverEndpoint` — a plain
 HTTPS **WebDriver** URL, which AWS's own documentation demonstrates with
 `curl <endpoint>/status`. Any W3C WebDriver client speaks to it; this server
 speaks to it directly with `fetch`. That is what makes "an agent drives a real
@@ -74,8 +74,10 @@ reports `drivable: true` instead.
 ## Tools
 
 Nineteen, in three groups. The groups are about **money**, not damage: an access
-key scoped to Device Farm cannot break anything else in the AWS account, and an
-abandoned remote-access session bills $0.17 a minute for 150 of them.
+key scoped to Device Farm cannot break anything else in the AWS account, and a
+remote-access session bills $0.17 a minute for as long as something keeps it
+alive — five idle minutes end it, 150 minutes is the cap, and an agent polling it
+in a loop is what reaches the cap.
 
 | Tool | Group | What it does |
 | --- | --- | --- |
@@ -111,7 +113,7 @@ Nothing here creates or deletes a project, deletes a run or an upload, or
 purchases an unmetered device slot — the last one is a **$250/month** decision
 that is one API call away and no agent is going to make it.
 `test/tools.test.ts` asserts that no tool name mentions any of them, and
-`test/client.test.ts` asserts the same of the eighteen SDK calls underneath.
+`test/client.test.ts` asserts the same of the sixteen SDK calls underneath.
 
 ## The two coordinate systems, which is the trap
 
@@ -213,7 +215,7 @@ the credential exists is in `docs/servers/aws-device-farm-setup`.
 cd servers/aws-device-farm && npm test
 ```
 
-141 tests, under Vitest against the TypeScript sources, run on every PR by the
+The suite runs under Vitest against the TypeScript sources, on every PR, in the
 `servers (aws-device-farm)` CI job. **No AWS account, no network, no live
 device.** Every seam is an injected interface, so the fakes are plain objects:
 
@@ -248,4 +250,7 @@ likely it is to bite:
 2. whether the iOS predicate `hasKeyboardFocus == 1` names the field a tap just
    focused on a real device;
 3. how long a session really takes to become drivable, which decides whether
-   `start_device_session`'s 180-second default wait is generous or tight.
+   `start_device_session`'s 180-second default wait is generous or tight;
+4. whether `"2"` is the right `appium:version` to default on iOS 27 and later,
+   where Device Farm requires one — the SDK documents "2 or 3" and says the
+   service may reject a version the device does not have.

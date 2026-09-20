@@ -3206,11 +3206,11 @@ See `HACKS.md` #102.
 
 ### 103. The Device Farm server has never made a live call
 
-[`aws-device-farm`](/servers/aws-device-farm/) is built, tested and baked into the bundle image. **No environment declares a slug for it, and there is no AWS account behind it.** Every line is written from AWS's published API and documented behaviour, and its 141 tests run against injected fakes: an AWS SDK `send`, and a `fetch` standing in for both the build download and the phone's WebDriver endpoint.
+[`aws-device-farm`](/servers/aws-device-farm/) is built, tested and baked into the bundle image. **No environment declares a slug for it, and there is no AWS account behind it.** Every line is written from AWS's published API and documented behaviour, and its suite runs against injected fakes: an AWS SDK `send`, and a `fetch` standing in for both the build download and the phone's WebDriver endpoint.
 
 It shipped that way on purpose. An unresolved `${NAME}` fails the spec render, and the render is the whole spec — a slug that lands before its secret is seeded takes every other server's deploy down with it. The mount costs nothing while it waits: it comes up `degraded`, lists its tools, and fails every call with an error naming the variables.
 
-**Three claims the first live call will settle:** whether the Appium endpoint accepts a session created with `platformName: iOS` and nothing else; whether the iOS predicate `hasKeyboardFocus == 1` names the field a coordinate tap just focused; and how long a session really takes to become drivable, which decides whether the 180-second default wait is generous or tight.
+**Four claims the first live call will settle:** whether the Appium endpoint accepts a session created with `platformName: iOS` and nothing else; whether the iOS predicate `hasKeyboardFocus == 1` names the field a coordinate tap just focused; how long a session really takes to become drivable, which decides whether the 180-second default wait is generous or tight; and whether `"2"` is the right `appium:version` to default on iOS 27 and later, where Device Farm requires one.
 
 **One thing that is a choice rather than an unknown:** `upload_app` buffers the build in memory, because the pre-signed S3 PUT needs a `Content-Length` and a source URL is not obliged to declare one. The download is read with a running ceiling — `AWS_DEVICE_FARM_MAX_UPLOAD_MB`, 192 MB by default — and abandoned mid-flight past it. On a 2 GB box shared with a Chromium that is a real bound, not a formality.
 

@@ -319,6 +319,8 @@ export interface FakeRoute {
   bytes?: Uint8Array;
   /** Serve the bytes as a stream, the way a real `fetch` does. */
   stream?: boolean;
+  /** The URL the response claims to have come from, i.e. after redirects. */
+  url?: string;
   throws?: Error;
 }
 
@@ -356,6 +358,7 @@ export function fakeHttp(routes: Record<string, FakeRoute | (() => FakeRoute)>):
     const response: FetchResponse = {
       ok: status >= 200 && status < 300,
       status,
+      ...(route.url === undefined ? {} : { url: route.url }),
       headers: { get: (name) => headers.get(name.toLowerCase()) ?? null },
       text: async () => text,
       arrayBuffer: async () =>

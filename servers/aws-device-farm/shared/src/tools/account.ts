@@ -1,4 +1,4 @@
-import { args, guard, ok, type DepsFactory, type ToolDefinition } from "./shared.js";
+import { guard, ok, type DepsFactory, type ToolDefinition } from "./shared.js";
 
 /**
  * What a minute costs this account, before anyone spends one.
@@ -33,10 +33,6 @@ export function getAccountStatusTool(deps: DepsFactory): ToolDefinition {
       "checking an account is actually set up before a run fails on it.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: true },
-    handler: (raw) =>
-      guard(async () => {
-        args(raw);
-        return ok(await (await deps()).gateway.accountStatus());
-      }),
+    handler: () => guard(async () => ok(await (await deps()).gateway.accountStatus())),
   };
 }

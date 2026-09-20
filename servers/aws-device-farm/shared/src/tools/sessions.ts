@@ -1,3 +1,4 @@
+import type { DeviceFarmGateway } from "../gateway.js";
 import {
   args,
   boundedInt,
@@ -12,6 +13,33 @@ import {
 
 const MAX_LIMIT = 50;
 const DEFAULT_LIMIT = 20;
+
+/**
+ * The Appium major version a session gets when the caller named none.
+ *
+ * Device Farm REQUIRES `appium:version` on iOS 27 and later and rejects the
+ * request without it; below that it is optional and the service picks. One
+ * `list_devices` call resolves the OS for the ARN. It is best-effort: a
+ * lookup that fails leaves the parameter unset, which is the pre-27 answer and
+ * a clear error on 27+ rather than a wrong guess.
+ */
+async function defaultAppiumVersion(
+  gateway: DeviceFarmGateway,
+  deviceArn: string,
+): Promise<string | undefined> {
+  try {
+    const { devices } = await gateway.listDevices({
+      available_only: false,
+      remote_access_only: false,
+      limit: 500,
+    });
+    const os = devices.find((d) => d.arn === deviceArn)?.os;
+    const major = Number.parseInt(os ?? "", 10);
+    return Number.isFinite(major) && major >= 27 ? "2" : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * A real phone, held for as long as somebody is using it.
@@ -89,6 +117,14 @@ export function startDeviceSessionTool(deps: DepsFactory): ToolDefinition {
             "Only meaningful on PRIVATE devices. Public devices are always " +
             "re-signed by Device Farm.",
         },
+        appium_version: {
+          type: "string",
+          description:
+            'The major Appium server version for the session, e.g. "2" or ' +
+            '"3". REQUIRED on iOS 27 and later — Device Farm rejects the ' +
+            "session without it — and optional below that, where the service " +
+            "picks. Defaults to \"2\" when the device's OS is 27 or newer.",
+        },
       },
       required: ["device_arn"],
       additionalProperties: false,
@@ -102,23 +138,39 @@ export function startDeviceSessionTool(deps: DepsFactory): ToolDefinition {
         const name = optionalString(input, "name");
         const skipResign = optionalBool(input, "skip_app_resign");
         const waitSeconds = boundedInt(input, "wait_seconds", 180, 600, 0);
+        const deviceArn = requiredArn(input, "device_arn");
+        const appiumVersion =
+          optionalString(input, "appium_version") ??
+          (await defaultAppiumVersion(gateway, deviceArn));
 
         let session = await gateway.startSession({
-          device_arn: requiredArn(input, "device_arn"),
+          device_arn: deviceArn,
           ...(appArn === undefined ? {} : { app_arn: appArn }),
           ...(name === undefined ? {} : { name }),
           ...(skipResign === undefined ? {} : { skip_app_resign: skipResign }),
+          ...(appiumVersion === undefined ? {} : { appium_version: appiumVersion }),
         });
 
+        // From here on the session is REAL and billing, so nothing below may
+        // turn into a failure that loses its ARN. A poll that throws — a
+        // throttle is the realistic one, at one poll every five seconds — ends
+        // the wait and returns the last state read, with the ARN in it.
+        let pollError: string | undefined;
         const deadline = Date.now() + waitSeconds * 1000;
         while (!session.drivable && Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 5000));
-          session = await gateway.getSession(session.arn);
+          try {
+            session = await gateway.getSession(session.arn);
+          } catch (err) {
+            pollError = err instanceof Error ? err.message : String(err);
+            break;
+          }
           if (session.status === "COMPLETED" || session.status === "STOPPING") break;
         }
 
         return ok({
           ...session,
+          ...(pollError === undefined ? {} : { poll_error: pollError }),
           next: session.drivable
             ? "read_screen to see what is on the phone. stop_device_session " +
               "when you are done — it bills until then."

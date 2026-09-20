@@ -248,7 +248,7 @@ jobs:
   #               repo would say so.
   #
   #   bundle/host test. THE host: the process every bundle container runs. It
-  #               mounts every tree in the image — 22 mounts, which staging's 32
+  #               mounts every tree in the image — 23 mounts, which staging's 32
   #               supplementary-image slugs resolve to, since a capability
   #               variant is another slug on the same mount. Its `tree:` carries
   #               a slash because it is a tree one level deeper than the rest —
@@ -415,7 +415,7 @@ jobs:
           node "$STRAD_HOSTD_HOME/app/build/cli.js" keys | awk '{ if (length($2) < 32) exit 1 }'
           ./install/uninstall.sh --purge
 
-  # THE bundle: twenty-two MCP servers, fourteen dependency trees, one Chromium and the
+  # THE bundle: twenty-three MCP servers, fifteen dependency trees, one Chromium and the
   # `op` CLI in one container. It is now the only supplementary component strad
   # deploys, so a PR that cannot build it — or that builds one where a server
   # silently lost half its tools — is a failing PR.

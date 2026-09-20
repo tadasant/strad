@@ -94,6 +94,9 @@ export function readScreenTool(deps: DepsFactory): ToolDefinition {
       "and compare a label or a value — a timer, a progress figure, a state " +
       "word. That is the only way to verify motion, and it works for playback " +
       "state where audio itself cannot be heard.\n\n" +
+      "The FIRST driving call on a session establishes the phone's WebDriver " +
+      "session, which relaunches the app; every call after that reads the " +
+      "running app in place.\n\n" +
       "Use cases: confirming a screen rendered; reading an error message the " +
       "app shows; checking a button is enabled before tapping it; asserting a " +
       "timer advances.",
@@ -120,7 +123,10 @@ export function readScreenTool(deps: DepsFactory): ToolDefinition {
       },
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: true, openWorldHint: true },
+    // Not `readOnlyHint`: the first call on a session relaunches the app under
+    // test, and a client that treats read-only tools as free to call
+    // speculatively would restart the thing being examined.
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     handler: (raw) =>
       guard(async () => {
         const input = args(raw);
@@ -165,6 +171,8 @@ export function takeScreenshotTool(deps: DepsFactory): ToolDefinition {
       "Example: the image, plus one line of metadata — " +
       '{"width_px":1179,"height_px":2556,"bytes":412887}.\n\n' +
       "⚠️ " + COORDINATE_NOTE + "\n\n" +
+      "The FIRST driving call on a session relaunches the app; after that it " +
+      "captures the running app in place.\n\n" +
       "Use cases: seeing what an app actually looks like when read_screen " +
       "reports nothing useful; capturing evidence for a human; confirming a " +
       "screen is blank rather than slow.",
@@ -173,7 +181,7 @@ export function takeScreenshotTool(deps: DepsFactory): ToolDefinition {
       properties: { session_arn: SESSION_ARN_PARAM },
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     handler: (raw) =>
       guard(async (): Promise<ToolResult> => {
         const input = args(raw);
@@ -454,8 +462,8 @@ export function runMobileCommandTool(deps: DepsFactory): ToolDefinition {
       '- `pressButton` with {"name":"home"} — send the app to the background\n' +
       '- `launchApp` / `terminateApp` / `activateApp` with {"bundleId":"..."} ' +
       "— relaunch or kill the app under test\n" +
-      '- `queryAppState` with {"bundleId":"..."} — 1 not installed, 2 not ' +
-      "running, 3 background suspended, 4 background running, 4+ foreground\n" +
+      '- `queryAppState` with {"bundleId":"..."} — 0 not installed, 1 not ' +
+      "running, 2 background suspended, 3 background running, 4 foreground\n" +
       '- `scroll` with {"direction":"down"} — a scroll the OS drives\n' +
       '- `alert` with {"action":"accept"} — a system dialog\n' +
       '- `getDeviceTime`, `deviceInfo`, `batteryInfo`\n\n' +
@@ -498,7 +506,7 @@ export function runMobileCommandTool(deps: DepsFactory): ToolDefinition {
         const arn = await pool.resolve(optionalString(input, "session_arn"));
         const requested = requiredString(input, "command");
         const bare = requested.replace(/^mobile:\s*/i, "");
-        if (bare.includes(":") || bare.includes("/") || bare.includes(" ")) {
+        if (bare === "" || bare.includes(":") || bare.includes("/") || bare.includes(" ")) {
           throw new InputError(
             `\`command\`="${requested}" is not a \`mobile:\` command. This ` +
               `tool runs exactly one namespace — pass a name like ` +

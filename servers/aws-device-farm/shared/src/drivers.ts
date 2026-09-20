@@ -55,7 +55,40 @@ export interface CreateDriverPoolOptions {
 
 export function createDriverPool(options: CreateDriverPoolOptions): DriverPool {
   const { gateway, fetchImpl } = options;
-  const open = new Map<string, WebDriverSession>();
+  /**
+   * Keyed on the Device Farm session ARN, and holding the PROMISE rather than
+   * the session. strad builds a `Server` per request and nothing serialises
+   * them, so two commands can arrive for a phone with no handle yet; a map of
+   * settled sessions would let both connect, relaunch the app twice, and leak
+   * the handle the second `set` overwrote. A shared in-flight promise means the
+   * second caller waits on the first connect instead of starting its own.
+   */
+  const open = new Map<string, Promise<WebDriverSession>>();
+
+  const acquire = (sessionArn: string): Promise<WebDriverSession> => {
+    let pending = open.get(sessionArn);
+    if (!pending) {
+      pending = connect(sessionArn);
+      open.set(sessionArn, pending);
+      // A connect that fails must not be cached as a permanently broken
+      // handle: the next call gets a fresh attempt.
+      pending.catch(() => {
+        if (open.get(sessionArn) === pending) open.delete(sessionArn);
+      });
+    }
+    return pending;
+  };
+
+  /** Forget a handle, ending it politely if it ever came up. Never throws. */
+  const discard = async (sessionArn: string, handle?: Promise<WebDriverSession>): Promise<void> => {
+    const current = open.get(sessionArn);
+    // Only the handle the caller found stale is dropped. A sibling that has
+    // already re-established a fresh one must not lose it to this retry.
+    if (handle !== undefined && current !== handle) return;
+    open.delete(sessionArn);
+    const driver = await (handle ?? current)?.catch(() => undefined);
+    await driver?.quit().catch(() => undefined);
+  };
 
   async function connect(sessionArn: string): Promise<WebDriverSession> {
     const raw = await gateway.rawSession(sessionArn);
@@ -115,18 +148,15 @@ export function createDriverPool(options: CreateDriverPoolOptions): DriverPool {
 
     async with(sessionArn, run) {
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        let driver = open.get(sessionArn);
-        if (!driver) {
-          driver = await connect(sessionArn);
-          open.set(sessionArn, driver);
-        }
+        const handle = acquire(sessionArn);
+        const driver = await handle;
         try {
           return await run(driver);
         } catch (err) {
           const code = (err as { code?: string }).code;
           const stale = typeof code === "string" && STALE.has(code);
           if (!stale || attempt === 1) throw err;
-          open.delete(sessionArn);
+          await discard(sessionArn, handle);
         }
       }
       // Unreachable: the loop either returns or throws on its second pass.
@@ -134,13 +164,10 @@ export function createDriverPool(options: CreateDriverPoolOptions): DriverPool {
     },
 
     async release(sessionArn) {
-      const driver = open.get(sessionArn);
-      open.delete(sessionArn);
-      if (!driver) return;
       // Best effort. The Device Farm session is about to be stopped, which ends
       // the endpoint anyway, and a failure to say goodbye politely must not
       // stop the call that stops the billing.
-      await driver.quit().catch(() => undefined);
+      await discard(sessionArn);
     },
   };
 }

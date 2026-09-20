@@ -7,6 +7,7 @@ import { DESCRIPTION_BUDGET, type Deps, type ToolDefinition } from "../src/tools
 import {
   APPIUM_ENDPOINT,
   DEVICE_ARN,
+  IPHONE,
   PROJECT_ARN,
   RUN_ARN,
   SESSION_ARN,
@@ -126,12 +127,20 @@ describe("the surface", () => {
       "get_run",
       "list_run_artifacts",
       "list_device_sessions",
-      "read_screen",
-      "take_screenshot",
     ]) {
       expect(readOnly(name), name).toBe(true);
     }
-    for (const name of ["schedule_run", "start_device_session", "tap_screen"]) {
+    // The two driving READS are not marked read-only on purpose: the first call
+    // on a session establishes the WebDriver handle, which relaunches the app,
+    // and a client that calls read-only tools speculatively would restart the
+    // thing being examined.
+    for (const name of [
+      "schedule_run",
+      "start_device_session",
+      "tap_screen",
+      "read_screen",
+      "take_screenshot",
+    ]) {
       expect(readOnly(name), name).toBe(false);
     }
   });
@@ -208,12 +217,11 @@ describe("the loop an agent actually runs", () => {
     const { api, json } = harness();
     const { payload } = await json("list_devices");
     expect((payload.devices as unknown[])[0]).toMatchObject({ model: "iPhone 15 Pro" });
-    const filters = api.calls[0]!.input.filters as { attribute: string }[];
-    expect(filters.map((f) => f.attribute)).toEqual([
-      "PLATFORM",
-      "REMOTE_ACCESS_ENABLED",
-      "AVAILABILITY",
-    ]);
+    // Availability is applied after the walk, not sent — Device Farm's filter
+    // grammar has no multi-value operator for it.
+    const filters = api.calls[0]!.input.filters as { attribute: string; values: string[] }[];
+    expect(filters.map((f) => f.attribute)).toEqual(["PLATFORM", "REMOTE_ACCESS_ENABLED"]);
+    expect(filters[1]!.values).toEqual(["TRUE"]);
   });
 
   it("explains an empty device list instead of implying there are no iPhones", async () => {
@@ -493,6 +501,102 @@ describe("failures an agent has to act on", () => {
     const { isError } = await json("get_run", { run_arn: "motet-smoke-run" });
     expect(isError).toBe(true);
     expect(api.calls).toEqual([]);
+  });
+
+  it("checks every device in a run's list the way it checks one", async () => {
+    const { api, json } = harness();
+    const { isError, text } = await json("schedule_run", {
+      app_arn: UPLOAD_ARN,
+      device_arns: [DEVICE_ARN, "iPhone 15 Pro"],
+    });
+    expect(isError).toBe(true);
+    expect(text).toContain("device_arns[1]");
+    expect(api.calls).toEqual([]);
+  });
+
+  it("caps a run at the default automation concurrency", async () => {
+    const { api, json } = harness();
+    const { isError, text } = await json("schedule_run", {
+      app_arn: UPLOAD_ARN,
+      device_arns: Array.from({ length: 6 }, (_, i) => `${DEVICE_ARN}${i}`),
+    });
+    expect(isError).toBe(true);
+    expect(text).toContain("6 devices");
+    expect(api.calls).toEqual([]);
+  });
+
+  it("refuses an artifact kind Device Farm does not have", async () => {
+    const { api, json } = harness();
+    const { isError, text } = await json("list_run_artifacts", {
+      run_arn: RUN_ARN,
+      kinds: ["VIDEO"],
+    });
+    expect(isError).toBe(true);
+    expect(text).toContain("FILE, LOG, SCREENSHOT");
+    expect(api.calls).toEqual([]);
+    const ok = await json("list_run_artifacts", { run_arn: RUN_ARN, kinds: ["file"] });
+    expect(ok.isError).toBe(false);
+    expect(Object.keys(ok.payload)).toEqual(["file", "returned"]);
+  });
+
+  it("refuses an empty mobile: command name", async () => {
+    const { json } = harness({ sessions: [runningSession()] });
+    expect((await json("run_mobile_command", { command: "mobile:" })).isError).toBe(true);
+  });
+
+  it("keeps the session ARN when a poll during the wait throws", async () => {
+    // The session is real and billing from the first call. A throttled poll
+    // must not become a failure that loses the one thing that can stop it.
+    vi.useFakeTimers();
+    try {
+      const api = fakeDeviceFarm();
+      const http = fakeHttp({});
+      const gateway = createGateway({ api, projectArn: PROJECT_ARN });
+      const tools = toolDefinitions(async () => ({
+        gateway,
+        pool: createDriverPool({ gateway, fetchImpl: http.fetchImpl }),
+        maxUploadBytes: 1024,
+        fetchImpl: http.fetchImpl,
+      }));
+      const start = tools.find((t) => t.name === "start_device_session")!;
+      const pending = start.handler({ device_arn: DEVICE_ARN, wait_seconds: 60 });
+      await vi.advanceTimersByTimeAsync(0);
+      const throttled = new Error("slow down");
+      throttled.name = "TooManyRequestsException";
+      api.state.failWith = throttled;
+      await vi.advanceTimersByTimeAsync(6000);
+      const result = await pending;
+      expect(result.isError).toBeFalsy();
+      const payload = JSON.parse(
+        (result.content[0] as { text: string }).text,
+      ) as Record<string, unknown>;
+      expect(payload.arn).toBe(SESSION_ARN);
+      expect(String(payload.poll_error)).toContain("TooManyRequestsException");
+      expect(String(payload.next)).toContain("stop_device_session");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("asks for Appium 2 on an iOS 27 phone, and nothing on an older one", async () => {
+    const newer = harness({ devices: [{ ...IPHONE, os: "27.0.1" }] });
+    await newer.json("start_device_session", { device_arn: DEVICE_ARN, wait_seconds: 0 });
+    const create = newer.api.calls.find((c) => c.method === "createRemoteAccessSession")!;
+    expect(create.input.configuration).toEqual({ parameters: { "appium:version": "2" } });
+
+    const older = harness();
+    await older.json("start_device_session", { device_arn: DEVICE_ARN, wait_seconds: 0 });
+    const bare = older.api.calls.find((c) => c.method === "createRemoteAccessSession")!;
+    expect(bare.input.configuration).toBeUndefined();
+
+    const explicit = harness();
+    await explicit.json("start_device_session", {
+      device_arn: DEVICE_ARN,
+      wait_seconds: 0,
+      appium_version: "3",
+    });
+    const named = explicit.api.calls.find((c) => c.method === "createRemoteAccessSession")!;
+    expect(named.input.configuration).toEqual({ parameters: { "appium:version": "3" } });
   });
 });
 

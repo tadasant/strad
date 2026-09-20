@@ -12,6 +12,13 @@
 export interface FetchResponse {
   ok: boolean;
   status: number;
+  /**
+   * The URL the response actually came from, after redirects. Present on a
+   * real `fetch`; a fake may omit it. It is what lets a download refuse an
+   * `https://` source that redirected to `http://`, which the Fetch spec
+   * permits and follows silently.
+   */
+  url?: string;
   headers: { get(name: string): string | null };
   text(): Promise<string>;
   arrayBuffer(): Promise<ArrayBuffer>;
@@ -28,6 +35,18 @@ export interface FetchInit {
   headers?: Record<string, string>;
   body?: string | Uint8Array;
   signal?: AbortSignal;
+}
+
+/**
+ * A deadline for one outbound request.
+ *
+ * Every call this server makes over plain HTTP carries one. Device Farm caps an
+ * Appium command at four minutes server-side, but a source URL that drips
+ * bytes for an hour is bounded by nothing else, and a tool call that never
+ * returns is a phone billing by the minute with nobody driving it.
+ */
+export function deadline(ms: number): AbortSignal {
+  return AbortSignal.timeout(ms);
 }
 
 export type FetchLike = (url: string, init?: FetchInit) => Promise<FetchResponse>;

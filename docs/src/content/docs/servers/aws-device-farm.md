@@ -97,8 +97,9 @@ and never writes it to a log; `redact()` scrubs it out of every message.
 ## The nineteen tools
 
 Three groups, and the groups are about **money** rather than damage. An access key
-scoped to Device Farm cannot break anything else in the AWS account; an abandoned
-remote-access session bills $0.17 a minute for up to 150 of them.
+scoped to Device Farm cannot break anything else in the AWS account; a
+remote-access session bills $0.17 a minute for as long as something keeps it
+alive — five idle minutes end it, 150 minutes is the cap.
 
 | Tool | Group | What it does |
 | --- | --- | --- |
@@ -232,7 +233,7 @@ missing config must not cost the other twenty-two their boot.
 
 ## Tests
 
-141 tests, no AWS account, no network, no device. Every seam is an injected
+The suite runs with no AWS account, no network and no device. Every seam is an injected
 interface: the SDK seam is a `send` function, so the suite asserts the inputs
 this server builds against the real `@aws-sdk/client-device-farm` command
 classes; the HTTP seam is a `fetch`, covering both the build download and the

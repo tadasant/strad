@@ -16,16 +16,17 @@ const gatewayOn = (api: ReturnType<typeof fakeDeviceFarm>) =>
   createGateway({ api, projectArn: PROJECT_ARN });
 
 describe("listing devices", () => {
-  it("scopes the list to the project, which is what makes filters apply", async () => {
-    // Device Farm IGNORES `filters` on an account-wide list, so an unscoped
-    // call would hand a caller that asked for iPhones every Android tablet AWS
-    // owns and report it as a match.
+  it("scopes the list to the project the credential is for", async () => {
     const api = fakeDeviceFarm();
     await gatewayOn(api).listDevices({ platform: "IOS", limit: 10 });
     expect(api.calls[0]!.input.arn).toBe(PROJECT_ARN);
   });
 
-  it("turns each query field into the filter Device Farm understands", async () => {
+  it("sends only filters Device Farm's grammar accepts", async () => {
+    // `IN` is allowed on ARN, OS_VERSION, MODEL, MANUFACTURER and INSTANCE_ARN
+    // and nothing else, and a boolean attribute is the literal TRUE / FALSE.
+    // AVAILABILITY therefore never goes on the wire: it is filtered after the
+    // walk. An `IN` on it is an ArgumentException on the DEFAULT call.
     const api = fakeDeviceFarm();
     await gatewayOn(api).listDevices({
       platform: "IOS",
@@ -39,13 +40,52 @@ describe("listing devices", () => {
       { attribute: "PLATFORM", operator: "EQUALS", values: ["IOS"] },
       { attribute: "OS_VERSION", operator: "GREATER_THAN_OR_EQUALS", values: ["17.0"] },
       { attribute: "MODEL", operator: "CONTAINS", values: ["iPhone 15"] },
-      { attribute: "REMOTE_ACCESS_ENABLED", operator: "EQUALS", values: ["true"] },
-      {
-        attribute: "AVAILABILITY",
-        operator: "IN",
-        values: ["AVAILABLE", "HIGHLY_AVAILABLE"],
-      },
+      { attribute: "REMOTE_ACCESS_ENABLED", operator: "EQUALS", values: ["TRUE"] },
     ]);
+    for (const f of api.calls[0]!.input.filters as { attribute: string }[]) {
+      expect(f.attribute).not.toBe("AVAILABILITY");
+    }
+  });
+
+  it("drops a busy device client-side when only available ones were asked for", async () => {
+    const api = fakeDeviceFarm({
+      devices: [
+        { ...IPHONE, arn: `${DEVICE_ARN}1`, availability: "BUSY" },
+        { ...IPHONE, arn: `${DEVICE_ARN}2`, availability: "AVAILABLE" },
+        { ...IPHONE, arn: `${DEVICE_ARN}3`, availability: "TEMPORARY_NOT_AVAILABLE" },
+      ],
+    });
+    const { devices } = await gatewayOn(api).listDevices({ available_only: true, limit: 10 });
+    expect(devices.map((d) => d.arn)).toEqual([`${DEVICE_ARN}2`]);
+    const all = await gatewayOn(api).listDevices({ available_only: false, limit: 10 });
+    expect(all.devices).toHaveLength(3);
+  });
+
+  it("ranks the whole fleet before cutting to the limit", async () => {
+    // The best phone is on page two. A walk that stopped at `limit` and then
+    // sorted would never see it, and the description promises it is first.
+    const api = fakeDeviceFarm({
+      devices: [
+        { ...IPHONE, arn: `${DEVICE_ARN}old`, os: "16.0", availability: "AVAILABLE" },
+        { ...IPHONE, arn: `${DEVICE_ARN}new`, os: "18.0", availability: "HIGHLY_AVAILABLE" },
+      ],
+    });
+    // Page it: the fake hands the list back one device per call.
+    let page = 0;
+    api.listDevices = async (input) => {
+      api.calls.push({ method: "listDevices", input });
+      const device = api.state.devices[page]!;
+      page += 1;
+      return {
+        devices: [device],
+        ...(page < api.state.devices.length ? { nextToken: `t${page}` } : {}),
+      };
+    };
+    const { devices, truncated } = await gatewayOn(api).listDevices({ limit: 1 });
+    expect(devices.map((d) => d.arn)).toEqual([`${DEVICE_ARN}new`]);
+    expect(truncated).toBe(true);
+    expect(api.calls).toHaveLength(2);
+    expect(api.calls[1]!.input.nextToken).toBe("t1");
   });
 
   it("returns what an agent needs and drops what it does not", async () => {
@@ -133,6 +173,17 @@ describe("runs", () => {
     ).rejects.toThrow(InputError);
   });
 
+  it("refuses a run that names both a pool and a list", async () => {
+    // Two answers to "which devices" is two different bills.
+    await expect(
+      gatewayOn(fakeDeviceFarm()).scheduleRun({
+        test_type: "BUILTIN_FUZZ",
+        device_pool_arn: "arn:aws:devicefarm:us-west-2::devicepool:top",
+        device_arns: [DEVICE_ARN],
+      }),
+    ).rejects.toThrow(/not both/);
+  });
+
   it("turns a device list into a selection configuration", async () => {
     const api = fakeDeviceFarm();
     await gatewayOn(api).scheduleRun({
@@ -215,6 +266,18 @@ describe("sessions", () => {
     const session = await gatewayOn(api).getSession(SESSION_ARN);
     expect(session.status).toBe("PREPARING");
     expect(session.drivable).toBe(false);
+  });
+
+  it("passes an Appium version through as the session parameter AWS names", async () => {
+    // Required on iOS 27 and later; the request is rejected without it.
+    const api = fakeDeviceFarm();
+    await gatewayOn(api).startSession({ device_arn: DEVICE_ARN, appium_version: "2" });
+    expect(api.calls[0]!.input.configuration).toEqual({
+      parameters: { "appium:version": "2" },
+    });
+    const bare = fakeDeviceFarm();
+    await gatewayOn(bare).startSession({ device_arn: DEVICE_ARN });
+    expect(bare.calls[0]!.input.configuration).toBeUndefined();
   });
 
   it("stops a session by ARN", async () => {

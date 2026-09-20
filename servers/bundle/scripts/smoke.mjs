@@ -98,7 +98,7 @@ const EXPECT = {
   // moving, and this is where it gets noticed.
   "bill-spend": 5,
   // The nineteen-tool Device Farm surface: seven reads, two stops, upload +
-  // schedule, and the nine that hold and drive a physical phone. The count is
+  // schedule, and the eight that hold and drive a physical phone. The count is
   // also a SPEND assertion — this is the one mount in the image whose tools
   // bill by the minute against a card, and the two `stop_` tools are what a
   // read-only slug is given so it can end a session it can see.

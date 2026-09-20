@@ -144,14 +144,48 @@ describe("what is refused before anything is spent", () => {
     expect(result.bytes).toBe(1024);
   });
 
+  it("refuses a build that arrived over a redirect to plain HTTP", async () => {
+    // `fetch` follows https -> http without comment, which would quietly undo
+    // refusing an http source in the first place.
+    const h = harness({
+      ...okRoutes,
+      "builds.example.com": {
+        bytes: BUILD,
+        headers: { "content-length": "1024" },
+        url: "http://mirror.example.com/Motet-staging.ipa",
+      },
+    });
+    await expect(h.run()).rejects.toThrow(/redirected to a non-https/);
+    expect(h.api.calls).toHaveLength(0);
+  });
+
+  it("ignores a content-length it cannot read and falls back to the ceiling on the bytes", async () => {
+    const h = harness({
+      ...okRoutes,
+      "builds.example.com": { bytes: BUILD, headers: { "content-length": "lots" }, stream: true },
+    });
+    expect((await h.run()).bytes).toBe(1024);
+  });
+
+  it("puts a deadline on the download and on the PUT", async () => {
+    const h = harness(okRoutes);
+    await h.run();
+    expect(h.http.calls[0]!.init?.signal).toBeInstanceOf(AbortSignal);
+    expect(h.http.calls[1]!.init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("says what a 403 on a pre-signed source link means", async () => {
     const h = harness({ ...okRoutes, "builds.example.com": { status: 403 } });
     await expect(h.run()).rejects.toThrow(SourceFetchError);
     await expect(h.run()).rejects.toThrow(/expired/);
   });
 
-  it("reports a rejected PUT as a failure rather than a finished upload", async () => {
+  it("reports a rejected PUT as Device Farm's failure, not the source's", async () => {
+    // A caller told "the source answered 403" would go and check the wrong URL.
     const h = harness({ ...okRoutes, "s3.amazonaws.com/put": { status: 403 } });
-    await expect(h.run()).rejects.toThrow(/rejected the build with HTTP 403/);
+    const err = await h.run().catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(SourceFetchError);
+    expect((err as Error).message).toMatch(/pre-signed upload URL rejected the build with HTTP 403/);
+    expect((err as Error).message).toMatch(/download itself succeeded/);
   });
 });

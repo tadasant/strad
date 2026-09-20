@@ -62,14 +62,19 @@ export {
   type DriverPool,
 } from "./drivers.js";
 
-export { globalFetch, type FetchInit, type FetchLike, type FetchResponse } from "./http.js";
+export {
+  deadline,
+  globalFetch,
+  type FetchInit,
+  type FetchLike,
+  type FetchResponse,
+} from "./http.js";
 
 export { parseScreen, type ParsedScreen, type ScreenElement } from "./screen.js";
 
 export {
   ELEMENT_KEY,
   createWebDriverSession,
-  endpointReady,
   type CreateSessionOptions,
   type Point,
   type WebDriverSession,

@@ -32,6 +32,7 @@ const TEST_TYPES = [
 /** `ListArtifacts` takes one of exactly these three. */
 const ARTIFACT_KINDS = ["FILE", "LOG", "SCREENSHOT"] as const;
 
+/** The account's DEFAULT metered automation concurrency. A raised quota allows more; this does not. */
 const MAX_DEVICES = 5;
 
 /**
@@ -151,10 +152,15 @@ export function scheduleRunTool(deps: DepsFactory): ToolDefinition {
         }
         if (Array.isArray(deviceArns) && deviceArns.length > MAX_DEVICES) {
           throw new InputError(
-            `\`device_arns\` names ${deviceArns.length} devices; Device Farm ` +
-              `runs at most ${MAX_DEVICES} at once, and each one bills its own ` +
-              `minutes.`,
+            `\`device_arns\` names ${deviceArns.length} devices; this server ` +
+              `caps a run at ${MAX_DEVICES} — the account's default automation ` +
+              `concurrency — and each one bills its own minutes.`,
           );
+        }
+        // Every entry is checked the way a single ARN is: a device name in the
+        // list is a run Device Farm refuses after the call was spent.
+        for (const [i, arn] of (Array.isArray(deviceArns) ? deviceArns : []).entries()) {
+          requiredArn({ [`device_arns[${i}]`]: arn }, `device_arns[${i}]`);
         }
         const appArn = optionalString(input, "app_arn");
         const testSpecArn = optionalString(input, "test_spec_arn");
@@ -284,7 +290,7 @@ export function listRunArtifactsTool(deps: DepsFactory): ToolDefinition {
       'Example: {"file":[{"name":"Video","type":"VIDEO","extension":"mp4",' +
       '"url":"https://prod-us-west-2-uploads.s3..."},{"name":"Customer ' +
       'Artifacts","type":"CUSTOMER_ARTIFACT","extension":"zip","url":"..."}],' +
-      '"log":[{"name":"Device Log","type":"DEVICE_LOG","extension":"logcat"}],' +
+      '"log":[{"name":"Device Log","type":"DEVICE_LOG","extension":"syslog"}],' +
       '"screenshot":[],"returned":3}\n\n' +
       "`kinds`: FILE is video, crash reports and customer artifacts; LOG is " +
       "device and test logs; SCREENSHOT is images a test captured. All three " +

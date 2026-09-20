@@ -31,8 +31,6 @@ import {
   ListDevicesCommand,
   ListJobsCommand,
   ListRemoteAccessSessionsCommand,
-  ListSuitesCommand,
-  ListTestsCommand,
   ListUploadsCommand,
   ScheduleRunCommand,
   StopRemoteAccessSessionCommand,
@@ -179,8 +177,6 @@ export interface DeviceFarmApi {
   getRun(input: Record<string, unknown>): Promise<any>;
   stopRun(input: Record<string, unknown>): Promise<any>;
   listJobs(input: Record<string, unknown>): Promise<any>;
-  listSuites(input: Record<string, unknown>): Promise<any>;
-  listTests(input: Record<string, unknown>): Promise<any>;
   listArtifacts(input: Record<string, unknown>): Promise<any>;
   createRemoteAccessSession(input: Record<string, unknown>): Promise<any>;
   getRemoteAccessSession(input: Record<string, unknown>): Promise<any>;
@@ -201,8 +197,6 @@ export function createApi(send: DeviceFarmSend): DeviceFarmApi {
     getRun: (i) => call(send, new GetRunCommand(i as never)),
     stopRun: (i) => call(send, new StopRunCommand(i as never)),
     listJobs: (i) => call(send, new ListJobsCommand(i as never)),
-    listSuites: (i) => call(send, new ListSuitesCommand(i as never)),
-    listTests: (i) => call(send, new ListTestsCommand(i as never)),
     listArtifacts: (i) => call(send, new ListArtifactsCommand(i as never)),
     createRemoteAccessSession: (i) =>
       call(send, new CreateRemoteAccessSessionCommand(i as never)),

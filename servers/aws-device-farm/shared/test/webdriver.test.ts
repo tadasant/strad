@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { DriverError } from "../src/errors.js";
-import {
-  ELEMENT_KEY,
-  createWebDriverSession,
-  endpointReady,
-} from "../src/webdriver.js";
+import { ELEMENT_KEY, createWebDriverSession } from "../src/webdriver.js";
 import { APPIUM_ENDPOINT, SESSION_ARN, fakeHttp } from "./fakes.js";
 
 const SESSION_ID = "abcdef123456-1234-5678-abcd-abcdef123456";
@@ -39,6 +35,11 @@ describe("establishing a session", () => {
         firstMatch: [{}],
       },
     });
+  });
+
+  it("puts a deadline on every request, past Device Farm's own four-minute cap", async () => {
+    const { http } = await driverOn({});
+    expect(http.calls[0]!.init?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("names no app: the endpoint injects the build the session installed", async () => {
@@ -192,17 +193,5 @@ describe("a failure keeps the code a caller branches on", () => {
         capabilities: {},
       }),
     ).rejects.toThrow(/not JSON/);
-  });
-});
-
-describe("the readiness probe", () => {
-  it("answers before any session exists", async () => {
-    const http = fakeHttp({ "/status": { body: { value: { ready: true } } } });
-    expect(await endpointReady(APPIUM_ENDPOINT, http.fetchImpl)).toBe(true);
-  });
-
-  it("is false rather than throwing when the endpoint is not there yet", async () => {
-    const http = fakeHttp({ "/status": { throws: new Error("ENOTFOUND") } });
-    expect(await endpointReady(APPIUM_ENDPOINT, http.fetchImpl)).toBe(false);
   });
 });
