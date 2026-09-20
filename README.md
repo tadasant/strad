@@ -99,6 +99,11 @@ format was designed for and refuses the rest by name. See
 See [`strad.config.example.yaml`](./strad.config.example.yaml) for the whole
 surface — roles, bundles, capability, and auth.
 
+[`hostd/`](./hostd/README.md) is strad's own server for the `local-tunnel` kind:
+a daemon for a machine you own that serves a shell and your running Chrome as
+MCP servers, with an on-screen consent dialog and a kill switch. It also runs
+over stdio with no tunnel, for a local MCP client.
+
 ## Capability: read-only is a policy the gateway enforces
 
 Which **tools** a slug may use is a `tools:` policy on the entry, enforced by the

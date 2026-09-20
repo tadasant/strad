@@ -5279,3 +5279,50 @@ the mechanism. The leak is the telegram tree's, and closing it is a change there
 
 **Undo.** A `close()` on the telegram tree. An instance tree for remote-filesystem once its
 routes key on the slug.
+
+---
+
+## 101. strad-hostd is installed, permissioned and logged in to Cloudflare by hand, on the machine
+
+`hostd/` is the daemon behind the `shell-*` and `browser-use-*-headless`
+`local-tunnel` slugs (`docs/servers/hostd.md`, `docs/servers/hostd-design.md`).
+Operating it starts with steps AGENTS.md's "Ops without box access" rule calls a
+design defect, and this entry is the marker that rule asks for:
+
+- `./hostd/install/install.sh` is run in a terminal on the laptop. It installs a
+  LaunchAgent and runs `cloudflared tunnel login`, which opens a browser.
+- macOS TCC prompts ("node would like to access files in your Documents
+  folder") can only be answered at the screen.
+- Chrome's remote debugging is a toggle at `chrome://inspect/#remote-debugging`.
+- The Cloudflare Access application and its service token are made in
+  Cloudflare's dashboard.
+- An upgrade is `git pull` and the install script again.
+
+**Why it cannot be designed out the usual way.** The rule exists because a
+container strad deploys can always be reached by a deploy. This box is a personal
+laptop that strad does not deploy to and must never hold a credential for: the
+whole security argument is that the machine dials out and nothing dials in. A
+channel that let strad push code or config to the laptop would be a standing
+remote-code-execution path with no dialog in front of it, which is the thing the
+consent gate exists to prevent.
+
+**What stays off the box.** Everything after install. The slugs, their
+entitlements and their `recovery:` text are config and ship by deploy. The three
+secrets per slug are seeded at `/ui/secrets`. Whether the machine is up is on
+`/healthz` and in `troubleshoot_host`. No strad-side step needs the laptop.
+
+**Two behaviours that follow, worth knowing before they surprise someone:**
+
+- An unanswered consent dialog is a DENIAL by default, so with nobody at the
+  laptop every `request_control` fails with `timeout`. That is the shipped
+  posture, not a fault. `consent.onTimeout: "allow"` in
+  `~/.strad-hostd/config.json` makes the dialog a veto window, and is again a
+  file on the box.
+- The macOS halves have never run in CI, which is Linux: the `osascript` dialog,
+  the LaunchAgent, the installer's `cloudflared` branch, and Chrome 144's
+  debugging toggle against a real default profile. The design page lists what was
+  run and what was reasoned about.
+
+**Undo.** A signed, notarized app with an auto-updater would take upgrades off
+the terminal and give TCC a stable identity to grant. It would not remove the
+first install, the TCC clicks or the Cloudflare login, and nothing should.

@@ -156,6 +156,14 @@ does not use it.
   isolation, not capability. Both are in `docs/.../start/local.md`.
 - `servers/**` is **outside** the core TypeScript program (see `eslint.config.js`).
   Each server tree has its own lockfile and is built by its own image.
+- `hostd/` is **strad-hostd**, the daemon that runs on a machine a person owns and
+  serves the shell and browser MCP servers behind `local-tunnel` slugs. It is its
+  own npm tree (`cd hostd && npm ci && npm test`) and is NOT under `servers/`:
+  everything there is baked into the bundle image, and this code never runs in a
+  strad container. Root ESLint and Prettier cover its source; the root `tsc` does
+  not. Its suite runs on Linux, so the macOS halves — the `osascript` consent
+  dialog, the LaunchAgent, the installer's `cloudflared` branch — are exercised
+  by nothing. Do not describe them as tested.
 
 ## Documentation lives in `docs/` — update it in the same PR
 
@@ -191,6 +199,7 @@ not a confession.
 | `src/ui/roster-page.ts` — the roster, a badge, the grouping, an editor control         | `operate/secrets.md`, `operate/runtime-config.md`, `operate/operations.md`, `auth/overview.md`                                                                                       |
 | `src/ui/landing.ts` — what the splash at `/` carries, and what it withholds            | `operate/operations.md`, `auth/overview.md`, and the absences `test/landing.test.ts` asserts                                                                                         |
 | `servers/remote-filesystem/**` — a tool, the link model, the sensitivity model         | `servers/artifact-store.md`, `limitations.md`                                                                                                                                        |
+| `hostd/**` — a tool, the consent gate, the kill switch, the install                    | `servers/hostd.md`, `servers/hostd-design.md`, `hostd/README.md`, `limitations.md`                                                                                                   |
 | `servers/telegram/**` — a tool, the credential model, the read/write split             | `servers/telegram.md`, `limitations.md`                                                                                                                                              |
 | `servers/bill-spend/**` — a tool, the write's body shapes, the read-back rule          | `servers/bill-spend.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                      |
 | `servers/grafana/**` — the pinned version, the read-only flags, the env allowlist      | `servers/grafana.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                         |
@@ -317,6 +326,16 @@ slop behind when you fix a stale fact.
   `telegram-rw`. MTProto with a USER session, because the Bot API cannot read the
   history of a group its account does not administer. The credential is a
   logged-in account; the library lives behind one function in `mtproto.ts`.
+- `hostd/` — strad-hostd. ONE daemon on the owner's machine, SEVERAL logical MCP
+  servers (`/shell/mcp`, `/browser/mcp`), because strad entitles a slug and not a
+  tool, so "may run a shell" and "may drive my browser" are only separate grants
+  if they are separate slugs. strad pools one upstream connection per slug and
+  forwards a tool's name and arguments and nothing else, so consent cannot hang
+  on "a connection": `request_control(purpose)` shows a dialog on the machine and
+  returns a `grant_id` that every other tool requires. An unanswered dialog is a
+  denial. The status page and kill switch are a second loopback listener the
+  tunnel never routes. `HACKS.md` #101 is what it costs the ops-without-box-access
+  rule.
 - `servers/bill-spend/` — strad's own BILL Spend & Expense server, behind
   `bill-spend-ro` and `bill-spend-rw`. Re-codes card transactions to the right
   chart-of-accounts value, which BILL carries as CUSTOM-FIELD VALUES rather than

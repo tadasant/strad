@@ -11,3 +11,5 @@ servers
 # Supplementary-image sources (bundle-google, …) are self-contained projects
 # with their own formatting; they are not part of the core format check.
 images
+# strad-hostd compiles to build/, like the server trees; its SOURCE is formatted and checked.
+hostd/build

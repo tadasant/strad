@@ -20,6 +20,8 @@ export default tseslint.config(
       "node_modules/**",
       "servers/**",
       "images/**",
+      "hostd/build/**",
+      "hostd/node_modules/**",
       "docs/dist/**",
       "docs/.astro/**",
     ],

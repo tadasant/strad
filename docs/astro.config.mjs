@@ -96,6 +96,8 @@ export default defineConfig({
               label: "Running a local-tunnel host",
               slug: "servers/local-tunnel-host",
             },
+            { label: "Running strad-hostd", slug: "servers/hostd" },
+            { label: "strad-hostd: the design", slug: "servers/hostd-design" },
             { label: "The artifact store", slug: "servers/artifact-store" },
             { label: "Slack attachments", slug: "servers/slack-attachments" },
             { label: "Telegram", slug: "servers/telegram" },

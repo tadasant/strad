@@ -11,6 +11,10 @@ to lock it down, and what strad does when it goes away.
 Everything here is generic to the kind. Nothing on this page is specific to any one
 server or account.
 
+If the server you want on that machine is a shell or its browser,
+[strad-hostd](/servers/hostd/) is strad's own: it supervises its tunnel, and it
+puts a consent dialog and a kill switch in front of every caller.
+
 ## The shape
 
 ```mermaid

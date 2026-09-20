@@ -3132,6 +3132,24 @@ See `HACKS.md` #100.
 
 ---
 
+### 101. strad-hostd is set up by hand, on the machine it controls
+
+[strad-hostd](/servers/hostd/) breaks the rule that operating a strad feature never needs a shell on a box. Its install script runs in a terminal on the laptop, `cloudflared tunnel login` opens a browser there, macOS permission prompts are answered at its screen, Chrome's remote debugging is a toggle in Chrome, and an upgrade is `git pull` and the script again.
+
+The rule assumes a box strad deploys to. This one is a personal laptop strad holds no credential for, by design: the machine dials out and nothing dials in. A channel that let strad push code to it would be remote code execution with no consent dialog in front of it. Everything after install stays off the box. The slugs are config, the secrets are seeded at `/ui/secrets`, and the machine's state is on `/healthz` and in `troubleshoot_host`.
+
+An unanswered consent dialog is a denial by default, so with nobody at the laptop every `request_control` fails with `timeout`. `consent.onTimeout: "allow"` changes that, and [the design page](/servers/hostd-design/#fail-closed-and-the-tension-with-the-original-ask) says what it costs.
+
+The macOS halves have not run anywhere: CI is Linux. That covers the `osascript` dialog, the LaunchAgent, the installer's `cloudflared` branch, and Chrome 144's debugging toggle against a real default profile. Two of the four servers originally asked for, Accessibility control and foreground pixel control, are designed and not built.
+
+**How you would know.** `troubleshoot_host` reports `offline` when the daemon, the tunnel or the laptop is down, and also when the owner has switched remote control off. `http://127.0.0.1:7312` on the machine says which.
+
+**Undo:** a signed app with an auto-updater would take upgrades off the terminal. The first install, the permission clicks and the Cloudflare login stay manual.
+
+See `HACKS.md` #101.
+
+---
+
 ## What the human still needs to provision
 
 The one-time steps that clear most of the list above:
