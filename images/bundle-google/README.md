@@ -26,6 +26,17 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
 - `src/index.ts` — the Streamable-HTTP entrypoint. Mirrors strad's own `/mcp`
   handler: a **fresh** `Server` + `StreamableHTTPServerTransport`
   (`sessionIdGenerator: undefined`) is built per request and torn down on close.
+- `src/gmail.ts` — **strad's own layer over the verbatim gmail tree**, and the
+  only reason that tree is still verbatim. `vendor/gmail-shared` reads
+  `process.env` directly, which is right for the one-server-per-process
+  deployment upstream wrote it for and impossible in strad's collapsed bundle,
+  where several gmail mounts share one process — one per slug, one per Google
+  account. This module takes an INJECTED `env`, owns the name lists the bundle
+  host's per-slug discovery keys on (`GMAIL_ENV_NAMES`,
+  `GMAIL_OAUTH_APP_ENV_NAMES`, `missingCredentials()`), and is what the host
+  imports as `dist/gmail.js`. `test/gmail.test.ts` is its suite. The requirement
+  is strad's, not upstream's, so the fix lives here rather than as a vendor
+  delta — see the `fix-a-defect-in-vendored-upstream-code` skill.
 - `vendor/` — the upstream `shared/` factories, vendored verbatim from
   `github.com/pulsemcp/mcp-servers/experimental/{gmail,google-calendar,google-docs}`,
   plus `@pulsemcp/mcp-elicitation`. Wired as npm workspaces. The only edit to
@@ -48,7 +59,7 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
 ```bash
 npm install
 npm run build          # builds vendored shared packages, then the entrypoint
-npm test               # the google-sheets unit suite (builds first)
+npm test               # the google-sheets and src/gmail.ts suites (builds first)
 node dist/index.js &   # serves on :8080
 npm run smoke          # asserts all four servers list their tools
 ```
@@ -66,9 +77,23 @@ call.
 | **Service account (domain-wide delegation)** | `GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL`, `GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY`, `GMAIL_IMPERSONATE_EMAIL` |
 | **OAuth2 (refresh token)** — takes precedence if all three set | `GMAIL_OAUTH_CLIENT_ID`, `GMAIL_OAUTH_CLIENT_SECRET`, `GMAIL_OAUTH_REFRESH_TOKEN` |
 | **Capability toggle** | `GMAIL_ENABLED_TOOLGROUPS` = `readonly` \| `readwrite` \| `readwrite_external` (comma-sep; default: all) |
+| **Console reconnect hint** (not a credential) | `GMAIL_RECONNECT_URL` — the page named in an `invalid_grant` error |
 
 Scopes (service-account mode must have these authorized for DWD):
 `gmail.readonly`, `gmail.modify`, `gmail.compose`, `gmail.send`.
+
+A refresh token is ONE Google account, which is why `src/gmail.ts` reads an
+injected env rather than `process.env`: the collapsed bundle mounts gmail once
+per strad slug, each with its own account. This image keeps the single
+conventional mount and hands it `process.env`.
+
+**Two modes on one container is a trap the other servers here do not have.** A
+per-slug mount in the collapsed bundle must inherit neither the bare
+`GMAIL_OAUTH_REFRESH_TOKEN` nor the bare service-account trio — falling back to
+the latter would serve a Workspace mailbox under a slug named for a personal
+account, with every call succeeding. `GMAIL_ENV_NAMES` names all six so the host
+can drop everything that is not the OAuth app pair; see
+`servers/bundle/host/src/mounts.ts`.
 
 ### google-calendar (`/google-calendar`)
 

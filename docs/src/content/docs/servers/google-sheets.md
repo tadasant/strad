@@ -31,6 +31,11 @@ That choice has consequences worth stating, because they run in both directions:
 - One token is one account, so **several accounts need several mounts**. That is
   the shape below.
 
+`gmail` takes the same shape, with one extra hazard sheets does not have: it
+carries a **second** auth mode (a Workspace service account) on the same
+container, so a per-slug gmail mount drops the bare service-account names as well
+as the bare token. See [Connectors](/operate/connectors/#name-the-three-variables-the-servers-own-tree-reads).
+
 ## Six slugs, three accounts, one implementation
 
 A slug's credential is baked onto the container under

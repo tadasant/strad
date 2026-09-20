@@ -636,6 +636,80 @@ jobs:
             --image ghcr.io/tadasant/strad-bundle:latest \
             $(for cfg in strad.config*.yaml infra/*.yaml; do printf -- '--config %s ' "$cfg"; done)
 
+      # PER-SLUG GMAIL, END TO END, IN A REAL CONTAINER — and the cross-account
+      # trap it exists to close.
+      #
+      # gmail is the one mount in this image with TWO auth modes, and a real
+      # deployment carries both: the conventional /gmail runs on a Workspace
+      # service account, while a connector slug runs on one person's OAuth
+      # refresh token. A per-slug mount that inherited the bare service-account
+      # names would not be unconfigured — it would serve the WRONG MAILBOX, with
+      # every call succeeding and nothing in any log. That failure is invisible
+      # to a unit test of either tree on its own: the name lists live in
+      # images/bundle-google, the drop lives in servers/bundle/host, and only a
+      # booted image has both.
+      #
+      # Its own container, because a per-slug environment is `process.env` and
+      # the first container's has none. Credential-free in the sense that
+      # matters: these values are CI placeholders, listing tools calls no Google
+      # API, and the per-slug slug is deliberately left UNCONNECTED — no refresh
+      # token — because that is the state the trap lives in.
+      - name: A per-slug gmail mount appears, serves 8 tools, and inherits no mailbox
+        run: |
+          set -euo pipefail
+          GMAILSLUG="$BUNDLE_CONTAINER-gmail"
+          docker run -d --name "$GMAILSLUG" --label strad-ci=1 \
+            -e DANGEROUSLY_SKIP_ELICITATIONS=true \
+            -e STRAD_INTERNAL_TOKEN="$STRAD_INTERNAL_TOKEN" \
+            -e GCS_PROJECT_ID=ci -e GCS_BUCKET=ci-bucket \
+            -e REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET=ci-rfs-bucket \
+            -e REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN=ci.example \
+            -e SECRETS_PROJECT_ID=ci -e SECRETS_NAMESPACES=/strad/staging/mcp/ \
+            -e GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL=ci-dwd@ci.iam.gserviceaccount.com \
+            -e GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY=ci-placeholder-key \
+            -e GMAIL_IMPERSONATE_EMAIL=someone@ci.example \
+            -e GMAIL_CI_PERSONAL_RO__GMAIL_OAUTH_CLIENT_ID=ci-oauth-app \
+            -e GMAIL_CI_PERSONAL_RO__GMAIL_OAUTH_CLIENT_SECRET=ci-oauth-secret \
+            "$BUNDLE_IMAGE"
+          for i in $(seq 1 60); do
+            if docker exec "$GMAILSLUG" node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" 2>/dev/null; then break; fi
+            sleep 2
+          done
+          docker exec "$GMAILSLUG" node -e 'fetch("http://127.0.0.1:8080/healthz").then(r=>r.json()).then(h=>console.log(JSON.stringify(h)))' > bundle-health-gmail.json
+          docker exec "$GMAILSLUG" node /app/scripts/smoke.mjs --json > bundle-tools-gmail.json
+          node -e '
+            const fs = require("fs");
+            const health = JSON.parse(fs.readFileSync("bundle-health-gmail.json", "utf8"));
+            const dump = JSON.parse(fs.readFileSync("bundle-tools-gmail.json", "utf8"));
+            const bySlug = Object.fromEntries(health.servers.map((s) => [s.slug, s]));
+
+            // 1. The environment stood the mount up, at its own path.
+            const slug = "gmail-ci-personal-ro";
+            if (!bySlug[slug]) throw new Error(`no per-slug gmail mount: ${health.servers.map((s) => s.slug).join(", ")}`);
+
+            // 2. It serves the full surface. A strad `-ro` slug is this same
+            //    mount with tools withheld by the GATEWAY, not by the container.
+            const tools = dump.mounts[`/${slug}`]?.tools ?? [];
+            if (tools.length !== 8) throw new Error(`per-slug gmail listed ${tools.length} tools, expected 8: ${tools.join(", ")}`);
+
+            // 3. THE TRAP. It is degraded, and degraded on its TOKEN — not
+            //    quietly serving the service-account mailbox sitting beside it.
+            const degraded = bySlug[slug].degraded ?? "";
+            if (!/GMAIL_OAUTH_REFRESH_TOKEN/.test(degraded))
+              throw new Error(`an unconnected per-slug gmail mount is not degraded on its token: ${JSON.stringify(degraded)}`);
+            for (const leaked of ["GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL", "GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY", "GMAIL_IMPERSONATE_EMAIL"])
+              if (degraded.includes(leaked)) throw new Error(`per-slug gmail is reporting ${leaked}, which belongs to the conventional mount`);
+
+            // 4. And the conventional mount is untouched: same 8 tools, and NOT
+            //    degraded, because its service-account credential is right there.
+            if (bySlug.gmail?.degraded) throw new Error(`the conventional /gmail mount went degraded: ${bySlug.gmail.degraded}`);
+            const conventional = dump.mounts["/gmail"]?.tools ?? [];
+            if (conventional.length !== 8) throw new Error(`/gmail listed ${conventional.length} tools, expected 8`);
+
+            console.log(`/${slug}: ${tools.length} tools, degraded on "${degraded}"; /gmail: ${conventional.length} tools, not degraded`);
+          '
+          docker rm -f "$GMAILSLUG" >/dev/null
+
       # THE DESCRIPTOR SEAM, END TO END, IN A REAL CONTAINER.
       #
       # `renderAppSpec` composes SECRETS_STORES from `mcpStores:` and the secrets

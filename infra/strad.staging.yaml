@@ -174,7 +174,9 @@ bundles:
   # share ONE Chromium (never one per server: see
   # servers/bundle/host/src/browser.ts). Three mounts have no slug here:
   # `/x-twitter`, `/google-sheets` — registered in prod, where its six slugs each
-  # carry one Google account's OAuth token — and the conventional `/grafana`,
+  # carry one Google account's OAuth token, and where `/gmail` takes the same
+  # per-slug shape beside its conventional service-account mount — and the
+  # conventional `/grafana`,
   # since staging's Grafana is the per-slug `/grafana-registry` below. The
   # PROCESS registers all twenty-two either way — including `/telegram`, whose
   # two slugs are disabled until their secret is seeded — which is what the
@@ -912,9 +914,23 @@ servers:
   # ---------------------------------------------------------------------------
   # Gmail — 8 tools full, 7 read-write, 5 read-only. THREE slugs, ONE container.
   #
+  # ALL THREE SHARE THE CONVENTIONAL /gmail MOUNT, which authenticates as a
+  # SERVICE ACCOUNT impersonating one Workspace user. The only difference between
+  # them is the `tools:` policy below.
+  #
   # DWD is a Workspace-admin dependency: until the service account's client ID is
   # authorized for the scopes, tools LIST fine but tool CALLS fail. See
   # images/bundle-google/README.md.
+  #
+  # THE OTHER SHAPE — one mailbox per slug, consented in strad's console — needs
+  # no entry here and none exists: staging has no `oauth:` connector, for the
+  # same reason it has no google-sheets slug. A connector pins a REAL Google
+  # account and the consent is a human step, so those slugs live in prod's config
+  # (tadasant-internal) rather than in this repo. The bundle host serves them the
+  # moment a config asks: give a slug `path: /<its own slug>` and an `oauth:`
+  # block naming GMAIL_OAUTH_CLIENT_ID / _CLIENT_SECRET / _REFRESH_TOKEN — the
+  # names gmail's own tree reads, NOT the google-sheets defaults. See
+  # strad.config.example.yaml and docs/operate/connectors.md.
   # ---------------------------------------------------------------------------
   - slug: gmail-ro
     kind: supplementary-image

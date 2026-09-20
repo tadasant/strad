@@ -6,15 +6,15 @@
  * supplementary-image entries in infra/strad.staging.yaml — because capability
  * variants (gmail-ro, gmail-rw, …) are several slugs pointing at ONE mount here.
  *
- * TWENTY-TWO IS THE FLOOR, not a constant. Four trees (telegram,
- * remote-filesystem, google-sheets, grafana) mount ONE INSTANCE PER SLUG the
- * environment carries per-slug values for — see `extraSlugs` — so a container
- * told about `telegram-ro` and `telegram-rw` separately serves /telegram,
- * /telegram-ro and /telegram-rw. google-sheets and grafana are the cases a real
- * deployment uses: an OAuth refresh token IS one Google account and a
- * service-account token IS one Grafana, so each extra account is another mount
- * here. The conventional path is always mounted, so a config that asks for none
- * of this sees exactly the twenty-two it saw before.
+ * TWENTY-TWO IS THE FLOOR, not a constant. Five trees (telegram,
+ * remote-filesystem, google-sheets, gmail, grafana) mount ONE INSTANCE PER SLUG
+ * the environment carries per-slug values for — see `extraSlugs` — so a
+ * container told about `telegram-ro` and `telegram-rw` separately serves
+ * /telegram, /telegram-ro and /telegram-rw. google-sheets, gmail and grafana are
+ * the cases a real deployment uses: an OAuth refresh token IS one Google account
+ * and a service-account token IS one Grafana, so each extra account is another
+ * mount here. The conventional path is always mounted, so a config that asks for
+ * none of this sees exactly the twenty-two it saw before.
  *
  * STORE-SERVED INSTANCES are the other way in, and the one that needs no deploy.
  * A strad server on `path: /_instance/{tree}/{slug}` puts nothing on this
@@ -294,19 +294,28 @@ async function buildMounts(): Promise<Mount[]> {
   mounts.push(await loadBillSpend());
 
   // --- bundle-google: gmail / calendar / docs --------------------------------
-  // These build per request (their factories are cheap and hold no client), which
-  // is exactly what the bundle-google image does today.
+  // calendar and docs build per request — their factories are cheap and hold no
+  // client, which is exactly what the bundle-google image does today. gmail and
+  // google-sheets are the two whose CLIENT is cached per credential, because a
+  // client built per request would re-authenticate to Google on every tool call.
   const google = await loadGoogleTree();
 
-  mounts.push({
-    slug: "gmail",
-    tree: "bundle-google",
-    serverName: "gmail-workspace-mcp-server",
-    capabilities: { tools: {} },
-    register: async (s) => {
-      await google.gmail({ version: VERSION }).registerHandlers(s);
-    },
-  });
+  // gmail is the SECOND server in this tree whose credential can be per slug,
+  // and the only one with two auth modes. The conventional `/gmail` keeps
+  // serving the service-account credential the `gmail-ro` / `gmail-rw` /
+  // `gmail-rw-external` slugs are entitled to; each slug the environment carries
+  // an OAuth CLIENT for gets its own mount, holding one person's mailbox.
+  //
+  // Discovery is on the OAuth app pair rather than the refresh token for the
+  // reason spelled out over google-sheets below: the token is minted after the
+  // deploy, by a human clicking Connect on the slug's console page, and that
+  // page only exists once the slug is mounted.
+  mounts.push(loadGmail(google.gmail, "gmail", false));
+  for (const slug of extraSlugs(
+    "gmail",
+    google.gmail.GMAIL_OAUTH_APP_ENV_NAMES,
+  ))
+    deferred.push({ slug, load: async () => loadGmail(google.gmail, slug, true) });
 
   mounts.push({
     slug: "google-calendar",
@@ -554,6 +563,31 @@ async function loadPulseSubregistry(): Promise<Mount> {
   };
 }
 
+/**
+ * strad's own layer over the vendored gmail tree
+ * (`images/bundle-google/src/gmail.ts`). Same shape as
+ * {@link GoogleSheetsModule}, plus the one thing sheets has no need of: a list
+ * that spans BOTH of gmail's auth modes.
+ */
+interface GmailModule {
+  createMCPServer: Factory;
+  missingCredentials: (env: Record<string, string | undefined>) => string[];
+  /**
+   * Every variable that decides WHICH MAILBOX a mount reads — the OAuth three
+   * AND the service-account three. No mount needs all six; this is the set the
+   * marker pair is subtracted from to get what a discovered slug may not
+   * inherit, and for that it has to span both modes. See `dropInheritedNames`.
+   */
+  GMAIL_ENV_NAMES: readonly string[];
+  /**
+   * The OAuth app pair, and the marker set per-slug discovery keys on — the two
+   * variables a human seeds before consent. What it leaves out is every
+   * per-account name, which is why the host derives those by subtraction rather
+   * than naming them here.
+   */
+  GMAIL_OAUTH_APP_ENV_NAMES: readonly string[];
+}
+
 interface GoogleSheetsModule {
   createMCPServer: Factory;
   missingCredentials: (env: Record<string, string | undefined>) => string[];
@@ -704,16 +738,23 @@ function loadGrafana(
 }
 
 interface GoogleTree {
-  gmail: Factory;
+  gmail: GmailModule;
   calendar: Factory;
   docs: Factory;
   sheets: GoogleSheetsModule;
 }
 
 async function loadGoogleTree(): Promise<GoogleTree> {
-  const gmail = await loadFromTree<{ createMCPServer: Factory }>(
+  // NOT `vendor/gmail-shared/build/index.js`. That tree is vendored verbatim
+  // from pulsemcp/mcp-servers and reads `process.env` directly, which is right
+  // for the one-server-per-process deployment it was written for and fatal here:
+  // several gmail mounts in one process would all serve the last credential
+  // loaded. `dist/gmail.js` is strad's own layer over it — the injected env, the
+  // two credential modes, and the name lists discovery keys on — built from
+  // images/bundle-google/src/gmail.ts by that image's own `npm run build`.
+  const gmail = await loadFromTree<GmailModule>(
     "bundle-google",
-    "vendor/gmail-shared/build/index.js",
+    "dist/gmail.js",
   );
   const calendar = await loadFromTree<{ createMCPServer: Factory }>(
     "bundle-google",
@@ -728,10 +769,94 @@ async function loadGoogleTree(): Promise<GoogleTree> {
     "vendor/google-sheets-shared/build/index.js",
   );
   return {
-    gmail: gmail.createMCPServer,
+    gmail,
     calendar: calendar.createMCPServer,
     docs: docs.createMCPServer,
     sheets,
+  };
+}
+
+/**
+ * gmail: the conventional mount, plus one mount per Google ACCOUNT the
+ * environment carries an OAuth app for.
+ *
+ * TWO AUTH MODES ON ONE CONTAINER, which is what makes this different from
+ * google-sheets and is the whole reason this function is careful.
+ *
+ *   - The CONVENTIONAL `/gmail` mount is a SERVICE ACCOUNT with domain-wide
+ *     delegation, impersonating one Workspace user. `gmail-ro`, `gmail-rw` and
+ *     `gmail-rw-external` are three strad slugs over it, differing only by the
+ *     gateway's `tools:` policy. It reads the bare names, exactly as it always
+ *     has, and this change does not touch what it serves.
+ *   - A DISCOVERED mount is a PERSON: an OAuth refresh token minted by that
+ *     person, for that account, through the console consent flow an `oauth:`
+ *     connector puts on the slug's own page. A refresh token is one account by
+ *     construction, so each account is another mount here.
+ *
+ * WHY THE DROP IS NOT OPTIONAL. `slugEnvView` falls back to the bare name for
+ * anything a slug has no name of its own for, and for sheets the worst case of
+ * that is a mount holding another Google account's spreadsheets token. Here the
+ * worst case is bigger: an unconnected `gmail-tadas412-ro` would fall back to
+ * `GMAIL_SERVICE_ACCOUNT_*` + `GMAIL_IMPERSONATE_EMAIL`, which are on this box
+ * for the conventional mount — and serve Tadas's WORK mailbox under a slug named
+ * for his personal account, with `missingCredentials()` reporting nothing wrong
+ * and every call succeeding. So a discovered slug reads every per-account name
+ * from its own prefix or not at all; the subtraction below is where that is
+ * decided, and the tree owns both lists so it stays true when a fourth name
+ * joins either mode.
+ *
+ * The READ/WRITE half of a slug's name is NOT decided here. This mount serves
+ * all eight tools and strad's gateway withholds from a `-ro` slug
+ * (src/gateway/toolPolicy.ts) — the same trade every capability variant in this
+ * container makes. A deployment that wants Google to enforce it too can consent
+ * the `-ro` slug for `gmail.readonly` alone; because the credential is per slug,
+ * that costs nothing here.
+ *
+ * THE ENV IS A SNAPSHOT, taken here, and that is the same trade google-sheets
+ * makes for the same reason: a live view of `process.env` is what makes two
+ * instances of one tree in one process stop being independent. The cost is that
+ * this mount is not `liveEnv`, so a `paramsRefresh:` value landing in the
+ * environment does not reach it until a restart — which is what leaving that
+ * flag unset already tells `startParamRefresh` to warn about, and no config
+ * declares `paramsRefresh:` on a gmail slug today.
+ */
+function loadGmail(gmail: GmailModule, slug: string, perSlug: boolean): Mount {
+  const view = slugEnvView(process.env, slug);
+  if (perSlug) {
+    const app = new Set<string>(gmail.GMAIL_OAUTH_APP_ENV_NAMES);
+    dropInheritedNames(
+      view,
+      slug,
+      gmail.GMAIL_ENV_NAMES.filter((name) => !app.has(name)),
+    );
+  }
+  const env = {
+    ...view,
+    // WHERE TO GO WHEN THE TOKEN DIES — same as google-sheets, same reason:
+    // `invalid_grant` is the normal end of a refresh token's life and the
+    // recovery is one button on this slug's own console page.
+    ...(process.env.STRAD_PUBLIC_URL
+      ? {
+          GMAIL_RECONNECT_URL: `${process.env.STRAD_PUBLIC_URL.replace(/\/$/, "")}/ui/${slug}`,
+        }
+      : {}),
+  };
+  // The tree owns what its credential IS, and which mode this environment is in.
+  const missing = gmail.missingCredentials(env);
+
+  return {
+    slug,
+    tree: "bundle-google",
+    serverName: "gmail-workspace-mcp-server",
+    capabilities: { tools: {} },
+    // Degraded, not unmounted: the tools must still LIST, so the console shows
+    // the slug and an agent can see what it would offer once a token lands —
+    // and a slug has to be mounted for its console page to offer the Connect
+    // button that mints one.
+    degraded: missingCredentialsDegraded(missing),
+    register: async (s) => {
+      await gmail.createMCPServer({ version: VERSION, env }).registerHandlers(s);
+    },
   };
 }
 
