@@ -122,6 +122,9 @@ first: with that setting and nobody at the screen, the dialog protects nothing.
 | Turn everything off | **Disable everything**, `strad-hostd disable`, or `touch ~/.strad-hostd/DISABLED` |
 | Turn it back on | **Turn back on**, or `strad-hostd enable` |
 
+The machine posts a notification when a grant starts and when it ends, naming
+the server and the purpose. There is no persistent on-screen banner.
+
 Disabling ends every grant, kills what they started, stops the tunnel, and
 survives a reboot. strad then reports the slugs `offline`.
 

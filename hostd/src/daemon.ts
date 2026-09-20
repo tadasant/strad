@@ -5,6 +5,7 @@ import { browserCapability } from "./browser/tools.js";
 import type { CapabilityId } from "./capabilities.js";
 import { enabledCapabilities, type Config } from "./config.js";
 import { ConsentGate } from "./consent/gate.js";
+import type { Notifier } from "./consent/notifier.js";
 import { platformPrompter, type Prompter } from "./consent/prompter.js";
 import { createControlListener } from "./control/server.js";
 import { KillSwitch } from "./killswitch.js";
@@ -29,7 +30,13 @@ export interface Core {
  */
 export function buildCore(
   config: Config,
-  opts: { stateDir: string; prompter?: Prompter; only?: CapabilityId[] },
+  opts: {
+    stateDir: string;
+    prompter?: Prompter;
+    notifier?: Notifier;
+    controlUrl?: string;
+    only?: CapabilityId[];
+  },
 ): Core {
   const killSwitch = new KillSwitch(opts.stateDir);
   const audit = new AuditLog(opts.stateDir);
@@ -38,6 +45,8 @@ export function buildCore(
     prompter: opts.prompter ?? platformPrompter(),
     killSwitch,
     audit,
+    notifier: opts.notifier,
+    controlUrl: opts.controlUrl,
   });
 
   const ids = opts.only ?? enabledCapabilities(config);
@@ -89,6 +98,8 @@ export async function startDaemon(
   opts: {
     stateDir: string;
     prompter?: Prompter;
+    /** Omitted, nothing is notified. `serve` passes the platform's. */
+    notifier?: Notifier;
     log?: (line: string) => void;
     ephemeralPorts?: boolean;
   },
@@ -106,7 +117,10 @@ export async function startDaemon(
     }
   }
   const log = opts.log ?? (() => {});
-  const core = buildCore(config, opts);
+  const core = buildCore(config, {
+    ...opts,
+    controlUrl: `http://127.0.0.1:${config.controlPort}`,
+  });
   const tunnel = new TunnelSupervisor(config, core.deps.killSwitch, (l) =>
     log(`[tunnel] ${l}`),
   );

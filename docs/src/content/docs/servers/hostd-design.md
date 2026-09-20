@@ -195,6 +195,18 @@ rebinding. It refuses any request carrying `cf-connecting-ip`, `cf-ray` or
 `x-forwarded-for`. Every write needs a per-boot token, so a web page open in the
 owner's browser cannot post a kill, or an enable.
 
+**The machine is told, not only asked.** When a grant starts, the OS posts a
+notification naming the server, the purpose and the status page's address, and
+another when the grant ends. Under `onTimeout: "allow"` the dialog can come and go
+with nobody looking, and the notification is what is still there when the owner
+comes back. It says so when nobody answered.
+
+This is short of what a driven machine deserves, which is a banner that stays on
+screen for the life of a grant. A banner drawn by a process the caller can reach
+with a shell is one the caller can dismiss, so the honest version is a separate
+always-on-top helper with a menu-bar state. That is the same native helper the
+computer-use servers need, and it is not built.
+
 **Kill ends the work, not only the permission.** Each grant carries an
 `AbortSignal`. The shell hangs its process groups on it and the browser hangs its
 DevTools socket on it.

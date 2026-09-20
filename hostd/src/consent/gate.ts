@@ -3,6 +3,7 @@ import type { CapabilityId } from "../capabilities.js";
 import type { Config } from "../config.js";
 import type { KillSwitch } from "../killswitch.js";
 import { GrantStore, type Grant } from "./grants.js";
+import type { Notifier } from "./notifier.js";
 import type { Prompter } from "./prompter.js";
 import { normalizePurpose } from "./purpose.js";
 
@@ -48,6 +49,10 @@ export class ConsentGate {
       prompter: Prompter;
       killSwitch: KillSwitch;
       audit: AuditLog;
+      /** Told when a grant starts and ends. Optional: stdio with consent off has no use for it. */
+      notifier?: Notifier;
+      /** Where the owner can see and kill grants, for the notification text. */
+      controlUrl?: string;
       now?: () => number;
     },
   ) {
@@ -55,7 +60,7 @@ export class ConsentGate {
     this.grants = new GrantStore({
       idleMs: consent.idleMinutes * 60_000,
       now: deps.now,
-      onEnd: (g, reason) =>
+      onEnd: (g, reason) => {
         deps.audit.record({
           kind:
             reason === "killed" || reason === "disabled"
@@ -66,7 +71,12 @@ export class ConsentGate {
           capability: g.capability,
           grantId: g.id,
           detail: `grant ${reason} after ${g.calls} call(s)`,
-        }),
+        });
+        deps.notifier?.notify(
+          `${g.server} no longer has control`,
+          `Grant ${reason} after ${g.calls} call${g.calls === 1 ? "" : "s"}.`,
+        );
+      },
     });
   }
 
@@ -195,6 +205,14 @@ export class ConsentGate {
       grantId: grant.id,
       detail: `${how}, ${minutes} min: ${purpose.purpose}`,
     });
+    this.deps.notifier?.notify(
+      `${input.server} has control of ${config.machine}`,
+      `${how === "timeout-allow" ? "Nobody answered the dialog, so it was allowed. " : ""}${purpose.purpose}${
+        this.deps.controlUrl
+          ? ` — see or kill it at ${this.deps.controlUrl}`
+          : ""
+      }`,
+    );
     return { ok: true, grant, how };
   }
 

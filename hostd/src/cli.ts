@@ -13,6 +13,7 @@ import {
   ensureStateDir,
   loadConfig,
 } from "./config.js";
+import { platformNotifier } from "./consent/notifier.js";
 import { buildCore, startDaemon } from "./daemon.js";
 import { KillSwitch } from "./killswitch.js";
 import { buildServer } from "./mcp/server.js";
@@ -93,6 +94,7 @@ async function main(argv: string[]): Promise<number> {
       const daemon = await startDaemon(loadConfig(), {
         stateDir: dir,
         log: (l) => console.error(l),
+        notifier: platformNotifier(),
       });
       const stop = () => void daemon.stop().then(() => process.exit(0));
       process.on("SIGTERM", stop);
