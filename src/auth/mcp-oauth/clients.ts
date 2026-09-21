@@ -318,6 +318,29 @@ function isLoopback(hostname: string): boolean {
 }
 
 /**
+ * Would a code sent here land on the human's own machine rather than a website?
+ *
+ * Wider than `isLoopback`, which decides where plain `http:` is ALLOWED: this
+ * decides where the consent screen WARNS, and an `https` redirect to
+ * `127.0.0.2` or `x.localhost` (which browsers resolve to loopback) lands on
+ * the same machine as `127.0.0.1` does.
+ */
+export function isLoopbackRedirect(uri: string): boolean {
+  let host: string;
+  try {
+    host = new URL(uri).hostname;
+  } catch {
+    return false;
+  }
+  return (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host === "[::1]" ||
+    /^127\.\d+\.\d+\.\d+$/.test(host)
+  );
+}
+
+/**
  * Why a declared `grant_types` / `response_types` rules out strad's one flow,
  * or null. Absent is fine: RFC 7591 §2 defaults both to the code flow.
  */

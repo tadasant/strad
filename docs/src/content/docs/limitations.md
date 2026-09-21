@@ -544,7 +544,9 @@ document](/auth/overview/#client-id-metadata-documents) — and fetches it at
   reserved address (checked on the lookup the socket actually uses), follows no
   redirect, and stops at 5 KiB and five seconds. The destination is still the
   caller's choice, and a failure is never cached, so a repeated request is a
-  repeated fetch.
+  repeated fetch. At most sixteen fetches run at once; past that a sign-in is
+  refused as busy, which a caller flooding the endpoint can use to make a real
+  sign-in fail until it is retried.
 - **A document cannot vouch for a loopback redirect URI.** Any program can
   present VS Code's document URL and listen on its port. The consent screen names
   the publishing host and warns when the code is going to a program on the

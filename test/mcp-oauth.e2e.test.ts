@@ -85,6 +85,7 @@ const CLAUDE_CALLBACK = "https://claude.ai/api/mcp/auth_callback";
 const CLAUDE_CIMD = "https://claude.ai/oauth/mcp-oauth-client-metadata";
 const VSCODE_CIMD = "https://vscode.dev/oauth/client-metadata.json";
 const MISMATCHED_CIMD = "https://evil.example/claude.json";
+const MARKUP_CIMD = "https://markup.example/client.json";
 const documents = new Map<string, FetchedDocument>();
 const fetched: string[] = [];
 
@@ -144,6 +145,13 @@ serveDocument(MISMATCHED_CIMD, {
   client_id: CLAUDE_CIMD,
   client_name: "Claude",
   redirect_uris: ["https://evil.example/cb"],
+});
+
+// A client_name carrying markup: the consent screen must print it, not run it.
+serveDocument(MARKUP_CIMD, {
+  client_id: MARKUP_CIMD,
+  client_name: '<img src=x onerror="alert(1)">Claude',
+  redirect_uris: [CLAUDE_CALLBACK],
 });
 
 async function fetchDocument(url: URL): Promise<FetchedDocument> {
@@ -431,6 +439,13 @@ describe("dynamic client registration", () => {
     expect(body.grant_types).toEqual(["authorization_code", "refresh_token"]);
   });
 
+  it("still refuses a registration that does not include the code flow", async () => {
+    const res = await register({ grant_types: ["refresh_token"] });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("invalid_client_metadata");
+  });
+
   it("admits a native client's loopback listener", async () => {
     const res = await register({
       redirect_uris: ["http://127.0.0.1:33418/callback"],
@@ -669,6 +684,16 @@ describe("client id metadata documents", () => {
     });
     expect(consent).toContain("published by <code>vscode.dev</code>");
     expect(consent).toContain("program on this computer");
+  });
+
+  it("escapes a client_name that carries markup on the consent screen", async () => {
+    let consent = "";
+    await walkToCode({
+      clientId: MARKUP_CIMD,
+      onConsent: (html) => (consent = html),
+    });
+    expect(consent).not.toContain("<img src=x");
+    expect(consent).toContain("&lt;img src=x");
   });
 
   it("refuses a document whose client_id is not the URL it was fetched from", async () => {

@@ -62,6 +62,8 @@ export interface ConsentPageOptions {
 
 export function renderConsent(opts: ConsentPageOptions): string {
   const who = opts.clientName ? esc(opts.clientName) : "An MCP client";
+  /** The same, for the middle of a sentence. */
+  const whoInline = opts.clientName ? who : "an MCP client";
   const identifiedBy = opts.clientHost
     ? `published by <code>${esc(opts.clientHost)}</code>`
     : `self-registered — the name is the client's own claim`;
@@ -69,11 +71,11 @@ export function renderConsent(opts: ConsentPageOptions): string {
     ? `
   <p class="state-detail consent-warning">
     The code goes to a program on this computer, not to a website. Any program
-    on this machine can claim to be ${who} that way${
+    on this machine can claim to be ${whoInline} that way${
       opts.clientHost
         ? `, whatever <code>${esc(opts.clientHost)}</code> publishes`
         : ""
-    }. Approve only if you started this yourself, just now, from ${who} on this
+    }. Approve only if you started this yourself, just now, from ${whoInline} on this
     computer.
   </p>`
     : "";

@@ -5485,7 +5485,12 @@ registration. Four properties follow, stated rather than worked around:
    socket's own lookup, so a rebinding name has no second answer to give), no
    redirects, 5 KiB, five seconds — but the destination is the caller's choice.
    One `/oauth/authorize` is at most one fetch, and failures are not cached (the
-   draft forbids it), so a caller who repeats the request repeats the fetch. The
+   draft forbids it), so a caller who repeats the request repeats the fetch. At
+   most 16 fetches are open at once across the process; past that a new
+   `/authorize` is refused as busy rather than queued, so a caller looping
+   against a host that trickles its answer holds sixteen sockets, not
+   unbounded ones — and can, for that window, make a real client's sign-in
+   fail until it retries. The
    IPv4 half of the address rule is a denylist of special-use ranges, like
    strad-fetch's (#79); the IPv6 half admits global unicast only.
 

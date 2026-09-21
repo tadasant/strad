@@ -84,6 +84,19 @@ export const CIMD_DEFAULT_TTL_MS = 5 * 60 * 1000;
  */
 export const CIMD_MAX_TTL_MS = 60 * 60 * 1000;
 
+/**
+ * How many metadata fetches may be open at once, across every client id.
+ *
+ * The fetch runs on an unauthenticated request, and neither the cache nor the
+ * in-flight sharing helps against a caller who varies the URL — a query string
+ * or a port is enough. Without a ceiling, a loop of `/oauth/authorize` calls
+ * against a host that trickles its answer holds one outbound socket per call
+ * for the full deadline, in the same process that serves `/mcp`. Past this
+ * many, a new fetch is refused as busy rather than queued: a real client
+ * retries a sign-in; a queue would only lengthen the attacker's hold.
+ */
+export const CIMD_MAX_CONCURRENT_FETCHES = 16;
+
 /** How many documents the cache holds before evicting the oldest. */
 const CACHE_ENTRIES = 256;
 
@@ -162,6 +175,13 @@ export function clientIdUrlProblem(clientId: string): string | null {
   if (clientId.includes("#")) {
     return "a client_id URL may not carry a fragment";
   }
+  const literal = ipLiteral(url.hostname);
+  if (literal !== null && !isPublicAddress(literal)) {
+    return "a client_id URL may not name a private, loopback or reserved address";
+  }
+  // Dot segments are checked on the RAW string: the parser resolves them away,
+  // so after it they would be caught only as "not normalized", which is the
+  // wrong sentence to hand a publisher.
   const rawPath = clientId.slice(`https://${url.host}`.length).split("?")[0];
   if (rawPath === undefined || rawPath === "" || rawPath === "/") {
     return "a client_id URL must have a path, such as https://example.com/client.json";
@@ -170,10 +190,6 @@ export function clientIdUrlProblem(clientId: string): string | null {
     rawPath.split("/").some((segment) => segment === "." || segment === "..")
   ) {
     return "a client_id URL may not contain . or .. path segments";
-  }
-  const literal = ipLiteral(url.hostname);
-  if (literal !== null && !isPublicAddress(literal)) {
-    return "a client_id URL may not name a private, loopback or reserved address";
   }
   if (url.href !== clientId) {
     return (
@@ -265,7 +281,7 @@ export function parseClientMetadata(
   }
   const name =
     typeof rawName === "string" && rawName.trim() !== ""
-      ? rawName.trim().slice(0, MAX_NAME_CHARS)
+      ? Array.from(rawName.trim()).slice(0, MAX_NAME_CHARS).join("")
       : undefined;
 
   return {
@@ -568,6 +584,8 @@ export interface ClientMetadataResolverOptions {
   /** The network. `guardedFetch` unless a test substitutes it. */
   fetch?: DocumentFetcher;
   now?: () => number;
+  /** Test seam: the ceiling on concurrent fetches. */
+  maxConcurrent?: number;
 }
 
 /**
@@ -581,10 +599,12 @@ export class ClientMetadataResolver {
   private readonly now: () => number;
   private readonly cache = new Map<string, CacheEntry>();
   private readonly inFlight = new Map<string, Promise<MetadataOutcome>>();
+  private readonly maxConcurrent: number;
 
   constructor(opts: ClientMetadataResolverOptions = {}) {
     this.fetchDocument = opts.fetch ?? ((url) => guardedFetch(url));
     this.now = opts.now ?? (() => Date.now());
+    this.maxConcurrent = opts.maxConcurrent ?? CIMD_MAX_CONCURRENT_FETCHES;
   }
 
   async resolve(clientId: string): Promise<MetadataOutcome> {
@@ -601,6 +621,17 @@ export class ClientMetadataResolver {
 
     const pending = this.inFlight.get(clientId);
     if (pending) return pending;
+
+    // `inFlight` holds exactly one entry per open fetch, so its size IS the
+    // count. See `CIMD_MAX_CONCURRENT_FETCHES`.
+    if (this.inFlight.size >= this.maxConcurrent) {
+      return {
+        ok: false,
+        reason: "client_metadata_unreachable",
+        description:
+          "strad is fetching too many client metadata documents at once; try again shortly",
+      };
+    }
 
     const work = this.fetchAndValidate(clientId).finally(() =>
       this.inFlight.delete(clientId),
@@ -688,7 +719,8 @@ function isJsonContentType(value: string | undefined): boolean {
  * strad is a private cache here, so `max-age` is read and `s-maxage` is not.
  * `no-store` and `no-cache` both mean zero — `no-cache` would have strad
  * revalidate on every use, and a revalidation is a fetch. Absent any
- * directive, `CIMD_DEFAULT_TTL_MS`; never more than `CIMD_MAX_TTL_MS`.
+ * directive, `CIMD_DEFAULT_TTL_MS`; never more than `CIMD_MAX_TTL_MS`. A
+ * malformed `max-age` is zero.
  */
 export function freshnessMs(headers: IncomingHttpHeaders): number {
   const raw = headers["cache-control"];
@@ -699,10 +731,12 @@ export function freshnessMs(headers: IncomingHttpHeaders): number {
     .map((d) => d.trim());
   if (directives.some((d) => d === "no-store" || d === "no-cache")) return 0;
   for (const d of directives) {
+    if (!/^max-age\s*=/.test(d)) continue;
+    // RFC 9111 §4.2.1: a `max-age` that is not a non-negative integer makes the
+    // response stale, not "unspecified".
     const m = /^max-age\s*=\s*"?(\d+)"?$/.exec(d);
-    if (m?.[1] !== undefined) {
-      return Math.min(Number(m[1]) * 1000, CIMD_MAX_TTL_MS);
-    }
+    if (m?.[1] === undefined) return 0;
+    return Math.min(Number(m[1]) * 1000, CIMD_MAX_TTL_MS);
   }
   return CIMD_DEFAULT_TTL_MS;
 }

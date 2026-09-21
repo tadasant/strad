@@ -323,7 +323,8 @@ still has to approve the client _by name_ on strad's own consent screen.
 7591 §2 allows. Real clients list grants strad does not serve — claude.ai's
 metadata names the JWT-bearer grant, VS Code's the device grant — so a
 registration is accepted as long as it includes `authorization_code` (and `code`),
-and the response names the subset that was registered. A
+and the response names the subset that was registered. A registration that
+leaves out `authorization_code` — `["refresh_token"]` alone, say — is refused. A
 `token_endpoint_auth_method` other than `none` is still refused by name: a
 client that expects to authenticate with a secret would fail at the token
 endpoint instead.
@@ -382,7 +383,8 @@ checked inside the socket's own DNS lookup, so the address vetted is the address
 dialled and a rebinding name gets no second answer — with loopback, RFC 1918,
 link-local (including `169.254.169.254`), CGNAT and reserved space refused, and
 IPv6 restricted to global unicast. Redirects are not followed. The read stops at
-5 KiB and the whole exchange at five seconds. Nothing inside the document —
+5 KiB and the whole exchange at five seconds, and at most sixteen fetches run at
+once — past that a sign-in is refused as busy rather than queued. Nothing inside the document —
 `logo_uri`, `jwks_uri` — is ever fetched.
 
 A good document is cached for its `Cache-Control: max-age`, at most an hour, five

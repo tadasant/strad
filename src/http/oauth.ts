@@ -7,6 +7,7 @@ import {
 } from "../auth/mcp-oauth/cimd.ts";
 import {
   clientFingerprint,
+  isLoopbackRedirect,
   readClient,
   registerClient,
   resolveRedirectUri,
@@ -1059,16 +1060,6 @@ interface ResolvedClient {
   uris: string[];
   name?: string;
   host?: string;
-}
-
-/** Would this code be delivered to a listener on the human's own machine? */
-function isLoopbackRedirect(uri: string): boolean {
-  try {
-    const host = new URL(uri).hostname;
-    return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
-  } catch {
-    return false;
-  }
 }
 
 function hostOf(uri: string): string {

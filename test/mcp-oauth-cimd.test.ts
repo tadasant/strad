@@ -16,7 +16,10 @@ import {
   type FetchedDocument,
 } from "../src/auth/mcp-oauth/cimd.ts";
 import { mcpOAuthKeysFromEnv } from "../src/auth/mcp-oauth/keys.ts";
-import { registerClient } from "../src/auth/mcp-oauth/clients.ts";
+import {
+  isLoopbackRedirect,
+  registerClient,
+} from "../src/auth/mcp-oauth/clients.ts";
 
 /**
  * Client id metadata documents, below the routes: the URL rules, the document
@@ -73,6 +76,9 @@ describe("which client ids are metadata-document URLs", () => {
     expect(
       clientIdUrlProblem(`https://example.com/${"a".repeat(1100)}`),
     ).toContain("at most");
+    // A host the parser rewrites is named as not normalized, not blamed on the
+    // path the rewrite happened to shift.
+    expect(clientIdUrlProblem("https://0x08080808/c")).toContain("normalized");
   });
 
   it("refuses a URL that names a non-public address on its face", () => {
@@ -88,6 +94,21 @@ describe("which client ids are metadata-document URLs", () => {
       expect(clientIdUrlProblem(id), id).toContain("private");
     }
     expect(clientIdUrlProblem("https://8.8.8.8/c")).toBeNull();
+  });
+});
+
+describe("which redirects land on the human's own machine", () => {
+  it.each([
+    ["http://127.0.0.1:33418/", true],
+    ["https://127.0.0.2/cb", true],
+    ["http://localhost:9000/cb", true],
+    ["https://app.localhost/cb", true],
+    ["http://[::1]:9000/cb", true],
+    ["https://claude.ai/api/mcp/auth_callback", false],
+    ["https://localhost.example/cb", false],
+    ["not a url", false],
+  ])("%s → %s", (uri, expected) => {
+    expect(isLoopbackRedirect(uri)).toBe(expected);
   });
 });
 
@@ -205,6 +226,14 @@ describe("what a document must say", () => {
       );
       expect(out.ok, method).toBe(false);
     }
+  });
+
+  it("truncates a long name on characters, not UTF-16 units", () => {
+    const out = parseClientMetadata(
+      CLAUDE,
+      doc({ client_name: `${"a".repeat(127)}😀😀` }),
+    );
+    expect(out.ok && out.client.name).toBe(`${"a".repeat(127)}😀`);
   });
 
   it("refuses a client that does not do the authorization-code flow", () => {
@@ -454,6 +483,54 @@ describe("the resolver", () => {
     expect((await resolver.resolve(CLAUDE)).ok).toBe(true);
   });
 
+  it("reports an unexpected fetch failure as unreachable, never as a throw", async () => {
+    const resolver = new ClientMetadataResolver({
+      fetch: answering([new TypeError("socket hang up")]).fetch,
+    });
+    await expect(resolver.resolve(CLAUDE)).resolves.toMatchObject({
+      ok: false,
+      reason: "client_metadata_unreachable",
+    });
+  });
+
+  it("refuses a fetch past the concurrency ceiling, whatever the URL", async () => {
+    // A fetch that never answers until released: the tarpit case.
+    const release: Array<() => void> = [];
+    let calls = 0;
+    const resolver = new ClientMetadataResolver({
+      maxConcurrent: 2,
+      fetch: (url) => {
+        calls++;
+        return new Promise<FetchedDocument>((done) =>
+          release.push(() =>
+            done({
+              status: 200,
+              headers: { "content-type": "application/json" },
+              body: Buffer.from(JSON.stringify(doc({ client_id: url.href }))),
+            }),
+          ),
+        );
+      },
+    });
+    const a = resolver.resolve(`${CLAUDE}?n=1`);
+    const b = resolver.resolve(`${CLAUDE}?n=2`);
+    const refused = await resolver.resolve(`${CLAUDE}?n=3`);
+    expect(refused).toMatchObject({
+      ok: false,
+      reason: "client_metadata_unreachable",
+    });
+    expect(!refused.ok && refused.description).toContain("too many");
+    expect(calls).toBe(2);
+
+    for (const r of release) r();
+    expect((await a).ok).toBe(true);
+    expect((await b).ok).toBe(true);
+    // The slots come back once the fetches finish.
+    const later = resolver.resolve(`${CLAUDE}?n=4`);
+    release[2]?.();
+    expect((await later).ok).toBe(true);
+  });
+
   it("never fetches a URL that fails the shape rules", async () => {
     const net = answering([ok(doc())]);
     const resolver = new ClientMetadataResolver({ fetch: net.fetch });
@@ -477,6 +554,9 @@ describe("freshness", () => {
     ).toBe(0);
     expect(freshnessMs({ "cache-control": "no-cache" })).toBe(0);
     expect(freshnessMs({ "cache-control": "max-age=0" })).toBe(0);
+    // Malformed means stale (RFC 9111 §4.2.1), not "unspecified".
+    expect(freshnessMs({ "cache-control": "max-age=-1" })).toBe(0);
+    expect(freshnessMs({ "cache-control": "max-age=soon" })).toBe(0);
     expect(freshnessMs({ "cache-control": "public" })).toBe(
       CIMD_DEFAULT_TTL_MS,
     );
