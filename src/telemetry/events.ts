@@ -240,7 +240,10 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      * the `grant_type` the caller sent — an unsupported one never reaches here.
      * `client` is the six-byte id minted at registration
      * (`src/auth/mcp-oauth/clients.ts`), which is ours and is not the client id
-     * the holder presents: that one carries the whole sealed registration.
+     * the holder presents: that one carries the whole sealed registration. For
+     * a metadata-document client it is `cimd-` and twelve hex characters of a
+     * SHA-256 of the document URL (`src/auth/mcp-oauth/cimd.ts`) — derived by
+     * this repo, never the caller-chosen URL itself.
      *
      * The HOLDER is absent, and deliberately. It would be a Google `sub` or an
      * email address — a person's account identifier, which is the same field

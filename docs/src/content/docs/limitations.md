@@ -532,6 +532,31 @@ first, second and fourth together, and gives the console page something to read.
 The third stays Google's shape unless strad mints its own grant identity, which
 it should not.
 
+### 105. A client id metadata document is fetched on an unauthenticated request
+
+strad accepts an `https` URL as a `client_id` — a [client id metadata
+document](/auth/overview/#client-id-metadata-documents) — and fetches it at
+`GET /oauth/authorize`, before anyone has signed in. It is on whenever
+`auth.mcpOAuth` is.
+
+- **Anyone can make strad fetch a public `https` URL.** The fetch is `https`
+  only, refuses any name that resolves to a private, loopback, link-local or
+  reserved address (checked on the lookup the socket actually uses), follows no
+  redirect, and stops at 5 KiB and five seconds. The destination is still the
+  caller's choice, and a failure is never cached, so a repeated request is a
+  repeated fetch.
+- **A document cannot vouch for a loopback redirect URI.** Any program can
+  present VS Code's document URL and listen on its port. The consent screen names
+  the publishing host and warns when the code is going to a program on the
+  machine; nothing stronger exists without client attestation.
+- **The token endpoint does not re-fetch.** The grant is bound to its client at
+  `/authorize`. A publisher that withdraws its document does not end grants
+  already issued; revocation is Google's, as above.
+- **The document cache is per process**, bounded to an hour and respecting
+  `Cache-Control`.
+
+See `HACKS.md` #105.
+
 ### 98. Console login tokens live in core's memory
 
 A [console login token](/auth/overview/#console-login-tokens-the-automated-actors-door)

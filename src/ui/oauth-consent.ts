@@ -8,8 +8,12 @@ import { esc, layout } from "./render.ts";
  * failed".
  *
  * **Consent.** Registration at this authorization server is open
- * (`src/auth/mcp-oauth/clients.ts`), so any client can arrive with a name it
- * chose for itself and a redirect URI it chose for itself. Google's consent
+ * (`src/auth/mcp-oauth/clients.ts`), and so are client id metadata documents
+ * (`src/auth/mcp-oauth/cimd.ts`), so any client can arrive with a name and a
+ * redirect URI. A registered client chose both for itself; a metadata-document
+ * client's are published by the host that serves its document, and the screen
+ * names that host, because it is the one thing about the client a caller
+ * cannot pick. Google's consent
  * screen cannot help here: it asks whether the human trusts STRAD, which they
  * do — it says nothing about the third party that sent them. This screen is
  * where the name and the destination of that third party are put in front of
@@ -31,8 +35,19 @@ import { esc, layout } from "./render.ts";
 export interface ConsentPageOptions {
   /** The client's registered `client_name`, when it declared one. */
   clientName?: string;
+  /**
+   * For a metadata-document client, the host that serves the document. Absent
+   * for a dynamically registered client, whose name nobody vouched for.
+   */
+  clientHost?: string;
   /** The host of the redirect URI the code would be delivered to. */
   redirectHost: string;
+  /**
+   * The code goes to a listener on the human's own machine. A metadata
+   * document cannot vouch for one of those: any local program can present a
+   * well-known client's URL and listen on its port.
+   */
+  loopbackRedirect?: boolean;
   /** The Google account that just authenticated. */
   email: string;
   /** The resource the grant is for — the canonical `/mcp` URL. */
@@ -47,6 +62,21 @@ export interface ConsentPageOptions {
 
 export function renderConsent(opts: ConsentPageOptions): string {
   const who = opts.clientName ? esc(opts.clientName) : "An MCP client";
+  const identifiedBy = opts.clientHost
+    ? `published by <code>${esc(opts.clientHost)}</code>`
+    : `self-registered — the name is the client's own claim`;
+  const loopbackWarning = opts.loopbackRedirect
+    ? `
+  <p class="state-detail consent-warning">
+    The code goes to a program on this computer, not to a website. Any program
+    on this machine can claim to be ${who} that way${
+      opts.clientHost
+        ? `, whatever <code>${esc(opts.clientHost)}</code> publishes`
+        : ""
+    }. Approve only if you started this yourself, just now, from ${who} on this
+    computer.
+  </p>`
+    : "";
   const roles = opts.roles.length
     ? opts.roles.map((r) => `<code>${esc(r)}</code>`).join(" ")
     : `<span class="state-detail">none — this grant will reach no servers</span>`;
@@ -61,12 +91,13 @@ export function renderConsent(opts: ConsentPageOptions): string {
   </p>
   <div class="card consent-detail">
     <dl>
+      <dt>Client</dt><dd>${who}, ${identifiedBy}</dd>
       <dt>Endpoint</dt><dd><code>${esc(opts.resource)}</code></dd>
       <dt>Signed in as</dt><dd>${esc(opts.email)}</dd>
       <dt>Delivered to</dt><dd><code>${esc(opts.redirectHost)}</code></dd>
       <dt>Roles</dt><dd>${roles}</dd>
     </dl>
-  </div>
+  </div>${loopbackWarning}
   <p class="state-detail">
     Only approve this if you started it. The token expires hourly and refreshes
     until you revoke strad's access to your Google account.
@@ -83,6 +114,7 @@ export function renderConsent(opts: ConsentPageOptions): string {
 .consent-detail dt{color:var(--g3);font-size:.82rem}
 .consent-detail dd{margin:0;color:var(--g1);font-size:.86rem;overflow-wrap:anywhere}
 .consent-actions{display:flex;gap:.6rem;margin-top:.8rem}
+.consent-warning{max-width:30rem;color:var(--g1)}
 </style>`;
 
   return layout({

@@ -1,6 +1,11 @@
 import express, { type Express, type Request, type Response } from "express";
 import { metadataBaseUrl } from "../auth/protected-resource.ts";
 import {
+  clientIdUrlProblem,
+  isMetadataClientId,
+  metadataClientHandle,
+} from "../auth/mcp-oauth/cimd.ts";
+import {
   clientFingerprint,
   readClient,
   registerClient,
@@ -53,8 +58,11 @@ import { asyncRoute, jsonFailure } from "./async-route.ts";
  *   1. `GET /.well-known/oauth-protected-resource/mcp` — the RFC 9728 document
  *      (`src/auth/protected-resource.ts`). It names this server.
  *   2. `GET /.well-known/oauth-authorization-server` — RFC 8414 metadata.
- *   3. `POST /oauth/register` — RFC 7591, because claude.ai's connector dialog
- *      takes a URL and nothing else and there is no place to pre-register.
+ *   3. EITHER `POST /oauth/register` — RFC 7591, because a connector dialog
+ *      takes a URL and nothing else and there is no place to pre-register —
+ *      OR nothing at all: a client with a metadata document sends its `https`
+ *      URL as the `client_id` and strad fetches it at step 4
+ *      (`src/auth/mcp-oauth/cimd.ts`).
  *   4. `GET /oauth/authorize` — validated, then the browser goes to Google.
  *   5. `GET /oauth/callback/google` — Google comes back; the Workspace domain is
  *      enforced here, on verified claims.
@@ -90,6 +98,11 @@ interface TxPayload {
   /** The client's request, validated, awaiting an identity. */
   request: AuthorizationRequest;
   clientName?: string;
+  /**
+   * For a metadata-document client, the host that served its document — the
+   * one name on the consent screen a caller cannot choose for itself.
+   */
+  clientHost?: string;
   exp: number;
 }
 
@@ -180,165 +193,210 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
   });
 
   // --- the authorization endpoint -----------------------------------------
-  app.get(AUTHORIZE_PATH, (req, res) => {
-    res.set("Cache-Control", "no-store");
-    const base = origin(req);
-    if (base === null) {
-      // Nothing downstream can be built without one: no issuer to put in `iss`,
-      // no resource to bind a token to, and no absolute redirect URI to hand
-      // Google. Said as a page, because a human is looking at it.
-      page(
-        res,
-        500,
-        renderAuthorizeError({
-          heading: "This gateway cannot run an authorization flow",
-          detail:
-            "It has no public URL. An operator must set gateway.publicUrl to the " +
-            "origin this deployment is reached at.",
-        }),
-      );
-      return;
-    }
+  //
+  // Async, and so wrapped, because a metadata-document client is resolved by
+  // fetching its document. See `asyncRoute` for why an unwrapped async route
+  // is a process exit.
+  app.get(
+    AUTHORIZE_PATH,
+    asyncRoute(async (req, res) => {
+      res.set("Cache-Control", "no-store");
+      const base = origin(req);
+      if (base === null) {
+        // Nothing downstream can be built without one: no issuer to put in `iss`,
+        // no resource to bind a token to, and no absolute redirect URI to hand
+        // Google. Said as a page, because a human is looking at it.
+        page(
+          res,
+          500,
+          renderAuthorizeError({
+            heading: "This gateway cannot run an authorization flow",
+            detail:
+              "It has no public URL. An operator must set gateway.publicUrl to the " +
+              "origin this deployment is reached at.",
+          }),
+        );
+        return;
+      }
 
-    const clientId = single(req.query.client_id);
-    const client = clientId ? readClient(clientId, oauth.keys.client) : null;
-    if (!clientId || !client) {
-      refused("authorize", "unknown_client");
-      page(
-        res,
-        400,
-        renderAuthorizeError({
-          heading: "Unknown client",
-          detail:
-            "The client_id on this request was not issued by this gateway, or " +
-            "the key that signed it has been rotated. The client should register " +
-            "again.",
-        }),
-      );
-      return;
-    }
+      const clientId = single(req.query.client_id);
 
-    const redirectUri = resolveRedirectUri(
-      client,
-      single(req.query.redirect_uri),
-    );
-    if (redirectUri === null) {
-      refused("authorize", "redirect_uri_mismatch");
-      page(
-        res,
-        400,
-        renderAuthorizeError({
-          heading: "Redirect address not registered",
-          detail:
-            "The redirect_uri on this request is not one this client registered, " +
-            "or the client registered several and named none.",
-        }),
-      );
-      return;
-    }
+      // A client id with a URI scheme is a metadata document, and is fetched. Its
+      // refusals are pages for the same reason an unknown client's is: nothing
+      // about the redirect URI has been verified yet.
+      let client: ResolvedClient | null = null;
+      if (clientId && isMetadataClientId(clientId)) {
+        const outcome = await oauth.clientMetadata.resolve(clientId);
+        if (!outcome.ok) {
+          refused("authorize", outcome.reason);
+          page(
+            res,
+            400,
+            renderAuthorizeError({
+              heading: "This client's metadata document could not be used",
+              detail:
+                `The client_id is a metadata document URL, and ${outcome.description}. ` +
+                "The client's publisher has to fix it; nothing on this gateway can.",
+            }),
+          );
+          return;
+        }
+        client = {
+          uris: outcome.client.uris,
+          ...(outcome.client.name ? { name: outcome.client.name } : {}),
+          host: outcome.client.host,
+        };
+      } else if (clientId) {
+        const record = readClient(clientId, oauth.keys.client);
+        if (record) {
+          client = {
+            uris: record.uris,
+            ...(record.name ? { name: record.name } : {}),
+          };
+        }
+      }
+      if (!clientId || !client) {
+        refused("authorize", "unknown_client");
+        page(
+          res,
+          400,
+          renderAuthorizeError({
+            heading: "Unknown client",
+            detail:
+              "The client_id on this request was not issued by this gateway, or " +
+              "the key that signed it has been rotated. The client should register " +
+              "again.",
+          }),
+        );
+        return;
+      }
 
-    // Past this line the destination is verified, so an error is the client's
-    // to handle and travels as an OAuth error response (RFC 6749 §4.1.2.1).
-    const clientState = single(req.query.state);
-    const fail = (error: string, description: string): void => {
-      refused("authorize", error);
-      res.redirect(
-        302,
-        errorRedirect(redirectUri, base, error, description, clientState),
+      const redirectUri = resolveRedirectUri(
+        client,
+        single(req.query.redirect_uri),
       );
-    };
+      if (redirectUri === null) {
+        refused("authorize", "redirect_uri_mismatch");
+        page(
+          res,
+          400,
+          renderAuthorizeError({
+            heading: "Redirect address not registered",
+            detail: client.host
+              ? `The redirect_uri on this request is not one listed in the ` +
+                `client's metadata document at ${client.host}, or the document ` +
+                "lists several and the request named none."
+              : "The redirect_uri on this request is not one this client registered, " +
+                "or the client registered several and named none.",
+          }),
+        );
+        return;
+      }
 
-    if (single(req.query.response_type) !== "code") {
-      fail(
-        "unsupported_response_type",
-        'strad issues authorization codes only: response_type must be "code".',
-      );
-      return;
-    }
+      // Past this line the destination is verified, so an error is the client's
+      // to handle and travels as an OAuth error response (RFC 6749 §4.1.2.1).
+      const clientState = single(req.query.state);
+      const fail = (error: string, description: string): void => {
+        refused("authorize", error);
+        res.redirect(
+          302,
+          errorRedirect(redirectUri, base, error, description, clientState),
+        );
+      };
 
-    // PKCE IS MANDATORY, and `plain` is refused rather than downgraded to.
-    // OAuth 2.1 requires S256 for public clients, and a `plain` challenge is a
-    // challenge an attacker who intercepted the authorization request already
-    // holds — it protects nothing, so accepting it would be advertising a
-    // defence strad does not have.
-    const method = single(req.query.code_challenge_method);
-    const challenge = single(req.query.code_challenge);
-    if (!challenge) {
-      fail(
-        "invalid_request",
-        "code_challenge is required: this authorization server requires PKCE.",
-      );
-      return;
-    }
-    if (method !== CODE_CHALLENGE_METHOD) {
-      fail(
-        "invalid_request",
-        `code_challenge_method must be "${CODE_CHALLENGE_METHOD}". ` +
-          '"plain" is refused, and an absent method is not assumed to be it.',
-      );
-      return;
-    }
-    if (!validChallenge(challenge)) {
-      fail(
-        "invalid_request",
-        "code_challenge must be the base64url SHA-256 of the verifier.",
-      );
-      return;
-    }
+      if (single(req.query.response_type) !== "code") {
+        fail(
+          "unsupported_response_type",
+          'strad issues authorization codes only: response_type must be "code".',
+        );
+        return;
+      }
 
-    // RFC 8707. The client may name the resource it wants a token for; the
-    // query is stripped before comparing, so the `?servers=granola` URL a human
-    // pasted names the same resource as the bare one. See
-    // `src/auth/mcp-oauth/metadata.ts`.
-    const resource = canonicalResource(base);
-    const requestedResource = single(req.query.resource);
-    if (
-      requestedResource !== undefined &&
-      normalizeResource(requestedResource) !== resource
-    ) {
-      fail(
-        "invalid_target",
-        `this authorization server issues tokens for ${resource} only.`,
-      );
-      return;
-    }
+      // PKCE IS MANDATORY, and `plain` is refused rather than downgraded to.
+      // OAuth 2.1 requires S256 for public clients, and a `plain` challenge is a
+      // challenge an attacker who intercepted the authorization request already
+      // holds — it protects nothing, so accepting it would be advertising a
+      // defence strad does not have.
+      const method = single(req.query.code_challenge_method);
+      const challenge = single(req.query.code_challenge);
+      if (!challenge) {
+        fail(
+          "invalid_request",
+          "code_challenge is required: this authorization server requires PKCE.",
+        );
+        return;
+      }
+      if (method !== CODE_CHALLENGE_METHOD) {
+        fail(
+          "invalid_request",
+          `code_challenge_method must be "${CODE_CHALLENGE_METHOD}". ` +
+            '"plain" is refused, and an absent method is not assumed to be it.',
+        );
+        return;
+      }
+      if (!validChallenge(challenge)) {
+        fail(
+          "invalid_request",
+          "code_challenge must be the base64url SHA-256 of the verifier.",
+        );
+        return;
+      }
 
-    // SCOPE IS IGNORED, not refused, and RFC 6749 §3.3 is explicit that an
-    // authorization server may issue a scope other than the one asked for as
-    // long as it says so in the response — which `/oauth/token` does, always
-    // answering `scope: "mcp"`.
-    //
-    // Refusing an unrecognised scope would be the stricter reading and the
-    // wrong trade here. Scope grants NOTHING on this gateway: what a principal
-    // may reach is decided entirely by `roles` and the two-way entitlement,
-    // server-side, on every request (`src/gateway/entitlements.ts`). So a
-    // client asking for a scope it invented cannot widen anything, and the only
-    // effect of an `invalid_scope` would be a connector that fails to set up
-    // over a word that was never going to matter.
+      // RFC 8707. The client may name the resource it wants a token for; the
+      // query is stripped before comparing, so the `?servers=granola` URL a human
+      // pasted names the same resource as the bare one. See
+      // `src/auth/mcp-oauth/metadata.ts`.
+      const resource = canonicalResource(base);
+      const requestedResource = single(req.query.resource);
+      if (
+        requestedResource !== undefined &&
+        normalizeResource(requestedResource) !== resource
+      ) {
+        fail(
+          "invalid_target",
+          `this authorization server issues tokens for ${resource} only.`,
+        );
+        return;
+      }
 
-    const request: AuthorizationRequest = {
-      cid: clientFingerprint(clientId),
-      redirectUri,
-      challenge,
-      ...(clientState !== undefined ? { state: clientState } : {}),
-      resource,
-      issuer: base,
-    };
+      // SCOPE IS IGNORED, not refused, and RFC 6749 §3.3 is explicit that an
+      // authorization server may issue a scope other than the one asked for as
+      // long as it says so in the response — which `/oauth/token` does, always
+      // answering `scope: "mcp"`.
+      //
+      // Refusing an unrecognised scope would be the stricter reading and the
+      // wrong trade here. Scope grants NOTHING on this gateway: what a principal
+      // may reach is decided entirely by `roles` and the two-way entitlement,
+      // server-side, on every request (`src/gateway/entitlements.ts`). So a
+      // client asking for a scope it invented cannot widen anything, and the only
+      // effect of an `invalid_scope` would be a connector that fails to set up
+      // over a word that was never going to matter.
 
-    const googleRedirectUri = `${base}${GOOGLE_CALLBACK_PATH}`;
-    const pending = oauth.google.beginAuth(googleRedirectUri);
-    const payload: TxPayload = {
-      v: 1,
-      state: pending.state,
-      verifier: pending.codeVerifier,
-      googleRedirectUri,
-      request,
-      ...(client.name ? { clientName: client.name } : {}),
-      exp: now() + TX_TTL_MS,
-    };
-    setTxCookie(res, oauth.keys.tx, payload, env);
-    res.redirect(302, pending.url);
-  });
+      const request: AuthorizationRequest = {
+        cid: clientFingerprint(clientId),
+        redirectUri,
+        challenge,
+        ...(clientState !== undefined ? { state: clientState } : {}),
+        resource,
+        issuer: base,
+      };
+
+      const googleRedirectUri = `${base}${GOOGLE_CALLBACK_PATH}`;
+      const pending = oauth.google.beginAuth(googleRedirectUri);
+      const payload: TxPayload = {
+        v: 1,
+        state: pending.state,
+        verifier: pending.codeVerifier,
+        googleRedirectUri,
+        request,
+        ...(client.name ? { clientName: client.name } : {}),
+        ...(client.host ? { clientHost: client.host } : {}),
+        exp: now() + TX_TTL_MS,
+      };
+      setTxCookie(res, oauth.keys.tx, payload, env);
+      res.redirect(302, pending.url);
+    }, jsonFailure("mcp_oauth_authorize")),
+  );
 
   // --- Google comes back ---------------------------------------------------
   //
@@ -466,7 +524,9 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
         200,
         renderConsent({
           ...(tx.clientName ? { clientName: tx.clientName } : {}),
+          ...(tx.clientHost ? { clientHost: tx.clientHost } : {}),
           redirectHost: hostOf(request.redirectUri),
+          loopbackRedirect: isLoopbackRedirect(request.redirectUri),
           email: grant.identity.email,
           resource: request.resource,
           roles: oauth.roles,
@@ -595,12 +655,30 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
 
   // -----------------------------------------------------------------------
 
+  /**
+   * Is this a client id the token endpoint may answer for?
+   *
+   * A registered client, by its MAC. A metadata-document client, by the SHAPE
+   * of its URL only — the token endpoint never fetches. What binds a grant to
+   * its client is `cid`, the fingerprint sealed into the code and the refresh
+   * token at `/oauth/authorize`, which is where the document was fetched and
+   * the redirect URI matched against it. Fetching again here would add nothing
+   * to that binding, and would make every refresh — for as long as the
+   * connector lives — depend on the client's publisher keeping its document
+   * host up.
+   */
+  function knownClient(clientId: string): boolean {
+    if (isMetadataClientId(clientId))
+      return clientIdUrlProblem(clientId) === null;
+    return readClient(clientId, oauth.keys.client) !== null;
+  }
+
   async function codeGrant(req: Request, res: Response): Promise<void> {
     const body = req.body as Record<string, unknown>;
     const clientId = str(body.client_id);
     const code = readCode(oauth.keys.code, str(body.code), now());
 
-    if (!clientId || !readClient(clientId, oauth.keys.client)) {
+    if (!clientId || !knownClient(clientId)) {
       tokenError(res, 401, "invalid_client", "unknown client_id.");
       return;
     }
@@ -697,7 +775,7 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
       str(body.refresh_token),
     );
 
-    if (!clientId || !readClient(clientId, oauth.keys.client)) {
+    if (!clientId || !knownClient(clientId)) {
       tokenError(res, 401, "invalid_client", "unknown client_id.");
       return;
     }
@@ -963,9 +1041,34 @@ function sent(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-/** The client's own short id, for a log line. Never the whole registration. */
+/**
+ * The client's own short id, for a log line. Never the whole registration, and
+ * never a metadata document's URL — a derived handle stands in for that.
+ */
 function clientIdOf(clientId: string, sealer: Sealer): string {
+  if (isMetadataClientId(clientId)) return metadataClientHandle(clientId);
   return readClient(clientId, sealer)?.id ?? "unknown";
+}
+
+/**
+ * What `/oauth/authorize` needs from either kind of client: the redirect URIs
+ * to match, a name to show, and — for a metadata-document client only — the
+ * host that vouched for both.
+ */
+interface ResolvedClient {
+  uris: string[];
+  name?: string;
+  host?: string;
+}
+
+/** Would this code be delivered to a listener on the human's own machine? */
+function isLoopbackRedirect(uri: string): boolean {
+  try {
+    const host = new URL(uri).hostname;
+    return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
+  } catch {
+    return false;
+  }
 }
 
 function hostOf(uri: string): string {

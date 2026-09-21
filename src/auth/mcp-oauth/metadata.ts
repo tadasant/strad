@@ -118,6 +118,12 @@ export interface AuthorizationServerMetadata {
   service_documentation: string;
   /** RFC 9207: every authorization response carries `iss`. */
   authorization_response_iss_parameter_supported: true;
+  /**
+   * `draft-ietf-oauth-client-id-metadata-document`: an `https` URL is accepted
+   * as a `client_id` without registering first (`cimd.ts`). The MCP spec has a
+   * client that sees this prefer it over `registration_endpoint`.
+   */
+  client_id_metadata_document_supported: true;
 }
 
 const SERVICE_DOCUMENTATION = "https://docs.strad.tadasant.com/auth/overview/";
@@ -153,5 +159,6 @@ export function authorizationServerMetadata(
     scopes_supported: [MCP_SCOPE],
     service_documentation: SERVICE_DOCUMENTATION,
     authorization_response_iss_parameter_supported: true,
+    client_id_metadata_document_supported: true,
   };
 }

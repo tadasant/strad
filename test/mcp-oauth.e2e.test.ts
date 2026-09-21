@@ -5,6 +5,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
+import {
+  guardedFetch,
+  type FetchedDocument,
+} from "../src/auth/mcp-oauth/cimd.ts";
 import { mintToken } from "../src/auth/tokens.ts";
 import { parseConfig } from "../src/config/load.ts";
 import { Registry } from "../src/gateway/registry.ts";
@@ -69,6 +73,84 @@ const ENV = {
 
 const CLAUDE_CALLBACK = "https://claude.ai/api/mcp/auth_callback";
 
+/**
+ * Client id metadata documents, served by URL.
+ *
+ * The seam is the fetch and nothing else: every URL in this table answers the
+ * canned response, and every URL NOT in it goes to the real `guardedFetch` —
+ * so `https://localhost/…` really is resolved, really does come back as
+ * `127.0.0.1`, and really is refused by the address check, with no document
+ * server needed to prove it.
+ */
+const CLAUDE_CIMD = "https://claude.ai/oauth/mcp-oauth-client-metadata";
+const VSCODE_CIMD = "https://vscode.dev/oauth/client-metadata.json";
+const MISMATCHED_CIMD = "https://evil.example/claude.json";
+const documents = new Map<string, FetchedDocument>();
+const fetched: string[] = [];
+
+function serveDocument(
+  url: string,
+  body: unknown,
+  headers: Record<string, string> = {},
+): void {
+  documents.set(url, {
+    status: 200,
+    headers: { "content-type": "application/json", ...headers },
+    body: Buffer.from(JSON.stringify(body)),
+  });
+}
+
+// claude.ai's document, verbatim as it is served — including the JWT-bearer
+// grant strad does not implement, which must not make the document invalid.
+serveDocument(
+  CLAUDE_CIMD,
+  {
+    client_id: CLAUDE_CIMD,
+    client_name: "Claude",
+    client_uri: "https://claude.ai",
+    redirect_uris: [CLAUDE_CALLBACK],
+    grant_types: [
+      "authorization_code",
+      "refresh_token",
+      "urn:ietf:params:oauth:grant-type:jwt-bearer",
+    ],
+    response_types: ["code"],
+    token_endpoint_auth_method: "none",
+  },
+  { "cache-control": "public, max-age=300" },
+);
+// VS Code's, verbatim: a loopback listener and a `no-store` cache policy.
+serveDocument(
+  VSCODE_CIMD,
+  {
+    client_name: "Visual Studio Code",
+    logo_uri: "https://code.visualstudio.com/assets/branding/code-stable.png",
+    grant_types: [
+      "authorization_code",
+      "refresh_token",
+      "urn:ietf:params:oauth:grant-type:device_code",
+    ],
+    response_types: ["code"],
+    token_endpoint_auth_method: "none",
+    application_type: "native",
+    client_id: VSCODE_CIMD,
+    client_uri: "https://vscode.dev/product",
+    redirect_uris: ["http://127.0.0.1:33418/", "https://vscode.dev/redirect"],
+  },
+  { "cache-control": "no-store,no-cache,max-age=0" },
+);
+// A document that claims to be claude.ai's from somewhere else.
+serveDocument(MISMATCHED_CIMD, {
+  client_id: CLAUDE_CIMD,
+  client_name: "Claude",
+  redirect_uris: ["https://evil.example/cb"],
+});
+
+async function fetchDocument(url: URL): Promise<FetchedDocument> {
+  fetched.push(url.href);
+  return documents.get(url.href) ?? guardedFetch(url);
+}
+
 let server: Server;
 let base: string;
 let google: FakeGoogleGrant;
@@ -93,6 +175,7 @@ beforeAll(async () => {
     mode: "core",
     env,
     mcpOAuthGoogle: google,
+    mcpOAuthClientMetadataFetch: fetchDocument,
   });
   server = await new Promise<Server>((resolve) => {
     const s = app.listen(0, "127.0.0.1", () => resolve(s));
@@ -148,18 +231,27 @@ interface Authorized {
  * the client's redirect URI. The steps a human drives, driven.
  */
 async function walkToCode(
-  opts: { resource?: string; state?: string } = {},
+  opts: {
+    resource?: string;
+    state?: string;
+    /** A metadata-document URL to present instead of registering. */
+    clientId?: string;
+    redirectUri?: string;
+    /** Receives the consent page's HTML. */
+    onConsent?: (html: string) => void;
+  } = {},
 ): Promise<Authorized> {
-  const registration = (await (await register()).json()) as {
-    client_id: string;
-  };
+  const clientId =
+    opts.clientId ??
+    ((await (await register()).json()) as { client_id: string }).client_id;
+  const redirectUri = opts.redirectUri ?? CLAUDE_CALLBACK;
   const { verifier, challenge } = pkce();
   const state = opts.state ?? randomBytes(8).toString("hex");
 
   const authorize = new URL(`${base}/oauth/authorize`);
   authorize.searchParams.set("response_type", "code");
-  authorize.searchParams.set("client_id", registration.client_id);
-  authorize.searchParams.set("redirect_uri", CLAUDE_CALLBACK);
+  authorize.searchParams.set("client_id", clientId);
+  authorize.searchParams.set("redirect_uri", redirectUri);
   authorize.searchParams.set("code_challenge", challenge);
   authorize.searchParams.set("code_challenge_method", "S256");
   authorize.searchParams.set("state", state);
@@ -174,7 +266,9 @@ async function walkToCode(
   callback.searchParams.set("state", google.lastState);
   const consent = await fetch(callback, { headers: { cookie } });
   expect(consent.status).toBe(200);
-  const approval = approvalField(await consent.text());
+  const html = await consent.text();
+  opts.onConsent?.(html);
+  const approval = approvalField(html);
 
   const approved = await fetch(`${base}/oauth/approve`, {
     method: "POST",
@@ -186,7 +280,7 @@ async function walkToCode(
   const landed = new URL(approved.headers.get("location") ?? "");
 
   return {
-    clientId: registration.client_id,
+    clientId,
     verifier,
     code: landed.searchParams.get("code") ?? "",
     state: landed.searchParams.get("state") ?? "",
@@ -319,6 +413,22 @@ describe("dynamic client registration", () => {
       ],
     });
     expect(res.status).toBe(201);
+  });
+
+  it("registers a client that lists grants strad does not serve, narrowed to the ones it does", async () => {
+    // What a real client sends: claude.ai's metadata names the JWT-bearer
+    // grant and VS Code's the device grant. Refusing the registration over them
+    // would be a connector that cannot be added.
+    const res = await register({
+      grant_types: [
+        "authorization_code",
+        "refresh_token",
+        "urn:ietf:params:oauth:grant-type:device_code",
+      ],
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.grant_types).toEqual(["authorization_code", "refresh_token"]);
   });
 
   it("admits a native client's loopback listener", async () => {
@@ -462,5 +572,160 @@ describe("both doors are open at once", () => {
     // that share no code path beyond `bearerToken`. The static one is what
     // every headless agent holds and is the regression this must not cause.
     expect(viaStatic.tools).toEqual(viaOauth.tools);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Client ID Metadata Documents
+// ---------------------------------------------------------------------------
+
+/** `/oauth/authorize` for a client, up to strad's first answer. */
+async function authorizeAs(
+  clientId: string,
+  redirectUri: string = CLAUDE_CALLBACK,
+): Promise<Response> {
+  const authorize = new URL(`${base}/oauth/authorize`);
+  authorize.searchParams.set("response_type", "code");
+  authorize.searchParams.set("client_id", clientId);
+  authorize.searchParams.set("redirect_uri", redirectUri);
+  authorize.searchParams.set("code_challenge", pkce().challenge);
+  authorize.searchParams.set("code_challenge_method", "S256");
+  authorize.searchParams.set("state", "s");
+  return fetch(authorize, { redirect: "manual" });
+}
+
+describe("client id metadata documents", () => {
+  it("advertises support beside the registration endpoint", async () => {
+    const res = await fetch(`${base}/.well-known/oauth-authorization-server`);
+    const doc = (await res.json()) as Record<string, unknown>;
+    expect(doc.client_id_metadata_document_supported).toBe(true);
+    // Additive: DCR is still offered to every client that does not do CIMD.
+    expect(doc.registration_endpoint).toBe(`${base}/oauth/register`);
+  });
+
+  it("connects claude.ai by its document URL, with no registration, end to end", async () => {
+    let consent = "";
+    const authorized = await walkToCode({
+      clientId: CLAUDE_CIMD,
+      resource: `${base}/mcp?servers=granola`,
+      onConsent: (html) => (consent = html),
+    });
+    // The consent screen names the host that published the client, not just
+    // the name the client gave itself.
+    expect(consent).toContain("Claude");
+    expect(consent).toContain("published by <code>claude.ai</code>");
+    expect(consent).not.toContain("program on this computer");
+
+    const first = await exchange({
+      grant_type: "authorization_code",
+      code: authorized.code,
+      client_id: CLAUDE_CIMD,
+      code_verifier: authorized.verifier,
+      redirect_uri: CLAUDE_CALLBACK,
+    });
+    expect(first.status).toBe(200);
+    const { tools } = await callMcp(
+      first.json.access_token,
+      "?servers=granola",
+    );
+    expect(tools.length).toBeGreaterThan(0);
+
+    // Refresh works on the URL client id too, and never fetches: the grant is
+    // bound to its client by fingerprint at /oauth/authorize.
+    const before = fetched.length;
+    const refreshed = await exchange({
+      grant_type: "refresh_token",
+      refresh_token: first.json.refresh_token,
+      client_id: CLAUDE_CIMD,
+    });
+    expect(refreshed.status).toBe(200);
+    expect(fetched.length).toBe(before);
+    await expect(
+      callMcp(refreshed.json.access_token, "?servers=granola"),
+    ).resolves.toBeTruthy();
+  });
+
+  it("will not let a DCR client spend a code issued to a CIMD client", async () => {
+    const authorized = await walkToCode({ clientId: CLAUDE_CIMD });
+    const registered = (await (await register()).json()) as {
+      client_id: string;
+    };
+    const { status, json } = await exchange({
+      grant_type: "authorization_code",
+      code: authorized.code,
+      client_id: registered.client_id,
+      code_verifier: authorized.verifier,
+    });
+    expect(status).toBe(400);
+    expect(json.error).toBe("invalid_grant");
+  });
+
+  it("warns on the consent screen when the code goes to a loopback listener", async () => {
+    let consent = "";
+    await walkToCode({
+      clientId: VSCODE_CIMD,
+      redirectUri: "http://127.0.0.1:33418/",
+      onConsent: (html) => (consent = html),
+    });
+    expect(consent).toContain("published by <code>vscode.dev</code>");
+    expect(consent).toContain("program on this computer");
+  });
+
+  it("refuses a document whose client_id is not the URL it was fetched from", async () => {
+    const res = await authorizeAs(MISMATCHED_CIMD, "https://evil.example/cb");
+    expect(res.status).toBe(400);
+    // A page, never a redirect: nothing about the destination is verified.
+    expect(res.headers.get("location")).toBeNull();
+    expect(await res.text()).toContain("does not match the URL");
+  });
+
+  it("refuses a redirect_uri the document does not list, without redirecting to it", async () => {
+    const res = await authorizeAs(CLAUDE_CIMD, "https://attacker.example/cb");
+    expect(res.status).toBe(400);
+    expect(res.headers.get("location")).toBeNull();
+    expect(await res.text()).toContain("metadata document at claude.ai");
+  });
+
+  it("refuses to fetch a private, loopback or link-local address", async () => {
+    for (const clientId of [
+      "https://127.0.0.1/client.json",
+      "https://169.254.169.254/latest/meta-data",
+      "https://[::1]/client.json",
+      "https://10.0.0.8/client.json",
+    ]) {
+      const before = fetched.length;
+      const res = await authorizeAs(clientId);
+      expect(res.status, clientId).toBe(400);
+      expect(res.headers.get("location")).toBeNull();
+      // Refused on its face — the fetch was never attempted.
+      expect(fetched.length, clientId).toBe(before);
+    }
+  });
+
+  it("refuses a name that resolves to loopback, at the socket's own lookup", async () => {
+    // Not in the table, so this is the REAL guarded fetch, the real resolver
+    // and the real address check.
+    const res = await authorizeAs("https://localhost/client.json");
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("private, loopback or reserved address");
+  });
+
+  it("refuses an http client_id", async () => {
+    const res = await authorizeAs(
+      "http://claude.ai/oauth/mcp-oauth-client-metadata",
+    );
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("must use https");
+  });
+
+  it("answers invalid_client at the token endpoint for a malformed URL client id", async () => {
+    const { status, json } = await exchange({
+      grant_type: "authorization_code",
+      code: "x",
+      client_id: "http://claude.ai/x",
+      code_verifier: "y".repeat(43),
+    });
+    expect(status).toBe(401);
+    expect(json.error).toBe("invalid_client");
   });
 });
