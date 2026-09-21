@@ -1,6 +1,7 @@
 import type { StradConfig } from "../../config/schema.ts";
 import type { Principal } from "../index.ts";
 import { ACCESS_TOKEN_PREFIX, readAccessToken, SpentCodes } from "./grants.ts";
+import { ClientMetadataResolver, type DocumentFetcher } from "./cimd.ts";
 import { grantProviderFromEnv, type McpGoogleProvider } from "./google.ts";
 import {
   mcpOAuthKeysFromEnv,
@@ -34,6 +35,12 @@ export interface McpOAuth {
   google: McpGoogleProvider;
   /** The one piece of server-side state in the flow. See `SpentCodes`. */
   spent: SpentCodes;
+  /**
+   * Client id metadata documents (`cimd.ts`): the fetch, the checks and the
+   * cache. On whenever the flow is — there is no separate switch, for the
+   * reason open registration has none.
+   */
+  clientMetadata: ClientMetadataResolver;
 }
 
 export interface ResolveMcpOAuthOptions {
@@ -45,6 +52,11 @@ export interface ResolveMcpOAuthOptions {
    * other line of the flow for real.
    */
   google?: McpGoogleProvider | null;
+  /**
+   * Test seam: substitute the client-metadata fetch. The real one refuses
+   * every loopback address, which is where a test's document server lives.
+   */
+  clientMetadataFetch?: DocumentFetcher;
   log?: (msg: string) => void;
 }
 
@@ -106,6 +118,9 @@ export function resolveMcpOAuth(opts: ResolveMcpOAuthOptions): McpOAuth | null {
     keys,
     google,
     spent: new SpentCodes(),
+    clientMetadata: new ClientMetadataResolver(
+      opts.clientMetadataFetch ? { fetch: opts.clientMetadataFetch } : {},
+    ),
   };
 }
 

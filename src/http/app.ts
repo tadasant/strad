@@ -40,6 +40,7 @@ import {
   type McpGoogleProvider,
   type McpOAuth,
 } from "../auth/mcp-oauth/index.ts";
+import type { DocumentFetcher } from "../auth/mcp-oauth/cimd.ts";
 import { MCP_SCOPE } from "../auth/mcp-oauth/metadata.ts";
 import { mountMcpOAuth } from "./oauth.ts";
 import {
@@ -162,6 +163,11 @@ export interface AppOptions {
    */
   mcpOAuthGoogle?: McpGoogleProvider | null;
   /**
+   * Test seam: the client-metadata-document fetch (`src/auth/mcp-oauth/cimd.ts`).
+   * The real one refuses loopback, which is where a test serves its documents.
+   */
+  mcpOAuthClientMetadataFetch?: DocumentFetcher;
+  /**
    * The last tool-surface observation, for `/healthz`.
    *
    * A getter rather than a value, because the monitor re-probes on an interval
@@ -212,6 +218,9 @@ export function createApp(opts: AppOptions): Express {
           env,
           ...(opts.mcpOAuthGoogle !== undefined
             ? { google: opts.mcpOAuthGoogle }
+            : {}),
+          ...(opts.mcpOAuthClientMetadataFetch
+            ? { clientMetadataFetch: opts.mcpOAuthClientMetadataFetch }
             : {}),
         })
       : null;

@@ -5471,3 +5471,54 @@ request, so a failure never leaves a half-built file behind.
 **Undo.** A `move_spreadsheet` / `share_spreadsheet` pair behind `drive.file`, on
 a slug whose operator has decided that scope is worth it. The create stays on
 `spreadsheets` either way.
+
+## 105. A client id metadata document is fetched on an unauthenticated request, and trusted only at `/authorize`
+
+**What.** strad's authorization server accepts an `https` URL as a `client_id`
+(OAuth Client ID Metadata Documents, `src/auth/mcp-oauth/cimd.ts`) and fetches
+the document behind it at `GET /oauth/authorize`. It is on whenever
+`auth.mcpOAuth` is — there is no separate switch — and it is additive to dynamic
+registration. Four properties follow, stated rather than worked around:
+
+1. **Anyone can make strad fetch a public `https` URL.** The fetch is guarded —
+   `https` only, every resolved address must be public (checked inside the
+   socket's own lookup, so a rebinding name has no second answer to give), no
+   redirects, 5 KiB, five seconds — but the destination is the caller's choice.
+   One `/oauth/authorize` is at most one fetch, and failures are not cached (the
+   draft forbids it), so a caller who repeats the request repeats the fetch. At
+   most 16 fetches are open at once across the process; past that a new
+   `/authorize` is refused as busy rather than queued, so a caller looping
+   against a host that trickles its answer holds sixteen sockets, not
+   unbounded ones — and can, for that window, make a real client's sign-in
+   fail until it retries. The
+   IPv4 half of the address rule is a denylist of special-use ranges, like
+   strad-fetch's (#79); the IPv6 half admits global unicast only.
+
+2. **A metadata document cannot vouch for a loopback redirect URI.** Any program
+   on a machine can present `https://vscode.dev/oauth/client-metadata.json` and
+   listen on `127.0.0.1:33418` itself. The consent screen names the publishing
+   host and, when the code goes to a loopback listener, says in words that any
+   program on the machine could be claiming that name. Nothing stronger is
+   possible without client attestation.
+
+3. **The token endpoint does not re-fetch.** A grant is bound to its client by
+   the fingerprint sealed into the code and the refresh token at `/authorize`,
+   which is where the document was checked. Re-fetching on refresh would make
+   every connector's life depend on its publisher's uptime, and would add nothing
+   to the binding. The cost: a publisher that withdraws its document, or removes a
+   redirect URI, does not end grants already issued. Revocation stays Google's
+   (#94).
+
+4. **The document cache is per process.** `Cache-Control` is respected, bounded
+   to an hour, five minutes when absent, never for `no-store`/`no-cache`, never
+   for a failure. A redeploy or a second replica fetches again.
+
+**Why.** CIMD is what the MCP authorization spec (2025-11-25) prefers for clients
+with no prior relationship to the server, and claude.ai and VS Code both publish
+one. Fetching the document is the mechanism; the guards bound what the fetch can
+reach, not whether it happens.
+
+**Undo.** (1) narrows with a per-host allowlist (`auth.mcpOAuth` could grow one),
+at the cost of an operator edit for every new client — the thing open
+registration exists to avoid. (2) needs attestation the spec does not yet
+define. (3) and (4) need a datastore, like the rest of #94.

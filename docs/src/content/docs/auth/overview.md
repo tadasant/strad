@@ -272,16 +272,17 @@ connected. Nothing is copied or pasted.
 
 ### The endpoints
 
-| Endpoint                                      | What it is                                                      |
-| --------------------------------------------- | --------------------------------------------------------------- |
-| `/.well-known/oauth-authorization-server`     | [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414) metadata     |
-| `/.well-known/oauth-authorization-server/mcp` | the same document at the path-suffixed URL the MCP SDK probes   |
-| `POST /oauth/register`                        | [RFC 7591](https://www.rfc-editor.org/rfc/rfc7591) registration |
-| `GET /oauth/authorize`                        | authorization code + PKCE; the Google sign-in starts here       |
-| `GET /oauth/callback/google`                  | Google comes back; the domain is enforced here                  |
-| `POST /oauth/approve`                         | the consent screen's decision                                   |
-| `POST /oauth/token`                           | `authorization_code` and `refresh_token`                        |
-| `POST /oauth/revoke`                          | [RFC 7009](https://www.rfc-editor.org/rfc/rfc7009) revocation   |
+| Endpoint                                      | What it is                                                       |
+| --------------------------------------------- | ---------------------------------------------------------------- |
+| `/.well-known/oauth-authorization-server`     | [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414) metadata      |
+| `/.well-known/oauth-authorization-server/mcp` | the same document at the path-suffixed URL the MCP SDK probes    |
+| `POST /oauth/register`                        | [RFC 7591](https://www.rfc-editor.org/rfc/rfc7591) registration  |
+| _(none)_                                      | a client id metadata document: the `client_id` is an `https` URL |
+| `GET /oauth/authorize`                        | authorization code + PKCE; the Google sign-in starts here        |
+| `GET /oauth/callback/google`                  | Google comes back; the domain is enforced here                   |
+| `POST /oauth/approve`                         | the consent screen's decision                                    |
+| `POST /oauth/token`                           | `authorization_code` and `refresh_token`                         |
+| `POST /oauth/revoke`                          | [RFC 7009](https://www.rfc-editor.org/rfc/rfc7009) revocation    |
 
 The metadata advertises `code` as the only response type, `authorization_code`
 and `refresh_token` as the grants, `S256` as the only PKCE method, and `none` as
@@ -289,7 +290,8 @@ the only token-endpoint auth method. It sets
 `authorization_response_iss_parameter_supported`, and every authorization
 response carries `iss` ([RFC 9207](https://www.rfc-editor.org/rfc/rfc9207)), so a
 client talking to more than one server cannot be tricked into exchanging a code
-at the wrong one.
+at the wrong one. It sets `client_id_metadata_document_supported` beside
+`registration_endpoint`, so a client can pick either way of identifying itself.
 
 **Scope is ignored rather than refused.** The one scope strad issues is `mcp`,
 and a client that asks for something else gets a token anyway, with
@@ -317,6 +319,16 @@ URIs. To get a token, the holder still has to send a real human through Google,
 that human still has to be a member of the configured Workspace, and that human
 still has to approve the client _by name_ on strad's own consent screen.
 
+`grant_types` and `response_types` are **narrowed rather than refused**, as RFC
+7591 §2 allows. Real clients list grants strad does not serve — claude.ai's
+metadata names the JWT-bearer grant, VS Code's the device grant — so a
+registration is accepted as long as it includes `authorization_code` (and `code`),
+and the response names the subset that was registered. A registration that
+leaves out `authorization_code` — `["refresh_token"]` alone, say — is refused. A
+`token_endpoint_auth_method` other than `none` is still refused by name: a
+client that expects to authenticate with a secret would fail at the token
+endpoint instead.
+
 What _is_ checked is the shape of the redirect URIs, because that is where an
 authorization code is delivered: `https:` only, or `http:` on `localhost` /
 `127.0.0.1` / `[::1]` (the [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252)
@@ -339,11 +351,57 @@ Google hop, so nothing about it yields a token. The value is phishing rather tha
 access, and it is inherent to open dynamic registration. See
 [Known limitations](/limitations/).
 
+### Client ID Metadata Documents
+
+The [MCP authorization spec](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-id-metadata-documents)
+prefers a second way for a client to identify itself, and strad serves it beside
+registration: [OAuth Client ID Metadata
+Documents](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/).
+The client skips `/oauth/register` and sends an `https` URL as its `client_id`.
+The URL serves a JSON document naming the client and its redirect URIs —
+claude.ai's is `https://claude.ai/oauth/mcp-oauth-client-metadata`, VS Code's
+`https://vscode.dev/oauth/client-metadata.json`. It is on whenever
+`auth.mcpOAuth` is; there is no separate key.
+
+At `GET /oauth/authorize` strad fetches the document and checks it:
+
+- The URL is `https`, has a path, and has no userinfo, fragment or `.`/`..`
+  segment. It must already be in normalized form, because client ids are
+  compared as plain strings.
+- The document's `client_id` equals the URL **exactly**. A document at one URL
+  cannot speak for another.
+- `redirect_uris` is present and each entry passes the same rules as a
+  registration's; the request's `redirect_uri` must be an exact match against
+  it. `token_endpoint_auth_method`, when present, is `none`, and a
+  `client_secret` is refused. `grant_types` and `response_types`, when present,
+  must include `authorization_code` and `code`; anything else they list is
+  ignored.
+
+The fetch is the dangerous part, because an unauthenticated caller chooses the
+URL. It is `https` only; every address the name resolves to must be public —
+checked inside the socket's own DNS lookup, so the address vetted is the address
+dialled and a rebinding name gets no second answer — with loopback, RFC 1918,
+link-local (including `169.254.169.254`), CGNAT and reserved space refused, and
+IPv6 restricted to global unicast. Redirects are not followed. The read stops at
+5 KiB and the whole exchange at five seconds, and at most sixteen fetches run at
+once — past that a sign-in is refused as busy rather than queued. Nothing inside the document —
+`logo_uri`, `jwks_uri` — is ever fetched.
+
+A good document is cached for its `Cache-Control: max-age`, at most an hour, five
+minutes when it says nothing, and not at all for `no-store`/`no-cache`. Failures
+and invalid documents are never cached. The token endpoint never fetches: the
+grant was bound to its client at `/authorize`, so a refresh does not depend on
+the publisher's uptime.
+
+Every failure is a page, never a redirect — nothing about the redirect URI has
+been verified yet. See [Known limitations](/limitations/) for what this costs.
+
 ### The flow, and what each step refuses
 
-1. **`GET /oauth/authorize`.** The `client_id` must be one strad issued, and the
+1. **`GET /oauth/authorize`.** The `client_id` must be one strad issued, or a
+   metadata-document URL whose document passes the checks above, and the
    `redirect_uri` must be an **exact string match** against that client's
-   registration. Neither of those failures is redirected: bouncing an error to an
+   registration or document. Neither of those failures is redirected: bouncing an error to an
    unverified URI is the open redirect the exact match exists to prevent, so both
    render a page instead. Past that point, every error is a proper OAuth error
    response back to the verified URI.
@@ -371,7 +429,10 @@ access, and it is inherent to open dynamic registration. See
    name and a destination it chose for itself. Google's consent screen cannot
    help — it asks whether the human trusts _strad_. This screen names the client,
    the account, the endpoint and the roles the grant will carry, and is where the
-   human approves or denies.
+   human approves or denies. It also says who vouches for the name: "published by
+   `claude.ai`" for a metadata-document client, "self-registered" for a
+   registered one. When the code is going to a loopback listener it warns that
+   any program on the machine could claim that name.
 
 5. **`POST /oauth/token`.** The code is single-use, expires in sixty seconds, is
    bound to the client it was issued to, and is only redeemable with the PKCE

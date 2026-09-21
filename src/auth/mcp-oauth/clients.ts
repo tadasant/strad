@@ -9,8 +9,11 @@ import type { Sealer } from "../session.ts";
  * claude.ai's custom-connector dialog takes a URL and nothing else. There is no
  * screen where a human pastes a client id, and no screen on strad where one
  * could be minted for them — so a connector that cannot register itself cannot
- * be added at all. DCR is the mechanism that turns "paste this URL" into a
- * working client, and it is the reason this file exists.
+ * be added at all. DCR is one of the two mechanisms that turn "paste this URL"
+ * into a working client, and it is the reason this file exists. The other is a
+ * client id metadata document (`cimd.ts`), which the MCP authorization spec
+ * prefers and which a client uses when the metadata document advertises it;
+ * DCR stays for every client that does not.
  *
  * ## The registration IS the client id
  *
@@ -178,11 +181,20 @@ export function registerClient(
     );
   }
 
-  // The three fields a client may assert about the flow it wants. strad serves
-  // exactly one flow, so anything else is refused by name rather than silently
-  // ignored — a client that asked for the implicit grant and was answered with
-  // an authorization-code registration would discover the mismatch at
-  // /authorize, with a human watching.
+  // The three fields a client may assert about the flow it wants.
+  //
+  // The auth method is refused by name: a client that expects to authenticate
+  // with a secret and is registered without one fails at the token endpoint,
+  // with a human watching.
+  //
+  // `grant_types` and `response_types` are NARROWED rather than refused, as
+  // RFC 7591 §2 allows ("the authorization server MAY … replace"). Real
+  // clients list grants strad has never heard of — claude.ai's metadata
+  // document names the JWT-bearer grant, VS Code's the device grant — and
+  // refusing the whole registration over a grant the client was never going to
+  // use here is a connector that cannot be added. The response names what was
+  // actually registered. What IS refused is a client that does not do the one
+  // flow strad serves.
   const auth = meta.token_endpoint_auth_method;
   if (auth !== undefined && auth !== "none") {
     return refuse(
@@ -190,15 +202,15 @@ export function registerClient(
       'strad registers public clients only: token_endpoint_auth_method must be "none"',
     );
   }
-  const grantProblem = subsetProblem(
+  const grantProblem = mustInclude(
     meta.grant_types,
-    GRANT_TYPES,
+    "authorization_code",
     "grant_types",
   );
   if (grantProblem) return refuse("invalid_client_metadata", grantProblem);
-  const responseProblem = subsetProblem(
+  const responseProblem = mustInclude(
     meta.response_types,
-    RESPONSE_TYPES,
+    "code",
     "response_types",
   );
   if (responseProblem)
@@ -261,7 +273,7 @@ export function readClient(
  * where the argument may be absent.
  */
 export function resolveRedirectUri(
-  record: ClientRecord,
+  record: Pick<ClientRecord, "uris">,
   requested: string | undefined,
 ): string | null {
   if (requested === undefined || requested === "") {
@@ -305,17 +317,44 @@ function isLoopback(hostname: string): boolean {
   );
 }
 
-function subsetProblem(
+/**
+ * Would a code sent here land on the human's own machine rather than a website?
+ *
+ * Wider than `isLoopback`, which decides where plain `http:` is ALLOWED: this
+ * decides where the consent screen WARNS, and an `https` redirect to
+ * `127.0.0.2` or `x.localhost` (which browsers resolve to loopback) lands on
+ * the same machine as `127.0.0.1` does.
+ */
+export function isLoopbackRedirect(uri: string): boolean {
+  let host: string;
+  try {
+    host = new URL(uri).hostname;
+  } catch {
+    return false;
+  }
+  return (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host === "[::1]" ||
+    /^127\.\d+\.\d+\.\d+$/.test(host)
+  );
+}
+
+/**
+ * Why a declared `grant_types` / `response_types` rules out strad's one flow,
+ * or null. Absent is fine: RFC 7591 §2 defaults both to the code flow.
+ */
+function mustInclude(
   value: unknown,
-  allowed: string[],
+  required: string,
   field: string,
 ): string | null {
   if (value === undefined) return null;
-  if (!Array.isArray(value)) return `${field} must be an array`;
-  for (const item of value) {
-    if (typeof item !== "string" || !allowed.includes(item)) {
-      return `${field} may only contain ${allowed.map((a) => JSON.stringify(a)).join(", ")}`;
-    }
+  if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) {
+    return `${field} must be an array of strings`;
+  }
+  if (!value.includes(required)) {
+    return `${field} must include ${JSON.stringify(required)}: it is the only flow this server serves`;
   }
   return null;
 }
