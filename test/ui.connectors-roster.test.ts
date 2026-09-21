@@ -684,7 +684,7 @@ describe("GET /connectors — an ISSUE badge is never a dead control", () => {
     expect(body).toContain("bundle-internal");
     expect(body).toContain("not checked");
     // WHY it could not be checked — the probe outcome, not a shrug.
-    expect(body).toContain("what it holds and got no answer");
+    expect(body).toContain("what it holds and did not get a usable answer");
     // WHAT to do, first and numbered.
     expect(body).toContain('<ol class="fix-steps">');
     // WHERE to look instead: the store, the namespace, the project, the route.

@@ -1922,7 +1922,7 @@ token boots fine, lists every other server fine, and 401s in isolation. A page
 that reported presence alone would call that healthy. The `check value` state
 exists for exactly that shape.
 
-**Not visible here is not missing — so the component is asked.** The console
+**Not checked is not missing — so the component is asked.** The console
 renders in `core`. A supplementary image's `env:` is resolved at render time and
 injected onto its own _bundle_ — `appspec.ts` never broadcasts it — so core
 cannot see it, and a presence check that answered "not seeded" would paint a
@@ -1965,7 +1965,7 @@ named as the source either.
 ### The headline is three-way, not two
 
 The banner above the roster reads "N servers need attention" when something is
-actionable, and "every server's secrets resolve" when nothing is. Neither is true
+actionable, and "Every server is READY" when nothing is. Neither is true
 during an outage, so there is a third: **"N servers could not be checked"**,
 followed by "nothing is known to be broken, and nothing is confirmed healthy
 either." `unknown` and `unverified` are not problems and
@@ -2016,9 +2016,9 @@ check this server's credentials" over rows that were.
 An entry that declares nothing else has **zero requirement rows**, and it is the
 one the console can say the least about. Its popout is built from the probe
 outcome rather than from a row. It is ordered for the reader who came to act: a
-chip naming the state, then **numbered steps** (the first one always answers the
-question the page could not, usually "open this prefix in the parameters
-console"), then **where the values live** and when a write there takes effect,
+chip naming the state, then **numbered steps** (the first is the one to take
+first; for most reasons it is "open this prefix in the parameters console",
+which answers the question the page could not), then **where the values live** and when a write there takes effect,
 and last, folded into a `<details>`, **why** the page could not check. The
 mechanism is true and kept; it is just not the first thing anyone needs. The
 panel answers these questions:
@@ -2026,15 +2026,15 @@ panel answers these questions:
 | The panel says                 | Where it comes from                                                                                                                       |
 | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | **which component** holds it   | the server's `bundle:`. `core` when the process that _would_ resolve them is this one, which is a builtin and nothing else.               |
-| **why** it was not established | the probe outcome for a supplementary image; for a builtin, which process does the resolving. Eight flavours (below).                     |
-| **where to look instead**      | the store, the project, and `/strad/<env>/mcp/<slug>/static/*` — with a link straight into the parameters console at that prefix.         |
+| **why this page cannot check** | the probe outcome for a supplementary image; for a builtin, which process does the resolving. Nine reasons (below).                       |
+| **where the values live**      | the store, the project, and `/strad/<env>/mcp/<slug>/static/*` — with a link straight into the parameters console at that prefix.         |
 | **when a write takes effect**  | a deploy for a supplementary image, whose environment is baked at render time; `gateway.secrets.ttlSeconds` for a builtin, which is read. |
 
 The reasons, which want different responses. Five are **probe outcomes** from a `supplementary-image` — three about the component, two about what it said:
 
 | Reason         | The probe outcome                                                                                                                                                                                       | What closes it                                                                                                           |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `unwired`      | no `${<bundle>.PRIVATE_URL}` bound, so nothing was asked                                                                                                                                                | bind it in the app spec                                                                                                  |
+| `unwired`      | no `${<bundle>.PRIVATE_URL}` bound, so nothing was asked                                                                                                                                                | redeploy through the deploy workflow, whose render binds it                                                              |
 | `unsupported`  | the component answered `404` or `405` — an image predating the presence route                                                                                                                           | rebuild and repin that component's image                                                                                 |
 | `unreachable`  | it did not answer, or refused. Not always an outage: a `401`/`403` is the component not holding the token core derives for it — rendered from a different root, or from none — and the panel says which | chase the component itself first — one core cannot talk to is not answering core's requests either                       |
 | `unmanifested` | it answered and named no managed parameters for this slug at all — no entry, not an empty list                                                                                                          | redeploy that component; its `STRAD_PARAM_KEYS` predates this slug's `params: true`, and it says nothing about the store |

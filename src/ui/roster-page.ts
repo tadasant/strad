@@ -1025,7 +1025,7 @@ function fixDialog(
   // A FULLY ESTABLISHED SET OF ROWS UNDER AN `unverified` BADGE GETS ITS OWN
   // FIRST LINE. The `unverified` headline says this page could not check the
   // server, and a reader who skims acts on the first line — so printing it over
-  // a row reading "plumbed, checked by this gateway process" is the popout
+  // a row that resolved, checked by this gateway process, is the popout
   // contradicting itself in two consecutive sentences.
   //
   // The condition is EVERY ROW `present`, not merely "has rows". An entry
@@ -1107,9 +1107,13 @@ function unobservableBlock(
           <span class="chip chip-plain chip-route">${esc(UNOBSERVABLE_ROUTE[scope.reason])}</span>
           <span class="sec-delivery">${esc(UNOBSERVABLE_LABEL[scope.reason])}</span>
         </div>
-        <ol class="fix-steps">
+${
+  scope.steps.length
+    ? `        <ol class="fix-steps">
 ${scope.steps.map((s) => `          <li>${esc(s)}</li>`).join("\n")}
-        </ol>
+        </ol>`
+    : ""
+}
 ${fixBlock(
   unobservableTarget(config, scope, env),
   "Where the values live",
@@ -1143,7 +1147,7 @@ const UNOBSERVABLE_LABEL: Record<UnobservableScope["reason"], string> = {
   unsupported: "image too old to report",
   unreachable: "component did not answer",
   unmanifested: "component listed no parameters",
-  silent: "none seeded for this server",
+  silent: "component listed none for this server",
   instance: "store-served instance",
   "in-process": "read on each tool call",
   delegated: "read by that component on each tool call",
@@ -1245,7 +1249,9 @@ function requirementBlock(
   const shared = others.length
     ? `<p class="sec-shared">Also required by ${others
         .map((s) => `<code>${esc(s)}</code>`)
-        .join(" ")}. It is one secret, so fixing it here fixes those too.</p>`
+        .join(
+          " ",
+        )}. A value in the shared namespace covers all of them; one under a server's own namespace covers only that server.</p>`
     : "";
 
   // `unrenderable` is in `isActionable`, so a row that offered no resource, no
@@ -1547,7 +1553,7 @@ const GUIDE = `
         reason for the abbreviation. The workflow is to read that screen and then this one
         and compare, so a divergent spelling would defeat the badge. Zimmer additionally
         shows <code>Rails Credentials</code>; strad has no equivalent and never shows it.</p>
-      <p>An <code>unknown</code> row carries no badge. A backend that could not be consulted
+      <p>An <code>unknown</code> row carries no badge. A secret store that did not answer
         cannot be named as the source either.</p>
     </div>
   </details>

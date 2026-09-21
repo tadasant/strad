@@ -61,7 +61,7 @@ import {
  * placeholder token as fine would be worse than no page: prod's `granola` boots,
  * lists, and 401s in isolation on exactly that shape.
  *
- * **2. NOT VISIBLE HERE IS NOT MISSING.** This code runs in CORE. A
+ * **2. NOT CHECKED IS NOT MISSING.** This code runs in CORE. A
  * supplementary image's `env:` is resolved at render time and injected onto its
  * BUNDLE — `appspec.ts` never broadcasts it — so core cannot see it, and a
  * presence check that answered "missing" would report the entire fleet broken on
@@ -599,7 +599,7 @@ function classify(
   // THE BUNDLE HALF, asked of the process that actually holds it.
   //
   // A supplementary server's `env:` is resolved at render time and injected onto
-  // ITS component; core never receives it. So a question about it cannot end in "not visible here",
+  // ITS component; core never receives it. So a question about it cannot end in "not checked",
   // and under the `env` provider — which is what prod runs — that was most of the
   // fleet. The component answers for itself (src/gateway/bundle-presence.ts),
   // in presence and never in values.
@@ -645,7 +645,7 @@ function otherHalf(
   which: "bundle" | "gateway",
   loser: SecretObservation,
 ): string {
-  const verb = loser.state === "present" ? "resolves" : "is not usable either";
+  const verb = loser.state === "present" ? "is fine" : "has a problem too";
   return `The ${which} half ${verb}: ${lowerFirst(loser.detail)}`;
 }
 
@@ -1249,7 +1249,7 @@ export function forgetDeploymentDiagnosis(opts: {
  * failing the page:
  *
  *   1. Every bundle is asked what it actually holds (`probeBundles`). This is
- *      what turns "not visible here" into "plumbed via env, on `bundle`".
+ *      what turns "not checked" into "plumbed via env, on `bundle`".
  *   2. The parameter store is asked what it holds and what it will not render
  *      (`readStoreDiagnosticsCached`), whenever core has a resolver credential —
  *      which is true on a `provider: env` deployment that also uses
@@ -1439,8 +1439,9 @@ export interface UnobservableScope {
     | "delegated"
     | "inert";
   /**
-   * What to do, in order, as the panel's numbered list. First is the step that
-   * answers the question this page could not; the rest change the outcome.
+   * What to do, in order, as the panel's numbered list. First is the step to
+   * take first; for most reasons that is reading the namespace in the
+   * parameters console, which answers the question this page could not.
    */
   steps: string[];
   /** Why this page could not answer: what was asked, and what came back. */
@@ -1663,9 +1664,9 @@ function unobservableScope(
       reason: "unwired",
       steps: [
         look,
-        `To let this page check it, bind \${${component}.PRIVATE_URL} for core in the app ` +
-          `spec and redeploy. Until then this entry stays unverified, even if the server ` +
-          `works.`,
+        `To let this page check it, redeploy through the deploy workflow: render-spec ` +
+          `binds \${${component}.PRIVATE_URL} for core, so a spec without it was not rendered ` +
+          `by it. Until then this entry stays unverified, even if the server works.`,
       ],
       detail:
         `This gateway has no private URL for "${component}", so it could not ask it ` +
@@ -1693,11 +1694,12 @@ function unobservableScope(
       ...base,
       reason: "unreachable",
       steps: [
-        `Find out why core cannot reach "${component}" first. If core cannot reach it, ` +
-          `it is not answering core's requests either, whatever its secrets look like.`,
+        `Find out why "${component}" is not answering core (the reason is below) before ` +
+          `looking at its secrets. A component core cannot talk to is not serving core's ` +
+          `requests either.`,
         look,
       ],
-      detail: `core asked "${component}" what it holds and got no answer: ${outcome.detail}`,
+      detail: `core asked "${component}" what it holds and did not get a usable answer: ${outcome.detail}`,
     };
   }
 
@@ -1728,7 +1730,8 @@ function unobservableScope(
     ...base,
     reason: "silent",
     steps: [
-      `Seed this server's credentials under ${namespace} in the parameters console.`,
+      `Open ${namespace} in the parameters console. If nothing is listed, seed this ` +
+        `server's credentials there.`,
       `Then redeploy "${component}". A value reaches the container at the next deploy, ` +
         `not when it is written.`,
     ],
@@ -2506,7 +2509,12 @@ export function unobservableTarget(
           projectNote
         : `This server's parameters live under this prefix, and ${who} reads it on every ` +
           `tool call, so there is nothing to deploy, restart or repin: a write lands within ` +
-          `${ttl}s, or on the next tool call when it goes through this console.` +
+          `${ttl}s` +
+          // Only core's own snapshot is dropped by a console write; a delegated
+          // component keeps its own until the TTL runs out.
+          (scope.reason === "in-process"
+            ? `, or on the next tool call when it goes through this console.`
+            : `.`) +
           projectNote,
     };
   }
@@ -2712,7 +2720,7 @@ export function fixTargets(
             resource,
             project: owner.project,
             detail:
-              `Recommended. "${slug}" looks up \${${requirement.name}} in its own namespace ` +
+              `"${slug}" looks up \${${requirement.name}} in its own namespace ` +
               `before the shared one, so a credential that belongs to this server goes ` +
               `here. ${lands} The next deploy's preflight accepts it in place of ${path}.` +
               (requirement.slugs.length > 1

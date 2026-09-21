@@ -36,7 +36,7 @@ import {
  * than about markup. Three properties carry it, and each of them is a way the
  * obvious implementation would have been wrong:
  *
- *   1. NOT VISIBLE HERE IS NOT MISSING. A supplementary image's `env:` is baked
+ *   1. NOT CHECKED IS NOT MISSING. A supplementary image's `env:` is baked
  *      onto its own component; core cannot see it. A presence check that answered
  *      "not seeded" would paint a healthy 27-server fleet entirely red.
  *   2. A `consoleEnv:` VALUE IS FILED UNDER THE KEY, NOT THE REF NAME. Asking the
@@ -1427,7 +1427,7 @@ describe("GET /connectors", () => {
     );
     expect(body).toContain("Status unknown, not absent");
     // ...and the banner must never read as a clean bill of health.
-    expect(body).not.toContain("Every server&#39;s secrets resolve");
+    expect(body).not.toContain("Every server is READY");
     close();
   });
 
@@ -1468,7 +1468,7 @@ servers:
     ).text();
     expect(body).toContain("could not be checked");
     expect(body).toContain("nothing is confirmed");
-    expect(body).not.toContain("Every server&#39;s secrets resolve");
+    expect(body).not.toContain("Every server is READY");
     close();
   });
 
@@ -1660,7 +1660,7 @@ ${extra}`);
     expect(scope?.reason).toBe("silent");
     expect(scope?.detail).toContain("nothing is seeded");
     // Seed first; the redeploy is what carries the value, never the first move.
-    expect(scope?.steps[0]).toContain("Seed");
+    expect(scope?.steps[0]).toContain("seed this server");
     expect(scope?.steps[0]).not.toContain("edeploy");
   });
 

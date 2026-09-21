@@ -664,8 +664,8 @@ describe("the states that must NOT fire", () => {
     });
     const detail = detailOf(statuses, "slack", "SLACK_TOKEN");
     expect(detail).toContain("Not plumbed");
-    expect(detail).not.toContain("half resolves:");
-    expect(detail).toContain("is not usable either");
+    expect(detail).not.toContain("half is fine:");
+    expect(detail).toContain("has a problem too");
   });
 });
 
