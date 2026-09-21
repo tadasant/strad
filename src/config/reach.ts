@@ -187,7 +187,8 @@ export function reachIssues(cfg: ReachConfigView): ReachIssue[] {
  *
  * Every rule that decides REACH is re-derived here rather than trusted to
  * `reachIssues`, which only CI runs: the target exists, is enabled, is not a
- * local-tunnel, consents by name, and reaches nothing itself. A grant failing
+ * local-tunnel, consents by name, reaches nothing itself, and is the source's
+ * only grant onto that target. A grant failing
  * any of them is simply inactive — which is also what a runtime removal of
  * either half produces.
  */
@@ -197,7 +198,11 @@ export function activeGrants(
 ): ReachGrantView[] {
   const source = cfg.servers.find((s) => s.slug === sourceSlug);
   if (!source?.enabled) return [];
-  return (source.reaches ?? []).filter((g) => {
+  const grants = source.reaches ?? [];
+  return grants.filter((g) => {
+    // One grant per target: two would merge their tool lists and pins in an
+    // order nobody reviewed, so neither is served.
+    if (grants.filter((o) => o.slug === g.slug).length > 1) return false;
     const target = cfg.servers.find((s) => s.slug === g.slug);
     return (
       target !== undefined &&

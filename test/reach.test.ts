@@ -197,6 +197,18 @@ describe("the reaches: rules (config:check)", () => {
     ).toHaveLength(1);
   });
 
+  it("serves neither of two grants onto one target", () => {
+    const twice = `    reaches:
+      - slug: tgt
+        tools: [echo]
+      - slug: tgt
+        tools: [whoami]`;
+    expect(issuesOf(withGrant(twice, CONSENT))).toMatch(/twice/);
+    expect(activeGrants(parseConfig(withGrant(twice, CONSENT)), "src")).toEqual(
+      [],
+    );
+  });
+
   it("refuses a local-tunnel target, and never serves one", () => {
     const yaml = `
 version: 1

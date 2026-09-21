@@ -45,18 +45,20 @@ servers:
   `reachableFrom:` entry no grant matches;
 - a tool the target's own `tools:` policy withholds, so a grant on a `-ro` slug
   cannot reach the write tool `-ro` hides;
-- an empty tool list, a target that is not configured, and a server reaching
-  itself;
+- a target that is not configured, a server reaching itself, and two grants
+  onto one target;
 - a **chain**: a target that itself `reaches:` something. Flow-through is one
   hop, so a source's whole reach is readable off its own entry;
 - a `local-tunnel` target, whose degraded surface carries a tool outside every
   policy.
 
-Boot does not refuse these, on purpose. A runtime removal of either slug has to
+An empty tool list and an unknown key on a grant are refused at boot as well, by
+the schema. The rest are not, on purpose. A runtime removal of either slug has to
 stay possible, since it is how you switch a grant off without a deploy, and it
 leaves the other half dangling. What core serves never depends on the check
-having run: it re-derives every rule that decides reach on each request, and a
-grant that fails one is inactive.
+having run: on each request it re-checks every rule above that decides reach
+(target present, enabled, not a local-tunnel, consenting, not itself reaching
+anything, the only grant onto it), and a grant that fails one is inactive.
 
 A runtime roster write can neither declare nor change either half, on any slug,
 including one only the overlay declares. See

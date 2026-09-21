@@ -227,6 +227,26 @@ export function withBlankTarget(html: string): string {
   return base + html;
 }
 
+/**
+ * The host page's own policy: nothing may frame it, and IT may frame exactly
+ * one path — this slug's frame route.
+ *
+ * `frame-src` is what makes the bridge's "first document" rule hold without a
+ * race. The frame's window is the bridge's only identity, and a document that
+ * navigated in (a `target="_self"` link, `location =`, a meta refresh) would
+ * run its scripts before the host could notice the second load. Refusing every
+ * other URL in the frame means no such document ever loads. The source is
+ * scheme-less, so it inherits the page's scheme behind a TLS-terminating proxy;
+ * a Host header that is not a plain host[:port] frames nothing.
+ */
+export function hostCsp(req: Request, slug: string): string {
+  const host = req.get("host") ?? "";
+  const frame = /^[a-z0-9.-]+(:\d{1,5})?$/i.test(host)
+    ? `${host}${appHref(slug)}/frame`
+    : "'none'";
+  return `frame-ancestors 'none'; frame-src ${frame}`;
+}
+
 function queryUri(req: Request): string | undefined {
   return typeof req.query.uri === "string" && req.query.uri.startsWith("ui://")
     ? req.query.uri
@@ -292,21 +312,16 @@ export function mountApps(
           }
           res
             .set("Cache-Control", "no-store")
-            .set("Content-Security-Policy", "frame-ancestors 'none'")
+            .set("Content-Security-Policy", hostCsp(req, server.slug))
             .set("X-Frame-Options", "DENY");
           if (!sameOriginNavigation(req)) {
-            // Arrived from another site: no tool runs until the human says so.
+            // Arrived from another site: no tool runs until the human clicks,
+            // and the click is a same-origin navigation.
             res.type("html").send(
-              renderMessage({
-                title: `${server.slug} · app`,
+              renderOpenPrompt({
+                title: server.title ?? server.slug,
+                href: req.originalUrl,
                 signedInAs,
-                heading: `Open ${server.title ?? server.slug}?`,
-                sub:
-                  `A link from outside the console opened this app. Opening it ` +
-                  `runs its tools as you. Open it from ${appHref(server.slug)} ` +
-                  `in the console, or reload this page.`,
-                tone: "info",
-                nav: "playground",
               }),
             );
             return;
@@ -415,14 +430,18 @@ export function mountApps(
             // before it makes the call at all (`autoTool`).
             const opening =
               body.initial === true &&
+              Object.keys(args).length === 0 &&
               listed !== undefined &&
               toolResourceUri(listed._meta) !== null &&
               listed.annotations?.readOnlyHint === true;
-            if (
-              listed &&
-              !opening &&
-              !toolVisibility(listed._meta).includes("app")
-            ) {
+            if (!listed) {
+              res.status(404).json({
+                ok: false,
+                error: `${server.slug} does not list a tool named ${bare}.`,
+              });
+              return;
+            }
+            if (!opening && !toolVisibility(listed._meta).includes("app")) {
               res.status(403).json({
                 ok: false,
                 error: `${bare} is not callable from an app (its visibility excludes "app").`,
@@ -450,6 +469,37 @@ export function mountApps(
       }),
     ),
   );
+}
+
+/** The page a cross-site arrival gets: one same-origin link, and no tool run. */
+export function renderOpenPrompt(opts: {
+  title: string;
+  href: string;
+  signedInAs?: string;
+}): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+<title>${esc(opts.title)} · strad</title>
+<style>
+  body { margin: 0; font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f6f5f2; color: #333; }
+  main { max-width: 32rem; margin: 18vh auto; padding: 0 20px; text-align: center; }
+  a.open { display: inline-block; margin-top: 12px; padding: 10px 22px; border-radius: 999px; background: #111; color: #fff; text-decoration: none; font-weight: 600; }
+  p.who { color: #888; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>${esc(opts.title)}</h1>
+  <p>You followed a link from outside the console. Opening this app runs its tools as you.</p>
+  <a class="open" href="${esc(opts.href)}">Open</a>
+  ${opts.signedInAs ? `<p class="who">${esc(opts.signedInAs)}</p>` : ""}
+</main>
+</body>
+</html>`;
 }
 
 /** The host page: a thin bar, the sandboxed frame, and the bridge. */

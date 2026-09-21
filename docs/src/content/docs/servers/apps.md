@@ -54,14 +54,21 @@ it from being a way to run a tool by link:
 - A GET of `/apps/<slug>` that another site started (`Sec-Fetch-Site` other
   than `same-origin` or `none`) gets a page that says so and runs nothing. The
   console's session cookie is `SameSite=Lax`, so it rides on a cross-site
-  top-level GET, and this is the check that makes that harmless. The host page
-  itself refuses to be framed.
+  top-level GET, and this is the check that makes that harmless. That page's
+  Open button is a same-origin link, so one click opens the app.
 
 The bridge also belongs to the FIRST document the frame loads. Every document
 the frame could hold has the same opaque origin, so the window is the only
-identity. The served page gets `<base target="_blank">`, which sends plain links
-out as new tabs rather than into the frame. If the frame loads a second document
-anyway, the host removes the frame and the bridge with it.
+identity. Three layers keep a second document out:
+
+- The host page's own CSP is `frame-ancestors 'none'; frame-src
+  <host>/apps/<slug>/frame`. Nothing may frame the host, and the frame may load
+  exactly that one path, so a link, a `location =` or a meta refresh to anywhere
+  else is refused before any of its script runs.
+- The served page gets `<base target="_blank">`, which sends plain links out as
+  new tabs.
+- If the frame loads a second document anyway (its own frame route again), the
+  host removes the frame and the bridge with it.
 
 ## What the page can do
 

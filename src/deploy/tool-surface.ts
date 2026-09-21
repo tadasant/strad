@@ -203,7 +203,7 @@ export function checkToolSurface(
     if (source.kind !== "supplementary-image") continue;
     for (const grant of source.reaches) {
       const target = config.servers.find((s) => s.slug === grant.slug);
-      if (!target) continue; // the schema refuses this already
+      if (!target) continue; // config:check refuses this (src/config/reach.ts)
       const label = `${source.slug} → ${grant.slug}`;
       const seen = observe(target);
       if ("reason" in seen) {

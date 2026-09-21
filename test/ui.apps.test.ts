@@ -251,7 +251,9 @@ describe("GET /apps/:server", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).not.toContain("initialTool");
-    expect(html).toContain("A link from outside the console opened this app");
+    expect(html).toContain("You followed a link from outside the console");
+    // The way in is a same-origin link to the same URL.
+    expect(html).toContain('class="open" href="/apps/shop"');
   });
 
   it("renders the host with the frame and the tool that declares the UI", async () => {
@@ -266,8 +268,10 @@ describe("GET /apps/:server", () => {
     expect(html).toContain(
       '"sandbox", "allow-scripts allow-popups allow-popups-to-escape-sandbox"',
     );
+    // Nothing frames the host, and the host frames exactly its frame route.
+    const host = new URL(baseUrl).host;
     expect(res.headers.get("content-security-policy")).toBe(
-      "frame-ancestors 'none'",
+      `frame-ancestors 'none'; frame-src ${host}/apps/shop/frame`,
     );
     expect(html).toContain('const initialTool = "show"');
     // The page itself is never inlined into the console's origin.
@@ -336,6 +340,22 @@ describe("POST /apps/:server/tools/call", () => {
     expect(called).not.toContain("model_only");
   });
 
+  it("refuses a tool the server does not list", async () => {
+    called.length = 0;
+    const res = await call("shop", { tool: "not_a_tool" });
+    expect(res.status).toBe(404);
+    expect(called).toEqual([]);
+  });
+
+  it("does not treat an opening call with arguments as the host's", async () => {
+    const res = await call("shop", {
+      tool: "model_ui",
+      initial: true,
+      arguments: { anything: 1 },
+    });
+    expect(res.status).toBe(403);
+  });
+
   it("refuses a tool whose visibility excludes app, before it runs", async () => {
     called.length = 0;
     const res = await call("shop", { tool: "model_only" });
@@ -344,15 +364,12 @@ describe("POST /apps/:server/tools/call", () => {
   });
 
   it("pins a call to its own slug: another slug's name is not a way out", async () => {
-    // `echo__whoami` is taken as a bare name ON `shop`: the call reaches
-    // shop's upstream under that literal name, and the echo builtin never runs.
+    // `echo__whoami` is taken as a bare name ON `shop`, which lists no such
+    // tool: refused before any upstream runs, and the echo builtin never runs.
     called.length = 0;
     const res = await call("shop", { tool: "echo__whoami" });
-    const body = (await res.json()) as {
-      result: { structuredContent: unknown };
-    };
-    expect(called).toEqual(["echo__whoami"]);
-    expect(body.result.structuredContent).toEqual({ ran: "echo__whoami" });
+    expect(res.status).toBe(404);
+    expect(called).toEqual([]);
   });
 
   it("demands JSON, which a cross-site form cannot send", async () => {
