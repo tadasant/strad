@@ -539,8 +539,10 @@ describe("GET /connectors — the ISSUE popout", () => {
   it("says 'could not be checked' rather than 'broken' for an unobservable one", () => {
     const at = html.indexOf('<dialog class="fixdlg" id="fix-object-store-bad"');
     const body = html.slice(at, html.indexOf("</dialog>", at));
-    expect(body).toContain("could not be checked from the console");
-    expect(body).toContain("not the same as healthy");
+    expect(body).toContain(
+      "This page could not check this server&#39;s credentials",
+    );
+    expect(body).toContain("does not mean they are missing");
   });
 
   it("degrades without JS: the buttons hide and the panels render inline", () => {
@@ -680,9 +682,11 @@ describe("GET /connectors — an ISSUE badge is never a dead control", () => {
     const body = managed.slice(at, managed.indexOf("</dialog>", at));
     // Which component holds it, and that this process is not it.
     expect(body).toContain("bundle-internal");
-    expect(body).toContain("not visible here");
+    expect(body).toContain("not checked");
     // WHY it could not be checked — the probe outcome, not a shrug.
-    expect(body).toContain("could not be reached from this process");
+    expect(body).toContain("what it holds and got no answer");
+    // WHAT to do, first and numbered.
+    expect(body).toContain('<ol class="fix-steps">');
     // WHERE to look instead: the store, the namespace, the project, the route.
     expect(body).toContain("/strad/test/mcp/craigslist/static/");
     expect(body).toContain("<dt>project</dt>");
@@ -690,7 +694,9 @@ describe("GET /connectors — an ISSUE badge is never a dead control", () => {
       "/ui/secrets?ns=%2Fstrad%2Ftest%2Fmcp%2Fcraigslist%2Fstatic%2F",
     );
     // And it still does not pretend to know the answer.
-    expect(body).toContain("could not be checked from the console");
+    expect(body).toContain(
+      "This page could not check this server&#39;s credentials",
+    );
   });
 
   it("leaves a no-secrets entry inert — that one really has nothing behind it", async () => {

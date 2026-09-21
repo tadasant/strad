@@ -178,19 +178,19 @@ async function probeBundle(
       return {
         kind: "unsupported",
         detail:
-          `the component answered ${res.status} for ${PRESENCE_ROUTE}, so it is running an ` +
-          `image that predates the presence route. Rebuild and repin that image to make ` +
-          `its secrets checkable from here.`,
+          `the component answered ${res.status} for ${PRESENCE_ROUTE}, so its image was ` +
+          `built before components could report which secrets they hold. Rebuild that ` +
+          `image and bump its pin to make its secrets checkable from here.`,
       };
     }
     if (res.status === 401 || res.status === 403) {
       return {
         kind: "unreachable",
         detail:
-          `the component REFUSED the internal token (${res.status}). That is a ` +
-          `configuration fault rather than an outage: the component does not hold the ` +
-          `token core derives for it from STRAD_INTERNAL_TOKEN — a render from a ` +
-          `different root, or a component that holds none at all.`,
+          `the component rejected core's internal token (${res.status}). That is a ` +
+          `configuration problem, not an outage: the component does not hold the token ` +
+          `core derives for it from STRAD_INTERNAL_TOKEN, because it was rendered from a ` +
+          `different root or holds none at all.`,
       };
     }
     if (!res.ok) {

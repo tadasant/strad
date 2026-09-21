@@ -1966,8 +1966,9 @@ named as the source either.
 
 The banner above the roster reads "N servers need attention" when something is
 actionable, and "every server's secrets resolve" when nothing is. Neither is true
-during an outage, so there is a third: **"nothing is known to be broken, but N
-servers could not be checked."** `unknown` and `unverified` are not problems and
+during an outage, so there is a third: **"N servers could not be checked"**,
+followed by "nothing is known to be broken, and nothing is confirmed healthy
+either." `unknown` and `unverified` are not problems and
 they are not health, and a green headline over a page of `unknown` rows would be
 the page lying in the one place everybody reads. The presence route shrinks that
 third case to near-nothing; it does not remove it, and it must not.
@@ -2008,12 +2009,19 @@ resolved `${NAME}` **is** part of what the server runs on: `optionsFor` merges a
 builtin's parameters _over_ its resolved `options:`, and a supplementary image's
 `env:` is injected beside its parameters. So the entry says those names are not
 _all_ of what it needs, never that they are irrelevant — and the popout's first
-line says the same, rather than the `unverified` headline's "nothing here was
-established either" over rows that were.
+line says the same ("the references below resolve, but they are not everything
+this server needs"), rather than the `unverified` headline's "this page could not
+check this server's credentials" over rows that were.
 
 An entry that declares nothing else has **zero requirement rows**, and it is the
 one the console can say the least about. Its popout is built from the probe
-outcome rather than from a row, and it answers the three questions a reader has:
+outcome rather than from a row. It is ordered for the reader who came to act: a
+chip naming the state, then **numbered steps** (the first one always answers the
+question the page could not, usually "open this prefix in the parameters
+console"), then **where the values live** and when a write there takes effect,
+and last, folded into a `<details>`, **why** the page could not check. The
+mechanism is true and kept; it is just not the first thing anyone needs. The
+panel answers these questions:
 
 | The panel says                 | Where it comes from                                                                                                                       |
 | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
@@ -2051,7 +2059,7 @@ those rows. The rows are about names this server references; the panel is about
 the credentials it runs on, and they are different questions — the rows cannot
 answer the second one, which is precisely why the entry is not `READY`.
 
-The two families share a shape and almost no vocabulary, which is why a builtin takes three more reasons rather than a widened predicate. Every line of the panel is per-reason, including the two that read like boilerplate: the chip ("not visible here") and the evidence line ("this gateway process is not the component that holds these values, and it never sees them") are both false about a builtin core mounts, whose values this process does hold. `delegated` is the exception that proves the split — its values are genuinely elsewhere, so it keeps the container chip and takes the builtin's account of when a write lands. A confidently wrong panel is worse than an inert badge, which is why a builtin got no panel at all before [#264](https://github.com/tadasant/strad/issues/264) and its badge degraded to inert text instead.
+The two families share a shape and almost no vocabulary, which is why a builtin takes three more reasons rather than a widened predicate. Every line of the panel is per-reason, including the ones that read like boilerplate: the chip ("not checked"), and steps that say "rebuild the image and bump its pin" or "redeploy the component", are all false about a builtin core mounts, whose values this process does hold. `delegated` is the exception that proves the split — its values are genuinely elsewhere, so it keeps the container chip and takes the builtin's account of when a write lands. A confidently wrong panel is worse than an inert badge, which is why a builtin got no panel at all before [#264](https://github.com/tadasant/strad/issues/264) and its badge degraded to inert text instead.
 
 The panel is still not a green. Nothing here was observed, the state stays
 `unverified`, and the badge stays `ISSUE` — the change is that the badge now

@@ -222,7 +222,7 @@ describe("a bundle-delivered secret the component reports it holds", () => {
       .get("slack")!
       .requirements.find((r) => r.requirement.name === "SLACK_TOKEN")!;
     expect(observation.source).toBe("ENV");
-    expect(observation.detail).toContain("PLUMBED");
+    expect(observation.detail).toContain("Plumbed.");
     expect(observation.evidence).toEqual({
       by: "bundle",
       component: "bundle",
@@ -249,7 +249,7 @@ describe("a bundle-delivered secret the component reports it holds", () => {
       presence: presence({ kind: "ok", report: report({}) }),
     });
     expect(stateOf(statuses, "slack", "SLACK_TOKEN")).toBe("missing");
-    expect(detailOf(statuses, "slack", "SLACK_TOKEN")).toContain("NOT plumbed");
+    expect(detailOf(statuses, "slack", "SLACK_TOKEN")).toContain("Not plumbed");
   });
 
   it("separates an EMPTY value from an absent one", async () => {
@@ -452,7 +452,7 @@ describe("a parameter that exists and whose value will not render", () => {
       }),
     });
     const detail = detailOf(statuses, "granola", "GRANOLA_TOKEN");
-    expect(detail).toContain("EXISTS");
+    expect(detail).toContain("Exists, but its value cannot be read");
     expect(detail).toContain("409");
     expect(detail).toContain("Rotate");
   });
@@ -663,9 +663,9 @@ describe("the states that must NOT fire", () => {
       presence: presence({ kind: "ok", report: report({}) }),
     });
     const detail = detailOf(statuses, "slack", "SLACK_TOKEN");
-    expect(detail).toContain("NOT plumbed");
-    expect(detail).not.toContain("resolves too");
-    expect(detail).toContain("is also not usable");
+    expect(detail).toContain("Not plumbed");
+    expect(detail).not.toContain("half resolves:");
+    expect(detail).toContain("is not usable either");
   });
 });
 
@@ -728,11 +728,11 @@ describe("the console and the readiness report, with a probe", () => {
     // The headline claim of the whole change: without the probe this row is a
     // shrug.
     expect(html).toContain('href="/ui/slack">slack</a>');
-    expect(html).not.toContain("Nothing here is known to be broken");
+    expect(html).not.toContain("could not be checked.</strong>");
   });
 
   it("names the process that established each row", () => {
-    expect(html).toContain("Established by:");
+    expect(html).toContain("Checked by:");
     expect(html).toContain("asked over the private network");
     expect(html).toContain("up since 2026-07-30T09:12:00.000Z");
   });

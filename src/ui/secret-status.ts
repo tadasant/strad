@@ -544,8 +544,8 @@ function classify(
       alsoGateway && !("ok" in attempt && attempt.ok !== null)
         ? "error" in attempt
           ? `The gateway half could not be checked (${attempt.error}).`
-          : `The GATEWAY half is NOT seeded: \${${requirement.name}} does not resolve for ` +
-            `the process that answers /mcp, so every call to the server referencing it fails.`
+          : `The gateway half is not seeded: \${${requirement.name}} does not resolve for ` +
+            `the process that answers /mcp, so every call to a server that references it fails.`
         : "";
 
     const key = requirement.consoleKeys.find((k) => nonEmpty(bag[k]));
@@ -571,8 +571,8 @@ function classify(
         source: "error" in attempt ? null : "GSM",
         evidence: "error" in attempt ? { by: "none" } : { by: "core" },
         detail:
-          `The console half resolves from core's environment, but this name is ALSO a ` +
-          `gateway reference and that half does not. ${gatewayBad}`,
+          `The console half resolves from core's environment. This name is also a ` +
+          `gateway reference, and that half does not. ${gatewayBad}`,
       };
     }
     return {
@@ -584,12 +584,13 @@ function classify(
       evidence: { by: "core" },
       detail:
         `Not seeded for the console: neither ${requirement.consoleKeys.join(" / ")} nor ` +
-        `\${${requirement.name}} resolves on the core component. consoleEnv: is read from ` +
-        `the deploy environment ONLY — never from the parameter store, because it carries ` +
-        `the console's store-admin credential, so a value in the store does not fix this.` +
+        `\${${requirement.name}} is set on the core component. Set it in the deploy ` +
+        `environment, then redeploy. consoleEnv: is read from the deploy environment only, ` +
+        `never from the parameter store, because it carries the console's store-admin ` +
+        `credential, so a value in the store does not fix this.` +
         (requirement.deliveries.includes("bundle")
-          ? ` The same name is also declared under env:, and that half is baked onto the ` +
-            `bundle separately — it may well be fine. This row is about the console half.`
+          ? ` The same name is also declared under env:, which reaches the bundle ` +
+            `separately and may be fine. This row is about the console half only.`
           : ""),
     };
   }
@@ -623,7 +624,7 @@ function classify(
     const loser = gatewayWorse ? bundle : gateway;
     return {
       ...winner,
-      detail: `${winner.detail} ${otherHalf(gatewayWorse ? "BUNDLE" : "GATEWAY", loser)}`,
+      detail: `${winner.detail} ${otherHalf(gatewayWorse ? "bundle" : "gateway", loser)}`,
     };
   }
 
@@ -641,11 +642,10 @@ function classify(
  * and `headers:` and seeded nowhere is the likeliest way to reach it.
  */
 function otherHalf(
-  which: "BUNDLE" | "GATEWAY",
+  which: "bundle" | "gateway",
   loser: SecretObservation,
 ): string {
-  const verb =
-    loser.state === "present" ? "resolves too" : "is also not usable";
+  const verb = loser.state === "present" ? "resolves" : "is not usable either";
   return `The ${which} half ${verb}: ${lowerFirst(loser.detail)}`;
 }
 
@@ -683,11 +683,11 @@ function gatewayHalf(
       source: "GSM",
       evidence: { by: "store" },
       detail:
-        `The parameter EXISTS and its value cannot be produced. ` +
+        `Exists, but its value cannot be read: ` +
         `${gatewayNamespace(config.gateway.env)}${requirement.name} is in the store and ` +
-        `\`:render\` will not return it, so this is neither "not seeded" — creating it ` +
-        `again fails with 409 — nor healthy. Rotate the value through the console, which ` +
-        `rewrites the payload. Reason: ${unrenderableReason}`,
+        `\`:render\` will not return it. Rotate the value through the console, which ` +
+        `rewrites it. Do not create it again; that fails with 409. ` +
+        `Reason: ${unrenderableReason}`,
     };
   }
 
@@ -717,8 +717,8 @@ function gatewayHalf(
       source: storeBacked ? "GSM" : "ENV",
       evidence: storeBacked ? { by: "store" } : { by: "core" },
       lands: bundleOnly
-        ? " It reaches this server's container at the NEXT DEPLOY, not now: a " +
-          "supplementary image's env: is baked at render time and the container never " +
+        ? " It reaches this server's container at the next deploy, not now: a " +
+          "supplementary image's env: is baked in at deploy time, and the container never " +
           "reads the store."
         : "",
     });
@@ -734,8 +734,8 @@ function gatewayHalf(
       source: null,
       evidence: { by: "none" },
       detail:
-        `The secret backend could not be consulted for this name, so its status is ` +
-        `unknown — NOT absent. Detail: ${attempt.error}`,
+        `The secret store did not answer for this name, so its status is unknown. ` +
+        `That does not mean it is missing. Detail: ${attempt.error}`,
     };
   }
 
@@ -763,10 +763,9 @@ function gatewayHalf(
       source: "GSM",
       evidence: { by: "store" },
       detail:
-        `The parameter EXISTS in the store's index and resolves to no value, so every ` +
-        `reference to it gets nothing. That is not "not seeded" — the resource is there, ` +
-        `and creating it again fails with 409. Rotate it through the console to write a ` +
-        `payload that renders.`,
+        `Exists in the store's index, but resolves to no value, so everything that ` +
+        `references it gets nothing. Rotate it through the console to write a value that ` +
+        `renders. Do not create it again: the resource is there, and that fails with 409.`,
     };
   }
 
@@ -788,11 +787,11 @@ function gatewayHalf(
       source: "GSM",
       evidence: { by: "none" },
       detail:
-        `Declared only under a supplementary server's env:, which is baked onto that ` +
-        `component at deploy time and never broadcast to core. ` +
-        `${bundleShrugReason(requirement, opts)} It was present at the last successful ` +
-        `deploy, because a missing one fails the render — but that is a claim about the ` +
-        `deploy, not about the process running now.`,
+        `Declared only under a supplementary server's env:, which is baked into that ` +
+        `component at deploy time and never shared with core. ` +
+        `${bundleShrugReason(requirement, opts)} It had a value at the last successful ` +
+        `deploy, because a missing one fails the render, but that says nothing about the ` +
+        `process running now.`,
     };
   }
 
@@ -820,11 +819,11 @@ function gatewayHalf(
               )
               .join(", ")})`
           : "") +
-        `, so every value that references it resolves to nothing. ` +
+        `, so everything that references it resolves to nothing. ` +
         (requirement.deliveries.includes("bundle")
-          ? `The next deploy fails in render-spec's baked-secret pass — preflight ` +
-            `deliberately excludes a supplementary server's env:.`
-          : `The next deploy's preflight will fail, by name.`)
+          ? `The next deploy will fail in render-spec's baked-secret pass (preflight ` +
+            `skips a supplementary server's env:).`
+          : `The next deploy's preflight will fail on this name.`)
       : `Not seeded: \${${requirement.name}} does not resolve from this process's ` +
         `environment. ` +
         (requirement.slugs.length
@@ -852,21 +851,21 @@ function bundleShrugReason(
 
   if (outcomes.length === 0) {
     return (
-      `This gateway did not probe that component for presence, so nothing here ` +
-      `established anything about it.`
+      `This gateway did not ask that component what it holds, so nothing is known ` +
+      `about it here.`
     );
   }
   const unsupported = outcomes.find((o) => o.kind === "unsupported");
   if (unsupported && unsupported.kind === "unsupported") {
-    return `The component could not answer: ${unsupported.detail}`;
+    return `The component could not report: ${unsupported.detail}`;
   }
   const unreachable = outcomes.find((o) => o.kind === "unreachable");
   if (unreachable && unreachable.kind === "unreachable") {
     return `The component was asked and did not answer: ${unreachable.detail}`;
   }
   return (
-    `The component answered but did not report on this key, which means the deploy ` +
-    `did not bake it under the name this config declares.`
+    `The component answered but did not report this key, so the deploy did not set ` +
+    `it under the name this config declares.`
   );
 }
 
@@ -938,12 +937,12 @@ function bundleHalf(
         source,
         evidence,
         detail:
-          `PLUMBED, via a process environment variable. The component holding it — ` +
-          `${where} — was asked and reports a value. It was baked into the app spec at ` +
-          `deploy time from ${gatewayNamespace(opts.config.gateway.env)}${requirement.name} ` +
-          `or from strad-${opts.config.gateway.env}-${requirement.name} in Secret Manager. ` +
-          `That proves a value EXISTS in the running container — strad does not call the ` +
-          `upstream, so it is not a claim that the credential is accepted.`,
+          `Plumbed. The component holding it (${where}) was asked and reports a value in ` +
+          `its environment, baked in at deploy time from ` +
+          `${gatewayNamespace(opts.config.gateway.env)}${requirement.name} or from ` +
+          `strad-${opts.config.gateway.env}-${requirement.name} in Secret Manager. This shows ` +
+          `a value exists in the running container. strad does not call the upstream, so it ` +
+          `does not show the credential is accepted.`,
       };
     case "placeholder":
     case "unexpanded":
@@ -953,10 +952,10 @@ function bundleHalf(
         source,
         evidence,
         detail:
-          `Plumbed but not usable: ${reasonFor(worst.verdict.presence) ?? "the value is evident filler"}. ` +
-          `The component holding it — ${where} — reports a value of that shape, so the ` +
-          `server boots and lists tools normally and the upstream rejects every call. ` +
-          `Rotate it to a real credential and redeploy that component.`,
+          `Plumbed, but not usable: ${reasonFor(worst.verdict.presence) ?? "the value is evident filler"}. ` +
+          `Rotate it to a real credential, then redeploy that component. The component ` +
+          `holding it (${where}) reports a value of that shape, so the server boots and ` +
+          `lists tools normally while the upstream rejects every call.`,
       };
     case "empty":
       return {
@@ -965,10 +964,9 @@ function bundleHalf(
         source,
         evidence,
         detail:
-          `Plumbed but empty: ${where} holds this key set to the empty string, so whatever ` +
-          `reads it gets nothing. Something DID inject a value here and the value was ` +
-          `nothing — which is a different mistake from never seeding it, and it will not ` +
-          `be fixed by creating the secret.`,
+          `Plumbed, but empty: ${where} holds this key as an empty string, so whatever ` +
+          `reads it gets nothing. Something set it to nothing, which is a different ` +
+          `mistake from never seeding it, and creating the secret will not fix it.`,
       };
     case "absent":
       return {
@@ -977,9 +975,9 @@ function bundleHalf(
         source: "GSM",
         evidence,
         detail:
-          `NOT plumbed. The component that would hold it — ${where} — was asked and does ` +
-          `not have this key at all. Seed the value, then redeploy that component: a ` +
-          `supplementary image's env: is baked at render time, so a value added to the ` +
+          `Not plumbed. The component that would hold it (${where}) was asked and does ` +
+          `not have this key. Seed the value, then redeploy that component. A ` +
+          `supplementary image's env: is baked in at deploy time, so a value added to the ` +
           `store or to Secret Manager does not reach a running container on its own.`,
       };
   }
@@ -1012,10 +1010,10 @@ function finish(
       source: ctx.source,
       evidence: ctx.evidence,
       detail:
-        `Seeded, but not usable: ${reason}. It resolves from ${ctx.where}, so the ` +
-        `gateway boots and lists tools normally and the upstream rejects every call — ` +
-        `which looks like a broken server rather than an unset secret. Rotate it to a ` +
-        `real credential.`,
+        `Seeded, but not usable: ${reason}. Rotate it to a real credential. It resolves ` +
+        `from ${ctx.where}, so the gateway boots and lists tools normally while the ` +
+        `upstream rejects every call, which looks like a broken server rather than an ` +
+        `unset secret.`,
     };
   }
   return {
@@ -1024,8 +1022,8 @@ function finish(
     source: ctx.source,
     evidence: ctx.evidence,
     detail:
-      `Resolves from ${ctx.where}. That proves a value EXISTS — strad does not call ` +
-      `the upstream, so it is not a claim that the credential is accepted.` +
+      `Resolves from ${ctx.where}. This shows a value exists. strad does not call ` +
+      `the upstream, so it does not show the credential is accepted.` +
       (ctx.lands ?? ""),
   };
 }
@@ -1440,7 +1438,12 @@ export interface UnobservableScope {
     | "in-process"
     | "delegated"
     | "inert";
-  /** One sentence: what was asked, what answered, and what would change it. */
+  /**
+   * What to do, in order, as the panel's numbered list. First is the step that
+   * answers the question this page could not; the rest change the outcome.
+   */
+  steps: string[];
+  /** Why this page could not answer: what was asked, and what came back. */
   detail: string;
   /** The static namespace this server's managed parameters live under. */
   namespace: string;
@@ -1559,10 +1562,10 @@ function managedParamObservations(
         source: "GSM",
         evidence,
         detail:
-          `A managed parameter for this server, and the component does not hold it. The ` +
-          `deploy listed ${name} among this slug's parameters and the running process has ` +
-          `no such variable — so whatever reads it gets nothing. Seed it under this ` +
-          `server's static namespace and redeploy that component.`,
+          `Not plumbed. Seed it under this server's static namespace, then redeploy that ` +
+          `component. The deploy listed ${name} as one of this server's managed ` +
+          `parameters, and the running component has no such variable, so whatever reads ` +
+          `it gets nothing.`,
       };
     }
     if (verdict.presence === "present") {
@@ -1572,10 +1575,9 @@ function managedParamObservations(
         source: "ENV",
         evidence,
         detail:
-          `PLUMBED, via a process environment variable. A managed parameter, resolved out ` +
-          `of this server's static namespace at deploy time and injected onto the ` +
-          `component — which was asked and reports a value under ${name}. That proves a ` +
-          `value EXISTS in the running container, not that any upstream accepts it.`,
+          `Plumbed. The component was asked and reports a value under ${name}, injected at ` +
+          `deploy time from this server's static namespace. This shows a value exists in ` +
+          `the running container, not that the upstream accepts it.`,
       };
     }
     return {
@@ -1584,9 +1586,9 @@ function managedParamObservations(
       source: "ENV",
       evidence,
       detail:
-        `A managed parameter for this server, plumbed but not usable: ` +
+        `Plumbed, but not usable: ` +
         `${reasonFor(verdict.presence) ?? "the value is evident filler"}. Rotate it through the ` +
-        `console and redeploy that component.`,
+        `console, then redeploy that component.`,
     };
   });
 }
@@ -1625,6 +1627,11 @@ function unobservableScope(
   const component = server.bundle;
   const namespace = staticNamespace(config.gateway.env, server.slug);
   const base = { component, namespace };
+  // The step every probe reason shares: the store holds the answer this page
+  // could not get, and the parameters console lists it.
+  const look =
+    `Open ${namespace} in the parameters console to see which of this server's ` +
+    `parameters are set. That list is the answer this page could not get.`;
   // Before the probe, because the probe has nothing to say: an instance puts no
   // variable and no manifest on its component (src/deploy/appspec.ts), so every
   // answer below — "unmanifested, redeploy it" first — would be confidently wrong.
@@ -1632,13 +1639,17 @@ function unobservableScope(
     return {
       ...base,
       reason: "instance",
+      steps: [
+        look,
+        `To set or rotate one, write it there. It reaches the instance on the bundle's ` +
+          `next sync, with no deploy.`,
+        `To see whether the instance is built, and which variable it is missing, check ` +
+          `"${component}"'s /healthz.`,
+      ],
       detail:
-        `This server is a store-served instance, so nothing about it is on "${component}" — ` +
-        `no variable and no manifest — and there is nothing for that component to report. ` +
-        `Its credentials are read out of this namespace, through core, when the bundle asks; ` +
-        `a value seeded or rotated there reaches the instance on the bundle's next sync, with ` +
-        `no deploy. Whether the instance is built, and which variable it is missing, is on ` +
-        `that component's /healthz.`,
+        `This server is a store-served instance, so "${component}" holds no variable or ` +
+        `manifest for it and has nothing to report. The bundle asks core for this ` +
+        `namespace and builds the instance from what it gets.`,
     };
   }
   // `expectedKeys` enumerates every bundle holding a supplementary image, so a
@@ -1650,34 +1661,43 @@ function unobservableScope(
     return {
       ...base,
       reason: "unwired",
+      steps: [
+        look,
+        `To let this page check it, bind \${${component}.PRIVATE_URL} for core in the app ` +
+          `spec and redeploy. Until then this entry stays unverified, even if the server ` +
+          `works.`,
+      ],
       detail:
-        `This gateway holds no private URL for "${component}", so nothing was asked. A ` +
-        `supplementary image's environment is baked onto ITS container and never broadcast ` +
-        `to core, so with no way to ask that component there is no route from this process ` +
-        `to the answer. The app spec binds it as \${${component}.PRIVATE_URL}; until it does, ` +
-        `this entry stays unverified however well the server is working.`,
+        `This gateway has no private URL for "${component}", so it could not ask it ` +
+        `anything. A supplementary image's environment is set on its own container and ` +
+        `never shared with core, so asking the component is the only way to check it.`,
     };
   }
   if (outcome.kind === "unsupported") {
     return {
       ...base,
       reason: "unsupported",
+      steps: [
+        look,
+        `To let this page check it, rebuild the "${component}" image and bump its pin. ` +
+          `These rows fill in on the next page load.`,
+      ],
       detail:
-        `"${component}" answered, and it runs an image that predates the presence route, so ` +
-        `it cannot be asked what it holds. This is a PIN BUMP rather than an outage — the ` +
-        `component is up and serving requests, and only the question is unanswerable. ` +
-        `Rebuild that image and repin the component, and these rows fill in on the next load.`,
+        `"${component}" is up and serving requests, but its image was built before ` +
+        `components could report which secrets they hold, so it cannot be asked. This is ` +
+        `a stale pin, not an outage.`,
     };
   }
   if (outcome.kind === "unreachable") {
     return {
       ...base,
       reason: "unreachable",
-      detail:
-        `"${component}" could not be reached from this process, so nothing about it was ` +
-        `established. Chase that on its own account before the secrets: whatever it says ` +
-        `about them, a component core cannot talk to is not answering core's requests ` +
-        `either. (${outcome.detail})`,
+      steps: [
+        `Find out why core cannot reach "${component}" first. If core cannot reach it, ` +
+          `it is not answering core's requests either, whatever its secrets look like.`,
+        look,
+      ],
+      detail: `core asked "${component}" what it holds and got no answer: ${outcome.detail}`,
     };
   }
 
@@ -1691,23 +1711,31 @@ function unobservableScope(
     return {
       ...base,
       reason: "unmanifested",
+      steps: [
+        `Redeploy "${component}". Its running spec was rendered before this server set ` +
+          `\`params: true\`, or it cannot read its parameter list.`,
+        `Do not seed anything because of this: it says nothing about what the store ` +
+          `holds. ${look}`,
+      ],
       detail:
-        `"${component}" answered and named no managed parameters for this server — not an ` +
-        `empty list, no entry at all. The deploy bakes what it resolved into ` +
-        `STRAD_PARAM_KEYS, so the running component is holding a spec rendered before this ` +
-        `slug had \`params: true\`, or one whose manifest it cannot read. Redeploy that ` +
-        `component; do NOT seed on the strength of this, because it says nothing about ` +
-        `what the store holds.`,
+        `"${component}" answered, but gave no parameter list for this server at all (not ` +
+        `an empty one). The deploy writes the parameters it resolved into ` +
+        `STRAD_PARAM_KEYS, so the component is running a spec from before this server set ` +
+        `\`params: true\`, or one whose list it cannot read.`,
     };
   }
   return {
     ...base,
     reason: "silent",
+    steps: [
+      `Seed this server's credentials under ${namespace} in the parameters console.`,
+      `Then redeploy "${component}". A value reaches the container at the next deploy, ` +
+        `not when it is written.`,
+    ],
     detail:
-      `"${component}" answered, manifested its managed parameters, and listed NONE under ` +
-      `this server. That is the component reporting that the last render found nothing ` +
-      `beneath this namespace — so nothing was injected, and the usual reason is that ` +
-      `nothing is seeded there yet.`,
+      `"${component}" answered and listed its managed parameters, with none for this ` +
+      `server. The last deploy found nothing under this namespace, so nothing was ` +
+      `injected. The usual reason is that nothing is seeded there yet.`,
   };
 }
 
@@ -1794,6 +1822,10 @@ function builtinScope(
   const ttl = config.gateway.secrets.ttlSeconds;
   const credential = resolverCredential(env);
 
+  const look =
+    `Open ${namespace} in the parameters console to see which of this server's ` +
+    `parameters are set.`;
+
   if (server.bundle !== "core") {
     // THE TTL IS A PROMISE ABOUT A PROCESS THIS ONE CANNOT SEE, so it is stated
     // conditionally rather than asserted. That component holds whatever the app
@@ -1804,24 +1836,23 @@ function builtinScope(
     // prevent, one component over.
     const lands =
       credential === "present"
-        ? `A value written under this namespace reaches that process within the TTL, with ` +
+        ? `A value written there reaches "${server.bundle}" within the TTL (${ttl}s), with ` +
           `no redeploy.`
-        : `Whether a value written under this namespace reaches it depends on that ` +
-          `component holding a resolver credential of its own. The app spec gives it the ` +
-          `one core has, and core has none — so on this deployment the merge is most ` +
-          `likely skipped there too, and nothing reads this namespace.`;
+        : `Set up the resolver credential before you seed. "${server.bundle}" gets the one ` +
+          `core has, and core has none, so the merge is most likely skipped there too and ` +
+          `nothing reads this namespace.`;
     return {
       component: server.bundle,
       namespace,
       reason: "delegated",
+      steps: [look, lands],
       detail:
-        `This builtin is mounted in "${server.bundle}", a component running the strad image ` +
-        `in bundle mode, and THAT process resolves these parameters — merging everything ` +
-        `under this namespace over the server's options: on every tool call, out of its own ` +
-        `snapshot of the store, refreshed within gateway.secrets.ttlSeconds (${ttl}s). Core ` +
-        `proxies the call over the private network and never holds the values. Nothing was ` +
-        `asked of that component either: the presence probe enumerates only the components ` +
-        `holding supplementary images, and this one holds builtins. ${lands}`,
+        `This builtin is mounted in "${server.bundle}", which runs the strad image in ` +
+        `bundle mode and resolves these parameters itself: on every tool call it merges ` +
+        `everything under this namespace over the server's options:, from its own snapshot ` +
+        `of the store, refreshed within gateway.secrets.ttlSeconds (${ttl}s). core forwards ` +
+        `the call and never sees the values. This page only asks components that hold ` +
+        `supplementary images, so "${server.bundle}" was not asked.`,
     };
   }
 
@@ -1834,19 +1865,26 @@ function builtinScope(
       credential === "unset"
         ? `this environment sets no ${RESOLVER_ENV.projectId} / ${RESOLVER_ENV.keyJson}`
         : `this environment sets ${RESOLVER_ENV.keyJson} to something the resolver cannot ` +
-          `parse as a service-account key — which resolves exactly as much as an absent ` +
-          `one does, namely nothing`;
+          `parse as a service-account key, which resolves nothing, just like an absent one`;
+    const fix =
+      credential === "unset"
+        ? `Set ${RESOLVER_ENV.projectId} and ${RESOLVER_ENV.keyJson} on this deployment.`
+        : `Fix ${RESOLVER_ENV.keyJson}: it is set, but it does not parse as a ` +
+          `service-account key.`;
     return {
       component: "core",
       namespace,
       reason: "inert",
+      steps: [
+        fix,
+        `Then this server's parameters under ${namespace} are read on every tool call. ` +
+          `Until then, seeding them changes nothing.`,
+      ],
       detail:
-        `\`params: true\` is INERT on this deployment, so these parameters are read by ` +
-        `nothing. A builtin's parameters are resolved by this process rather than baked ` +
-        `onto a container — but only while it holds a usable store credential, and ${why}. ` +
-        `The registry is built with a null resolver, skips the merge outright, and this ` +
-        `server runs on its options: alone. Seeding this namespace changes nothing until ` +
-        `that credential works.`,
+        `\`params: true\` does nothing on this deployment. A builtin's parameters are ` +
+        `read by this process, but only while it holds a usable store credential, and ` +
+        `${why}. Without one, the registry skips the merge and this server runs on its ` +
+        `options: alone.`,
     };
   }
 
@@ -1854,16 +1892,19 @@ function builtinScope(
     component: "core",
     namespace,
     reason: "in-process",
+    steps: [
+      look,
+      `A value written there reaches the server within gateway.secrets.ttlSeconds ` +
+        `(${ttl}s), with no redeploy. A write made through this console takes effect on ` +
+        `the next tool call.`,
+    ],
     detail:
-      `THIS process resolves these, and no component holds them. A builtin runs inside the ` +
-      `gateway: everything under this namespace is merged over the server's options: on ` +
-      `EVERY TOOL CALL, out of the one snapshot of the store this process holds for ` +
-      `gateway.secrets.ttlSeconds (${ttl}s). So there is no private URL to bind, no image ` +
-      `to repin and no container to redeploy — a value written under this namespace reaches ` +
-      `the running server within that TTL, and rotating one takes effect the same way. The ` +
-      `TTL is the upper bound rather than the wait: a write made through this console drops ` +
-      `the snapshot, so the next tool call re-reads. What went unestablished is only that ` +
-      `this PAGE does not read the namespace; the process that serves the server does.`,
+      `This builtin runs inside the gateway, so this process resolves its parameters: ` +
+      `on every tool call it merges everything under this namespace over the server's ` +
+      `options:, from a snapshot of the store it keeps for gateway.secrets.ttlSeconds ` +
+      `(${ttl}s). A write through this console drops the snapshot. There is no private ` +
+      `URL to bind, no image to repin and no container to redeploy. This page just does ` +
+      `not read the namespace itself.`,
   };
 }
 
@@ -1978,10 +2019,9 @@ export function deriveServerStatuses(
             state: "unverified" as ServerState,
             label: STATE_LABEL.unverified,
             summary:
-              `This server sets \`params: true\`, so its credentials are managed parameters ` +
-              `under ${staticNamespace(config.gateway.env, server.slug)} rather than ` +
-              `\${NAME} references — and this page does not read that namespace. Nothing ` +
-              `here says they are seeded.`,
+              `Its credentials are managed parameters under ` +
+              `${staticNamespace(config.gateway.env, server.slug)} (\`params: true\`), and ` +
+              `this page cannot see them, so it cannot say whether they are seeded.`,
             requirements,
             unobservable: managedScope,
           };
@@ -1991,9 +2031,9 @@ export function deriveServerStatuses(
           state: "no-secrets" as ServerState,
           label: STATE_LABEL["no-secrets"],
           summary:
-            "This server declares no ${NAME} references, so there is nothing to seed. " +
-            "Whether its upstream needs no credential or gets one another way, strad " +
-            "holds none for it.",
+            "This server references no ${NAME}, so there is nothing to seed. Whether its " +
+            "upstream needs no credential or gets one some other way, strad holds none " +
+            "for it.",
           requirements,
         };
       }
@@ -2025,11 +2065,10 @@ export function deriveServerStatuses(
           state: "unverified" as ServerState,
           label: STATE_LABEL.unverified,
           summary:
-            `Every \${NAME} this server declares resolves — and they are not all of what it ` +
-            `needs. It also sets \`params: true\`, so it takes managed parameters from ` +
-            `${staticNamespace(config.gateway.env, server.slug)}, which are not \${NAME} ` +
-            `references and which this page does not read. Nothing here says those are ` +
-            `seeded.`,
+            `Every \${NAME} this server declares resolves, but those are not all of what it ` +
+            `needs. It also takes managed parameters from ` +
+            `${staticNamespace(config.gateway.env, server.slug)} (\`params: true\`), which ` +
+            `this page cannot see, so it cannot say whether those are seeded.`,
           requirements,
           unobservable: managedScope,
         };
@@ -2115,18 +2154,18 @@ function summarise(
     case "unconfigured":
       return (
         `${badCount} of ${total} required ${plural} not seeded yet: ${names}. ` +
-        `This server declares \`mayBeUnseeded\` for ${badCount === 1 ? "it" : "them"}, ` +
-        `so the deploy shipped it INACTIVE instead of failing — it starts serving ` +
-        `on its own within a TTL of the value landing, with no redeploy.`
+        `This server lists ${badCount === 1 ? "it" : "them"} under \`mayBeUnseeded\`, ` +
+        `so it was deployed inactive instead of failing the deploy. Once the value is ` +
+        `seeded it starts serving within a TTL, with no redeploy.`
       );
     case "unrenderable":
-      return `${badCount} of ${total} required ${plural} ${badIs} in the store and cannot be read: ${names}. Not absent — rotate the value.`;
+      return `${badCount} of ${total} required ${plural} ${badIs} in the store but cannot be read: ${names}. Rotate the value; do not create it again.`;
     case "placeholder":
-      return `Seeded but evidently placeholder: ${names}. The upstream will reject calls while listing tools normally.`;
+      return `Set to a placeholder: ${names}. The server lists tools normally, but the upstream will reject calls.`;
     case "unverified":
       return `${badCount} of ${total} required ${plural} cannot be checked from the console: ${names}.`;
     case "unknown":
-      return `The secret backend could not be consulted for: ${names}. Status unknown, not absent.`;
+      return `The secret store did not answer for: ${names}. Status unknown, not absent.`;
     case "no-secrets":
       return "No secrets required.";
   }
@@ -2407,13 +2446,21 @@ export function unobservableTarget(
     env,
   );
   const projectNote = guessed
-    ? "; the project is inferred from the naming convention, because this deployment declares none"
+    ? " The project is inferred from the naming convention, because this deployment declares none."
     : "";
   const ttl = config.gateway.secrets.ttlSeconds;
-  const where =
-    `Everything under this prefix is where this server's managed parameters live, and the ` +
-    `parameters console reads it directly. What is listed there is the answer this page ` +
-    `could not get${projectNote}.`;
+  // The same four facts on every branch — store, prefix, project, console
+  // route. What varies is the one sentence a reader acts on: when a write here
+  // takes effect. The numbered steps above this block say what to do; this
+  // says where, and when it lands.
+  const at = {
+    store: "GCP Parameter Manager (index) + Secret Manager (value)",
+    resource: `${scope.namespace}*`,
+    project,
+    // The steps above carry the instructions, so there is no recipe to repeat.
+    commands: [],
+    href: `/ui/secrets?ns=${encodeURIComponent(scope.namespace)}`,
+  };
 
   // A BUILTIN, RESOLVED BY A STRAD PROCESS. No render bakes these onto anything
   // and no deploy carries them; the process reads the prefix itself and a write
@@ -2426,32 +2473,16 @@ export function unobservableTarget(
   if (scope.reason === "inert") {
     const fix =
       resolverCredential(env) === "unusable"
-        ? {
-            detail:
-              `Fix ${RESOLVER_ENV.keyJson} first — it is set to something the resolver ` +
-              `cannot parse as a service-account key; then this prefix is read on every ` +
-              `tool call.`,
-            command: `# But first: ${RESOLVER_ENV.keyJson} does not parse, so nothing reads them.`,
-          }
-        : {
-            detail:
-              `Set ${RESOLVER_ENV.projectId} and ${RESOLVER_ENV.keyJson} first; then this ` +
-              `prefix is read on every tool call.`,
-            command: `# But first: this deployment sets no ${RESOLVER_ENV.projectId}, so nothing reads them.`,
-          };
+        ? `Fix ${RESOLVER_ENV.keyJson} first: it is set to something the resolver ` +
+          `cannot parse as a service-account key.`
+        : `Set ${RESOLVER_ENV.projectId} and ${RESOLVER_ENV.keyJson} first.`;
     return {
-      store: "GCP Parameter Manager (index) + Secret Manager (value)",
-      resource: `${scope.namespace}*`,
-      project,
+      ...at,
       detail:
-        `${where} Nothing reads it on this deployment: with no usable resolver credential ` +
-        `the registry skips the merge, so a value written here takes effect at no point at ` +
-        `all — not on write, not on a TTL, not on a deploy. ${fix.detail}`,
-      commands: [
-        `# Console: prefix "${scope.namespace}" — where this builtin's parameters would go.`,
-        fix.command,
-      ],
-      href: `/ui/secrets?ns=${encodeURIComponent(scope.namespace)}`,
+        `This builtin's parameters would live under this prefix, but nothing reads it on ` +
+        `this deployment: with no usable resolver credential the registry skips the ` +
+        `merge, so a value written here never takes effect, not on write, not after a ` +
+        `TTL, not on deploy. ${fix}${projectNote}`,
     };
   }
   if (scope.reason === "in-process" || scope.reason === "delegated") {
@@ -2459,54 +2490,43 @@ export function unobservableTarget(
       scope.reason === "in-process"
         ? "this gateway process"
         : `"${scope.component}"`;
-    // THE SAME HEDGE THE SCOPE'S OWN DETAIL MAKES, because the two are one
+    // THE SAME HEDGE THE SCOPE'S OWN STEPS MAKE, because the two are one
     // popout and a reader takes the action from THIS half. A `delegated` scope
     // on a deployment with no resolver credential says the merge is most likely
     // skipped on that component; promising the TTL here regardless would
-    // contradict the paragraph directly above it.
+    // contradict the list directly above it.
     const unbacked =
       scope.reason === "delegated" && resolverCredential(env) !== "present";
-    const lands = unbacked
-      ? `${where} It would be read by ${who} on every tool call — but only if that ` +
-        `component holds a resolver credential, and core holds none, so on this ` +
-        `deployment a value written here most likely reaches nothing. Wire the credential ` +
-        `before you seed.`
-      : `${where} It is read by ${who} on every tool call, out of one snapshot of the ` +
-        `store — so a value written here reaches the running server within ` +
-        `gateway.secrets.ttlSeconds (${ttl}s), with NO deploy, no restart and nothing to ` +
-        `repin. A rotation lands the same way, and a write made THROUGH THIS CONSOLE lands ` +
-        `sooner still: it drops the snapshot, so the next tool call re-reads rather than ` +
-        `waiting out the TTL.`;
     return {
-      store: "GCP Parameter Manager (index) + Secret Manager (value)",
-      resource: `${scope.namespace}*`,
-      project,
-      detail: lands,
-      commands: [
-        `# Console: prefix "${scope.namespace}" — every managed parameter this server gets.`,
-        unbacked
-          ? `# But first: core sets no ${RESOLVER_ENV.projectId}, and "${scope.component}" is given core's.`
-          : `# Then nothing: ${who} re-reads this prefix within ${ttl}s. No redeploy.`,
-      ],
-      href: `/ui/secrets?ns=${encodeURIComponent(scope.namespace)}`,
+      ...at,
+      detail: unbacked
+        ? `This server's parameters live under this prefix. ${who} would read it on every ` +
+          `tool call, but only if it holds a resolver credential, and core has none, so ` +
+          `on this deployment a value written here most likely reaches nothing.` +
+          projectNote
+        : `This server's parameters live under this prefix, and ${who} reads it on every ` +
+          `tool call, so there is nothing to deploy, restart or repin: a write lands within ` +
+          `${ttl}s, or on the next tool call when it goes through this console.` +
+          projectNote,
+    };
+  }
+  if (scope.reason === "instance") {
+    return {
+      ...at,
+      detail:
+        `This server's parameters live under this prefix. The bundle reads them through ` +
+        `core and builds the instance from them, so a value written here reaches the ` +
+        `instance on the bundle's next sync, with no deploy.${projectNote}`,
     };
   }
 
   return {
-    store: "GCP Parameter Manager (index) + Secret Manager (value)",
-    resource: `${scope.namespace}*`,
-    project,
+    ...at,
     detail:
-      `Everything under this prefix is resolved at RENDER time and injected into ` +
-      `"${scope.component}" as environment variables — so this is where the credentials ` +
-      `are, and the parameters console reads it directly. What is listed there is the ` +
-      `answer this page could not get${projectNote}. A value written here reaches the ` +
-      `container at the NEXT DEPLOY, not on write.`,
-    commands: [
-      `# Console: prefix "${scope.namespace}" — every managed parameter this server gets.`,
-      `# Then redeploy "${scope.component}": a supplementary image's environment is baked at render time.`,
-    ],
-    href: `/ui/secrets?ns=${encodeURIComponent(scope.namespace)}`,
+      `This server's parameters live under this prefix. They are injected into ` +
+      `"${scope.component}" as environment variables when the app is deployed, so a ` +
+      `value written here reaches the container at the next deploy, not when it is ` +
+      `written.${projectNote}`,
   };
 }
 
@@ -2550,7 +2570,7 @@ export function fixTargets(
   };
   const projectNoteFor = (guessed: boolean): string =>
     guessed
-      ? ` (project inferred from the naming convention — this deployment does not declare one)`
+      ? ` The project is inferred from the naming convention, because this deployment declares none.`
       : "";
 
   const targets: FixTarget[] = [];
@@ -2570,14 +2590,14 @@ export function fixTargets(
       resource: `${ns}${requirement.name}`,
       project: owner.project,
       detail:
-        `A managed parameter: "${slug}" sets \`params: true\`, so everything under its ` +
-        `static namespace is resolved at render time and injected into that server's ` +
-        `environment. This is the only place it goes — it is not a \${NAME} reference, so ` +
-        `the gateway namespace and strad-${gatewayEnv}-* do nothing for it. It reaches the ` +
-        `container at the NEXT DEPLOY, not on write.${projectNoteFor(owner.guessed)}`,
+        `This is the only place this value goes. "${slug}" uses managed parameters ` +
+        `(\`params: true\`), injected into its environment at deploy time; it is not a ` +
+        `\${NAME} reference, so the gateway namespace and strad-${gatewayEnv}-* do nothing ` +
+        `for it. It reaches the container at the next deploy, not when it is ` +
+        `written.${projectNoteFor(owner.guessed)}`,
       commands: [
-        `# Console: prefix "${slug}/static/", variable ${requirement.name}`,
-        `# Then redeploy: a supplementary image's environment is baked at render time.`,
+        `# Parameters console: prefix "${slug}/static/", variable ${requirement.name}`,
+        `# Then redeploy: the component's environment is set at deploy time.`,
       ],
       href: `/ui/secrets?ns=${encodeURIComponent(ns)}`,
     });
@@ -2596,10 +2616,10 @@ export function fixTargets(
       resource: smName,
       project: null,
       detail:
-        `This name is referenced only from a consoleEnv: map, and consoleEnv: is read from ` +
-        `the DEPLOY environment — never from the parameter store, because it carries the ` +
-        `console's store-admin credential. Seed it in Secret Manager, where the deploy ` +
-        `workflow reads every strad-${gatewayEnv}-* secret, then redeploy.` +
+        `Seed it in Secret Manager, where the deploy workflow reads every ` +
+        `strad-${gatewayEnv}-* secret, then redeploy. This name is only used in a ` +
+        `consoleEnv: map, which is read from the deploy environment, never from the ` +
+        `parameter store, because it carries the console's store-admin credential.` +
         deploySecretsProjectNote(gatewayEnv),
       commands: secretManagerCommands(smName, gatewayEnv),
     });
@@ -2612,13 +2632,14 @@ export function fixTargets(
     resource: path,
     project: shared.project,
     detail: storeBacked
-      ? `gateway.secrets.provider is "${config.gateway.secrets.provider}", so the gateway ` +
-        `reads this path at runtime. A value added here lands within ` +
-        `gateway.secrets.negativeTtlSeconds (${config.gateway.secrets.negativeTtlSeconds}s) ` +
-        `with no redeploy — and it is the same path the next deploy's preflight checks.` +
+      ? `The shared namespace. This deployment reads secrets from the store at runtime ` +
+        `(gateway.secrets.provider: "${config.gateway.secrets.provider}"), so a value added ` +
+        `here takes effect within gateway.secrets.negativeTtlSeconds ` +
+        `(${config.gateway.secrets.negativeTtlSeconds}s), with no redeploy. The next ` +
+        `deploy's preflight checks this same path.` +
         projectNoteFor(shared.guessed)
-      : `gateway.secrets.provider is "env" on this deployment, so a value here is DEPLOY-time ` +
-        `input: the render reads it and bakes it into the app spec. It does not reach the ` +
+      : `This deployment uses gateway.secrets.provider: "env", so a value here is only ` +
+        `read at deploy time, when it is baked into the app spec. It does not reach the ` +
         `running gateway on its own.${projectNoteFor(shared.guessed)}`,
     // The console is the route to recommend: a parameter is a Parameter Manager
     // entry plus (for a secret one) a Secret Manager secret, addressed by a
@@ -2626,7 +2647,7 @@ export function fixTargets(
     // recipe for that pairing would be four commands and an encoding a human
     // should not be computing by hand.
     commands: [
-      `# Console: namespace ${namespace} · prefix (none) · variable ${requirement.name}`,
+      `# Parameters console: namespace ${namespace} · prefix (none) · variable ${requirement.name}`,
       `# By hand, both stores use parameterId("${path}") as the resource id.`,
     ],
     href: `/ui/secrets?ns=${encodeURIComponent(namespace)}`,
@@ -2637,10 +2658,9 @@ export function fixTargets(
     resource: smName,
     project: null,
     detail:
-      `The deploy workflow loads every strad-${gatewayEnv}-* secret into its job ` +
-      `environment, and scripts/render-spec.ts turns each referenced \${NAME} into a ` +
-      `SECRET env var on the app spec. Adding a version here takes effect on the next ` +
-      `deploy, not immediately.` +
+      `A new version here takes effect at the next deploy, not immediately. The deploy ` +
+      `workflow loads every strad-${gatewayEnv}-* secret, and scripts/render-spec.ts ` +
+      `turns each referenced \${NAME} into a secret env var in the app spec.` +
       deploySecretsProjectNote(gatewayEnv),
     commands: secretManagerCommands(smName, gatewayEnv),
   };
@@ -2666,10 +2686,11 @@ export function fixTargets(
   const runtimeRef = requirement.deliveries.includes("gateway");
   const bakedRef = requirement.deliveries.includes("bundle");
   const lands = runtimeRef
-    ? `It is read on the request path, so a value here takes effect within ` +
-      `gateway.secrets.ttlSeconds (${config.gateway.secrets.ttlSeconds}s) with no redeploy.`
-    : `Its \${${requirement.name}} is a supplementary image's env: ref, baked at ` +
-      `render time — so a value here reaches the container at the NEXT DEPLOY, not on write.`;
+    ? `It is read on each request, so a value here takes effect within ` +
+      `gateway.secrets.ttlSeconds (${config.gateway.secrets.ttlSeconds}s), with no redeploy.`
+    : `\${${requirement.name}} is a supplementary image's env: reference, baked in at ` +
+      `deploy time, so a value here reaches the container at the next deploy, not when ` +
+      `it is written.`;
 
   // A name referenced ONLY from a consoleEnv: map is not served by this route at
   // all — that half is read from the deploy environment, never from the store —
@@ -2677,8 +2698,8 @@ export function fixTargets(
   // delivery. A name declared under both still needs the store route for its
   // other half, so the target stays and the caveat is said out loud.
   const consoleCaveat = requirement.deliveries.includes("console")
-    ? ` This name is ALSO declared under a consoleEnv: map, and that half is read ` +
-      `from the deploy environment — a value here does nothing for it.`
+    ? ` This name is also in a consoleEnv: map. That half is read from the deploy ` +
+      `environment, and a value here does nothing for it.`
     : "";
 
   const perServerTargets: FixTarget[] =
@@ -2691,19 +2712,19 @@ export function fixTargets(
             resource,
             project: owner.project,
             detail:
-              `"${slug}" resolves \${${requirement.name}} from its OWN namespace before the ` +
-              `shared one, so this is where a credential that belongs to this server goes. ` +
-              `${lands} The next deploy's preflight accepts it in place of ${path}.` +
+              `Recommended. "${slug}" looks up \${${requirement.name}} in its own namespace ` +
+              `before the shared one, so a credential that belongs to this server goes ` +
+              `here. ${lands} The next deploy's preflight accepts it in place of ${path}.` +
               (requirement.slugs.length > 1
                 ? ` ${requirement.slugs.length} servers reference this name, and the ` +
-                  `deploy demands that EVERY one of them resolve it: a value here covers ` +
-                  `"${slug}" alone, and the others still need ${namespace} or a value of ` +
+                  `deploy requires every one of them to resolve it: a value here covers ` +
+                  `"${slug}" only, and the others still need ${namespace} or a value of ` +
                   `their own.`
                 : "") +
               consoleCaveat +
               projectNoteFor(owner.guessed),
             commands: [
-              `# Console: namespace ${mcpNamespace(gatewayEnv)} · prefix "${slug}/static/" · variable ${requirement.name}`,
+              `# Parameters console: namespace ${mcpNamespace(gatewayEnv)} · prefix "${slug}/static/" · variable ${requirement.name}`,
             ],
             href: `/ui/secrets?ns=${encodeURIComponent(staticNamespace(gatewayEnv, slug))}`,
           };
@@ -2734,18 +2755,18 @@ export function fixTargets(
         resource,
         project: owner.project,
         detail:
-          `NOT a fix for this row — noted because it is the adjacent thing to reach for. ` +
-          `"${slug}" sets \`params: true\`, so everything under its static namespace is ` +
-          `injected into that server's environment. But this deployment sets ` +
-          `gateway.secrets.provider: env, so a \${${requirement.name}} REFERENCE is ` +
-          `resolved from the deploy environment and the rendered spec — never from a ` +
-          `parameter namespace — and a value here leaves the deploy failing exactly as it ` +
-          `does now. Use it to replace the \`${requirement.name}\` entry in that server's ` +
-          `env: with a managed parameter, which is a config change.` +
+          `Not a fix for this row on its own, but a related option. "${slug}" uses managed ` +
+          `parameters (\`params: true\`), so everything under its static namespace is ` +
+          `injected into its environment. This deployment uses gateway.secrets.provider: ` +
+          `env, though, so the \${${requirement.name}} reference comes from the deploy ` +
+          `environment, never from a parameter namespace, and a value here alone leaves ` +
+          `the deploy failing as it does now. To use this route, also replace the ` +
+          `\`${requirement.name}\` entry in that server's env: with a managed parameter, ` +
+          `which is a config change.` +
           projectNoteFor(owner.guessed),
         commands: [
-          `# Console: prefix "${slug}/static/", variable ${requirement.name}`,
-          `# ...then DELETE the \${${requirement.name}} entry from ${slug}'s env: in the config.`,
+          `# Parameters console: prefix "${slug}/static/", variable ${requirement.name}`,
+          `# Then delete the \${${requirement.name}} entry from ${slug}'s env: in the config.`,
         ],
         href: `/ui/secrets?ns=${encodeURIComponent(staticNamespace(gatewayEnv, slug))}`,
       });
@@ -2767,11 +2788,10 @@ const DEPLOY_PROJECT_VAR = "DEPLOY_SECRETS_PROJECT";
  */
 function deploySecretsProjectNote(gatewayEnv: string): string {
   return (
-    ` The project is whichever one your deploy workflow reads strad-${gatewayEnv}-* ` +
-    `out of — its own GCP_PROJECT_ID, a deploy-environment fact this page cannot ` +
-    `see. On a deployment that has a parameter store it is deliberately NOT that ` +
-    `store's project, so the commands leave it to you rather than naming an id ` +
-    `that answers a different question.`
+    ` Use the project your deploy workflow reads strad-${gatewayEnv}-* from (its own ` +
+    `GCP_PROJECT_ID, which this page cannot see). If this deployment has a parameter ` +
+    `store, that is not the store's project, so the commands leave the project for ` +
+    `you to fill in.`
   );
 }
 
@@ -2833,7 +2853,7 @@ function secretManagerCommands(name: string, gatewayEnv: string): string[] {
   }
   return [
     `# Set this to the project your deploy reads strad-${safeEnv}-* from — the`,
-    `# deploy workflow's GCP_PROJECT_ID, NOT this deployment's parameter store.`,
+    `# deploy workflow's GCP_PROJECT_ID, not this deployment's parameter store.`,
     `export ${DEPLOY_PROJECT_VAR}=…`,
     `gcloud secrets create ${safe} --project "$${DEPLOY_PROJECT_VAR}" --replication-policy automatic`,
     `printf %s "$VALUE" | gcloud secrets versions add ${safe} --project "$${DEPLOY_PROJECT_VAR}" --data-file=-`,

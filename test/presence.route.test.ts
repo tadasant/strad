@@ -576,7 +576,7 @@ describe("probeBundles", () => {
     const outcome = probes.get("bundle")!;
     expect(outcome.kind).toBe("unsupported");
     if (outcome.kind !== "unsupported") throw new Error("unreachable");
-    expect(outcome.detail).toContain("Rebuild and repin");
+    expect(outcome.detail).toContain("bump its pin");
   });
 
   it("calls anything else UNREACHABLE, without quoting the body", async () => {

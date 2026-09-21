@@ -328,7 +328,7 @@ describe("a multi-store slug's fix targets", () => {
     );
     const note = targets[targets.length - 1]!;
     expect(note.resource).toBe("/strad/test/mcp/shop/static/SHOP_PASSWORD");
-    expect(note.detail).toContain("NOT a fix for this row");
+    expect(note.detail).toContain("Not a fix for this row on its own");
     expect(note.project).toBe(SERVER_PROJECT);
     // …and the Secret Manager route beside it names no project at all.
     expect(
@@ -343,6 +343,7 @@ describe("a multi-store slug's fix targets", () => {
         component: "strad-bundle",
         namespace: "/strad/test/mcp/shop/static/",
         reason: "unwired",
+        steps: [],
         detail: "no private URL bound",
       },
       {},
@@ -355,6 +356,7 @@ describe("a multi-store slug's fix targets", () => {
         component: "strad-core",
         namespace: GATEWAY_NS,
         reason: "unwired",
+        steps: [],
         detail: "no private URL bound",
       },
       {},
