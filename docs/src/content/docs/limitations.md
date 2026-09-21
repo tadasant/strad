@@ -1158,8 +1158,8 @@ namespace is a requirement in its own right, ranked `unobservable`, so an
 unchecked one demotes the entry to `unverified` whatever its `${NAME}` references
 did. A `READY` badge is never earned by checking a part rather than the whole
 ([#265](https://github.com/tadasant/strad/issues/265)). The popout gets its own
-first line there: the `unverified` headline ("nothing here was established
-either") would contradict the rows under it.
+first line there: the `unverified` headline ("this page could not check this
+server's credentials") would contradict the rows under it.
 
 **A `params: true` builtin's panel says something else entirely, and the badge
 still never goes green.** A builtin runs inside a strad process, which resolves

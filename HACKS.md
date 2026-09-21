@@ -1460,9 +1460,9 @@ Two things that entry must NOT say, and both were written and rejected. It does
 not say the resolved `${NAME}` is "not what this server runs on" — `optionsFor`
 merges a builtin's parameters OVER its resolved `options:`, so the reference is
 part of what it runs on and only the namespace went unchecked. And it does not
-print the `unverified` headline, whose "nothing here was established either"
-would sit directly above a row reading "PLUMBED, established by this gateway
-process"; a partially established entry gets its own first line.
+print the `unverified` headline, whose "this page could not check this server's
+credentials" would sit directly above a row that resolved, checked by this gateway
+process; a partially established entry gets its own first line.
 
 **A BUILTIN GETS THE SAME PANEL SHAPE AND NONE OF THE SAME SENTENCES.** `params:`
 is a field on a BUILTIN too, whose bundle defaults to `core`: a strad process

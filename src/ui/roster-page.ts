@@ -536,10 +536,11 @@ function banner(issues: Entry[], enabled: number): string {
 
   if (issues.length === 0) {
     return `<p class="posture"><strong>Every server is READY.</strong> Every
-      <code>\${NAME}</code> the config references was OBSERVED to resolve — each row says by
-      which process and from which source, <code>GSM</code> or <code>ENV</code>. strad does
-      not call any upstream, so it is not a claim that a credential is still accepted. A
-      server that lists tools and 401s on every call is the shape to suspect next.</p>`;
+      <code>\${NAME}</code> the config references was checked and has a value; each popout
+      says where it was found (<code>GSM</code> or <code>ENV</code>) and which process
+      checked. strad does not call any upstream, so this does not show a credential is still
+      accepted. If a server lists tools but fails every call with a 401, suspect the
+      credential itself.</p>`;
   }
 
   // `isActionable` rather than an inlined `missing || placeholder`: there is one
@@ -553,24 +554,23 @@ function banner(issues: Entry[], enabled: number): string {
   if (actionable > 0) {
     return `<p class="posture posture-warn"><strong>${actionable} server${
       actionable === 1 ? "" : "s"
-    } need attention.</strong> Open the <code>ISSUE</code> badge on each for the store, the
-      resource name to create, and the project it goes in where this page can know it. Nothing
-      here can be fixed by redeploying alone unless the value exists first.${
+    } need attention.</strong> Open the <code>ISSUE</code> badge on each to see what is
+      missing, where to set it, and in which project where this page can know it. Redeploying
+      alone fixes none of these until the value exists.${
         unchecked
-          ? ` A further ${unchecked} could not be checked at all — their popouts say which process would have to be asked.`
+          ? ` Another ${unchecked} could not be checked; their popouts say how to check them.`
           : ""
       }</p>`;
   }
 
-  return `<p class="posture posture-warn"><strong>Nothing is known to be broken, but ${unchecked} server${
+  return `<p class="posture posture-warn"><strong>${unchecked} server${
     unchecked === 1 ? "" : "s"
-  } could not be checked.</strong> That is not the same as healthy. <code>unknown</code> means
-    the secret backend could not be consulted; <code>unverified</code> means the value
-    this server runs on was not established — the component holding it did not answer, it
-    runs an image without the presence route, or the server's credentials are managed
-    parameters no component named. On the last of those some other name may well have
-    resolved; it is not the one that decides. Each popout says which. Neither state is
-    evidence that anything this server needs resolves.</p>`;
+  } could not be checked.</strong> Nothing is known to be broken, and nothing is confirmed
+    healthy either. <code>unknown</code> means the secret store did not answer.
+    <code>unverified</code> means this page could not see the values the server runs on:
+    the component holding them did not answer, runs an image too old to report them, or
+    the server uses managed parameters no component listed. Each popout says which, and
+    how to check.</p>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -959,20 +959,20 @@ function fixDialogId(slug: string): string {
  */
 const ISSUE_HEADLINE: Record<ServerState, string> = {
   ready:
-    "Every secret this server needs was OBSERVED to resolve. Each row below says from which source — GSM or ENV — and which process established it. strad does not call the upstream, so this is not a claim that the credential is still accepted.",
+    "Every secret this server needs has a value. Each row says where it was found (GSM or ENV) and which process checked. strad does not call the upstream, so this does not show the credential is still accepted.",
   "no-secrets": "",
   missing:
-    "A secret this server needs is not seeded. Create the value at the resource named below — the entry goes READY on the next load once it resolves.",
+    "A secret this server needs is not seeded. Create it at the resource below; the badge turns READY on the next page load once it resolves.",
   unconfigured:
-    "This server declared that it could deploy without a credential it has not been given, so the deploy shipped it INACTIVE rather than failing for the whole fleet. Nothing is broken and nothing will fix it but you: create the value at the resource named below, and the server starts serving on its own within a TTL — no redeploy, no PR.",
+    "Waiting for a credential nobody has seeded yet. The server was deployed inactive on purpose (mayBeUnseeded), so nothing is broken. Seed the value below and it starts serving within a TTL, with no redeploy and no PR.",
   unrenderable:
-    "A secret this server needs EXISTS in the parameter store and its value cannot be read. This is neither absent nor healthy: creating it again fails with 409, and nothing that references it gets a value. Rotate it through the console, which rewrites the payload.",
+    "A secret this server needs exists in the parameter store, but its value cannot be read, so nothing that references it gets a value. Rotate it through the console to rewrite it. Do not create it again; that fails with 409.",
   placeholder:
-    "A secret this server needs resolves to evident filler. The gateway boots and lists tools normally and the upstream rejects every call, which looks like a broken server rather than an unset secret. Rotate it to a real credential.",
+    "A secret this server needs is set to a placeholder. The server lists tools normally, but the upstream rejects every call. Rotate it to a real credential.",
   unverified:
-    "Nothing here is known to be broken — and nothing here was established either. This entry could not be checked from the console, which is not the same as healthy.",
+    "This page could not check this server's credentials. That does not mean they are missing, and it does not mean they are fine.",
   unknown:
-    "The secret backend could not be consulted for this entry. Its status is unknown, NOT absent — do not seed anything on the strength of this until the backend answers.",
+    "The secret store did not answer, so this server's status is unknown. That does not mean anything is missing: do not seed anything until the store answers.",
 };
 
 /**
@@ -983,7 +983,7 @@ const ISSUE_HEADLINE: Record<ServerState, string> = {
  * narrower and more useful: what was checked is not the part this server takes
  * its credentials from.
  *
- * "THIS PAGE does not read", never "nothing could read it", and the distinction
+ * "this page cannot see", never "nothing could read it", and the distinction
  * is the whole reason this string is worded the way it is. `optionsFor` resolves
  * a `params: true` BUILTIN's namespace in this very process, per tool call,
  * through the resolver TTL — staging's `echo` exists to be watched that way — so
@@ -992,9 +992,8 @@ const ISSUE_HEADLINE: Record<ServerState, string> = {
  * same reason.
  */
 const PARTIAL_UNVERIFIED_HEADLINE =
-  "The rows below were established, and they are not the part that decides this. " +
-  "This server takes its credentials from a managed namespace THIS PAGE does not " +
-  "read, so what it actually runs on was checked by nothing.";
+  "The references below resolve, but they are not everything this server needs. " +
+  "It also uses managed parameters that this page cannot see, so those are unchecked.";
 
 /**
  * What is wrong, and what to do about it.
@@ -1024,9 +1023,9 @@ function fixDialog(
 
   const ready = status.state === "ready";
   // A FULLY ESTABLISHED SET OF ROWS UNDER AN `unverified` BADGE GETS ITS OWN
-  // FIRST LINE. The `unverified` headline says "nothing here was established
-  // either", and a reader who skims acts on the first line — so printing it over
-  // a row reading "PLUMBED, established by this gateway process" is the popout
+  // FIRST LINE. The `unverified` headline says this page could not check the
+  // server, and a reader who skims acts on the first line — so printing it over
+  // a row that resolved, checked by this gateway process, is the popout
   // contradicting itself in two consecutive sentences.
   //
   // The condition is EVERY ROW `present`, not merely "has rows". An entry
@@ -1036,9 +1035,9 @@ function fixDialog(
   //
   // Not keyed off `status.unobservable`, which would be the obvious thing and is
   // wrong in the other direction: a scope is set on graded entries too, so an
-  // entry whose rows carry real bad news would get the "the rows below were
-  // established" line over a row reading `not seeded`. Every-row-`present` is
-  // the fact this headline is about, and it holds for every kind.
+  // entry whose rows carry real bad news would get the "the references below
+  // resolve" line over a row reading `not seeded`. Every-row-`present` is the
+  // fact this headline is about, and it holds for every kind.
   const established =
     status.requirements.length > 0 &&
     status.requirements.every((o) => o.state === "present");
@@ -1069,23 +1068,22 @@ ${unobservableBlock(status, config, env)}
  * A `params: true` server whose component named no parameters produces ZERO rows
  * for them, and until this existed the page rendered a button over an empty
  * panel it never emitted — the click went nowhere and the badge was a dead
- * control. The fix is not to take the control away: the banner above this grid
- * says in so many words that "their popouts say which process would have to be
- * asked", and an inert chip asserting "this needs attention" with no way to find
- * out why is the worse half of the trade. So the control stays and the panel
- * says the true thing instead — WHICH component holds the value, WHY this page
- * did not establish it, and WHERE to look rather than here.
+ * control. The fix is not to take the control away: an inert chip asserting
+ * "this needs attention" with no way to find out why is the worse half of the
+ * trade. So the control stays and the panel says the true thing instead.
  *
- * EVERY LINE OF IT IS PER-REASON, including the two that read like boilerplate.
- * The chip and the evidence line were written for a supplementary image, whose
- * values are on a container core cannot see, and both are FALSE about a `params:
- * true` builtin core mounts: this process resolves its parameters itself, per
- * tool call, so "not visible here" and "it never sees them" would be the panel's
- * own vocabulary contradicting the paragraph between them. A panel with nothing
- * true to say is why a builtin got no block at all, and why widening it took
- * three more reasons rather than one more branch (#264). `delegated` is the
- * exception that proves the split: its values genuinely are elsewhere, so it
- * keeps the container chip and gets an evidence line of its own.
+ * ORDERED FOR THE READER WHO CAME TO ACT. The component and a short chip first;
+ * then the numbered steps; then where the values live and when a write there
+ * takes effect; and last, folded away, why this page could not check. The
+ * mechanism is true and worth having, and it is not what anyone opens the badge
+ * to read first.
+ *
+ * EVERY LINE OF IT IS PER-REASON. The chip and the steps written for a
+ * supplementary image, whose values are on a container core cannot see, are
+ * FALSE about a `params: true` builtin core mounts: this process resolves its
+ * parameters itself, per tool call, so "not checked" by a component and
+ * "redeploy it" would be the panel contradicting itself (#264). `delegated` keeps
+ * the container chip, because its values genuinely are elsewhere.
  *
  * It renders BELOW the requirement rows, and on an entry that has some. Those
  * rows are about names this server references; this block is about the
@@ -1109,73 +1107,64 @@ function unobservableBlock(
           <span class="chip chip-plain chip-route">${esc(UNOBSERVABLE_ROUTE[scope.reason])}</span>
           <span class="sec-delivery">${esc(UNOBSERVABLE_LABEL[scope.reason])}</span>
         </div>
-        <p class="sec-detail">${esc(scope.detail)}</p>
-        <p class="sec-evidence">${esc(UNOBSERVABLE_EVIDENCE[scope.reason])}</p>
+${
+  scope.steps.length
+    ? `        <ol class="fix-steps">
+${scope.steps.map((s) => `          <li>${esc(s)}</li>`).join("\n")}
+        </ol>`
+    : ""
+}
 ${fixBlock(
   unobservableTarget(config, scope, env),
-  "Check it here",
-  "Look in the console →",
+  "Where the values live",
+  "Open in the parameters console →",
 )}
+        <details class="sec-why">
+          <summary>${esc(UNOBSERVABLE_WHY[scope.reason])}</summary>
+          <p class="sec-detail">${esc(scope.detail)}</p>
+        </details>
       </div>`;
 }
 
 /** Why the value is where it is, in the two or three words on the chip. */
 const UNOBSERVABLE_ROUTE: Record<UnobservableScope["reason"], string> = {
-  unwired: "not visible here",
-  unsupported: "not visible here",
-  unreachable: "not visible here",
-  unmanifested: "not visible here",
-  silent: "not visible here",
-  instance: "read from the store when the bundle asks",
-  // NOT "not visible here". This process holds these values; what it does not
-  // do is read them on this page.
+  unwired: "not checked",
+  unsupported: "not checked",
+  unreachable: "not checked",
+  unmanifested: "not checked",
+  silent: "not checked",
+  instance: "read from the store on demand",
+  // NOT "not checked" by a component. This process holds these values; what it
+  // does not do is read them on this page.
   "in-process": "resolved in this process",
-  delegated: "not visible here",
-  inert: "not resolved at all",
+  delegated: "not checked",
+  inert: "not read at all",
 };
 
 /** The probe outcome — or, for a builtin, who resolves it — beside the chip. */
 const UNOBSERVABLE_LABEL: Record<UnobservableScope["reason"], string> = {
-  unwired: "no private URL bound",
-  unsupported: "image predates the presence route",
+  unwired: "no private URL for the component",
+  unsupported: "image too old to report",
   unreachable: "component did not answer",
-  unmanifested: "component manifested no parameters",
-  silent: "component listed none for this slug",
-  instance: "store-served instance — nothing on the container",
-  "in-process": "resolved per tool call, within the TTL",
-  delegated: "resolved by that component, per tool call",
-  inert: "no resolver credential on this deployment",
+  unmanifested: "component listed no parameters",
+  silent: "component listed none for this server",
+  instance: "store-served instance",
+  "in-process": "read on each tool call",
+  delegated: "read by that component on each tool call",
+  inert: "no resolver credential",
 };
 
-/** The five probe reasons' evidence line: core is not the holder, full stop. */
-const CONTAINER_EVIDENCE =
-  "Established by: nothing. This gateway process is not the component that holds these values, and it never sees them.";
-
-/**
- * What established these values, which for every one of these is "nothing" —
- * and the reason it is nothing is not the same reason twice.
- *
- * The probe reasons say core never saw them. `in-process` says a strad process
- * reads them and this PAGE does not, which is a much weaker claim and the only
- * one that is true of a builtin core mounts. `inert` says nothing reads them at
- * all, which is stronger than either.
- */
-const UNOBSERVABLE_EVIDENCE: Record<UnobservableScope["reason"], string> = {
-  unwired: CONTAINER_EVIDENCE,
-  unsupported: CONTAINER_EVIDENCE,
-  unreachable: CONTAINER_EVIDENCE,
-  unmanifested: CONTAINER_EVIDENCE,
-  silent: CONTAINER_EVIDENCE,
-  instance:
-    "Established by: nothing on this page. A store-served instance holds no value on its container to ask about: the bundle reads this namespace through core and builds the instance from it, and the console does not read that namespace.",
-  "in-process":
-    "Established by: nothing on this page. This process does resolve these values — per tool call, out of the snapshot it holds of the store — but the console does not read that namespace, so nothing here observed one.",
-  // NOT the container line: that component does not HOLD these either, it
-  // resolves them the same way core resolves its own.
-  delegated:
-    "Established by: nothing. These values are resolved by that component's own process, out of its own snapshot of the store, and core proxies the call without ever seeing them.",
-  inert:
-    "Established by: nothing, and nothing is reading them. Without a resolver credential the merge that would inject these never runs, so this is not a gap in what the console can see — there is nothing to see.",
+/** The folded mechanism's own heading: why, in this reason's terms. */
+const UNOBSERVABLE_WHY: Record<UnobservableScope["reason"], string> = {
+  unwired: "Why this page cannot check",
+  unsupported: "Why this page cannot check",
+  unreachable: "Why this page cannot check",
+  unmanifested: "Why this page cannot check",
+  silent: "What the component reported",
+  instance: "How an instance gets its credentials",
+  "in-process": "How this server gets its parameters",
+  delegated: "How this server gets its parameters",
+  inert: "Why nothing reads them",
 };
 
 const SECRET_CHIP_CLASS: Record<SecretState, string> = {
@@ -1192,7 +1181,7 @@ const SECRET_LABEL: Record<SecretState, string> = {
   placeholder: "placeholder",
   missing: "not seeded",
   unrenderable: "cannot render",
-  unobservable: "not visible here",
+  unobservable: "not checked",
   error: "unknown",
 };
 
@@ -1232,17 +1221,17 @@ function sourceBadge(source: SecretSource | null): string {
 function evidenceLine(evidence: SecretEvidence): string {
   switch (evidence.by) {
     case "core":
-      return "Established by: this gateway process, reading its own environment.";
+      return "Checked by: this gateway process, in its own environment.";
     case "store":
-      return "Established by: the parameter store, read from this process.";
+      return "Checked by: the parameter store, read from this process.";
     case "bundle": {
       const who = evidence.component ?? "the component";
       const image = evidence.image ? `, image ${evidence.image}` : "";
       const booted = evidence.bootedAt ? `, up since ${evidence.bootedAt}` : "";
-      return `Established by: ${who} itself, asked over the private network${image}${booted}. It reported presence, never a value.`;
+      return `Checked by: ${who} itself, asked over the private network${image}${booted}. It reports whether a value exists, never the value.`;
     }
     case "none":
-      return "Established by: nothing. No process was able to answer for this name.";
+      return "Checked by: nothing. No process could answer for this name.";
   }
 }
 
@@ -1262,7 +1251,7 @@ function requirementBlock(
         .map((s) => `<code>${esc(s)}</code>`)
         .join(
           " ",
-        )} — one secret, one problem, however many entries carry the badge.</p>`
+        )}. A value in the shared namespace covers all of them; one under a server's own namespace covers only that server.</p>`
     : "";
 
   // `unrenderable` is in `isActionable`, so a row that offered no resource, no
@@ -1441,7 +1430,7 @@ const FIX_DIALOG_SCRIPT = `<script>
  *
  * It exists to make the badges honest in prose as well as in markup — in
  * particular that READY is a statement about presence and nothing else, and that
- * an ISSUE reading "not visible here" is a scoping fact rather than a fault.
+ * an ISSUE reading "not checked" is a scoping fact rather than a fault.
  */
 const GUIDE = `
   <details class="acc" open>
@@ -1452,28 +1441,28 @@ const GUIDE = `
           value, or it references none at all. It is <b>not</b> a claim that the credential
           works: strad never calls the upstream to check. A server that lists tools and fails
           every call with an auth error is exactly the shape this badge cannot rule out.</li>
-        <li><b>ISSUE</b> — anything else. Click it: the popout names the secret, the state,
-          and the exact store and path to fix — with the project, except on the
-          <code>strad-&lt;env&gt;-*</code> route, whose project only your deploy environment knows. Four things land here, and they are
-          not the same problem:
+        <li><b>ISSUE</b> — anything else. Click it: the popout says what is wrong and what to
+          do, and names the store and path to fix, with the project (except on the
+          <code>strad-&lt;env&gt;-*</code> route, whose project only your deploy environment
+          knows). The states you will see:
           <ul>
-            <li><b>not seeded</b> — the backend answered, and there is no such secret. The one
-              unambiguous state, and the one the fix guidance is really for.</li>
-            <li><b>placeholder</b> — a value exists and is evidently filler (an unexpanded
-              <code>\${...}</code>, a well-known "change-me" string, an empty string). Seeded
-              is not working; this is what a boot-fine-then-401 server looks like from here.</li>
-            <li><b>not visible here</b> — the value is scoped to a component this process is
-              not. A supplementary image's <code>env:</code> is baked onto that container at
-              deploy time and never broadcast to core, so the console cannot confirm it either
-              way. It was present at the last successful deploy, because a missing one fails
-              the render.</li>
-            <li><b>unknown</b> — the secret backend could not be consulted. Not absent.</li>
+            <li><b>not seeded</b> — the store answered, and there is no such secret. Create
+              it.</li>
+            <li><b>placeholder</b> — a value exists but is filler (an unexpanded
+              <code>\${...}</code>, a "change-me" string, an empty string). The server boots
+              and lists tools, then every call fails with an auth error. Rotate it.</li>
+            <li><b>not checked</b> — the value lives on a component this page could not ask.
+              A supplementary image's <code>env:</code> is baked onto its own container at
+              deploy time and never shared with core. It had a value at the last successful
+              deploy, because a missing one fails the render. The popout says how to check it
+              yourself.</li>
+            <li><b>unknown</b> — the secret store did not answer. That does not mean the
+              secret is missing.</li>
           </ul>
         </li>
       </ul>
-      <p>The last two are not faults, and they are still not READY. A badge that went green on
-        "I could not check" would be the one lie this page cannot afford: its whole value is
-        that green means observed.</p>
+      <p>The last two are not faults, and they are still not READY: green on this page always
+        means a value was actually checked.</p>
     </div>
   </details>
   <details class="acc">
@@ -1564,7 +1553,7 @@ const GUIDE = `
         reason for the abbreviation. The workflow is to read that screen and then this one
         and compare, so a divergent spelling would defeat the badge. Zimmer additionally
         shows <code>Rails Credentials</code>; strad has no equivalent and never shows it.</p>
-      <p>An <code>unknown</code> row carries no badge. A backend that could not be consulted
+      <p>An <code>unknown</code> row carries no badge. A secret store that did not answer
         cannot be named as the source either.</p>
     </div>
   </details>
@@ -1769,5 +1758,12 @@ const ROSTER_CSS = `<style>
 .sec-fix-dl dd{margin:0;font-size:.8rem;word-break:break-all}
 .sec-fix-dl dd.sec-fix-open{word-break:normal;color:var(--g3);font-style:italic}
 .sec-fix-why{color:var(--g2);font-size:.79rem;margin:.55rem 0 0;line-height:1.55}
+/* What to do, first and numbered. The mechanism is folded below it. */
+.fix-steps{margin:.6rem 0 .2rem;padding-left:1.3rem;color:var(--g1);font-size:.84rem;
+  line-height:1.55}
+.fix-steps li{margin:.25rem 0}
+.sec-why{margin:.6rem 0 .2rem}
+.sec-why summary{cursor:pointer;color:var(--g3);font-size:.78rem}
+.sec-why .sec-detail{margin-top:.35rem}
 .secret-row .sec-detail-inline{padding-left:0}
 </style>`;

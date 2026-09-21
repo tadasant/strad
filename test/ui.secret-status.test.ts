@@ -36,7 +36,7 @@ import {
  * than about markup. Three properties carry it, and each of them is a way the
  * obvious implementation would have been wrong:
  *
- *   1. NOT VISIBLE HERE IS NOT MISSING. A supplementary image's `env:` is baked
+ *   1. NOT CHECKED IS NOT MISSING. A supplementary image's `env:` is baked
  *      onto its own component; core cannot see it. A presence check that answered
  *      "not seeded" would paint a healthy 27-server fleet entirely red.
  *   2. A `consoleEnv:` VALUE IS FILED UNDER THE KEY, NOT THE REF NAME. Asking the
@@ -632,7 +632,7 @@ describe("observe", () => {
       bag: EMPTY_BAG,
     });
     expect(o!.state).toBe("error");
-    expect(o!.detail).toContain("NOT absent");
+    expect(o!.detail).toContain("does not mean it is missing");
   });
 
   it("degrades ONE hanging name to error without hanging the others", async () => {
@@ -910,7 +910,7 @@ describe("fixTargets", () => {
     expect(last.resource).toBe(
       "/strad/test/mcp/params-server/static/PARAMS_TOKEN",
     );
-    expect(last.detail).toContain("NOT a fix for this row");
+    expect(last.detail).toContain("Not a fix for this row on its own");
     // ...and an actual fix is offered ahead of it.
     expect(targets[0]!.resource).toBe("strad-test-PARAMS_TOKEN");
   });
@@ -939,7 +939,7 @@ describe("fixTargets", () => {
       {},
     )[0]!;
     expect(baked.resource).toBe("/strad/test/mcp/shop/static/SHOP_PASSWORD");
-    expect(baked.detail).toContain("NEXT DEPLOY");
+    expect(baked.detail).toContain("at the next deploy");
     expect(baked.detail).not.toContain("no redeploy");
   });
 
@@ -952,7 +952,7 @@ describe("fixTargets", () => {
       }),
       {},
     );
-    expect(targets[0]!.detail).toContain("EVERY one of them");
+    expect(targets[0]!.detail).toContain("every one of them");
   });
 
   it("routes a consoleEnv-only name to the deploy environment, never the store", () => {
@@ -1038,7 +1038,7 @@ describe("the Secret Manager recipe when the two projects differ", () => {
       'gcloud secrets create strad-test-SHOP_PASSWORD --project "$DEPLOY_SECRETS_PROJECT"',
     );
     expect(baked.detail).toContain("GCP_PROJECT_ID");
-    expect(baked.detail).toContain("NOT that store's project");
+    expect(baked.detail).toContain("that is not the store's project");
   });
 
   it("does the same on the consoleEnv-only route, which is the other call site", () => {
@@ -1061,7 +1061,7 @@ describe("the Secret Manager recipe when the two projects differ", () => {
     expect(target[0]!.commands.join("\n")).toContain(
       '--project "$DEPLOY_SECRETS_PROJECT"',
     );
-    expect(target[0]!.detail).toContain("NOT that store's project");
+    expect(target[0]!.detail).toContain("that is not the store's project");
   });
 
   it("does not reach for the RESOLVER's project either", () => {
@@ -1346,20 +1346,20 @@ describe("GET /connectors", () => {
     expect([...new Set(badges)].sort()).toEqual(["ENV", "GSM"]);
   });
 
-  it("says a bundle-scoped secret is not visible here, rather than missing", () => {
+  it("says a bundle-scoped secret is not checked, rather than missing", () => {
     // Asserted on the CHIP, not on the words. The Help guide explains every state
     // in prose and is rendered on every request, so a bare
-    // toContain("not visible here") passes with zero rows in that state — it was
+    // toContain("not checked") passes with zero rows in that state — it was
     // written that way first, and caught in self-review.
     expect(html).toContain(
-      '<span class="chip chip-plain chip-route">not visible here</span>',
+      '<span class="chip chip-plain chip-route">not checked</span>',
     );
     // And the row it belongs to is a bundle-scoped secret, not something else.
     // PARAMS_TOKEN is declared only under a supplementary server's env: and is
     // absent from the bag, which is exactly the unobservable case.
     const at = html.indexOf("${PARAMS_TOKEN}");
     expect(at).toBeGreaterThan(-1);
-    expect(html.slice(at, at + 600)).toContain("not visible here");
+    expect(html.slice(at, at + 600)).toContain("not checked");
   });
 
   it("lists the gateway's own boot keys, and marks the optional ones optional", () => {
@@ -1427,7 +1427,7 @@ describe("GET /connectors", () => {
     );
     expect(body).toContain("Status unknown, not absent");
     // ...and the banner must never read as a clean bill of health.
-    expect(body).not.toContain("Every server&#39;s secrets resolve");
+    expect(body).not.toContain("Every server is READY");
     close();
   });
 
@@ -1467,8 +1467,8 @@ servers:
       await fetch(`${url}/connectors`, { headers: AUTH })
     ).text();
     expect(body).toContain("could not be checked");
-    expect(body).toContain("That is not the same as healthy");
-    expect(body).not.toContain("Every server&#39;s secrets resolve");
+    expect(body).toContain("nothing is confirmed");
+    expect(body).not.toContain("Every server is READY");
     close();
   });
 
@@ -1625,14 +1625,16 @@ ${extra}`);
     expect(scope?.reason).toBe("unwired");
     expect(scope?.component).toBe("bundle-internal");
     expect(scope?.namespace).toBe("/strad/test/mcp/craigslist/static/");
-    expect(scope?.detail).toContain("PRIVATE_URL");
+    expect(scope?.detail).toContain("no private URL");
+    expect(scope?.steps.join(" ")).toContain("PRIVATE_URL");
   });
 
   it("is `unsupported` — a pin bump, explicitly not an outage", () => {
     const scope = scopeFor({ kind: "unsupported", detail: "404" });
     expect(scope?.reason).toBe("unsupported");
-    expect(scope?.detail).toContain("PIN BUMP");
+    expect(scope?.detail).toContain("stale pin, not an outage");
     expect(scope?.detail).toContain("up and serving");
+    expect(scope?.steps.join(" ")).toContain("bump its pin");
   });
 
   it("is `unreachable`, and carries the probe's own diagnosis", () => {
@@ -1650,14 +1652,16 @@ ${extra}`);
     for (const paramKeys of [null, { other: ["OTHER_KEY"] }]) {
       const scope = scopeFor({ kind: "ok", report: report(paramKeys) });
       expect(scope?.reason).toBe("unmanifested");
-      expect(scope?.detail).toContain("Redeploy");
-      expect(scope?.detail).toContain("do NOT seed");
+      expect(scope?.steps[0]).toContain("Redeploy");
+      expect(scope?.steps.join(" ")).toContain("Do not seed");
     }
     // An empty list FOR THIS SLUG is the store being empty, and that one does.
     const scope = scopeFor({ kind: "ok", report: report({ craigslist: [] }) });
     expect(scope?.reason).toBe("silent");
     expect(scope?.detail).toContain("nothing is seeded");
-    expect(scope?.detail).not.toContain("Redeploy");
+    // Seed first; the redeploy is what carries the value, never the first move.
+    expect(scope?.steps[0]).toContain("seed this server");
+    expect(scope?.steps[0]).not.toContain("edeploy");
   });
 
   it("treats a bundle that was never probed as unwired, not as an answer", () => {
@@ -1749,14 +1753,16 @@ ${extra}`);
     expect(scope?.component).toBe("core");
     expect(scope?.namespace).toBe("/strad/test/mcp/echo/static/");
     // The three claims that make it a different panel rather than a reworded one.
-    expect(scope?.detail).toContain("THIS process resolves these");
-    expect(scope?.detail).toContain("EVERY TOOL CALL");
-    expect(scope?.detail).toContain("gateway.secrets.ttlSeconds (86400s)");
+    const said = [...scope!.steps, scope!.detail].join(" ");
+    expect(scope?.detail).toContain("this process resolves its parameters");
+    expect(scope?.detail).toContain("on every tool call");
+    expect(said).toContain("gateway.secrets.ttlSeconds (86400s)");
+    expect(said).toContain("with no redeploy");
     // And the four the old panel would have made, none of which is true here.
-    expect(scope?.detail).not.toContain("PRIVATE_URL");
-    expect(scope?.detail).not.toContain("Rebuild that image and repin");
-    expect(scope?.detail).not.toContain("Redeploy that component");
-    expect(scope?.detail).not.toContain("NEXT DEPLOY");
+    expect(said).not.toContain("PRIVATE_URL");
+    expect(said).not.toContain("bump its pin");
+    expect(said).not.toContain("redeploy that component");
+    expect(said).not.toContain("at the next deploy");
   });
 
   it("is `inert` when the deployment holds no resolver credential", () => {
@@ -1767,17 +1773,18 @@ ${extra}`);
     const scope = s!.unobservable;
     expect(scope?.reason).toBe("inert");
     expect(scope?.component).toBe("core");
-    expect(scope?.detail).toContain("INERT");
+    expect(scope?.detail).toContain("`params: true` does nothing");
     expect(scope?.detail).toContain("STRAD_PARAMS_PROJECT_ID");
     expect(scope?.detail).toContain("runs on its options: alone");
-    expect(scope?.detail).not.toContain("EVERY TOOL CALL");
+    expect(scope?.steps[0]).toBe(
+      "Set STRAD_PARAMS_PROJECT_ID and STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON on this deployment.",
+    );
+    expect(scope?.steps.join(" ")).toContain("seeding them changes nothing");
     const target = unobservableTarget(cfg(), scope!, {});
     expect(target.detail).toContain(
       "Set STRAD_PARAMS_PROJECT_ID and STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON first",
     );
-    expect(target.commands[1]).toBe(
-      "# But first: this deployment sets no STRAD_PARAMS_PROJECT_ID, so nothing reads them.",
-    );
+    expect(target.detail).toContain("never takes effect");
   });
 
   it("tells a key JSON the resolver cannot parse apart from an absent one", () => {
@@ -1804,8 +1811,11 @@ ${extra}`);
     expect(target.detail).toContain(
       "Fix STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON first",
     );
-    expect(target.commands[1]).toContain(
-      "STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON does not parse",
+    expect(scope?.steps[0]).toContain(
+      "Fix STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON",
+    );
+    expect(scope?.steps.join(" ")).not.toContain(
+      "Set STRAD_PARAMS_PROJECT_ID and",
     );
     expect(target.detail).not.toContain("Set STRAD_PARAMS_PROJECT_ID and");
   });
@@ -1874,19 +1884,19 @@ servers:
     );
     const scope = s!.unobservable;
     expect(scope?.reason).toBe("delegated");
-    expect(scope?.detail).toContain("most likely skipped there too");
-    expect(scope?.detail).not.toContain("reaches that process within the TTL");
+    const said = [...scope!.steps, scope!.detail].join(" ");
+    expect(said).toContain("most likely skipped there too");
+    expect(said).not.toContain("within the TTL");
     // AND THE FIX BLOCK BELOW IT. The scope's detail and its "where to look"
     // block are one popout, and the action is taken from the second — so a
     // hedge in one and an unconditional TTL promise in the other is the panel
     // contradicting itself in consecutive paragraphs.
     const target = unobservableTarget(cfg("", "bundle-builtins"), scope!, {});
     expect(target.detail).toContain("most likely reaches nothing");
-    expect(target.detail).not.toContain("with NO deploy");
-    expect(target.commands[1]).toContain(
-      'core sets no STRAD_PARAMS_PROJECT_ID, and "bundle-builtins" is given core\'s',
+    expect(target.detail).not.toContain("nothing to deploy");
+    expect(scope?.steps.join(" ")).toContain(
+      "Set up the resolver credential before you seed",
     );
-    expect(target.commands[1]).not.toContain("No redeploy.");
   });
 
   it("is `delegated` for a builtin core only proxies to", () => {
@@ -1906,9 +1916,9 @@ servers:
     expect(scope?.component).toBe("bundle-builtins");
     expect(scope?.detail).toContain("bundle-builtins");
     expect(scope?.detail).toContain("bundle mode");
-    expect(scope?.detail).toContain("with no redeploy");
+    expect(scope?.steps.join(" ")).toContain("with no redeploy");
     // Not "core resolves this", which is the one thing `in-process` says.
-    expect(scope?.detail).not.toContain("THIS process resolves these");
+    expect(scope?.detail).not.toContain("this process resolves its parameters");
   });
 
   it("rides along on a graded entry too, beside the rows", () => {
@@ -2211,11 +2221,12 @@ servers:
     const panel = dialog.indexOf('<code class="sec-component">');
     expect(row).toBeGreaterThan(-1);
     expect(panel).toBeGreaterThan(row);
-    expect(dialog).toContain("not visible here");
+    expect(dialog).toContain("not checked");
     expect(dialog).toContain("/strad/test/mcp/craigslist/static/");
-    // And the headline does not claim nothing was established, directly over a
-    // row saying this gateway process established it.
-    expect(dialog).not.toContain("nothing here was established either");
+    // And the headline does not claim nothing was checked, directly over a
+    // row saying this gateway process checked it.
+    expect(dialog).not.toContain("could not check this server");
+    expect(dialog).toContain("The references below resolve");
   });
 
   it("says nothing false about a BUILTIN, whose namespace core DOES read", () => {
@@ -2254,17 +2265,17 @@ servers:
       boot: [],
     });
     const dialog = html.slice(html.indexOf('<dialog class="fixdlg"'));
-    expect(dialog).toContain("THIS PAGE does not");
+    expect(dialog).toContain("this page cannot see");
     expect(dialog).not.toContain("nothing here could read");
-    expect(dialog).not.toContain("nothing here was established either");
+    expect(dialog).not.toContain("could not check this server");
     // The rows, and then the panel below them.
     expect(dialog).toContain('<code class="sec-var">');
     expect(dialog).toContain("/strad/test/mcp/echo/static/");
     expect(dialog).toContain('<code class="sec-component">core</code>');
     // `env: {}` above holds no resolver credential, so the panel is the honest
     // `inert` one rather than the TTL promise.
-    expect(dialog).toContain("not resolved at all");
-    expect(dialog).toContain("no resolver credential on this deployment");
+    expect(dialog).toContain("not read at all");
+    expect(dialog).toContain("no resolver credential");
   });
 });
 
@@ -2347,7 +2358,7 @@ servers:
       boot: [],
     });
     // BOUNDED at this dialog's own close tag. The page carries a help dialog
-    // further down whose state legend uses "not visible here", and a slice to
+    // further down whose state legend uses "not checked", and a slice to
     // the end of the document would let it answer for this panel.
     const start = html.indexOf('<dialog class="fixdlg"');
     return html.slice(start, html.indexOf("</dialog>", start));
@@ -2379,26 +2390,25 @@ servers:
   it("says which process resolves them, and that a write lands on a TTL", () => {
     const dialog = dialogFor("builtin");
     expect(dialog).toContain("resolved in this process");
-    expect(dialog).toContain("resolved per tool call, within the TTL");
+    expect(dialog).toContain("read on each tool call");
     expect(dialog).toContain(
-      "THIS process resolves these, and no component holds them.",
+      "This builtin runs inside the gateway, so this process resolves its parameters",
     );
     expect(dialog).toContain("gateway.secrets.ttlSeconds (86400s)");
+    // The numbered step a reader acts on: a TTL, not a deploy.
     expect(dialog).toContain(
-      "Established by: nothing on this page. This process does resolve these values",
-    );
-    // The pasteable lines, which are where the container assumption lives on
-    // the other branch.
-    expect(dialog).toContain(
-      "# Console: prefix &quot;/strad/test/mcp/echo/static/&quot; — every managed parameter this server gets.",
+      "A value written there reaches the server within gateway.secrets.ttlSeconds (86400s), with no redeploy.",
     );
     expect(dialog).toContain(
-      "# Then nothing: this gateway process re-reads this prefix within 86400s. No redeploy.",
+      "this gateway process reads it on every tool call",
     );
     // The TTL is the upper bound, not the wait: a console write calls
     // `forgetStoreReading` -> `invalidate()` -> `resolver.forget()`, and the
     // registry's parameter view reads through that same resolver.
     expect(dialog).toContain("drops the snapshot");
+    expect(dialog).toContain(
+      "on the next tool call when it goes through this console",
+    );
     expect(dialog).toContain(
       "/ui/secrets?ns=%2Fstrad%2Ftest%2Fmcp%2Fecho%2Fstatic%2F",
     );
@@ -2408,9 +2418,9 @@ servers:
     const dialog = dialogFor("builtin");
     for (const wrong of [
       "PRIVATE_URL",
-      "Rebuild that image and repin",
-      "NEXT DEPLOY",
-      "not visible here",
+      "bump its pin",
+      "at the next deploy",
+      "not checked",
     ]) {
       expect(dialog, wrong).not.toContain(wrong);
     }
@@ -2419,36 +2429,41 @@ servers:
 
   it("tells an operator NOT to seed when the merge is not running", () => {
     const dialog = dialogFor("builtin", {});
-    expect(dialog).toContain("not resolved at all");
+    expect(dialog).toContain("not read at all");
     expect(dialog).toContain(
-      "takes effect at no point at all — not on write, not on a TTL, not on a deploy",
+      "never takes effect, not on write, not after a TTL, not on deploy",
     );
     expect(dialog).toContain(
-      "# But first: this deployment sets no STRAD_PARAMS_PROJECT_ID, so nothing reads them.",
+      "Set STRAD_PARAMS_PROJECT_ID and STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON on this deployment.",
     );
+    expect(dialog).toContain("seeding them changes nothing");
     // And it must not promise the TTL the other branch does.
-    expect(dialog).not.toContain("No redeploy.");
+    expect(dialog).not.toContain("with no redeploy");
   });
 
-  it("leaves a SUPPLEMENTARY IMAGE's panel exactly as it was", () => {
+  it("gives a SUPPLEMENTARY IMAGE's panel steps, the store, and a folded why", () => {
     const dialog = dialogFor("supplementary-image");
     expect(dialog).toContain(
       '<code class="sec-component">bundle-internal</code>',
     );
-    expect(dialog).toContain("not visible here");
-    expect(dialog).toContain("no private URL bound");
+    expect(dialog).toContain("not checked");
+    expect(dialog).toContain("no private URL for the component");
+    // Steps first, then where the values live, then the mechanism folded away.
+    const steps = dialog.indexOf('<ol class="fix-steps">');
+    const where = dialog.indexOf("Where the values live");
+    const why = dialog.indexOf('<details class="sec-why">');
+    expect(steps).toBeGreaterThan(-1);
+    expect(where).toBeGreaterThan(steps);
+    expect(why).toBeGreaterThan(where);
     expect(dialog).toContain(
-      "Established by: nothing. This gateway process is not the component that holds these values, and it never sees them.",
+      "Open /strad/test/mcp/craigslist/static/ in the parameters console",
     );
     expect(dialog).toContain(
-      "A value written here reaches the container at the NEXT DEPLOY, not on write.",
-    );
-    expect(dialog).toContain(
-      "# Then redeploy &quot;bundle-internal&quot;: a supplementary image&#39;s environment is baked at render time.",
+      "a value written here reaches the container at the next deploy, not when it is written.",
     );
     // And none of the builtin's vocabulary leaks onto it.
     expect(dialog).not.toContain("resolved in this process");
-    expect(dialog).not.toContain("No redeploy.");
+    expect(dialog).not.toContain("with no redeploy");
   });
 });
 
