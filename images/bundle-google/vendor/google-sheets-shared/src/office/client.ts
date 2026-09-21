@@ -9,7 +9,7 @@
  * for Drive, what a write is told. Wrapping rather than subclassing is what
  * lets a test drive all four read tools over a fake workbook and a stub Drive.
  *
- * Reads fall back. Writes refuse. See `readWithOfficeFallback` and
+ * Reads fall back. Writes to an existing file refuse; a create has none. See `readWithOfficeFallback` and
  * `writeRefusingOfficeFiles` in ./load.ts for why the two differ.
  */
 import type { IGoogleSheetsClient } from '../server.js';
@@ -21,6 +21,7 @@ import type {
   AppendValuesResponse,
   ClearValuesResponse,
 } from '../google-sheets-client/lib/values.js';
+import type { CreateSpreadsheetRequest } from '../google-sheets-client/lib/create-spreadsheet.js';
 import {
   OfficeWorkbookLoader,
   readWithOfficeFallback,
@@ -111,6 +112,14 @@ class OfficeAwareClient implements IGoogleSheetsClient {
     return writeRefusingOfficeFiles('add_sheet', spreadsheetId, () =>
       this.sheets.addSheet(spreadsheetId, properties)
     );
+  }
+
+  /**
+   * Straight through. There is no existing file to be an Office one: what
+   * `spreadsheets.create` makes is always a native Google Sheet.
+   */
+  createSpreadsheet(request: CreateSpreadsheetRequest): Promise<Spreadsheet> {
+    return this.sheets.createSpreadsheet(request);
   }
 }
 

@@ -37,19 +37,28 @@ test("the read tier is the four tools that cannot change a spreadsheet", () => {
   ]);
 });
 
-test("the write tier can edit a sheet but cannot destroy one", () => {
+test("the write tier can edit and create a spreadsheet but cannot destroy one", () => {
   assert.deepEqual([...WRITE_TOOLS], [
     "update_sheet_values",
     "append_sheet_rows",
     "clear_sheet_values",
     "add_sheet",
+    "create_spreadsheet",
   ]);
-  // No delete_sheet, no delete_spreadsheet, no share tool: this server asks for
-  // no Drive scope, so file-level and permission operations are out of reach by
-  // construction rather than by policy.
+  // No delete_sheet, no delete_spreadsheet, no share or move tool. Creating a
+  // file needs only the `spreadsheets` scope; deleting, sharing and filing one in
+  // a folder are Drive writes, and this server asks for no Drive write scope, so
+  // they are out of reach by construction rather than by policy.
   for (const name of toolNames()) {
-    assert.doesNotMatch(name, /^(delete|share|create_spreadsheet)/);
+    assert.doesNotMatch(name, /^(delete|share|move)/);
   }
+});
+
+test("creating a file is a WRITE, so a -ro slug's allow list never reaches it", () => {
+  // A `-ro` slug's `tools: allow:` is READ_TOOLS. A create listed there would
+  // hand a read-only slug the one call that leaves a new file in someone's Drive.
+  assert.ok(!(READ_TOOLS as readonly string[]).includes("create_spreadsheet"));
+  assert.ok((WRITE_TOOLS as readonly string[]).includes("create_spreadsheet"));
 });
 
 test("a mount with no credential lists tools and fails calls, naming what is missing", () => {

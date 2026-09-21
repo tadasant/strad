@@ -30,10 +30,9 @@ const TOOL_DESCRIPTION = `Add a new empty tab to an existing spreadsheet.
 
 **Returns:** the new tab's title and gid.
 
-This is the only structural write here: there is no tool that deletes a tab, and
-none that creates or deletes a spreadsheet FILE. Adding is recoverable; those are
-not, and a file-level operation would need Drive scopes this server does not ask
-for.`;
+There is no tool that deletes a tab, and none that deletes a spreadsheet file.
+Adding is recoverable; deleting is not. To start a new file rather than a new
+tab, use create_spreadsheet.`;
 
 export function addSheetTool(_server: Server, clientFactory: ClientFactory) {
   return {

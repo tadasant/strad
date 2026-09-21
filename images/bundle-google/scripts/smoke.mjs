@@ -20,9 +20,9 @@ const EXPECTED = {
   "/gmail": 8,
   "/google-calendar": 7,
   "/google-docs": 11,
-  // Four read tools and four write tools. A strad `-ro` slug is this same mount
-  // with the write four withheld by the gateway's tools.allow.
-  "/google-sheets": 8,
+  // Four read tools and five write tools. A strad `-ro` slug is this same mount
+  // with the write five withheld by the gateway's tools.allow.
+  "/google-sheets": 9,
 };
 
 // The MCP SDK's per-request timeout defaults to 60s at every hop; be explicit.

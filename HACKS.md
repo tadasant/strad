@@ -5371,7 +5371,7 @@ a provenance line saying so, because the read is not equivalent:
   `sheet_gid` then resolves.
 - **No write tool works.** Writing one back would be a Drive WRITE scope, a
   re-encoded workbook and a last-writer-wins race against whoever has the file
-  open. The four write tools refuse and name the conversion.
+  open. The four write tools that edit a file refuse and name the conversion.
 - One workbook is read **whole**: 20MB downloaded (bounded on the stream, since
   Drive's `size` is optional), 500,000 cells parsed, 128MB inflated — each
   refused past that with a message. A native spreadsheet is read a range at a
@@ -5447,3 +5447,27 @@ without raising it.
 credential is seeded; the exact block is in the setup page. The buffering goes
 away if Device Farm ever accepts a chunked PUT, or if strad grows a place to
 spool a build to disk.
+
+## 104. A spreadsheet `create_spreadsheet` makes lands in the Drive root, shared with no one
+
+**What.** `google-sheets`' `create_spreadsheet` is `spreadsheets.create` and
+nothing else. It needs only `https://www.googleapis.com/auth/spreadsheets` — the
+scope every `-rw` slug already holds; Google's discovery document lists `drive`,
+`drive.file` and `spreadsheets` as each sufficient — and the file lands in the
+ROOT of the slug account's My Drive, owned by that account and shared with no
+one. Filing it in a folder, sharing it and deleting it are all Drive API writes,
+and this server asks for no Drive write scope, so none of them is a tool.
+
+It is also not idempotent. A call that times out after Google made the file and
+is then retried leaves two files, and nothing here can remove the first. The tool
+description says so, and asks a caller to look before it retries.
+
+**Why.** Adding a Drive write scope to three Google accounts to put a file in a
+folder is a much bigger grant than the feature, and a `drive.file` grant would
+reach only files this app created — so it could file a new spreadsheet but not
+one a human made. The tab titles and the frozen header row ride in the same one
+request, so a failure never leaves a half-built file behind.
+
+**Undo.** A `move_spreadsheet` / `share_spreadsheet` pair behind `drive.file`, on
+a slug whose operator has decided that scope is worth it. The create stays on
+`spreadsheets` either way.

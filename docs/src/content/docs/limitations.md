@@ -3176,7 +3176,8 @@ What differs from a native spreadsheet:
   stable within the file, and the same number `sheet_gid` resolves.
 - **No write tool works.** Writing one back would need a Drive write scope, a
   re-encoded workbook and a last-writer-wins race against whoever has the file
-  open in the Sheets UI. All four write tools refuse and name the conversion.
+  open in the Sheets UI. The four write tools that edit a file refuse and name
+  the conversion.
 - The file is read **whole**: 20MB downloaded, 500,000 cells parsed, both
   refused past that with a message. A native spreadsheet is read a range at a
   time and has no such ceiling.
@@ -3219,6 +3220,18 @@ It shipped that way on purpose. An unresolved `${NAME}` fails the spec render, a
 **Undo:** the slug block in [the setup guide](/servers/aws-device-farm-setup/#61--strad-staging-config-tadasantstrad-this-repo), pasted once the credential is seeded.
 
 See `HACKS.md` #103.
+
+### 104. A new spreadsheet lands in the Drive root, shared with no one
+
+[`create_spreadsheet`](/servers/google-sheets/#the-tools) needs nothing wider than the `https://www.googleapis.com/auth/spreadsheets` scope a `-rw` slug already holds, and that is exactly why it stops where it does. The file lands in the **root** of the slug account's My Drive, owned by that account and shared with no one. Putting it in a folder, sharing it and deleting it are Drive API writes, and this server asks for no Drive write scope — so a human moves or shares it, in Drive.
+
+It is **not idempotent**. A call that times out after Google made the file, retried, leaves two; nothing here can remove the first. The tool's own description tells a caller to look before retrying. The tabs and their header rows go in the same single request as the file, so a failure never leaves a half-built spreadsheet behind.
+
+**How you would know.** The tool's answer names the new file's id and URL; a duplicate is a second id with the same title.
+
+**Undo:** a move/share pair behind `drive.file`, on a slug whose operator has decided that scope is worth it. The create itself stays on `spreadsheets`.
+
+See `HACKS.md` #104.
 
 ---
 
