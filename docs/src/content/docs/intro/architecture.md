@@ -101,6 +101,15 @@ per-account name from its own slug prefix or not at all: inheriting the bare
 service-account trio would serve a Workspace mailbox under a slug named for a
 personal account, and nothing about that would read as broken.
 
+A hosted server can also be a CLIENT of core. With a [flow-through](/servers/flow-through/)
+grant (`reaches:` on it, `reachableFrom:` on the target), it opens an MCP
+session at `/_strad/reach/{its slug}/mcp` with its component's own internal token,
+and core serves it `buildGatewayServer` over exactly the granted tools, with the
+grant's pinned arguments checked on every call. The target's credential never
+leaves the target's container. The console is a client in the other direction:
+`/apps/{slug}` renders a server's [MCP App](/servers/apps/) in a sandboxed frame
+and runs its tool calls as the signed-in human, through the same builder.
+
 A **store-served instance** is the same per-slug mount with nothing on the
 container. A server on `path: /_instance/{tree}/{slug}` is listed to its bundle
 by core (`GET /_strad/instances`), and the host builds a telegram, google-sheets

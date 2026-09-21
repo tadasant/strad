@@ -233,6 +233,20 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      */
     "mcp.tool_denied": ["slug"],
     /**
+     * A flow-through call refused for sending a value other than the one its
+     * grant pins (src/config/reach.ts). `slug` has matched the selection and
+     * `argument` is a KEY of the grant's own `pin:` map or the literal
+     * `(undeclared)`, so both are words this repo or the config wrote down.
+     * The value that was sent never appears, nor an undeclared argument's name.
+     */
+    "mcp.pin_refused": ["slug", "argument"],
+    /**
+     * `/_strad/reach` refused a component-authenticated caller. No fields: the
+     * slug in the path is the caller's own bytes until it has matched, which a
+     * refusal means it did not. Same shape as `strad.param_refused`.
+     */
+    "mcp.reach_refused": [],
+    /**
      * A token issued by strad's own authorization server (src/http/oauth.ts).
      *
      * Both fields are closed sets this repo wrote down. `grant` is the literal
@@ -630,6 +644,11 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
     "unconfigured string never reaches this line — but the volume is the " +
     "objection. The mcp.request span carries requested and selected as " +
     "attributes, and strad.mcp.requests counts the outcomes.",
+  "ui.app.tool_call":
+    "The app host's twin of ui.playground.tool_call, and it stays for the " +
+    "same reason: `tool` arrives from a page the SERVER wrote, so it is not a " +
+    "word from a set this repo wrote down, and strad.mcp.tool_calls already " +
+    "carries the call with strad.surface=app.",
   "ui.playground.tool_call":
     "Two of its three fields are ours — `server` is the slug the console route " +
     "resolved out of the config, `principal` is the console session's id — and " +
@@ -733,6 +752,8 @@ const THROTTLED = new Set([
   // throttled; `strad.mcp.tool_denials` is the continuous half of this pair,
   // and the record is the narration.
   "mcp.tool_denied",
+  // Driven by a hosted server's own calls, one per refused call.
+  "mcp.pin_refused",
   // Client-driven through the request path, though the minter's backoff
   // already holds it to one attempt per window per slug.
   "strad.upstream_token_refresh_failed",

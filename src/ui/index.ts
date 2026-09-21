@@ -34,6 +34,7 @@ import { errorSummary, errorText } from "../util/error-text.ts";
 import { event } from "../telemetry/index.ts";
 import type { BundlePresence } from "../gateway/bundle-presence.ts";
 import type { Registry } from "../gateway/registry.ts";
+import { mountApps } from "./apps.ts";
 import { mountPlayground } from "./playground.ts";
 import { renderLanding } from "./landing.ts";
 import {
@@ -300,6 +301,9 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
   // browser and its `:server` param already means "a slug with a viewer". See
   // src/ui/playground.ts for how it authenticates without touching either gate.
   mountPlayground(app, gate, { config: opts.config, registry: opts.registry });
+  // The console as an MCP Apps host: a server's own `ui://` page, sandboxed.
+  // See src/ui/apps.ts.
+  mountApps(app, gate, { config: opts.config, registry: opts.registry });
 
   // Connect / Reconnect Google, for a server whose config declares `oauth:`.
   // Same gate, same process, and its callback lives at a fixed path so the slug

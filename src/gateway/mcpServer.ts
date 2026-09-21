@@ -48,6 +48,7 @@ import {
   type ToolPolicies,
 } from "./toolPolicy.ts";
 import { errorText } from "../util/error-text.ts";
+import { pinViolation, type ArgumentPins } from "../config/reach.ts";
 
 /**
  * The MCP `Server` strad builds for ONE already-authorized selection.
@@ -71,7 +72,7 @@ import { errorText } from "../util/error-text.ts";
  */
 
 /** Which door a session came through. Telemetry only; it grants nothing. */
-export type Surface = "mcp" | "playground";
+export type Surface = "mcp" | "playground" | "app" | "reach";
 
 export interface GatewayServerOptions {
   config: StradConfig;
@@ -109,6 +110,17 @@ export interface GatewayServerOptions {
    * listToolsFor.
    */
   explicit?: { onUnlistable: (slug: string) => void };
+  /**
+   * Arguments fixed per slug, checked on every call after the capability
+   * check. Only the flow-through route sets it (src/http/reach.ts); see
+   * `pinViolation` in src/config/reach.ts for what "fixed" means.
+   */
+  pins?: ArgumentPins;
+  /**
+   * Whether to relay resources at all. Default true. The flow-through route
+   * turns it off: a grant names TOOLS, and a resource read is not one of them.
+   */
+  resources?: boolean;
 }
 
 /**
@@ -136,9 +148,14 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
   const surface: Surface = opts.surface ?? "mcp";
   const principal = { roles: opts.principalRoles ?? [] };
 
+  const relayResources = opts.resources ?? true;
   const server = new Server(
     { name: config.gateway.name, version: "0.1.0" },
-    { capabilities: { tools: {}, resources: {} } },
+    {
+      capabilities: relayResources
+        ? { tools: {}, resources: {} }
+        : { tools: {} },
+    },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -189,8 +206,12 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
     // It therefore SHADOWS an upstream tool of this name on a local-tunnel slug,
     // permanently. See the note on TROUBLESHOOT_TOOL, HACKS.md #60, and the
     // limitations page.
+    // Never on a flow-through session: a grant is exhaustive, and this tool is
+    // outside every policy.
     const isTroubleshoot =
-      parsed.tool === TROUBLESHOOT_TOOL && adapter.host !== undefined;
+      parsed.tool === TROUBLESHOOT_TOOL &&
+      adapter.host !== undefined &&
+      surface !== "reach";
 
     // CAPABILITY. The upstream container holds every tool the server has —
     // read-only is this check, and nothing else. It runs BEFORE the adapter, so
@@ -240,6 +261,46 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
     }
 
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+
+    // PINNED ARGUMENTS, on the action for the same reason as the capability
+    // check above: a flow-through grant fixed to one spreadsheet is only fixed
+    // if a call naming another one never reaches the upstream. Only the NAME of
+    // the argument is logged — its value is the caller's bytes.
+    // Under a pin, an argument the tool does not DECLARE is refused too: a pin
+    // names one spelling of the resource, and an undeclared alternative
+    // (`spreadsheetId`, `url`) would reach the same resource around it.
+    const pin = opts.pins?.get(parsed.slug);
+    let pinned = pinViolation(pin, args);
+    if (pinned === null && pin) {
+      const declared = (await adapter.listTools()).find(
+        (t) => t.name === parsed.tool,
+      )?.inputSchema?.properties;
+      pinned =
+        Object.keys(args).find(
+          (k) => !declared || !Object.hasOwn(declared, k),
+        ) ?? null;
+    }
+    if (pinned !== null) {
+      inst.toolDenials.add(1, {
+        "mcp.server": parsed.slug,
+        "strad.mode": mode,
+        "strad.surface": surface,
+      });
+      log({
+        evt: "mcp.pin_refused",
+        principal: principalId,
+        slug: parsed.slug,
+        // A pin KEY is the config's own word; an undeclared argument's name is
+        // the caller's bytes, and never reaches the exported record.
+        argument: pin && Object.hasOwn(pin, pinned) ? pinned : "(undeclared)",
+      });
+      throw new McpError(
+        ErrorCode.InvalidRequest,
+        `argument "${pinned}" is not allowed for "${parsed.slug}" on this ` +
+          `grant: pinned arguments must be exactly the configured value, and ` +
+          `an argument the tool does not declare is refused.`,
+      );
+    }
 
     // The tool-call span.
     //
@@ -335,6 +396,8 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
   // relays resources the same way it relays tools: union on list, route on read,
   // scoped to the servers selected for THIS request. A server that serves no
   // resources (every builtin today) simply contributes none.
+  if (!relayResources) return server;
+
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     resources: await listResourcesFor(selected, registry),
   }));

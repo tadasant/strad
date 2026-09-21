@@ -334,6 +334,8 @@ describe("consoleScopeProblems", () => {
       },
       consoleStores: [],
       mcpStores: [],
+      reaches: [],
+      reachableFrom: [],
     });
     const problems = consoleScopeProblems(
       twoServers,

@@ -76,7 +76,11 @@ export interface ObservedSurface {
 export interface PolicyFinding {
   slug: string;
   mount: string;
-  kind: "allow" | "deny";
+  /**
+   * `reach` is a flow-through grant's `tools:` entry (src/config/reach.ts):
+   * `slug` is then the SOURCE, and `mount` the target's.
+   */
+  kind: "allow" | "deny" | "reach";
   /** The entry as written in the config. */
   entry: string;
   /** The closest name the mount does serve, when there is an obvious one. */
@@ -121,57 +125,53 @@ export function checkToolSurface(
   const skipped: SkippedPolicy[] = [];
   const findings: PolicyFinding[] = [];
 
+  /** What this image lists at a server's mount, or why that cannot be known. */
+  const observe = (
+    server: StradConfig["servers"][number],
+  ): { offered: readonly string[] } | { reason: string } => {
+    if (server.kind !== "supplementary-image") {
+      return {
+        reason: `kind: ${server.kind} — not a mount of ${surface.image}, and nothing here can list its tools`,
+      };
+    }
+    if (!sameRepository(parseImage(server.image), observedImage)) {
+      return {
+        reason: `runs ${server.image}, not ${surface.image} — a different image's ${server.path} is not this one`,
+      };
+    }
+    const observed = surface.mounts[server.path];
+    if (!observed) {
+      return {
+        reason: `${surface.image} mounts nothing at ${server.path} (it mounts ${Object.keys(surface.mounts).sort().join(", ")})`,
+      };
+    }
+    if (observed.error !== undefined) {
+      return {
+        reason: `${server.path} would not list its tools: ${observed.error}`,
+      };
+    }
+    if (observed.partial !== undefined) {
+      return {
+        reason: `${server.path} shows a partial surface here — ${observed.partial}`,
+      };
+    }
+    if (!observed.tools) {
+      return { reason: `${server.path} reported no tool list at all` };
+    }
+    return { offered: observed.tools };
+  };
+
   for (const server of config.servers) {
     const policy = policies.get(server.slug);
     if (!policy) continue;
 
-    if (server.kind !== "supplementary-image") {
-      skipped.push({
-        slug: server.slug,
-        reason: `kind: ${server.kind} — not a mount of ${surface.image}, and nothing here can list its tools`,
-      });
+    const seen = observe(server);
+    if ("reason" in seen) {
+      skipped.push({ slug: server.slug, reason: seen.reason });
       continue;
     }
-
-    if (!sameRepository(parseImage(server.image), observedImage)) {
-      skipped.push({
-        slug: server.slug,
-        reason: `runs ${server.image}, not ${surface.image} — a different image's ${server.path} is not this one`,
-      });
-      continue;
-    }
-
-    const observed = surface.mounts[server.path];
-    if (!observed) {
-      skipped.push({
-        slug: server.slug,
-        reason: `${surface.image} mounts nothing at ${server.path} (it mounts ${Object.keys(surface.mounts).sort().join(", ")})`,
-      });
-      continue;
-    }
-    if (observed.error !== undefined) {
-      skipped.push({
-        slug: server.slug,
-        reason: `${server.path} would not list its tools: ${observed.error}`,
-      });
-      continue;
-    }
-    if (observed.partial !== undefined) {
-      skipped.push({
-        slug: server.slug,
-        reason: `${server.path} shows a partial surface here — ${observed.partial}`,
-      });
-      continue;
-    }
-    if (!observed.tools) {
-      skipped.push({
-        slug: server.slug,
-        reason: `${server.path} reported no tool list at all`,
-      });
-      continue;
-    }
-
-    const offered = observed.tools;
+    const offered = seen.offered;
+    const mount = (server as { path: string }).path;
     for (const kind of ["allow", "deny"] as const) {
       const unmatched =
         kind === "allow"
@@ -180,7 +180,7 @@ export function checkToolSurface(
       for (const entry of unmatched) {
         findings.push({
           slug: server.slug,
-          mount: server.path,
+          mount,
           kind,
           entry,
           nearest: nearestName(entry, offered),
@@ -191,9 +191,39 @@ export function checkToolSurface(
 
     checked.push({
       slug: server.slug,
-      mount: server.path,
+      mount,
       entries: (policy.allow?.size ?? 0) + (policy.deny?.size ?? 0),
     });
+  }
+
+  // FLOW-THROUGH GRANTS. A grant's tool list is exhaustive like an `allow:`,
+  // so a typo in it silently grants one tool fewer. Checked against the
+  // TARGET's mount; the source may run on any image.
+  for (const source of config.servers) {
+    if (source.kind !== "supplementary-image") continue;
+    for (const grant of source.reaches) {
+      const target = config.servers.find((s) => s.slug === grant.slug);
+      if (!target) continue; // the schema refuses this already
+      const label = `${source.slug} → ${grant.slug}`;
+      const seen = observe(target);
+      if ("reason" in seen) {
+        skipped.push({ slug: label, reason: seen.reason });
+        continue;
+      }
+      const have = new Set(seen.offered);
+      const mount = (target as { path: string }).path;
+      for (const entry of grant.tools.filter((t) => !have.has(t))) {
+        findings.push({
+          slug: source.slug,
+          mount,
+          kind: "reach",
+          entry,
+          nearest: nearestName(entry, seen.offered),
+          offered: seen.offered.length,
+        });
+      }
+      checked.push({ slug: label, mount, entries: grant.tools.length });
+    }
   }
 
   return { checked, skipped, findings };
@@ -268,7 +298,10 @@ export function formatFinding(finding: PolicyFinding): string {
     ? ` Did you mean "${finding.nearest}"?`
     : ` The ${finding.offered} tool(s) it does serve are listed above.`;
   return (
-    `server "${finding.slug}": tools.${finding.kind} names "${finding.entry}", ` +
+    `server "${finding.slug}": ` +
+    (finding.kind === "reach"
+      ? `a reaches: grant names "${finding.entry}", `
+      : `tools.${finding.kind} names "${finding.entry}", `) +
     `which ${finding.mount} does not serve.${nearest}`
   );
 }

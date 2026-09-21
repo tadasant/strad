@@ -3260,6 +3260,24 @@ It is **not idempotent**. A call that times out after Google made the file, retr
 
 See `HACKS.md` #104.
 
+### 106. A flow-through grant is held by a component
+
+A [`reaches:`](/servers/flow-through/) grant lets a hosted server call another slug's tools as itself. Core proves which **component** is calling, not which server on it: every server in one container shares the same internal token, so any of them could use a neighbour's grant. And a pin fixes an argument to one exact value and nothing finer, so a grant pinned to one spreadsheet can write any cell of it. Past that, the source server's code is the boundary.
+
+**How you would know.** Every call is a `strad.surface=reach` span and metric under the target's slug, and a pin refusal is a `mcp.pin_refused` event naming the argument.
+
+**Undo:** per-server tokens inside a shared container, and pin forms beyond exact equality where a real grant needs them.
+
+See `HACKS.md` #106.
+
+### 107. The console's app host is not the spec's sandbox proxy
+
+The MCP Apps spec describes, for a web host, a proxy iframe on a **different origin**. strad has one public origin, so [`/apps/<slug>`](/servers/apps/) serves the app's page from the console's origin under a CSP `sandbox` header without `allow-same-origin`. That gives the page an opaque origin that cannot read the console's cookies or call its routes, and `connect-src 'none'` gives it no network. The host also has no model, so the methods an LLM host answers (`ui/message`, `ui/update-model-context`) say "not supported" here.
+
+**Undo:** a second hostname for app frames.
+
+See `HACKS.md` #107.
+
 ---
 
 ## What the human still needs to provision

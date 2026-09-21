@@ -530,6 +530,54 @@ const McpStore = z.object({
   viewerKeyVar: z.string().min(1),
 });
 
+/**
+ * One FLOW-THROUGH grant: a hosted server calling ANOTHER slug through core.
+ *
+ *   - slug: housing-search-2026
+ *     kind: supplementary-image
+ *     reaches:
+ *       - slug: google-sheets-tadas-tadasant-rw
+ *         tools: [get_sheet_values, update_sheet_values]
+ *         pin:
+ *           spreadsheet_id: "1HHgyj_..."
+ *
+ *   - slug: google-sheets-tadas-tadasant-rw
+ *     reachableFrom: [housing-search-2026]
+ *
+ * The server calls `POST {STRAD_CORE_URL}/_strad/reach/{its slug}/mcp` with its
+ * component's own internal token, and gets an MCP session over exactly the
+ * tools named here — no new credential anywhere, because the target's
+ * credential never leaves the target's container. See src/http/reach.ts.
+ *
+ * LEAST PRIVILEGE, in four places, all of them checked-in config:
+ *
+ *   - `tools:` is an exhaustive allow list, never "every tool", and each entry
+ *     must also pass the target's OWN `tools:` policy, so a grant can never
+ *     exceed what the target slug serves to anyone.
+ *   - `pin:` fixes named arguments to exact values on every call — the one
+ *     spreadsheet a grant may touch, say. A call that omits a pinned argument
+ *     or sends another value is refused before it reaches the target.
+ *   - Both sides consent: the target's `reachableFrom:` must name the source.
+ *   - No chains: a target that itself `reaches:` something is refused, so a
+ *     grant is one hop and its reach is readable off two entries.
+ *
+ * Neither field may be written at runtime (src/config/overlay.ts); a grant is a
+ * deploy, reviewed like `entitlements:`. The cross-entry rules are checked by
+ * `npm run config:check`, not at boot: a runtime REMOVAL of either slug must
+ * stay possible, and it would leave the other half dangling. The route only
+ * ever serves a grant both halves still agree on (`activeGrants`).
+ */
+export const ReachGrant = z
+  .object({
+    /** The target slug. */
+    slug: SLUG,
+    /** The target's tools this grant may list and call. Exhaustive. */
+    tools: z.array(z.string().min(1)).min(1),
+    /** Arguments fixed to exact values on every call. */
+    pin: z.record(z.union([z.string(), z.number(), z.boolean()])).default({}),
+  })
+  .strict();
+
 const ServerBase = z.object({
   /** Stable identifier. Tools are namespaced `<slug>__<tool>`. */
   slug: SLUG,
@@ -542,6 +590,12 @@ const ServerBase = z.object({
   enabled: z.boolean().default(true),
   /** Capability: the tools this slug may list AND call. Omit for all of them. */
   tools: ToolPolicySchema.optional(),
+  /**
+   * The hosted servers allowed to call THIS slug through core — the target's
+   * half of a {@link ReachGrant}. Naming a source here grants it nothing on its
+   * own; the source's `reaches:` must name this slug too.
+   */
+  reachableFrom: z.array(SLUG).default([]),
   /** Per-request upstream timeout in ms. The MCP SDK defaults to 60s at
    *  every hop, which silently kills long tool calls; make it explicit. */
   timeoutMs: z.number().int().positive().default(120_000),
@@ -949,6 +1003,12 @@ const SupplementaryImageServer = ServerBase.extend({
    * servers/secrets/shared/src/capabilities.ts.
    */
   mcpStores: z.array(McpStore).default([]),
+  /**
+   * Other slugs this server may call through core — flow-through. See
+   * {@link ReachGrant}. Supplementary images only: the caller is identified by
+   * its component's internal token, which only a hosted component holds.
+   */
+  reaches: z.array(ReachGrant).default([]),
   /** Headers strad sends when proxying to it (e.g. a shared internal token). */
   headers: HeaderMap,
 });

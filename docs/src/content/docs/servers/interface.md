@@ -24,6 +24,7 @@ Every server, regardless of kind, has these base fields (from
 | `timeoutMs`            | `120000`     | Per-hop upstream timeout. The MCP SDK's own default is 60s at every hop.              |
 | `oauth`                | —            | This server authenticates as a **person**, and strad's console runs the consent. See below. |
 | `mayBeUnseeded`        | `[]`         | `${NAME}`s this server may **deploy without**, staying inactive until they land. See below. |
+| `reachableFrom`        | `[]`         | Hosted servers allowed to call this slug's tools through core — the target's half of a [flow-through](/servers/flow-through/) grant. |
 | `title`, `description` | —            | Human-facing metadata.                                                                |
 
 `tools` is `.strict()` and must set at least one of `allow` / `deny`. `allow` is
@@ -404,6 +405,13 @@ render error — for servers that share a `path`. A slug on a path of its own
 (`path: /<its own slug>`) is a separate instance in the container, so it reads
 [its own per-slug names](/operate/secrets/#what-a-servers-variables-are-called-on-the-box)
 and can hold its own value. Those names exist for every server either way.
+
+**Flow-through.** A supplementary server may also declare `reaches:`: other
+slugs whose tools it may call through core as itself, each an exhaustive `tools:`
+list with optional `pin:`ned arguments, consented to by the target's
+`reachableFrom:`. It is supplementary-only because the caller proves itself with
+its component's internal token. [Flow-through](/servers/flow-through/) has the
+rules.
 
 **A store-served instance** is the third shape, and the one a runtime write can
 create. Its `path:` is `/_instance/{tree}/{its own slug}`, where `{tree}` is one
