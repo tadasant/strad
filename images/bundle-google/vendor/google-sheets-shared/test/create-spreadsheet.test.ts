@@ -117,7 +117,7 @@ test("two tabs whose titles differ only by case are refused before anything is c
     arguments: { title: "x", sheets: [{ title: "Listings" }, { title: "listings" }] },
   });
   assert.equal(result.isError, true);
-  assert.match(textOf(result), /Two tabs are titled "listings"/);
+  assert.match(textOf(result), /sheets: Two tabs are titled "listings"/);
   assert.deepEqual(calls, []);
 });
 

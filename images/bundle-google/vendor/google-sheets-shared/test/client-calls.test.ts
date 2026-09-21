@@ -158,6 +158,11 @@ test("create with no tabs sends none, and Google makes its own Sheet1", async ()
   assert.deepEqual(JSON.parse(calls[1].body), { properties: { title: "Blank" } });
 });
 
+test("an EMPTY header list is no headers: nothing written, nothing frozen", async () => {
+  await createSpreadsheet(HEADERS, { title: "t", sheets: [{ title: "a", headers: [] }] });
+  assert.deepEqual(JSON.parse(calls[0].body).sheets[0], { properties: { title: "a", index: 0 } });
+});
+
 test("more headers than Sheets' 26 default columns widens the grid to fit them", async () => {
   const headers = Array.from({ length: 30 }, (_, i) => `h${i}`);
   await createSpreadsheet(HEADERS, { title: "Wide", sheets: [{ title: "a", headers }] });

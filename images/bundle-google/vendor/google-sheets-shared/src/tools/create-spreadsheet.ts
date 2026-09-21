@@ -10,7 +10,11 @@ const PARAM_DESCRIPTIONS = {
     'Each is { title, headers? }: headers, if given, fill row 1 and freeze it.',
 } as const;
 
-/** Sheets' own ceiling on columns (ZZZ), so a header row past it is refused here. */
+/**
+ * Sheets' own column ceiling (ZZZ). A coarse guard only: a new tab also gets 1000
+ * rows against a 10M-cell cap, so a header row near this is still refused by
+ * Google — as one failed create, never a half-built file.
+ */
 const MAX_COLUMNS = 18278;
 
 export const CreateSpreadsheetSchema = z.object({
@@ -105,6 +109,12 @@ export function createSpreadsheetTool(_server: Server, clientFactory: ClientFact
         });
 
         const id = created.spreadsheetId;
+        if (!id) {
+          throw new Error(
+            'Google answered the create without a spreadsheet id. A file may still have been ' +
+              'made — look in the Drive root before retrying.'
+          );
+        }
         const url = created.spreadsheetUrl ?? `https://docs.google.com/spreadsheets/d/${id}/edit`;
         const lines = [
           `Created spreadsheet "${created.properties?.title ?? parsed.title}".`,

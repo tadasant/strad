@@ -154,10 +154,10 @@ the file, so a failure leaves nothing half-built — but a timed-out call that i
 retried can leave two files, so look before retrying. See
 [limitations](/limitations/#104-a-new-spreadsheet-lands-in-the-drive-root-shared-with-no-one).
 
-There is no tool that deletes a tab or a spreadsheet, and none that shares a file
-or moves it into a folder. Adding is recoverable and deleting is not, and every
-one of those is a Drive **write**, a scope this server never asks for — the one
-Drive scope it can use is `drive.readonly`, and only to
+There is no tool that deletes a tab: adding is recoverable and deleting is not,
+so it is left out on purpose. Nor is there one that deletes, shares or moves a
+spreadsheet **file** — those are Drive **writes**, a scope this server never asks
+for. The one Drive scope it can use is `drive.readonly`, and only to
 [read an Office file](#office-files-in-drive-are-read-too).
 
 Reads are capped and say when they truncate — a retirement model is tens of
