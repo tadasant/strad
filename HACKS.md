@@ -5522,6 +5522,7 @@ reach, not whether it happens.
 at the cost of an operator edit for every new client — the thing open
 registration exists to avoid. (2) needs attestation the spec does not yet
 define. (3) and (4) need a datastore, like the rest of #94.
+
 ## 106. A flow-through grant is held by a component, and bounded by its pins and the source's code
 
 **What.** `reaches:` (src/config/reach.ts) lets a hosted server call another
