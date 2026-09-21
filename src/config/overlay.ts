@@ -725,6 +725,7 @@ export function assertNoAccessControlChange(
   entry: Record<string, unknown>,
 ): void {
   const declared = rawEntry(baseDoc, String(entry.slug));
+  assertNoReachChange(declared, entry);
   if (!declared) return;
 
   const withMount = declared.kind === "supplementary-image";
@@ -741,6 +742,37 @@ export function assertNoAccessControlChange(
       `deploy authorised, that stays with the deploy. Change ` +
       `${moved.length > 1 ? "them" : "it"} in the checked-in config, or point a ` +
       `NEW slug at the upstream you want.`,
+  );
+}
+
+/** The flow-through fields (src/config/reach.ts), in the order a refusal names them. */
+const REACH_FIELDS = ["reaches", "reachableFrom"] as const;
+
+/**
+ * A runtime write may not declare or change a FLOW-THROUGH grant, on any slug.
+ *
+ * Unlike `entitlements:` this binds overlay-only slugs too. A grant is standing
+ * authority held by code — a server calling another slug's tools as itself —
+ * and it is legal only when both halves agree, so a roster editor that could
+ * write either half could write the pair. There is no "your own new connector"
+ * case to preserve: a runtime-created slug has no hosted code of its own to
+ * exercise a grant with. So the value a write carries must be exactly what the
+ * checked-in entry declares, which for a slug the file does not name is none.
+ */
+function assertNoReachChange(
+  declared: Record<string, unknown> | undefined,
+  entry: Record<string, unknown>,
+): void {
+  const shape = (v: unknown) => JSON.stringify(Array.isArray(v) ? v : []);
+  const moved = REACH_FIELDS.filter(
+    (f) => shape(declared?.[f]) !== shape(entry[f]),
+  );
+  if (moved.length === 0) return;
+  throw new AccessControlChanged(
+    `${moved.map((f) => `${f}:`).join(", ")} cannot be written at runtime on ` +
+      `${String(entry.slug)}. A flow-through grant lets one server call ` +
+      `another's tools as itself, so both of its halves stay with the deploy. ` +
+      `Change ${moved.length > 1 ? "them" : "it"} in the checked-in config.`,
   );
 }
 

@@ -92,6 +92,8 @@ export default defineConfig({
           items: [
             { label: "The server-config interface", slug: "servers/interface" },
             { label: "Adding a server", slug: "servers/adding" },
+            { label: "Flow-through", slug: "servers/flow-through" },
+            { label: "Apps in the console", slug: "servers/apps" },
             {
               label: "Running a local-tunnel host",
               slug: "servers/local-tunnel-host",

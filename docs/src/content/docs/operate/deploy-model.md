@@ -707,7 +707,9 @@ nothing and that slug serves one tool fewer. Nothing errors. The gateway does
 `tools/list`, once it is deployed.
 
 `scripts/check-tool-policy.ts` moves that verdict before the deploy by joining the
-config to a booted image's real tool names:
+config to a booted image's real tool names. A [flow-through](/servers/flow-through/)
+grant's `reaches[].tools` list is exhaustive in the same way, so it is checked
+too, against the TARGET's mount, whatever image the source runs:
 
 ```bash
 # with the bundle container up (this is what CI runs; it names its container

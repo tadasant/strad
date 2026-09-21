@@ -9,7 +9,7 @@ import type { Express, RequestHandler, Request, Response } from "express";
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
 import { asyncRoute, jsonFailure } from "../http/async-route.ts";
 import { entitledServers, resolveSelection } from "../gateway/entitlements.ts";
-import { buildGatewayServer } from "../gateway/mcpServer.ts";
+import { buildGatewayServer, type Surface } from "../gateway/mcpServer.ts";
 import type { Registry } from "../gateway/registry.ts";
 import { compileToolPolicies } from "../gateway/toolPolicy.ts";
 import { denamespace } from "../gateway/adapters/types.ts";
@@ -325,7 +325,7 @@ const PLAYGROUND_FAILURE = jsonFailure("playground", {
  * It runs BEFORE anything reads the body. A 400 "that is not a tool name" for a
  * form-encoded POST would be a true statement about the wrong thing.
  */
-const requireJson: RequestHandler = (req, res, next) => {
+export const requireJson: RequestHandler = (req, res, next) => {
   if (!req.is("application/json")) {
     res
       .status(415)
@@ -344,12 +344,14 @@ const requireJson: RequestHandler = (req, res, next) => {
  * ADAPTERS are the registry's and are long-lived, so an upstream connection is
  * not re-established per click.
  */
-async function withSession(
+export async function withSession(
   req: Request,
   res: Response,
   opts: PlaygroundOptions,
   policies: ReturnType<typeof compileToolPolicies>,
   run: (client: Client, server: ServerConfig) => Promise<void>,
+  /** Telemetry only. The console app host (src/ui/apps.ts) is "app". */
+  surface: Surface = "playground",
 ): Promise<void> {
   const slug = req.params.server ?? "";
   const decision = decide(res, opts.config, slug);
@@ -374,7 +376,7 @@ async function withSession(
     // playground to serve. A `mode` parameter here would be a knob whose only
     // legal value is this one.
     mode: "core",
-    surface: "playground",
+    surface,
     selected: [decision.server.slug],
     principalId: consolePrincipal(res).id,
     // The signed-in human's own roles, so a write made through the playground is
@@ -465,7 +467,7 @@ export function playgroundAccess(
   };
 }
 
-type Decision =
+export type Decision =
   | { ok: true; server: ServerConfig }
   | { ok: false; status: number; heading: string; detail: string };
 
@@ -476,7 +478,11 @@ type Decision =
  * for one that exists and is not yours, because "you are fine, a thing you
  * depend on is not available to you" is the same answer here as there.
  */
-function decide(res: Response, config: StradConfig, slug: string): Decision {
+export function decide(
+  res: Response,
+  config: StradConfig,
+  slug: string,
+): Decision {
   const principal = consolePrincipal(res);
   const access = playgroundAccess(
     config,

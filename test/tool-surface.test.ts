@@ -50,6 +50,7 @@ auth: { staticTokens: { enabled: true } }
 roles: { admin: { servers: ["*"] } }
 bundles:
   - name: bundle
+  - name: bundle-internal
 servers:
 ${servers}
 `);
@@ -424,5 +425,59 @@ describe("infra/strad.staging.yaml", () => {
         allow.length,
       );
     }
+  });
+});
+
+describe("checkToolSurface — flow-through grants", () => {
+  // The source runs on ANOTHER image, and does not need to be observed: a
+  // grant names the TARGET's tools, so it is checked against the target mount.
+  const cfg = (tools: string) =>
+    config(`  - slug: showcase
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-internal:latest
+    bundle: bundle-internal
+    path: /showcase
+    entitlements: [admin]
+    reaches:
+      - slug: gmail-rw
+        tools: [${tools}]
+  - slug: gmail-rw
+    kind: supplementary-image
+    image: ${IMAGE}
+    bundle: bundle
+    path: /gmail
+    entitlements: [admin]
+    reachableFrom: [showcase]
+`);
+
+  it("finds a grant tool the target does not serve, and names the near miss", () => {
+    const result = checkToolSurface(
+      cfg("list_email_conversations, send_emails"),
+      surface({ "/gmail": { tools: GMAIL_TOOLS } }),
+    );
+    expect(result.findings).toEqual([
+      expect.objectContaining({
+        slug: "showcase",
+        kind: "reach",
+        entry: "send_emails",
+        nearest: "send_email",
+      }),
+    ]);
+    expect(formatFinding(result.findings[0]!)).toContain(
+      'a reaches: grant names "send_emails"',
+    );
+  });
+
+  it("passes a grant whose every tool the target serves", () => {
+    const result = checkToolSurface(
+      cfg("list_email_conversations"),
+      surface({ "/gmail": { tools: GMAIL_TOOLS } }),
+    );
+    expect(result.findings).toEqual([]);
+    expect(result.checked).toContainEqual({
+      slug: "showcase → gmail-rw",
+      mount: "/gmail",
+      entries: 1,
+    });
   });
 });

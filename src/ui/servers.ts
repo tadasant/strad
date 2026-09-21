@@ -235,7 +235,7 @@ function handleNew(
   // shows what somebody wrote rather than what Zod filled in around it.
   const copyFrom = String(req.query.copyFrom ?? "");
   const source = copyFrom ? rawEntry(runtime.document(), copyFrom) : undefined;
-  const entry = source ? withoutSlug(source) : { kind };
+  const entry = source ? asCopy(source) : { kind };
 
   res.type("html").send(
     renderForm({
@@ -255,6 +255,21 @@ function handleNew(
 /** A copied entry, minus the one field that must be unique. */
 function withoutSlug(entry: Record<string, unknown>): Record<string, unknown> {
   const { slug: _slug, ...rest } = entry;
+  return rest;
+}
+
+/**
+ * An entry as a COPY starts from: no slug, and no flow-through grant. A grant
+ * names the slug it belongs to, so a copy would carry authority nothing
+ * consented to — and a runtime write may not declare one anyway
+ * (`assertNoReachChange`), so leaving it in only makes every save fail.
+ */
+function asCopy(entry: Record<string, unknown>): Record<string, unknown> {
+  const {
+    reaches: _reaches,
+    reachableFrom: _reachableFrom,
+    ...rest
+  } = withoutSlug(entry);
   return rest;
 }
 
@@ -348,10 +363,14 @@ async function handleSave(
    */
   const targetSlug = String(body.slug ?? original ?? "");
   const accessLocked = runtime.fileSlugs().has(targetSlug);
-  const carrySource =
-    before ??
-    (copiedFrom ? rawEntry(runtime.document(), copiedFrom) : undefined);
-  const carry = carrySource ? withoutSlug(carrySource) : undefined;
+  const copied = copiedFrom
+    ? rawEntry(runtime.document(), copiedFrom)
+    : undefined;
+  const carry = before
+    ? withoutSlug(before)
+    : copied
+      ? asCopy(copied)
+      : undefined;
 
   /**
    * Whether this save is an EDIT of an entry the roster currently holds, which

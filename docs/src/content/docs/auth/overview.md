@@ -30,8 +30,8 @@ Different doors take different credentials, but every one that reads an
 when it comes as a header rather than `?token=`), and a component's own
 `STRAD_INTERNAL_TOKEN` wherever one is asked for — a strad-image bundle's
 `/mcp`, every `strad-bundle` mount (`/<slug>` and `/<slug>/upload/:token`),
-`/_strad/presence` on either image, and core's `/_strad/params` and
-`/_strad/store/refresh`.
+`/_strad/presence` on either image, and core's `/_strad/params`,
+`/_strad/store/refresh` and `/_strad/reach/{slug}/mcp`.
 
 - **The scheme is required.** `Authorization: Bearer <credential>`, with the scheme
   in any case (`bearer`, `BEARER` — scheme names are case-insensitive) and a space

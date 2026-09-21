@@ -645,6 +645,27 @@ servers:
         # out of Drive. Writing one back is not a thing this server does under
         # any scope — the write tools refuse an Office file and say so.
         - https://www.googleapis.com/auth/drive.readonly
+    # FLOW-THROUGH: the target's half of a grant. Uncomment together with the
+    # `reaches:` block below; either half alone is a config error.
+    # reachableFrom: [my-sheet-app]
+
+  # A HOSTED SERVER THAT CALLS ANOTHER SLUG'S TOOLS THROUGH CORE, as itself, with
+  # no credential of its own. `tools:` is exhaustive and bounded by the target's
+  # own policy; `pin:` fixes arguments to exact values on every call. The server
+  # calls `${STRAD_CORE_URL}/_strad/reach/my-sheet-app/mcp` with its component's
+  # `STRAD_INTERNAL_TOKEN`. docs: servers/flow-through.
+  #
+  # - slug: my-sheet-app
+  #   kind: supplementary-image
+  #   image: ghcr.io/you/your-bundle:latest
+  #   bundle: your-bundle
+  #   path: /my-sheet-app
+  #   entitlements: [admin]
+  #   reaches:
+  #     - slug: google-sheets-rw
+  #       tools: [get_sheet_values, update_sheet_values]
+  #       pin:
+  #         spreadsheet_id: "your-spreadsheet-id"
 
   # THE SAME SHAPE FOR gmail, AND THE ONE FIELD THAT IS NOT OPTIONAL HERE.
   #

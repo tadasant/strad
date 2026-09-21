@@ -5522,3 +5522,42 @@ reach, not whether it happens.
 at the cost of an operator edit for every new client — the thing open
 registration exists to avoid. (2) needs attestation the spec does not yet
 define. (3) and (4) need a datastore, like the rest of #94.
+
+## 106. A flow-through grant is held by a component, and bounded by its pins and the source's code
+
+**What.** `reaches:` (src/config/reach.ts) lets a hosted server call another
+slug's tools through `/_strad/reach/{slug}/mcp`, as itself. Core proves the
+caller's COMPONENT with its derived internal token, and then trusts the slug
+named in the path as long as it lives on that component. Every server on one
+component shares a process environment, and so the same token, so any server
+there could exercise a neighbour's grant. Past the pinned arguments, which fix
+an argument to one exact value, nothing at the gateway bounds WHAT the source
+does with the target's tools: a grant on `update_sheet_values` pinned to one
+spreadsheet can still write any cell of that spreadsheet.
+
+**Why.** A per-server credential inside a shared container is not something the
+bundle hosts can hold apart today, and a richer pin language (column ranges,
+path prefixes) is a second policy dialect per upstream. The first grant is one
+spreadsheet, one private server, on a component that runs only first-party code.
+
+**Undo.** Per-server tokens (the component token extended with the slug, handed
+to each mount rather than to the process), and pin forms beyond exact equality
+where a real grant needs them.
+
+## 107. The console's MCP Apps host isolates with a CSP sandbox, not the spec's separate-origin proxy
+
+**What.** SEP-1865 describes, for web hosts, a sandbox PROXY iframe served from a
+different origin, with the app's HTML handed to it over `postMessage`.
+`/apps/:server/frame` (src/ui/apps.ts) serves the app's HTML from the console's
+own origin instead, under a `Content-Security-Policy: sandbox allow-scripts …`
+header without `allow-same-origin`, which gives the document an opaque origin,
+and `connect-src 'none'`. The host also implements only `ui/initialize`, `ping`,
+`ui/open-link` and `tools/call`, plus the `tool-input` / `tool-result`
+notifications. It has no model, so `ui/message` and `ui/update-model-context`
+answer "not supported".
+
+**Why.** strad has one public origin and no second one to serve a proxy from.
+The CSP sandbox gives the property the proxy exists for (the app cannot touch
+the console's origin) without one.
+
+**Undo.** A second hostname for app frames, when strad has a reason to own one.

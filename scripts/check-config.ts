@@ -57,6 +57,7 @@ import {
   type ParsedConfig,
 } from "../src/config/load.ts";
 import { formatUnknownKey, unknownConfigKeys } from "../src/config/strict.ts";
+import { reachIssues } from "../src/config/reach.ts";
 import {
   collectSecretRefs,
   parseImage,
@@ -159,6 +160,15 @@ for (const unknown of unknownConfigKeys(raw, config)) {
     `unknown config key: ${formatUnknownKey(unknown)} — the schema does not ` +
       `define it, so it is silently ignored and does nothing`,
   );
+}
+
+// --- 2b. flow-through grants -------------------------------------------------
+//
+// Here and not in the schema, because the schema also judges the MERGED roster,
+// and a runtime removal of one half of a grant must stay possible — the route
+// serves only grants both halves still agree on. See src/config/reach.ts.
+for (const issue of reachIssues(config)) {
+  problem(`${issue.path.join(".")}: ${issue.message}`);
 }
 
 // --- 3. instance sizes ------------------------------------------------------

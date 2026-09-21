@@ -443,6 +443,13 @@ may not move any of them. `assertNoAccessControlChange` in
 `409` in the console, an error result from `save_connector` — because both call
 `RuntimeConfig.assertAcceptable`.
 
+The two halves of a [flow-through](/servers/flow-through/) grant, `reaches:`
+and `reachableFrom:`, are bound harder than that. A runtime write may not declare
+or change either one on **any** slug, including one only the overlay declares.
+Its value must equal the checked-in entry's, which for an overlay-only slug is
+none. A grant lets one server call another's tools as itself, and a roster
+editor that could write either half could write the pair.
+
 `kind:` is in that set because a checked-in `local-tunnel`, re-created as a
 `supplementary-image`, is the `path:` move wearing a different field: the slug
 name keeps the reach the deploy granted it while the thing on the other end

@@ -51,6 +51,7 @@ import {
 } from "../ui/console-auth.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { createMcpHandler } from "../gateway/router.ts";
+import { createReachHandler, REACH_ROUTE } from "./reach.ts";
 import type { Mode, Registry } from "../gateway/registry.ts";
 import type { ToolSurfaceSnapshot } from "../gateway/reachability.ts";
 import type { SecretBag } from "../secrets/index.ts";
@@ -539,6 +540,14 @@ export function createApp(opts: AppOptions): Express {
       env,
       resolver: opts.resolver,
     };
+    // FLOW-THROUGH, same direction and same token: a hosted server's MCP
+    // session onto the slugs its checked-in `reaches:` grant names, and no
+    // others. Built from THIS app's config and registry. See src/http/reach.ts
+    // and src/config/reach.ts.
+    app.all(
+      REACH_ROUTE,
+      createReachHandler({ config: opts.config, registry: opts.registry, env }),
+    );
     app.get(INSTANCE_LIST_ROUTE, createInstanceListHandler(instancesOptions));
     app.get(
       `${INSTANCE_LIST_ROUTE}/:slug`,
