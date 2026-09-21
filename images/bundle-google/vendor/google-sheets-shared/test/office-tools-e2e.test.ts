@@ -1,5 +1,5 @@
 /**
- * All eight tools against an Office file, over a real MCP client.
+ * Every tool that takes an existing file, against an Office file, over a real MCP client.
  *
  * The other Office suites test the pieces. This one runs the thing a caller
  * runs: an MCP `tools/call` over an in-memory transport, into the same

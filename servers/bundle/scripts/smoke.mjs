@@ -64,9 +64,9 @@ const EXPECT = {
   gmail: 8,
   "google-calendar": 7,
   "google-docs": 11,
-  // Four read tools and four write tools. A strad `google-sheets-*-ro` slug is
-  // this same mount with the write four withheld by the gateway.
-  "google-sheets": 8,
+  // Four read tools and five write tools. A strad `google-sheets-*-ro` slug is
+  // this same mount with the write five withheld by the gateway.
+  "google-sheets": 9,
   onepassword: 9,
   // Four tools, and not one of them can return a SECRET value. This is the
   // CREDENTIAL-FREE, CORE-LESS count: the probe fails closed here, so it is the

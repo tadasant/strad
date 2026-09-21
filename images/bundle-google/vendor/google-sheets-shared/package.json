@@ -1,7 +1,7 @@
 {
   "name": "google-sheets-workspace-mcp-server-shared",
   "version": "0.1.0",
-  "description": "Shared code for strad's Google Sheets MCP server: four read tools and four write tools, one Google account per credential",
+  "description": "Shared code for strad's Google Sheets MCP server: four read tools and five write tools, one Google account per credential",
   "main": "build/index.js",
   "types": "build/index.d.ts",
   "type": "module",

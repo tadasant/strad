@@ -7,8 +7,8 @@ Read and edit Google Sheets from an agent, as a specific Google account.
 
 `google-sheets` is strad's own MCP server — source in
 `images/bundle-google/vendor/google-sheets-shared/`, mounted at `/google-sheets`
-inside the bundle image. It serves eight tools: four that read and four that
-write.
+inside the bundle image. It serves nine tools: four that read and five that
+write, one of which creates a new spreadsheet.
 
 ## One server, one account per slug
 
@@ -77,7 +77,7 @@ complete marker set is the only evidence a deployment asked for one.
 
 ## The read tier is the gateway's, and can also be Google's
 
-The mount serves all eight tools. A `-ro` slug is that same mount with the four
+The mount serves all nine tools. A `-ro` slug is that same mount with the five
 write tools withheld by strad's
 [tool policy](/intro/architecture/), enforced on `tools/list` **and** on
 `tools/call`:
@@ -111,8 +111,9 @@ console — and `render-spec` fails the **whole** app spec on one unresolvable
 reference, so a single unconnected slug would take every other server's deploy
 with it.
 
-The `-rw` slug is the same entry with no `tools:` block — the full eight are that
-tier — its own `path`, and `scopes: [https://www.googleapis.com/auth/spreadsheets]`,
+The `-rw` slug is the same entry with no `tools:` block — the full nine are that
+tier, so a write tool added to the server reaches it on the next image with no
+config change — its own `path`, and `scopes: [https://www.googleapis.com/auth/spreadsheets]`,
 so it holds its own credential consented for the wider scope.
 
 Unlike [1Password](/limitations/#22-onepassword-ro-is-read-only-because-strad-says-so),
@@ -134,7 +135,7 @@ Four read:
 | `batch_get_sheet_values` | Several ranges in one round trip |
 | `find_in_spreadsheet` | Which cells contain a piece of text, as A1 addresses. The Sheets API has no server-side search, so this reads tabs and scans them — name the tabs when you can |
 
-Four write:
+Five write:
 
 | Tool | What it does |
 | --- | --- |
@@ -142,11 +143,21 @@ Four write:
 | `append_sheet_rows` | Insert rows after the end of a table. The safe way to log something |
 | `clear_sheet_values` | Empty a range, keeping its formatting |
 | `add_sheet` | Add a tab |
+| `create_spreadsheet` | Make a new spreadsheet file, optionally with named tabs and a frozen header row on each. Returns its id and URL |
 
-There is no tool that deletes a tab, and none that creates or deletes a
-spreadsheet **file**. Adding is recoverable and those are not, and a file-level
-operation would need a Drive **write** scope, which this server never asks for —
-the one Drive scope it can use is `drive.readonly`, and only to
+`create_spreadsheet` needs nothing wider than
+`https://www.googleapis.com/auth/spreadsheets`, the scope a `-rw` slug already
+holds: Google lists `drive`, `drive.file` and `spreadsheets` as each sufficient
+for `spreadsheets.create`. The file lands in the **root** of that account's My
+Drive, shared with no one. The tabs and header rows go in the same one request as
+the file, so a failure leaves nothing half-built — but a timed-out call that is
+retried can leave two files, so look before retrying. See
+[limitations](/limitations/#104-a-new-spreadsheet-lands-in-the-drive-root-shared-with-no-one).
+
+There is no tool that deletes a tab or a spreadsheet, and none that shares a file
+or moves it into a folder. Adding is recoverable and deleting is not, and every
+one of those is a Drive **write**, a scope this server never asks for — the one
+Drive scope it can use is `drive.readonly`, and only to
 [read an Office file](#office-files-in-drive-are-read-too).
 
 Reads are capped and say when they truncate — a retirement model is tens of
@@ -264,7 +275,7 @@ the two reads are not equivalent:
 | `UNFORMATTED_VALUE` | The stored number | The stored number, the same way |
 | Named ranges | Reported | Empty; an `.xlsx`'s defined names are formulas, not grid ranges |
 | `gid` | The Sheets gid | The workbook's own sheet id — stable in the file, and what `sheet_gid` resolves |
-| Writes | All four write tools | **None.** They refuse and name the conversion |
+| Writes | All the write tools | **None.** The four that edit a file refuse and name the conversion |
 | Size | Read a range at a time | Read whole: 20MB and 500,000 cells, refused past that |
 
 Legacy `.xls`, `.xlsb` and `.ods` are refused by name rather than attempted, and

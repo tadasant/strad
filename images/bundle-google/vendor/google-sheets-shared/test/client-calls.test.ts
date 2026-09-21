@@ -19,6 +19,7 @@ import {
   updateValues,
 } from "../src/google-sheets-client/lib/values.js";
 import { addSheet } from "../src/google-sheets-client/lib/batch-update.js";
+import { createSpreadsheet } from "../src/google-sheets-client/lib/create-spreadsheet.js";
 
 const HEADERS = { Authorization: "Bearer test", "Content-Type": "application/json" };
 const ID = "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms";
@@ -101,6 +102,67 @@ test("addSheet sends exactly one addSheet request and nothing else", async () =>
     index: 2,
     gridProperties: { rowCount: 100 },
   });
+});
+
+test("create is ONE POST to the collection: the file, its tabs and their headers together", async () => {
+  await createSpreadsheet(HEADERS, {
+    title: "Housing listings",
+    sheets: [{ title: "Listings", headers: ["Date", "Address", "Rent"] }, { title: "Notes" }],
+  });
+  assert.equal(calls.length, 1);
+  const call = calls[0];
+  assert.equal(call.method, "POST");
+  const url = new URL(call.url);
+  assert.equal(url.origin + url.pathname, "https://sheets.googleapis.com/v4/spreadsheets");
+  assert.match(url.searchParams.get("fields"), /spreadsheetId,spreadsheetUrl/);
+
+  const body = JSON.parse(call.body);
+  assert.deepEqual(body.properties, { title: "Housing listings" });
+  assert.deepEqual(body.sheets[0].properties, {
+    title: "Listings",
+    index: 0,
+    gridProperties: { frozenRowCount: 1 },
+  });
+  assert.deepEqual(body.sheets[0].data, [
+    {
+      startRow: 0,
+      startColumn: 0,
+      rowData: [
+        {
+          values: [
+            { userEnteredValue: { stringValue: "Date" } },
+            { userEnteredValue: { stringValue: "Address" } },
+            { userEnteredValue: { stringValue: "Rent" } },
+          ],
+        },
+      ],
+    },
+  ]);
+  // A tab with no headers is a title and a position, and nothing is frozen.
+  assert.deepEqual(body.sheets[1], { properties: { title: "Notes", index: 1 } });
+});
+
+test("a header is a STRING, so `=SUM(...)` or `+1` is text rather than a formula", async () => {
+  await createSpreadsheet(HEADERS, { title: "t", sheets: [{ title: "a", headers: ["=1+1", "+44"] }] });
+  const values = JSON.parse(calls[0].body).sheets[0].data[0].rowData[0].values;
+  assert.deepEqual(values.map((v) => v.userEnteredValue), [
+    { stringValue: "=1+1" },
+    { stringValue: "+44" },
+  ]);
+});
+
+test("create with no tabs sends none, and Google makes its own Sheet1", async () => {
+  await createSpreadsheet(HEADERS, { title: "Blank" });
+  assert.deepEqual(JSON.parse(calls[0].body), { properties: { title: "Blank" } });
+  await createSpreadsheet(HEADERS, { title: "Blank", sheets: [] });
+  assert.deepEqual(JSON.parse(calls[1].body), { properties: { title: "Blank" } });
+});
+
+test("more headers than Sheets' 26 default columns widens the grid to fit them", async () => {
+  const headers = Array.from({ length: 30 }, (_, i) => `h${i}`);
+  await createSpreadsheet(HEADERS, { title: "Wide", sheets: [{ title: "a", headers }] });
+  const grid = JSON.parse(calls[0].body).sheets[0].properties.gridProperties;
+  assert.deepEqual(grid, { frozenRowCount: 1, columnCount: 30 });
 });
 
 test("the metadata read asks for a fields mask, so a huge workbook stays small", async () => {
