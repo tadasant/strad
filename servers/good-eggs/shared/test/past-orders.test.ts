@@ -7,7 +7,7 @@
 // the 2026-09-21 order read back "No items found" under five formats across two
 // days while `9/13` read fine. The same list double-counted every order's items.
 //
-// Both now come from the payload: `storeData.populatedPastOrders` on the list,
+// Both come from the payload: `storeData.populatedPastOrders` on the list,
 // `storeData.order.items` on an order's page. The fixtures are trimmed from the
 // live 2026-09-22 responses, with the delivery address redacted.
 //
@@ -140,8 +140,8 @@ test('the list names each order by its delivery day in Pacific time', () => {
 });
 
 test('the list carries the real item count, not twice it', () => {
-  // The old count summed every `a.js-product-link` under an order's header on
-  // `/reorder`, and came out at exactly twice the real count: 56 for 28.
+  // Summing every `a.js-product-link` under an order's header on `/reorder`
+  // comes out at exactly twice the real count: 56 for 28.
   const orders = pastOrdersFromStoreData(ordersStoreData());
   assert.deepEqual(
     orders.map((o) => o.itemCount),
@@ -174,6 +174,8 @@ test('every format tried against the 2026-09-21 order resolves to it', () => {
     'Sep 21',
     '9/21/2026',
     'Delivered Monday, September 21st',
+    '2026/09/21',
+    '9/21/26',
   ]) {
     const query = parseOrderDateQuery(input);
     assert.ok(query, `could not parse ${input}`);
@@ -232,11 +234,47 @@ test('a payload with no order items is null, so the caller falls back', () => {
 // Through the client
 // ---------------------------------------------------------------------------
 
+test('without a year the newest order on that day wins; with one, that year does', () => {
+  const orders = pastOrdersFromStoreData({
+    populatedPastOrders: [
+      pastOrder('6ab086f4262ac1d68453dfb6', '2026-09-21T13:00:00.000Z', null, 11, 7813),
+      pastOrder('5ab086f4262ac1d68453dfb6', '2025-09-21T13:00:00.000Z', null, 4, 2000),
+    ],
+  });
+  assert.equal(findPastOrder(orders, parseOrderDateQuery('9/21'))?.orderId, SEP_21_ID);
+  assert.equal(
+    findPastOrder(orders, parseOrderDateQuery('2025-09-21'))?.orderId,
+    '5ab086f4262ac1d68453dfb6'
+  );
+});
+
+test('on one day, a delivered order wins over one that was not', () => {
+  const cancelled = { ...pastOrder(SEP_13_ID, '2026-09-21T15:00:00.000Z', null, 3, 900) };
+  cancelled.deliveryStatus = 'cancelled';
+  const orders = pastOrdersFromStoreData({
+    populatedPastOrders: [
+      cancelled,
+      pastOrder(SEP_21_ID, '2026-09-21T13:00:00.000Z', null, 11, 7813),
+    ],
+  });
+  assert.equal(findPastOrder(orders, parseOrderDateQuery('9/21'))?.orderId, SEP_21_ID);
+});
+
+test('a timezone the runtime does not know falls back instead of failing the list', () => {
+  const storeData = ordersStoreData();
+  storeData.foodhub.tzid = 'Bogus/Zone';
+  const orders = pastOrdersFromStoreData(storeData);
+  assert.equal(orders[0].isoDate, '2026-09-21');
+});
+
 /** A Playwright `Page` stand-in that serves each URL its payload. */
 class FakePage {
-  constructor() {
+  constructor({ orderPayloadHasItems = true, scraped = [] } = {}) {
     this.currentUrl = 'about:blank';
     this.visited = [];
+    this.orderPayloadHasItems = orderPayloadHasItems;
+    this.scraped = scraped;
+    this.scrapes = 0;
   }
   async goto(url) {
     this.visited.push(url);
@@ -257,11 +295,20 @@ class FakePage {
   async content() {
     if (this.currentUrl === ORDERS_URL) return renderPage(ordersStoreData());
     const order = this.currentUrl.match(/\/account\/orders\/([0-9a-f]{24})$/);
-    if (order) return renderPage(orderStoreData(order[1]));
+    if (order) {
+      const storeData = orderStoreData(order[1]);
+      if (!this.orderPayloadHasItems) delete storeData.order;
+      return renderPage(storeData);
+    }
     return renderPage({ user: { id: '5f00000000000000000000aa' }, basket: { items: [] } });
   }
+  /** Only the item fallback scrapes the page; the fake answers for it. */
   async evaluate() {
-    throw new Error('the past-order path must not need a DOM scrape');
+    if (this.orderPayloadHasItems) {
+      throw new Error('the past-order path must not scrape when the payload has items');
+    }
+    this.scrapes++;
+    return this.scraped;
   }
 }
 
@@ -316,5 +363,29 @@ test('a miss names the orders that do exist instead of claiming "no items"', asy
       /Orders on file: 2026-09-21, 2026-09-13, 2026-09-10, 2026-09-04/
     );
     await assert.rejects(client.getPastOrderGroceries('last week'), /Could not read a date/);
+  });
+});
+
+test('an order page with no items in its payload falls back to the drawn rows', async () => {
+  const row = {
+    url: `${BASE_URL}/x/y/5dbc6f848342b0000eaa8878`,
+    name: 'Beyond Meat',
+    brand: '',
+    price: '$10.99',
+  };
+  const page = new FakePage({ orderPayloadHasItems: false, scraped: [row] });
+  await withClient(page, async (client) => {
+    assert.deepEqual(await client.getPastOrderGroceries('9/21'), [row]);
+    assert.equal(page.scrapes, 1);
+  });
+});
+
+test('an order that reads as empty both ways is an error, never an empty order', async () => {
+  const page = new FakePage({ orderPayloadHasItems: false, scraped: [] });
+  await withClient(page, async (client) => {
+    await assert.rejects(
+      client.getPastOrderGroceries('9/21'),
+      /Could not read the items of the order delivered on 2026-09-21/
+    );
   });
 });

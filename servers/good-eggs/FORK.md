@@ -502,8 +502,9 @@ under `9/21`, `09/21`, `2026-09-21`, `September 21st` and
   after a failed lookup had left the browser on `/account/orders` overnight.
   Because of the reload skip, that lookup may have searched a list drawn the
   evening before. Which failure caused which miss can't be established after the
-  fact, and the fix does not depend on it: nothing here reads drawn text any
-  more.
+  fact, and the fix does not depend on it: the lookup reads no drawn text. The
+  row scrape reads it only when an order page's payload has no items array,
+  and an empty scrape is an error, not an empty order.
 
 The list's item counts were also exactly doubled against the payload: 56 for an
 order of 28, 22 for 11, 26 for 13. The payload's `itemCount` is the number the

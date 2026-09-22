@@ -1197,9 +1197,15 @@ export class GoodEggsClient implements IGoodEggsClient {
       throw new Error(`No past order was delivered on ${orderDate}. Orders on file: ${onFile}.`);
     }
 
+    if (!/^[0-9a-f]{24}$/.test(order.orderId)) {
+      throw new Error(`Good Eggs listed an order id that is not an id: "${order.orderId}".`);
+    }
     await page.goto(`${BASE_URL}/account/orders/${order.orderId}`, {
       waitUntil: 'domcontentloaded',
     });
+    if (page.url().includes('/signin')) {
+      throw new Error('Not logged in. Cannot access past orders.');
+    }
 
     const fromPayload = pastOrderItemsFromStoreData(
       extractStoreData(await page.content()) as PastOrdersStoreData | null,
@@ -1210,7 +1216,7 @@ export class GoodEggsClient implements IGoodEggsClient {
     // The payload carried no line items: fall back to the drawn page.
     await page.waitForTimeout(2000);
 
-    // Now we're on the order details page - extract items with quantity ordered
+    // Extract items with quantity ordered from the drawn order page
     const items = await page.evaluate(() => {
       interface ProductItem {
         url: string;
@@ -1277,6 +1283,11 @@ export class GoodEggsClient implements IGoodEggsClient {
       return products;
     });
 
+    // A delivered order has lines, so an empty scrape is a page this could not
+    // read, never an empty order.
+    if (items.length === 0) {
+      throw new Error(`Could not read the items of the order delivered on ${order.isoDate}.`);
+    }
     return items;
   }
 

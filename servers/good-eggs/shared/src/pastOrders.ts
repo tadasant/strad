@@ -87,17 +87,26 @@ interface CalendarDate {
   weekday: string;
 }
 
-/** The calendar day an instant falls on in `timeZone`. */
-function calendarDate(iso: string, timeZone: string): CalendarDate | null {
-  const instant = new Date(iso);
-  if (Number.isNaN(instant.getTime())) return null;
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
+function dayFormatter(timeZone: string): Intl.DateTimeFormat {
+  const options: Intl.DateTimeFormatOptions = {
     year: 'numeric',
     month: 'numeric',
     day: 'numeric',
     weekday: 'long',
-  }).formatToParts(instant);
+  };
+  try {
+    return new Intl.DateTimeFormat('en-US', { ...options, timeZone });
+  } catch {
+    // A zone name this runtime does not know must not take the whole list down.
+    return new Intl.DateTimeFormat('en-US', { ...options, timeZone: DEFAULT_ORDER_TIMEZONE });
+  }
+}
+
+/** The calendar day an instant falls on in `timeZone`. */
+function calendarDate(iso: string, timeZone: string): CalendarDate | null {
+  const instant = new Date(iso);
+  if (Number.isNaN(instant.getTime())) return null;
+  const parts = dayFormatter(timeZone).formatToParts(instant);
   const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
   return {
     year: Number(get('year')),
@@ -152,7 +161,7 @@ export interface OrderDateQuery {
 export function parseOrderDateQuery(input: string): OrderDateQuery | null {
   const text = input.trim().toLowerCase();
 
-  const iso = text.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+  const iso = text.match(/\b(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b/);
   if (iso)
     return valid({
       year: Number(iso[1]),
@@ -191,17 +200,20 @@ function valid(query: OrderDateQuery): OrderDateQuery | null {
 
 /**
  * The order delivered on the date asked for. Without a year the newest order on
- * that month and day wins, since the list is newest first.
+ * that month and day wins, since the list is newest first; on one day, a
+ * delivered order wins over one that was not.
  */
 export function findPastOrder(orders: PastOrder[], query: OrderDateQuery): PastOrder | null {
-  for (const order of orders) {
-    if (!order.isoDate) continue;
+  const matches = orders.filter((order) => {
+    if (!order.isoDate) return false;
     const [year, month, day] = order.isoDate.split('-').map(Number);
-    if (month !== query.month || day !== query.day) continue;
-    if (query.year !== undefined && year !== query.year) continue;
-    return order;
-  }
-  return null;
+    if (month !== query.month || day !== query.day) return false;
+    return query.year === undefined || year === query.year;
+  });
+  if (matches.length === 0) return null;
+  const newestDay = matches[0].isoDate;
+  const sameDay = matches.filter((order) => order.isoDate === newestDay);
+  return sameDay.find((order) => order.deliveryStatus === 'delivered') ?? sameDay[0];
 }
 
 /**
