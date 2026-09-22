@@ -46,6 +46,8 @@ final class Banner: NSObject {
 
     /// What a request needs from the controller's last state to be allowed.
     enum Need {
+        /// The controlling connection, whatever its grants.
+        case controller
         /// Any live grant on a computer-use server.
         case anyGrant
         /// A live grant that holds the mouse and keyboard.
@@ -58,6 +60,8 @@ final class Banner: NSObject {
             throw HelperError(code: "not_controller", message: "this connection has not sent set_state, or another connection holds the helper; only the daemon that reports grants may act")
         }
         switch need {
+        case .controller:
+            return
         case .anyGrant:
             guard !grants.isEmpty else {
                 throw HelperError(code: "no_grant", message: "no grant is in force on this machine, so nothing may be read or driven")

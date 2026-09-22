@@ -78,12 +78,18 @@ final class Dispatcher {
     /// the main thread owns (the controller and its grants).
     func authorize(op: String, channel: Channel) throws {
         switch op {
-        case "hello", "request_permissions", "set_state", "list_apps", "displays":
-            return
         case "ax_tree", "ax_find", "ax_get", "ax_perform", "ax_set_value", "ax_read_text":
             try banner.authorize(channel, .anyGrant)
-        default:
+        case "mouse_move", "click", "drag", "scroll", "type_text", "press_keys", "screen_capture":
             try banner.authorize(channel, .foregroundGrant)
+        case "input_release":
+            // Letting go of the keys is what a grant's END asks for, so it needs
+            // the controller and no grant.
+            try banner.authorize(channel, .controller)
+        default:
+            // hello, request_permissions, set_state, list_apps, displays — and
+            // an unknown op, which `handle` refuses by name.
+            return
         }
     }
 
