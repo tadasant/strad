@@ -1796,6 +1796,14 @@ long an outage lasts. Without it, a latched failure has nothing to clear it —
 this mount degrades rather than exiting, so no restart comes — and one transient
 blip at boot disables the slug until a redeploy.
 
+Past orders go the same way as the basket. `get_past_order_groceries` finds an
+order by comparing its delivery date with `storeData.populatedPastOrders`, then
+reads the items from that order page's `storeData.order.items`. It does not
+search the drawn `/account/orders` page for the date's text: that page draws
+`Monday 9/21`, a text search cannot match the `Monday, September 21st` form the
+list tool hands out, and on 2026-09-21 it left that day's order unreadable for a
+day.
+
 **Undo:** if upstream ever publishes `shared` as a library carrying these fixes,
 depend on it and delete the fork.
 

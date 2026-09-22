@@ -112,16 +112,18 @@ Returns each $0.00 item found, with its URL for add_to_cart:
 const GET_PAST_ORDER_DATES_DESCRIPTION = `Get a list of past order dates from Good Eggs.
 
 Returns a list of previous orders with:
-- Order date
-- Order total (if available)
-- Number of items (if available)
+- Delivery date, as Good Eggs names it and as YYYY-MM-DD
+- Delivery status
+- Order total
+- Number of distinct products
 
-Use these dates with get_past_order_groceries to see specific order contents.
+Pass either form of the date to get_past_order_groceries to see an order's contents.
 Requires the user to be logged in.`;
 
 const GET_PAST_ORDER_GROCERIES_DESCRIPTION = `Get the grocery items from a specific past order.
 
-Provide the past_order_date (from get_list_of_past_order_dates) to see what was ordered.
+Provide the past_order_date (from get_list_of_past_order_dates; "2026-09-21", "9/21" and
+"Monday, September 21st" all work) to see what was ordered.
 Returns a list of items from that order including:
 - Product URL
 - Product name and brand
@@ -573,9 +575,13 @@ export function createRegisterTools(
 
           const formattedResults = orders
             .map((order, i) => {
-              const parts = [`${i + 1}. **${order.date}**`];
+              const heading = order.isoDate
+                ? `${order.date}** (${order.isoDate})`
+                : `${order.date}**`;
+              const parts = [`${i + 1}. **${heading}`];
+              if (order.deliveryStatus) parts.push(`   Status: ${order.deliveryStatus}`);
               if (order.total) parts.push(`   Total: ${order.total}`);
-              if (order.itemCount) parts.push(`   Items: ${order.itemCount}`);
+              if (order.itemCount !== undefined) parts.push(`   Items: ${order.itemCount}`);
               return parts.join('\n');
             })
             .join('\n\n');
@@ -609,7 +615,8 @@ export function createRegisterTools(
         properties: {
           past_order_date: {
             type: 'string',
-            description: 'The date of the past order to get groceries from (e.g., "2024-01-15")',
+            description:
+              'The delivery date of the past order, e.g. "2026-09-21", "9/21" or "Monday, September 21st"',
           },
         },
         required: ['past_order_date'],
@@ -625,7 +632,7 @@ export function createRegisterTools(
               content: [
                 {
                   type: 'text',
-                  text: `No items found for order on ${validated.past_order_date}. Make sure the date matches exactly.`,
+                  text: `The order delivered on ${validated.past_order_date} has no line items.`,
                 },
               ],
             };
