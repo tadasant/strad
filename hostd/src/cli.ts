@@ -15,6 +15,7 @@ import {
   configPath,
   ConfigSchema,
   displayName,
+  enableCapability,
   ensureStateDir,
   loadConfig,
 } from "./config.js";
@@ -35,8 +36,9 @@ const USAGE = `strad-hostd — MCP servers that operate the machine they run on.
       Serve ONE server over stdio, for a local MCP client. No tunnel, no keys.
   strad-hostd keys
       Print each server's bearer key, for pasting into strad's secrets page.
-  strad-hostd helper
-      Report whether strad-hostd-ax is reachable and which permissions it holds.
+  strad-hostd helper [--request-access]
+      Report whether strad-hostd-ax is reachable and which permissions it holds;
+      --request-access makes macOS prompt for both, attributed to the helper.
   strad-hostd status | disable | enable | kill <grant_id|--all>
       See and stop what is in control. \`disable\` works with the daemon down.
 `;
@@ -82,7 +84,9 @@ async function main(argv: string[]): Promise<number> {
           CAPABILITY_IDS.map((id) => [
             id,
             {
-              enabled: true,
+              // The computer-use servers need the macOS helper; elsewhere they
+              // would only ever answer "helper not running".
+              enabled: !needsHelper(id) || process.platform === "darwin",
               key: randomBytes(32).toString("base64url"),
               displayName: slugFor(id, suffix),
             },
@@ -111,26 +115,25 @@ async function main(argv: string[]): Promise<number> {
         );
         return 1;
       }
-      const raw = JSON.parse(readFileSync(path, "utf8")) as {
-        capabilities?: Record<string, { enabled?: boolean; key?: string }>;
-      };
-      raw.capabilities ??= {};
-      const existing = raw.capabilities[id];
-      if (existing?.enabled && existing.key) {
-        console.log(`${id} is already enabled in ${path}.`);
+      const raw = JSON.parse(readFileSync(path, "utf8")) as Record<
+        string,
+        unknown
+      >;
+      const result = enableCapability(
+        raw,
+        id,
+        randomBytes(32).toString("base64url"),
+        flag(args, "--suffix"),
+      );
+      if (!result.changed) {
+        console.log(
+          `${id} is already configured in ${path}; leaving it as it is.`,
+        );
         return 0;
       }
-      const suffix = flag(args, "--suffix");
-      raw.capabilities[id] = {
-        ...existing,
-        enabled: true,
-        key: existing?.key ?? randomBytes(32).toString("base64url"),
-        ...(suffix ? { displayName: slugFor(id, suffix) } : {}),
-      };
-      ConfigSchema.parse(raw);
       writeFileSync(path, JSON.stringify(raw, null, 2) + "\n", { mode: 0o600 });
       console.log(
-        `enabled ${id} in ${path}${needsHelper(id) ? " (it needs strad-hostd-ax: see `strad-hostd helper`)" : ""}. Restart the daemon to serve it.`,
+        `enabled ${id}${result.displayName ? ` as ${result.displayName}` : ""} in ${path}${needsHelper(id) ? " (it needs strad-hostd-ax: see `strad-hostd helper`)" : ""}. Restart the daemon to serve it.`,
       );
       return 0;
     }
@@ -140,6 +143,14 @@ async function main(argv: string[]): Promise<number> {
       const config = loadConfig();
       const core = buildCore(config, { stateDir: dir, only: [] });
       try {
+        if (args.includes("--request-access")) {
+          // Through the helper's own connection, so the prompt macOS shows is
+          // attributed to the helper and not to the terminal this ran from.
+          await core.helper.call("request_permissions", {}, 10_000);
+          console.log(
+            "asked macOS to prompt for Accessibility and Screen Recording; answer in System Settings, then run `strad-hostd helper` again.",
+          );
+        }
         const hello = await core.helper.hello();
         console.log(
           `strad-hostd-ax ${hello.version} at ${hello.executable}\n  accessibility:    ${hello.trusted.accessibility ? "granted" : "NOT granted — System Settings › Privacy & Security › Accessibility"}\n  screen recording: ${hello.trusted.screen_recording ? "granted" : "NOT granted — System Settings › Privacy & Security › Screen & System Audio Recording"}`,

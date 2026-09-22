@@ -331,12 +331,13 @@ final class Accessibility {
         var names: CFArray?
         if AXUIElementCopyAttributeNames(el, &names) == .success, let list = names as? [String] {
             var extra: [String: Any] = [:]
-            for name in list where node[name] == nil {
-                if name == kAXChildrenAttribute || name == kAXParentAttribute || name == kAXWindowAttribute
-                    || name == kAXTopLevelUIElementAttribute || name == kAXValueAttribute && node["role"] as? String == "AXSecureTextField"
-                {
-                    continue
-                }
+            let shown: Set<String> = [
+                kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXValueAttribute, kAXDescriptionAttribute,
+                "AXPlaceholderValue", kAXIdentifierAttribute, kAXEnabledAttribute, kAXFocusedAttribute, kAXSelectedAttribute,
+                kAXPositionAttribute, kAXSizeAttribute, kAXChildrenAttribute, kAXParentAttribute, kAXWindowAttribute,
+                kAXTopLevelUIElementAttribute,
+            ]
+            for name in list where !shown.contains(name) {
                 if let s = string(el, name) { extra[name] = clipped(s, 500) }
             }
             node["attributes"] = extra
@@ -356,8 +357,8 @@ final class Accessibility {
             guard err == .success else { throw axError(err, "focus") }
             return ["performed": "focus"]
         }
-        let action = friendlyActions[requested] ?? (requested.hasPrefix("AX") ? requested : nil)
-        guard let action = action else {
+        let resolved = friendlyActions[requested] ?? (requested.hasPrefix("AX") ? requested : nil)
+        guard let action = resolved else {
             throw HelperError(code: "bad_action", message: "unknown action \"\(requested)\"; use one of \(friendlyActions.keys.sorted().joined(separator: ", ")), focus, or a raw AX… name from the element's actions")
         }
         let available = actions(el)
@@ -383,8 +384,9 @@ final class Accessibility {
         } else {
             throw HelperError(code: "bad_args", message: "value must be a string, number or boolean")
         }
-        if bool(el, "AXSettable") == false {
-            throw HelperError(code: "not_settable", message: "that element's value cannot be set")
+        var settable = DarwinBoolean(false)
+        if AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &settable) == .success, !settable.boolValue {
+            throw HelperError(code: "not_settable", message: "that element's value cannot be set through Accessibility; focus it and use the foreground server's type_text")
         }
         let err = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, value)
         guard err == .success else { throw axError(err, "set value") }

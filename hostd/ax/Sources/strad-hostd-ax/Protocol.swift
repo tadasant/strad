@@ -51,14 +51,41 @@ struct Args {
     }
 }
 
-/// Every op the daemon may send, routed on the MAIN thread: the banner and the
-/// menu bar are AppKit, and the Accessibility calls are cheap enough to share
-/// the thread with them.
+/// Every op the daemon may send.
+///
+/// Two threads. The banner, the menu bar and the input monitor are AppKit and
+/// run on the MAIN thread, and posting a mouse event is quick, so input and
+/// `set_state` go there. Reading an Accessibility tree can take seconds
+/// against a busy app, and a Kill button that does not respond for those
+/// seconds is a Kill button that does not work, so the AX and capture ops run
+/// on their own serial queue instead.
+///
+/// Every op that acts on the machine is checked against the controller's last
+/// `set_state` first (`Banner.authorize`): no grant reported by the daemon, no
+/// action, whoever is asking.
 final class Dispatcher {
     let ax = Accessibility()
     let input = Input()
     let capture = Capture()
     let banner = Banner()
+
+    /// Ops the main thread does not need to wait on.
+    static func offMain(_ op: String) -> Bool {
+        op.hasPrefix("ax_") || op == "list_apps" || op == "displays" || op == "screen_capture"
+    }
+
+    /// Called on the main thread. What it decides depends only on state that
+    /// the main thread owns (the controller and its grants).
+    func authorize(op: String, channel: Channel) throws {
+        switch op {
+        case "hello", "request_permissions", "set_state", "list_apps", "displays":
+            return
+        case "ax_tree", "ax_find", "ax_get", "ax_perform", "ax_set_value", "ax_read_text":
+            try banner.authorize(channel, .anyGrant)
+        default:
+            try banner.authorize(channel, .foregroundGrant)
+        }
+    }
 
     func handle(op: String, args raw: [String: Any], channel: Channel) throws -> Any {
         let args = Args(raw: raw)
@@ -125,7 +152,7 @@ final class Dispatcher {
             return ["released": true]
 
         case "set_state":
-            banner.setState(args, channel: channel)
+            try banner.setState(args, channel: channel)
             return ["shown": !banner.isEmpty]
 
         default:

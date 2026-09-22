@@ -219,6 +219,26 @@ describe("the headless computer-use server, through a real MCP client", () => {
     await client.close();
   });
 
+  it("says 'disabled', not 'helper down', when the owner switched remote control off", async () => {
+    fake.state.fail = "connect ENOENT ax.sock";
+    daemon.core.helper.close();
+    daemon.core.deps.gate.disableAll("test");
+    const client = await connect(
+      daemon.mcpPort,
+      "/computer-headless/mcp",
+      HEADLESS_KEY,
+    );
+    const r = await client.callTool({
+      name: "request_control",
+      arguments: { purpose: PURPOSE },
+    });
+    expect(r.isError).toBe(true);
+    expect(resultText(r)).toMatch(/\(disabled\)/);
+    daemon.core.deps.gate.enable();
+    delete fake.state.fail;
+    await client.close();
+  });
+
   it("shows NO dialog when the helper is down, and says how to find out why", async () => {
     fake.state.fail = "connect ENOENT ax.sock";
     daemon.core.helper.close();
@@ -400,6 +420,22 @@ describe("the foreground computer-use server", () => {
 });
 
 describe("the banner", () => {
+  it("is re-sent on the clock even when nothing changed, and again after the helper comes back", async () => {
+    const before = daemon.core.presence.sends;
+    await daemon.core.presence.sync();
+    await daemon.core.presence.sync();
+    expect(daemon.core.presence.sends).toBe(before + 2);
+    // The helper dies; the next tick reconnects and redraws from the grant table.
+    fake.drop();
+    await new Promise((r) => setImmediate(r));
+    expect(daemon.core.helper.connected).toBe(false);
+    await daemon.core.presence.sync();
+    expect(daemon.core.helper.connected).toBe(true);
+    // The tick's send, plus the redraw the reconnect itself triggers.
+    expect(daemon.core.presence.sends).toBeGreaterThanOrEqual(before + 3);
+    expect(fake.state.banner?.grants).toEqual([]);
+  });
+
   it("mirrors every grant, on every server, with its mode — and clears when they end", async () => {
     const shell = await grantOn(
       "/shell/mcp",

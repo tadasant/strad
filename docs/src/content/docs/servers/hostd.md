@@ -87,11 +87,13 @@ code signing, which asks for your login password in a dialog once. Any of those
 is stable across rebuilds; an ad-hoc signature is not, and would drop both
 grants every time you upgrade.
 
-Then, in System Settings › Privacy & Security, add `~/.strad-hostd/bin/strad-hostd-ax`
-under **Accessibility** (both computer-use servers) and under **Screen & System
-Audio Recording** (`computer-use-*` only, for screenshots). Running
-`~/.strad-hostd/bin/strad-hostd-ax --request-access` makes macOS put up its own
-prompts for both. Restart the helper afterwards:
+Then grant it. `strad-hostd helper --request-access` asks the running helper
+to make macOS put up its own prompts for **Accessibility** (both computer-use
+servers) and **Screen & System Audio Recording** (`computer-use-*` only, for
+screenshots); asking through the helper's own connection is what attributes
+the prompts to the helper rather than to your terminal. Or add
+`~/.strad-hostd/bin/strad-hostd-ax` by hand under both headings in System
+Settings › Privacy & Security. Restart the helper afterwards:
 
 ```bash
 launchctl kickstart -k gui/$(id -u)/com.strad.hostd-ax
@@ -189,7 +191,17 @@ everything** buttons, and the menu bar shows the same state with the same
 buttons. Orange means background control (shell, browser, Accessibility); red
 means the mouse and keyboard are taken, and any key or click you make ends
 that grant. The daemon re-sends the banner's state every two seconds, so a
-caller that kills the helper from the shell slug gets it back on the next tick.
+helper that restarts redraws it on the next tick, and the helper acts for one
+connection only: it refuses to read a tree, capture the screen or post input
+unless the daemon that reported the grants is the one asking, and unless a
+grant that covers it is in force.
+
+That is a gate against the daemon's own bugs and against another process
+driving the helper around the grant table while the daemon is up. It is not a
+privilege boundary. A command run through the shell slug runs as you, and can
+stop the daemon, edit `~/.strad-hostd/config.json`, unload either LaunchAgent
+or replace the helper — which is the shell slug's blast radius, and why it
+stays `admin`-only.
 
 Disabling ends every grant, kills what they started, stops the tunnel, and
 survives a reboot. A `touch`ed file takes effect within two seconds. A command

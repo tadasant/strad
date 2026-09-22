@@ -67,9 +67,7 @@ final class LineChannel: Channel {
         let args = obj["args"] as? [String: Any] ?? [:]
         var response: [String: Any] = [:]
         if let id = obj["id"] { response["id"] = id }
-        // Every op runs on the main thread, one at a time. AppKit demands it for
-        // the banner, and a serial order is what a caller expects of a mouse.
-        DispatchQueue.main.sync {
+        let run = {
             do {
                 response["ok"] = true
                 response["result"] = try dispatcher.handle(op: op, args: args, channel: self)
@@ -81,8 +79,27 @@ final class LineChannel: Channel {
                 response["error"] = ["code": "internal", "message": "\(error)"]
             }
         }
+        // The permission check is main-thread state; the work runs where the
+        // op belongs (see Dispatcher). Both are synchronous from this reader
+        // thread, so one connection's requests stay in order.
+        var refused: HelperError?
+        DispatchQueue.main.sync {
+            do { try dispatcher.authorize(op: op, channel: self) } catch let e as HelperError { refused = e } catch {}
+        }
+        if let e = refused {
+            response["ok"] = false
+            response["error"] = ["code": e.code, "message": e.message]
+        } else if Dispatcher.offMain(op) {
+            LineChannel.work.sync(execute: run)
+        } else {
+            DispatchQueue.main.sync(execute: run)
+        }
         send(response)
     }
+
+    /// One queue for the slow, non-AppKit ops, so two connections cannot
+    /// interleave Accessibility calls and the main thread stays free.
+    static let work = DispatchQueue(label: "strad-hostd-ax.work")
 }
 
 final class Transport {
@@ -120,6 +137,9 @@ final class Transport {
     /// the `node` that would otherwise be its parent.
     private func startListening(path: String) {
         unlink(path)
+        // The socket is created 0600 rather than chmod'ed to it afterwards.
+        let previous = umask(0o177)
+        defer { umask(previous) }
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { fail("socket(): \(String(cString: strerror(errno)))") }
         var addr = sockaddr_un()
@@ -144,7 +164,13 @@ final class Transport {
         let acceptor = Thread {
             while true {
                 let client = Darwin.accept(fd, nil, nil)
-                if client < 0 { continue }
+                if client < 0 {
+                    if errno == EINTR || errno == ECONNABORTED { continue }
+                    // A listening socket that cannot accept is a helper that
+                    // cannot serve; exit and let launchd start a fresh one.
+                    FileHandle.standardError.write("strad-hostd-ax: accept(): \(String(cString: strerror(errno)))\n".data(using: .utf8)!)
+                    exit(1)
+                }
                 let channel = LineChannel(readFD: client, writeFD: client) { ch in
                     close(client)
                     DispatchQueue.main.async { dispatcher.banner.channelClosed(ch) }

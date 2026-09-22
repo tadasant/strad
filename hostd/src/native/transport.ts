@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { connect as netConnect } from "node:net";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -56,10 +57,23 @@ export function helperConnector(
 ): () => Promise<Duplex> {
   const socketPath = helperSocketPath(config, stateDir);
   const candidates = helperBinaryCandidates(config, stateDir);
+  const agentPlist = join(
+    homedir(),
+    "Library",
+    "LaunchAgents",
+    "com.strad.hostd-ax.plist",
+  );
 
   return () =>
     new Promise<Duplex>((resolve, reject) => {
-      if (existsSync(socketPath)) {
+      // With the LaunchAgent installed the socket is the ONLY way in. Both
+      // agents start at login in no particular order, and a daemon that spawned
+      // a private helper because the socket was not there yet would keep it for
+      // good: two helpers, two menu-bar items, and grants attributed to `node`.
+      const socketOnly =
+        config.native.mode === "socket" ||
+        (config.native.mode === "auto" && existsSync(agentPlist));
+      if (config.native.mode !== "stdio" && existsSync(socketPath)) {
         const socket = netConnect(socketPath);
         socket.once("connect", () => resolve(socket));
         socket.once("error", (err) =>
@@ -67,6 +81,14 @@ export function helperConnector(
             new Error(
               `could not reach strad-hostd-ax at ${socketPath} (${err.message}); is its LaunchAgent running? \`launchctl print gui/$(id -u)/com.strad.hostd-ax\``,
             ),
+          ),
+        );
+        return;
+      }
+      if (socketOnly) {
+        reject(
+          new Error(
+            `strad-hostd-ax is not listening at ${socketPath} yet; its LaunchAgent com.strad.hostd-ax starts it at login (\`launchctl print gui/$(id -u)/com.strad.hostd-ax\`, and ~/Library/Logs/com.strad.hostd-ax.err.log)`,
           ),
         );
         return;

@@ -3322,6 +3322,8 @@ The two grants are clicked in System Settings › Privacy & Security, and they o
 
 macOS 15 asks again, about monthly, whether a program that captures the screen without the system picker may keep doing so. Nothing on the strad side can answer it. Until the owner does, `take_screenshot` fails with `screen_recording_denied`; the headless server does not capture the screen and is unaffected.
 
+One boundary is not there, and the shell slug is why. The helper's socket is a file every process of the owner can open. The helper takes one controlling connection at a time and refuses every op that acts on the machine unless that connection last reported a grant covering it, so nobody drives it around the daemon's grant table while the daemon runs; but a command run through `shell-*` runs as the owner and can stop the daemon, edit its config, unload a LaunchAgent or replace the helper. macOS gives two processes of one user no way to keep secrets from each other. That is the shell slug's blast radius, and every hostd slug stays `admin`-only for it.
+
 **How you would know.** `get_control_status` on either server reports `helper: {running, accessibility, screen_recording}`, and `request_control` refuses with `helper_unavailable` and shows no dialog when a grant is missing. `strad-hostd helper` on the Mac says the same.
 
 **Undo:** a Developer ID certificate removes the self-signed step. Apple's persistent-content-capture entitlement removes the monthly prompt and is issued on application to remote-desktop products. The grants are the owner's and stay.

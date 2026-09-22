@@ -5596,6 +5596,17 @@ personal laptop that strad holds no credential for and must never push code
 to. The grants are the machine's owner deciding what a program on it may see,
 which is the one decision that should stay on the machine.
 
+**And one boundary that is not there.** The helper's socket is a file every
+process of the owner can open, a shell-slug command included. The helper
+honours one controlling connection and refuses every op that acts on the
+machine unless that connection's last `set_state` carried a covering grant,
+which closes the cheap path while the daemon is up. It is not a privilege
+boundary: two processes of one macOS user cannot keep secrets from each other,
+so a process running as the owner can stop the daemon, edit its config, unload
+a LaunchAgent or replace the helper binary. That is the shell slug's blast
+radius, named in #159 from the start, and why every hostd slug stays
+`admin`-only.
+
 **What stays off the box.** As #101: the slugs, their entitlements and
 `recovery:` text ship by deploy, the keys are seeded at `/ui/secrets`, and
 `get_control_status` on either server reports `helper: {running, accessibility,

@@ -45,10 +45,13 @@ describe("the helper client", () => {
     });
     await client.hello();
     expect(client.connected).toBe(true);
-    // Kill the helper's end. Two channels were opened? No: one; end it.
-    fake.emit({ event: "noise" });
-    client.close();
+    // A call in flight when the helper dies is refused, not hung.
+    const inFlight = client.call("list_apps");
+    fake.drop();
+    await expect(inFlight).rejects.toMatchObject({ code: "disconnected" });
     expect(client.connected).toBe(false);
+    expect(fake.connections).toBe(0);
+    // The next call opens a fresh connection on its own.
     await client.hello();
     expect(client.connected).toBe(true);
     expect(fake.connections).toBe(1);

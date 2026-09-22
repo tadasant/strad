@@ -29,6 +29,7 @@ export class FakeHelper {
   readonly ops: { op: string; args: Record<string, unknown> }[] = [];
   readonly state: FakeState;
   private channels = new Set<PassThrough>();
+  private streams = new Set<Duplex>();
   private textFieldValue = "";
 
   constructor(over: Partial<FakeState> = {}) {
@@ -42,6 +43,12 @@ export class FakeHelper {
 
   get connections(): number {
     return this.channels.size;
+  }
+
+  /** The helper died: every connection the daemon holds drops. */
+  drop(): void {
+    for (const s of this.streams) s.destroy();
+    this.streams.clear();
   }
 
   /** A fresh transport, as `HelperClient.connect` wants. */
@@ -68,7 +75,11 @@ export class FakeHelper {
       }
     });
     const stream = Duplex.from({ readable: fromHelper, writable: toHelper });
-    stream.once("close", () => this.channels.delete(fromHelper));
+    this.streams.add(stream);
+    stream.once("close", () => {
+      this.channels.delete(fromHelper);
+      this.streams.delete(stream);
+    });
     return stream;
   };
 

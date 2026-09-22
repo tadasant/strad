@@ -129,7 +129,7 @@ unsigned or ad-hoc-signed build has to be re-granted after every rebuild.
 
 Then grant it, once, in System Settings › Privacy & Security:
 
-- **Accessibility** — both servers. `ax/.build/release/strad-hostd-ax --request-access` makes macOS prompt for it.
+- **Accessibility** — both servers. `node build/cli.js helper --request-access` makes macOS prompt for it.
 - **Screen & System Audio Recording** — `computer` only, for `take_screenshot`.
 
 `node build/cli.js helper` says whether the helper is reachable and what it
@@ -167,6 +167,7 @@ matter:
 | `consent.windowSeconds`                                    | `5`                 | how long the dialog stays up                                      |
 | `consent.grantMinutes` / `maxGrantMinutes` / `idleMinutes` | `30` / `120` / `10` | grant lifetime                                                    |
 | `shell.defaultCwd`                                         | `$HOME`             |                                                                   |
+| `native.mode`                                              | `"auto"`            | `socket` (the LaunchAgent, never a child), `stdio`, or `auto`     |
 | `native.binary` / `native.socketPath`                      | see `src/config.ts` | where `strad-hostd-ax` is, or where its LaunchAgent listens       |
 | `computer.maxScreenshotWidth`                              | `1280`              | widest image `take_screenshot` returns                            |
 | `port` / `controlPort`                                     | `7311` / `7312`     | daemon mode only, both on `127.0.0.1`                             |

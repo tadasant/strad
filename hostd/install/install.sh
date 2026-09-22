@@ -17,7 +17,7 @@
 set -euo pipefail
 
 MACHINE="this machine"
-SUFFIX="hostd"
+SUFFIX=""
 HOSTNAME_ARG=""
 TUNNEL_NAME="strad-hostd"
 AGENT=1
@@ -66,13 +66,19 @@ HOSTD=("$NODE" "$APP/build/cli.js")
 
 if [ ! -f "$STATE/config.json" ]; then
   say "Writing config and generating keys"
-  STRAD_HOSTD_HOME="$STATE" "${HOSTD[@]}" init --machine "$MACHINE" --suffix "$SUFFIX"
+  STRAD_HOSTD_HOME="$STATE" "${HOSTD[@]}" init --machine "$MACHINE" --suffix "${SUFFIX:-hostd}"
 else
   say "Keeping the existing $STATE/config.json"
   # A config from before a server existed does not know it: enable it, with a
-  # fresh key, and leave everything already there alone.
+  # fresh key. A server the config already knows — enabled, or switched off by
+  # its owner — is left exactly as it is. Without --suffix the new server is
+  # named after the existing shell server's suffix.
   for cap in shell browser computer-headless computer; do
-    STRAD_HOSTD_HOME="$STATE" "${HOSTD[@]}" add "$cap" --suffix "$SUFFIX"
+    if [ -n "$SUFFIX" ]; then
+      STRAD_HOSTD_HOME="$STATE" "${HOSTD[@]}" add "$cap" --suffix "$SUFFIX"
+    else
+      STRAD_HOSTD_HOME="$STATE" "${HOSTD[@]}" add "$cap"
+    fi
   done
 fi
 
@@ -103,6 +109,14 @@ if [ "$HELPER" = 1 ] && [ "$(uname)" = "Darwin" ]; then
         "$HERE/install/$AX_LABEL.plist" > "$AX_PLIST"
       launchctl bootout "gui/$(id -u)/$AX_LABEL" 2>/dev/null || true
       launchctl bootstrap "gui/$(id -u)" "$AX_PLIST"
+      # From here on the daemon reaches the helper over the agent's socket and
+      # never spawns one of its own (see native.mode in src/config.ts).
+      node -e '
+        const fs = require("fs"), file = process.argv[1];
+        const c = JSON.parse(fs.readFileSync(file, "utf8"));
+        c.native = { ...(c.native ?? {}), mode: "socket" };
+        fs.writeFileSync(file, JSON.stringify(c, null, 2) + "\n", { mode: 0o600 });
+      ' "$STATE/config.json"
     fi
     say "Helper permissions (both must be granted in System Settings › Privacy & Security):"
     "$AX" --status || true

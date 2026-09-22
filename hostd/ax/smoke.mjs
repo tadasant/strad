@@ -1,8 +1,10 @@
 // Drive a built strad-hostd-ax over --stdio, the way the daemon does, and
 // check what a GitHub macOS runner can check: the protocol, `hello`, the app
-// list, the display list, and that every guarded op refuses cleanly with a
-// permission code when the runner has granted nothing. It runs from CI's
-// hostd-ax workflow; locally: `node ax/smoke.mjs .build/release/strad-hostd-ax`.
+// list, the display list, the controller-and-grant gate in front of every op
+// that acts on the machine, and — when the runner holds the grants, which the
+// GitHub images do — a real Accessibility tree and a real screenshot. It runs
+// from CI's hostd-ax workflow; locally:
+// `node ax/smoke.mjs .build/release/strad-hostd-ax`.
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
@@ -75,9 +77,67 @@ try {
     bad.ok === false && bad.error?.code === "unknown_op",
   );
 
+  // The gate: nothing acts on the machine until the controller has reported a
+  // grant that covers it.
+  const noController = await call("click", { x: 1, y: 1 });
+  check(
+    "an input op before any set_state is refused as not_controller",
+    noController.ok === false && noController.error?.code === "not_controller",
+    noController.error?.code,
+  );
+  const noTree = await call("ax_tree", { app: "Finder" });
+  check(
+    "an ax op before any set_state is refused as not_controller",
+    noTree.ok === false && noTree.error?.code === "not_controller",
+    noTree.error?.code,
+  );
+
+  const bg = await call("set_state", {
+    disabled: false,
+    grants: [
+      {
+        id: "g_bg",
+        server: "computer-use-ci-headless",
+        purpose: "Smoke-test the headless gate.",
+        foreground: false,
+      },
+    ],
+  });
+  check("set_state with a background grant is accepted", bg.ok === true);
+  const noFg = await call("click", { x: 1, y: 1 });
+  check(
+    "an input op under a background-only grant is refused as no_grant",
+    noFg.ok === false && noFg.error?.code === "no_grant",
+    noFg.error?.code,
+  );
+  const noShot = await call("screen_capture", { max_width: 320 });
+  check(
+    "a screenshot under a background-only grant is refused as no_grant",
+    noShot.ok === false && noShot.error?.code === "no_grant",
+    noShot.error?.code,
+  );
+
+  const fg = await call("set_state", {
+    disabled: false,
+    control_url: "http://127.0.0.1:7312",
+    grants: [
+      {
+        id: "g_smoke",
+        server: "computer-use-ci",
+        purpose: "Smoke-test the banner.",
+        foreground: true,
+      },
+    ],
+  });
+  check(
+    "set_state with a foreground grant shows the banner",
+    fg.ok === true && fg.result?.shown === true,
+    JSON.stringify(fg.result ?? fg.error),
+  );
+
   const badArgs = await call("click", {});
   check(
-    "a guarded op without a grant refuses with a permission or argument code",
+    "a guarded op with bad arguments refuses with bad_args (or the permission code)",
     badArgs.ok === false &&
       ["accessibility_denied", "bad_args"].includes(badArgs.error?.code),
     badArgs.error?.code,
@@ -114,27 +174,16 @@ try {
     );
   }
 
-  const state = await call("set_state", {
-    disabled: false,
-    control_url: "http://127.0.0.1:7312",
-    grants: [
-      {
-        id: "g_smoke",
-        server: "computer-use-ci",
-        purpose: "Smoke-test the banner.",
-        foreground: true,
-      },
-    ],
-  });
-  check(
-    "set_state shows the banner",
-    state.ok === true && state.result?.shown === true,
-    JSON.stringify(state.result ?? state.error),
-  );
   const cleared = await call("set_state", { disabled: false, grants: [] });
   check(
-    "set_state clears it",
+    "set_state with no grants clears the banner",
     cleared.ok === true && cleared.result?.shown === false,
+  );
+  const afterClear = await call("mouse_move", { x: 1, y: 1 });
+  check(
+    "an input op after the grants are cleared is refused as no_grant",
+    afterClear.ok === false && afterClear.error?.code === "no_grant",
+    afterClear.error?.code,
   );
 } catch (err) {
   check("protocol", false, err.message);

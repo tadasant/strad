@@ -186,8 +186,11 @@ Idempotent: ending a grant that is already gone returns {"ended":false}.`,
       if (tool === "request_control") {
         // A server that cannot work gets no dialog: the helper is down, or a
         // TCC grant is missing, and neither is something the person at the
-        // screen can fix in five seconds.
-        const blocked = await capability.preflight?.();
+        // screen can fix in five seconds. The switch is asked first, so a
+        // machine its owner turned off says so rather than "helper down".
+        const blocked = killSwitch.isDisabled()
+          ? undefined
+          : await capability.preflight?.();
         if (blocked) {
           audit.record({
             kind: "denied",

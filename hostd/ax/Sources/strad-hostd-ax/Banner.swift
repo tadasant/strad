@@ -12,9 +12,17 @@ import Foundation
 ///
 /// The daemon owns the truth and pushes it here with `set_state`; buttons go
 /// back to the daemon as events, and the daemon ends the grant. Nothing here
-/// decides anything, which is why a caller with a shell cannot talk it out of
-/// showing the banner: the daemon re-sends the state every couple of seconds,
-/// and this process is not one the shell slug's grant reaches.
+/// decides anything.
+///
+/// ONE controller at a time. The first connection to send `set_state` holds
+/// the helper until it drops; a second connection's `set_state` is refused as
+/// `busy`, and every op that acts on the machine is refused unless it comes
+/// from the controller AND the controller's last state carried a grant that
+/// covers it. That is what stops the helper being driven around the daemon's
+/// grant table by another process of the same user — a shell-slug command,
+/// say — while the daemon is up. It is not a privilege boundary: a process
+/// running as the owner can stop the daemon, edit its config or replace this
+/// binary, and the docs say so. It closes the cheap path, not the machine.
 final class Banner: NSObject {
     private struct GrantRow {
         let id: String
@@ -36,9 +44,37 @@ final class Banner: NSObject {
 
     var isEmpty: Bool { grants.isEmpty }
 
+    /// What a request needs from the controller's last state to be allowed.
+    enum Need {
+        /// Any live grant on a computer-use server.
+        case anyGrant
+        /// A live grant that holds the mouse and keyboard.
+        case foregroundGrant
+    }
+
+    /// Refuse an op that the daemon's own grant table would not allow.
+    func authorize(_ channel: Channel, _ need: Need) throws {
+        guard let c = controller, c === channel else {
+            throw HelperError(code: "not_controller", message: "this connection has not sent set_state, or another connection holds the helper; only the daemon that reports grants may act")
+        }
+        switch need {
+        case .anyGrant:
+            guard !grants.isEmpty else {
+                throw HelperError(code: "no_grant", message: "no grant is in force on this machine, so nothing may be read or driven")
+            }
+        case .foregroundGrant:
+            guard grants.contains(where: { $0.foreground }) else {
+                throw HelperError(code: "no_grant", message: "no foreground grant is in force, so the mouse, keyboard and screen may not be touched")
+            }
+        }
+    }
+
     // MARK: state from the daemon
 
-    func setState(_ args: Args, channel: Channel) {
+    func setState(_ args: Args, channel: Channel) throws {
+        if let c = controller, c !== channel {
+            throw HelperError(code: "busy", message: "another connection already controls this helper; it is released when that connection closes")
+        }
         controller = channel
         disabled = args.bool("disabled", default: false)
         controlUrl = args.string("control_url")
@@ -88,7 +124,8 @@ final class Banner: NSObject {
         label?.stringValue = "\(first.server) \(verb): \(first.purpose)\(more)"
         killButton?.title = grants.count > 1 ? "Kill all" : "Kill"
         background?.layer?.backgroundColor = (foreground ? NSColor.systemRed : NSColor.systemOrange).cgColor
-        if let screen = NSScreen.main {
+        // The primary display, where the menu bar is — not the key window's.
+        if let screen = NSScreen.screens.first {
             let visible = screen.visibleFrame
             let width = min(880, visible.width - 24)
             panel.setFrame(NSRect(x: visible.midX - width / 2, y: visible.maxY - 46 - 6, width: width, height: 46), display: true)

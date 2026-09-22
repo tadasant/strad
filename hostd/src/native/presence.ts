@@ -8,16 +8,24 @@ import type { HelperClient } from "./client.js";
  *
  * The daemon owns the grants; the helper only draws them. So the whole
  * protocol is one idempotent message, `set_state`, carrying every grant in
- * force, sent when the set changes and again on a slow clock. The clock is
- * what makes the banner honest against a caller holding a shell: it can kill
- * the helper (its LaunchAgent restarts it), and the next tick puts the banner
- * back. It cannot reach the daemon's grant table from a command.
+ * force, sent when the set changes and again on a clock, unconditionally. The
+ * clock is what puts the banner back after the helper restarts, and it keeps
+ * the daemon the helper's controller: the helper honours ONE connection at a
+ * time, and refuses every op that acts on the machine unless it comes from
+ * that connection and the state it last sent carries a grant that covers it.
+ *
+ * What that does not do, and the docs say so: a process running as the owner
+ * — a shell-slug command is one — can stop this daemon, edit its config or
+ * replace the helper. The gate closes the cheap path; it is not a privilege
+ * boundary.
  *
  * Buttons come back as events, and the daemon ends the grant.
  */
 export class Presence {
-  private lastSent?: string;
   private timer?: NodeJS.Timeout;
+  /** How many times the state has been pushed. Tests. */
+  sends = 0;
+  private closing = false;
 
   constructor(
     private readonly deps: {
@@ -30,7 +38,7 @@ export class Presence {
   ) {}
 
   start(everyMs = 2000): void {
-    this.timer = setInterval(() => void this.sync(true), everyMs);
+    this.timer = setInterval(() => void this.sync(), everyMs);
     this.timer.unref();
   }
 
@@ -61,32 +69,32 @@ export class Presence {
   }
 
   /**
-   * Push the state. `onlyIfChanged` is the timer's mode; a change to the
-   * grants sends unconditionally. Sending never throws: a helper that is not
-   * there is a banner that is not there, and the notification still is.
+   * Push the state. Sending never throws: a helper that is not there is a
+   * banner that is not there, and the notification still is.
    */
-  async sync(onlyIfChanged = false): Promise<void> {
+  async sync(): Promise<void> {
+    if (this.closing) return;
     const state = this.state();
-    const encoded = JSON.stringify(state);
-    if (
-      onlyIfChanged &&
-      encoded === this.lastSent &&
-      this.deps.helper.connected
-    )
-      return;
     // Nothing to show and never connected: do not start a helper just to say so.
     if (
       !this.deps.helper.connected &&
       state.grants.length === 0 &&
-      !this.lastSent
+      this.sends === 0
     )
       return;
     try {
       await this.deps.helper.call("set_state", state, 5000);
-      this.lastSent = encoded;
+      this.sends += 1;
     } catch (err) {
-      this.lastSent = undefined;
-      this.deps.log?.(`banner not shown: ${(err as Error).message}`);
+      if (!this.closing)
+        this.deps.log?.(`banner not shown: ${(err as Error).message}`);
     }
+  }
+
+  /** The last push before the daemon stops; nothing after it is logged. */
+  async close(): Promise<void> {
+    this.stop();
+    await this.sync();
+    this.closing = true;
   }
 }

@@ -35,7 +35,13 @@ private let modifierCodes: [String: (CGKeyCode, CGEventFlags)] = [
 /// cursor and one keyboard: everything here takes them from the person at the
 /// machine.
 final class Input {
-    private let source = CGEventSource(stateID: .combinedSessionState)
+    private let source: CGEventSource? = {
+        let s = CGEventSource(stateID: .combinedSessionState)
+        // Every event from this source carries the tag, and each event is
+        // stamped again below: two ways for the monitor to recognise its own.
+        s?.userData = eventTag
+        return s
+    }()
 
     private func post(_ event: CGEvent) {
         event.setIntegerValueField(.eventSourceUserData, value: eventTag)

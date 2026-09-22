@@ -47,7 +47,9 @@ jobs:
           swift --version
       - name: Build
         working-directory: hostd/ax
-        run: swift build -c release 2>&1 | tail -20
+        run: |
+          set -o pipefail
+          swift build -c release 2>&1 | tail -20
       - name: Sign (ad-hoc, to exercise the codesign step; a real install uses install/sign-helper.sh)
         working-directory: hostd/ax
         run: |

@@ -133,7 +133,7 @@ export function buildCore(
       clearInterval(sweep);
       presence.stop();
       gate.grants.endAll("killed");
-      await presence.sync();
+      await presence.close();
       for (const c of Object.values(capabilities)) await c?.close?.();
       helper.close();
     },

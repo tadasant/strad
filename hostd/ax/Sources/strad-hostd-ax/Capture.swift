@@ -69,8 +69,13 @@ final class Capture {
             throw HelperError(code: "capture_failed", message: "the display could not be captured (is the screen locked?)")
         }
 
+        // `scale` is output pixels per point. It never exceeds the display's own
+        // backing factor (there are no more pixels than that) and never exceeds
+        // what max_width allows, so a small region with a large max_width comes
+        // back at full Retina resolution and a whole display comes back smaller.
         let maxWidth = Double(max(160, min(args.int("max_width", default: 1280), 4096)))
-        let scale = min(1.0, maxWidth / pointSize.width)
+        let backing = Double(captured.width) / pointSize.width
+        let scale = min(backing, maxWidth / pointSize.width)
         let outW = max(1, Int((pointSize.width * scale).rounded()))
         let outH = max(1, Int((pointSize.height * scale).rounded()))
         guard let ctx = CGContext(

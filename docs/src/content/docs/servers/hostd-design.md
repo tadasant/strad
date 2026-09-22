@@ -219,11 +219,25 @@ on every Space, naming the server and the purpose, with a **Kill** button and a
 same buttons. Orange is background control; red is a foreground grant that
 holds the mouse. The helper draws it and decides nothing: the daemon pushes the
 full set of grants as one idempotent `set_state` message whenever the set
-changes and again every two seconds, and the buttons come back as events the
-gate acts on. A caller holding the shell slug can kill the helper process, and
-launchd restarts it and the next tick redraws the banner; what it cannot reach
-from a command is the daemon's grant table. The notification remains, for the
-case where nobody was looking.
+changes and again every two seconds, unconditionally, and the buttons come back
+as events the gate acts on. The notification remains, for the case where nobody
+was looking.
+
+**One controller, and every op checked against its grants.** The helper's
+socket is a file, and every process running as the owner can open it — a
+shell-slug command included. So the helper honours one connection at a time:
+the first to send `set_state` holds it until it drops, a second connection's
+`set_state` is `busy`, and every op that reads a tree, captures the screen or
+posts input is refused unless it comes from that connection and the state it
+last sent carries a grant that covers it (`no_grant`, `not_controller`). The
+daemon connects at boot and re-sends on the clock, so it is the controller
+whenever it is up. That closes the cheap path: nobody drives the helper around
+the daemon's grant table while the daemon runs. It is not a privilege
+boundary, and the limitations page says so: a process running as the owner can
+stop the daemon, edit its config, unload either LaunchAgent or replace the
+helper, and macOS offers no way for two processes of one user to keep secrets
+from each other. That is the shell slug's blast radius, which #159 named on
+day one, and the reason it stays `admin`-only.
 
 **Kill ends the work, not only the permission.** Each grant carries an
 `AbortSignal`. The shell hangs its process groups on it and the browser hangs its
@@ -331,15 +345,19 @@ Two consequences shaped it, and the second changed the original design.
   the daemon spawned would be `node` for TCC's purposes, signature or not. So
   `com.strad.hostd-ax` is a second LaunchAgent listening on a Unix socket in
   the state directory (mode 0600), and the daemon connects to it, reconnecting
-  whenever it drops. Stdio remains for local-run mode, where the daemon spawns
-  the helper as a child and the grant lands on the terminal that launched the
-  MCP client, which is the ordinary arrangement for a command-line tool.
+  whenever it drops. Once the agent is installed the installer pins
+  `native.mode: "socket"`, so a daemon that boots before the helper waits for
+  the socket rather than spawning a private helper whose grants would land on
+  `node`. Stdio remains for local-run mode, where the daemon spawns the helper
+  as a child and the grant lands on the terminal that launched the MCP client,
+  which is the ordinary arrangement for a command-line tool.
 
 The protocol is newline-delimited JSON: `{id, op, args}` in, `{id, ok, result}`
 or `{id, ok:false, error:{code,message}}` out, and lines with an `event` and no
-`id` from the helper when the person at the machine presses a button. Every op
-runs on the helper's main thread, one at a time, which AppKit needs for the
-banner and a mouse needs for sanity. `hello` reports the two grants, and the
+`id` from the helper when the person at the machine presses a button. Input
+and the banner run on the helper's main thread, which AppKit needs; reading an
+Accessibility tree and capturing the screen run on a serial queue of their own,
+so a stuck app cannot freeze the Kill button. `hello` reports the two grants, and the
 daemon asks it **before** showing a consent dialog: a server that cannot work
 gets `helper_unavailable` and no dialog, because nothing the person at the
 screen can click in five seconds would fix a missing grant.
@@ -460,9 +478,12 @@ image content, chords, the pre-dialog refusal for a missing grant, the
 owner-input rule, the banner's state and its buttons, and the helper client's
 reconnect, timeout and spawn paths.
 
-**Run on a macOS runner, with no grants:** the helper compiles, signs ad-hoc,
-answers `hello`, lists apps and displays, and refuses every guarded op with the
-right code (`.github/workflows/hostd-ax.yml`).
+**Run on a GitHub macOS runner:** the helper compiles, signs ad-hoc, answers
+`hello`, lists apps and displays, refuses every op that acts on the machine
+until a controller has reported a grant that covers it, and — because the
+runner image turns out to hold both grants — reads a real Accessibility tree
+from Finder, captures a real screenshot, and shows and clears the banner
+(`.github/workflows/hostd-ax.yml`).
 
 **Reasoned about, not run:** everything that needs a person at a Mac. The
 `osascript` dialog and whether it comes to the front when launched from a
@@ -470,8 +491,8 @@ LaunchAgent, both LaunchAgents, the installer's `cloudflared` branch, the
 Chrome 144 toggle and its prompt on a real default profile, TCC prompts for
 files under `~/Documents`, `~/Desktop` and `~/Downloads` when the shell reaches
 them, the signing script's self-signed branch and whether `codesign` accepts
-the certificate it makes, the two System Settings grants and whether TCC
-attributes them to the helper under its LaunchAgent, a real Accessibility tree
-and a real screenshot, the banner's look, the global input monitor telling the
+the certificate it makes, the two System Settings grants on a real Mac and
+whether TCC attributes them to the helper under its LaunchAgent, the banner's
+look on a real desktop, the global input monitor telling the
 owner's keys from posted ones, and the monthly Screen Recording re-prompt. The
 first install on the MacBook is the test of all of these.
