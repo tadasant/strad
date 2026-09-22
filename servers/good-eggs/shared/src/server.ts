@@ -7,6 +7,13 @@ import {
   productNameFromHtml,
   type BasketSnapshot,
 } from './basketState.js';
+import {
+  findPastOrder,
+  parseOrderDateQuery,
+  pastOrderItemsFromStoreData,
+  pastOrdersFromStoreData,
+  type PastOrdersStoreData,
+} from './pastOrders.js';
 import type {
   GoodEggsConfig,
   GroceryItem,
@@ -1143,149 +1150,65 @@ export class GoodEggsClient implements IGoodEggsClient {
     return allFreeItems;
   }
 
-  async getPastOrderDates(): Promise<PastOrder[]> {
-    const page = await this.ensureBrowser();
+  /**
+   * Load `/account/orders` and read the past-order list off its payload.
+   *
+   * Always a fresh load. A lookup that trusted a list already on screen would
+   * search whatever it said when it last loaded, and a failed lookup leaves the
+   * page there — so one miss would keep missing until something navigated away.
+   */
+  private async loadPastOrders(page: import('playwright').Page): Promise<PastOrder[]> {
+    await page.goto(`${BASE_URL}/account/orders`, { waitUntil: 'domcontentloaded' });
 
-    // Navigate to reorder/past orders page
-    // Use domcontentloaded instead of networkidle - Good Eggs has persistent connections
-    await page.goto(`${BASE_URL}/reorder`, { waitUntil: 'domcontentloaded' });
-
-    // Wait for React to render
-    await page.waitForTimeout(3000);
-
-    // Check if we're redirected to signin
     if (page.url().includes('/signin')) {
       throw new Error('Not logged in. Cannot access past orders.');
     }
 
-    // Extract past order information
-    const orders = await page.evaluate(() => {
-      const orderList: PastOrder[] = [];
-
-      // Good Eggs reorder page uses 'reorder-page__grid__header' class for order date headers
-      // Each header contains a <p> element with text like "Delivered Saturday, January 10th"
-      const headerElements = document.querySelectorAll('.reorder-page__grid__header');
-
-      headerElements.forEach((header) => {
-        const dateEl = header.querySelector('p');
-        const dateText = dateEl?.textContent?.trim();
-
-        if (!dateText) return;
-
-        // Skip non-order headers like "Based on your shopping" recommendations section
-        if (!dateText.includes('Delivered')) return;
-
-        // Extract just the date part (e.g., "Saturday, January 10th" from "Delivered Saturday, January 10th")
-        const dateMatch = dateText.match(/Delivered\s+(.+)/);
-        const cleanDate = dateMatch ? dateMatch[1] : dateText;
-
-        // Count the products in this order section
-        // The products follow the header in the DOM as sibling elements with js-product-link
-        let itemCount = 0;
-        let sibling = header.nextElementSibling;
-        while (sibling && !sibling.classList.contains('reorder-page__grid__header')) {
-          const productLinks = sibling.querySelectorAll('a.js-product-link');
-          itemCount += productLinks.length;
-          sibling = sibling.nextElementSibling;
-        }
-
-        orderList.push({
-          date: cleanDate,
-          itemCount: itemCount > 0 ? itemCount : undefined,
-        });
-      });
-
-      return orderList;
-    });
-
+    const orders = pastOrdersFromStoreData(
+      extractStoreData(await page.content()) as PastOrdersStoreData | null
+    );
+    if (!orders) {
+      // Never "no past orders": an unreadable list is not an empty one.
+      throw new Error('Could not read the past-order list from the Good Eggs orders page.');
+    }
     return orders;
+  }
+
+  async getPastOrderDates(): Promise<PastOrder[]> {
+    const page = await this.ensureBrowser();
+    return this.loadPastOrders(page);
   }
 
   async getPastOrderGroceries(orderDate: string): Promise<GroceryItem[]> {
     const page = await this.ensureBrowser();
 
-    // First, go to account orders page to find the order ID
-    // Check if we're on the orders list page (not a specific order details page)
-    const currentUrl = page.url();
-    const isOnOrdersList =
-      currentUrl.includes('/account/orders') && !/\/account\/orders\/[^/]+/.test(currentUrl);
-    if (!isOnOrdersList) {
-      await page.goto(`${BASE_URL}/account/orders`, { waitUntil: 'domcontentloaded' });
-      await page.waitForTimeout(3000);
+    const query = parseOrderDateQuery(orderDate);
+    if (!query) {
+      throw new Error(
+        `Could not read a date from "${orderDate}". ` +
+          'Use a date like "2026-09-21", "9/21" or "Monday, September 21st".'
+      );
     }
 
-    // Check if we're redirected to signin
-    if (page.url().includes('/signin')) {
-      throw new Error('Not logged in. Cannot access past orders.');
+    const orders = await this.loadPastOrders(page);
+    const order = findPastOrder(orders, query);
+    if (!order?.orderId) {
+      const onFile = orders.map((o) => o.isoDate ?? o.date).join(', ') || 'none';
+      throw new Error(`No past order was delivered on ${orderDate}. Orders on file: ${onFile}.`);
     }
 
-    // Find the order that matches the date and get its URL
-    const orderUrl = await page.evaluate((targetDate) => {
-      // Try to find by looking at the page structure for order links
-      const orderLinks = Array.from(document.querySelectorAll('a[href*="/account/orders/"]'));
-      for (const link of orderLinks) {
-        const linkEl = link as HTMLAnchorElement;
-        // Get the parent container to check the date
-        const container = linkEl.closest('[class*="card"], [class*="row"], div') || linkEl;
-        const text = container.textContent || '';
+    await page.goto(`${BASE_URL}/account/orders/${order.orderId}`, {
+      waitUntil: 'domcontentloaded',
+    });
 
-        // Check if this order matches our target date
-        // Dates can be like "Saturday 1/10", "January 10th", etc.
-        if (text.includes(targetDate)) {
-          return linkEl.href;
-        }
+    const fromPayload = pastOrderItemsFromStoreData(
+      extractStoreData(await page.content()) as PastOrdersStoreData | null,
+      BASE_URL
+    );
+    if (fromPayload) return fromPayload;
 
-        // Try more flexible date matching
-        // Extract date components from targetDate and compare
-        const datePatterns = [
-          /(\d{1,2})\/(\d{1,2})/, // 1/10
-          /([A-Za-z]+)\s+(\d{1,2})/, // January 10
-          /(\d{1,2})(?:st|nd|rd|th)/, // 10th
-        ];
-
-        for (const pattern of datePatterns) {
-          const targetMatch = targetDate.match(pattern);
-          const textMatch = text.match(pattern);
-          if (targetMatch && textMatch && targetMatch[0] === textMatch[0]) {
-            return linkEl.href;
-          }
-        }
-      }
-
-      return null;
-    }, orderDate);
-
-    if (!orderUrl) {
-      // Fallback: try clicking on "Order Details" for a matching date
-      const clickedUrl = await page.evaluate((targetDate) => {
-        const cards = Array.from(
-          document.querySelectorAll('[class*="single-order"], [class*="order-summary"], div')
-        );
-        for (const card of cards) {
-          const text = card.textContent || '';
-          if (text.includes(targetDate)) {
-            // This card contains the target date, look for Order Details link
-            const detailsLink = card.querySelector(
-              'a[href*="/account/orders/"]'
-            ) as HTMLAnchorElement;
-            if (detailsLink) {
-              return detailsLink.href;
-            }
-          }
-        }
-        return null;
-      }, orderDate);
-
-      if (!clickedUrl) {
-        return [];
-      }
-
-      await page.goto(clickedUrl, { waitUntil: 'domcontentloaded' });
-      await page.waitForTimeout(2000);
-    } else {
-      await page.goto(orderUrl, { waitUntil: 'domcontentloaded' });
-      await page.waitForTimeout(2000);
-    }
+    // The payload carried no line items: fall back to the drawn page.
+    await page.waitForTimeout(2000);
 
     // Now we're on the order details page - extract items with quantity ordered
     const items = await page.evaluate(() => {

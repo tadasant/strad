@@ -456,6 +456,66 @@ through the tool surface, over a stubbed client. It also drives the real
 and pins that it visits the homepage and `/fresh-picks` and nothing else, so the
 strings cannot quietly understate a sweep that grows a third page.
 
+## 11. Past orders are found by delivery date in the payload, not by page text
+
+**Upstream.** `get_list_of_past_order_dates` reads `/reorder`, takes each
+`.reorder-page__grid__header` whose text says "Delivered …", and counts the
+`a.js-product-link` elements under it. `get_past_order_groceries` then loads
+`/account/orders`, but skips the load if the page is already there, and walks
+every `a[href*="/account/orders/"]`. For each link it checks whether the text of
+its nearest `div` contains the date it was given, or whether the first `m/d`,
+`Word 12` or `12th` in that text equals the first one in the date. If no link
+matches, it takes the first `div` anywhere on the page whose text contains the
+date. Then it scrapes `.single-order-page__line-item` rows off the order page.
+
+**Here.** `pastOrders.ts` reads both pages' `storeData`. The list comes from
+`populatedPastOrders`: each order's id, `deliveryWindow.startAt` converted to a
+calendar day in the foodhub's timezone (`foodhub.tzid`, or
+`America/Los_Angeles` when the payload names none), `itemCount`, and
+`totals.stripeTotal`. The list tool prints each date both ways,
+`Monday, September 21st (2026-09-21)`. A lookup parses the date it was given as
+a month and day, plus a year if one is included (`2026-09-21`, `9/21`,
+`09/21/2026`, `Sep 21`, `Monday, September 21st`, `Monday 9/21`), compares it
+with those calendar days, and loads `/account/orders/{id}`. The items come from
+that page's `storeData.order.items`. The row scrape is kept only as a fallback
+for a payload with no items array. `/account/orders` is reloaded on every call.
+A date that matches no order is an error that lists the dates that do exist. It
+is never "No items found".
+
+**Why.** On 2026-09-21 the weekly shop could not read back the order it had just
+placed. `get_past_order_groceries` answered "No items found" for the 9/21 order
+under `9/21`, `09/21`, `2026-09-21`, `September 21st` and
+`Monday, September 21st`, on 9/21 and again on 9/22, while `9/13` read normally
+(`tadasant-internal#2956`). Measured live on 9/22:
+
+- `/account/orders` draws the order as `Monday 9/21`. The list tool had named it
+  `Monday, September 21st`, taken from a different page. That string cannot match
+  the text search, so a date the list hands out works only by accident: the same
+  call returned "No items found" for `Monday, September 21st` and all 11 items
+  for `9/21`.
+- The order and its page were fine. Given text that only that order's card
+  contains, its total `$78.13`, the old lookup returned all 11 items.
+- `9/21` itself missed three times on 9/21 and once on 9/22, then matched on a
+  later call. That call went through the same code against the same
+  `Monday 9/21` markup, so the heuristic's answer depended on how the page
+  happened to be drawn at the moment of each call. The 9/22 miss came right
+  after a failed lookup had left the browser on `/account/orders` overnight.
+  Because of the reload skip, that lookup may have searched a list drawn the
+  evening before. Which failure caused which miss can't be established after the
+  fact, and the fix does not depend on it: nothing here reads drawn text any
+  more.
+
+The list's item counts were also exactly doubled against the payload: 56 for an
+order of 28, 22 for 11, 26 for 13. The payload's `itemCount` is the number the
+orders page itself prints ("28 Products").
+
+`shared/test/past-orders.test.ts` pins the timezone conversion (a Friday-evening
+window starts on Saturday in UTC), every date format the failed lookups tried,
+the real counts, and a miss that lists the dates on file. It also runs the real
+client over a fake page through `setSharedBrowserProvider`. That covers the
+list-then-read flow, that a lookup reloads a list it is already sitting on, and
+that the path never falls back to a DOM scrape when the payload is there.
+
 ## Deltas that predate this fork
 
 These were already in the tree when it was still a vendor copy, and are listed so

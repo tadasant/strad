@@ -34,6 +34,19 @@ export {
   type BasketSnapshot,
 } from './basketState.js';
 
+// Past orders — read from the payload, matched by calendar date (see FORK.md #11)
+export {
+  pastOrdersFromStoreData,
+  parseOrderDateQuery,
+  findPastOrder,
+  pastOrderItemsFromStoreData,
+  DEFAULT_ORDER_TIMEZONE,
+  type OrderDateQuery,
+  type PastOrdersStoreData,
+  type StorePastOrder,
+  type StoreOrderItem,
+} from './pastOrders.js';
+
 // MCP App (io.modelcontextprotocol/ui) exports
 export {
   MCP_APPS_EXTENSION,

@@ -49,10 +49,14 @@ export interface GroceryDetails {
 }
 
 export interface PastOrder {
+  /** How Good Eggs names the delivery day, e.g. "Monday, September 21st". */
   date: string;
-  orderNumber?: string;
+  /** The delivery day as YYYY-MM-DD, in the foodhub's timezone. */
+  isoDate?: string;
+  orderId?: string;
   total?: string;
   itemCount?: number;
+  deliveryStatus?: string;
 }
 
 export interface CartResult {
@@ -106,7 +110,9 @@ export const AddToCartSchema = z.object({
 export const GetPastOrderGroceriesSchema = z.object({
   past_order_date: z
     .string()
-    .describe('The date of the past order to get groceries from (e.g., "2024-01-15")'),
+    .describe(
+      'The delivery date of the past order, e.g. "2026-09-21", "9/21" or "Monday, September 21st"'
+    ),
 });
 
 export const AddFavoriteSchema = z.object({
