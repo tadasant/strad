@@ -2,10 +2,17 @@
 
 MCP servers that operate the machine they run on.
 
-| Server    | Tools                                                                                                                                                 |
-| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `shell`   | `run_command`, `get_command`, `list_commands`, `kill_command`                                                                                         |
-| `browser` | `list_tabs`, `open_tab`, `navigate_tab`, `read_page`, `click_element`, `type_text`, `evaluate_script`, `take_screenshot`, `activate_tab`, `close_tab` |
+| Server              | Tools                                                                                                                                                 |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `shell`             | `run_command`, `get_command`, `list_commands`, `kill_command`                                                                                         |
+| `browser`           | `list_tabs`, `open_tab`, `navigate_tab`, `read_page`, `click_element`, `type_text`, `evaluate_script`, `take_screenshot`, `activate_tab`, `close_tab` |
+| `computer-headless` | `list_apps`, `read_ui_tree`, `find_elements`, `get_element`, `perform_action`, `set_value`, `read_text`                                               |
+| `computer`          | `take_screenshot`, `list_displays`, `click`, `move_mouse`, `drag`, `scroll`, `type_text`, `press_keys`                                                |
+
+The two `computer-*` servers are macOS only and need the native helper below.
+`computer-headless` works through the Accessibility tree and never touches the
+mouse. `computer` takes the real mouse and keyboard, and the first key or click
+from the person at the machine ends its grant.
 
 Every server also has `request_control`, `end_control` and `get_control_status`.
 `request_control` takes a purpose of at most two sentences and returns a
@@ -35,8 +42,11 @@ npm run build
 Register the servers with the client. For Claude Code:
 
 ```bash
-claude mcp add hostd-shell   -- node "$PWD/build/cli.js" stdio shell --no-consent
-claude mcp add hostd-browser -- node "$PWD/build/cli.js" stdio browser --no-consent
+claude mcp add hostd-shell    -- node "$PWD/build/cli.js" stdio shell --no-consent
+claude mcp add hostd-browser  -- node "$PWD/build/cli.js" stdio browser --no-consent
+# macOS, after "The native helper" below:
+claude mcp add hostd-computer-headless -- node "$PWD/build/cli.js" stdio computer-headless --no-consent
+claude mcp add hostd-computer          -- node "$PWD/build/cli.js" stdio computer --no-consent
 ```
 
 Or in any client's `mcp.json` (use the absolute path to the clone):
@@ -100,6 +110,42 @@ To point it at a different Chrome, write `~/.strad-hostd/config.json`:
 
 or `{ "browser": { "userDataDir": "/path/to/profile" } }`.
 
+### The native helper (macOS): `strad-hostd-ax`
+
+The two `computer-*` servers drive the Mac through a small Swift program in
+`ax/`. It is what macOS grants Accessibility and Screen Recording to, and it
+draws the banner that says a caller is in control. Build it once, on the Mac,
+with the Command Line Tools (`xcode-select --install`):
+
+```bash
+cd ax && swift build -c release && cd ..
+./install/sign-helper.sh ax/.build/release/strad-hostd-ax
+```
+
+The second line signs it with a stable identity (a Developer ID certificate if
+the keychain has one, else a self-signed one it creates, which asks for your
+login password once). macOS keys its permission grants on the signature, so an
+unsigned or ad-hoc-signed build has to be re-granted after every rebuild.
+
+Then grant it, once, in System Settings › Privacy & Security:
+
+- **Accessibility** — both servers. `ax/.build/release/strad-hostd-ax --request-access` makes macOS prompt for it.
+- **Screen & System Audio Recording** — `computer` only, for `take_screenshot`.
+
+`node build/cli.js helper` says whether the helper is reachable and what it
+holds. In this local mode the daemon spawns the helper as a child and macOS
+attributes the grants to whatever launched your MCP client (your terminal, as
+for any command-line tool); the LaunchAgent arrangement the strad install uses
+is in `docs/src/content/docs/servers/hostd.md`.
+
+On macOS 15 the system asks again, about monthly, whether the helper may keep
+recording the screen. That is macOS's rule for every capture that skips its
+picker, and there is no setting for it.
+
+While a grant is live the helper shows a banner at the top of the screen and a
+menu-bar item, each with Kill and Disable buttons. A foreground (`computer`)
+grant is red and ends on your first key or click.
+
 ### The shell server
 
 Commands run as `$SHELL -lc "<command>"` as your user, with no stdin and no TTY.
@@ -121,6 +167,8 @@ matter:
 | `consent.windowSeconds`                                    | `5`                 | how long the dialog stays up                                      |
 | `consent.grantMinutes` / `maxGrantMinutes` / `idleMinutes` | `30` / `120` / `10` | grant lifetime                                                    |
 | `shell.defaultCwd`                                         | `$HOME`             |                                                                   |
+| `native.binary` / `native.socketPath`                      | see `src/config.ts` | where `strad-hostd-ax` is, or where its LaunchAgent listens       |
+| `computer.maxScreenshotWidth`                              | `1280`              | widest image `take_screenshot` returns                            |
 | `port` / `controlPort`                                     | `7311` / `7312`     | daemon mode only, both on `127.0.0.1`                             |
 
 `STRAD_HOSTD_HOME` moves the state directory.
@@ -135,5 +183,11 @@ The browser suite drives a real Chrome or Chromium. It looks at
 `$HOSTD_TEST_CHROME`, Playwright's cache, then the usual system paths. With none
 it skips locally and fails under `CI`.
 
-The macOS halves (the `osascript` dialog, the LaunchAgent, the installer's
-`cloudflared` branch) are not exercised by the suite, which runs on Linux.
+The computer-use servers are tested against `test/fake-ax.ts`, a stand-in that
+speaks the helper's protocol in-process, so every daemon-side path runs on
+Linux. The Swift helper itself is built and smoke-tested over stdio on a
+GitHub macOS runner (`.github/workflows/hostd-ax.yml`), which holds no
+permission grants: reading a real tree, a real screenshot and the banner under
+a real grant run only on a Mac whose owner has granted them. The other macOS
+halves (the `osascript` dialog, the LaunchAgents, the installer's `cloudflared`
+branch, the signing script) are not exercised by any suite.

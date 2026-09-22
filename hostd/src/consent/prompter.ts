@@ -17,6 +17,8 @@ export interface PromptRequest {
   seconds: number;
   /** What an unanswered dialog will mean, so the dialog can say so. */
   onTimeout: "deny" | "allow";
+  /** One more line for a server whose cost is not obvious from its name. */
+  note?: string;
   signal?: AbortSignal;
 }
 
@@ -29,7 +31,8 @@ export function dialogText(req: PromptRequest): string {
     req.onTimeout === "allow"
       ? `Allowed automatically in ${req.seconds} seconds unless you reject it.`
       : `Denied automatically in ${req.seconds} seconds unless you allow it.`;
-  return `Remote control requested by ${req.server} MCP server for purpose: ${req.purpose}\n\n${tail}`;
+  const note = req.note ? `${req.note}\n\n` : "";
+  return `Remote control requested by ${req.server} MCP server for purpose: ${req.purpose}\n\n${note}${tail}`;
 }
 
 /** Run a dialog helper to completion. Text travels as ARGV, never as source. */

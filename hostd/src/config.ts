@@ -93,6 +93,33 @@ const BrowserConfig = z
   })
   .default({});
 
+const NativeConfig = z
+  .object({
+    /**
+     * Where `strad-hostd-ax` listens when it runs as its own LaunchAgent —
+     * which is how it runs behind strad, because TCC attributes a process
+     * launchd started to itself and a process node started to node. Defaults
+     * to `ax.sock` in the state directory.
+     */
+    socketPath: z.string().min(1).optional(),
+    /**
+     * The helper binary, for the stdio (local-run) case where the daemon spawns
+     * it as a child. Defaults to `bin/strad-hostd-ax` in the state directory,
+     * then the package's own build, then `strad-hostd-ax` on PATH.
+     */
+    binary: z.string().min(1).optional(),
+    /** How long one helper request may take. A stuck app must not stick the daemon. */
+    requestTimeoutMs: z.number().int().min(1000).max(120_000).default(20_000),
+  })
+  .default({});
+
+const ComputerConfig = z
+  .object({
+    /** Widest screenshot the foreground server returns, in pixels. */
+    maxScreenshotWidth: z.number().int().min(320).max(4096).default(1280),
+  })
+  .default({});
+
 const TunnelConfig = z
   .object({
     /** Supervise `cloudflared` as a child, so one LaunchAgent runs everything. */
@@ -112,11 +139,18 @@ export const ConfigSchema = z
     /** The status page and kill buttons. A SEPARATE listener the tunnel never routes. */
     controlPort: z.number().int().min(1).max(65_535).default(7312),
     capabilities: z
-      .object({ shell: CapabilityConfig, browser: CapabilityConfig })
+      .object({
+        shell: CapabilityConfig,
+        browser: CapabilityConfig,
+        "computer-headless": CapabilityConfig,
+        computer: CapabilityConfig,
+      })
       .default({}),
     consent: ConsentConfig,
     shell: ShellConfig,
     browser: BrowserConfig,
+    native: NativeConfig,
+    computer: ComputerConfig,
     tunnel: TunnelConfig,
   })
   .strict()

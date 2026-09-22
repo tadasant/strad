@@ -3171,7 +3171,7 @@ The rule assumes a box strad deploys to. This one is a personal laptop strad hol
 
 An unanswered consent dialog is a denial by default, so with nobody at the laptop every `request_control` fails with `timeout`. `consent.onTimeout: "allow"` changes that, and [the design page](/servers/hostd-design/#fail-closed-and-the-tension-with-the-original-ask) says what it costs.
 
-The macOS halves have not run anywhere: CI is Linux. That covers the `osascript` dialog, the LaunchAgent, the installer's `cloudflared` branch, and Chrome 144's debugging toggle against a real default profile. Two of the four servers originally asked for, Accessibility control and foreground pixel control, are designed and not built.
+The macOS halves have not run anywhere but a bare CI runner: the `osascript` dialog, the LaunchAgents, the installer's `cloudflared` branch, and Chrome 144's debugging toggle against a real default profile. The two computer-use servers add steps of their own; see #108.
 
 **How you would know.** `troubleshoot_host` reports `offline` when the daemon, the tunnel or the laptop is down, and also when the owner has switched remote control off. `http://127.0.0.1:7312` on the machine says which.
 
@@ -3309,3 +3309,23 @@ The one-time steps that clear most of the list above:
 - Mint a dedicated strad GHCR pull token — clears **#5**.
 - Provision Workload Identity Federation, then delete `GCP_SA_KEY` — clears **#8**.
 - Stand up a datastore and a console mint/revoke UI — clears **#6**.
+
+---
+
+### 108. The computer-use servers are signed, permissioned and re-approved by hand
+
+The `computer-use-*-headless` and `computer-use-*` servers of [strad-hostd](/servers/hostd/) run through a native helper, `strad-hostd-ax`, because macOS grants Accessibility and Screen Recording to a program by its code signature and a grant to `node` would cover every Node script on the machine. Three things about that happen at the Mac, by hand.
+
+The helper has to be signed with a stable identity, or every rebuild loses both grants. The install signs with a Developer ID certificate if there is one, else with a self-signed certificate it creates and trusts for code signing, which asks for the login password once. The self-signed route has not run anywhere.
+
+The two grants are clicked in System Settings › Privacy & Security, and they only land on the helper because it runs as its own LaunchAgent rather than as a child of the daemon: macOS attributes a child's grants to its parent, and resets that for a process launchd starts. That is reasoned from how the responsible-process rule works and has not been observed.
+
+macOS 15 asks again, about monthly, whether a program that captures the screen without the system picker may keep doing so. Nothing on the strad side can answer it. Until the owner does, `take_screenshot` fails with `screen_recording_denied`; the headless server does not capture the screen and is unaffected.
+
+**How you would know.** `get_control_status` on either server reports `helper: {running, accessibility, screen_recording}`, and `request_control` refuses with `helper_unavailable` and shows no dialog when a grant is missing. `strad-hostd helper` on the Mac says the same.
+
+**Undo:** a Developer ID certificate removes the self-signed step. Apple's persistent-content-capture entitlement removes the monthly prompt and is issued on application to remote-desktop products. The grants are the owner's and stay.
+
+See `HACKS.md` #108.
+
+---

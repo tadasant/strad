@@ -5561,3 +5561,48 @@ The CSP sandbox gives the property the proxy exists for (the app cannot touch
 the console's origin) without one.
 
 **Undo.** A second hostname for app frames, when strad has a reason to own one.
+
+---
+
+## 108. The computer-use servers are signed, permissioned and re-approved by hand, on the Mac
+
+`hostd/ax/` is `strad-hostd-ax`, the native helper behind the
+`computer-use-*-headless` and `computer-use-*` `local-tunnel` slugs and the
+on-screen banner (`docs/servers/hostd.md`, `docs/servers/hostd-design.md`). It
+adds three steps to #101 that only the person at the Mac can take, and one that
+recurs:
+
+- **A signing identity.** macOS keys the Accessibility and Screen Recording
+  grants on the helper's code signature, and an ad-hoc signature is the
+  binary's hash, so `hostd/install/sign-helper.sh` signs with a Developer ID
+  certificate or with a self-signed one it creates in the login keychain and
+  trusts for code signing. The trust step asks for the login password in a
+  dialog. The self-signed branch has run on no machine.
+- **Two grants in System Settings.** Accessibility for both servers and Screen
+  Recording for the foreground one, added by hand or through the helper's
+  `--request-access`, and only meaningful if TCC attributes them to the helper
+  rather than to `node`, which is why the helper runs as its own LaunchAgent
+  (`com.strad.hostd-ax`) and not as a child of the daemon. Reasoned from how
+  launchd resets the responsible process; not yet observed.
+- **The monthly Screen Recording re-prompt.** macOS 15 asks again, about
+  monthly, whether an app that captures the screen without the system picker
+  may keep doing so. `CGDisplayCreateImage` is such a capture, and so is
+  ScreenCaptureKit without the picker. Nothing in strad, the daemon or the
+  helper can answer it. Until the owner clicks, `take_screenshot` fails with
+  `screen_recording_denied`; the headless server is unaffected.
+
+**Why it cannot be designed out.** The same reason as #101: the box is a
+personal laptop that strad holds no credential for and must never push code
+to. The grants are the machine's owner deciding what a program on it may see,
+which is the one decision that should stay on the machine.
+
+**What stays off the box.** As #101: the slugs, their entitlements and
+`recovery:` text ship by deploy, the keys are seeded at `/ui/secrets`, and
+`get_control_status` on either server reports `helper: {running, accessibility,
+screen_recording}` so a caller, and the console through it, can tell "grant
+lapsed" from "helper down" without a shell.
+
+**Undo.** A Developer ID certificate removes the self-signed branch and its
+password dialog. The `com.apple.developer.persistent-content-capture`
+entitlement removes the monthly prompt, and Apple issues it on application to
+VNC-class products. The grants themselves are the owner's, and stay.

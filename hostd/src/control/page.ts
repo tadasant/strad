@@ -9,6 +9,8 @@ export interface ControlState {
   servers: { id: string; name: string }[];
   pending: { server: string; purpose: string; since: number }[];
   grants: (GrantView & { running: string[] })[];
+  /** Absent when no enabled server needs the native helper. */
+  helper?: { connected: boolean; error?: string };
   audit: AuditEntry[];
   now: number;
 }
@@ -87,7 +89,11 @@ ${g.running.map((c) => `<span class="cmd">▶ ${esc(c)}</span>`).join("")}
 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="refresh" content="4"><title>strad-hostd — ${esc(state.machine)}</title><style>${CSS}</style></head><body><main>
-<h1>strad-hostd</h1><p class="sub">${esc(state.machine)} · serving ${state.servers.map((s) => `<code>${esc(s.name)}</code>`).join(", ") || "nothing"} · tunnel: ${esc(state.tunnel)}</p>
+<h1>strad-hostd</h1><p class="sub">${esc(state.machine)} · serving ${state.servers.map((s) => `<code>${esc(s.name)}</code>`).join(", ") || "nothing"} · tunnel: ${esc(state.tunnel)}${
+    state.helper
+      ? ` · native helper: ${state.helper.connected ? "connected" : `not reachable${state.helper.error ? ` (${esc(state.helper.error)})` : ""}`}`
+      : ""
+  }</p>
 ${banner}
 <h2>In control now</h2>${pending}${grants}
 ${state.grants.length > 1 ? `<div class="actions" style="margin-top:10px">${form("/kill-all", "Kill all", "danger")}</div>` : ""}
