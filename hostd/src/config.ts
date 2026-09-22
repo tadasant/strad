@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 
-import { CAPABILITY_IDS, type CapabilityId } from "./capabilities.js";
+import { CAPABILITY_IDS, slugFor, type CapabilityId } from "./capabilities.js";
 
 /**
  * The daemon's state directory: config, the kill-switch file, the audit log and
@@ -93,6 +93,41 @@ const BrowserConfig = z
   })
   .default({});
 
+const NativeConfig = z
+  .object({
+    /**
+     * How the daemon reaches the helper. `socket`: the LaunchAgent's socket,
+     * and never a spawned child — the installer writes this once the agent is
+     * in, so a daemon that boots before the helper waits for it rather than
+     * spawning a private one whose grants would land on `node`. `stdio`: always
+     * spawn. `auto`: the socket if it exists, else spawn.
+     */
+    mode: z.enum(["auto", "socket", "stdio"]).default("auto"),
+    /**
+     * Where `strad-hostd-ax` listens when it runs as its own LaunchAgent —
+     * which is how it runs behind strad, because TCC attributes a process
+     * launchd started to itself and a process node started to node. Defaults
+     * to `ax.sock` in the state directory.
+     */
+    socketPath: z.string().min(1).optional(),
+    /**
+     * The helper binary, for the stdio (local-run) case where the daemon spawns
+     * it as a child. Defaults to `bin/strad-hostd-ax` in the state directory,
+     * then the package's own build, then `strad-hostd-ax` on PATH.
+     */
+    binary: z.string().min(1).optional(),
+    /** How long one helper request may take. A stuck app must not stick the daemon. */
+    requestTimeoutMs: z.number().int().min(1000).max(120_000).default(20_000),
+  })
+  .default({});
+
+const ComputerConfig = z
+  .object({
+    /** Widest screenshot the foreground server returns, in pixels. */
+    maxScreenshotWidth: z.number().int().min(320).max(4096).default(1280),
+  })
+  .default({});
+
 const TunnelConfig = z
   .object({
     /** Supervise `cloudflared` as a child, so one LaunchAgent runs everything. */
@@ -112,11 +147,18 @@ export const ConfigSchema = z
     /** The status page and kill buttons. A SEPARATE listener the tunnel never routes. */
     controlPort: z.number().int().min(1).max(65_535).default(7312),
     capabilities: z
-      .object({ shell: CapabilityConfig, browser: CapabilityConfig })
+      .object({
+        shell: CapabilityConfig,
+        browser: CapabilityConfig,
+        "computer-headless": CapabilityConfig,
+        computer: CapabilityConfig,
+      })
       .default({}),
     consent: ConsentConfig,
     shell: ShellConfig,
     browser: BrowserConfig,
+    native: NativeConfig,
+    computer: ComputerConfig,
     tunnel: TunnelConfig,
   })
   .strict()
@@ -171,4 +213,39 @@ export function displayName(cfg: Config, id: CapabilityId): string {
 
 export function enabledCapabilities(cfg: Config): CapabilityId[] {
   return CAPABILITY_IDS.filter((id) => cfg.capabilities[id].enabled);
+}
+
+/**
+ * Enable a server in a RAW config object (the file's JSON, before parsing),
+ * with a fresh key, and leave everything else alone. A server that already
+ * has a key is left exactly as it is — enabled or, if its owner switched it
+ * off, disabled; re-running the installer must not re-enable it. The display
+ * name follows the existing shell server's suffix when none is given, so a
+ * re-run without `--suffix` does not name the new server after the default.
+ */
+export function enableCapability(
+  raw: Record<string, unknown>,
+  id: CapabilityId,
+  key: string,
+  suffix?: string,
+): { changed: boolean; displayName?: string } {
+  const capabilities = (raw.capabilities ??= {}) as Record<
+    string,
+    { enabled?: boolean; key?: string; displayName?: string } | undefined
+  >;
+  const existing = capabilities[id];
+  if (existing?.key) return { changed: false };
+  const derived =
+    suffix ??
+    /^shell-(.+)$/.exec(capabilities.shell?.displayName ?? "")?.[1] ??
+    undefined;
+  const displayName = derived ? slugFor(id, derived) : existing?.displayName;
+  capabilities[id] = {
+    ...existing,
+    enabled: true,
+    key,
+    ...(displayName ? { displayName } : {}),
+  };
+  ConfigSchema.parse(raw);
+  return { changed: true, displayName };
 }

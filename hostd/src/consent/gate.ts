@@ -1,5 +1,5 @@
 import type { AuditLog } from "../audit.js";
-import type { CapabilityId } from "../capabilities.js";
+import { CAPABILITIES, type CapabilityId } from "../capabilities.js";
 import type { Config } from "../config.js";
 import type { KillSwitch } from "../killswitch.js";
 import { GrantStore, type Grant } from "./grants.js";
@@ -54,6 +54,8 @@ export class ConsentGate {
       notifier?: Notifier;
       /** Where the owner can see and kill grants, for the notification text. */
       controlUrl?: string;
+      /** Told whenever the set of grants changes: the banner mirrors it. */
+      onChange?: () => void;
       now?: () => number;
     },
   ) {
@@ -61,10 +63,13 @@ export class ConsentGate {
     this.grants = new GrantStore({
       idleMs: consent.idleMinutes * 60_000,
       now: deps.now,
+      onChange: deps.onChange,
       onEnd: (g, reason) => {
         deps.audit.record({
           kind:
-            reason === "killed" || reason === "disabled"
+            reason === "killed" ||
+            reason === "disabled" ||
+            reason === "owner_input"
               ? "killed"
               : reason === "ended"
                 ? "ended"
@@ -75,7 +80,9 @@ export class ConsentGate {
         });
         deps.notifier?.notify(
           `${g.server} no longer has control`,
-          `Grant ${reason} after ${g.calls} call${g.calls === 1 ? "" : "s"}.`,
+          reason === "owner_input"
+            ? `You pressed a key or clicked, so the grant ended after ${g.calls} call${g.calls === 1 ? "" : "s"}.`
+            : `Grant ${reason} after ${g.calls} call${g.calls === 1 ? "" : "s"}.`,
         );
       },
     });
@@ -164,6 +171,7 @@ export class ConsentGate {
           purpose: purpose.purpose,
           seconds: consent.windowSeconds,
           onTimeout: consent.onTimeout,
+          note: CAPABILITIES[input.capability].consentNote,
           signal: input.signal,
         });
       } finally {
@@ -251,11 +259,14 @@ export class ConsentGate {
       kind: "disabled",
       detail: reason ?? "disabled by owner",
     });
-    return this.grants.endAll("disabled");
+    const ended = this.grants.endAll("disabled");
+    this.deps.onChange?.();
+    return ended;
   }
 
   enable(): void {
     this.deps.killSwitch.enable();
     this.deps.audit.record({ kind: "enabled", detail: "re-enabled by owner" });
+    this.deps.onChange?.();
   }
 }

@@ -157,13 +157,18 @@ does not use it.
 - `servers/**` is **outside** the core TypeScript program (see `eslint.config.js`).
   Each server tree has its own lockfile and is built by its own image.
 - `hostd/` is **strad-hostd**, the daemon that runs on a machine a person owns and
-  serves the shell and browser MCP servers behind `local-tunnel` slugs. It is its
-  own npm tree (`cd hostd && npm ci && npm test`) and is NOT under `servers/`:
-  everything there is baked into the bundle image, and this code never runs in a
-  strad container. Root ESLint and Prettier cover its source; the root `tsc` does
-  not. Its suite runs on Linux, so the macOS halves — the `osascript` consent
-  dialog, the LaunchAgent, the installer's `cloudflared` branch — are exercised
-  by nothing. Do not describe them as tested.
+  serves the shell, browser and two computer-use MCP servers behind
+  `local-tunnel` slugs. It is its own npm tree (`cd hostd && npm ci && npm test`)
+  and is NOT under `servers/`: everything there is baked into the bundle image,
+  and this code never runs in a strad container. Root ESLint and Prettier cover
+  its source; the root `tsc` does not. `hostd/ax/` is `strad-hostd-ax`, the Swift
+  helper the computer-use servers and the on-screen banner go through; it builds
+  only on macOS, and `.github/workflows/hostd-ax.yml` is the ONE job in this
+  repository on a GitHub-hosted (billed) macOS runner, path-filtered to it. The
+  Node suite runs on Linux against a fake helper, so the macOS halves — the
+  `osascript` consent dialog, both LaunchAgents, the installer's `cloudflared`
+  branch, the signing script, a real Accessibility tree, a real screenshot —
+  are exercised by nothing but the owner's Mac. Do not describe them as tested.
 
 ## Documentation lives in `docs/` — update it in the same PR
 
@@ -201,7 +206,7 @@ not a confession.
 | `src/ui/roster-page.ts` — the roster, a badge, the grouping, an editor control               | `operate/secrets.md`, `operate/runtime-config.md`, `operate/operations.md`, `auth/overview.md`                                                                                       |
 | `src/ui/landing.ts` — what the splash at `/` carries, and what it withholds                  | `operate/operations.md`, `auth/overview.md`, and the absences `test/landing.test.ts` asserts                                                                                         |
 | `servers/remote-filesystem/**` — a tool, the link model, the sensitivity model               | `servers/artifact-store.md`, `limitations.md`                                                                                                                                        |
-| `hostd/**` — a tool, the consent gate, the kill switch, the install                          | `servers/hostd.md`, `servers/hostd-design.md`, `hostd/README.md`, `limitations.md`                                                                                                   |
+| `hostd/**` — a tool, the consent gate, the kill switch, the banner, the helper, the install  | `servers/hostd.md`, `servers/hostd-design.md`, `hostd/README.md`, `limitations.md`, and `operate/operations.md` if `hostd-ax.yml` moves with it                                      |
 | `servers/telegram/**` — a tool, the credential model, the read/write split                   | `servers/telegram.md`, `limitations.md`                                                                                                                                              |
 | `servers/bill-spend/**` — a tool, the write's body shapes, the read-back rule                | `servers/bill-spend.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                      |
 | `servers/aws-device-farm/**` — a tool, the driving wire, the cost model                      | `servers/aws-device-farm.md`, `servers/aws-device-farm-setup.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                             |

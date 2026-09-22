@@ -54,5 +54,14 @@ export function json(value: unknown): CallToolResult {
 /** A capability: its tools, and what to tear down when the daemon stops. */
 export interface Capability {
   tools: CapabilityTool[];
+  /**
+   * Asked BEFORE the consent dialog is shown. A reason returned here refuses
+   * the request without troubling the person at the machine: a dialog for a
+   * server that cannot work — the native helper is down, a TCC grant is
+   * missing — is a dialog that trains them to click Allow without reading.
+   */
+  preflight?: () => Promise<string | undefined>;
+  /** Extra fields for get_control_status, e.g. the helper's permission state. */
+  status?: () => Promise<Record<string, unknown>>;
   close?: () => Promise<void> | void;
 }

@@ -9,13 +9,20 @@
 # Idempotent: re-running it upgrades the code and leaves the config, the keys and
 # the tunnel alone. Without --hostname it installs a loopback-only daemon and
 # touches nothing at Cloudflare.
+#
+# On macOS it also builds strad-hostd-ax (the native helper behind the two
+# computer-use servers and the on-screen banner) when `swift` is available,
+# signs it with a stable identity (install/sign-helper.sh), installs it to
+# $STATE/bin and runs it as its own LaunchAgent. --no-helper skips all of that.
 set -euo pipefail
 
 MACHINE="this machine"
-SUFFIX="hostd"
+SUFFIX=""
 HOSTNAME_ARG=""
 TUNNEL_NAME="strad-hostd"
 AGENT=1
+HELPER=1
+SIGN_IDENTITY="${STRAD_HOSTD_SIGN_IDENTITY:-}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -24,7 +31,9 @@ while [ $# -gt 0 ]; do
     --hostname) HOSTNAME_ARG="$2"; shift 2 ;;
     --tunnel-name) TUNNEL_NAME="$2"; shift 2 ;;
     --no-agent) AGENT=0; shift ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    --no-helper) HELPER=0; shift ;;
+    --sign-identity) SIGN_IDENTITY="$2"; shift 2 ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -33,6 +42,7 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 STATE="${STRAD_HOSTD_HOME:-$HOME/.strad-hostd}"
 APP="$STATE/app"
 LABEL="com.strad.hostd"
+AX_LABEL="com.strad.hostd-ax"
 
 say() { printf '\n==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -56,9 +66,63 @@ HOSTD=("$NODE" "$APP/build/cli.js")
 
 if [ ! -f "$STATE/config.json" ]; then
   say "Writing config and generating keys"
-  STRAD_HOSTD_HOME="$STATE" "${HOSTD[@]}" init --machine "$MACHINE" --suffix "$SUFFIX"
+  STRAD_HOSTD_HOME="$STATE" "${HOSTD[@]}" init --machine "$MACHINE" --suffix "${SUFFIX:-hostd}"
 else
   say "Keeping the existing $STATE/config.json"
+  # A config from before a server existed does not know it: enable it, with a
+  # fresh key. A server the config already knows — enabled, or switched off by
+  # its owner — is left exactly as it is. Without --suffix the new server is
+  # named after the existing shell server's suffix.
+  for cap in shell browser computer-headless computer; do
+    if [ -n "$SUFFIX" ]; then
+      STRAD_HOSTD_HOME="$STATE" "${HOSTD[@]}" add "$cap" --suffix "$SUFFIX"
+    else
+      STRAD_HOSTD_HOME="$STATE" "${HOSTD[@]}" add "$cap"
+    fi
+  done
+fi
+
+# The native helper: Swift, macOS only. Built from hostd/ax, signed with a
+# stable identity so its TCC grants survive rebuilds, copied beside the app so
+# the clone can go away. Without `swift`, the two computer-use servers are
+# served but refuse every request with "helper not running", and the shell and
+# browser servers are unaffected.
+if [ "$HELPER" = 1 ] && [ "$(uname)" = "Darwin" ]; then
+  if command -v swift >/dev/null && swift build --help >/dev/null 2>&1; then
+    say "Building strad-hostd-ax"
+    (cd "$HERE/ax" && swift build -c release 2>&1 | tail -3)
+    AX_BUILT="$HERE/ax/.build/release/strad-hostd-ax"
+    [ -x "$AX_BUILT" ] || die "the helper did not build; see the output above"
+    if [ -n "$SIGN_IDENTITY" ]; then
+      "$HERE/install/sign-helper.sh" "$AX_BUILT" --identity "$SIGN_IDENTITY"
+    else
+      "$HERE/install/sign-helper.sh" "$AX_BUILT"
+    fi
+    mkdir -p "$STATE/bin"
+    cp "$AX_BUILT" "$STATE/bin/strad-hostd-ax.new" && mv -f "$STATE/bin/strad-hostd-ax.new" "$STATE/bin/strad-hostd-ax"
+    AX="$STATE/bin/strad-hostd-ax"
+    if [ "$AGENT" = 1 ]; then
+      say "Installing the LaunchAgent $AX_LABEL"
+      AX_PLIST="$HOME/Library/LaunchAgents/$AX_LABEL.plist"
+      mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+      sed -e "s|__HELPER__|$AX|g" -e "s|__HOME__|$HOME|g" -e "s|__STATE__|$STATE|g" \
+        "$HERE/install/$AX_LABEL.plist" > "$AX_PLIST"
+      launchctl bootout "gui/$(id -u)/$AX_LABEL" 2>/dev/null || true
+      launchctl bootstrap "gui/$(id -u)" "$AX_PLIST"
+      # From here on the daemon reaches the helper over the agent's socket and
+      # never spawns one of its own (see native.mode in src/config.ts).
+      node -e '
+        const fs = require("fs"), file = process.argv[1];
+        const c = JSON.parse(fs.readFileSync(file, "utf8"));
+        c.native = { ...(c.native ?? {}), mode: "socket" };
+        fs.writeFileSync(file, JSON.stringify(c, null, 2) + "\n", { mode: 0o600 });
+      ' "$STATE/config.json"
+    fi
+    say "Helper permissions (both must be granted in System Settings › Privacy & Security):"
+    "$AX" --status || true
+  else
+    say "swift is not available: skipping strad-hostd-ax (xcode-select --install, then re-run; the computer-use servers need it)"
+  fi
 fi
 
 if [ -n "$HOSTNAME_ARG" ]; then
@@ -118,4 +182,5 @@ cat <<TXT
   See what is in control:   $NODE $APP/build/cli.js status
   Turn everything off:      $NODE $APP/build/cli.js disable     (or: touch $STATE/DISABLED)
   Print the bearer keys:    $NODE $APP/build/cli.js keys
+  Check the native helper:  $NODE $APP/build/cli.js helper
 TXT

@@ -202,9 +202,11 @@ of which, `servers`, is a fifteen-leg matrix over the server trees:
   denial, each server's key opens only that server, the status page answers only
   to loopback with a token, and ending a grant kills the process group it started.
   The browser suite drives a real Chromium, and with `CI` set a missing browser
-  fails the suite rather than skipping it. The macOS halves — the `osascript`
-  dialog, the LaunchAgent, the installer's `cloudflared` branch — run nowhere in
-  CI.
+  fails the suite rather than skipping it. The two computer-use servers run
+  against a stand-in for the native helper that speaks its protocol in-process.
+  The macOS halves — the `osascript` dialog, the LaunchAgents, the installer's
+  `cloudflared` branch, the signing script — run nowhere in CI; the helper
+  itself has its own workflow, below.
 - **`bundle_image`** — builds `servers/bundle/Dockerfile`, **boots the container**,
   and runs `scripts/smoke.mjs` against every mount of the running image, asserting
   the full-capability tool count for each (slack 13, tailscale 15, monarch-money 23,
@@ -376,6 +378,23 @@ reorders it, or hand-rolls a `docker login` in a `run:` block. See
 [limitations #57](/limitations/#57-the-ghcr-credential-is-a-box-wide-file-and-the-slowest-build-loses-it).
 
 </aside>
+
+## `hostd-ax.yml` — the one macOS job
+
+`strad-hostd-ax`, the native helper behind strad-hostd's computer-use servers,
+is Swift and builds only on a Mac. Everything else in this repository runs on
+the self-hosted Linux runner, so this is the one job on a GitHub-hosted
+`macos-15` runner, and on a private repository those minutes are billed. It is
+path-filtered to `hostd/ax/**`, the helper's LaunchAgent plist, the signing
+script and itself, and runs on a PR and on `main`.
+
+It proves the helper compiles, ad-hoc signs, speaks its JSON-lines protocol over
+stdio (`hostd/ax/smoke.mjs`), answers `hello`, lists apps and displays, and
+refuses every guarded op with the right code on a runner that holds no
+Accessibility or Screen Recording grant. It also lints both LaunchAgent plists.
+A runner has nobody to click a grant, so reading a real Accessibility tree, a
+real screenshot and the banner under a real grant are exercised on the owner's
+Mac and nowhere else; [limitation #108](/limitations/) says so.
 
 ## `release-image.yml` — mint and ship
 

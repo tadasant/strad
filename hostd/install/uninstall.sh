@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
-# Stop strad-hostd and remove its LaunchAgent and code. Pass --purge to also
-# delete the state directory (config, keys, audit log). The Cloudflare tunnel and
-# its DNS record are left alone: `cloudflared tunnel delete strad-hostd`.
+# Stop strad-hostd and remove its LaunchAgents and code. Pass --purge to also
+# delete the state directory (config, keys, audit log, the helper binary). Left
+# alone, on purpose: the Cloudflare tunnel and its DNS record (`cloudflared
+# tunnel delete strad-hostd`), the logs under ~/Library/Logs/com.strad.hostd*,
+# the "strad-hostd-ax" code-signing certificate in the login keychain, and the
+# helper's two entries in System Settings › Privacy & Security.
 set -euo pipefail
 
 STATE="${STRAD_HOSTD_HOME:-$HOME/.strad-hostd}"
 LABEL="com.strad.hostd"
+AX_LABEL="com.strad.hostd-ax"
 
 if [ "$(uname)" = "Darwin" ]; then
-  launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-  rm -f "$HOME/Library/LaunchAgents/$LABEL.plist"
+  for label in "$LABEL" "$AX_LABEL"; do
+    launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+    rm -f "$HOME/Library/LaunchAgents/$label.plist"
+  done
 fi
-rm -rf "$STATE/app"
+rm -rf "$STATE/app" "$STATE/bin" "$STATE/ax.sock"
 if [ "${1:-}" = "--purge" ]; then
   # STATE comes from the environment. Only delete a directory that is
   # recognisably this daemon's, so a stray STRAD_HOSTD_HOME=$HOME cannot cost a

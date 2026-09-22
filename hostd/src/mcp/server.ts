@@ -73,7 +73,7 @@ Calling it puts a dialog on the machine's screen — "Remote control requested b
 {"grant_id":"g_Zk3…","expires_at":"2026-01-01T12:30:00.000Z","minutes":30,"idle_minutes":10,"approved_by":"owner"}
 approved_by is "owner" (they clicked Allow), "timeout" (nobody objected, and this machine allows that) or "local" (a local stdio run with the dialog turned off).
 
-**On refusal** the result is an error naming one of: rejected (the owner said no — do not retry; tell your user), timeout, no_display (nobody is logged in to the desktop), cooldown (a recent rejection; wait), dialog_busy (another request is on screen; ask again in a few seconds), disabled (the owner switched remote control off), bad_purpose, too_many_grants.
+**On refusal** the result is an error naming one of: rejected (the owner said no — do not retry; tell your user), timeout, no_display (nobody is logged in to the desktop), cooldown (a recent rejection; wait), dialog_busy (another request is on screen; ask again in a few seconds), disabled (the owner switched remote control off), bad_purpose, too_many_grants, helper_unavailable (this server's native helper is not running or not permitted on the machine; the owner has to fix that, and no dialog was shown).
 
 **Use cases:**
 - First call of any task on this server
@@ -129,7 +129,7 @@ Idempotent: ending a grant that is already gone returns {"ended":false}.`,
       description: `Report whether this server is usable right now, without asking for anything and without showing a dialog.
 
 **Returns:** {"machine":"…","server":"${name}","enabled":true,"consent":{"mode":"modal","window_seconds":5,"on_timeout":"deny"},"grant":{"active":true,"expires_at":"…","calls":4}}
-"enabled": false means the owner has switched remote control off. "grant" appears only when you pass a grant_id.
+"enabled": false means the owner has switched remote control off. "grant" appears only when you pass a grant_id. A server that depends on the native helper adds "helper": {"running":true,"accessibility":true,"screen_recording":false}.
 
 **Use cases:**
 - Check whether a grant_id you hold is still live before a long step
@@ -166,7 +166,10 @@ Idempotent: ending a grant that is already gone returns {"ended":false}.`,
       instructions:
         `${CAPABILITIES[id].summary} The machine is ${config.machine}, a personal computer with a person who may be ` +
         `using it. Call request_control with a one-or-two-sentence purpose first; pass the grant_id it returns to ` +
-        `every other tool; call end_control when done.`,
+        `every other tool; call end_control when done.` +
+        (CAPABILITIES[id].mode === "foreground"
+          ? " While you hold a grant here the owner cannot use their mouse or keyboard without ending it, so work quickly, take screenshots to confirm, and end control as soon as you are done."
+          : ""),
     },
   );
 
@@ -181,6 +184,24 @@ Idempotent: ending a grant that is already gone returns {"ended":false}.`,
       const args = (req.params.arguments ?? {}) as Record<string, unknown>;
 
       if (tool === "request_control") {
+        // A server that cannot work gets no dialog: the helper is down, or a
+        // TCC grant is missing, and neither is something the person at the
+        // screen can fix in five seconds. The switch is asked first, so a
+        // machine its owner turned off says so rather than "helper down".
+        const blocked = killSwitch.isDisabled()
+          ? undefined
+          : await capability.preflight?.();
+        if (blocked) {
+          audit.record({
+            kind: "denied",
+            capability: id,
+            detail: `helper_unavailable: ${blocked}`,
+          });
+          return text(
+            `Control was not granted (helper_unavailable): ${blocked}. Nothing was shown to the owner.`,
+            true,
+          );
+        }
         const decision = await gate.request({
           capability: id,
           server: name,
@@ -222,6 +243,7 @@ Idempotent: ending a grant that is already gone returns {"ended":false}.`,
             window_seconds: config.consent.windowSeconds,
             on_timeout: config.consent.onTimeout,
           },
+          ...((await capability.status?.()) ?? {}),
           ...(typeof args.grant_id === "string"
             ? {
                 grant: mine

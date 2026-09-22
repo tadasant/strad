@@ -1,0 +1,69 @@
+name: hostd-ax
+
+# strad-hostd-ax is Swift and only builds on a Mac, and every other job in this
+# repository runs on Linux. This is the one job on a GitHub-hosted macOS runner,
+# and it is billed by the minute on a private repository, so it is kept to
+# what needs a Mac and runs only when the helper or this file changes.
+#
+# What it proves: the helper compiles, signs, speaks its protocol over stdio,
+# answers `hello`, lists apps and displays, and refuses every guarded op with
+# the right code when the runner has granted nothing — a runner has no
+# Accessibility or Screen Recording grant and nobody to click one, so the
+# grant-holding halves (reading a real tree, a real screenshot, the banner
+# under a real grant) are exercised on the owner's Mac and nowhere else.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "hostd/ax/**"
+      - "hostd/install/com.strad.hostd-ax.plist"
+      - "hostd/install/sign-helper.sh"
+      - ".github/workflows/hostd-ax.yml"
+  push:
+    branches: [main]
+    paths:
+      - "hostd/ax/**"
+      - "hostd/install/com.strad.hostd-ax.plist"
+      - "hostd/install/sign-helper.sh"
+      - ".github/workflows/hostd-ax.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hostd-ax-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  helper:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sw_vers
+          swift --version
+      - name: Build
+        working-directory: hostd/ax
+        run: |
+          set -o pipefail
+          swift build -c release 2>&1 | tail -20
+      - name: Sign (ad-hoc, to exercise the codesign step; a real install uses install/sign-helper.sh)
+        working-directory: hostd/ax
+        run: |
+          codesign --force --sign - --identifier com.strad.hostd-ax .build/release/strad-hostd-ax
+          codesign --verify --verbose=2 .build/release/strad-hostd-ax
+      - name: Permission state on a bare runner
+        working-directory: hostd/ax
+        run: .build/release/strad-hostd-ax --status
+      - name: Smoke over stdio
+        working-directory: hostd/ax
+        run: node smoke.mjs .build/release/strad-hostd-ax
+      - name: LaunchAgent plist is well-formed
+        run: plutil -lint hostd/install/com.strad.hostd-ax.plist hostd/install/com.strad.hostd.plist
+      - name: The signing script parses and refuses a missing binary
+        run: |
+          bash -n hostd/install/sign-helper.sh
+          if hostd/install/sign-helper.sh; then exit 1; fi

@@ -2,7 +2,14 @@ import { randomBytes } from "node:crypto";
 
 import type { CapabilityId } from "../capabilities.js";
 
-export type EndReason = "ended" | "killed" | "expired" | "idle" | "disabled";
+export type EndReason =
+  | "ended"
+  | "killed"
+  | "expired"
+  | "idle"
+  | "disabled"
+  /** The person at the machine pressed a key or clicked while a foreground grant held the mouse. */
+  | "owner_input";
 
 export interface GrantView {
   id: string;
@@ -42,6 +49,8 @@ export class GrantStore {
       idleMs: number;
       now?: () => number;
       onEnd?: (grant: GrantView, reason: EndReason) => void;
+      /** Any grant created or ended, for whatever mirrors the set (the banner). */
+      onChange?: () => void;
     },
   ) {}
 
@@ -70,6 +79,7 @@ export class GrantStore {
       signal: controller.signal,
     };
     this.grants.set(grant.id, grant);
+    this.opts.onChange?.();
     return grant;
   }
 
@@ -106,6 +116,7 @@ export class GrantStore {
     this.grants.delete(id);
     grant.controller.abort(new Error(`grant ${reason}`));
     this.opts.onEnd?.(view(grant), reason);
+    this.opts.onChange?.();
     return true;
   }
 

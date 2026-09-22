@@ -5,14 +5,17 @@ description: Why one daemon exposes several MCP servers, how consent rides on a 
 
 `strad-hostd` is a daemon that runs on a machine a person owns and serves MCP
 servers that operate that machine: run a shell command, drive the Chrome that is
-already open. strad reaches it as [`kind: local-tunnel`](/servers/local-tunnel-host/)
+already open, operate an app through its Accessibility tree, see the screen and
+move the mouse. strad reaches it as [`kind: local-tunnel`](/servers/local-tunnel-host/)
 slugs. This page records the decisions and the reasons. [Running it](/servers/hostd/)
 is the how-to.
 
 The request it answers named four servers: `shell-tadas-mbp`,
 `browser-use-tadas-mbp-headless`, `computer-use-tadas-mbp-headless` and
-`computer-use-tadas-mbp`. The first two are built and tested. The second two are
-designed here and not built. Nothing on this page describes them as working.
+`computer-use-tadas-mbp`. All four are built. The daemon side of every one is
+tested on Linux; the native helper the last two need is compiled and
+smoke-tested on a macOS runner, and the parts that need a permission grant have
+run on no machine yet. The last section says which is which.
 
 ## Why it lives in this repo
 
@@ -56,8 +59,10 @@ place to say no.
 
 The mode axis is not a config flag either. "Headless" and "foreground" computer
 use have different tool surfaces (an element tree against pixels and coordinates),
-different TCC grants and very different blast radii. They are two more rows in the
-table when they are built.
+different TCC grants and very different blast radii. They are the third and
+fourth rows: `/computer-headless/mcp` and `/computer/mcp`, and each
+`CapabilityInfo` carries a `mode`, which is what colours the banner and decides
+whether the owner's own keystroke ends the grant.
 
 ## The daemon
 
@@ -65,7 +70,9 @@ table when they are built.
 and `zod`). The same stack as the rest of strad, so the same people and agents can
 maintain it. DevTools is spoken over Node's built-in `WebSocket`, so the daemon
 carries no browser-automation library. It attaches to a Chrome that is already
-running and has no use for the half of Playwright that launches one.
+running and has no use for the half of Playwright that launches one. The one
+thing Node cannot do is hold a macOS privacy grant sensibly, and that is the
+native helper's whole job.
 
 **Kept running by a LaunchAgent, not a LaunchDaemon.** A LaunchDaemon runs as
 root, before login, outside any GUI session. It cannot show the consent dialog,
@@ -205,11 +212,32 @@ another when the grant ends. Under `onTimeout: "allow"` the dialog can come and 
 with nobody looking, and the notification is what is still there when the owner
 comes back. It says so when nobody answered.
 
-This is short of what a driven machine deserves, which is a banner that stays on
-screen for the life of a grant. A banner drawn by a process the caller can reach
-with a shell is one the caller can dismiss, so the honest version is a separate
-always-on-top helper with a menu-bar state. That is the same native helper the
-computer-use servers need, and it is not built.
+**And it is shown, for the life of every grant.** With the native helper
+installed, a strip sits at the top of the main display above every window and
+on every Space, naming the server and the purpose, with a **Kill** button and a
+**Disable everything** button, and the menu bar carries the same state with the
+same buttons. Orange is background control; red is a foreground grant that
+holds the mouse. The helper draws it and decides nothing: the daemon pushes the
+full set of grants as one idempotent `set_state` message whenever the set
+changes and again every two seconds, unconditionally, and the buttons come back
+as events the gate acts on. The notification remains, for the case where nobody
+was looking.
+
+**One controller, and every op checked against its grants.** The helper's
+socket is a file, and every process running as the owner can open it — a
+shell-slug command included. So the helper honours one connection at a time:
+the first to send `set_state` holds it until it drops, a second connection's
+`set_state` is `busy`, and every op that reads a tree, captures the screen or
+posts input is refused unless it comes from that connection and the state it
+last sent carries a grant that covers it (`no_grant`, `not_controller`). The
+daemon connects at boot and re-sends on the clock, so it is the controller
+whenever it is up. That closes the cheap path: nobody drives the helper around
+the daemon's grant table while the daemon runs. It is not a privilege
+boundary, and the limitations page says so: a process running as the owner can
+stop the daemon, edit its config, unload either LaunchAgent or replace the
+helper, and macOS offers no way for two processes of one user to keep secrets
+from each other. That is the shell slug's blast radius, which #159 named on
+day one, and the reason it stays `admin`-only.
 
 **Kill ends the work, not only the permission.** Each grant carries an
 `AbortSignal`. The shell hangs its process groups on it and the browser hangs its
@@ -293,41 +321,90 @@ half the point.
 Chrome does not paint a tab in the background of its window, so `take_screenshot`
 of one hangs. The tool bounds that at ten seconds and names the way out.
 
-### computer-use headless — designed, not built
+### The native helper: `strad-hostd-ax`
 
-Accessibility APIs: `AXUIElement` trees per application. Tools would be
-`list_apps`, `read_ui_tree(app)`, `perform_action(element, AXPress | AXSetValue …)`.
+Both computer-use servers, and the banner, go through one small Swift program
+(`hostd/ax/`, no dependencies, `swift build -c release` with the Command Line
+Tools). It exists for one reason: **macOS keys a privacy grant on the code
+signature of the "responsible process"**, and for the daemon that would be
+`node`. System Settings would list "node", and the grant would cover every
+Node script the owner ever runs.
 
-- **What it can drive.** Native AppKit and SwiftUI apps expose full trees, and
+Two consequences shaped it, and the second changed the original design.
+
+- **Signed with a stable identity.** The designated requirement of an ad-hoc
+  signature is the binary's own hash, so every rebuild is a different program
+  and loses both grants. A signature from any certificate is recognised across
+  rebuilds. `install/sign-helper.sh` uses a Developer ID certificate if the
+  keychain has one, and otherwise creates a self-signed code-signing
+  certificate in the login keychain and trusts it for code signing, which asks
+  for the login password once. The certificate signs nothing else.
+- **Its own LaunchAgent, not a child of the daemon.** The design said "JSON over
+  stdio". Responsibility passes from parent to child through `fork`/`exec` and
+  is reset only when launchd (or LaunchServices) starts the process, so a helper
+  the daemon spawned would be `node` for TCC's purposes, signature or not. So
+  `com.strad.hostd-ax` is a second LaunchAgent listening on a Unix socket in
+  the state directory (mode 0600), and the daemon connects to it, reconnecting
+  whenever it drops. Once the agent is installed the installer pins
+  `native.mode: "socket"`, so a daemon that boots before the helper waits for
+  the socket rather than spawning a private helper whose grants would land on
+  `node`. Stdio remains for local-run mode, where the daemon spawns the helper
+  as a child and the grant lands on the terminal that launched the MCP client,
+  which is the ordinary arrangement for a command-line tool.
+
+The protocol is newline-delimited JSON: `{id, op, args}` in, `{id, ok, result}`
+or `{id, ok:false, error:{code,message}}` out, and lines with an `event` and no
+`id` from the helper when the person at the machine presses a button. Input
+and the banner run on the helper's main thread, which AppKit needs; reading an
+Accessibility tree and capturing the screen run on a serial queue of their own,
+so a stuck app cannot freeze the Kill button. `hello` reports the two grants, and the
+daemon asks it **before** showing a consent dialog: a server that cannot work
+gets `helper_unavailable` and no dialog, because nothing the person at the
+screen can click in five seconds would fix a missing grant.
+
+### computer-use headless — built
+
+`list_apps`, `read_ui_tree`, `find_elements`, `get_element`, `perform_action`,
+`set_value`, `read_text`, through `AXUIElement`.
+
+- **What it drives.** Native AppKit and SwiftUI apps expose full trees, and
   `AXPress` works on a window that is not frontmost. That is what makes it
-  background control.
+  background control: the owner keeps their mouse and their focus.
 - **What it cannot.** Electron apps expose a tree only after
-  `AXManualAccessibility` is set on them. Games and canvas-drawn UI expose
-  nothing. Some actions (menus, drags) only work on the frontmost app. Secure
-  input fields are unreadable by design.
-- **TCC.** Accessibility, granted to the responsible process. For a LaunchAgent
-  running `node` that is the `node` binary, so System Settings would list "node",
-  and the grant would cover every Node script the user ever runs. The design is a
-  small signed Swift helper (`strad-hostd-ax`) that holds the grant and speaks
-  JSON over stdio to the daemon. It must be signed with a stable identity: an
-  ad-hoc-signed binary loses its grant on every rebuild.
+  `AXManualAccessibility` is set on them, which the helper does on every read.
+  Games and canvas-drawn UI expose nothing. Some actions (menus, drags) only
+  work on the frontmost app. Secure fields never show a value: the helper skips
+  `AXValue` on `AXSecureTextField`.
+- **Element ids are stable.** `AXUIElement` is CF-hashable, so `e12` names the
+  same button on the next read; an id dies with the element or the helper.
+- **The tree is an outline, not JSON.** One line per element with its id, role,
+  text, state and actions, for a caller that reads it in a context window.
+  `find_elements` is the search, `read_text` the window's words in reading
+  order, `max_nodes` and `scope` the bounds.
 
-### computer-use foreground — designed, not built
+### computer-use foreground — built
 
-Screen capture plus synthetic input through `CGEvent`. Tools would be
-`take_screenshot`, `click(x, y)`, `type_text`, `press_keys`, `scroll`.
+`take_screenshot`, `list_displays`, `click`, `move_mouse`, `drag`, `scroll`,
+`type_text`, `press_keys`: `CGDisplayCreateImage` and `CGEvent` posted at the
+HID tap.
 
 - **TCC.** Screen Recording for capture and Accessibility for posting events,
-  both on the same helper. Recent macOS re-prompts for Screen Recording
-  periodically, which a fail-closed unattended machine cannot answer.
-- **It takes the machine.** It moves the real cursor and types into whatever is
-  focused. A person using the laptop fights it, and their keystrokes land in the
-  agent's flow.
-- **Consent should differ.** A grant here should hold a visible on-screen
-  indicator for its whole life and end on any physical input from the owner.
-
-Both need a native helper and a Mac to develop against. Neither can be exercised
-from CI, which runs on Linux. They are a follow-up with its own PR.
+  both on the helper. On macOS 15 the system re-asks for Screen Recording
+  roughly monthly, for every capture that skips its picker (the legacy CG
+  APIs and ScreenCaptureKit alike); the entitlement that exempts an app is
+  issued to VNC-class products on application. An unattended machine cannot
+  answer that prompt, so a screenshot taken after the approval lapses fails
+  with `screen_recording_denied` until the owner clicks again.
+- **It takes the machine, and says so.** The consent dialog carries a second
+  line — it will move your mouse and type on your keyboard — and the banner is
+  red. Every event the helper posts is stamped, so the helper's global monitor
+  can tell the owner's keyboard from its own: the owner's first key or click
+  ends the grant (`owner_input`), and ending a grant for any reason releases
+  every modifier and the mouse button.
+- **Coordinates are points.** `take_screenshot` returns an image scaled to at
+  most `maxScreenshotWidth` pixels with `scale` and `origin`, so a point in the
+  image maps back to the global coordinates `click` takes. JPEG by default,
+  because a desktop is large and the caller pays per pixel.
 
 ## Security model
 
@@ -360,7 +437,8 @@ Recommended tiering:
 | --- | --- |
 | `shell-*` | `admin` only. Hand it to a session explicitly when a task needs it. |
 | `browser-use-*-headless` | `admin` only. `evaluate_script` in a signed-in profile reaches every account the owner is logged in to, which is arguably wider than the shell. |
-| `computer-use-*` | `admin` only, when built. |
+| `computer-use-*-headless` | `admin` only. Every app's contents, fields and buttons, in the background. |
+| `computer-use-*` | `admin` only. The screen and the keyboard; a caller here is the person at the machine. |
 
 None of them is a candidate for fleet-wide entitlement today. If one is widened,
 keep `onTimeout: "deny"` on that machine. The widening is the owner's decision:
@@ -371,8 +449,11 @@ entitlement.
 
 `strad-hostd stdio shell` serves the same server over stdio. There is no daemon,
 no tunnel, no key and no config file: `buildCore()` in `src/daemon.ts` assembles
-the gate, the switch and the capabilities, and `serve` and `stdio` differ only in
-what they put in front of it. The test suite asserts the tool list is identical.
+the gate, the switch, the helper client and the capabilities, and `serve` and
+`stdio` differ only in what they put in front of it. The test suite asserts the
+tool list is identical. `stdio computer-headless` and `stdio computer` spawn the
+helper as a child over stdio, from `~/.strad-hostd/bin`, the package's own
+build, or PATH.
 
 The consent dialog stays on by default. `--no-consent` turns it off, on the
 reasoning that the person who launched the process is at the keyboard and their
@@ -389,13 +470,29 @@ Development and CI are on Linux.
 the kill switch, the HTTP listener and its auth through a real MCP client, the
 status page and its guards, the shell capability including process-group kills,
 the tunnel supervisor against a stand-in binary, stdio mode against the built
-CLI, the installer with `--no-agent`, and the browser capability against a real
-running Chromium discovered through `DevToolsActivePort`.
+CLI, the installer with `--no-agent`, the browser capability against a real
+running Chromium discovered through `DevToolsActivePort`, and both computer-use
+servers through a real MCP client against `test/fake-ax.ts`, a stand-in that
+speaks the helper's protocol: the tree outline, actions, values, screenshots as
+image content, chords, the pre-dialog refusal for a missing grant, the
+owner-input rule, the banner's state and its buttons, and the helper client's
+reconnect, timeout and spawn paths.
 
-**Reasoned about, not run:** the `osascript` dialog and whether it comes to the
-front when launched from a LaunchAgent, the LaunchAgent itself, the installer's
-`cloudflared` branch, the Chrome 144 toggle and its prompt on a real default
-profile, and TCC prompts for files under `~/Documents`, `~/Desktop` and
-`~/Downloads` when the shell reaches them (expect "node would like to access…",
-or grant `node` Full Disk Access). The first install on the MacBook is the test
-of all of these.
+**Run on a GitHub macOS runner:** the helper compiles, signs ad-hoc, answers
+`hello`, lists apps and displays, refuses every op that acts on the machine
+until a controller has reported a grant that covers it, and — because the
+runner image turns out to hold both grants — reads a real Accessibility tree
+from Finder, captures a real screenshot, and shows and clears the banner
+(`.github/workflows/hostd-ax.yml`).
+
+**Reasoned about, not run:** everything that needs a person at a Mac. The
+`osascript` dialog and whether it comes to the front when launched from a
+LaunchAgent, both LaunchAgents, the installer's `cloudflared` branch, the
+Chrome 144 toggle and its prompt on a real default profile, TCC prompts for
+files under `~/Documents`, `~/Desktop` and `~/Downloads` when the shell reaches
+them, the signing script's self-signed branch and whether `codesign` accepts
+the certificate it makes, the two System Settings grants on a real Mac and
+whether TCC attributes them to the helper under its LaunchAgent, the banner's
+look on a real desktop, the global input monitor telling the
+owner's keys from posted ones, and the monthly Screen Recording re-prompt. The
+first install on the MacBook is the test of all of these.

@@ -22,6 +22,8 @@ export interface ControlDeps {
   tunnelState: () => string;
   /** The commands a grant has running, for the status page. */
   runningFor: (grantId: string) => string[];
+  /** Whether the native helper is reachable, for the status page. */
+  helperState?: () => { connected: boolean; error?: string };
   /** Where to write the control token, for the CLI. Omitted in tests. */
   stateDir?: string;
 }
@@ -54,6 +56,7 @@ export function collectState(deps: ControlDeps): ControlState {
     grants: gate.grants
       .active()
       .map((g) => ({ ...g, running: deps.runningFor(g.id) })),
+    helper: deps.helperState?.(),
     audit: deps.audit.tail(40),
     now: Date.now(),
   };
