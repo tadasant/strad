@@ -10,7 +10,7 @@ import { metrics, type Meter, type ObservableResult } from "@opentelemetry/api";
  * Process, runtime and CONTAINER resource metrics.
  *
  * This module is the answer to the question the collapse is about to pose:
- * *when 23 MCP servers, the `op` CLI and Chromium all share one 1-vCPU box, is
+ * *when 24 MCP servers, the `op` CLI and Chromium all share one 1-vCPU box, is
  * it dying of memory or of CPU?* Those have completely different fixes, and
  * from the outside they look identical (App Platform restarts the component and
  * says nothing useful).

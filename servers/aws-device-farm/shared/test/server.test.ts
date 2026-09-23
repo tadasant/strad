@@ -5,7 +5,7 @@
  * strad injects them at deploy time, and until it does every one of these must
  * hold: the server BUILDS, it MOUNTS, it LISTS its tools, and a call fails with
  * an error a human can act on — naming the variable, and never echoing a value.
- * One missing variable must not be a boot failure for the twenty-two other
+ * One missing variable must not be a boot failure for the twenty-three other
  * servers sharing the process.
  */
 

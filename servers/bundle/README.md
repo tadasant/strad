@@ -1,18 +1,18 @@
 # bundle — THE strad supplementary image
 
-Twenty-three MCP servers. One container. One Chromium. One `op` binary. One
+Twenty-four MCP servers. One container. One Chromium. One `op` binary. One
 `mcp-grafana` binary.
 
 ```
 /slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-filesystem-tmp-public
-/x-twitter /telegram /bill-spend /aws-device-farm /pulse-subregistry /strad-fetch
+/x-twitter /telegram /whatsapp /bill-spend /aws-device-farm /pulse-subregistry /strad-fetch
 /grafana
 /google-flights /gmail /google-calendar /google-docs /google-sheets
 /onepassword /secrets
 /good-eggs /fetchpet /pointsyeah
 ```
 
-Twenty-three is the floor, not a constant: four of those mounts (`/telegram`,
+Twenty-four is the floor, not a constant: four of those mounts (`/telegram`,
 `/remote-filesystem-tmp-public`, `/google-sheets`, `/grafana`) are re-mounted once
 more per slug the container holds a separate credential for. `/google-sheets` is
 the one a real deployment uses that way — an OAuth refresh token is one Google
@@ -23,7 +23,9 @@ is one Grafana, so `grafana-registry` is its own mount and its own child process
 strad's staging app is **three components**: `core` (the public gateway),
 `bundle` (this), and `bundle-zimmer-secrets` — a second copy of this image that
 exists only because a parameter store is `process.env` and a container has one of
-those. It used to be thirteen, for a much worse reason.
+those. `bundle-whatsapp` becomes a fourth once `whatsapp-zimmer` is enabled: a
+third copy of this image, at one instance, that holds the one WhatsApp
+linked-device socket. It used to be thirteen, for a much worse reason.
 
 ## Why this could not exist before
 
@@ -48,10 +50,10 @@ its environment at boot. A stale one would not just be ignored — it would stri
 write tools from the read-**write** slugs too, and the failure would look like an
 upstream bug.
 
-## How fifteen projects become one image
+## How sixteen projects become one image
 
 `Dockerfile`'s build context is the **repo root**, because the servers live in
-fifteen different places:
+sixteen different places:
 
 | tree | source | servers |
 | --- | --- | --- |
@@ -65,6 +67,7 @@ fifteen different places:
 | `strad-fetch` | `servers/strad-fetch` | strad-fetch (web fetching, strad's own fork) |
 | `grafana` | `servers/grafana` | grafana (proxies the pinned `mcp-grafana` Go binary, baked in) |
 | `telegram` | `servers/telegram` | telegram (MTProto, a user session) |
+| `whatsapp` | `servers/whatsapp` | whatsapp (a WhatsApp linked device, Baileys) |
 | `bill-spend` | `servers/bill-spend` | bill-spend (BILL Spend & Expense transaction coding) |
 | `aws-device-farm` | `servers/aws-device-farm` | aws-device-farm (a real iPhone, driven over the session's Appium endpoint) |
 | `good-eggs` | `servers/good-eggs` | good-eggs |
@@ -73,7 +76,7 @@ fifteen different places:
 
 Each is built **in its own stage, with its own lockfile and its own
 `node_modules`**, exactly as its standalone image builds it, and lands at
-`/app/trees/<name>`. Nothing is merged. Merging fifteen dependency trees is how
+`/app/trees/<name>`. Nothing is merged. Merging sixteen dependency trees is how
 you find out in production that two of them wanted different Playwright versions.
 
 `host/` imports across the trees **by path** (`src/trees.ts`). Node resolves each
@@ -159,12 +162,12 @@ could perform one. See [`servers/secrets/README.md`](../secrets/README.md).
 
 ## Blast radius, honestly
 
-Twenty-three servers share a process. A crash is a twenty-three-server outage. Everything
+Twenty-four servers share a process. A crash is a twenty-four-server outage. Everything
 that *can* be made survivable is:
 
 - a browser server whose **login fails** is marked `degraded` in `/healthz`; the
   container keeps serving. (The standalone images `process.exit(1)` here — correct
-  when the process *is* the server, catastrophic when it is twenty others too.)
+  when the process *is* the server, catastrophic when it is twenty-three others too.)
   For fetchpet the mark is a report on the last attempt: the next tool call retries
   the login and a success clears it, so a form that changed and was fixed does not
   cost a redeploy. good-eggs still holds its first failure until the container

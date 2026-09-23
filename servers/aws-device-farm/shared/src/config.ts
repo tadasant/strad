@@ -4,7 +4,7 @@
  *
  * ONE IAM PRINCIPAL, AND IT IS NOT THE CONTAINER'S. The AWS SDK's default
  * credential chain reads `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` out of
- * the process environment, and this server shares a process with twenty-two
+ * the process environment, and this server shares a process with twenty-three
  * others. So the credential is read under NAMES OF ITS OWN and passed to the
  * client explicitly, and the default chain is never consulted: a stray AWS
  * variable belonging to some other mount must not become the identity this

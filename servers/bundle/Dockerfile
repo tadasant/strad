@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# bundle — THE strad supplementary image. Twenty-three MCP servers, one container.
+# bundle — THE strad supplementary image. Twenty-four MCP servers, one container.
 #
 # BUILD CONTEXT IS THE REPO ROOT (not servers/bundle/), because this image is
-# assembled from fifteen existing projects that live in different places:
+# assembled from sixteen existing projects that live in different places:
 #
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
 #                           gcs, google-flights
@@ -16,6 +16,7 @@
 #   servers/pointsyeah      pointsyeah             ┘
 #   servers/x-twitter       X
 #   servers/telegram        telegram               (MTProto, USER session)
+#   servers/whatsapp        whatsapp               (WhatsApp linked device; Baileys)
 #   servers/bill-spend      bill-spend             (BILL Spend & Expense coding)
 #   servers/aws-device-farm aws-device-farm        (real iOS hardware, driven over
 #                                                  the session's Appium endpoint)
@@ -26,7 +27,7 @@
 #
 # Each is built in its OWN stage with its OWN lockfile and its OWN node_modules,
 # exactly as its standalone image builds it, and copied into /app/trees/<name>.
-# Nothing is merged. That is on purpose: merging fifteen dependency trees is how you
+# Nothing is merged. That is on purpose: merging sixteen dependency trees is how you
 # discover in production that two of them wanted different Playwright versions.
 # The host (servers/bundle/host) imports across them by path — Node resolves each
 # package's own imports from its own tree — and owns the one thing that MUST be
@@ -118,6 +119,19 @@ COPY servers/telegram/package.json servers/telegram/package-lock.json ./
 COPY servers/telegram/shared/package.json ./shared/
 RUN npm ci --no-audit --no-fund
 COPY servers/telegram/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
+# ---- whatsapp -----------------------------------------------------------------
+# strad's own WhatsApp server, which is also the long-lived WhatsApp client: a
+# linked device (Baileys) whose Signal state and message buffer live in GCS,
+# sealed. Its dependencies are the MCP SDK, Baileys (with a WebAssembly Signal
+# core, so nothing native is compiled here) and @google-cloud/storage.
+FROM ${PW} AS build-whatsapp
+WORKDIR /src
+COPY servers/whatsapp/package.json servers/whatsapp/package-lock.json ./
+COPY servers/whatsapp/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/whatsapp/shared ./shared
 RUN npm run build && npm prune --omit=dev
 
 # ---- bill-spend ---------------------------------------------------------------
@@ -302,7 +316,7 @@ RUN set -eux; \
 ENV NODE_ENV=production
 WORKDIR /app
 
-# The fifteen trees, each with the node_modules it was built against.
+# The sixteen trees, each with the node_modules it was built against.
 COPY --from=build-api /src /app/trees/bundle-api
 COPY --from=build-google /src /app/trees/bundle-google
 COPY --from=build-op /src /app/trees/onepassword
@@ -313,6 +327,7 @@ COPY --from=build-fetchpet /src /app/trees/fetchpet
 COPY --from=build-pointsyeah /src /app/trees/pointsyeah
 COPY --from=build-x-twitter /src /app/trees/x-twitter
 COPY --from=build-telegram /src /app/trees/telegram
+COPY --from=build-whatsapp /src /app/trees/whatsapp
 COPY --from=build-bill-spend /src /app/trees/bill-spend
 COPY --from=build-aws-device-farm /src /app/trees/aws-device-farm
 COPY --from=build-pulse-subregistry /src /app/trees/pulse-subregistry

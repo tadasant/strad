@@ -1,0 +1,1062 @@
+/**
+ * The bridge: ONE long-lived WhatsApp linked device, and everything it knows.
+ *
+ * It is a process-lifetime object, not a per-request one. The bundle host
+ * builds a fresh MCP Server per HTTP request, but a linked device is a socket
+ * that must stay open to receive messages at all — WhatsApp has no history API
+ * a companion can call later, so a message nobody was connected for is a
+ * message this server never knows about beyond what the phone chooses to
+ * replay. So the socket, the Signal state and the buffer live here, and the
+ * tools are thin reads and writes against it.
+ *
+ * LIFECYCLE
+ *   start()   claim the lease, read the sealed state, connect if paired.
+ *   pair()    fresh credentials, a socket, a pairing code for the phone.
+ *   (the phone enters the code → WhatsApp restarts the stream (515) →
+ *    reconnect → open, paired)
+ *   close / reconnect with backoff; 401 (logged out) wipes the login;
+ *   440 (replaced by another socket) waits long before trying again.
+ *   logout()  unlink, and delete everything persisted.
+ *
+ * NOTHING here logs a message's text, a key, or a pairing code.
+ */
+import type { BlobStore } from "./blob-store.js";
+import { MessageBuffer, type ChatMeta } from "./buffer.js";
+import type { WhatsAppConfig } from "./config.js";
+import { SealError } from "./crypto.js";
+import { errMessage, logInfo, logWarning } from "./logging.js";
+import {
+  classify,
+  isGroupJid,
+  isIgnoredJid,
+  isLidJid,
+  isPhoneJid,
+  isSelf,
+  mutationOf,
+  normalizeJid,
+  normalizeMessage,
+  toSeconds,
+  unwrap,
+  type RawContent,
+  type RawKey,
+  type RawMessage,
+  type SelfIdentity,
+  type StoredMessage,
+} from "./normalize.js";
+import { DEFAULT_PACING, Pacer, type PacingLimits } from "./pacing.js";
+import {
+  createMemoryAuth,
+  DISCONNECT,
+  disconnectCode,
+  type ConnectionUpdate,
+  type GroupInfo,
+  type MemoryAuth,
+  type SocketFactory,
+  type WaSocket,
+} from "./socket.js";
+import { LEASE_CHECK_MS, StateStore, SupersededError, type IndexDoc } from "./store.js";
+
+// --- the tool contract's shapes ---------------------------------------------------
+
+export interface Status {
+  connected: boolean;
+  paired: boolean;
+  self_jid: string | null;
+  self_name: string | null;
+  last_event_at: number | null;
+  pairing_in_progress: boolean;
+  /** Why the socket last closed, when it is not open. Additive to the contract. */
+  last_disconnect_reason: string | null;
+}
+
+export interface ChatSummary {
+  id: string;
+  name: string;
+  is_group: boolean;
+  last_message_at: number | null;
+  participant_count: number | null;
+}
+
+export interface OutMessage {
+  id: string;
+  chat_id: string;
+  timestamp: number;
+  sender_jid: string;
+  sender_name: string;
+  from_me: boolean;
+  sent_by_bridge: boolean;
+  text: string | null;
+  type: StoredMessage["type"];
+  quoted_message_id: string | null;
+  mentions_self: boolean;
+  reply_to_self: boolean;
+}
+
+export interface MessagesResult {
+  chat_id: string;
+  chat_name: string;
+  self_jid: string | null;
+  has_more: boolean;
+  messages: OutMessage[];
+}
+
+export interface PairResult {
+  pairing_code: string;
+  expires_in_seconds: number;
+  instructions: string;
+}
+
+/** A failure whose message tells the caller what to do next. */
+export class BridgeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BridgeError";
+  }
+}
+
+export interface BridgeOptions {
+  config: WhatsAppConfig;
+  blobs: BlobStore;
+  socketFactory: SocketFactory;
+  /** Milliseconds. */
+  clock?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  pacing?: PacingLimits;
+  flushDelayMs?: number;
+  reconnectBaseMs?: number;
+  reconnectMaxMs?: number;
+  /** How long to wait after being replaced (440) before trying once more. */
+  replacedDelayMs?: number;
+  /** How long `pair` waits for the socket to be ready to register. */
+  pairingReadyTimeoutMs?: number;
+}
+
+/**
+ * What the pairing code is honestly good for. It lives as long as the socket
+ * waits for the phone — several pairing refs of a minute each — so two minutes
+ * is the floor, not the ceiling. `whatsapp_status` says when it has lapsed.
+ */
+export const PAIRING_CODE_TTL_SECONDS = 120;
+
+export const PAIRING_INSTRUCTIONS =
+  "On the phone that holds this WhatsApp account: open WhatsApp › Settings › " +
+  "Linked devices › Link a device, then tap \"Link with phone number instead\" " +
+  "and enter this code. Do NOT wait for a notification to appear on the phone: " +
+  "WhatsApp stopped reliably sending the automatic \"enter code\" prompt to " +
+  "linked-device clients around August 2026 (whatsmeow#1271 and matching " +
+  "Baileys reports), so the manual path is the one that works. When it " +
+  "succeeds, whatsapp_status reports connected: true and paired: true. If the " +
+  "code lapses first, call whatsapp_pair again for a new one.";
+
+const MAX_TEXT_LENGTH = 4096;
+const BRIDGE_SENT_KEEP = 2000;
+const RECENT_SENT_KEEP = 200;
+
+export class WhatsAppBridge {
+  private readonly config: WhatsAppConfig;
+  private readonly store: StateStore;
+  private readonly socketFactory: SocketFactory;
+  private readonly clock: () => number;
+  private readonly pacer: Pacer;
+  readonly buffer: MessageBuffer;
+
+  private readonly flushDelayMs: number;
+  private readonly reconnectBaseMs: number;
+  private readonly reconnectMaxMs: number;
+  private readonly replacedDelayMs: number;
+  private readonly pairingReadyTimeoutMs: number;
+
+  private startPromise: Promise<void> | undefined;
+  private stateError: string | null = null;
+  private auth: MemoryAuth | null = null;
+  private authDirty = false;
+  private ownerJid: string | null = null;
+  private readonly bridgeSent = new Set<string>();
+  private readonly recentSent = new Map<string, unknown>();
+
+  private socket: WaSocket | null = null;
+  /** Bumped whenever a socket is abandoned, so its late events are ignored. */
+  private generation = 0;
+  private connected = false;
+  private lastEventAt: number | null = null;
+  private lastDisconnectReason: string | null = null;
+  private pairing: { expiresAt: number; ready?: () => void } | null = null;
+  private reconnectAttempts = 0;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private flushTimer: NodeJS.Timeout | null = null;
+  private flushing: Promise<void> = Promise.resolve();
+  private ingesting: Promise<void> = Promise.resolve();
+  private closed = false;
+  private leaseTimer: NodeJS.Timeout | null = null;
+
+  constructor(options: BridgeOptions) {
+    this.config = options.config;
+    this.clock = options.clock ?? Date.now;
+    this.store = new StateStore(
+      options.blobs,
+      options.config.encryptionKey,
+      options.config.prefix,
+      this.clock,
+    );
+    this.socketFactory = options.socketFactory;
+    this.pacer = new Pacer(options.pacing ?? DEFAULT_PACING, this.clock, options.sleep);
+    this.buffer = new MessageBuffer(
+      {
+        maxMessages: options.config.bufferMaxMessages,
+        maxAgeDays: options.config.bufferMaxAgeDays,
+      },
+      (chatId) => this.store.readChat(chatId),
+      () => Math.floor(this.clock() / 1000),
+    );
+    this.flushDelayMs = options.flushDelayMs ?? 2_000;
+    this.reconnectBaseMs = options.reconnectBaseMs ?? 2_000;
+    this.reconnectMaxMs = options.reconnectMaxMs ?? 5 * 60_000;
+    this.replacedDelayMs = options.replacedDelayMs ?? 10 * 60_000;
+    this.pairingReadyTimeoutMs = options.pairingReadyTimeoutMs ?? 30_000;
+  }
+
+  // --- identity ---------------------------------------------------------------------
+
+  private nowSeconds(): number {
+    return Math.floor(this.clock() / 1000);
+  }
+
+  /** Paired = WhatsApp accepted this device: an account signature is on file. */
+  private paired(): boolean {
+    const creds = this.auth?.state.creds;
+    return Boolean(creds?.me?.id && creds.account);
+  }
+
+  private self(): SelfIdentity {
+    const me = this.auth?.state.creds.me;
+    return { jid: normalizeJid(me?.id), lid: normalizeJid(me?.lid) };
+  }
+
+  private selfName(): string | null {
+    const name = this.auth?.state.creds.me?.name;
+    return name && name !== "~" ? name : null;
+  }
+
+  // --- start / close ------------------------------------------------------------------
+
+  /** Idempotent. A failure is not memoised, so the next call retries. */
+  start(): Promise<void> {
+    this.startPromise ??= this.doStart().catch((err: unknown) => {
+      this.startPromise = undefined;
+      throw err;
+    });
+    return this.startPromise;
+  }
+
+  private async doStart(): Promise<void> {
+    await this.store.claimLease();
+    // Re-read the lease on a clock, not only when a write happens: a process
+    // that has nothing to write would otherwise keep its socket open after a
+    // newer deploy took the account.
+    this.leaseTimer ??= setInterval(() => {
+      void this.store
+        .checkLease()
+        .then((mine) => {
+          if (!mine && !this.closed) this.onSuperseded();
+        })
+        .catch((err: unknown) => logWarning(`lease check failed: ${errMessage(err)}`));
+    }, LEASE_CHECK_MS);
+    this.leaseTimer.unref?.();
+    let saved: string | null;
+    try {
+      saved = await this.store.readAuth();
+      const index = await this.store.readIndex();
+      if (index) this.loadIndex(index);
+    } catch (err) {
+      if (err instanceof SealError) {
+        // Not memoised as a failure: the state is there, it just does not open.
+        // Tools report it; whatsapp_logout clears it.
+        this.stateError = err.message;
+        logWarning(`stored state does not open: ${err.message}`);
+        return;
+      }
+      throw err;
+    }
+    if (saved) {
+      this.auth = await createMemoryAuth(saved, () => this.markAuthDirty());
+      if (this.paired()) {
+        logInfo(`restored a paired device (${this.self().jid ?? "unknown"}); connecting`);
+        await this.connect();
+      }
+    }
+  }
+
+  private loadIndex(index: IndexDoc): void {
+    this.ownerJid = index.owner_jid;
+    for (const chat of index.chats) this.buffer.chats.set(chat.id, { ...chat });
+    for (const id of index.stored) this.buffer.stored.add(id);
+    for (const [jid, name] of index.names) this.buffer.names.set(jid, name);
+    for (const [lid, pn] of index.lid_to_pn) this.buffer.lidToPn.set(lid, pn);
+    for (const id of index.bridge_sent ?? []) this.bridgeSent.add(id);
+    this.buffer.indexDirty = false;
+  }
+
+  private indexDoc(): IndexDoc {
+    return {
+      version: 1,
+      owner_jid: this.ownerJid,
+      chats: [...this.buffer.chats.values()],
+      stored: [...this.buffer.stored],
+      names: [...this.buffer.names],
+      lid_to_pn: [...this.buffer.lidToPn],
+      bridge_sent: [...this.bridgeSent],
+    };
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+    if (this.leaseTimer) clearInterval(this.leaseTimer);
+    this.leaseTimer = null;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.reconnectTimer = this.flushTimer = null;
+    await this.ingesting;
+    await this.flush().catch(() => {});
+    this.dropSocket();
+  }
+
+  private dropSocket(): void {
+    this.generation++;
+    const socket = this.socket;
+    this.socket = null;
+    this.connected = false;
+    try {
+      socket?.end();
+    } catch {
+      // Already closed.
+    }
+  }
+
+  // --- the socket ---------------------------------------------------------------------
+
+  private async connect(): Promise<void> {
+    if (!this.auth || this.closed || this.store.superseded) return;
+    // Every (re)connect asks first. A socket WhatsApp replaced (440) is most
+    // often an old container whose successor now holds the lease; opening a
+    // socket here would kick the successor off.
+    if (!(await this.store.checkLease(true))) {
+      this.onSuperseded();
+      return;
+    }
+    this.dropSocket();
+    const gen = this.generation;
+    const socket = await this.socketFactory({
+      auth: this.auth.state,
+      // `os` is what the phone's Linked devices list names this device;
+      // "Chrome" is the platform WhatsApp's pairing-code flow accepts.
+      browser: [this.config.deviceName, "Chrome", "124.0.0"],
+      getMessage: async (key) =>
+        (key.id ? this.recentSent.get(key.id) : undefined) ?? undefined,
+    });
+    if (gen !== this.generation) {
+      socket.end();
+      return;
+    }
+    this.socket = socket;
+    const on = <T>(event: string, handler: (payload: T) => void | Promise<void>) =>
+      socket.ev.on(event, ((payload: T) => {
+        if (gen !== this.generation) return;
+        this.lastEventAt = this.nowSeconds();
+        void Promise.resolve(handler(payload)).catch((err: unknown) =>
+          logWarning(`${event} handler failed: ${errMessage(err)}`),
+        );
+      }) as never);
+
+    on<ConnectionUpdate>("connection.update", (u) => this.onConnection(u, gen));
+    on<unknown>("creds.update", () => this.markAuthDirty());
+    on<{ messages?: RawMessage[] }>("messages.upsert", (e) =>
+      this.enqueue(async () => {
+        for (const m of e.messages ?? []) await this.ingest(m);
+      }),
+    );
+    on<{
+      chats?: Chat[];
+      contacts?: Contact[];
+      messages?: RawMessage[];
+      lidPnMappings?: { lid: string; pn: string }[];
+    }>("messaging-history.set", (e) =>
+      this.enqueue(async () => {
+        for (const m of e.lidPnMappings ?? []) this.learnLid(m.lid, m.pn);
+        for (const c of e.contacts ?? []) this.learnContact(c);
+        for (const c of e.chats ?? []) this.learnChat(c);
+        for (const m of e.messages ?? []) await this.ingest(m);
+      }),
+    );
+    on<Chat[]>("chats.upsert", (chats) => chats.forEach((c) => this.learnChat(c)));
+    on<Chat[]>("chats.update", (chats) => chats.forEach((c) => this.learnChat(c)));
+    on<Contact[]>("contacts.upsert", (cs) => cs.forEach((c) => this.learnContact(c)));
+    on<Contact[]>("contacts.update", (cs) => cs.forEach((c) => this.learnContact(c)));
+    on<GroupInfo[]>("groups.upsert", (gs) => gs.forEach((g) => this.learnGroup(g)));
+    on<GroupInfo[]>("groups.update", (gs) => gs.forEach((g) => this.learnGroup(g)));
+    on<{ lid: string; pn: string }>("lid-mapping.update", (m) => this.learnLid(m.lid, m.pn));
+    on<{ key: RawKey; update: { message?: RawContent | null; messageStubType?: number | null } }[]>(
+      "messages.update",
+      (updates) => this.enqueue(async () => {
+        for (const u of updates) await this.applyUpdate(u.key, u.update);
+      }),
+    );
+  }
+
+  private onConnection(update: ConnectionUpdate, gen: number): void {
+    if (update.qr && this.pairing?.ready) {
+      this.pairing.ready();
+      this.pairing.ready = undefined;
+    }
+    if (update.connection === "open") {
+      this.connected = true;
+      this.reconnectAttempts = 0;
+      this.lastDisconnectReason = null;
+      this.pairing = null;
+      logInfo(`connected as ${this.self().jid ?? "unknown"}`);
+      void this.enqueue(() => this.adoptOwner());
+      void this.refreshGroups(gen);
+      this.markAuthDirty();
+      void this.flush().catch(() => {});
+      return;
+    }
+    if (update.connection === "close") {
+      this.connected = false;
+      this.socket = null;
+      this.onClose(disconnectCode(update.lastDisconnect?.error));
+    }
+  }
+
+  private onClose(code: number | undefined): void {
+    if (this.closed) return;
+    if (this.store.superseded) {
+      this.lastDisconnectReason = "replaced_by_another_instance";
+      return;
+    }
+    if (code === DISCONNECT.loggedOut) {
+      // Unlinked from the phone, or the phone was offline long enough (about
+      // 14 days) that WhatsApp logged this device out. The login is dead; the
+      // buffer is kept, because re-pairing the same account should find it.
+      logWarning("WhatsApp logged this device out; pair again to reconnect");
+      this.lastDisconnectReason = "logged_out";
+      this.pairing = null;
+      this.auth = null;
+      this.authDirty = false;
+      void this.store.deleteAuth().catch((err: unknown) =>
+        logWarning(`could not delete the dead login: ${errMessage(err)}`),
+      );
+      return;
+    }
+    if (!this.paired()) {
+      // A pairing attempt ended without the phone entering the code.
+      this.lastDisconnectReason =
+        code === DISCONNECT.timedOut ? "pairing_code_expired" : reasonName(code);
+      this.pairing = null;
+      this.auth = null;
+      return;
+    }
+    if (code === DISCONNECT.restartRequired) {
+      // Expected right after pairing: WhatsApp asks for a fresh stream.
+      this.lastDisconnectReason = "restart_required";
+      this.scheduleReconnect(0);
+      return;
+    }
+    if (code === DISCONNECT.connectionReplaced) {
+      // Another socket opened on this same device — during a deploy, the new
+      // container. Reconnecting now would kick it back and the two would
+      // ping-pong. Wait long enough for a deploy to finish, then try once more.
+      logWarning("replaced by another connection on this device; backing off");
+      this.lastDisconnectReason = "connection_replaced";
+      this.scheduleReconnect(this.replacedDelayMs);
+      return;
+    }
+    this.lastDisconnectReason = reasonName(code);
+    const delay = Math.min(
+      this.reconnectMaxMs,
+      this.reconnectBaseMs * 2 ** this.reconnectAttempts,
+    );
+    this.reconnectAttempts++;
+    // Jitter, so a WhatsApp-side blip does not make every retry land together.
+    this.scheduleReconnect(delay + Math.floor(Math.random() * Math.min(1000, delay)));
+  }
+
+  private scheduleReconnect(delayMs: number): void {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.connect().catch((err: unknown) => {
+        logWarning(`reconnect failed: ${errMessage(err)}`);
+        this.onClose(undefined);
+      });
+    }, delayMs);
+    this.reconnectTimer.unref?.();
+  }
+
+  private async refreshGroups(gen: number): Promise<void> {
+    const socket = this.socket;
+    if (!socket) return;
+    try {
+      const groups = await socket.groupFetchAllParticipating();
+      if (gen !== this.generation) return;
+      for (const g of Object.values(groups)) this.learnGroup(g);
+      this.scheduleFlush();
+    } catch (err) {
+      logWarning(`could not list groups: ${errMessage(err)}`);
+    }
+  }
+
+  /**
+   * The buffer belongs to one account. Pairing a DIFFERENT account must not
+   * serve it the previous account's chats.
+   */
+  private async adoptOwner(): Promise<void> {
+    const jid = this.self().jid;
+    if (!jid || jid === this.ownerJid) return;
+    if (this.ownerJid !== null) {
+      logWarning("a different account was paired; discarding the old buffer");
+      await this.store.deleteBuffer();
+      this.buffer.clear();
+      this.bridgeSent.clear();
+    }
+    this.ownerJid = jid;
+    this.buffer.indexDirty = true;
+  }
+
+  // --- ingestion ------------------------------------------------------------------------
+
+  private enqueue(work: () => Promise<void>): Promise<void> {
+    const next = this.ingesting.then(work).then(
+      () => this.scheduleFlush(),
+      (err: unknown) => logWarning(`could not buffer an event: ${errMessage(err)}`),
+    );
+    this.ingesting = next;
+    return next;
+  }
+
+  private learnLid(lid: string | null | undefined, pn: string | null | undefined): void {
+    const l = normalizeJid(lid);
+    const p = normalizeJid(pn);
+    if (l && p && isLidJid(l) && isPhoneJid(p)) this.buffer.mapLid(l, p);
+  }
+
+  private learnContact(c: Contact): void {
+    const id = normalizeJid(c.id);
+    if (!id) return;
+    const name = c.name ?? c.notify ?? c.verifiedName ?? null;
+    if (isLidJid(id)) this.learnLid(id, c.phoneNumber);
+    else if (isPhoneJid(id)) this.learnLid(c.lid, id);
+    if (name) {
+      // Under both addresses: chats and senders are keyed by the phone JID
+      // wherever it is known, and a contact-book name outranks a push name.
+      this.buffer.setName(id, name);
+      const pn = isLidJid(id) ? this.buffer.lidToPn.get(id) : undefined;
+      if (pn) this.buffer.setName(pn, name);
+    }
+    this.scheduleFlush();
+  }
+
+  private learnChat(c: Chat): void {
+    let id = normalizeJid(c.id);
+    if (!id || isIgnoredJid(id)) return;
+    if (isLidJid(id)) id = this.buffer.lidToPn.get(id) ?? id;
+    this.buffer.touchChat(id, {
+      name: c.name ?? undefined,
+      last_message_at: toSeconds(c.conversationTimestamp) ?? undefined,
+    });
+    if (c.name) this.buffer.setName(id, c.name);
+    this.scheduleFlush();
+  }
+
+  private learnGroup(g: GroupInfo): void {
+    const id = normalizeJid(g.id);
+    if (!id || !isGroupJid(id)) return;
+    const count = Array.isArray(g.participants) ? g.participants.length : g.size;
+    this.buffer.touchChat(id, {
+      name: g.subject ?? undefined,
+      participant_count: typeof count === "number" ? count : undefined,
+    });
+    if (g.subject) this.buffer.setName(id, g.subject);
+    this.scheduleFlush();
+  }
+
+  private async ingest(raw: RawMessage): Promise<void> {
+    const key = raw.key;
+    if (key) {
+      this.learnLid(key.remoteJid, key.remoteJidAlt);
+      this.learnLid(key.participant, key.participantAlt);
+    }
+    const n = normalizeMessage(raw, this.self(), this.buffer.lidToPn);
+    if (n.kind === "message") {
+      if (this.bridgeSent.has(n.message.id)) n.message.sent_by_bridge = true;
+      await this.buffer.upsert(n.message);
+    } else if (n.kind === "mutation") {
+      const m = n.mutation;
+      if (m.kind === "revoke") await this.buffer.revoke(m.chat_id, m.id);
+      else await this.buffer.edit(m.chat_id, m.id, m.text);
+    }
+  }
+
+  private async applyUpdate(
+    key: RawKey,
+    update: { message?: RawContent | null; messageStubType?: number | null },
+  ): Promise<void> {
+    if (!key?.id || !key.remoteJid) return;
+    const chat = this.canonicalChat(key.remoteJid, key.remoteJidAlt);
+    if (!chat) return;
+    // WAMessageStubType.REVOKE = 1: "this message was deleted".
+    if (update.message === null && update.messageStubType === 1) {
+      await this.buffer.revoke(chat, key.id);
+      return;
+    }
+    if (!update.message) return;
+    const content = unwrap(update.message);
+    const mutation = mutationOf(chat, content);
+    if (mutation) {
+      if (mutation.kind === "revoke") await this.buffer.revoke(chat, mutation.id);
+      else await this.buffer.edit(chat, mutation.id, mutation.text);
+      return;
+    }
+    // An edit arrives as `{ editedMessage: { message: <new content> } }`.
+    if (update.message.editedMessage) {
+      await this.buffer.edit(chat, key.id, classify(content)?.text ?? null);
+    }
+  }
+
+  private canonicalChat(jid: string | null | undefined, alt?: string | null): string | null {
+    const n = normalizeJid(jid);
+    if (!n) return null;
+    if (isLidJid(n)) {
+      const a = normalizeJid(alt);
+      if (a && isPhoneJid(a)) return a;
+      return this.buffer.lidToPn.get(n) ?? n;
+    }
+    return n;
+  }
+
+  // --- persistence ----------------------------------------------------------------------
+
+  private markAuthDirty(): void {
+    this.authDirty = true;
+    this.scheduleFlush();
+  }
+
+  private scheduleFlush(): void {
+    if (this.flushTimer || this.closed) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      void this.flush().catch(() => {});
+    }, this.flushDelayMs);
+    this.flushTimer.unref?.();
+  }
+
+  /** Write whatever changed. Serialized: one flush at a time. */
+  flush(): Promise<void> {
+    const next = this.flushing.then(() => this.doFlush());
+    this.flushing = next.catch(() => {});
+    return next;
+  }
+
+  private async doFlush(): Promise<void> {
+    if (this.store.superseded) return;
+    try {
+      if (!(await this.store.checkLease())) throw new SupersededError();
+      if (this.authDirty && this.auth && this.paired()) {
+        this.authDirty = false;
+        try {
+          await this.store.writeAuth(this.auth.serialize());
+        } catch (err) {
+          this.authDirty = true;
+          throw err;
+        }
+      }
+      const chats = [...this.buffer.dirtyChats];
+      this.buffer.dirtyChats.clear();
+      for (let i = 0; i < chats.length; i++) {
+        const chat = chats[i]!;
+        try {
+          await this.store.writeChat(chat, await this.buffer.snapshot(chat));
+        } catch (err) {
+          for (const c of chats.slice(i)) this.buffer.dirtyChats.add(c);
+          throw err;
+        }
+      }
+      if (this.buffer.indexDirty) {
+        this.buffer.indexDirty = false;
+        try {
+          await this.store.writeIndex(this.indexDoc());
+        } catch (err) {
+          this.buffer.indexDirty = true;
+          throw err;
+        }
+      }
+    } catch (err) {
+      if (err instanceof SupersededError) {
+        this.onSuperseded();
+        return;
+      }
+      logWarning(`could not persist state (will retry): ${errMessage(err)}`);
+      this.scheduleFlush();
+      throw err;
+    }
+  }
+
+  private onSuperseded(): void {
+    logWarning(
+      "another process owns this WhatsApp account now; closing this socket and " +
+        "no longer writing state",
+    );
+    this.lastDisconnectReason = "replaced_by_another_instance";
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.leaseTimer) clearInterval(this.leaseTimer);
+    this.reconnectTimer = this.leaseTimer = null;
+    this.pairing = null;
+    this.dropSocket();
+  }
+
+  // --- the tools ------------------------------------------------------------------------
+
+  private async ready(): Promise<void> {
+    await this.start();
+    if (this.store.superseded) throw new SupersededError();
+  }
+
+  private requireReadable(): void {
+    if (this.stateError) throw new BridgeError(this.stateError);
+  }
+
+  private requireConnected(): WaSocket {
+    this.requireReadable();
+    if (!this.paired()) {
+      throw new BridgeError(
+        "No WhatsApp account is paired. A human pairs one with whatsapp_pair " +
+          "(from strad's console playground or an agent session).",
+      );
+    }
+    if (!this.connected || !this.socket) {
+      throw new BridgeError(
+        `The WhatsApp socket is not connected (last reason: ` +
+          `${this.lastDisconnectReason ?? "still connecting"}). It reconnects on ` +
+          `its own with backoff; check whatsapp_status and retry.`,
+      );
+    }
+    return this.socket;
+  }
+
+  async status(): Promise<Status> {
+    await this.start();
+    const paired = this.paired();
+    const self = this.self();
+    return {
+      connected: this.connected && paired && !this.store.superseded,
+      paired,
+      self_jid: paired ? self.jid : null,
+      self_name: paired ? this.selfName() : null,
+      last_event_at: this.lastEventAt,
+      pairing_in_progress:
+        this.pairing !== null && this.clock() < this.pairing.expiresAt && !paired,
+      last_disconnect_reason: this.store.superseded
+        ? "replaced_by_another_instance"
+        : (this.stateError ? "state_unreadable" : this.lastDisconnectReason),
+    };
+  }
+
+  private chatName(meta: ChatMeta | undefined, id: string): string {
+    return meta?.name ?? this.buffer.names.get(id) ?? id.split("@")[0]!;
+  }
+
+  async listChats(query: { limit: number; query?: string }): Promise<{ chats: ChatSummary[] }> {
+    await this.ready();
+    this.requireReadable();
+    const needle = query.query?.trim().toLowerCase();
+    const chats = [...this.buffer.chats.values()]
+      .map((meta) => ({
+        id: meta.id,
+        name: this.chatName(meta, meta.id),
+        is_group: meta.is_group,
+        last_message_at: meta.last_message_at,
+        participant_count: meta.participant_count,
+      }))
+      .filter(
+        (c) =>
+          !needle ||
+          c.name.toLowerCase().includes(needle) ||
+          c.id.toLowerCase().includes(needle),
+      )
+      .sort((a, b) => (b.last_message_at ?? 0) - (a.last_message_at ?? 0));
+    return { chats: chats.slice(0, query.limit) };
+  }
+
+  private resolveChat(chatId: string): string {
+    const canonical = this.canonicalChat(chatId);
+    if (!canonical || !canonical.includes("@") || !this.buffer.chats.has(canonical)) {
+      throw new BridgeError(
+        `No chat "${chatId}" is known to this bridge. Chat ids are WhatsApp JIDs ` +
+          `("…@g.us" for a group, "…@s.whatsapp.net" for a person); call ` +
+          `whatsapp_list_chats to find one. A chat appears there once the ` +
+          `paired account has a message in it or is a member of the group.`,
+      );
+    }
+    return canonical;
+  }
+
+  async getMessages(query: {
+    chat_id: string;
+    after?: number;
+    limit: number;
+  }): Promise<MessagesResult> {
+    await this.ready();
+    this.requireReadable();
+    await this.ingesting;
+    const chatId = this.resolveChat(query.chat_id);
+    const self = this.self();
+    const result = await this.buffer.query(chatId, query.limit, query.after);
+    const messages: OutMessage[] = [];
+    for (const m of result.messages) {
+      let replyToSelf = isSelf(m.quoted_participant, self);
+      if (!replyToSelf && m.quoted_message_id) {
+        const quoted = await this.buffer.get(chatId, m.quoted_message_id);
+        replyToSelf = quoted?.from_me === true;
+      }
+      messages.push({
+        id: m.id,
+        chat_id: m.chat_id,
+        timestamp: m.timestamp,
+        sender_jid: m.from_me && self.jid ? self.jid : m.sender_jid,
+        sender_name: this.senderName(m, self),
+        from_me: m.from_me,
+        sent_by_bridge: m.sent_by_bridge || this.bridgeSent.has(m.id),
+        text: m.text,
+        type: m.type,
+        quoted_message_id: m.quoted_message_id,
+        mentions_self: m.mentioned.some((j) => isSelf(j, self)),
+        reply_to_self: replyToSelf,
+      });
+    }
+    this.scheduleFlush();
+    return {
+      chat_id: chatId,
+      chat_name: this.chatName(this.buffer.chats.get(chatId), chatId),
+      self_jid: self.jid,
+      has_more: result.has_more,
+      messages,
+    };
+  }
+
+  private senderName(m: StoredMessage, self: SelfIdentity): string {
+    if (m.from_me) return this.selfName() ?? self.jid?.split("@")[0] ?? "me";
+    return (
+      this.buffer.names.get(m.sender_jid) ??
+      (m.sender_alt_jid ? this.buffer.names.get(m.sender_alt_jid) : undefined) ??
+      m.push_name ??
+      m.sender_jid.split("@")[0]!
+    );
+  }
+
+  async sendMessage(request: {
+    chat_id: string;
+    text: string;
+    reply_to_message_id?: string;
+  }): Promise<{ id: string; timestamp: number }> {
+    await this.ready();
+    const socket = this.requireConnected();
+    const chatId = this.resolveChat(request.chat_id);
+    if (request.text.length > MAX_TEXT_LENGTH) {
+      throw new BridgeError(
+        `\`text\` is ${request.text.length} characters; this bridge sends at most ` +
+          `${MAX_TEXT_LENGTH} in one message. Send it as several messages, ` +
+          `deliberately, rather than have one split silently.`,
+      );
+    }
+
+    let quoted: RawMessage | undefined;
+    if (request.reply_to_message_id) {
+      const target = await this.buffer.get(chatId, request.reply_to_message_id);
+      if (!target) {
+        throw new BridgeError(
+          `Message "${request.reply_to_message_id}" is not in this bridge's buffer ` +
+            `for ${chatId}, so it cannot be quoted. Use an id from ` +
+            `whatsapp_get_messages, or send without reply_to_message_id.`,
+        );
+      }
+      quoted = {
+        key: {
+          remoteJid: chatId,
+          id: target.id,
+          fromMe: target.from_me,
+          ...(isGroupJid(chatId) ? { participant: target.sender_alt_jid ?? target.sender_jid } : {}),
+        },
+        message: { conversation: target.text ?? "" },
+      };
+    }
+
+    const sent = await this.pacer.run(
+      request.text,
+      () => socket.sendPresenceUpdate("composing", chatId),
+      () => socket.sendMessage(chatId, { text: request.text }, quoted ? { quoted } : undefined),
+    );
+    const id = sent?.key?.id;
+    if (!id) {
+      throw new BridgeError(
+        "WhatsApp accepted no message id for this send, so it may or may not have " +
+          "been delivered. Check whatsapp_get_messages before sending again.",
+      );
+    }
+    const timestamp = toSeconds(sent.messageTimestamp) ?? this.nowSeconds();
+
+    // Recorded BEFORE anything else can read the chat, and in a set that
+    // survives the message being re-delivered under another chat address:
+    // Zimmer drops sent_by_bridge messages, and a miss here is the bridge
+    // answering itself.
+    this.bridgeSent.add(id);
+    if (this.bridgeSent.size > BRIDGE_SENT_KEEP) {
+      this.bridgeSent.delete(this.bridgeSent.values().next().value!);
+    }
+    this.recentSent.set(id, sent.message);
+    if (this.recentSent.size > RECENT_SENT_KEEP) {
+      this.recentSent.delete(this.recentSent.keys().next().value!);
+    }
+    await this.enqueue(async () => {
+      await this.ingest({ ...sent, messageTimestamp: timestamp });
+      await this.buffer.markSentByBridge(chatId, id);
+    });
+    // Persisted BEFORE the call returns, not on the debounce. On a personal
+    // number `from_me` is also true of everything typed on the phone, so this
+    // flag is the poller's only self-loop guard, and a crash or deploy inside
+    // the debounce window must not forget it. A failed write is retried on the
+    // debounce and does not fail a send that already happened.
+    this.buffer.indexDirty = true;
+    await this.flush().catch(() => {});
+    return { id, timestamp };
+  }
+
+  async pair(phoneNumber: string): Promise<PairResult> {
+    await this.ready();
+    this.requireReadable();
+    const digits = phoneNumber.replace(/[\s()+-]/g, "");
+    if (!/^\d{8,15}$/.test(digits)) {
+      throw new BridgeError(
+        "`phone_number` must be the account's number in E.164 digits with the " +
+          'country code and no "+", e.g. "15551234567".',
+      );
+    }
+    if (this.paired()) {
+      throw new BridgeError(
+        `Already paired as ${this.self().jid}. Pairing again would link a second ` +
+          `device; call whatsapp_logout first if the intent is to replace it.`,
+      );
+    }
+    if (this.closed) throw new BridgeError("The bridge is shutting down.");
+
+    // A fresh identity per attempt. Nothing is persisted until WhatsApp
+    // accepts it (see doFlush: auth is written only once paired).
+    this.auth = await createMemoryAuth(null, () => this.markAuthDirty());
+    this.authDirty = false;
+    const readyForCode = new Promise<void>((resolve) => {
+      this.pairing = {
+        expiresAt: this.clock() + PAIRING_CODE_TTL_SECONDS * 1000,
+        ready: resolve,
+      };
+    });
+    await this.connect();
+    const socket = this.socket as WaSocket | null;
+    if (!socket) throw new BridgeError("Could not open a WhatsApp socket to pair on.");
+
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), this.pairingReadyTimeoutMs);
+    });
+    const outcome = await Promise.race([readyForCode, timedOut]);
+    clearTimeout(timer);
+    if (outcome === "timeout") {
+      this.pairing = null;
+      this.dropSocket();
+      this.auth = null;
+      throw new BridgeError(
+        "WhatsApp did not offer this device a pairing session in time. Retry " +
+          "whatsapp_pair; if it keeps failing, WhatsApp may be refusing this " +
+          "client version (see the README's ban-risk section).",
+      );
+    }
+
+    const code = await socket.requestPairingCode(digits);
+    if (this.pairing) {
+      this.pairing.expiresAt = this.clock() + PAIRING_CODE_TTL_SECONDS * 1000;
+    }
+    const clean = code.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+    return {
+      pairing_code:
+        clean.length === 8 ? `${clean.slice(0, 4)}-${clean.slice(4)}` : clean,
+      expires_in_seconds: PAIRING_CODE_TTL_SECONDS,
+      instructions: PAIRING_INSTRUCTIONS,
+    };
+  }
+
+  async logout(): Promise<{ ok: true; unlinked_on_phone: boolean }> {
+    await this.ready().catch((err: unknown) => {
+      // A superseded process must not wipe what the live one is using.
+      if (err instanceof SupersededError) throw err;
+    });
+    let unlinked = false;
+    if (this.socket && this.connected) {
+      try {
+        await this.socket.logout();
+        unlinked = true;
+      } catch (err) {
+        logWarning(`logout request failed, wiping locally anyway: ${errMessage(err)}`);
+      }
+    }
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    this.dropSocket();
+    this.pairing = null;
+    this.auth = null;
+    this.authDirty = false;
+    await this.ingesting;
+    await this.store.deleteAuth();
+    await this.store.deleteBuffer();
+    this.buffer.clear();
+    this.buffer.indexDirty = false;
+    this.bridgeSent.clear();
+    this.recentSent.clear();
+    this.ownerJid = null;
+    this.stateError = null;
+    this.lastDisconnectReason = "logged_out_by_tool";
+    logInfo("logged out and wiped persisted state");
+    return { ok: true, unlinked_on_phone: unlinked };
+  }
+}
+
+// --- event payload shapes (structural) ------------------------------------------------------
+
+interface Chat {
+  id?: string | null;
+  name?: string | null;
+  conversationTimestamp?: number | string | { toNumber(): number } | null;
+}
+
+interface Contact {
+  id?: string | null;
+  lid?: string | null;
+  phoneNumber?: string | null;
+  name?: string | null;
+  notify?: string | null;
+  verifiedName?: string | null;
+}
+
+function reasonName(code: number | undefined): string {
+  switch (code) {
+    case undefined:
+      return "connection_failed";
+    case DISCONNECT.forbidden:
+      return "forbidden";
+    case DISCONNECT.timedOut:
+      return "timed_out";
+    case DISCONNECT.connectionClosed:
+      return "connection_closed";
+    case DISCONNECT.badSession:
+      return "bad_session";
+    case 503:
+      return "service_unavailable";
+    default:
+      return `closed_${code}`;
+  }
+}

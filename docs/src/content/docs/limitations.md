@@ -607,11 +607,11 @@ nothing warns beforehand. Publishing the OAuth app removes the expiry.
 
 ## The deployment
 
-### 24. Twenty-three servers share one process and one CPU
+### 24. Twenty-four servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts twenty-three MCP servers,
+The `bundle` component runs one Node process that mounts twenty-four MCP servers,
 launches one shared Chromium and supervises one `mcp-grafana` child process, on
-`apps-s-1vcpu-2gb`. A crash in the host takes all twenty-three down together, and
+`apps-s-1vcpu-2gb`. A crash in the host takes all twenty-four down together, and
 Chromium contends with every other server for the single vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -993,7 +993,7 @@ a store-wide read.
 keeps a listed parameter current in a supplementary container's environment
 without a redeploy. It cannot make the MCP server inside that container **look**
 at the new value — that is a property of the upstream, and the bundle image runs
-twenty-three of them written by other people.
+twenty-four of them written by other people.
 
 `strad-fetch` builds its scraping clients inside a factory the host invokes per
 request, so a rotated key is used by the next tool call; that is the case the
@@ -2168,7 +2168,7 @@ ever rebuilt with a rootless or hand-installed docker, where buildx lives in
 
 **Serialising the workflows was the alternative.** A `concurrency:` group would
 have ended it too, at the cost of every push taking the sum of its builds rather
-than the longest — the bundle alone is fifteen dependency trees. Isolation costs a
+than the longest — the bundle alone is sixteen dependency trees. Isolation costs a
 `mkdir`.
 
 ### 49. The Telegram MTProto library is archived upstream
@@ -2268,7 +2268,7 @@ for the telegram pair, `BILL_SPEND_API_TOKEN` for the bill-spend pair,
 then delete that entry's `enabled:` line and add each seeded name to
 `PROVISIONED_STATICS` in `test/staging-config.test.ts`.
 
-### 56. Per-slug variable names are emitted for every server; only six of the fifteen trees can read one
+### 56. Per-slug variable names are emitted for every server; only seven of the sixteen trees can read one
 
 Every supplementary server's `env:` lands on its bundle twice — under the bare
 name and under `<SLUG>__<NAME>` — with no condition attached, so what a server's
@@ -2284,12 +2284,13 @@ differently is still a hard error — one process cannot hold two credentials,
 whatever the variables are called.
 
 **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
-`grafana`, `bill-spend` and `aws-device-farm` read an injected environment.** The other nine trees
+`grafana`, `bill-spend`, `aws-device-farm` and `whatsapp` read an injected environment.** The other nine trees
 in the bundle image are vendored upstream code that reads `process.env` directly,
 often lazily at call time, so they see the bare names only. `bill-spend` reads
 the injected view for one mount rather than one per slug: one BILL token is one
 company, so `bill-spend-ro` and `bill-spend-rw` share it and differ only in what
-the gateway's `tools:` policy lets them call. The renderer cannot tell which tree an image contains — an image is a tag in
+the gateway's `tools:` policy lets them call. `whatsapp` does the same, because
+one linked device is one account. The renderer cannot tell which tree an image contains — an image is a tag in
 someone else's config — so a slug of another tree given its own path renders,
 warns, and serves nothing, because the image has no mount at that path.
 Reachability reports the deployment `degraded`, which is where you would see it.
@@ -2553,7 +2554,7 @@ leak. Nothing in the cache is a credential; it is public pages someone fetched.
 
 **What the fork DID bound is the memory.** Upstream's store grows for the life of
 the process, which is fine for a subprocess the OS reclaims and an out-of-memory
-kill in a container that hosts twenty-three mounts. The cache is LRU-bounded on both
+kill in a container that hosts twenty-four mounts. The cache is LRU-bounded on both
 entry count and bytes, and the filesystem backend is gone (App Platform gives the
 container no persistent volume, so it was memory with extra steps).
 
@@ -3309,6 +3310,10 @@ The one-time steps that clear most of the list above:
 - An AWS account, a Device Farm project, a least-privilege IAM key, and three
   values at `/ui/secrets` — clears **#103**. Every step is in
   [the setup guide](/servers/aws-device-farm-setup/).
+- A private GCS bucket, a service account with `roles/storage.objectAdmin` on
+  it, and a 32-byte key, seeded as four values at `/ui/secrets` — then a
+  `whatsapp_pair` call and a code typed into the phone — turns on
+  `whatsapp-zimmer` (**#109**). See [WhatsApp](/servers/whatsapp/#setup).
 - Delete the DigitalOcean Container Registry named `strad`. Staging and prod pull
   ghcr images; the registry the first deploy used is left over, and bills while it
   sits there.
@@ -3337,5 +3342,21 @@ One boundary is not there, and the shell slug is why. The helper's socket is a f
 **Undo:** a Developer ID certificate removes the self-signed step. Apple's persistent-content-capture entitlement removes the monthly prompt and is issued on application to remote-desktop products. The grants are the owner's and stay.
 
 See `HACKS.md` #108.
+
+---
+
+### 109. The WhatsApp bridge is an unofficial linked device, on one socket, with its state in a bucket
+
+The [WhatsApp](/servers/whatsapp/) server sits in chats as a linked device of one real account, through Baileys, because Meta's Cloud API cannot join a group a consumer created. Automating an account that way is against WhatsApp's Terms of Service, and the account can be banned for it. Every tool description says so. Sending is human-paced, which lowers the risk and does not remove it. Baileys is pinned to `7.0.0-rc14`: the 7.x line is the one that speaks WhatsApp's LID addressing, and it has not left release candidates.
+
+A linked device is one socket, so the component that holds it runs one instance and the render refuses more. A deploy still overlaps two containers; a lease in the bucket makes the newer one the owner, and the older one stops within 30 seconds. State the older one wrote in that window is overwritten. A Signal session that loses a step recovers through WhatsApp's retry receipts, so a message can arrive late, once.
+
+State is written to GCS on a two-second debounce and on shutdown, so a crash loses up to that window. There is no history API: a gap WhatsApp does not replay on reconnect is a gap in `whatsapp_get_messages`. The phone has to come online about every 14 days or WhatsApp logs the device out. A new `WHATSAPP_STATE_ENCRYPTION_KEY` makes the stored state unreadable; there is no rotation path.
+
+**How you would know.** `whatsapp_status` reports `connected`, `paired` and `last_disconnect_reason` — `logged_out`, `connection_replaced`, `replaced_by_another_instance`, `state_unreadable`. Zimmer treats only `connected && paired` as healthy.
+
+**Undo:** an official API that can join a consumer group replaces all of it. Short of that, a key-rotation path, and a transactional store for the Signal state if strad ever has a database.
+
+See `HACKS.md` #109.
 
 ---

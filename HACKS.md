@@ -391,7 +391,7 @@ one (hack #4).
 **✅ RESOLVED.** Core presents the internal token to every `supplementary-image`
 component, and the `strad-bundle` host refuses a mount request without it.
 
-**What.** The `strad-bundle` container — twenty-three mounts, and every upstream
+**What.** The `strad-bundle` container — twenty-four mounts, and every upstream
 credential behind them — serves every mount unauthenticated. Its only protection
 is the network boundary: an internal-only App Platform component
 (`internal_ports: [8080]`, no public route), reachable by core over the private
@@ -402,7 +402,7 @@ seam. Anything else that gets into the VPC can talk to the mounts directly.
 **Why.** The core→supplementary proxy path sends no internal token, unlike the
 builtin-in-bundle path, so the entry described the remedy as a config change:
 a `headers:` entry on the server entry plus a check in the image. That was the
-wrong shape. Thirty-two `supplementary-image` entries would each have had to
+wrong shape. Thirty-three `supplementary-image` entries would each have had to
 remember the block, and the one that forgot would be silently open.
 
 **Undone by.** Two halves, in code rather than in config:
@@ -786,10 +786,10 @@ still what makes prod's read-only variants read-only.
 policies) → confirm → _then_ delete the per-server images, their workflows and the
 toggle plumbing.
 
-## 24. Twenty-three servers share one process, and one Chromium
+## 24. Twenty-four servers share one process, and one Chromium
 
-The collapsed bundle is one container running twenty-three MCP servers and one
-headless Chromium. An OOM there is a twenty-three-server outage; it used to be a
+The collapsed bundle is one container running twenty-four MCP servers and one
+headless Chromium. An OOM there is a twenty-four-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -2635,7 +2635,7 @@ both `infra/strad.staging.yaml` and `strad.config.example.yaml` — plus the cou
 in `servers/bundle/scripts/smoke.mjs`, `test/staging-config.test.ts` and
 `.github/workflows/ci.yml`.
 
-## 56. Per-slug box names are emitted for every server; six of fifteen trees can read one
+## 56. Per-slug box names are emitted for every server; seven of sixteen trees can read one
 
 **What.** Every enabled `supplementary-image` server's resolved `env:` is emitted
 onto its bundle TWICE: under the bare name it always had, and under
@@ -2690,7 +2690,7 @@ DigitalOcean both times.
 **The edges.**
 
 - **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
-  `grafana`, `bill-spend` and `aws-device-farm` read an injected env.** The other
+  `grafana`, `bill-spend`, `aws-device-farm` and `whatsapp` read an injected env.** The other
   nine trees are vendored upstream code reading `process.env`, often lazily at
   call time (`onepassword` builds its client per call off
   `OP_SERVICE_ACCOUNT_TOKEN`). A single process cannot overlay `process.env`
@@ -3701,7 +3701,7 @@ behaviour, which is the pre-change one.
 a listed parameter current in a supplementary container's `process.env` without a
 redeploy. What it cannot do is make the MCP server inside that container LOOK at
 the new value. That is a property of the upstream, and this image runs
-twenty-three of them, most written by other people.
+twenty-four of them, most written by other people.
 
 The split is real and it is not subtle:
 
@@ -5351,7 +5351,7 @@ Workspace documents and cannot touch an uploaded binary. `files.copy` with
 file in the owner's Drive every time an agent reads a spreadsheet — a write, in a
 read tier. The npm packages that read xlsx are large, and the popular one has
 been unmaintained on npm since 0.18.5 with a live prototype-pollution advisory;
-this process holds three Google accounts' refresh tokens beside twenty-two other
+this process holds three Google accounts' refresh tokens beside twenty-three other
 MCP servers.
 
 **What it costs, and what a caller is told.** Every Office-backed result carries
@@ -5617,3 +5617,49 @@ lapsed" from "helper down" without a shell.
 password dialog. The `com.apple.developer.persistent-content-capture`
 entitlement removes the monthly prompt, and Apple issues it on application to
 VNC-class products. The grants themselves are the owner's, and stay.
+
+## 109. The WhatsApp bridge is an unofficial linked device, one socket, with its state in a bucket
+
+`servers/whatsapp/` sits in WhatsApp chats as a LINKED DEVICE of one real
+account, through Baileys (`docs/servers/whatsapp.md`). Meta's Cloud API cannot
+join a group a consumer created, so there is no official route to the
+requirement. What that costs:
+
+- **Terms of Service.** Automating an account this way is against WhatsApp's
+  ToS, and the account can be banned. Every tool description says so. Sending
+  is human-paced (typing indicator, 3 s spacing, refused past 6/minute or
+  60/hour), which lowers the risk and does not remove it. Baileys is
+  `7.0.0-rc14`, pinned exactly: the 7.x line is the one that speaks WhatsApp's
+  LID addressing, and it has not left release candidates.
+- **One instance.** A linked device is one socket; two processes holding its
+  state kick each other off and both write its Signal ratchets. The renderer
+  refuses `instanceCount > 1` for any bundle serving `/whatsapp`
+  (`SINGLE_SOCKET_PATHS`), and the server's own lease in GCS makes the newest
+  process the owner across the overlap an App Platform deploy creates. The
+  older process stops within 30 s, or at once if WhatsApp replaces its socket
+  first. State an old process wrote in that window and the new one overwrote is
+  lost; a Signal session that loses a ratchet step recovers through WhatsApp's
+  retry receipts, and a message can arrive late or as "waiting for this
+  message" once.
+- **State in a bucket, not a database.** The Signal state and the buffer are
+  sealed objects under `WHATSAPP_GCS_PREFIX`, written on a 2 s debounce and on
+  SIGTERM. A crash loses up to that window: the same retry-receipt recovery for
+  keys, and messages received in it are missing from the buffer.
+- **No history API.** A linked device gets one history sync when it pairs and
+  whatever its socket receives after. A gap WhatsApp does not replay on
+  reconnect is a gap in `whatsapp_get_messages`.
+- **The phone must come online every ~14 days**, or WhatsApp logs the device out
+  and a human pairs again. That is WhatsApp's rule, surfaced as
+  `last_disconnect_reason: "logged_out"`.
+- **Key rotation is not supported.** A new `WHATSAPP_STATE_ENCRYPTION_KEY` makes
+  the stored state unreadable; the server reports `state_unreadable` and does
+  not connect. The recovery is the old key, or `whatsapp_logout` and a new pair.
+
+**What stays off the box.** Pairing is `whatsapp_pair`, a tool call from the
+console playground or an agent; the phone gets a code, and nobody opens a shell
+to scan a QR. The four variables are seeded at `/ui/secrets`.
+
+**Undo.** An official API that can join a consumer group would replace all of
+it. Short of that: a key-rotation path (read under a previous key, write under
+the new one), and moving the Signal store to a database with transactions if
+strad ever has one.
