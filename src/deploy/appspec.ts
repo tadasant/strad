@@ -41,6 +41,13 @@ import { componentToken } from "../auth/internal-token.ts";
  *     headlessly from CI.
  */
 
+/**
+ * Bundle mounts that hold ONE upstream session, which a second replica of their
+ * component would fight over. `renderAppSpec` refuses `instanceCount > 1` for a
+ * bundle serving any of them. See servers/whatsapp/README.md.
+ */
+export const SINGLE_SOCKET_PATHS: readonly string[] = ["/whatsapp"];
+
 export interface RenderOptions {
   config: StradConfig;
   /** App name, e.g. "strad-staging". */
@@ -1746,6 +1753,29 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
           `refreshing it invalidate each other and the last write wins the next ` +
           `boot. Set instanceCount: 1 for this bundle, or move the server with ` +
           `paramsWritable: to its own bundle.`,
+      );
+    }
+
+    // ONE SOCKET, enforced at render — the same shape as the check above, for a
+    // different reason. A mount in SINGLE_SOCKET_PATHS holds one live session
+    // with an upstream that allows exactly one (a WhatsApp linked device: two
+    // sockets on it kick each other off, and both write its Signal state). A
+    // second replica is not more capacity, it is the outage. The tree's own
+    // lease stops the loser; this stops the topology from being asked for.
+    const singleSocketHere = config.servers.flatMap((s) =>
+      s.enabled &&
+      s.kind === "supplementary-image" &&
+      s.bundle === name &&
+      SINGLE_SOCKET_PATHS.includes(s.path)
+        ? [`${s.slug} (${s.path})`]
+        : [],
+    );
+    if (singleSocketHere.length > 0 && instanceCount > 1) {
+      throw new Error(
+        `bundle "${name}" has instance_count ${instanceCount} and hosts ` +
+          `${singleSocketHere.join(", ")}, ` +
+          `which holds ONE upstream session that two replicas would fight over. ` +
+          `Set instanceCount: 1 for this bundle.`,
       );
     }
 

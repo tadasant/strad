@@ -103,6 +103,7 @@ export default defineConfig({
             { label: "The artifact store", slug: "servers/artifact-store" },
             { label: "Slack attachments", slug: "servers/slack-attachments" },
             { label: "Telegram", slug: "servers/telegram" },
+            { label: "WhatsApp", slug: "servers/whatsapp" },
             { label: "BILL Spend & Expense", slug: "servers/bill-spend" },
             { label: "AWS Device Farm", slug: "servers/aws-device-farm" },
             {

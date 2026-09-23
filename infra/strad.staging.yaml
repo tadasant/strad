@@ -12,22 +12,23 @@
 # ---------------------------------------------------------------------------
 # CAPABILITY LIVES AT THE GATEWAY. THREE COMPONENTS, NOT THIRTEEN.
 # ---------------------------------------------------------------------------
-# This file declares thirty-five server SLUGS: thirty-two supplementary-image
+# This file declares thirty-six server SLUGS: thirty-three supplementary-image
 # entries, the `echo` builtin in core, the `deepwiki` remote-http canary, and
 # the `anki` local-tunnel, which ships disabled — see its entry below.
-# Thirty-one of the thirty-two land on twenty upstream mounts inside the
-# one bundle image, because capability variants share a mount; the thirty-second
-# (`zimmer-secrets`) runs that same image on a component of its own. The image
-# serves twenty-three mounts: `/x-twitter`, `/google-sheets`, `/grafana` and
-# `/aws-device-farm` are in it with no staging slug pointing at any of them —
+# Thirty-one of the thirty-three land on twenty upstream mounts inside the
+# one bundle image, because capability variants share a mount; the other two
+# (`zimmer-secrets` and `whatsapp-zimmer`) each run that same image on a
+# bundle of their own. The image serves twenty-four mounts: `/x-twitter`,
+# `/google-sheets`, `/grafana` and `/aws-device-farm` are in it with no
+# staging slug pointing at any of them —
 # `grafana-registry` is served by a per-slug instance at `/grafana-registry`, not
 # by the conventional mount, and `/aws-device-farm` has no slug in ANY
 # environment yet because its AWS credential has not been minted. The block to
 # paste once it has is in docs/servers/aws-device-farm-setup.
 #
-# FOUR of the thirty-two carry `enabled: false` — telegram-ro, telegram-rw,
-# pulse-subregistry and grafana-registry — because their credentials are not in
-# the store yet.
+# FIVE of the thirty-three carry `enabled: false` — telegram-ro, telegram-rw,
+# pulse-subregistry, grafana-registry and whatsapp-zimmer — because their
+# credentials are not in the store yet.
 # A `${NAME}` the store does not hold fails the RENDER, and the render is the
 # whole spec, so an entry that ships enabled before its secret is seeded takes
 # every other server's deploy down with it.
@@ -35,7 +36,9 @@
 # THREE components, not two, and the third is not a capability variant: it is
 # `bundle-zimmer-secrets`, a second copy of the bundle image fronting a SECOND
 # parameter store. Capability is config; a STORE is `process.env`, and one
-# container has one of those. See the bundles block below.
+# container has one of those. See the bundles block below. `bundle-whatsapp`
+# becomes a fourth once `whatsapp-zimmer` is enabled; while it is disabled the
+# bundle renders no component.
 #
 # It used to be twelve bundles for twenty-six slugs, and the reason was
 # small and stupid: a server's capability was a CONTAINER env var
@@ -171,17 +174,18 @@ roles:
     servers: [zimmer-secrets, secrets, echo]
 
 bundles:
-  # THE bundle. One image, one component, and nineteen of the image's twenty-three
+  # THE bundle. One image, one component, and nineteen of the image's twenty-four
   # upstream MCP servers — the bundle-api fleet, the Google servers, 1Password
   # (with the `op` CLI baked in), telegram and the three browser servers, which
   # share ONE Chromium (never one per server: see
-  # servers/bundle/host/src/browser.ts). Four mounts have no slug here:
+  # servers/bundle/host/src/browser.ts). Five mounts have no slug here:
   # `/x-twitter`, `/google-sheets` — registered in prod, where its six slugs each
   # carry one Google account's OAuth token, and where `/gmail` takes the same
   # per-slug shape beside its conventional service-account mount — the
   # conventional `/grafana`, since staging's Grafana is the per-slug
-  # `/grafana-registry` below, and `/aws-device-farm`, whose AWS credential does
-  # not exist yet. The PROCESS registers all twenty-three either way — including
+  # `/grafana-registry` below, `/aws-device-farm`, whose AWS credential does
+  # not exist yet, and `/whatsapp`, whose one slug is served from
+  # `bundle-whatsapp`. The PROCESS registers all twenty-four either way — including
   # `/telegram`, whose two slugs are disabled until their secret is seeded —
   # which is what the sizing below is about.
   #
@@ -236,6 +240,19 @@ bundles:
   # `parameters.list` is authorized on the PROJECT and `SECRETS_NAMESPACES` is a
   # code-level guard, not IAM.
   - name: bundle-zimmer-secrets
+
+  # THE WHATSAPP BRIDGE'S BUNDLE, and the one component whose instance count is
+  # a correctness property rather than a cost. The `/whatsapp` mount holds ONE
+  # WhatsApp linked-device socket; a second replica of this component opens a
+  # second socket on the same device, WhatsApp kicks one off, and both write the
+  # same Signal state. `renderAppSpec` refuses instanceCount > 1 for any bundle
+  # serving /whatsapp (SINGLE_SOCKET_PATHS in src/deploy/appspec.ts). It gets a
+  # component of its own for the same reason bundle-zimmer-secrets does: its
+  # env is its own, so the socket opens here and nowhere else — every other
+  # container running this image lists /whatsapp degraded and never connects.
+  # No component exists while whatsapp-zimmer below is disabled.
+  - name: bundle-whatsapp
+    instanceCount: 1
 
 servers:
   # kind: builtin, in the gateway process.
@@ -1158,6 +1175,45 @@ servers:
     timeoutMs: 180000
     env:
       POINTSYEAH_REFRESH_TOKEN: "${POINTSYEAH_REFRESH_TOKEN}"
+
+  # ---------------------------------------------------------------------------
+  # whatsapp — strad's own server, and the long-lived WhatsApp client behind it:
+  # a LINKED DEVICE (Baileys) of one real account, which is what can sit in a
+  # group a consumer created. Meta's Cloud API cannot join one.
+  #
+  # UNOFFICIAL, and said in every tool description: automating an account this
+  # way is against WhatsApp's ToS, and the account can be banned for it.
+  #
+  # NO CREDENTIAL FOR WHATSAPP ITSELF. The login is minted by `whatsapp_pair`
+  # (a pairing code a human types into the phone) and lives in GCS under
+  # WHATSAPP_GCS_PREFIX, sealed with AES-256-GCM under
+  # WHATSAPP_STATE_ENCRYPTION_KEY. What is seeded here is only where that state
+  # lives and the key it is sealed with.
+  #
+  # DISABLED UNTIL SEEDED, like telegram below: seed WHATSAPP_STATE_ENCRYPTION_KEY,
+  # WHATSAPP_GCS_BUCKET, WHATSAPP_GCS_CLIENT_EMAIL and WHATSAPP_GCS_PRIVATE_KEY in
+  # the store (/ui/secrets), delete `enabled: false`, deploy, then call
+  # whatsapp_pair from the console playground. docs/servers/whatsapp has the rest.
+  #
+  # ITS OWN BUNDLE, `bundle-whatsapp` above, at one instance. See its comment.
+  - slug: whatsapp-zimmer
+    kind: supplementary-image
+    title: WhatsApp (Zimmer bridge)
+    description: A linked WhatsApp device — read a chat's recent messages and post as the paired account.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle-whatsapp
+    path: /whatsapp
+    entitlements: [admin]
+    enabled: false
+    env:
+      WHATSAPP_STATE_ENCRYPTION_KEY: "${WHATSAPP_STATE_ENCRYPTION_KEY}"
+      WHATSAPP_GCS_BUCKET: "${WHATSAPP_GCS_BUCKET}"
+      WHATSAPP_GCS_CLIENT_EMAIL: "${WHATSAPP_GCS_CLIENT_EMAIL}"
+      WHATSAPP_GCS_PRIVATE_KEY: "${WHATSAPP_GCS_PRIVATE_KEY}"
+      # Plain config. Staging's own folder, so it can never share a login with
+      # production even if both point at one bucket.
+      WHATSAPP_GCS_PREFIX: whatsapp/staging
+      WHATSAPP_DEVICE_NAME: Zimmer (staging)
 
   # ---------------------------------------------------------------------------
   # telegram — strad's own server, and the one that speaks MTProto as a PERSON.

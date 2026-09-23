@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * bundle — THE strad supplementary image. All 23 upstream MCP servers (23
+ * bundle — THE strad supplementary image. All 24 upstream MCP servers (24
  * mounts, see `buildMounts`), one container, one process, one Chromium, one
- * mcp-grafana child. The gateway's config names more SLUGS than that — 32
+ * mcp-grafana child. The gateway's config names more SLUGS than that — 33
  * supplementary-image entries in infra/strad.staging.yaml — because capability
  * variants (gmail-ro, gmail-rw, …) are several slugs pointing at ONE mount here.
  * `/aws-device-farm` is the one that runs the other way round: it is mounted
  * here and named by no slug yet, because its credential is not seeded.
  *
- * TWENTY-THREE IS THE FLOOR, not a constant. Five trees (telegram,
+ * TWENTY-FOUR IS THE FLOOR, not a constant. Five trees (telegram,
  * remote-filesystem, google-sheets, gmail, grafana) mount ONE INSTANCE PER SLUG
  * the environment carries per-slug values for — see `extraSlugs` — so a
  * container told about `telegram-ro` and `telegram-rw` separately serves
@@ -16,7 +16,7 @@
  * the cases a real deployment uses: an OAuth refresh token IS one Google account
  * and a service-account token IS one Grafana, so each extra account is another
  * mount here. The conventional path is always mounted, so a config that asks for
- * none of this sees exactly the twenty-three it saw before.
+ * none of this sees exactly the twenty-four it saw before.
  *
  * STORE-SERVED INSTANCES are the other way in, and the one that needs no deploy.
  * A strad server on `path: /_instance/{tree}/{slug}` puts nothing on this
@@ -28,9 +28,12 @@
  * and on the first request for one this process does not hold yet, which is what
  * makes a slug created at runtime servable on that request.
  *
- * THIRTY-ONE of those are on one component. The other one, `zimmer-secrets`,
- * runs this same image as a SECOND component, and what makes it one is the SLUG
- * rather than the store: a second entitlement and a second console page. A
+ * THIRTY-ONE of those are on one component. The other two each run this same
+ * image on a component of their own. `zimmer-secrets` is one, and what makes it
+ * one is the SLUG rather than the store: a second entitlement and a second
+ * console page. `whatsapp-zimmer` is the other, on `bundle-whatsapp`, because
+ * the one linked-device socket must open in exactly one container at one
+ * instance (see `loadWhatsApp`); it renders no component while disabled. A
  * second STORE needs no second component — `loadSecrets()` below hands the tree
  * a LIST of them (`SECRETS_STORES`, derived from `mcpStores:`), each with its own
  * project, namespaces, viewer credential and probed capability, so one container
@@ -57,8 +60,8 @@
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
  *
- * BLAST RADIUS, honestly. Twenty-three servers now share a process. A crash is
- * a 23-server outage, not a 1-server outage. Everything below that CAN be made
+ * BLAST RADIUS, honestly. Twenty-four servers now share a process. A crash is
+ * a 24-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
  * catastrophic here); a dead Chromium is relaunched on next use; an unhandled
@@ -292,6 +295,8 @@ async function buildMounts(): Promise<Mount[]> {
   mounts.push(await loadTelegram("telegram"));
   for (const slug of extraSlugs("telegram", TELEGRAM_MARKER_NAMES))
     deferred.push({ slug, load: () => loadTelegram(slug) });
+
+  mounts.push(await loadWhatsApp());
 
   mounts.push(await loadBillSpend());
 
@@ -1075,7 +1080,7 @@ async function loadXTwitter(): Promise<Mount> {
     // The client caches its OAuth provider for the host process, so the factory
     // is built once here and memoised inside registerHandlers. Building it
     // LAZILY matters: `createXClientFromEnv` throws when no X credential is
-    // configured at all, and a throw at boot would take all twenty-three mounts down
+    // configured at all, and a throw at boot would take all twenty-four mounts down
     // over one unconfigured server.
     register: (s) =>
       created.registerHandlers(s, () =>
@@ -1157,6 +1162,47 @@ async function loadTelegram(
     capabilities: { tools: {} },
     degraded: missingCredentialsDegraded(missing),
     register: (s) => created.registerHandlers(s),
+  };
+}
+
+/**
+ * whatsapp — strad's own WhatsApp server, and the long-lived WhatsApp client
+ * behind it: ONE linked device, paired by code through its own tool.
+ *
+ * MOUNTED IN EVERY CONTAINER, CONNECTED IN AT MOST ONE. The tree's factory
+ * opens a socket only when its four variables are present, and a component's
+ * environment is its own servers' `env:` maps — so the container a
+ * `path: /whatsapp` slug is bundled onto connects, and every other container
+ * running this image lists the six tools degraded and never touches WhatsApp.
+ * Two sockets on one linked device kick each other off, which is why the
+ * component that holds it must run one instance (the renderer refuses more).
+ *
+ * ONE MOUNT, not one per slug: one linked device is one account, and a second
+ * account wants a second component with its own bucket prefix, not a second
+ * instance in this process.
+ *
+ * `close` is what the shutdown path calls, so a deploy's SIGTERM flushes the
+ * Signal state to GCS before the process exits.
+ */
+async function loadWhatsApp(): Promise<Mount> {
+  const mod = (await loadFromTree("whatsapp", "shared/build/index.js")) as {
+    createMCPServer: (options: { version: string; env: NodeJS.ProcessEnv }) => Created & {
+      close: () => Promise<void>;
+    };
+    missingCredentials: (env?: NodeJS.ProcessEnv) => string[];
+  };
+
+  const env = slugEnvView(process.env, "whatsapp");
+  const created = mod.createMCPServer({ version: VERSION, env });
+
+  return {
+    slug: "whatsapp",
+    tree: "whatsapp",
+    serverName: "strad-whatsapp",
+    capabilities: { tools: {} },
+    degraded: missingCredentialsDegraded(mod.missingCredentials(env)),
+    register: (s) => created.registerHandlers(s),
+    close: () => created.close(),
   };
 }
 
@@ -1748,7 +1794,7 @@ async function main(): Promise<void> {
   //
   // NOT AWAITED, and that is deliberate. A pass is one sequential read per
   // listed variable, each with its own timeout, so awaiting it would put a slow
-  // or unreachable core directly in front of `listen()` below — twenty-three
+  // or unreachable core directly in front of `listen()` below — twenty-four
   // mounts held off serving because one credential could not be re-read. The
   // container starting with the value the deploy baked is exactly the behaviour
   // every deployment has today, so falling back to it costs nothing; blocking
@@ -1761,7 +1807,7 @@ async function main(): Promise<void> {
   // STORE-SERVED INSTANCES — the mounts no deploy named. See the header.
   //
   // The first sync is NOT awaited, for the reason the refresh pass above is
-  // not: a slow core must not stand in front of `listen()` for twenty-three
+  // not: a slow core must not stand in front of `listen()` for twenty-four
   // mounts that need nothing from it. A request that arrives before the sync
   // lands takes the miss path in the route below, which syncs then.
   const instances = createInstanceReconciler<Mount>({
@@ -1797,7 +1843,7 @@ async function main(): Promise<void> {
   const internalOnly = requireInternalToken(process.env, timingSafeEqual);
 
   // Liveness for App Platform. Reports every mount and whether it is degraded —
-  // with 23 servers behind one health check, "ok: true" alone is not information.
+  // with 24 servers behind one health check, "ok: true" alone is not information.
   //
   // Deliberately OUTSIDE `internalOnly`. The platform's health prober holds no
   // token, and a 401 here is a component App Platform takes out of service — an
@@ -2007,16 +2053,26 @@ async function main(): Promise<void> {
     });
   });
 
-  // One stray rejection from one of twenty-three servers must not kill the other
-  // twenty-one. The standalone images exit here (correct, when the process IS the
+  // One stray rejection from one of twenty-four servers must not kill the other
+  // twenty-three. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {
     logError("unhandledRejection", reason);
   });
 
   const shutdown = (signal: string): void => {
-    log(`received ${signal}, closing Chromium and exiting`);
-    void closeSharedBrowser().finally(() => process.exit(0));
+    log(`received ${signal}, closing mounts and Chromium, then exiting`);
+    // A mount with `close` holds state worth saving — whatsapp flushes its
+    // Signal state to GCS here. Bounded, because App Platform escalates a
+    // slow exit to SIGKILL and a hung close must not cost the rest.
+    const closing = Promise.allSettled(mounts.map((m) => m.close?.()));
+    const bounded = Promise.race([
+      closing,
+      new Promise((resolve) => setTimeout(resolve, 5_000).unref()),
+    ]);
+    void bounded
+      .then(() => closeSharedBrowser())
+      .finally(() => process.exit(0));
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));

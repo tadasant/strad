@@ -10,14 +10,15 @@ import { waivedNames } from "../src/deploy/unseeded.ts";
  *
  * Three things are checked here, and they are the three that would rot:
  *
- *   1. COMPONENT COUNT. 32 servers must render as exactly THREE components —
+ *   1. COMPONENT COUNT. 33 servers must render as exactly THREE components —
  *      core, the bundle, and `bundle-zimmer-secrets`. A stray `bundle:` name in
  *      the config is a $5-$25/month regression that nobody would otherwise
  *      notice, so the number is pinned rather than merely bounded. The third one
  *      is deliberate and is not a capability variant: it fronts a SECOND
  *      parameter store, which is `process.env` and therefore cannot share a
  *      container. test/staging-config.multi-store.test.ts is where that property
- *      is proven; this file only guards the count.
+ *      is proven; this file only guards the count. `whatsapp-zimmer` declares a
+ *      fourth, `bundle-whatsapp`, which renders only once that slug is enabled.
  *
  *   2. THE TOOL COUNTS. The capability tiers are now allow-lists in this file,
  *      derived from each upstream's tool-group definitions. If someone trims one
@@ -47,7 +48,7 @@ const IMAGE = "ghcr.io/tadasant/strad-bundle:latest";
  *
  * This is not decoration. `render-spec` resolves an `env:`/`consoleEnv:` ref at
  * RENDER time and exits 1 on one it cannot find, so a single unseeded name does
- * not degrade one slug — it fails the spec and takes all thirty-five down. That is
+ * not degrade one slug — it fails the spec and takes all thirty-six down. That is
  * the fail-loud property the store-backed deploy is built around, and it is
  * worth keeping; what it costs is that "declare the server" and "seed the
  * secret" are one atomic step, and a PR can only do the first half.
@@ -162,7 +163,7 @@ describe("staging config", () => {
     expect(credentials.every((e) => e.type === "SECRET")).toBe(true);
 
     // And it is INSTRUMENTED. The collapsed container is the one this telemetry
-    // exists for — it is where Chromium, `op` and twenty-three servers now share a
+    // exists for — it is where Chromium, `op` and twenty-four servers now share a
     // vCPU — so a bundle that renders without its identity vars is a bundle we
     // could not tell apart from the core in a dashboard.
     expect(bundle.envs.find((e) => e.key === "STRAD_COMPONENT")?.value).toBe(
@@ -230,21 +231,25 @@ describe("staging config", () => {
     expect(core.envs.find((e) => e.key === KEY)?.type).toBe("SECRET");
   });
 
-  it("every containerised server runs the ONE image, and only the second store leaves the ONE bundle", () => {
+  it("every containerised server runs the ONE image, and only the second store and the WhatsApp socket leave the ONE bundle", () => {
     const supplementary = CONFIG.servers.filter(
       (s) => s.kind === "supplementary-image",
     );
-    expect(supplementary.length).toBe(32);
+    expect(supplementary.length).toBe(33);
     for (const server of supplementary) {
       expect(server.image).toBe(IMAGE);
       // ONE image, and one bundle for everything whose difference is
       // CAPABILITY. `zimmer-secrets` is the sole exception, and its difference
-      // is a STORE — `process.env`, which a container has exactly one of. A
-      // second slug appearing here is a second billed component: justify it in
+      // is a STORE — `process.env`, which a container has exactly one of.
+      // `whatsapp-zimmer` is the other, and its difference is a SOCKET: one
+      // linked device that a replica of the shared bundle would fight over. A
+      // new slug appearing here is another billed component: justify it in
       // this test or put it back in the bundle.
-      expect(server.bundle).toBe(
-        server.slug === "zimmer-secrets" ? "bundle-zimmer-secrets" : "bundle",
-      );
+      const own: Record<string, string> = {
+        "zimmer-secrets": "bundle-zimmer-secrets",
+        "whatsapp-zimmer": "bundle-whatsapp",
+      };
+      expect(server.bundle).toBe(own[server.slug] ?? "bundle");
     }
   });
 

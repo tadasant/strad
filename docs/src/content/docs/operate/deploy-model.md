@@ -355,6 +355,12 @@ learn:
   `instanceCount` above 1.** The render throws rather than emit it: a credential
   that rotates on use has exactly one valid value at a time, so two replicas
   refreshing it invalidate each other at the upstream.
+- **A component that serves `/whatsapp` may not have `instanceCount` above 1
+  either**, for a different reason: the mount holds ONE WhatsApp linked-device
+  socket, and a second replica opens a second socket on the same device, which
+  WhatsApp answers by kicking one off while both write its Signal state. The
+  paths this applies to are `SINGLE_SOCKET_PATHS` in `src/deploy/appspec.ts`.
+  See [WhatsApp](/servers/whatsapp/#exactly-one-instance).
 - **Deploy from a registry image, not a GitHub source.** App Platform's GitHub
   integration needs an interactive OAuth handshake and can't be driven headlessly
   from CI.

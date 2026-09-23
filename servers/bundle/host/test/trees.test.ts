@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 /**
- * `treeSdk` is the reason one process can host fifteen unrelated npm trees: it
+ * `treeSdk` is the reason one process can host sixteen unrelated npm trees: it
  * resolves the MCP SDK *as one tree sees it*, out of that tree's own
  * `node_modules`, and memoises the answer.
  *

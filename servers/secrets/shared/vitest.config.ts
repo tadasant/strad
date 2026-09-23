@@ -5,7 +5,7 @@ export default defineConfig({
     environment: "node",
     include: ["test/**/*.test.ts"],
     // The root's value. `node --test` had no per-test timeout at all, and the
-    // `servers` matrix runs fifteen legs at once on the one self-hosted box,
+    // `servers` matrix runs sixteen legs at once on the one self-hosted box,
     // so Vitest's 5s default would be the only new way for these to fail.
     testTimeout: 20_000,
   },

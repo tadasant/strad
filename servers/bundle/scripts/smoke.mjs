@@ -15,7 +15,7 @@
  * credential-dependent. CI has no credential, the probe fails closed, and the
  * count is the read-only 4 below.
  *
- * What it is really checking is that twenty-three servers, fifteen dependency trees and
+ * What it is really checking is that twenty-four servers, sixteen dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  *
@@ -89,6 +89,10 @@ const EXPECT = {
   // get_me, list_chats, get_chat, get_chat_history, search_messages, and the one
   // write tool, send_message — which `telegram-ro` is the allow-list without.
   telegram: 6,
+  // The WhatsApp bridge's contract with Zimmer's poller: three reads, the one
+  // send, and pair/logout. Named below as well as counted — Zimmer calls these
+  // by name every minute, so a rename is an outage there, not a new count here.
+  whatsapp: 6,
   // list_coding_fields, list_coding_options, list_transactions,
   // get_transaction_coding, and the one write tool, set_transaction_coding —
   // which `bill-spend-ro` is the allow-list without. The count is also a
@@ -134,6 +138,11 @@ const PARTIAL_SURFACES = {
 
 const TELEGRAM_TOOLS = new Set([
   "get_me", "list_chats", "get_chat", "get_chat_history", "search_messages", "send_message",
+]);
+
+const WHATSAPP_TOOLS = new Set([
+  "whatsapp_status", "whatsapp_list_chats", "whatsapp_get_messages",
+  "whatsapp_send_message", "whatsapp_pair", "whatsapp_logout",
 ]);
 
 const BILL_SPEND_TOOLS = new Set([
@@ -254,7 +263,7 @@ if (unchecked.length || absent.length) {
 
 // Two trees registering the SAME slug is the collision a twelve-tree single process
 // invites, and it collapses to one route — the set above cannot see it, because a
-// Set of 23 mounts' slugs is 22 entries wide and matches EXPECT exactly.
+// Set of 24 mounts' slugs is 23 entries wide and matches EXPECT exactly.
 if (health.servers.length !== mounted.size) {
   failed += 1;
   console.log(
@@ -277,8 +286,11 @@ for (const [slug, expected] of Object.entries(EXPECT)) {
     // of 5 is satisfied by a surface that swapped a read tool for `create_card`.
     const isExactBillSpendSurface = slug !== "bill-spend" ||
       tools.length === BILL_SPEND_TOOLS.size && tools.every((tool) => BILL_SPEND_TOOLS.has(tool));
+    const isExactWhatsAppSurface = slug !== "whatsapp" ||
+      tools.length === WHATSAPP_TOOLS.size && tools.every((tool) => WHATSAPP_TOOLS.has(tool));
     const ok = (expected === null || tools.length === expected) &&
-      isExactXSurface && isExactTelegramSurface && isExactBillSpendSurface;
+      isExactXSurface && isExactTelegramSurface && isExactBillSpendSurface &&
+      isExactWhatsAppSurface;
     if (!ok) failed += 1;
     console.log(
       `${ok ? "ok  " : "FAIL"} /${slug}: ${tools.length} tools${expected === null ? "" : ` (expected ${expected})`}`,

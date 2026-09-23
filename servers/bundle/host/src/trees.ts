@@ -3,14 +3,14 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /**
- * The collapsed bundle is ONE image assembled from FIFTEEN existing npm projects —
+ * The collapsed bundle is ONE image assembled from SIXTEEN existing npm projects —
  * bundle-api, bundle-google, onepassword, secrets, remote-filesystem, good-eggs,
- * fetchpet, pointsyeah, x-twitter, telegram, bill-spend, aws-device-farm,
- * pulse-subregistry, strad-fetch, grafana — each of which is copied in,
+ * fetchpet, pointsyeah, x-twitter, telegram, whatsapp, bill-spend,
+ * aws-device-farm, pulse-subregistry, strad-fetch, grafana — each of which is copied in,
  * installed and built exactly as its own image builds it, keeping its own
  * `node_modules` and its own lockfile.
  *
- * WHY NOT ONE FLAT npm PROJECT. Because merging fifteen dependency trees into one
+ * WHY NOT ONE FLAT npm PROJECT. Because merging sixteen dependency trees into one
  * is how you find out, in production, that fetchpet pinned playwright-extra and
  * bundle-google pinned express 4 and someone's transitive zod moved. Each tree
  * stays byte-for-byte the tree its own CI already proves; this host just imports
@@ -22,7 +22,7 @@ import { pathToFileURL } from "node:url";
  * is deliberate: three browsers on one vCPU is the thing we are trying not to do.
  */
 
-/** Where the Dockerfile lays the fifteen trees down. */
+/** Where the Dockerfile lays the sixteen trees down. */
 export const TREES_DIR = process.env.STRAD_TREES_DIR ?? "/app/trees";
 
 export type TreeName =
@@ -38,6 +38,7 @@ export type TreeName =
   | "telegram"
   | "bill-spend"
   | "aws-device-farm"
+  | "whatsapp"
   | "pulse-subregistry"
   | "strad-fetch"
   | "grafana";
@@ -50,7 +51,7 @@ export function treeDir(tree: TreeName): string {
  * Import a built module out of one of the trees, by path.
  *
  * A path import (not a bare specifier) is what lets one process host packages
- * from fifteen unrelated `node_modules`: resolution of the module's OWN imports then
+ * from sixteen unrelated `node_modules`: resolution of the module's OWN imports then
  * happens relative to where the file lives, which is inside its tree.
  */
 export async function loadFromTree<T>(

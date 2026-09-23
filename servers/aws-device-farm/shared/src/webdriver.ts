@@ -6,7 +6,7 @@
  * WebDriver server reachable over HTTPS — AWS's own documentation demonstrates
  * it with `curl <endpoint>/status` — and the dozen commands this server needs
  * are a dozen `fetch` calls. Pulling in WebdriverIO would add a large
- * dependency tree to an image that already carries fifteen of them, to spell
+ * dependency tree to an image that already carries sixteen of them, to spell
  * the same requests.
  *
  * THE URL IS THE CREDENTIAL. `remoteDriverEndpoint` authorises by the opaque

@@ -9,7 +9,7 @@
 # holds no cloud credentials.
 #
 # This file is an EXAMPLE: it shows every shape the schema allows, with fewer
-# servers than a real deployment. infra/strad.staging.yaml is the real one — 35
+# servers than a real deployment. infra/strad.staging.yaml is the real one — 36
 # server slugs across 3 App Platform components.
 
 version: 1
@@ -381,7 +381,7 @@ servers:
   # ONE image backs MANY servers: give each entry the SAME `image` and `bundle`
   # but a distinct `path`, and they all run in that one component (a component
   # still runs exactly one image). That is `ghcr.io/tadasant/strad-bundle:latest`
-  # — 23 MCP servers in one Node process, one shared Chromium, served at /slack,
+  # — 24 MCP servers in one Node process, one shared Chromium, served at /slack,
   # /gmail, /onepassword, /secrets and so on. Every entry below points at it.
   #
   # `env:` maps a container env var to a `${NAME}` ref, and those values resolve

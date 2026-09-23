@@ -255,10 +255,10 @@ numbers describe "how many servers," and they count different things:
 | The number | What it counts                                                                                     |
 | ---------- | -------------------------------------------------------------------------------------------------- |
 | **3**      | App Platform components: `core`, `bundle`, `bundle-zimmer-secrets`                                 |
-| **15**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
-| **23**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
-| **32**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included)         |
-| **35**     | total server slugs in staging (32 + `echo` builtin + `deepwiki` remote-http + `anki` local-tunnel) |
+| **16**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
+| **24**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
+| **33**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included)         |
+| **36**     | total server slugs in staging (33 + `echo` builtin + `deepwiki` remote-http + `anki` local-tunnel) |
 
 A slug is not a mount, and a mount is not a component. Before you write a number,
 grep for the others.
@@ -268,7 +268,10 @@ for capability. What makes it a component is the SLUG, not the store: a second
 entitlement and a second console page. A second STORE needs no second component —
 `mcpStores:` gives one `secrets` slug a list of them, each with its own project,
 namespaces, viewer credential and probed capability, rendered onto the bundle as
-a `SECRETS_STORES` descriptor.
+a `SECRETS_STORES` descriptor. `bundle-whatsapp` becomes a fourth once
+`whatsapp-zimmer` is enabled, and it is not there for capability either: it holds
+the one WhatsApp linked-device socket, at one instance. While that slug is
+disabled it renders no component.
 
 Two secrets SLUGS in ONE bundle is still silently wrong, and for the same reason
 it always was: a bundle is a container is one `process.env`, the secrets tree
@@ -320,8 +323,8 @@ slop behind when you fix a stale fact.
   "did I typo a key" is answered here, by `scripts/check-config.ts`.
 - `src/deploy/appspec.ts` — turns the config into a DigitalOcean App Platform spec.
   The server list decides the container topology.
-- `servers/bundle/` — one image, 23 mounted MCP servers, one shared Chromium,
-  assembled from FIFTEEN independently-built dependency trees.
+- `servers/bundle/` — one image, 24 mounted MCP servers, one shared Chromium,
+  assembled from SIXTEEN independently-built dependency trees.
 - `servers/remote-filesystem/` — strad's own artifact store, behind the
   `remote-filesystem-tmp-public` slug. `is_sensitive` picks the KIND of link;
   GCS's 7-day V4 ceiling is why the 14-day default is signed with V2.

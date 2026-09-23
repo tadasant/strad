@@ -146,7 +146,7 @@ at `${bundle.PRIVATE_URL}`.
   several Chromiums in one component; 1 vCPU serialises rendering.
 
 strad's own deployment is **three** components: `core`; one `bundle` whose image
-mounts twenty-three MCP servers and a single shared Chromium on `apps-s-1vcpu-2gb`; and
+mounts twenty-four MCP servers and a single shared Chromium on `apps-s-1vcpu-2gb`; and
 `bundle-zimmer-secrets`, that same image fronting a second parameter store.
 
 `src/deploy/appspec.ts` turns the same config into a DigitalOcean App Platform

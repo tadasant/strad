@@ -1,0 +1,14 @@
+{
+  "name": "whatsapp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "strad's WhatsApp MCP server — and the long-lived WhatsApp client behind it. A linked device (Baileys) paired to ONE account, whose Signal state and message buffer persist to GCS encrypted. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared",
+    "test": "npm run test --workspace shared"
+  }
+}
