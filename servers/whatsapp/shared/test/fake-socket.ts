@@ -30,6 +30,7 @@ export class FakeSocket implements WaSocket {
   pairingRequests: string[] = [];
   loggedOut = false;
   ended = false;
+  failNextSendAfterDelivery = false;
   private counter = 0;
 
   constructor(
@@ -82,11 +83,26 @@ export class FakeSocket implements WaSocket {
   async sendMessage(
     jid: string,
     content: { text: string },
-    options?: { quoted?: RawMessage },
+    options?: { quoted?: RawMessage; messageId?: string },
   ): Promise<RawMessage | undefined> {
+    if (this.failNextSendAfterDelivery) {
+      // The stanza went out (the echo comes back) but the call fails.
+      this.failNextSendAfterDelivery = false;
+      this.emit("messages.upsert", {
+        type: "append",
+        messages: [
+          {
+            key: { remoteJid: jid, fromMe: true, id: options?.messageId ?? "LOST" },
+            message: { conversation: content.text },
+            messageTimestamp: Math.floor(this.now() / 1000),
+          },
+        ],
+      });
+      throw new Error("socket closed before the ack");
+    }
     this.sent.push({ jid, text: content.text, ...(options?.quoted ? { quoted: options.quoted } : {}) });
     const message: RawMessage = {
-      key: { remoteJid: jid, fromMe: true, id: `3EB0SENT${++this.counter}` },
+      key: { remoteJid: jid, fromMe: true, id: options?.messageId ?? `3EB0SENT${++this.counter}` },
       message: options?.quoted
         ? { extendedTextMessage: { text: content.text, contextInfo: { stanzaId: options.quoted.key?.id } } }
         : { conversation: content.text },

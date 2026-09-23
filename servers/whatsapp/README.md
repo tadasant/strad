@@ -79,5 +79,11 @@ preconditions: pairing and the 515 restart, restore after a restart, the
 get_messages cursor, the `_self` flags against a phone JID and a LID, edits and
 deletes, history sync, `sent_by_bridge` surviving an echo, pacing refusals, two
 processes on one account, 401 and 440, logout, a state sealed under another
-key, and no configuration. The auth-state round trip runs against real Baileys.
+key, and no configuration; a send that fails after delivery, overlapping pair
+calls, logout racing a flush, a message held through a chat-load failure, and
+403. The auth-state round trip runs against real Baileys, the console guard
+against real libsignal, and `GcsBlobStore` against the real
+`@google-cloud/storage` client pointed at a local stand-in for the GCS JSON API
+(`test/gcs.test.ts`) — which is what checks that a read reports the generation
+a later conditional write needs.
 Nothing in CI talks to WhatsApp. Every identifier in the fixtures is invented.

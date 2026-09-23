@@ -46,3 +46,39 @@ export function logError(message: string): void {
 export function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
+
+/**
+ * libsignal — Baileys' Signal implementation — writes to `console` directly,
+ * and what it writes is the Signal state itself: `console.info("Closing
+ * session:", session)` prints a session's root key and ratchet private keys in
+ * full, on ordinary events (a contact's new device, an incoming prekey
+ * message). Baileys has a few `console` calls of its own. None of it passes
+ * through a logger this server can silence.
+ *
+ * So `console` is wrapped, once, before Baileys is loaded — and the wrapper
+ * acts ONLY on calls whose stack runs through `node_modules/libsignal/` or
+ * `node_modules/baileys/`. Everything else in this process (the bundle hosts
+ * twenty-three other servers) is passed through untouched. From those two
+ * libraries, `log` / `info` / `debug` are dropped, and `warn` / `error` keep
+ * only their leading string, redacted: never an object, never a stack.
+ */
+const NOISY_LIBRARY = /[\\/]node_modules[\\/](libsignal|baileys)[\\/]/;
+const GUARDED = Symbol.for("strad.whatsapp.consoleGuard");
+
+export function installConsoleGuard(target: Console = console): void {
+  const marked = target as unknown as Record<symbol, boolean>;
+  if (marked[GUARDED]) return;
+  marked[GUARDED] = true;
+  for (const level of ["log", "info", "debug", "trace", "warn", "error"] as const) {
+    const original = target[level].bind(target);
+    target[level] = (...args: unknown[]) => {
+      if (!NOISY_LIBRARY.test(new Error().stack ?? "")) {
+        original(...args);
+        return;
+      }
+      if (level !== "warn" && level !== "error") return;
+      const lead = typeof args[0] === "string" ? args[0] : "(non-text message)";
+      original(`${PREFIX} ${level === "warn" ? "WARN" : "ERROR"} [signal] ${redact(lead)}`);
+    };
+  }
+}

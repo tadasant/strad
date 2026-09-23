@@ -45,6 +45,12 @@ export interface GcsBlobStoreOptions {
   clientEmail: string;
   privateKey: string;
   projectId?: string;
+  /**
+   * Tests only: a local stand-in for the GCS JSON API. With a custom endpoint
+   * the client sends no credentials, which is what lets the suite drive the
+   * REAL client library end to end.
+   */
+  apiEndpoint?: string;
 }
 
 const status = (err: unknown): number | undefined => {
@@ -65,6 +71,7 @@ export class GcsBlobStore implements BlobStore {
         private_key: options.privateKey,
       },
       retryOptions: { autoRetry: true, maxRetries: 3 },
+      ...(options.apiEndpoint ? { apiEndpoint: options.apiEndpoint } : {}),
     });
   }
 
@@ -72,16 +79,40 @@ export class GcsBlobStore implements BlobStore {
     return this.storage.bucket(this.bucketName).file(name);
   }
 
+  /**
+   * The generation comes from the object's METADATA, and the bytes from a
+   * download pinned to that generation. `download()` alone reads no metadata —
+   * `file.metadata` stays empty — and a read that reported no generation would
+   * make every later conditional write fail its precondition, forever.
+   *
+   * Pinned, so the bytes and the generation describe the same write. If the
+   * object is replaced between the two calls the pinned download 404s, and the
+   * read starts over.
+   */
   async read(name: string): Promise<BlobRead | null> {
-    try {
-      const file = this.file(name);
-      const [data] = await file.download();
-      const generation = String(file.metadata?.generation ?? "");
-      return { data, generation };
-    } catch (err) {
-      if (status(err) === 404) return null;
-      throw err;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let generation: string;
+      try {
+        const [metadata] = await this.file(name).getMetadata();
+        generation = String(metadata.generation ?? "");
+      } catch (err) {
+        if (status(err) === 404) return null;
+        throw err;
+      }
+      if (!/^\d+$/.test(generation)) {
+        throw new Error(`GCS returned no generation for ${name}`);
+      }
+      try {
+        const [data] = await this.storage
+          .bucket(this.bucketName)
+          .file(name, { generation: Number(generation) })
+          .download();
+        return { data, generation };
+      } catch (err) {
+        if (status(err) !== 404) throw err;
+      }
     }
+    throw new Error(`${name} kept changing while it was being read`);
   }
 
   async write(
@@ -107,7 +138,12 @@ export class GcsBlobStore implements BlobStore {
       if (status(err) === 412) throw new PreconditionFailed(name);
       throw err;
     }
-    return String(file.metadata?.generation ?? "");
+    // A save DOES set `file.metadata` (the upload's response body).
+    const generation = String(file.metadata?.generation ?? "");
+    if (!/^\d+$/.test(generation)) {
+      throw new Error(`GCS returned no generation after writing ${name}`);
+    }
+    return generation;
   }
 
   async delete(name: string): Promise<void> {

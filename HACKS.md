@@ -5636,15 +5636,17 @@ requirement. What that costs:
   refuses `instanceCount > 1` for any bundle serving `/whatsapp`
   (`SINGLE_SOCKET_PATHS`), and the server's own lease in GCS makes the newest
   process the owner across the overlap an App Platform deploy creates. The
-  older process stops within 30 s, or at once if WhatsApp replaces its socket
-  first. State an old process wrote in that window and the new one overwrote is
-  lost; a Signal session that loses a ratchet step recovers through WhatsApp's
-  retry receipts, and a message can arrive late or as "waiting for this
-  message" once.
+  older process stops within 30 s, or at its next state write or reconnect if
+  that comes first (each re-reads the lease). State an old process wrote in
+  that window and the new one overwrote is lost; a Signal session that loses a
+  ratchet step recovers through WhatsApp's retry receipts, and a message can
+  arrive late or as "waiting for this message" once.
 - **State in a bucket, not a database.** The Signal state and the buffer are
-  sealed objects under `WHATSAPP_GCS_PREFIX`, written on a 2 s debounce and on
-  SIGTERM. A crash loses up to that window: the same retry-receipt recovery for
-  keys, and messages received in it are missing from the buffer.
+  sealed objects under `WHATSAPP_GCS_PREFIX` (the prefix is part of each
+  object's AAD, so moving them is as breaking as a new key), written on a 2 s
+  debounce and on SIGTERM. A crash loses up to that window: the same
+  retry-receipt recovery for keys, and messages RECEIVED in it are missing
+  from the buffer. A SENT message's id is written before it is sent.
 - **No history API.** A linked device gets one history sync when it pairs and
   whatever its socket receives after. A gap WhatsApp does not replay on
   reconnect is a gap in `whatsapp_get_messages`.

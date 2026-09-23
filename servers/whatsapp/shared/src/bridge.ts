@@ -20,6 +20,7 @@
  *
  * NOTHING here logs a message's text, a key, or a pairing code.
  */
+import { randomBytes } from "node:crypto";
 import type { BlobStore } from "./blob-store.js";
 import { MessageBuffer, type ChatMeta } from "./buffer.js";
 import type { WhatsAppConfig } from "./config.js";
@@ -151,6 +152,7 @@ export const PAIRING_INSTRUCTIONS =
 const MAX_TEXT_LENGTH = 4096;
 const BRIDGE_SENT_KEEP = 2000;
 const RECENT_SENT_KEEP = 200;
+const PENDING_KEEP = 5000;
 
 export class WhatsAppBridge {
   private readonly config: WhatsAppConfig;
@@ -188,6 +190,10 @@ export class WhatsAppBridge {
   private ingesting: Promise<void> = Promise.resolve();
   private closed = false;
   private leaseTimer: NodeJS.Timeout | null = null;
+  /** Set while logout or an owner change deletes the buffer: nothing may write. */
+  private wiping = false;
+  private readonly pendingIngest: StoredMessage[] = [];
+  private retryTimer: NodeJS.Timeout | null = null;
 
   constructor(options: BridgeOptions) {
     this.config = options.config;
@@ -205,7 +211,19 @@ export class WhatsAppBridge {
         maxMessages: options.config.bufferMaxMessages,
         maxAgeDays: options.config.bufferMaxAgeDays,
       },
-      (chatId) => this.store.readChat(chatId),
+      async (chatId) => {
+        try {
+          return await this.store.readChat(chatId);
+        } catch (err) {
+          // One chat object that does not open is that chat's history lost,
+          // not a reason to refuse its new messages forever. It is rewritten
+          // on the next flush. A transient read failure rethrows and the
+          // message is held (upsertOrHold).
+          if (!(err instanceof SealError)) throw err;
+          logWarning(`a chat object does not open and is discarded: ${err.message}`);
+          return null;
+        }
+      },
       () => Math.floor(this.clock() / 1000),
     );
     this.flushDelayMs = options.flushDelayMs ?? 2_000;
@@ -255,7 +273,7 @@ export class WhatsAppBridge {
     // newer deploy took the account.
     this.leaseTimer ??= setInterval(() => {
       void this.store
-        .checkLease()
+        .checkLease(true)
         .then((mine) => {
           if (!mine && !this.closed) this.onSuperseded();
         })
@@ -310,6 +328,7 @@ export class WhatsAppBridge {
 
   async close(): Promise<void> {
     this.closed = true;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
     if (this.leaseTimer) clearInterval(this.leaseTimer);
     this.leaseTimer = null;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
@@ -454,6 +473,13 @@ export class WhatsAppBridge {
       this.auth = null;
       return;
     }
+    if (code === DISCONNECT.forbidden) {
+      // Typically the account is banned or restricted. Retrying every few
+      // minutes would only make that worse; a human has to look.
+      logWarning("WhatsApp refused this device (403); not reconnecting");
+      this.lastDisconnectReason = "forbidden";
+      return;
+    }
     if (code === DISCONNECT.restartRequired) {
       // Expected right after pairing: WhatsApp asks for a fresh stream.
       this.lastDisconnectReason = "restart_required";
@@ -513,12 +539,29 @@ export class WhatsAppBridge {
     if (!jid || jid === this.ownerJid) return;
     if (this.ownerJid !== null) {
       logWarning("a different account was paired; discarding the old buffer");
-      await this.store.deleteBuffer();
-      this.buffer.clear();
-      this.bridgeSent.clear();
+      await this.wipe(() => this.store.deleteBuffer());
     }
     this.ownerJid = jid;
     this.buffer.indexDirty = true;
+  }
+
+  /**
+   * Delete persisted state with no flush able to write it back: new flushes
+   * are refused while `wiping` is set, and one already in flight is waited
+   * out before anything is deleted. Without both, a flush that had passed its
+   * lease check would restore a chat object or the index right after logout.
+   */
+  private async wipe(remove: () => Promise<void>): Promise<void> {
+    this.wiping = true;
+    try {
+      await this.flushing;
+      await remove();
+      this.buffer.clear();
+      this.bridgeSent.clear();
+      this.pendingIngest.length = 0;
+    } finally {
+      this.wiping = false;
+    }
   }
 
   // --- ingestion ------------------------------------------------------------------------
@@ -587,12 +630,41 @@ export class WhatsAppBridge {
     const n = normalizeMessage(raw, this.self(), this.buffer.lidToPn);
     if (n.kind === "message") {
       if (this.bridgeSent.has(n.message.id)) n.message.sent_by_bridge = true;
-      await this.buffer.upsert(n.message);
+      await this.upsertOrHold(n.message);
     } else if (n.kind === "mutation") {
       const m = n.mutation;
       if (m.kind === "revoke") await this.buffer.revoke(m.chat_id, m.id);
       else await this.buffer.edit(m.chat_id, m.id, m.text);
     }
+  }
+
+  /**
+   * WhatsApp does not deliver a message twice, so a message whose chat could
+   * not be loaded from GCS (a transient read failure) is HELD and retried,
+   * never dropped. Bounded, so a store that stays down cannot grow it without
+   * limit; past the bound the oldest held message is the one given up.
+   */
+  private async upsertOrHold(message: StoredMessage): Promise<void> {
+    try {
+      await this.buffer.upsert(message);
+    } catch (err) {
+      logWarning(`holding a message: its chat could not be loaded (${errMessage(err)})`);
+      this.pendingIngest.push(message);
+      if (this.pendingIngest.length > PENDING_KEEP) this.pendingIngest.shift();
+      this.scheduleRetryHeld();
+    }
+  }
+
+  private scheduleRetryHeld(): void {
+    if (this.retryTimer || this.closed) return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      const held = this.pendingIngest.splice(0);
+      void this.enqueue(async () => {
+        for (const m of held) await this.upsertOrHold(m);
+      });
+    }, this.flushDelayMs * 5);
+    this.retryTimer.unref?.();
   }
 
   private async applyUpdate(
@@ -656,27 +728,36 @@ export class WhatsAppBridge {
   }
 
   private async doFlush(): Promise<void> {
-    if (this.store.superseded) return;
+    if (this.store.superseded || this.wiping) return;
+    let failure: unknown;
     try {
-      if (!(await this.store.checkLease())) throw new SupersededError();
+      // FORCED, every flush: the chat and index writes below are
+      // unconditional, and a lease read that is up to 30 s stale is exactly
+      // the window in which a replaced process would overwrite what its
+      // successor just wrote. One small read per flush is the price.
+      if (!(await this.store.checkLease(true))) throw new SupersededError();
+
+      // Three independent sections. A failed auth write must not keep the
+      // buffer (and the `bridge_sent` ids in the index) from being saved.
       if (this.authDirty && this.auth && this.paired()) {
         this.authDirty = false;
         try {
           await this.store.writeAuth(this.auth.serialize());
         } catch (err) {
+          if (err instanceof SupersededError) throw err;
           this.authDirty = true;
-          throw err;
+          failure ??= err;
         }
       }
       const chats = [...this.buffer.dirtyChats];
       this.buffer.dirtyChats.clear();
-      for (let i = 0; i < chats.length; i++) {
-        const chat = chats[i]!;
+      for (const chat of chats) {
         try {
           await this.store.writeChat(chat, await this.buffer.snapshot(chat));
         } catch (err) {
-          for (const c of chats.slice(i)) this.buffer.dirtyChats.add(c);
-          throw err;
+          if (err instanceof SupersededError) throw err;
+          this.buffer.dirtyChats.add(chat);
+          failure ??= err;
         }
       }
       if (this.buffer.indexDirty) {
@@ -684,8 +765,9 @@ export class WhatsAppBridge {
         try {
           await this.store.writeIndex(this.indexDoc());
         } catch (err) {
+          if (err instanceof SupersededError) throw err;
           this.buffer.indexDirty = true;
-          throw err;
+          failure ??= err;
         }
       }
     } catch (err) {
@@ -693,9 +775,12 @@ export class WhatsAppBridge {
         this.onSuperseded();
         return;
       }
-      logWarning(`could not persist state (will retry): ${errMessage(err)}`);
+      failure ??= err;
+    }
+    if (failure !== undefined) {
+      logWarning(`could not persist state (will retry): ${errMessage(failure)}`);
       this.scheduleFlush();
-      throw err;
+      throw failure;
     }
   }
 
@@ -888,44 +973,53 @@ export class WhatsAppBridge {
       };
     }
 
+    // The id is chosen HERE and persisted as the bridge's BEFORE anything is
+    // sent. A send can reach WhatsApp and still fail on the way back (a
+    // dropped socket, a timeout); if the id were only learned from the return
+    // value, that message's echo would arrive unmarked and Zimmer — which drops
+    // sent_by_bridge messages, and on a personal number cannot tell by
+    // `from_me` — would answer its own post. Same shape as Baileys' own ids.
+    const id = `3EB0${randomBytes(18).toString("hex").toUpperCase()}`;
+    this.rememberSent(id);
+    this.buffer.indexDirty = true;
+    await this.flush().catch(() => {});
+
     const sent = await this.pacer.run(
       request.text,
       () => socket.sendPresenceUpdate("composing", chatId),
-      () => socket.sendMessage(chatId, { text: request.text }, quoted ? { quoted } : undefined),
+      () =>
+        socket.sendMessage(
+          chatId,
+          { text: request.text },
+          { messageId: id, ...(quoted ? { quoted } : {}) },
+        ),
     );
-    const id = sent?.key?.id;
-    if (!id) {
+    if (!sent?.key?.id) {
       throw new BridgeError(
-        "WhatsApp accepted no message id for this send, so it may or may not have " +
+        "WhatsApp returned no message for this send, so it may or may not have " +
           "been delivered. Check whatsapp_get_messages before sending again.",
       );
     }
     const timestamp = toSeconds(sent.messageTimestamp) ?? this.nowSeconds();
-
-    // Recorded BEFORE anything else can read the chat, and in a set that
-    // survives the message being re-delivered under another chat address:
-    // Zimmer drops sent_by_bridge messages, and a miss here is the bridge
-    // answering itself.
-    this.bridgeSent.add(id);
-    if (this.bridgeSent.size > BRIDGE_SENT_KEEP) {
-      this.bridgeSent.delete(this.bridgeSent.values().next().value!);
-    }
     this.recentSent.set(id, sent.message);
     if (this.recentSent.size > RECENT_SENT_KEEP) {
       this.recentSent.delete(this.recentSent.keys().next().value!);
     }
     await this.enqueue(async () => {
-      await this.ingest({ ...sent, messageTimestamp: timestamp });
+      await this.ingest({ ...sent, key: { ...sent.key, id }, messageTimestamp: timestamp });
       await this.buffer.markSentByBridge(chatId, id);
     });
-    // Persisted BEFORE the call returns, not on the debounce. On a personal
-    // number `from_me` is also true of everything typed on the phone, so this
-    // flag is the poller's only self-loop guard, and a crash or deploy inside
-    // the debounce window must not forget it. A failed write is retried on the
-    // debounce and does not fail a send that already happened.
-    this.buffer.indexDirty = true;
+    // The record, flushed before the call returns too, so a read after a crash
+    // finds the message itself and not only its id.
     await this.flush().catch(() => {});
     return { id, timestamp };
+  }
+
+  private rememberSent(id: string): void {
+    this.bridgeSent.add(id);
+    if (this.bridgeSent.size > BRIDGE_SENT_KEEP) {
+      this.bridgeSent.delete(this.bridgeSent.values().next().value!);
+    }
   }
 
   async pair(phoneNumber: string): Promise<PairResult> {
@@ -959,6 +1053,13 @@ export class WhatsAppBridge {
     await this.connect();
     const socket = this.socket as WaSocket | null;
     if (!socket) throw new BridgeError("Could not open a WhatsApp socket to pair on.");
+    // This attempt's socket. A later whatsapp_pair call replaces it, and this
+    // call must then neither tear that one down nor hand out a code for it.
+    const mine = this.generation;
+    const superseded = () =>
+      new BridgeError(
+        "A newer whatsapp_pair call replaced this one; use the code it returned.",
+      );
 
     let timer: NodeJS.Timeout | undefined;
     const timedOut = new Promise<"timeout">((resolve) => {
@@ -966,6 +1067,7 @@ export class WhatsAppBridge {
     });
     const outcome = await Promise.race([readyForCode, timedOut]);
     clearTimeout(timer);
+    if (mine !== this.generation) throw superseded();
     if (outcome === "timeout") {
       this.pairing = null;
       this.dropSocket();
@@ -978,6 +1080,7 @@ export class WhatsAppBridge {
     }
 
     const code = await socket.requestPairingCode(digits);
+    if (mine !== this.generation) throw superseded();
     if (this.pairing) {
       this.pairing.expiresAt = this.clock() + PAIRING_CODE_TTL_SECONDS * 1000;
     }
@@ -1011,11 +1114,11 @@ export class WhatsAppBridge {
     this.auth = null;
     this.authDirty = false;
     await this.ingesting;
-    await this.store.deleteAuth();
-    await this.store.deleteBuffer();
-    this.buffer.clear();
+    await this.wipe(async () => {
+      await this.store.deleteAuth();
+      await this.store.deleteBuffer();
+    });
     this.buffer.indexDirty = false;
-    this.bridgeSent.clear();
     this.recentSent.clear();
     this.ownerJid = null;
     this.stateError = null;

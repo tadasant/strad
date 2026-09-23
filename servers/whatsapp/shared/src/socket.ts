@@ -15,6 +15,7 @@
  * speaks. Baileys is that protocol in Node, which is the language of this repo.
  * It is unofficial, and so is everything built on it: see the README.
  */
+import { installConsoleGuard } from "./logging.js";
 import type { RawMessage } from "./normalize.js";
 
 /** The subset of Baileys' auth state this server builds and persists. */
@@ -52,7 +53,7 @@ export interface WaSocket {
   sendMessage(
     jid: string,
     content: { text: string },
-    options?: { quoted?: RawMessage },
+    options?: { quoted?: RawMessage; messageId?: string },
   ): Promise<RawMessage | undefined>;
   sendPresenceUpdate(type: "composing" | "paused", jid: string): Promise<void>;
   groupFetchAllParticipating(): Promise<Record<string, GroupInfo>>;
@@ -72,7 +73,11 @@ export type SocketFactory = (options: SocketOptions) => Promise<WaSocket>;
 /** Baileys' module, loaded once, on first need. */
 type BaileysModule = typeof import("baileys");
 let baileys: Promise<BaileysModule> | undefined;
-export const loadBaileys = (): Promise<BaileysModule> => (baileys ??= import("baileys"));
+export const loadBaileys = (): Promise<BaileysModule> => {
+  // Before the import, so nothing libsignal prints can slip out first.
+  installConsoleGuard();
+  return (baileys ??= import("baileys"));
+};
 
 /** HTTP-ish status a Baileys disconnect carries (a Boom's `output.statusCode`). */
 export function disconnectCode(error: unknown): number | undefined {
@@ -112,7 +117,7 @@ export const createBaileysSocket: SocketFactory = async (options) => {
     // WhatsApp refuses a client version it considers too old (405). Asking
     // for the current web version on every connect is what keeps a pinned
     // Baileys connecting between releases; the bundled default is the fallback.
-    const latest = await mod.fetchLatestWaWebVersion({});
+    const latest = await mod.fetchLatestWaWebVersion({ signal: AbortSignal.timeout(5_000) });
     if (latest?.version) version = latest.version as [number, number, number];
   } catch {
     version = undefined;

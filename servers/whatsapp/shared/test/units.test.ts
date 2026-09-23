@@ -181,3 +181,39 @@ describe("auth state (real Baileys)", () => {
     assert.deepEqual(await restored.state.keys.get("session", ["a.0"]), {});
   });
 });
+
+describe("console guard", () => {
+  test("libsignal's session dumps never reach the console; other callers are untouched", async () => {
+    const { installConsoleGuard } = await import("../src/logging.js");
+    const { createRequire } = await import("node:module");
+    const lines: string[] = [];
+    const sink = {
+      log: (...a: unknown[]) => lines.push(`log ${a.map(String).join(" ")}`),
+      info: (...a: unknown[]) => lines.push(`info ${a.map(String).join(" ")}`),
+      debug: (...a: unknown[]) => lines.push(`debug ${a.map(String).join(" ")}`),
+      trace: (...a: unknown[]) => lines.push(`trace ${a.map(String).join(" ")}`),
+      warn: (...a: unknown[]) => lines.push(`warn ${a.map(String).join(" ")}`),
+      error: (...a: unknown[]) => lines.push(`error ${a.map(String).join(" ")}`),
+    } as unknown as Console;
+    installConsoleGuard(sink);
+
+    // The real library, printing through the guarded sink.
+    const real = globalThis.console;
+    globalThis.console = sink;
+    try {
+      const { SessionRecord } = createRequire(import.meta.url)("libsignal");
+      const secret = "ab".repeat(32);
+      const session = { indexInfo: { closed: -1 }, currentRatchet: { rootKey: secret } };
+      const record = new SessionRecord();
+      record.closeSession(session); // console.info("Closing session:", session)
+      record.closeSession(session); // console.warn("Session already closed", session)
+      assert.equal(lines.join("\n").includes(secret), false);
+      assert.deepEqual(lines, ["warn [whatsapp] WARN [signal] Session already closed"]);
+
+      sink.info("an unrelated server's line", { kept: true });
+      assert.equal(lines[1], "info an unrelated server's line [object Object]");
+    } finally {
+      globalThis.console = real;
+    }
+  });
+});

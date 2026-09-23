@@ -664,3 +664,99 @@ test("unconfigured: tools list, every call names the missing variables", async (
     assert.match(res.text, new RegExp(name));
   }
 });
+
+test("a send that reaches WhatsApp and then fails still marks its echo sent_by_bridge", async () => {
+  const { mcp, fake } = await connect();
+  await pairAndConnect(mcp, fake);
+  const socket = fake.latest();
+  socket.failNextSendAfterDelivery = true;
+  const res = await call(mcp, "whatsapp_send_message", { chat_id: GROUP, text: "did this go?" });
+  assert.equal(res.isError, true);
+  const read = await call(mcp, "whatsapp_get_messages", { chat_id: GROUP });
+  const echo = read.json.messages.find((m: any) => m.text === "did this go?");
+  assert.ok(echo, "the echo is buffered");
+  assert.equal(echo.sent_by_bridge, true, "its id was the bridge's before the send");
+});
+
+test("a second whatsapp_pair replaces the first without the first tearing it down", async () => {
+  const { mcp, fake } = await connect();
+  const first = call(mcp, "whatsapp_pair", { phone_number: "15550000001" });
+  await waitFor(() => fake.sockets.length === 1);
+  const second = call(mcp, "whatsapp_pair", { phone_number: "15550000001" });
+  await waitFor(() => fake.sockets.length === 2);
+  fake.latest().offerPairing();
+  assert.equal((await second).isError, false);
+  const stale = await first; // times out (500 ms here) waiting on a replaced socket
+  assert.equal(stale.isError, true);
+  assert.match(stale.text, /newer whatsapp_pair/);
+  assert.equal(fake.sockets[1]!.ended, false, "the live pairing socket survives");
+  assert.equal((await call(mcp, "whatsapp_status")).json.pairing_in_progress, true);
+});
+
+test("logout waits out an in-flight flush, so nothing it deletes is written back", async () => {
+  class SlowBlobs extends MemoryBlobStore {
+    slow = false;
+    override async write(name: string, data: Buffer, ifGeneration?: string | null) {
+      if (this.slow && name.includes("/chats/")) await new Promise((r) => setTimeout(r, 50));
+      return super.write(name, data, ifGeneration);
+    }
+  }
+  const blobs = new SlowBlobs();
+  const { mcp, fake, created } = await connect({ blobs });
+  await pairAndConnect(mcp, fake);
+  await created.bridge()!.flush();
+  blobs.slow = true;
+  fake.latest().emit("messages.upsert", { type: "notify", messages: [groupText("W1", NOW, "racing")] });
+  // The debounced flush starts within a millisecond and then sits in its slow
+  // chat write: that is the in-flight flush logout has to wait out.
+  await new Promise((r) => setTimeout(r, 15));
+  const out = await call(mcp, "whatsapp_logout");
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(out.isError, false);
+  assert.deepEqual(await blobs.list("whatsapp/"), ["whatsapp/lease.json"]);
+});
+
+test("a message whose chat cannot be loaded right now is held, not dropped", async () => {
+  class FlakyBlobs extends MemoryBlobStore {
+    failChatReads = 0;
+    override async read(name: string) {
+      if (this.failChatReads > 0 && name.includes("/chats/")) {
+        this.failChatReads--;
+        throw new Error("503 backend error");
+      }
+      return super.read(name);
+    }
+  }
+  const blobs = new FlakyBlobs();
+  const cfg = config();
+  const first = await connect({ blobs, cfg });
+  await pairAndConnect(first.mcp, first.fake);
+  first.fake.latest().emit("messages.upsert", { type: "notify", messages: [groupText("F0", NOW - 9, "before")] });
+  await waitFor(async () => (await blobs.list("whatsapp/chats/")).length === 1);
+  await first.close();
+  open.pop();
+
+  const fake = fakeWhatsApp(clock);
+  fake.autoOpen = true;
+  const second = await connect({ blobs, cfg, fake });
+  await waitFor(async () => (await call(second.mcp, "whatsapp_status")).json.connected);
+  blobs.failChatReads = 1;
+  fake.latest().emit("messages.upsert", { type: "notify", messages: [groupText("F1", NOW, "after")] });
+  await waitFor(async () => {
+    const r = await call(second.mcp, "whatsapp_get_messages", { chat_id: GROUP });
+    return !r.isError && r.json.messages.some((m: any) => m.id === "F1");
+  });
+  const r = await call(second.mcp, "whatsapp_get_messages", { chat_id: GROUP });
+  assert.deepEqual(r.json.messages.map((m: any) => m.id), ["F0", "F1"]);
+});
+
+test("a 403 (a banned or restricted account) stops reconnecting", async () => {
+  const { mcp, fake } = await connect();
+  await pairAndConnect(mcp, fake);
+  fake.latest().close(403);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(fake.sockets.length, 2);
+  const status = await call(mcp, "whatsapp_status");
+  assert.equal(status.json.last_disconnect_reason, "forbidden");
+  assert.equal(status.json.paired, true);
+});

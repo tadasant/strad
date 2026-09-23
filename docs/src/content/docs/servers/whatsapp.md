@@ -44,8 +44,9 @@ speaking, under their own name.
 | `whatsapp_pair`         | admin     | Start pairing: returns a code a human enters on the phone            |
 | `whatsapp_logout`       | admin     | Unlink, and delete everything persisted                              |
 
-Every result is a JSON object in `structuredContent` and the same JSON as the
-first text item. Timestamps are integer UNIX seconds. Chat ids are WhatsApp JIDs:
+Every successful result is a JSON object in `structuredContent` and the same
+JSON as the first text item. A failure is an MCP error result (`isError: true`)
+whose text says what went wrong and what to do next. Timestamps are integer UNIX seconds. Chat ids are WhatsApp JIDs:
 `…@g.us` for a group, `…@s.whatsapp.net` (or `…@lid`) for a person.
 
 ### The read Zimmer polls
@@ -127,7 +128,9 @@ every chat and post as it.
 
 **Changing the key** makes the stored state unreadable. The server says so
 (`state_unreadable`) and does not connect; it does not silently start over.
-Restore the old key, or call `whatsapp_logout` and pair again.
+Restore the old key, or call `whatsapp_logout` and pair again. The same goes for
+**changing the prefix**: the associated data is the full object name, prefix
+included, so objects moved to another prefix do not open either.
 
 Give each deployment its **own prefix** — staging uses `whatsapp/staging`. Two
 deployments sharing one prefix are two processes on one linked device.
@@ -163,7 +166,9 @@ for about **14 days**. The server sees that as a logout (`401`): it deletes the
 dead login, keeps the buffer, stops reconnecting, and `whatsapp_status` reports
 `paired: false` with `last_disconnect_reason: "logged_out"`. A human pairs again.
 The same happens when someone removes the device from the phone's Linked devices
-list.
+list. A `403` (typically a banned or restricted account) also stops reconnecting,
+with `last_disconnect_reason: "forbidden"`; the login is kept, and a human decides
+what happens next.
 
 ## Exactly one instance
 
@@ -176,11 +181,12 @@ state — a session that silently stops decrypting. So:
   render more than one instance of any bundle serving `/whatsapp`.
 - **A deploy overlaps two containers anyway** — App Platform starts the new one
   before stopping the old. The server holds a **lease** in GCS: a process claims
-  it at start, so the newest process owns the account. The older one learns it
-  lost the lease within 30 seconds (or at its next state write, which is
-  conditional on the GCS generation it last saw), closes its socket, and stops
-  writing. A socket WhatsApp reports as replaced (`440`) waits ten minutes before
-  trying again, so two live processes cannot ping-pong.
+  it at start, so the newest process owns the account. Every process re-reads
+  the lease every 30 seconds, before every state write, and before every
+  reconnect; one that finds it lost closes its socket and stops writing. The
+  auth write is also conditional on the GCS generation the process last saw. A
+  socket WhatsApp reports as replaced (`440`) waits ten minutes and then checks
+  the lease before trying again, so two live processes cannot ping-pong.
 - **SIGTERM flushes.** The bundle host closes the mount on shutdown, which writes
   any pending state before exit.
 
@@ -199,9 +205,12 @@ nothing marking it as software. To look less like a bot:
   queued. A queue nobody watches is bulk sending.
 
 It sends only to a chat the bridge knows (`whatsapp_list_chats`), so a typo'd id
-cannot message a stranger. The sent message is recorded in the buffer with
-`sent_by_bridge: true` before the call returns; the echo WhatsApp sends back, a
-retry, or a later history sync cannot clear it.
+cannot message a stranger. The message id is chosen by the bridge and written to
+GCS as the bridge's **before** the message is sent, and the sent message itself
+is written before the call returns. So a send that reaches WhatsApp and then
+fails, a crash, or a redeploy cannot leave a message the bridge posted without
+`sent_by_bridge: true` — on a personal number `from_me` is also true of what the
+person types, so that flag is the only way a caller can skip its own posts.
 
 The device is marked `markOnlineOnConnect: false`, so the phone keeps getting
 notifications — on a personal number, the person is still told about their own
