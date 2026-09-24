@@ -8,6 +8,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import express from "express";
 import type { Server } from "node:http";
+import vm from "node:vm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { parseConfig } from "../src/config/load.ts";
@@ -18,6 +19,7 @@ import {
   sharedSecretProviders,
 } from "../src/secrets/provider/index.ts";
 import {
+  ADDRESS_JS,
   cspOrigin,
   frameCsp,
   MCP_APP_MIME,
@@ -231,6 +233,126 @@ describe("pure units", () => {
   });
 });
 
+/**
+ * Runs the host page's inline script against a stub browser opened at `url`,
+ * and returns what it framed plus a way to post from the frame. The script is
+ * the one the server rendered, not a copy.
+ */
+function runHost(html: string, url: string) {
+  const script = /<script>([\s\S]*?)<\/script>/.exec(html)?.[1] ?? "";
+  const u = new URL(url);
+  const location = { pathname: u.pathname, search: u.search, hash: u.hash };
+  const contentWindow = { postMessage() {} };
+  const frame: Record<string, unknown> = {
+    contentWindow,
+    setAttribute() {},
+    addEventListener() {},
+  };
+  const listeners: Record<string, (e: unknown) => void> = {};
+  const replaced: string[] = [];
+  vm.runInNewContext(script, {
+    URLSearchParams,
+    location,
+    document: {
+      createElement: () => frame,
+      body: { appendChild() {} },
+    },
+    window: {
+      addEventListener: (t: string, f: (e: unknown) => void) => {
+        listeners[t] = f;
+      },
+    },
+    history: {
+      replaceState: (_s: unknown, _t: string, next: string) => {
+        replaced.push(next);
+        const n = new URL(next, u);
+        Object.assign(location, {
+          pathname: n.pathname,
+          search: n.search,
+          hash: n.hash,
+        });
+      },
+    },
+  });
+  return {
+    src: frame.src as string,
+    replaced,
+    notify(method: string, params: unknown) {
+      listeners.message?.({
+        source: contentWindow,
+        data: { jsonrpc: "2.0", method, params },
+      });
+    },
+  };
+}
+
+describe("the address bar hand-over (ADDRESS_JS)", () => {
+  const fn = vm.runInNewContext(
+    `${ADDRESS_JS}; ({ frameSrcFor, hostUrlFor })`,
+    { URLSearchParams },
+  ) as {
+    frameSrcFor(base: string, search: string, hash: string): string;
+    hostUrlFor(p: string, s: string, h: string, app: string): string;
+  };
+  const BASE = "/apps/shop/frame?uri=ui%3A%2F%2Fshop%2Fpage";
+
+  it("forwards the query onto the frame, minus the host's uri", () => {
+    expect(
+      fn.frameSrcFor(
+        BASE,
+        "?uri=ui%3A%2F%2Fevil&updated=2026-09-20&keys=a,b",
+        "",
+      ),
+    ).toBe(`${BASE}&updated=2026-09-20&keys=a%2Cb`);
+    expect(fn.frameSrcFor(BASE, "?uri=ui%3A%2F%2Fevil", "")).toBe(BASE);
+    expect(fn.frameSrcFor(BASE, "", "")).toBe(BASE);
+  });
+
+  it("never hands the console gate's token, or a bracketed uri, to the app", () => {
+    expect(
+      fn.frameSrcFor(
+        BASE,
+        "?token=sekrit&token%5B%5D=x&uri%5B%5D=ui%3A%2F%2Fevil&uri%5Ba%5D=b&tokens=1&a=1",
+        "",
+      ),
+    ).toBe(`${BASE}&tokens=1&a=1`);
+  });
+
+  it("keeps the hash, after the query", () => {
+    expect(fn.frameSrcFor(BASE, "?listing=k1", "#photos")).toBe(
+      `${BASE}&listing=k1#photos`,
+    );
+    expect(fn.frameSrcFor(BASE, "", "#photos")).toBe(`${BASE}#photos`);
+    expect(fn.frameSrcFor(BASE, "", "#")).toBe(BASE);
+  });
+
+  it("starts a query when the base has none", () => {
+    expect(fn.frameSrcFor("/apps/shop/frame", "?a=1", "#h")).toBe(
+      "/apps/shop/frame?a=1#h",
+    );
+  });
+
+  it("mirrors an app's search onto the address bar, keeping only the host's uri", () => {
+    expect(
+      fn.hostUrlFor(
+        "/apps/shop",
+        "?uri=ui%3A%2F%2Fx&old=1",
+        "#h",
+        "?updated=2026-09-20",
+      ),
+    ).toBe("/apps/shop?uri=ui%3A%2F%2Fx&updated=2026-09-20#h");
+    // An app cannot move the host onto another page through the mirror.
+    expect(
+      fn.hostUrlFor("/apps/shop", "", "", "uri=ui%3A%2F%2Fevil&keys=a"),
+    ).toBe("/apps/shop?keys=a");
+    expect(fn.hostUrlFor("/apps/shop", "?old=1", "", "")).toBe("/apps/shop");
+    // Nor plant a sign-in token for the console gate to try on reload.
+    expect(
+      fn.hostUrlFor("/apps/shop", "", "", "token=x&token%5B%5D=y&keys=a"),
+    ).toBe("/apps/shop?keys=a");
+  });
+});
+
 describe("withBlankTarget", () => {
   it("lands after <head>, else after the doctype, else first", () => {
     expect(withBlankTarget("<html><head><title>x</title></head></html>")).toBe(
@@ -256,6 +378,21 @@ describe("GET /apps/:server", () => {
     expect(html).toContain('class="open" href="/apps/shop"');
   });
 
+  it("keeps a shared link's query on the way in, and its hash on the click", async () => {
+    const res = await fetch(`${baseUrl}/apps/shop?updated=2026-09-20`, {
+      headers: { cookie, "sec-fetch-site": "cross-site" },
+    });
+    const html = await res.text();
+    expect(html).toContain('class="open" href="/apps/shop?updated=2026-09-20"');
+    const script = /<script>([\s\S]*?)<\/script>/.exec(html)?.[1] ?? "";
+    const a = { hash: "" };
+    vm.runInNewContext(script, {
+      location: { hash: "#photos" },
+      document: { querySelector: () => a },
+    });
+    expect(a.hash).toBe("#photos");
+  });
+
   it("renders the host with the frame and the tool that declares the UI", async () => {
     const res = await get("/apps/shop");
     expect(res.status).toBe(200);
@@ -276,6 +413,37 @@ describe("GET /apps/:server", () => {
     expect(html).toContain('const initialTool = "show"');
     // The page itself is never inlined into the console's origin.
     expect(html).not.toContain("hello from the app");
+  });
+
+  it("frames the app with the address bar's query (minus uri) and hash, and mirrors search back", async () => {
+    const html = await (await get("/apps/shop")).text();
+    const host = runHost(
+      html,
+      `${baseUrl}/apps/shop?uri=ui%3A%2F%2Fshop%2Fother&updated=2026-09-20&listing=k1#photos`,
+    );
+    expect(host.src).toBe(
+      `/apps/shop/frame?uri=${encodeURIComponent("ui://shop/page")}&updated=2026-09-20&listing=k1#photos`,
+    );
+    host.notify("x-strad/search", { search: "?updated=2026-09-21" });
+    expect(host.replaced).toEqual([
+      "/apps/shop?uri=ui%3A%2F%2Fshop%2Fother&updated=2026-09-21#photos",
+    ]);
+    // Each mirror keeps the other's half of the address.
+    host.notify("x-strad/hash", { hash: "floorplan" });
+    host.notify("x-strad/search", { search: "keys=a" });
+    // Anything but a string is ignored.
+    host.notify("x-strad/search", { search: { toString: 1 } });
+    expect(host.replaced.slice(1)).toEqual([
+      "#floorplan",
+      "/apps/shop?uri=ui%3A%2F%2Fshop%2Fother&keys=a#floorplan",
+    ]);
+  });
+
+  it("frames the bare app when the address bar carries nothing", async () => {
+    const html = await (await get("/apps/shop")).text();
+    expect(runHost(html, `${baseUrl}/apps/shop`).src).toBe(
+      `/apps/shop/frame?uri=${encodeURIComponent("ui://shop/page")}`,
+    );
   });
 
   it("says so for a server that ships no app", async () => {

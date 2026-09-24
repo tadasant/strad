@@ -498,9 +498,53 @@ export function renderOpenPrompt(opts: {
   <a class="open" href="${esc(opts.href)}">Open</a>
   ${opts.signedInAs ? `<p class="who">${esc(opts.signedInAs)}</p>` : ""}
 </main>
+<script>
+  // The server never sees the fragment, so the link it wrote has none: carry
+  // this page's hash over, or a shared #listing is lost on the click.
+  document.querySelector("a.open").hash = location.hash;
+</script>
 </body>
 </html>`;
 }
+
+/**
+ * The host page's address-bar hand-over, as browser source: the host page
+ * inlines it, and `test/ui.apps.test.ts` runs it in `node:vm`. The frame is
+ * opaque-origin and cannot read this page's URL, so the app's own state in the
+ * address bar (`?updated=`, `#listing`) reaches it only on its src, and comes
+ * back only as a notification the host mirrors.
+ *
+ * Two params are the HOST's and never the app's. `uri` picks which `ui://`
+ * page to frame; `token` is the console gate's sign-in token, which must never
+ * reach third-party page code, nor be planted on the address bar by it. Both
+ * are dropped on the way in, bracketed `qs` forms included, and on the way back
+ * `uri` is kept from the address bar while `token` is never written. Every
+ * other param is the app's. It rides after the frame route's own `uri`, and
+ * `frame-src` matches the path, so it widens nothing the frame may load.
+ */
+export const ADDRESS_JS = `
+function isHostParam(k) {
+  return /^(uri|token)(\\[|$)/.test(k);
+}
+function appParams(search) {
+  const all = new URLSearchParams(search);
+  const out = new URLSearchParams();
+  all.forEach((v, k) => { if (!isHostParam(k)) out.append(k, v); });
+  return out;
+}
+function frameSrcFor(base, search, hash) {
+  const extra = appParams(search).toString();
+  const src = extra ? base + (base.indexOf("?") === -1 ? "?" : "&") + extra : base;
+  return src + (hash.length > 1 ? hash : "");
+}
+function hostUrlFor(pathname, search, hash, appSearch) {
+  const keep = new URLSearchParams(search);
+  const out = new URLSearchParams();
+  if (keep.has("uri")) out.set("uri", keep.get("uri"));
+  appParams(appSearch.replace(/^[?]/, "")).forEach((v, k) => out.append(k, v));
+  const q = out.toString();
+  return pathname + (q ? "?" + q : "") + hash;
+}`;
 
 /** The host page: a thin bar, the sandboxed frame, and the bridge. */
 export function renderAppHost(opts: {
@@ -542,15 +586,17 @@ export function renderAppHost(opts: {
   const slug = ${jsonForScript(opts.slug)};
   const initialTool = ${opts.tool ? jsonForScript(opts.tool) : "null"};
   // Built here rather than in the markup so it loads EXACTLY ONE document,
-  // with the address bar's hash already on it: the frame is opaque-origin and
-  // cannot see this page's URL, so the hash (a listing, a tab) is handed over
-  // on its src, and its changes are mirrored back (x-strad/hash below).
+  // with the address bar's query (minus uri) and hash already on it: the frame
+  // is opaque-origin and cannot see this page's URL, so both are handed over
+  // on its src, and their changes are mirrored back (x-strad/search and
+  // x-strad/hash below). ADDRESS_JS is the whole rule.
+${ADDRESS_JS}
   const frame = document.createElement("iframe");
   frame.id = "app";
   frame.title = ${jsonForScript(opts.title)};
   frame.setAttribute("sandbox", "allow-scripts allow-popups allow-popups-to-escape-sandbox");
   frame.referrerPolicy = "no-referrer";
-  frame.src = ${jsonForScript(frameSrc)} + (location.hash.length > 1 ? location.hash : "");
+  frame.src = frameSrcFor(${jsonForScript(frameSrc)}, location.search, location.hash);
   // THE BRIDGE BELONGS TO THE FIRST DOCUMENT. Every document this frame could
   // hold has the same opaque origin, so the window is the only identity — and
   // a second load means the app navigated the frame somewhere. Fail closed:
@@ -615,6 +661,12 @@ export function renderAppHost(opts: {
       // Notifications need no answer. "initialized" is the one the host waits
       // for before it sends the page anything.
       if (m.method === "ui/notifications/initialized") void startInitialTool();
+      if (m.method === "x-strad/search") {
+        const q = m.params && m.params.search;
+        if (typeof q === "string") {
+          try { history.replaceState(null, "", hostUrlFor(location.pathname, location.search, location.hash, q)); } catch (_) {}
+        }
+      }
       if (m.method === "x-strad/hash") {
         const h = String((m.params && m.params.hash) || "");
         try { history.replaceState(null, "", h ? "#" + h : location.pathname + location.search); } catch (_) {}
