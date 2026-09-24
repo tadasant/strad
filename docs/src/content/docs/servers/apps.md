@@ -82,7 +82,7 @@ window:
 | `ui/open-link` | opens an `http(s)` URL in a new tab, without an opener |
 | `tools/call` | runs one of **this server's** tools |
 
-Notifications the host acts on: `ui/notifications/initialized`, and the two
+Notifications the host acts on: `ui/notifications/initialized`, and the
 `x-strad/` ones below.
 
 A `tools/call` is POSTed to `/apps/<slug>/tools/call`. It is the playground's
@@ -107,9 +107,21 @@ ignores them still works, and other hosts never send them.
   `x-strad/key {key: "ArrowLeft" | …}`. An app should route it through its own
   `keydown` handler.
 - **Location.** The frame has an opaque origin and cannot see the address bar.
-  The host appends its own `#hash` to the frame's `src`, so the app can read where
-  a link or a refresh meant to land. An app that sends `x-strad/hash {hash}` has
-  it mirrored onto the address bar with `history.replaceState`.
+  The host appends its own query and `#hash` to the frame's `src`, so the app
+  reads where a link or a refresh meant to land from its own `location.search`
+  and `location.hash`: `/apps/<slug>?view=week#item-3` frames the app with
+  `view=week` in its query and `#item-3` as its hash. Two params are the
+  host's and are never forwarded: `uri`, the host's own choice of `ui://` page,
+  and `token`, the console's sign-in token. The frame's query also carries the
+  host's `uri` ahead of the app's params, and the params are re-encoded on the
+  way, so read them with `URLSearchParams` rather than as raw text. Treat both
+  as untrusted input: anyone can write a link, and all that stands between it
+  and your app is the Open click a link from another site gets. An app that
+  sends `x-strad/search {search}` or `x-strad/hash {hash}` has it mirrored onto
+  the address bar with `history.replaceState`, so a filter or a selection is a
+  link someone can share. A mirrored search replaces every param except `uri`,
+  which the host keeps, and it never writes a `token`. The Open prompt carries
+  the hash over too.
 
 ## What it does not do
 
