@@ -5778,3 +5778,58 @@ refresh path, which runs on every token expiry, never leaves strad's egress.
 **Undo.** Get the upstream to allow the deployment's egress, and drop
 `discoveryProxy:`. Verify against a real upstream that allows App Platform
 egress, and record it here.
+
+## 112. The Chrome extension makes the owner's real profile drivable with no prompt, by anything holding a hostd key
+
+`hostd/extension/` is an MV3 extension, and `hostd/src/browser/bridge.ts` is
+the daemon side of it (`docs/servers/hostd.md`, `docs/servers/hostd-design.md`).
+It exists because the two routes Chrome offers into the default profile cannot
+run unattended: `--remote-debugging-port` is ignored there since Chrome 136,
+and the `chrome://inspect/#remote-debugging` toggle (144+) asks "Allow remote
+debugging?" on EVERY connection and never remembers the answer. An extension
+installed in the profile attaches `chrome.debugger` to its tabs with no
+per-connection prompt, and once the extension is connected the browser server
+uses it ahead of `DevToolsActivePort`.
+
+**The trade-off, plainly.** The owner's real, signed-in Chrome — every account
+they are logged in to — becomes drivable, with no Chrome prompt, by anything
+that holds a hostd browser key and gets past the consent window. Unattended use
+is the point, so that window is `consent.onTimeout: "allow"` with
+`windowSeconds` at its minimum, which makes the dialog a veto nobody is there
+to cast. A prompt injection that lands in one agent's page therefore reaches
+every one of the owner's logged-in sessions. The daemon's own boundaries are
+what remain: the key per server, the grant per task, the audit log, the kill
+switch — which now also detaches `chrome.debugger` from every tab — and the
+`admin`-only entitlement on the strad side. None of them is Chrome asking.
+
+**What is on the box, by hand (adds to #101).**
+
+- Installing the extension, by one of two routes. Unpacked, from
+  `chrome://extensions` with Developer mode on, and paired by pasting the token
+  into its options page: quick, and Chrome may switch it off on an update.
+  Force-installed, by opening the configuration profile
+  `strad-hostd extension` writes: durable, cannot be disabled from
+  `chrome://extensions`, and — because it is policy-installed — attaches with no
+  "started debugging this browser" infobar. The profile carries the pairing
+  token as managed storage under `/Library/Managed Preferences`, readable by
+  every user of the Mac.
+- `consent.onTimeout: "allow"` in `~/.strad-hostd/config.json`, for the
+  unattended posture.
+- A key per local session: `strad-hostd key add browser <name>`, then
+  `claude mcp add --transport http …`.
+
+**What has run, and what has not.** The real extension runs in a real
+Chromium in CI (`hostd/test/extension.test.ts`): it pairs over the socket,
+attaches inside the profile, every browser tool works through it, two sessions
+share one attachment, and the kill switch takes the debugger off every tab.
+That Chromium is `--load-extension`ed; branded Chrome 137+ ignores that flag,
+so the unpacked and force-install routes, managed storage, the infobar's
+absence and the `.mobileconfig` itself have run on no Mac. The CRX3 packer and
+the update manifest are checked byte-for-byte against the format; whether
+Google Chrome accepts a loopback `http://` update URL is read from Chromium's
+source (only the Web Store URL is forced to HTTPS) and not yet observed.
+
+**Undo.** Chrome offering a remembered "always allow" for remote debugging on
+the default profile would retire the extension; nothing suggests it will.
+Widening the entitlement past `admin` should not happen while this is the
+posture.

@@ -7,9 +7,13 @@ import {
 } from "node:http";
 import { join } from "node:path";
 
+import { WebSocketServer } from "ws";
+
 import type { AuditLog } from "../audit.js";
+import type { ExtensionBridge } from "../browser/bridge.js";
 import { displayName, enabledCapabilities, type Config } from "../config.js";
 import type { ConsentGate } from "../consent/gate.js";
+import type { PackedExtension } from "../extension/crx.js";
 import type { KillSwitch } from "../killswitch.js";
 import { keysMatch } from "../mcp/auth.js";
 import { renderPage, type ControlState } from "./page.js";
@@ -26,6 +30,19 @@ export interface ControlDeps {
   helperState?: () => { connected: boolean; error?: string };
   /** Where to write the control token, for the CLI. Omitted in tests. */
   stateDir?: string;
+  /**
+   * The Chrome extension's door: the bridge its WebSocket lands on, and the
+   * packed CRX plus update manifest a policy-installed Chrome fetches from
+   * here. On THIS listener because it is the one the tunnel never routes.
+   */
+  extension?: {
+    bridge: ExtensionBridge;
+    packed: () => PackedExtension;
+    /** The manifest names the CRX by the port this listener really got. */
+    updateXml: (packed: PackedExtension, controlPort: number) => string;
+  };
+  /** Re-read the servers' keys from the config file: `strad-hostd key add` calls it. */
+  reloadKeys?: () => void;
 }
 
 /** Headers a request only carries when it came through a proxy or a tunnel. */
@@ -57,6 +74,7 @@ export function collectState(deps: ControlDeps): ControlState {
       .active()
       .map((g) => ({ ...g, running: deps.runningFor(g.id) })),
     helper: deps.helperState?.(),
+    extension: deps.extension?.bridge.state(),
     audit: deps.audit.tail(40),
     now: Date.now(),
   };
@@ -96,6 +114,16 @@ export function createControlListener(deps: ControlDeps): {
     `127.0.0.1:${deps.config.controlPort}`,
     `localhost:${deps.config.controlPort}`,
   ]);
+  /** Loopback `Host`, and no header a proxy or a tunnel would have added. */
+  function local(req: IncomingMessage): boolean {
+    const port = (server.address() as { port: number } | null)?.port;
+    const host = req.headers.host ?? "";
+    const hostOk =
+      allowedHosts.has(host) ||
+      host === `127.0.0.1:${port}` ||
+      host === `localhost:${port}`;
+    return hostOk && !PROXIED.some((h) => req.headers[h] !== undefined);
+  }
 
   const server = createServer((req, res) => {
     void (async () => {
@@ -106,16 +134,34 @@ export function createControlListener(deps: ControlDeps): {
         });
         res.end(body);
       };
-      const port = (server.address() as { port: number } | null)?.port;
-      const host = req.headers.host ?? "";
-      const hostOk =
-        allowedHosts.has(host) ||
-        host === `127.0.0.1:${port}` ||
-        host === `localhost:${port}`;
-      if (!hostOk || PROXIED.some((h) => req.headers[h] !== undefined)) {
+      if (!local(req)) {
         return plain(403, "The control page answers on this machine only.\n");
       }
       const path = (req.url ?? "/").split("?")[0];
+
+      // What a policy-installed Chrome fetches: the update manifest, then the
+      // CRX it names. Neither is secret — the extension does nothing without
+      // the token — and both are loopback-only like everything else here.
+      if (req.method === "GET" && deps.extension) {
+        if (path === "/extension/update.xml") {
+          const port = (server.address() as { port: number }).port;
+          const xml = deps.extension.updateXml(deps.extension.packed(), port);
+          res.writeHead(200, {
+            "content-type": "application/xml; charset=utf-8",
+            "cache-control": "no-store",
+          });
+          return res.end(xml);
+        }
+        if (path === "/extension/strad-hostd.crx") {
+          const { crx } = deps.extension.packed();
+          res.writeHead(200, {
+            "content-type": "application/x-chrome-extension",
+            "content-length": String(crx.length),
+            "cache-control": "no-store",
+          });
+          return res.end(crx);
+        }
+      }
 
       if (req.method === "GET" && path === "/") {
         res.writeHead(200, {
@@ -146,7 +192,14 @@ export function createControlListener(deps: ControlDeps): {
       else if (path === "/disable")
         deps.gate.disableAll("disabled from the control page");
       else if (path === "/enable") deps.gate.enable();
-      else return plain(404, "not found\n");
+      else if (path === "/reload-keys" && deps.reloadKeys) {
+        try {
+          deps.reloadKeys();
+        } catch (err) {
+          return plain(400, `${(err as Error).message}\n`);
+        }
+        return plain(200, "keys reloaded\n");
+      } else return plain(404, "not found\n");
 
       res.writeHead(303, { location: "/" });
       res.end();
@@ -155,5 +208,29 @@ export function createControlListener(deps: ControlDeps): {
       res.end();
     });
   });
+
+  // The extension's WebSocket. Three guards before the bridge sees it: the
+  // same loopback-and-unproxied test as every request here, an Origin that
+  // only an extension carries (a web page's says its site, and a browser does
+  // not let a page forge it), and then the pairing token in the bridge — which
+  // is the guard a non-browser process on this machine cannot pass.
+  if (deps.extension) {
+    const { bridge } = deps.extension;
+    const wss = new WebSocketServer({ noServer: true });
+    server.on("upgrade", (req, socket, head) => {
+      const path = (req.url ?? "/").split("?")[0];
+      const origin = req.headers.origin ?? "";
+      if (
+        path !== "/extension" ||
+        !local(req) ||
+        !origin.startsWith("chrome-extension://")
+      ) {
+        socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => bridge.accept(ws, req));
+    });
+  }
   return { server, token };
 }

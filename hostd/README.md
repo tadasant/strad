@@ -96,19 +96,99 @@ request is denied as `no_display`, so use `--no-consent` there.
 
 ### The browser server
 
-It attaches to the Chrome that is already running, with its real profile. In that
-Chrome, open `chrome://inspect/#remote-debugging` and turn remote debugging on.
-This needs Chrome 144 or newer. Chrome asks for permission each time a client
-connects. Launching Chrome with `--remote-debugging-port` does not work for the
-default profile: Chrome has ignored the flag there since version 136.
+It drives the Chrome that is already running, with its real profile. There are
+two ways in, and the daemon picks the first that is there:
 
-To point it at a different Chrome, write `~/.strad-hostd/config.json`:
+1. **The bridge extension** (`extension/`), installed in that Chrome. It
+   connects out to the daemon and attaches `chrome.debugger` to tabs on the
+   daemon's request. No prompt from Chrome, so this is the route for a machine
+   with nobody at the keyboard. It needs the daemon (`serve`), not `stdio`:
+   the extension connects to the daemon's control port.
+2. **DevTools**, when no extension is connected. In Chrome, open
+   `chrome://inspect/#remote-debugging` and turn remote debugging on (Chrome
+   144 or newer). Chrome asks "Allow remote debugging?" every time the daemon
+   connects, and only a person can answer. Launching Chrome with
+   `--remote-debugging-port` does not work for the default profile: Chrome has
+   ignored the flag there since version 136.
+
+To point the DevTools route at a different Chrome, write
+`~/.strad-hostd/config.json`:
 
 ```json
 { "browser": { "cdpUrl": "http://127.0.0.1:9222" } }
 ```
 
 or `{ "browser": { "userDataDir": "/path/to/profile" } }`.
+
+#### Installing the extension
+
+`strad-hostd extension` prints everything below for your machine, with the
+real paths and the pairing token. Both routes need the daemon running.
+
+**Durable: a configuration profile (macOS).** The command writes
+`~/.strad-hostd/strad-hostd-extension.mobileconfig`. Open it, then approve it
+in System Settings › General › Device Management. It force-installs the
+extension from the daemon (which serves a signed CRX and an update manifest on
+`http://127.0.0.1:7312/extension/…`, loopback only) and hands it the daemon
+URL and the pairing token as managed storage. A force-installed extension
+cannot be switched off from `chrome://extensions`, survives Chrome's
+developer-mode rules, and — because Chrome treats policy-installed extensions
+this way — shows no "started debugging this browser" bar. The profile holds
+the token; it is readable by every user of the Mac, which on a one-person Mac
+is the same boundary as `~/.strad-hostd`. Remove the profile to remove the
+extension. When `extension/manifest.json` changes, bump its `version`: that is
+what Chrome compares to decide whether to fetch the new copy.
+
+**Quick: load it unpacked.** `chrome://extensions` › Developer mode › Load
+unpacked › the `extension/` directory (in an install, `~/.strad-hostd/app/extension`).
+Then Details › Extension options, and paste the daemon URL and the token. This
+works while developer mode stays on, and Chrome may switch the extension off
+on an update. Each attach puts a "started debugging this browser" bar on the
+tab; `--silent-debugger-extension-api` on Chrome's command line hides it.
+
+The status page (`http://127.0.0.1:7312`) and `strad-hostd status` say whether
+the extension is connected. `get_control_status` on the browser server reports
+`browser: {extension, via}`.
+
+**What this hands over.** With the extension installed, every account that
+Chrome is signed in to can be driven by anything holding a browser key that
+gets past the consent dialog — and for unattended use the dialog is set to
+allow when nobody answers. A prompt injection in one agent's page reaches all
+of those accounts. The daemon's own boundaries remain: a key per server, a
+grant per task, the audit log, and the kill switch, which also detaches the
+debugger from every tab. Nothing in Chrome asks any more.
+
+### Several sessions on this machine, unattended
+
+Run the daemon locally and give each MCP client its own key, instead of one
+`stdio` process per client. `stdio` cannot use the extension, and on a Mac with
+the helper's LaunchAgent installed a `stdio computer-*` process cannot reach
+the helper either (it honours one controller, and that is the daemon).
+
+```bash
+node build/cli.js init --machine "My Mac" --suffix mbp   # once
+node build/cli.js serve                                  # or the LaunchAgent, below
+node build/cli.js key add browser claude-1               # one per session
+claude mcp add --transport http hostd-browser http://127.0.0.1:7311/browser/mcp \
+  --header "Authorization: Bearer <the key it printed>"
+```
+
+`key add` works while the daemon runs and prints the `claude mcp add` line.
+The same for `shell`, `computer-headless` and `computer`. The dialog and the
+status page show the client's name next to the server's, and `key revoke`
+drops one key without touching the others. Sessions get independent grants;
+a tab one grant opened is not closable by another.
+
+For nobody-at-the-keyboard use, in `~/.strad-hostd/config.json`:
+
+```json
+{ "consent": { "onTimeout": "allow", "windowSeconds": 3 } }
+```
+
+An unanswered dialog is then allowed, after the shortest window the daemon
+accepts. That is the unattended configuration, and it is the whole of what the
+dialog protects: with nobody there, nothing is refused. The default stays
+`deny`.
 
 ### The native helper (macOS): `strad-hostd-ax`
 
@@ -164,7 +244,8 @@ matter:
 | Field                                                      | Default             |                                                                   |
 | ---------------------------------------------------------- | ------------------- | ----------------------------------------------------------------- |
 | `consent.onTimeout`                                        | `"deny"`            | what an unanswered dialog means. `"allow"` makes it a veto window |
-| `consent.windowSeconds`                                    | `5`                 | how long the dialog stays up                                      |
+| `consent.windowSeconds`                                    | `5`                 | how long the dialog stays up (3 is the minimum)                   |
+| `capabilities.<server>.clientKeys`                         | `{}`                | named extra keys for that server; `strad-hostd key add` writes it |
 | `consent.grantMinutes` / `maxGrantMinutes` / `idleMinutes` | `30` / `120` / `10` | grant lifetime                                                    |
 | `shell.defaultCwd`                                         | `$HOME`             |                                                                   |
 | `native.mode`                                              | `"auto"`            | `socket` (the LaunchAgent, never a child), `stdio`, or `auto`     |
@@ -182,7 +263,12 @@ npm test   # tsc, then vitest
 
 The browser suite drives a real Chrome or Chromium. It looks at
 `$HOSTD_TEST_CHROME`, Playwright's cache, then the usual system paths. With none
-it skips locally and fails under `CI`.
+it skips locally and fails under `CI`. `test/extension.test.ts` loads the real
+extension into that Chromium (`--load-extension`, which branded Chrome 137+
+ignores and Chromium honours) and drives every browser tool through it;
+`test/bridge.test.ts` runs the same daemon against `test/fake-extension.ts`, a
+stand-in that speaks the extension's protocol. The force-install profile,
+managed storage and the infobar's absence run only on a Mac.
 
 The computer-use servers are tested against `test/fake-ax.ts`, a stand-in that
 speaks the helper's protocol in-process, so every daemon-side path runs on

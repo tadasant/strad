@@ -4,6 +4,7 @@ import type { Config } from "../config.js";
 import { defineTool, json, text, type Capability } from "../mcp/tool.js";
 import { clip } from "../shell/output.js";
 import { focusForTyping, LIST_ELEMENTS, locate } from "./page-scripts.js";
+import type { ExtensionBridge } from "./bridge.js";
 import { BrowserSessions } from "./session.js";
 
 const P = {
@@ -41,8 +42,11 @@ export function checkUrl(raw: string): string | undefined {
   }
 }
 
-export function browserCapability(config: Config): Capability {
-  const sessions = new BrowserSessions(config);
+export function browserCapability(
+  config: Config,
+  bridge?: ExtensionBridge,
+): Capability {
+  const sessions = new BrowserSessions(config, bridge);
 
   const listTabs = defineTool({
     name: "list_tabs",
@@ -100,15 +104,7 @@ load is "complete", or "timeout" if the page was still loading after 15s (it is 
       const bad = checkUrl(a.url);
       if (bad) return text(bad, true);
       const s = sessions.for(grant);
-      const conn = await s.connection();
-      const { targetId } = await conn.send<{ targetId: string }>(
-        "Target.createTarget",
-        {
-          url: a.url,
-          background: !a.foreground,
-        },
-      );
-      s.opened.add(targetId);
+      const targetId = await s.openTab(a.url, a.foreground);
       const load = await s.waitForLoad(targetId);
       const info = await s.evaluate<{ url: string; title: string }>(
         targetId,
@@ -527,9 +523,7 @@ Chrome does not paint tabs that are in the background of their window, so a scre
     },
     summarize: (a) => `activate_tab: ${a.tab_id}`,
     handler: async (a, { grant }) => {
-      await (
-        await sessions.for(grant).connection()
-      ).send("Target.activateTarget", { targetId: a.tab_id });
+      await sessions.for(grant).activateTab(a.tab_id);
       return json({ activated: a.tab_id });
     },
   });
@@ -564,10 +558,7 @@ Chrome does not paint tabs that are in the background of their window, so a scre
           true,
         );
       }
-      await (
-        await s.connection()
-      ).send("Target.closeTarget", { targetId: a.tab_id });
-      s.opened.delete(a.tab_id);
+      await s.closeTab(a.tab_id);
       return json({ closed: a.tab_id });
     },
   });
@@ -585,6 +576,12 @@ Chrome does not paint tabs that are in the background of their window, so a scre
       activateTab,
       closeTab,
     ],
+    status: async () => ({
+      browser: {
+        extension: bridge?.connected ?? false,
+        via: bridge?.connected ? "extension" : "devtools",
+      },
+    }),
     close: () => sessions.closeAll(),
   };
 }

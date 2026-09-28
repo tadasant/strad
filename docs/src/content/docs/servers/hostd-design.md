@@ -66,13 +66,14 @@ whether the owner's own keystroke ends the grant.
 
 ## The daemon
 
-**Runtime: Node 22, TypeScript, two runtime dependencies** (`@modelcontextprotocol/sdk`
-and `zod`). The same stack as the rest of strad, so the same people and agents can
-maintain it. DevTools is spoken over Node's built-in `WebSocket`, so the daemon
-carries no browser-automation library. It attaches to a Chrome that is already
-running and has no use for the half of Playwright that launches one. The one
-thing Node cannot do is hold a macOS privacy grant sensibly, and that is the
-native helper's whole job.
+**Runtime: Node 22, TypeScript, three runtime dependencies** (`@modelcontextprotocol/sdk`,
+`zod`, and `ws` for the one socket the daemon *accepts*: Node has a WebSocket
+client and no server). The same stack as the rest of strad, so the same people
+and agents can maintain it. DevTools is spoken over Node's built-in
+`WebSocket`, so the daemon carries no browser-automation library. It attaches
+to a Chrome that is already running and has no use for the half of Playwright
+that launches one. The one thing Node cannot do is hold a macOS privacy grant
+sensibly, and that is the native helper's whole job.
 
 **Kept running by a LaunchAgent, not a LaunchDaemon.** A LaunchDaemon runs as
 root, before login, outside any GUI session. It cannot show the consent dialog,
@@ -170,6 +171,14 @@ rule is in force, and `request_control`'s description tells the caller, so an
 agent knows whether the owner has to be at the screen. Two outcomes are denials
 under either setting: a click on Reject, and a dialog that could not be shown at
 all (`no_display`: nobody is logged in to the desktop).
+
+The unattended configuration is therefore `onTimeout: "allow"` with
+`windowSeconds: 3`, the shortest window the schema accepts, and the extension
+in Chrome. `serve` still refuses `consent.mode: "none"`: the dialog is shown,
+a person who happens to be there can still reject, and the audit log says
+`timeout-allow` on every grant nobody answered. What the setting means is that
+with nobody there, nothing is refused, and the docs say so wherever it is
+mentioned.
 
 ### What bounds a grant
 
@@ -292,22 +301,92 @@ exactly that point:
 | Copy the profile directory and launch that | **No.** | Chrome's own note on the 136 change says a non-standard data directory uses a different encryption key, so do not expect the copied cookies to decrypt. Where they do, it is still a fork: sessions diverge, and the owner's open tabs are not in it. |
 | Playwright or Puppeteer `connectOverCDP` | Inherits the endpoint's answer | A client, not a way in. |
 | AppleScript `execute javascript` | Yes | Needs "Allow JavaScript from Apple Events". No input events, no screenshots, no load waiting. |
-| A Chrome extension bridging to the daemon | Yes | `chrome.debugger` on the live profile, on any Chrome version. Costs an extension to build, ship and keep installed. |
-| `chrome://inspect/#remote-debugging` toggle (Chrome 144+) | **Yes.** | The running browser opens a DevTools endpoint and writes `DevToolsActivePort` into its user-data directory. |
+| A Chrome extension bridging to the daemon | **Yes.** | `chrome.debugger` on the live profile, on any Chrome version, with no per-connection prompt. Costs an extension to build, ship and keep installed. |
+| `chrome://inspect/#remote-debugging` toggle (Chrome 144+) | Yes | The running browser opens a DevTools endpoint and writes `DevToolsActivePort` into its user-data directory. Asks "Allow remote debugging?" on every connection, and never remembers. |
 
-The daemon uses the last. `src/browser/discover.ts` reads `DevToolsActivePort`
-from the stock profile directory, connects to the browser target, and attaches to
-tabs with flat sessions. A Chrome enabled this way serves no `/json/version`, so
-the file is the only discovery that works. When the file is missing, the tool
-error says what to switch on, and that the launch flag does not work.
+The daemon uses both, and prefers the extension. `src/browser/backend.ts` is
+the seam: one interface — list, open, focus and close tabs, send a DevTools
+command to one — with two implementations, and `BrowserSession` picks one per
+grant on first use without a tool knowing which. The extension backend is
+taken whenever the extension is connected; otherwise `src/browser/discover.ts`
+reads `DevToolsActivePort` from the stock profile directory and the DevTools
+backend connects to the browser target and attaches to tabs with flat
+sessions. A Chrome enabled from the toggle serves no `/json/version`, so the
+file is the only discovery that works there. When neither is there, the tool
+error says the extension is not connected and what the toggle is.
 
-Chrome shows its own "Allow remote debugging?" prompt every time a client
-connects, and a "Chrome is being controlled by automated test software" banner
-while a session is attached. Both are Chrome's and cannot be turned off. The
-daemon bounds the wait at eight seconds and says so in the error. Under
-`onTimeout: "allow"` this prompt still needs a person, so unattended browser use
-is weaker than unattended shell use. The extension bridge is the way around it,
-and it fits behind `BrowserSession` without changing a tool.
+The toggle route cannot run unattended. Chrome shows its own "Allow remote
+debugging?" prompt every time a client connects, and the daemon bounds the
+wait at eight seconds and says so in the error. Under `onTimeout: "allow"` that
+prompt still needs a person, which is what the extension is for.
+
+#### The extension bridge — built
+
+`hostd/extension/` is a Manifest V3 extension: a service worker, an options
+page, and a managed-storage schema. `src/browser/bridge.ts` is its other half.
+
+**The extension dials, the daemon listens.** The service worker opens one
+WebSocket to `ws://127.0.0.1:7312/extension` — the CONTROL listener, the port
+the tunnel never routes — and the daemon accepts it there. Native messaging
+would spawn a host process per connection, a second daemon with its own
+lifetime; the daemon already exists and already holds the grant table. Since
+Chrome 116 an open WebSocket with traffic keeps a service worker alive, so the
+daemon pings it every twenty seconds, and an alarm every thirty reconnects one
+that dropped.
+
+**Three guards on the socket, and what each is for.** The listener's own
+loopback-`Host`-and-no-proxy-headers test, so nothing that came through a
+tunnel or a proxy reaches it. An `Origin` starting `chrome-extension://`,
+which a browser sets and a web page cannot forge, so no page open in the
+owner's Chrome can pose as the extension. Then the pairing token in the first
+message, `~/.strad-hostd/extension-token`, made at first boot, mode 0600, and
+compared in constant time: that is the guard against a non-browser process on
+the machine, which can send any header it likes. The extension only ever sends
+the token to the URL its own settings name, so a rogue listener on another port
+learns nothing. A wrong token closes the socket with code 4003; a second good
+connection replaces the first, because there is one owner and one live profile.
+
+**One extension, many grants.** `chrome.debugger` attaches a tab once per
+extension, so attachments are shared. Each grant's backend records the tabs it
+used; the bridge counts holders per tab, attaches on the first and detaches
+when the last lets go. A grant ending releases its tabs, and only those. The
+kill switch calls `detachAll` — from the switch's `onChange`, and again on the
+two-second sweep, because a `touch`ed `DISABLED` file calls nothing — and the
+extension detaches everything itself the moment its socket closes, since a
+daemon that is gone has no grants. If the person cancels the debugger from
+Chrome's own bar, the extension reports it and the next call re-attaches.
+
+**Tab operations go through `chrome.tabs`, not the Target domain.** `open_tab`
+is `chrome.tabs.create`, `activate_tab` is `chrome.tabs.update` plus a window
+focus, `close_tab` is `chrome.tabs.remove`, and the tab id is the number Chrome
+gives, carried as a string. The DevTools commands the tools use — `Page`,
+`Runtime`, `Input` — are all on `chrome.debugger`'s allowed list. Events are
+not forwarded: no tool consumes one, and `Runtime.enable` alone would flood the
+socket with console events.
+
+**Installing it is the daemon's job, as far as it can be.** The daemon packs
+`extension/` into a CRX3 signed with an RSA key it keeps in
+`~/.strad-hostd/extension-key.pem` (`src/extension/crx.ts`, a zip writer and
+the CRX3 header in two hundred lines, because Chrome's "Pack extension" is a
+hand step and a Web Store listing is not the point), and serves it with an
+update manifest at `http://127.0.0.1:7312/extension/`. `strad-hostd extension`
+writes a configuration profile that force-installs the extension by id from
+that URL and sets its managed storage to the daemon URL and the token. Chromium
+forces HTTPS on the Web Store's update URL only, so a loopback `http://` one is
+valid; and `debugger_api.cc` skips the "started debugging this browser" infobar
+for a policy-installed extension, so this route needs no
+`--silent-debugger-extension-api`. The key is what the id is derived from, so
+the key must not change: a new key is a new extension and a profile that
+force-installs the old one. The unpacked route is the same extension with the
+token pasted into its options page.
+
+**What it costs, said once here and again on the limitations page.** The
+owner's real profile becomes drivable with no Chrome prompt by anything that
+holds a browser key and gets past the consent window — and unattended use sets
+that window to allow. A prompt injection in one agent's page reaches every
+account the owner is signed in to. The extension moves the last line of
+defence from Chrome to the daemon: the key, the grant, the audit log, the kill
+switch, and `admin`-only entitlement.
 
 "Headless" here means the owner is not interrupted. `open_tab` creates background
 tabs. `activate_tab` is the one tool that takes focus and its description says
@@ -422,6 +501,16 @@ machine. The daemon adds:
   requests, decisions and one line per tool call including the command. No tool
   returns it and nothing ships it. strad's own telemetry still records no
   arguments.
+- **A key per local client, on top of the key per server.**
+  `capabilities.<server>.clientKeys` names further keys, one per Claude Code
+  session on the machine, each opening exactly what the server's own key opens
+  and nothing else. The dialog and the status page name the client, so the
+  owner can see which session is asking and revoke one without the rest.
+- **The extension's door is on the control port, behind a pairing token.** A
+  socket there passes the loopback test, must carry a `chrome-extension://`
+  Origin, and must present the token from `~/.strad-hostd/extension-token`
+  before the daemon speaks to it. The extension acts only on the daemon's
+  request, and the daemon only asks under a live grant.
 
 **What entitlement means here.** Adding one of these slugs to
 `roles.zimmer.servers` puts it in reach of every Zimmer session, and therefore of
@@ -436,7 +525,7 @@ Recommended tiering:
 | Slug | Recommendation |
 | --- | --- |
 | `shell-*` | `admin` only. Hand it to a session explicitly when a task needs it. |
-| `browser-use-*-headless` | `admin` only. `evaluate_script` in a signed-in profile reaches every account the owner is logged in to, which is arguably wider than the shell. |
+| `browser-use-*-headless` | `admin` only. `evaluate_script` in a signed-in profile reaches every account the owner is logged in to, which is arguably wider than the shell. With the extension installed there is no Chrome prompt in front of that at all. |
 | `computer-use-*-headless` | `admin` only. Every app's contents, fields and buttons, in the background. |
 | `computer-use-*` | `admin` only. The screen and the keyboard; a caller here is the person at the machine. |
 
@@ -460,6 +549,16 @@ reasoning that the person who launched the process is at the keyboard and their
 MCP client already asks about each tool call. `request_control` and `grant_id`
 remain, so an agent that learned the interface through strad uses it unchanged.
 
+Two things `stdio` cannot do, and the shape that replaces it for them. The
+extension connects to the daemon's control port, so a `stdio` process, which
+has no listener, is always on the DevTools route. And on a Mac where the
+helper runs as its own LaunchAgent, the helper honours one controller — the
+daemon — so a `stdio computer-*` process is refused with `not_controller`. For
+several sessions on the owner's own machine the answer is one `serve` on
+loopback, reached over HTTP with a client key per session
+(`strad-hostd key add`): the same daemon strad reaches through the tunnel, the
+same grants, the same status page.
+
 `hostd/README.md` is the page to point an agent at.
 
 ## What was run, and what was reasoned about
@@ -471,7 +570,14 @@ the kill switch, the HTTP listener and its auth through a real MCP client, the
 status page and its guards, the shell capability including process-group kills,
 the tunnel supervisor against a stand-in binary, stdio mode against the built
 CLI, the installer with `--no-agent`, the browser capability against a real
-running Chromium discovered through `DevToolsActivePort`, and both computer-use
+running Chromium discovered through `DevToolsActivePort`, the same capability
+through the REAL extension loaded into a real Chromium (`--load-extension`,
+which Chromium honours and branded Chrome 137+ does not): pairing over the
+socket, `chrome.debugger` attaching inside the profile, every browser tool,
+two sessions on two keys sharing one attachment, the kill switch taking the
+debugger off every tab, and the CRX and update manifest served — plus the
+bridge against `test/fake-extension.ts` for the refusals (wrong Origin, wrong
+token, wrong path, a replaced connection, a dropped one), and both computer-use
 servers through a real MCP client against `test/fake-ax.ts`, a stand-in that
 speaks the helper's protocol: the tree outline, actions, values, screenshots as
 image content, chords, the pre-dialog refusal for a missing grant, the
@@ -488,7 +594,13 @@ from Finder, captures a real screenshot, and shows and clears the banner
 **Reasoned about, not run:** everything that needs a person at a Mac. The
 `osascript` dialog and whether it comes to the front when launched from a
 LaunchAgent, both LaunchAgents, the installer's `cloudflared` branch, the
-Chrome 144 toggle and its prompt on a real default profile, TCC prompts for
+Chrome 144 toggle and its prompt on a real default profile, the extension in
+Google Chrome rather than Chromium — the unpacked install and its options
+page, the configuration profile and whether Chrome force-installs from a
+loopback `http://` update URL (read from `extension_downloader.cc`, which
+forces HTTPS for the Web Store only), managed storage delivering the token,
+and the infobar's absence for a policy-installed extension (read from
+`debugger_api.cc`) — TCC prompts for
 files under `~/Documents`, `~/Desktop` and `~/Downloads` when the shell reaches
 them, the signing script's self-signed branch and whether `codesign` accepts
 the certificate it makes, the two System Settings grants on a real Mac and

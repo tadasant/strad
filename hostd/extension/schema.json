@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "daemon": {
+      "type": "string",
+      "description": "The daemon's extension endpoint, e.g. ws://127.0.0.1:7312/extension."
+    },
+    "token": {
+      "type": "string",
+      "description": "The pairing token from ~/.strad-hostd/extension-token on the same machine."
+    }
+  }
+}

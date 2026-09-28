@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>strad-hostd bridge</title>
+    <style>
+      body {
+        font:
+          14px/1.5 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        max-width: 560px;
+        margin: 24px auto;
+        padding: 0 16px;
+        color: #1b1b18;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0 0 4px;
+      }
+      p.sub {
+        color: #6b6b63;
+        margin: 0 0 18px;
+      }
+      label {
+        display: block;
+        font-weight: 600;
+        margin: 14px 0 4px;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        font:
+          13px ui-monospace,
+          Menlo,
+          monospace;
+        padding: 7px 9px;
+        border: 1px solid #deded6;
+        border-radius: 6px;
+      }
+      button {
+        font: inherit;
+        font-weight: 600;
+        margin-top: 16px;
+        padding: 7px 14px;
+        border-radius: 6px;
+        border: 1px solid #deded6;
+        background: #fff;
+        cursor: pointer;
+      }
+      #status {
+        margin-top: 20px;
+        padding: 12px 14px;
+        border-radius: 8px;
+        background: #f3f3ef;
+      }
+      #status.connected {
+        background: #e6f4ea;
+        color: #1d6b3a;
+      }
+      #status.error,
+      #status.disconnected,
+      #status.unpaired {
+        background: #fdecea;
+        color: #b3261e;
+      }
+      .note {
+        color: #6b6b63;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>strad-hostd bridge</h1>
+    <p class="sub">
+      Pair this Chrome with the strad-hostd daemon on this machine.
+    </p>
+    <label for="daemon">Daemon</label>
+    <input id="daemon" placeholder="ws://127.0.0.1:7312/extension" />
+    <label for="token">Pairing token</label>
+    <input
+      id="token"
+      placeholder="paste the token that `strad-hostd extension` prints"
+    />
+    <p class="note" id="managed" hidden>
+      These values come from a configuration profile and cannot be changed here.
+    </p>
+    <button id="save">Save and connect</button>
+    <div id="status">…</div>
+    <script src="options.js"></script>
+  </body>
+</html>
