@@ -591,6 +591,13 @@ export function renderAppHost(opts: {
   // on its src, and their changes are mirrored back (x-strad/search and
   // x-strad/hash below). ADDRESS_JS is the whole rule.
 ${ADDRESS_JS}
+  // History belongs to THIS page. The frame cannot keep its own: a traversal
+  // or a parent-set fragment reloads an opaque-origin frame, which the bridge
+  // below treats as the app navigating away. So an app that wants Back asks for
+  // an entry (x-strad/hash with push: true) and is told the hash Back or
+  // Forward restored (popstate, below). Its query only ever replaces.
+  let frameSearch = location.search;
+  const sameHash = (h) => { try { return new URL(h || "#", location.href).hash === location.hash; } catch (_) { return false; } };
   const frame = document.createElement("iframe");
   frame.id = "app";
   frame.title = ${jsonForScript(opts.title)};
@@ -614,6 +621,13 @@ ${ADDRESS_JS}
     document.body.appendChild(p);
   });
   document.body.appendChild(frame);
+  // Back / Forward (or a hash typed into the address bar): tell the app the
+  // hash it is at now. The query stays the app's latest — an older entry can
+  // carry one the app has since replaced, and the address bar shows the app.
+  window.addEventListener("popstate", () => {
+    try { history.replaceState(history.state, "", hostUrlFor(location.pathname, location.search, location.hash, frameSearch)); } catch (_) {}
+    send({ jsonrpc: "2.0", method: "x-strad/hash", params: { hash: location.hash.replace(/^#/, "") } });
+  });
   // Keys go to whichever document has focus. Focus the app on load (above),
   // and forward the navigation keys pressed on THIS page into it, so a click on
   // the bar does not silently break arrow-key paging.
@@ -664,12 +678,16 @@ ${ADDRESS_JS}
       if (m.method === "x-strad/search") {
         const q = m.params && m.params.search;
         if (typeof q === "string") {
+          frameSearch = q;
           try { history.replaceState(null, "", hostUrlFor(location.pathname, location.search, location.hash, q)); } catch (_) {}
         }
       }
       if (m.method === "x-strad/hash") {
         const h = String((m.params && m.params.hash) || "");
-        try { history.replaceState(null, "", h ? "#" + h : location.pathname + location.search); } catch (_) {}
+        // Already there — the app's echo of a Back, or a route it re-states —
+        // is never a new entry: Back would have one more step that goes nowhere.
+        const how = m.params && m.params.push === true && !sameHash(h ? "#" + h : "") ? "pushState" : "replaceState";
+        try { history[how](null, "", h ? "#" + h : location.pathname + location.search); } catch (_) {}
       }
       return;
     }

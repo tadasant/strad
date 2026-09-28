@@ -242,7 +242,12 @@ function runHost(html: string, url: string) {
   const script = /<script>([\s\S]*?)<\/script>/.exec(html)?.[1] ?? "";
   const u = new URL(url);
   const location = { pathname: u.pathname, search: u.search, hash: u.hash };
-  const contentWindow = { postMessage() {} };
+  const posted: unknown[] = [];
+  const contentWindow = {
+    postMessage(m: unknown) {
+      posted.push(m);
+    },
+  };
   const frame: Record<string, unknown> = {
     contentWindow,
     setAttribute() {},
@@ -250,7 +255,19 @@ function runHost(html: string, url: string) {
   };
   const listeners: Record<string, (e: unknown) => void> = {};
   const replaced: string[] = [];
+  const pushed: string[] = [];
+  const go = (next: string) => {
+    const n = new URL(next, new URL(location.pathname + location.search, u));
+    Object.assign(location, {
+      pathname: n.pathname,
+      search: n.search,
+      hash: n.hash,
+      href: n.href,
+    });
+  };
+  go(u.href);
   vm.runInNewContext(script, {
+    URL,
     URLSearchParams,
     location,
     document: {
@@ -263,20 +280,27 @@ function runHost(html: string, url: string) {
       },
     },
     history: {
+      state: null,
       replaceState: (_s: unknown, _t: string, next: string) => {
         replaced.push(next);
-        const n = new URL(next, u);
-        Object.assign(location, {
-          pathname: n.pathname,
-          search: n.search,
-          hash: n.hash,
-        });
+        go(next);
+      },
+      pushState: (_s: unknown, _t: string, next: string) => {
+        pushed.push(next);
+        go(next);
       },
     },
   });
   return {
     src: frame.src as string,
     replaced,
+    pushed,
+    posted,
+    /** The browser's Back or Forward, landing on `url`. */
+    popTo(url: string) {
+      go(url);
+      listeners.popstate?.({});
+    },
     notify(method: string, params: unknown) {
       listeners.message?.({
         source: contentWindow,
@@ -436,6 +460,41 @@ describe("GET /apps/:server", () => {
     expect(host.replaced.slice(1)).toEqual([
       "#floorplan",
       "/apps/shop?uri=ui%3A%2F%2Fshop%2Fother&keys=a#floorplan",
+    ]);
+  });
+
+  it("makes a history entry for a route the app pushes, and hands Back's hash down", async () => {
+    const html = await (await get("/apps/shop")).text();
+    const host = runHost(html, `${baseUrl}/apps/shop?keys=a`);
+    // Opening a listing: an entry, carrying the query.
+    host.notify("x-strad/hash", { hash: "k1", push: true });
+    expect(host.pushed).toEqual(["#k1"]);
+    // The same route again — a re-statement, or the echo of a Back — is not
+    // a second entry.
+    host.notify("x-strad/hash", { hash: "k1", push: true });
+    // Paging asks for no entry, and replaces.
+    host.notify("x-strad/hash", { hash: "k2" });
+    expect(host.pushed).toEqual(["#k1"]);
+    expect(host.replaced).toEqual(["#k1", "#k2"]);
+    // The app replaced its query since the first entry was made.
+    host.notify("x-strad/search", { search: "?keys=b" });
+    host.replaced.length = 0;
+    host.posted.length = 0;
+    // Back to the gallery: the app is told, and the address bar keeps the
+    // app's current query rather than the older entry's.
+    host.popTo(`${baseUrl}/apps/shop?keys=a`);
+    expect(host.posted).toEqual([
+      { jsonrpc: "2.0", method: "x-strad/hash", params: { hash: "" } },
+    ]);
+    expect(host.replaced).toEqual(["/apps/shop?keys=b"]);
+    // The app follows and says where it is: already there, so no entry.
+    host.notify("x-strad/hash", { hash: "", push: true });
+    expect(host.pushed).toEqual(["#k1"]);
+    // Forward: the restored hash goes down as it stands in the address bar.
+    host.posted.length = 0;
+    host.popTo(`${baseUrl}/apps/shop?keys=a#map/k%201`);
+    expect(host.posted).toEqual([
+      { jsonrpc: "2.0", method: "x-strad/hash", params: { hash: "map/k%201" } },
     ]);
   });
 
