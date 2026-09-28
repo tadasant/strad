@@ -12,7 +12,8 @@
 #
 # Identity, in order: --identity, $STRAD_HOSTD_SIGN_IDENTITY, a Developer ID
 # Application certificate in the keychain, an existing "strad-hostd-ax"
-# certificate, else one is created (openssl → .p12 → login keychain → trusted
+# certificate (trusted first if an earlier run was cancelled before it was),
+# else one is created (openssl → .p12 → login keychain → trusted
 # for code signing, which asks for the login password in a dialog). The
 # certificate never leaves the machine and signs nothing but this helper.
 set -euo pipefail
@@ -41,6 +42,17 @@ if [ -z "$IDENTITY" ]; then
   elif security find-identity -v -p codesigning 2>/dev/null | grep -q "\"$CERT_NAME\""; then
     IDENTITY="$CERT_NAME"
     say "Signing with the existing \"$CERT_NAME\" certificate"
+  elif security find-certificate -c "$CERT_NAME" "$KEYCHAIN" >/dev/null 2>&1; then
+    # Imported but never trusted: the password dialog below was cancelled, or
+    # there was no GUI to show it. `find-identity -v` lists only valid
+    # identities, so without this branch a re-run imports a second certificate
+    # of the same name and codesign then refuses the name as ambiguous.
+    say "Trusting the existing \"$CERT_NAME\" certificate for code signing"
+    TMP="$(mktemp -d)"
+    trap 'rm -rf "$TMP"' EXIT
+    security find-certificate -c "$CERT_NAME" -p "$KEYCHAIN" > "$TMP/cert.pem"
+    security add-trusted-cert -p codeSign -k "$KEYCHAIN" "$TMP/cert.pem"
+    IDENTITY="$CERT_NAME"
   else
     say "Creating a self-signed code-signing certificate named \"$CERT_NAME\" in the login keychain"
     TMP="$(mktemp -d)"
