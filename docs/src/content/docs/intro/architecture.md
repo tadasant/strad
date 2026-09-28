@@ -313,6 +313,23 @@ retired, and the operation is tried once more against whatever the thunk
 resolves next. A `401` is the upstream refusing the request before running it,
 so the retry cannot run a tool twice.
 
+### A listing gets a second look; a tool call does not
+
+`tools/list` and `resources/list` retry a **transient** upstream failure: a
+`429` or `500`/`502`/`503`/`504`, a connection that closed under the request, or
+a socket reset. Three tries, with jittered exponential backoff from 250ms, at
+most 1.5s of sleep and no new try once 10s have gone. Intermediate failures log
+nothing beyond the per-hop error counter and span; `mcp.list_tools_failed` and
+`mcp.list_resources_failed` fire at ERROR only once the budget is spent. One bad
+second at a hosted server's edge therefore does not page, and an upstream that
+is still failing a moment later still does.
+
+Everything else fails on the first answer: any other `4xx`, `-32601`, a
+timeout, a slug waiting on an unseeded credential, and a `local-tunnel` machine
+that is off. A `401` on a minted credential keeps its own single retry above.
+`tools/call` is never retried, because a `5xx` does not say whether the tool
+ran.
+
 Resource proxying asks the handshake rather than the error text: if an upstream
 never advertised the `resources` capability — which is every tools-only server,
 i.e. most of them — `listResources()` answers `[]` without a round trip. A server

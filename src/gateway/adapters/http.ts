@@ -35,6 +35,12 @@ import {
 import { remedyText, type HostState, type LocalHost } from "../troubleshoot.ts";
 import type { CallToolResult, ServerAdapter } from "./types.ts";
 import { errorText } from "../../util/error-text.ts";
+import {
+  isRetryableStatus,
+  retryDelayMs,
+  sleep,
+  type RetryBudget,
+} from "../../http/retry.ts";
 
 /** Where this adapter connects, and with what credential. */
 export interface HttpEndpoint {
@@ -712,7 +718,54 @@ export class HttpServerAdapter implements ServerAdapter {
     }
   }
 
+  /**
+   * Run a LISTING, and run it again if the upstream failed in a way that says
+   * "not now" rather than "no".
+   *
+   * A listing fails into an ERROR-severity `_failed` record, and that record
+   * pages. One `503` from a hosted server's edge — a single bad second on
+   * somebody else's infrastructure — paged prod as a strad fault (#379), and
+   * the listing a moment later would have answered. So a transient failure gets
+   * a short, bounded second look, and only an exhausted budget reaches the
+   * caller, which still emits `_failed` at ERROR: a sustained outage pages
+   * exactly as before, one budget later. Intermediate attempts log nothing;
+   * each is already a failed hop in the upstream error counter and its span.
+   *
+   * Listings only. A listing reads, so repeating one cannot do anything twice;
+   * a `tools/call` can, and a `5xx` says nothing about whether the tool ran.
+   *
+   * Outside `authorized()`, so a `401` on a minted credential keeps its own
+   * single retry and never spends this budget.
+   */
+  private async transient<T>(run: () => Promise<T>): Promise<T> {
+    const startedAt = Date.now();
+    let spentMs = 0;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await run();
+      } catch (err) {
+        if (this.closed || !isTransientListFailure(err)) throw err;
+        // The wall clock, not just the sleeps: a `504` can take as long as the
+        // proxy that emitted it was willing to wait, and three of those in a row
+        // is a listing the client has already given up on.
+        if (Date.now() - startedAt >= LIST_RETRY_DEADLINE_MS) throw err;
+        const delay = retryDelayMs({
+          attempt,
+          spentMs,
+          budget: LIST_RETRY_BUDGET,
+        });
+        if (delay === undefined) throw err;
+        spentMs += delay;
+        await sleep(delay);
+      }
+    }
+  }
+
   async listTools(): Promise<Tool[]> {
+    return this.transient(() => this.listToolsOnce());
+  }
+
+  private async listToolsOnce(): Promise<Tool[]> {
     return this.authorized(async () => {
       const conn = await this.leased();
       const res = await this.lease(conn, "list_tools", (client) =>
@@ -757,7 +810,9 @@ export class HttpServerAdapter implements ServerAdapter {
    * answer has to come from the handshake or from the code on the wire.
    */
   async listResources(): Promise<Resource[]> {
-    return this.authorized(() => this.listResourcesOnce());
+    return this.transient(() =>
+      this.authorized(() => this.listResourcesOnce()),
+    );
   }
 
   private async listResourcesOnce(): Promise<Resource[]> {
@@ -1020,6 +1075,75 @@ function fingerprintOf(endpoint: HttpEndpoint): string {
   return createHash("sha256")
     .update(JSON.stringify([endpoint.url, headers]))
     .digest("hex");
+}
+
+/**
+ * The listing retry's budget: three tries, at most ~750ms of sleep.
+ *
+ * Sized for a blip, not an outage — one bad second at an upstream's edge. An
+ * upstream that is still failing after that is failing, and the `_failed`
+ * record that pages is the right answer. Small against the 60s a client's SDK
+ * gives a `tools/list` by default, because every listing a client makes fans
+ * out to every selected slug and waits for the slowest.
+ */
+const LIST_RETRY_BUDGET: RetryBudget = {
+  attempts: 3,
+  baseDelayMs: 250,
+  maxDelayMs: 1_000,
+  totalDelayMs: 1_500,
+};
+
+/** No retry STARTS once a listing has spent this long, sleeps included. */
+const LIST_RETRY_DEADLINE_MS = 10_000;
+
+/**
+ * Is this listing failure worth one more look?
+ *
+ * Positive matches only, and narrow ones; anything unrecognised fails on the
+ * first answer:
+ *
+ * - An HTTP status in `src/http/retry.ts`'s transient set (`429`, `500`,
+ *   `502`, `503`, `504`). Every other status is a real answer, a `401`
+ *   included — `authorized()` owns that one.
+ * - The connection closing under the request (`-32000`), which is also how a
+ *   request on a connection a peer just retired ends.
+ * - A fetch that got no response because the socket went away: a reset, a hang
+ *   up, undici's "fetch failed" around either.
+ *
+ * NOT a timeout: a listing that already spent its whole deadline once would
+ * spend it again. NOT a `LocalHostUnavailableError`: a machine that is off is a
+ * verdict the listing reports on at once, with its own remedy, and it does not
+ * page. NOT a `ServerUnconfiguredError`: nothing a second later changes a
+ * credential that has not been seeded.
+ */
+function isTransientListFailure(err: unknown): boolean {
+  if (err instanceof LocalHostUnavailableError) return false;
+  const cause = err instanceof UpstreamError ? err.cause : err;
+  if (cause instanceof StreamableHTTPError) {
+    return cause.code !== undefined && isRetryableStatus(cause.code, true);
+  }
+  if (cause instanceof McpError) {
+    return cause.code === ErrorCode.ConnectionClosed;
+  }
+  if (!(cause instanceof Error)) return false;
+  if (cause.name === "TimeoutError" || cause.name === "AbortError") {
+    return false;
+  }
+  const reset =
+    /ECONNRESET|EPIPE|socket hang up|other side closed|UND_ERR_SOCKET/i;
+  if (
+    /^fetch failed$/i.test(cause.message) ||
+    reset.test(cause.message) ||
+    /every connection was retired/.test(cause.message)
+  ) {
+    return true;
+  }
+  const inner = (cause as { cause?: unknown }).cause;
+  return (
+    inner instanceof Error &&
+    (reset.test(inner.message) ||
+      reset.test(String((inner as { code?: unknown }).code ?? "")))
+  );
 }
 
 /**
