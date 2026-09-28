@@ -2,8 +2,15 @@ import { createHash } from "node:crypto";
 
 /**
  * A macOS configuration profile that force-installs the bridge extension and
- * hands it its settings, so the durable install is one file the owner opens
- * once. Two payloads:
+ * hands it its settings — on a Mac that Chrome considers MANAGED. Chromium
+ * filters `ExtensionSettings` entries that force-install from anywhere but
+ * the Web Store as "sensitive" unless the machine is MDM-enrolled or
+ * domain-bound (`FilterSensitiveExtensionSettings` in
+ * `components/policy/core/common/policy_loader_common.cc`, applied by
+ * `policy_loader_mac.mm` when `IsManagedOrEnterpriseDevice()` is false), so
+ * on a personal Mac the first payload shows as `[BLOCKED]` in
+ * `chrome://policy` and installs nothing. `strad-hostd extension` says so;
+ * the unpacked route is the one a personal Mac gets. Two payloads:
  *
  * - `com.google.Chrome` → `ExtensionSettings`: the extension id, force-installed
  *   from the daemon's own update manifest on loopback. Chrome fetches the CRX

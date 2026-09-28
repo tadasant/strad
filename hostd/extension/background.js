@@ -6,8 +6,15 @@
 // What it does: on the daemon's request, attach chrome.debugger to a tab of
 // the profile this extension is installed in, relay DevTools commands to it,
 // and open, focus and close tabs. What it never does: act on its own. Every
-// attach, command and tab operation is a request from a daemon that presented
-// the pairing token, and the daemon only makes one under a live grant.
+// attach, command and tab operation is a request from a daemon that proved it
+// holds the pairing token, and the daemon only makes one under a live grant.
+//
+// The token never leaves this worker. Any process on the machine can bind the
+// daemon's port while the daemon is down and wait for this worker to dial in,
+// so the daemon has to prove itself first: it answers the hello with an HMAC
+// of the token over a nonce chosen here, and only then does this side prove
+// itself the same way over the daemon's nonce. A listener that cannot produce
+// the first proof gets hung up on and learns nothing.
 //
 // Why a WebSocket and not native messaging: native messaging spawns a host
 // process per connection, which would be a second daemon with its own
@@ -19,9 +26,9 @@
 const DEFAULT_DAEMON = "ws://127.0.0.1:7312/extension";
 const VERSION = chrome.runtime.getManifest().version;
 
-/** The socket the daemon welcomed, or null. */
+/** The socket the daemon admitted, or null. */
 let socket = null;
-/** A socket that is opening or awaiting welcome, so two connects do not race. */
+/** A socket that is opening or in its handshake, so two connects do not race. */
 let opening = null;
 /** Set before the first await in connect(), so two connects cannot both pass the guard. */
 let connecting = false;
@@ -50,6 +57,27 @@ async function settings() {
     token: managed.token || local.token || "",
     managed: Boolean(managed.token),
   };
+}
+
+function hex(bytes) {
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** HMAC-SHA256(token, "strad-hostd <role> <nonce>"), hex — the same string the daemon signs. */
+async function proofFor(token, role, nonce) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(token),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(`strad-hostd ${role} ${nonce}`),
+  );
+  return hex(new Uint8Array(sig));
 }
 
 async function detachAll() {
@@ -127,7 +155,7 @@ function send(ws, msg) {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
-async function onMessage(ws, raw) {
+async function onMessage(ws, raw, pairing) {
   let msg;
   try {
     msg = JSON.parse(raw);
@@ -135,12 +163,33 @@ async function onMessage(ws, raw) {
     return;
   }
   if (msg.type === "welcome") {
+    // The daemon's proof, over OUR nonce. Anything else on this port is not
+    // the daemon, and gets nothing: not the token, not a proof, not a tab.
+    const expected = await proofFor(pairing.token, "daemon", pairing.nonce);
+    if (
+      typeof msg.proof !== "string" ||
+      msg.proof !== expected ||
+      typeof msg.nonce !== "string"
+    ) {
+      setStatus(
+        "error",
+        `something answered at ${pairing.daemon} but did not know the pairing token; not the daemon, or the token has changed`,
+      );
+      ws.close(4003, "daemon failed proof");
+      return;
+    }
+    send(ws, {
+      type: "auth",
+      proof: await proofFor(pairing.token, "extension", msg.nonce),
+    });
+    pairing.daemonName =
+      `${msg.daemon ?? "strad-hostd"} ${msg.version ?? ""}`.trim();
+    return;
+  }
+  if (msg.type === "ready") {
     socket = ws;
     opening = null;
-    setStatus(
-      "connected",
-      `${msg.daemon ?? "strad-hostd"} ${msg.version ?? ""}`.trim(),
-    );
+    setStatus("connected", pairing.daemonName ?? "strad-hostd");
     return;
   }
   if (msg.type === "ping") {
@@ -193,17 +242,19 @@ async function connect() {
     connecting = false;
   }
   setStatus("connecting", daemon);
+  const pairing = {
+    daemon,
+    token,
+    nonce: hex(crypto.getRandomValues(new Uint8Array(32))),
+  };
   ws.onopen = () =>
     send(ws, {
       type: "hello",
-      token,
+      nonce: pairing.nonce,
       version: VERSION,
       extensionId: chrome.runtime.id,
     });
-  ws.onmessage = (m) => void onMessage(ws, m.data);
-  ws.onerror = () => {
-    if (opening === ws) opening = null;
-  };
+  ws.onmessage = (m) => void onMessage(ws, m.data, pairing);
   ws.onclose = (e) => {
     // A socket that was already replaced says nothing: the status is the
     // current socket's, and so are the attachments.
@@ -214,10 +265,11 @@ async function connect() {
     // The daemon is gone, and its grants with it: nothing may stay attached
     // on the say-so of a process that no longer exists.
     void detachAll();
-    setStatus(
-      "disconnected",
-      `${daemon} closed (${e.code}${e.reason ? `: ${e.reason}` : ""})`,
-    );
+    if (status.state !== "error")
+      setStatus(
+        "disconnected",
+        `${daemon} closed (${e.code}${e.reason ? `: ${e.reason}` : ""})`,
+      );
   };
 }
 
@@ -264,6 +316,7 @@ chrome.alarms.onAlarm.addListener((a) => {
 });
 chrome.storage.onChanged.addListener(() => {
   if (socket) socket.close(4000, "settings changed");
+  if (opening) opening.close(4000, "settings changed");
   void connect();
 });
 chrome.runtime.onStartup.addListener(() => void connect());

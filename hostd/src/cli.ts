@@ -56,8 +56,8 @@ const USAGE = `strad-hostd — MCP servers that operate the machine they run on.
       local MCP client (one Claude Code session), named on the dialog.
   strad-hostd extension
       How to install the Chrome extension that lets the browser server drive
-      the real profile unattended: the unpacked directory, the pairing token,
-      and the configuration profile that force-installs it.
+      the real profile unattended: the unpacked directory and the pairing
+      token, plus a configuration profile for a managed Mac.
   strad-hostd helper [--request-access]
       Report whether strad-hostd-ax is reachable and which permissions it holds;
       --request-access makes macOS prompt for both, attributed to the helper.
@@ -317,16 +317,19 @@ async function main(argv: string[]): Promise<number> {
       );
       console.log(
         `The Chrome extension lets the browser server drive the profile Chrome is running, with nobody at the screen.\n\n` +
-          `Durable install (a configuration profile that force-installs it, with the token inside):\n` +
+          `Install it unpacked (the route for a personal Mac):\n` +
+          `  chrome://extensions › Developer mode on › Load unpacked › ${extensionDir()}\n` +
+          `  then the extension's Details › Extension options, and paste:\n` +
+          `  daemon:  ${extensionEndpoint(config.controlPort)}\n` +
+          `  token:   ${token}\n` +
+          `  It stays installed while Developer mode stays on. Each attach puts a "started debugging this browser" bar\n` +
+          `  on the tab; launching Chrome with --silent-debugger-extension-api hides it.\n\n` +
+          `Force-install by configuration profile (ONLY on a Mac Chrome considers managed — MDM-enrolled or domain-bound;\n` +
+          `on a personal Mac Chrome blocks a force-install from outside the Web Store, and chrome://policy shows it [BLOCKED]):\n` +
           `  open ${profile}\n` +
           `  then System Settings › General › Device Management › install "strad-hostd Chrome extension".\n` +
           `  Chrome fetches the extension from the daemon at ${updateManifestUrl(config.controlPort)}, so the daemon must be running.\n` +
           `  Extension id: ${id}\n\n` +
-          `Quick install (developer mode, until Chrome turns it off):\n` +
-          `  chrome://extensions › Developer mode › Load unpacked › ${extensionDir()}\n` +
-          `  then the extension's Details › Extension options, and paste:\n` +
-          `  daemon:  ${extensionEndpoint(config.controlPort)}\n` +
-          `  token:   ${token}\n\n` +
           `Either way, the status page at http://127.0.0.1:${config.controlPort} says "Chrome extension: connected" once it is paired.`,
       );
       return 0;

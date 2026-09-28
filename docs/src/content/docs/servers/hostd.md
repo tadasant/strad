@@ -122,20 +122,17 @@ The browser server has two ways into the Chrome you use, and takes the first
 that is there.
 
 **The extension, for a machine nobody is at.** `strad-hostd extension` on the
-Mac prints both installs with your paths and pairing token. The durable one is
-a configuration profile it writes to
-`~/.strad-hostd/strad-hostd-extension.mobileconfig`: open it, approve it under
-System Settings › General › Device Management, and Chrome force-installs the
-extension from the daemon (a signed CRX served on the control port) with the
-pairing token already in its managed storage. It cannot be switched off from
-`chrome://extensions`, and it attaches with no "started debugging this
-browser" bar, because Chrome exempts policy-installed extensions. The quick
-one is `chrome://extensions` › Developer mode › Load unpacked ›
-`~/.strad-hostd/app/extension`, then the token pasted into its options page;
-that lasts while developer mode does, and shows the bar on each attach unless
-Chrome runs with `--silent-debugger-extension-api`. Either way the daemon must
-be running, and the status page says "Chrome extension: connected" once it is
-paired.
+Mac prints the install with your paths and pairing token: `chrome://extensions`
+› Developer mode › Load unpacked › `~/.strad-hostd/app/extension`, then the
+token pasted into its options page. It stays installed while developer mode
+does, and shows a "started debugging this browser" bar on each tab it
+attaches unless Chrome runs with `--silent-debugger-extension-api`. The daemon
+must be running, and the status page says "Chrome extension: connected" once
+it is paired. The command also writes a configuration profile that
+force-installs the extension from the daemon with the token in managed
+storage, for a Mac Chrome considers managed: on a personal Mac Chrome filters
+a force-install from outside the Web Store as a sensitive policy and installs
+nothing, so that file is for an MDM-enrolled or domain-bound machine only.
 
 **DevTools, otherwise.** Open `chrome://inspect/#remote-debugging` and turn on
 remote debugging for the running browser (Chrome 144 or newer). Chrome asks

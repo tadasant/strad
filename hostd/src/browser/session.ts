@@ -35,11 +35,6 @@ export class BrowserSession {
     private readonly bridge?: ExtensionBridge,
   ) {}
 
-  /** Which route this session is on, once it has one. */
-  get via(): BrowserBackend["kind"] | undefined {
-    return this.be && !this.be.isClosed ? this.be.kind : undefined;
-  }
-
   async backend(): Promise<BrowserBackend> {
     if (this.be && !this.be.isClosed) return this.be;
     this.be?.close();

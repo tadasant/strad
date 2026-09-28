@@ -4,6 +4,7 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { WebSocketServer } from "ws";
 
 import { CdpConnection } from "../src/browser/cdp.js";
 import { parseActivePort } from "../src/browser/discover.js";
@@ -55,6 +56,7 @@ describe.skipIf(!chrome)(
     let cdp: CdpConnection;
     let worker: string;
     let grantId: string;
+    let token: string;
     let client: Awaited<ReturnType<typeof connect>>;
     const call = (name: string, args: Record<string, unknown> = {}) =>
       client.callTool({ name, arguments: { grant_id: grantId, ...args } });
@@ -124,7 +126,7 @@ describe.skipIf(!chrome)(
           ephemeralPorts: true,
         },
       );
-      const token = readFileSync(join(stateDir, "extension-token"), "utf8");
+      token = readFileSync(join(stateDir, "extension-token"), "utf8");
 
       const userDataDir = mkdtempSync(join(tmpdir(), "hostd-ext-chrome-"));
       proc = spawn(
@@ -387,6 +389,46 @@ describe.skipIf(!chrome)(
         "Owner's page",
         "Two",
       ]);
+    });
+
+    it("hands a rogue listener on the daemon's port nothing: no token, no proof, and hangs up", async () => {
+      // What a local process gets by binding the port while the daemon is
+      // down and waiting for the extension to dial in.
+      const seen: Record<string, unknown>[] = [];
+      let closedWith: number | undefined;
+      const rogue = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+      await new Promise<void>((r) => rogue.once("listening", () => r()));
+      rogue.on("connection", (sock) => {
+        sock.on("message", (d) => {
+          const msg = JSON.parse(String(d)) as Record<string, unknown>;
+          seen.push(msg);
+          if (msg.type === "hello")
+            sock.send(
+              JSON.stringify({
+                type: "welcome",
+                proof: "0".repeat(64),
+                nonce: "00".repeat(32),
+                daemon: "strad-hostd",
+              }),
+            );
+        });
+        sock.on("close", (code) => (closedWith = code));
+      });
+      const port = (rogue.address() as { port: number }).port;
+      await inWorker(
+        `chrome.storage.local.set({ daemon: "ws://127.0.0.1:${port}/extension" })`,
+      );
+      await until(async () => closedWith !== undefined);
+      expect(closedWith).toBe(4003);
+      expect(seen.map((m) => m.type)).toEqual(["hello"]);
+      expect(JSON.stringify(seen)).not.toContain(token.trim());
+      expect(await inWorker<string>("status.state")).toBe("error");
+      rogue.close();
+      // Back to the real daemon.
+      await inWorker(
+        `chrome.storage.local.set({ daemon: "ws://127.0.0.1:${daemon.controlPort}/extension" })`,
+      );
+      await until(async () => (await state()).extension?.connected === true);
     });
 
     it("serves the CRX and update manifest a policy-installed Chrome would fetch", async () => {

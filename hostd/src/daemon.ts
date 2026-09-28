@@ -1,4 +1,6 @@
+import { statSync } from "node:fs";
 import type { Server as HttpServer } from "node:http";
+import { join } from "node:path";
 import type { Duplex } from "node:stream";
 
 import { AuditLog } from "./audit.js";
@@ -18,6 +20,7 @@ import { platformPrompter, type Prompter } from "./consent/prompter.js";
 import { createControlListener } from "./control/server.js";
 import { KillSwitch } from "./killswitch.js";
 import {
+  listExtensionFiles,
   loadOrCreateSigningKey,
   packExtension,
   updateManifestXml,
@@ -182,6 +185,26 @@ export function buildCore(
   };
 }
 
+/** A packer that re-signs only when the extension directory's files change. */
+function memoisedPack(dir: string, keyPath: string): () => PackedExtension {
+  let last: { stamp: string; packed: PackedExtension } | undefined;
+  return () => {
+    const stamp = listExtensionFiles(dir)
+      .map((f) => {
+        const st = statSync(join(dir, f));
+        return `${f}:${st.size}:${st.mtimeMs}`;
+      })
+      .join("\n");
+    if (!last || last.stamp !== stamp) {
+      last = {
+        stamp,
+        packed: packExtension(dir, loadOrCreateSigningKey(keyPath)),
+      };
+    }
+    return last.packed;
+  };
+}
+
 /** Whether any enabled server needs `strad-hostd-ax`. */
 export function helperWanted(ids: CapabilityId[]): boolean {
   return ids.some(needsHelper);
@@ -261,13 +284,13 @@ export async function startDaemon(
     extension: core.bridge
       ? {
           bridge: core.bridge,
-          // Packed on demand and not cached: the directory is small, and a
-          // re-install that changed it must serve the new bytes.
-          packed: (): PackedExtension =>
-            packExtension(
-              opts.extensionDir ?? extensionDir(),
-              loadOrCreateSigningKey(extensionKeyPath(opts.stateDir)),
-            ),
+          // Packed on first request and again only when a file in the
+          // directory changes: signing is an RSA operation, and the route is
+          // reachable by any local page in a loop.
+          packed: memoisedPack(
+            opts.extensionDir ?? extensionDir(),
+            extensionKeyPath(opts.stateDir),
+          ),
           updateXml: (packed, port) =>
             updateManifestXml(packed.id, packed.version, crxUrl(port)),
         }

@@ -338,13 +338,20 @@ that dropped.
 loopback-`Host`-and-no-proxy-headers test, so nothing that came through a
 tunnel or a proxy reaches it. An `Origin` starting `chrome-extension://`,
 which a browser sets and a web page cannot forge, so no page open in the
-owner's Chrome can pose as the extension. Then the pairing token in the first
-message, `~/.strad-hostd/extension-token`, made at first boot, mode 0600, and
-compared in constant time: that is the guard against a non-browser process on
-the machine, which can send any header it likes. The extension only ever sends
-the token to the URL its own settings name, so a rogue listener on another port
-learns nothing. A wrong token closes the socket with code 4003; a second good
-connection replaces the first, because there is one owner and one live profile.
+owner's Chrome can pose as the extension. Then the pairing token,
+`~/.strad-hostd/extension-token`, made at first boot, mode 0600 — and it
+never crosses the socket. Any process on the machine can bind the control
+port while the daemon is down and wait for the extension to dial in, so the
+daemon proves itself first: the extension's hello carries a nonce, the
+daemon's welcome carries an HMAC of the token over it, and an extension that
+cannot verify that proof hangs up having sent nothing but the nonce. Then
+the extension proves itself the same way over the daemon's nonce, compared in
+constant time, and nothing is relayed before that. A wrong proof closes the
+socket with code 4003 from whichever side saw it; a second good connection
+replaces the first, because there is one owner and one live profile. A
+malformed frame from a socket that never said hello is terminated, not
+raised: `ws` reports it as an error event, and an unhandled one would take
+the daemon down.
 
 **One extension, many grants.** `chrome.debugger` attaches a tab once per
 extension, so attachments are shared. Each grant's backend records the tabs it
@@ -364,21 +371,28 @@ gives, carried as a string. The DevTools commands the tools use — `Page`,
 not forwarded: no tool consumes one, and `Runtime.enable` alone would flood the
 socket with console events.
 
-**Installing it is the daemon's job, as far as it can be.** The daemon packs
-`extension/` into a CRX3 signed with an RSA key it keeps in
-`~/.strad-hostd/extension-key.pem` (`src/extension/crx.ts`, a zip writer and
-the CRX3 header in two hundred lines, because Chrome's "Pack extension" is a
-hand step and a Web Store listing is not the point), and serves it with an
-update manifest at `http://127.0.0.1:7312/extension/`. `strad-hostd extension`
-writes a configuration profile that force-installs the extension by id from
-that URL and sets its managed storage to the daemon URL and the token. Chromium
-forces HTTPS on the Web Store's update URL only, so a loopback `http://` one is
-valid; and `debugger_api.cc` skips the "started debugging this browser" infobar
-for a policy-installed extension, so this route needs no
-`--silent-debugger-extension-api`. The key is what the id is derived from, so
-the key must not change: a new key is a new extension and a profile that
-force-installs the old one. The unpacked route is the same extension with the
-token pasted into its options page.
+**Installing it: unpacked on a personal Mac, by profile on a managed one.**
+The route a personal Mac gets is `chrome://extensions` with developer mode
+on, Load unpacked, and the token pasted into the options page; it holds while
+developer mode does. The daemon also packs `extension/` into a CRX3 signed
+with an RSA key it keeps in `~/.strad-hostd/extension-key.pem`
+(`src/extension/crx.ts`, a zip writer and the CRX3 header in two hundred
+lines, because Chrome's "Pack extension" is a hand step and a Web Store
+listing is not the point), serves it with an update manifest at
+`http://127.0.0.1:7312/extension/`, and `strad-hostd extension` writes a
+configuration profile that force-installs the extension by id from that URL
+and sets its managed storage to the daemon URL and the token. Two reads of
+Chromium say what that profile is worth. `extension_downloader.cc` forces
+HTTPS on the Web Store's update URL only, so a loopback `http://` one is
+valid, and `debugger_api.cc` skips the "started debugging this browser"
+infobar for a policy-installed extension. But `policy_loader_common.cc`
+filters a force-install from outside the Web Store as a *sensitive* policy,
+and `policy_loader_mac.mm` applies that filter unless the Mac is MDM-enrolled
+or domain-bound — so on a personal Mac the profile's `ExtensionSettings`
+entry shows `[BLOCKED]` in `chrome://policy` and installs nothing. The CLI
+and the docs say so. The key is what the id is derived from, so the key must
+not change: a new key is a new extension and a profile that force-installs
+the old one.
 
 **What it costs, said once here and again on the limitations page.** The
 owner's real profile becomes drivable with no Chrome prompt by anything that
@@ -506,10 +520,13 @@ machine. The daemon adds:
   session on the machine, each opening exactly what the server's own key opens
   and nothing else. The dialog and the status page name the client, so the
   owner can see which session is asking and revoke one without the rest.
-- **The extension's door is on the control port, behind a pairing token.** A
-  socket there passes the loopback test, must carry a `chrome-extension://`
-  Origin, and must present the token from `~/.strad-hostd/extension-token`
-  before the daemon speaks to it. The extension acts only on the daemon's
+- **The extension's door is on the control port, behind a pairing token that
+  never crosses the socket.** A socket there passes the loopback test, must
+  carry a `chrome-extension://` Origin, is answered with the daemon's own
+  HMAC proof over the extension's nonce — the extension hangs up on a
+  listener that cannot produce it — and must then prove the token from
+  `~/.strad-hostd/extension-token` the same way over the daemon's nonce
+  before the daemon relays anything. The extension acts only on the daemon's
   request, and the daemon only asks under a live grant.
 
 **What entitlement means here.** Adding one of these slugs to
@@ -575,9 +592,12 @@ through the REAL extension loaded into a real Chromium (`--load-extension`,
 which Chromium honours and branded Chrome 137+ does not): pairing over the
 socket, `chrome.debugger` attaching inside the profile, every browser tool,
 two sessions on two keys sharing one attachment, the kill switch taking the
-debugger off every tab, and the CRX and update manifest served — plus the
-bridge against `test/fake-extension.ts` for the refusals (wrong Origin, wrong
-token, wrong path, a replaced connection, a dropped one), and both computer-use
+debugger off every tab, a rogue listener on the daemon's port getting a
+nonce and nothing else, and the CRX and update manifest served — plus the
+bridge against `test/fake-extension.ts` for the refusals (wrong Origin, a
+daemon that cannot prove the token, an extension that cannot, wrong path, a
+malformed frame before hello, a replaced connection, a dropped one), the
+client-key paths, and both computer-use
 servers through a real MCP client against `test/fake-ax.ts`, a stand-in that
 speaks the helper's protocol: the tree outline, actions, values, screenshots as
 image content, chords, the pre-dialog refusal for a missing grant, the
@@ -596,11 +616,13 @@ from Finder, captures a real screenshot, and shows and clears the banner
 LaunchAgent, both LaunchAgents, the installer's `cloudflared` branch, the
 Chrome 144 toggle and its prompt on a real default profile, the extension in
 Google Chrome rather than Chromium — the unpacked install and its options
-page, the configuration profile and whether Chrome force-installs from a
-loopback `http://` update URL (read from `extension_downloader.cc`, which
-forces HTTPS for the Web Store only), managed storage delivering the token,
-and the infobar's absence for a policy-installed extension (read from
-`debugger_api.cc`) — TCC prompts for
+page, whether developer mode keeps it installed across Chrome updates, and,
+on a managed Mac, the configuration profile: the force-install from a
+loopback `http://` update URL (`extension_downloader.cc` forces HTTPS for the
+Web Store only), the sensitive-policy filter that blocks it on an unmanaged
+one (`policy_loader_common.cc`, `policy_loader_mac.mm`), managed storage
+delivering the token, and the infobar's absence for a policy-installed
+extension (`debugger_api.cc`) — TCC prompts for
 files under `~/Documents`, `~/Desktop` and `~/Downloads` when the shell reaches
 them, the signing script's self-signed branch and whether `codesign` accepts
 the certificate it makes, the two System Settings grants on a real Mac and

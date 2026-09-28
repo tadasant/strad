@@ -5804,15 +5804,19 @@ switch — which now also detaches `chrome.debugger` from every tab — and the
 
 **What is on the box, by hand (adds to #101).**
 
-- Installing the extension, by one of two routes. Unpacked, from
-  `chrome://extensions` with Developer mode on, and paired by pasting the token
-  into its options page: quick, and Chrome may switch it off on an update.
-  Force-installed, by opening the configuration profile
-  `strad-hostd extension` writes: durable, cannot be disabled from
-  `chrome://extensions`, and — because it is policy-installed — attaches with no
-  "started debugging this browser" infobar. The profile carries the pairing
-  token as managed storage under `/Library/Managed Preferences`, readable by
-  every user of the Mac.
+- Installing the extension unpacked, from `chrome://extensions` with
+  Developer mode on, paired by pasting the token into its options page. It
+  holds while developer mode does, and each attach shows a "started debugging
+  this browser" bar unless Chrome runs with `--silent-debugger-extension-api`.
+  The durable route — a configuration profile `strad-hostd extension` writes,
+  which force-installs the extension from the daemon with the token in
+  managed storage, cannot be disabled from `chrome://extensions`, and attaches
+  with no bar — works only on a Mac Chrome considers managed: Chromium's
+  `policy_loader_common.cc` filters a force-install from outside the Web Store
+  as a sensitive policy, and `policy_loader_mac.mm` applies that unless the
+  Mac is MDM-enrolled or domain-bound. On a personal Mac the entry shows
+  `[BLOCKED]` in `chrome://policy`. The daemon still serves the CRX and the
+  CLI still writes the profile, labelled for what it is.
 - `consent.onTimeout: "allow"` in `~/.strad-hostd/config.json`, for the
   unattended posture.
 - A key per local session: `strad-hostd key add browser <name>`, then
@@ -5823,11 +5827,13 @@ Chromium in CI (`hostd/test/extension.test.ts`): it pairs over the socket,
 attaches inside the profile, every browser tool works through it, two sessions
 share one attachment, and the kill switch takes the debugger off every tab.
 That Chromium is `--load-extension`ed; branded Chrome 137+ ignores that flag,
-so the unpacked and force-install routes, managed storage, the infobar's
-absence and the `.mobileconfig` itself have run on no Mac. The CRX3 packer and
-the update manifest are checked byte-for-byte against the format; whether
-Google Chrome accepts a loopback `http://` update URL is read from Chromium's
-source (only the Web Store URL is forced to HTTPS) and not yet observed.
+so the unpacked route in Google Chrome, and on a managed Mac the profile,
+managed storage and the infobar's absence, have run on no Mac. The CRX3
+packer and the update manifest are checked byte-for-byte against the format;
+that Chrome accepts a loopback `http://` update URL, and blocks the
+force-install on an unmanaged Mac, are both read from Chromium's source and
+not yet observed. A rogue listener on the daemon's port is tested against the
+real extension: it gets a nonce and nothing else.
 
 **Undo.** Chrome offering a remembered "always allow" for remote debugging on
 the default profile would retire the extension; nothing suggests it will.

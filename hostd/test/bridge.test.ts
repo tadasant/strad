@@ -1,4 +1,6 @@
+import { randomBytes } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
+import net from "node:net";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -106,17 +108,55 @@ describe("the extension's door", () => {
     );
   });
 
-  it("closes a socket whose hello carries the wrong token, and shows nothing connected", async () => {
-    const impostor = new FakeExtension({ token: "not-the-token" });
-    await impostor.connect(daemon.controlPort);
-    expect(impostor.outcome).toEqual({ closed: 4003, reason: "bad token" });
+  it("hangs up on a daemon that cannot prove the token, before proving anything itself", async () => {
+    // A fake holding a DIFFERENT token is the extension's view of a rogue
+    // listener: the daemon's proof does not verify, so the fake closes first
+    // and never sends its own proof.
+    const wrongToken = new FakeExtension({ token: "not-the-token" });
+    await wrongToken.connect(daemon.controlPort);
+    expect(wrongToken.outcome).toBe("daemon-failed-proof");
     expect((await state()).extension).toMatchObject({ connected: false });
+  });
+
+  it("refuses an extension whose proof is wrong, with 4003 and nothing connected", async () => {
+    const liar = new FakeExtension({ token, lie: true });
+    await liar.connect(daemon.controlPort);
+    expect(liar.outcome).toEqual({ closed: 4003, reason: "bad token" });
+    expect((await state()).extension).toMatchObject({ connected: false });
+  });
+
+  it("survives a malformed frame from a socket that never said hello", async () => {
+    // A raw upgrade with the right Origin, then two bytes that are not a
+    // valid frame (RSV1 set, unmasked). `ws` reports that as an error event,
+    // and an unhandled one would take the daemon down.
+    await new Promise<void>((resolve, reject) => {
+      const sock = net.connect(daemon.controlPort, "127.0.0.1", () => {
+        sock.write(
+          `GET /extension HTTP/1.1\r\nHost: 127.0.0.1:${daemon.controlPort}\r\n` +
+            "Origin: chrome-extension://fakefakefakefake\r\n" +
+            "Upgrade: websocket\r\nConnection: Upgrade\r\n" +
+            "Sec-WebSocket-Version: 13\r\n" +
+            `Sec-WebSocket-Key: ${randomBytes(16).toString("base64")}\r\n\r\n`,
+        );
+      });
+      sock.once("data", (d) => {
+        expect(String(d)).toMatch(/^HTTP\/1.1 101/);
+        sock.write(Buffer.from([0xf1, 0x00]));
+        sock.on("close", () => resolve());
+        sock.on("error", () => resolve());
+      });
+      sock.on("error", reject);
+    });
+    const res = await fetch(
+      `http://127.0.0.1:${daemon.controlPort}/state.json`,
+    );
+    expect(res.status).toBe(200);
   });
 
   it("welcomes the right token and reports it on the status page", async () => {
     ext = new FakeExtension({ token, version: "0.1.0-fake" });
     await ext.connect(daemon.controlPort);
-    expect(ext.outcome).toBe("welcomed");
+    expect(ext.outcome).toBe("ready");
     expect((await state()).extension).toMatchObject({
       connected: true,
       version: "0.1.0-fake",
@@ -327,7 +367,7 @@ describe("several grants, one extension", () => {
     const newer = new FakeExtension({ token, version: "0.2.0-fake" });
     newer.addTab("Fresh", "https://fresh.example/");
     await newer.connect(daemon.controlPort);
-    await until(() => ext.outcome !== "welcomed");
+    await until(() => ext.outcome !== "ready");
     expect(ext.outcome).toEqual({ closed: 4000, reason: "replaced" });
     expect((await state()).extension?.version).toBe("0.2.0-fake");
     const { tabs } = resultJson<{ tabs: { title: string }[] }>(

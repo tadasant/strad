@@ -123,28 +123,27 @@ or `{ "browser": { "userDataDir": "/path/to/profile" } }`.
 #### Installing the extension
 
 `strad-hostd extension` prints everything below for your machine, with the
-real paths and the pairing token. Both routes need the daemon running.
+real paths and the pairing token. The daemon must be running.
 
-**Durable: a configuration profile (macOS).** The command writes
-`~/.strad-hostd/strad-hostd-extension.mobileconfig`. Open it, then approve it
-in System Settings › General › Device Management. It force-installs the
-extension from the daemon (which serves a signed CRX and an update manifest on
+**Load it unpacked.** `chrome://extensions` › Developer mode › Load
+unpacked › the `extension/` directory (in an install,
+`~/.strad-hostd/app/extension`). Then Details › Extension options, and paste
+the daemon URL and the token. It stays installed while developer mode stays
+on. Each attach puts a "started debugging this browser" bar on the tab;
+launching Chrome with `--silent-debugger-extension-api` hides it.
+
+**A configuration profile, on a managed Mac only.** The command also writes
+`~/.strad-hostd/strad-hostd-extension.mobileconfig`, which force-installs the
+extension from the daemon (a signed CRX and an update manifest on
 `http://127.0.0.1:7312/extension/…`, loopback only) and hands it the daemon
-URL and the pairing token as managed storage. A force-installed extension
-cannot be switched off from `chrome://extensions`, survives Chrome's
-developer-mode rules, and — because Chrome treats policy-installed extensions
-this way — shows no "started debugging this browser" bar. The profile holds
-the token; it is readable by every user of the Mac, which on a one-person Mac
-is the same boundary as `~/.strad-hostd`. Remove the profile to remove the
-extension. When `extension/manifest.json` changes, bump its `version`: that is
-what Chrome compares to decide whether to fetch the new copy.
-
-**Quick: load it unpacked.** `chrome://extensions` › Developer mode › Load
-unpacked › the `extension/` directory (in an install, `~/.strad-hostd/app/extension`).
-Then Details › Extension options, and paste the daemon URL and the token. This
-works while developer mode stays on, and Chrome may switch the extension off
-on an update. Each attach puts a "started debugging this browser" bar on the
-tab; `--silent-debugger-extension-api` on Chrome's command line hides it.
+URL and the token as managed storage. Chrome honours a force-install from
+outside the Web Store only on a Mac it considers managed — MDM-enrolled or
+domain-bound; on a personal Mac the entry is filtered as a sensitive policy
+and `chrome://policy` shows it `[BLOCKED]`. Where it applies, the extension
+cannot be switched off from `chrome://extensions` and attaches with no
+"started debugging" bar. The profile holds the token, readable by every user
+of the Mac. When `extension/manifest.json` changes, bump its `version`: that
+is what Chrome compares to decide whether to fetch the new copy.
 
 The status page (`http://127.0.0.1:7312`) and `strad-hostd status` say whether
 the extension is connected. `get_control_status` on the browser server reports

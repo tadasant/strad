@@ -1,12 +1,17 @@
+import { randomBytes } from "node:crypto";
+
 import WebSocket from "ws";
+
+import { proofFor } from "../src/browser/bridge.js";
 
 /**
  * A stand-in for `hostd/extension/background.js`: the same protocol over the
  * same socket, against an in-memory Chrome. What it fakes is `chrome.tabs`
  * and `chrome.debugger`; what it keeps honest is every message the daemon's
- * bridge sends and expects back, so the bridge, the backend and the tools
- * run on Linux against it. `test/extension.test.ts` runs the real extension
- * in a real Chromium for the half this cannot say.
+ * bridge sends and expects back — the handshake included, both proofs — so
+ * the bridge, the backend and the tools run on Linux against it.
+ * `test/extension.test.ts` runs the real extension in a real Chromium for the
+ * half this cannot say.
  */
 export interface FakeTab {
   id: number;
@@ -23,8 +28,9 @@ export class FakeExtension {
   readonly ops: string[] = [];
   /** The tabs the daemon asked to detach, in order. */
   readonly detaches: number[] = [];
-  /** How the daemon answered the hello, or how the socket ended. */
-  outcome?: "welcomed" | { closed: number; reason: string };
+  /** How the handshake ended, or how the socket ended. */
+  outcome?:
+    "ready" | "daemon-failed-proof" | { closed: number; reason: string };
   private ws?: WebSocket;
   private nextId = 100;
   /** A method → answer override, for a test that needs a particular reply. */
@@ -40,6 +46,8 @@ export class FakeExtension {
       origin?: string;
       version?: string;
       extensionId?: string;
+      /** Send a wrong proof of our own, to see the daemon refuse it. */
+      lie?: boolean;
     },
   ) {}
 
@@ -56,11 +64,12 @@ export class FakeExtension {
         origin: this.opts.origin ?? "chrome-extension://fakefakefakefake",
       });
       this.ws = ws;
+      const nonce = randomBytes(32).toString("hex");
       ws.on("open", () =>
         ws.send(
           JSON.stringify({
             type: "hello",
-            token: this.opts.token,
+            nonce,
             version: this.opts.version ?? "0.0.0-fake",
             extensionId: this.opts.extensionId ?? "fakefakefakefake",
           }),
@@ -69,7 +78,23 @@ export class FakeExtension {
       ws.on("message", (d) => {
         const msg = JSON.parse(String(d)) as Record<string, unknown>;
         if (msg.type === "welcome") {
-          this.outcome = "welcomed";
+          // The daemon proves itself first, over OUR nonce — the real
+          // extension hangs up on anything that cannot.
+          if (msg.proof !== proofFor(this.opts.token, "daemon", nonce)) {
+            this.outcome = "daemon-failed-proof";
+            ws.close(4003, "daemon failed proof");
+            return;
+          }
+          ws.send(
+            JSON.stringify({
+              type: "auth",
+              proof: this.opts.lie
+                ? "0".repeat(64)
+                : proofFor(this.opts.token, "extension", String(msg.nonce)),
+            }),
+          );
+        } else if (msg.type === "ready") {
+          this.outcome = "ready";
           resolve(this);
         } else if (msg.type === "ping") {
           ws.send(JSON.stringify({ type: "pong" }));
@@ -80,7 +105,8 @@ export class FakeExtension {
         }
       });
       ws.on("close", (code, reason) => {
-        this.outcome = { closed: code, reason: String(reason) };
+        if (this.outcome !== "daemon-failed-proof")
+          this.outcome = { closed: code, reason: String(reason) };
         // Chrome detaches nothing on its own; the real extension does this.
         this.attached.clear();
         resolve(this);
@@ -175,7 +201,9 @@ export class FakeExtension {
       return { frameId: "f1" };
     }
     if (method === "Page.captureScreenshot")
-      return { data: Buffer.from([0xff, 0xd8, 0xff, 0xe0]).toString("base64") };
+      return {
+        data: Buffer.from([0xff, 0xd8, 0xff, 0xe0]).toString("base64"),
+      };
     if (method.startsWith("Input.")) return {};
     if (method === "Runtime.evaluate") {
       const expr = params.expression as string;

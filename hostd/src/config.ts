@@ -313,8 +313,16 @@ export function addClientKey(
   const keys = (cap.clientKeys ??= {});
   if (keys[client])
     throw new Error(`${id} already has a key for "${client}"; revoke it first`);
+  // Validated on a copy: a name or key the schema refuses must not be left
+  // in the file's object for the next write to carry.
+  ConfigSchema.parse({
+    ...raw,
+    capabilities: {
+      ...capabilities,
+      [id]: { ...cap, clientKeys: { ...keys, [client]: key } },
+    },
+  });
   keys[client] = key;
-  ConfigSchema.parse(raw);
 }
 
 export function revokeClientKey(
