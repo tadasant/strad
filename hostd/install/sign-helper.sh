@@ -60,8 +60,14 @@ CNF
     openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
       -keyout "$TMP/key.pem" -out "$TMP/cert.pem" -config "$TMP/openssl.cnf" >/dev/null 2>&1
     # A throwaway export password: the .p12 exists for the seconds it takes to import it.
+    # The algorithms are pinned because `security import` reads only the old
+    # PKCS#12 format (3DES, SHA-1 MAC). OpenSSL 3 — Homebrew's, which `brew
+    # install node` puts first on PATH — defaults to AES with a SHA-256 MAC, and
+    # macOS reports that file as "MAC verification failed (wrong password?)".
+    # LibreSSL, macOS's own /usr/bin/openssl, takes the same flags.
     openssl pkcs12 -export -inkey "$TMP/key.pem" -in "$TMP/cert.pem" -out "$TMP/identity.p12" \
-      -name "$CERT_NAME" -passout pass:strad-hostd-ax
+      -name "$CERT_NAME" -passout pass:strad-hostd-ax \
+      -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1
     security import "$TMP/identity.p12" -k "$KEYCHAIN" -P strad-hostd-ax -T /usr/bin/codesign -T /usr/bin/security >/dev/null
     # codesign refuses an identity whose chain it cannot trust. This marks the
     # certificate trusted for code signing, for this user only; macOS asks for
