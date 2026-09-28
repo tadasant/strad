@@ -12,7 +12,8 @@
 #
 # Identity, in order: --identity, $STRAD_HOSTD_SIGN_IDENTITY, a Developer ID
 # Application certificate in the keychain, an existing "strad-hostd-ax"
-# certificate, else one is created (openssl → .p12 → login keychain → trusted
+# certificate (trusted first if an earlier run was cancelled before it was),
+# else one is created (openssl → .p12 → login keychain → trusted
 # for code signing, which asks for the login password in a dialog). The
 # certificate never leaves the machine and signs nothing but this helper.
 set -euo pipefail
@@ -41,6 +42,17 @@ if [ -z "$IDENTITY" ]; then
   elif security find-identity -v -p codesigning 2>/dev/null | grep -q "\"$CERT_NAME\""; then
     IDENTITY="$CERT_NAME"
     say "Signing with the existing \"$CERT_NAME\" certificate"
+  elif security find-certificate -c "$CERT_NAME" "$KEYCHAIN" >/dev/null 2>&1; then
+    # Imported but never trusted: the password dialog below was cancelled, or
+    # there was no GUI to show it. `find-identity -v` lists only valid
+    # identities, so without this branch a re-run imports a second certificate
+    # of the same name and codesign then refuses the name as ambiguous.
+    say "Trusting the existing \"$CERT_NAME\" certificate for code signing"
+    TMP="$(mktemp -d)"
+    trap 'rm -rf "$TMP"' EXIT
+    security find-certificate -c "$CERT_NAME" -p "$KEYCHAIN" > "$TMP/cert.pem"
+    security add-trusted-cert -p codeSign -k "$KEYCHAIN" "$TMP/cert.pem"
+    IDENTITY="$CERT_NAME"
   else
     say "Creating a self-signed code-signing certificate named \"$CERT_NAME\" in the login keychain"
     TMP="$(mktemp -d)"
@@ -60,8 +72,14 @@ CNF
     openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
       -keyout "$TMP/key.pem" -out "$TMP/cert.pem" -config "$TMP/openssl.cnf" >/dev/null 2>&1
     # A throwaway export password: the .p12 exists for the seconds it takes to import it.
+    # The algorithms are pinned because `security import` reads only the old
+    # PKCS#12 format (3DES, SHA-1 MAC). OpenSSL 3 — Homebrew's, which `brew
+    # install node` puts first on PATH — defaults to AES with a SHA-256 MAC, and
+    # macOS reports that file as "MAC verification failed (wrong password?)".
+    # LibreSSL, macOS's own /usr/bin/openssl, takes the same flags.
     openssl pkcs12 -export -inkey "$TMP/key.pem" -in "$TMP/cert.pem" -out "$TMP/identity.p12" \
-      -name "$CERT_NAME" -passout pass:strad-hostd-ax
+      -name "$CERT_NAME" -passout pass:strad-hostd-ax \
+      -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1
     security import "$TMP/identity.p12" -k "$KEYCHAIN" -P strad-hostd-ax -T /usr/bin/codesign -T /usr/bin/security >/dev/null
     # codesign refuses an identity whose chain it cannot trust. This marks the
     # certificate trusted for code signing, for this user only; macOS asks for
