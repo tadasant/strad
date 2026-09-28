@@ -10,6 +10,14 @@ import { buildGatewayServer, listToolsFor } from "../src/gateway/mcpServer.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { compileToolPolicies } from "../src/gateway/toolPolicy.ts";
 import { resetEventThrottle } from "../src/telemetry/events.ts";
+import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
+import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {
+  isTransientListFailure,
+  LocalMachineOfflineError,
+  UpstreamError,
+} from "../src/gateway/adapters/http.ts";
+import { ServerUnconfiguredError } from "../src/gateway/unconfigured.ts";
 import {
   EnvSecretProvider,
   sharedSecretProviders,
@@ -39,11 +47,14 @@ interface Stub {
   seen: (method: string) => number;
   /** Answer the next `times` requests for `method` with `status`. */
   fail: (method: string, status: number, times: number) => void;
+  /** Destroy the socket under the next `times` requests for `method`. */
+  drop: (method: string, times: number) => void;
 }
 
 function startStub(): Promise<Stub> {
   const counts = new Map<string, number>();
   const failing = new Map<string, { status: number; left: number }>();
+  const dropping = new Map<string, number>();
 
   const build = (): McpServer => {
     const server = new McpServer({ name: "stub", version: "0" });
@@ -64,6 +75,12 @@ function startStub(): Promise<Stub> {
   app.post("/mcp", async (req: Request, res: Response) => {
     const method = (req.body as { method?: string } | undefined)?.method;
     if (method) counts.set(method, (counts.get(method) ?? 0) + 1);
+    const d = method ? (dropping.get(method) ?? 0) : 0;
+    if (method && d > 0) {
+      dropping.set(method, d - 1);
+      req.socket.destroy();
+      return;
+    }
     const f = method ? failing.get(method) : undefined;
     if (f && f.left > 0) {
       f.left--;
@@ -97,12 +114,13 @@ function startStub(): Promise<Stub> {
           }),
         seen: (m) => counts.get(m) ?? 0,
         fail: (m, status, times) => failing.set(m, { status, left: times }),
+        drop: (m, times) => dropping.set(m, times),
       });
     });
   });
 }
 
-const CONFIG = (url: string) =>
+const CONFIG = (url: string, kind = "remote-http") =>
   parseConfig(`
 version: 1
 gateway: { name: strad, env: test }
@@ -110,7 +128,7 @@ auth: { staticTokens: { enabled: true } }
 roles: { admin: { servers: ["*"] } }
 servers:
   - slug: apify
-    kind: remote-http
+    kind: ${kind}
     url: "${url}"
     entitlements: [admin]
 `);
@@ -121,13 +139,13 @@ afterEach(async () => {
 });
 
 /** A registry over one remote-http slug, and the fault stream it writes. */
-async function setup(): Promise<{
+async function setup(kind?: string): Promise<{
   stub: Stub;
   registry: Registry;
   faults: () => string[];
 }> {
   const stub = await startStub();
-  const config = CONFIG(stub.url);
+  const config = CONFIG(stub.url, kind);
   const registry = await Registry.build({
     config,
     secrets: sharedSecretProviders(new EnvSecretProvider({})),
@@ -212,6 +230,14 @@ describe("a listing rides out a transient upstream failure", () => {
     expect(stub.seen("tools/list")).toBe(2);
   });
 
+  it("a socket dropped under the request is retried", async () => {
+    const { stub, registry, faults } = await setup();
+    stub.drop("tools/list", 1);
+    expect(await listTools(registry)).toEqual(["apify__ping"]);
+    expect(stub.seen("tools/list")).toBe(2);
+    expect(faults().filter((l) => l.includes("_failed"))).toEqual([]);
+  });
+
   it("a failed handshake is retried like a failed listing", async () => {
     // The first listing on a fresh adapter handshakes first, and an edge having
     // a bad second does not care which request it refuses.
@@ -273,11 +299,67 @@ describe("a real answer is not retried", () => {
     ).toHaveLength(1);
   });
 
+  it("a local-tunnel edge answering 503 is an offline machine, reported at once", async () => {
+    // The offline verdict has its own event and its own remedy; retrying it
+    // would only make a closed laptop take longer to say so.
+    const { stub, registry, faults } = await setup("local-tunnel");
+    stub.fail("initialize", 503, 100);
+    await listTools(registry);
+    expect(stub.seen("initialize")).toBe(1);
+    expect(faults().filter((l) => l.includes("_failed"))).toEqual([]);
+  });
+
   it("a tools/call is never retried, whatever the status", async () => {
     // A 5xx says nothing about whether the tool ran.
     const { stub, registry } = await setup();
     stub.fail("tools/call", 503, 100);
     await expect(registry.get("apify")!.callTool("ping", {})).rejects.toThrow();
     expect(stub.seen("tools/call")).toBe(1);
+  });
+});
+
+describe("what counts as transient", () => {
+  const fetchFailed = (code: string): Error =>
+    new TypeError("fetch failed", {
+      cause: Object.assign(new Error(code), { code }),
+    });
+  const up = (cause: unknown) => new UpstreamError("apify", cause);
+
+  it.each([
+    ["503", up(new StreamableHTTPError(503, "x")), true],
+    ["429", up(new StreamableHTTPError(429, "x")), true],
+    [
+      "connection closed",
+      up(new McpError(ErrorCode.ConnectionClosed, "x")),
+      true,
+    ],
+    ["socket reset", up(fetchFailed("ECONNRESET")), true],
+    ["refused connect", up(fetchFailed("ECONNREFUSED")), true],
+    ["undici socket", up(fetchFailed("UND_ERR_SOCKET")), true],
+    ["404", up(new StreamableHTTPError(404, "x")), false],
+    ["401", up(new StreamableHTTPError(401, "x")), false],
+    ["501", up(new StreamableHTTPError(501, "x")), false],
+    ["-32601", up(new McpError(ErrorCode.MethodNotFound, "x")), false],
+    ["SDK timeout", up(new McpError(ErrorCode.RequestTimeout, "x")), false],
+    ["DNS", up(fetchFailed("ENOTFOUND")), false],
+    ["bad certificate", up(fetchFailed("CERT_HAS_EXPIRED")), false],
+    ["connect timeout", up(fetchFailed("UND_ERR_CONNECT_TIMEOUT")), false],
+    ["bare fetch failed", up(new TypeError("fetch failed")), false],
+    [
+      "unconfigured",
+      new ServerUnconfiguredError("apify", ["APIFY_TOKEN"]),
+      false,
+    ],
+    [
+      "offline machine",
+      new LocalMachineOfflineError(
+        "apify",
+        new StreamableHTTPError(503, "x"),
+        undefined,
+      ),
+      false,
+    ],
+  ])("%s -> %s", (_label, err, transient) => {
+    expect(isTransientListFailure(err)).toBe(transient);
   });
 });

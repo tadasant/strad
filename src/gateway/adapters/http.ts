@@ -757,6 +757,9 @@ export class HttpServerAdapter implements ServerAdapter {
         if (delay === undefined) throw err;
         spentMs += delay;
         await sleep(delay);
+        // A reload can close this adapter mid-backoff, and a retry after that
+        // would handshake with an upstream nobody is listening to.
+        if (this.closed) throw err;
       }
     }
   }
@@ -1080,6 +1083,9 @@ function fingerprintOf(endpoint: HttpEndpoint): string {
 /**
  * The listing retry's budget: three tries, at most ~750ms of sleep.
  *
+ * `totalDelayMs` never binds: it is the ceiling a `Retry-After` is measured
+ * against, and a `StreamableHTTPError` carries no headers to read one from.
+ *
  * Sized for a blip, not an outage — one bad second at an upstream's edge. An
  * upstream that is still failing after that is failing, and the `_failed`
  * record that pages is the right answer. Small against the 60s a client's SDK
@@ -1093,8 +1099,15 @@ const LIST_RETRY_BUDGET: RetryBudget = {
   totalDelayMs: 1_500,
 };
 
-/** No retry STARTS once a listing has spent this long, sleeps included. */
-const LIST_RETRY_DEADLINE_MS = 10_000;
+/**
+ * No retry STARTS once a listing has spent this long, sleeps included.
+ *
+ * Under the 10s deadline the reachability probe and the troubleshoot probe put
+ * around `listTools()`, so a retry does not turn an upstream's `503` into
+ * their deadline error. It bounds when a retry may start, not how long the one
+ * it starts may take — that is `timeoutMs`, as it is for any listing.
+ */
+const LIST_RETRY_DEADLINE_MS = 5_000;
 
 /**
  * Is this listing failure worth one more look?
@@ -1107,8 +1120,10 @@ const LIST_RETRY_DEADLINE_MS = 10_000;
  *   included — `authorized()` owns that one.
  * - The connection closing under the request (`-32000`), which is also how a
  *   request on a connection a peer just retired ends.
- * - A fetch that got no response because the socket went away: a reset, a hang
- *   up, undici's "fetch failed" around either.
+ * - A fetch that got no response because the socket went away or was refused:
+ *   a reset, a hang up, a refused connect, or undici's "fetch failed" around
+ *   one of those. A "fetch failed" around anything else — DNS, TLS, a connect
+ *   timeout — is not.
  *
  * NOT a timeout: a listing that already spent its whole deadline once would
  * spend it again. NOT a `LocalHostUnavailableError`: a machine that is off is a
@@ -1116,10 +1131,18 @@ const LIST_RETRY_DEADLINE_MS = 10_000;
  * page. NOT a `ServerUnconfiguredError`: nothing a second later changes a
  * credential that has not been seeded.
  */
-function isTransientListFailure(err: unknown): boolean {
+/**
+ * A socket that went away under a request, or a port nobody was listening on
+ * for a moment — an upstream restarting behind its edge.
+ */
+const SOCKET_DROPPED =
+  /ECONNRESET|ECONNREFUSED|EPIPE|socket hang up|other side closed|UND_ERR_SOCKET/i;
+
+export function isTransientListFailure(err: unknown): boolean {
   if (err instanceof LocalHostUnavailableError) return false;
   const cause = err instanceof UpstreamError ? err.cause : err;
   if (cause instanceof StreamableHTTPError) {
+    // `true`: the transport POSTs, but a listing is a read, so it may repeat.
     return cause.code !== undefined && isRetryableStatus(cause.code, true);
   }
   if (cause instanceof McpError) {
@@ -1129,20 +1152,20 @@ function isTransientListFailure(err: unknown): boolean {
   if (cause.name === "TimeoutError" || cause.name === "AbortError") {
     return false;
   }
-  const reset =
-    /ECONNRESET|EPIPE|socket hang up|other side closed|UND_ERR_SOCKET/i;
   if (
-    /^fetch failed$/i.test(cause.message) ||
-    reset.test(cause.message) ||
+    SOCKET_DROPPED.test(cause.message) ||
     /every connection was retired/.test(cause.message)
   ) {
     return true;
   }
+  // undici's "fetch failed" says only that no response came back, and it wraps
+  // DNS failures, bad certificates and connect timeouts too — none of which a
+  // second later fixes. So the verdict is read one level down, from the reason.
   const inner = (cause as { cause?: unknown }).cause;
   return (
     inner instanceof Error &&
-    (reset.test(inner.message) ||
-      reset.test(String((inner as { code?: unknown }).code ?? "")))
+    (SOCKET_DROPPED.test(inner.message) ||
+      SOCKET_DROPPED.test(String((inner as { code?: unknown }).code ?? "")))
   );
 }
 
