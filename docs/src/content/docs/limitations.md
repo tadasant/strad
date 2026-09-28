@@ -3283,6 +3283,8 @@ See `HACKS.md` #106.
 
 The MCP Apps spec describes, for a web host, a proxy iframe on a **different origin**. strad has one public origin, so [`/apps/<slug>`](/servers/apps/) serves the app's page from the console's origin under a CSP `sandbox` header without `allow-same-origin`. That gives the page an opaque origin that cannot read the console's cookies or call its routes, and `connect-src 'none'` gives it no network. The host also has no model, so the methods an LLM host answers (`ui/message`, `ui/update-model-context`) say "not supported" here.
 
+The opaque origin also costs the app its own history. In Chromium, traversing an entry the frame pushed, or the host setting the frame's `#hash`, reloads the frame, and the host closes an app whose frame loads twice. So Back and Forward work only for an app that asks the host for entries and follows the hash the host sends back (`x-strad/hash`, [History](/servers/apps/#console-extensions)); an app that does neither gets no in-app Back.
+
 **Undo:** a second hostname for app frames.
 
 See `HACKS.md` #107.

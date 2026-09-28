@@ -5560,7 +5560,16 @@ answer "not supported".
 The CSP sandbox gives the property the proxy exists for (the app cannot touch
 the console's origin) without one.
 
+**And its history.** In Chromium, a traversal to an entry the frame pushed
+reloads the opaque-origin frame, and so does the host setting the frame's
+`#hash` (`location.replace`, or a new `src`). The host closes an app whose frame
+loads twice. So the frame cannot own Back: the host pushes entries on the app's
+request (`x-strad/hash {hash, push: true}`) and sends the restored hash down on
+`popstate`. An app that does not opt in gets no in-app Back.
+
 **Undo.** A second hostname for app frames, when strad has a reason to own one.
+That undoes the isolation half; whether a frame on its own origin keeps its own
+history through a traversal is untested.
 
 ---
 

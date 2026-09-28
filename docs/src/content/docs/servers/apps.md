@@ -95,9 +95,9 @@ re-namespaced onto this slug, so a page cannot reach another server. A tool whos
 So an app gives a human nothing the playground does not already give them over
 the same server. It is a better face on the same authority.
 
-## Two console extensions
+## Console extensions
 
-Both are prefixed `x-strad/` because the spec does not define them. An app that
+They are prefixed `x-strad/` because the spec does not define them. An app that
 ignores them still works, and other hosts never send them.
 
 - **Keys.** Key presses go to whichever document has focus, and a click on the
@@ -118,10 +118,30 @@ ignores them still works, and other hosts never send them.
   as untrusted input: anyone can write a link, and all that stands between it
   and your app is the Open click a link from another site gets. An app that
   sends `x-strad/search {search}` or `x-strad/hash {hash}` has it mirrored onto
-  the address bar with `history.replaceState`, so a filter or a selection is a
-  link someone can share. A mirrored search replaces every param except `uri`,
+  the address bar with `history.replaceState` (or `pushState`, for a hash that
+  asks for an entry — see History), so a filter or a selection is a link
+  someone can share. A mirrored search replaces every param except `uri`,
   which the host keeps, and it never writes a `token`. The Open prompt carries
   the hash over too.
+- **History.** Back and Forward belong to the host page. The frame cannot keep
+  its own: in Chromium, traversing an entry the frame pushed, or the host
+  setting the frame's `#hash`, reloads an opaque-origin frame, and the host
+  closes an app whose frame loads twice. So an app that wants Back sends
+  `x-strad/hash {hash, push: true}` for a route change that should be a step —
+  opening an item, switching views — and the host pushes an entry instead of
+  replacing one. It pushes only while the page has transient user activation
+  (a click in the frame counts), so an app cannot fill the tab's history on
+  its own and its first report on load is never an entry. A hash the address
+  bar already shows is never a second entry either, and without `push` the
+  hash replaces the current entry, which suits paging from one item to the
+  next. On Back or Forward the host sends the restored hash down as a
+  notification, `x-strad/hash {hash}`, in the address bar's encoding. The app
+  should go there without reloading, keep its own `location.hash` in step, and
+  report the route as usual: that report matches the address bar and adds
+  nothing, and a late report of a hash Back has already moved past is
+  dropped. Only the hash has history. The query always replaces, and after
+  Back the address bar keeps the app's latest query rather than the older
+  entry's.
 
 ## What it does not do
 
