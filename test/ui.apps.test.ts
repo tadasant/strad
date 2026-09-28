@@ -266,10 +266,12 @@ function runHost(html: string, url: string) {
     });
   };
   go(u.href);
+  const userActivation = { isActive: true };
   vm.runInNewContext(script, {
     URL,
     URLSearchParams,
     location,
+    navigator: { userActivation },
     document: {
       createElement: () => frame,
       body: { appendChild() {} },
@@ -296,6 +298,7 @@ function runHost(html: string, url: string) {
     replaced,
     pushed,
     posted,
+    userActivation,
     /** The browser's Back or Forward, landing on `url`. */
     popTo(url: string) {
       go(url);
@@ -496,6 +499,40 @@ describe("GET /apps/:server", () => {
     expect(host.posted).toEqual([
       { jsonrpc: "2.0", method: "x-strad/hash", params: { hash: "map/k%201" } },
     ]);
+  });
+
+  it("drops the app's late report of a hash Back has moved past", async () => {
+    const html = await (await get("/apps/shop")).text();
+    const host = runHost(html, `${baseUrl}/apps/shop`);
+    host.notify("x-strad/hash", { hash: "map", push: true });
+    host.notify("x-strad/hash", { hash: "map/k 1", push: true });
+    expect(host.pushed).toEqual(["#map", "#map/k 1"]);
+    // Back twice, before the app has answered the first.
+    host.popTo(`${baseUrl}/apps/shop#map`);
+    host.popTo(`${baseUrl}/apps/shop`);
+    host.replaced.length = 0;
+    host.notify("x-strad/hash", { hash: "map", push: true });
+    host.notify("x-strad/hash", { hash: "", push: true });
+    expect(host.pushed).toEqual(["#map", "#map/k 1"]);
+    expect(host.replaced).toEqual(["/apps/shop"]);
+    // Caught up: the same hash is an ordinary step again.
+    host.notify("x-strad/hash", { hash: "map", push: true });
+    expect(host.pushed).toEqual(["#map", "#map/k 1", "#map"]);
+    // An echo in another spelling of the hash sent down is still an echo.
+    host.popTo(`${baseUrl}/apps/shop#map/k%201`);
+    host.notify("x-strad/hash", { hash: "map/k 1", push: true });
+    expect(host.pushed).toHaveLength(3);
+  });
+
+  it("pushes only for a step the person took, and only on push: true", async () => {
+    const html = await (await get("/apps/shop")).text();
+    const host = runHost(html, `${baseUrl}/apps/shop`);
+    host.userActivation.isActive = false;
+    host.notify("x-strad/hash", { hash: "k1", push: true });
+    host.userActivation.isActive = true;
+    host.notify("x-strad/hash", { hash: "k2", push: "true" });
+    expect(host.pushed).toEqual([]);
+    expect(host.replaced).toEqual(["#k1", "#k2"]);
   });
 
   it("frames the bare app when the address bar carries nothing", async () => {

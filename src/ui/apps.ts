@@ -597,7 +597,9 @@ ${ADDRESS_JS}
   // an entry (x-strad/hash with push: true) and is told the hash Back or
   // Forward restored (popstate, below). Its query only ever replaces.
   let frameSearch = location.search;
-  const sameHash = (h) => { try { return new URL(h || "#", location.href).hash === location.hash; } catch (_) { return false; } };
+  const hashOf = (h) => { try { return new URL(h || "#", location.href).hash; } catch (_) { return null; } };
+  // Hashes sent down on Back / Forward that the app has not caught up with.
+  let followed = [];
   const frame = document.createElement("iframe");
   frame.id = "app";
   frame.title = ${jsonForScript(opts.title)};
@@ -625,6 +627,7 @@ ${ADDRESS_JS}
   // hash it is at now. The query stays the app's latest — an older entry can
   // carry one the app has since replaced, and the address bar shows the app.
   window.addEventListener("popstate", () => {
+    followed.push(location.hash);
     try { history.replaceState(history.state, "", hostUrlFor(location.pathname, location.search, location.hash, frameSearch)); } catch (_) {}
     send({ jsonrpc: "2.0", method: "x-strad/hash", params: { hash: location.hash.replace(/^#/, "") } });
   });
@@ -684,9 +687,18 @@ ${ADDRESS_JS}
       }
       if (m.method === "x-strad/hash") {
         const h = String((m.params && m.params.hash) || "");
-        // Already there — the app's echo of a Back, or a route it re-states —
-        // is never a new entry: Back would have one more step that goes nowhere.
-        const how = m.params && m.params.push === true && !sameHash(h ? "#" + h : "") ? "pushState" : "replaceState";
+        const at = hashOf(h ? "#" + h : "");
+        // The app following a hash sent down, after the address bar has moved
+        // on again (Back pressed twice): stale, and the next report settles it.
+        if (at !== location.hash && followed.includes(at)) return;
+        followed = [];
+        // An entry only for a step the person took (a click in the frame
+        // activates this page too), and never for the hash already showing:
+        // an app cannot fill the tab's history, and neither its echo of a Back
+        // nor its first report on load is a step Back has to go through.
+        const act = navigator.userActivation;
+        const stepped = !act || act.isActive;
+        const how = m.params && m.params.push === true && stepped && at !== location.hash ? "pushState" : "replaceState";
         try { history[how](null, "", h ? "#" + h : location.pathname + location.search); } catch (_) {}
       }
       return;
