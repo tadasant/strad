@@ -98,7 +98,7 @@ export function unquoteSheetTitle(title: string): string {
  * `'Done`, and splitting at the last one works for that example and breaks on
  * `'A!B'` with no cell range at all.
  */
-function splitA1(range: string, isKnownTab?: (title: string) => boolean): { title?: string; cells: string } {
+export function splitA1(range: string, isKnownTab?: (title: string) => boolean): { title?: string; cells: string } {
   if (range.startsWith("'")) {
     let i = 1;
     for (;;) {
@@ -129,6 +129,15 @@ function splitA1(range: string, isKnownTab?: (title: string) => boolean): { titl
 }
 
 const CELL_RANGE = /^\$?[A-Za-z]{0,3}\$?\d*(?::\$?[A-Za-z]{0,3}\$?\d*)?$/;
+
+/**
+ * Whether a cell range (the part after the `!`) is A1 that {@link parseA1Range}
+ * reads as written. Anything else — a named range, a typo — parses as A1 there,
+ * which a read can live with and a write that styles cells cannot.
+ */
+export function isCellRange(cells: string): boolean {
+  return CELL_RANGE.test(cells) && !/(^|[^\d])0+(:|$)/.test(cells);
+}
 
 /** One end of a cell range: column letters, row digits, either may be absent. */
 function parseCorner(cell: string): { row?: number; column?: number } {

@@ -7,8 +7,8 @@ Read and edit Google Sheets from an agent, as a specific Google account.
 
 `google-sheets` is strad's own MCP server — source in
 `images/bundle-google/vendor/google-sheets-shared/`, mounted at `/google-sheets`
-inside the bundle image. It serves nine tools: four that read and five that
-write, one of which creates a new spreadsheet.
+inside the bundle image. It serves ten tools: four that read and six that
+write — one of which creates a new spreadsheet, and one of which styles cells.
 
 ## One server, one account per slug
 
@@ -77,7 +77,7 @@ complete marker set is the only evidence a deployment asked for one.
 
 ## The read tier is the gateway's, and can also be Google's
 
-The mount serves all nine tools. A `-ro` slug is that same mount with the five
+The mount serves all ten tools. A `-ro` slug is that same mount with the six
 write tools withheld by strad's
 [tool policy](/intro/architecture/), enforced on `tools/list` **and** on
 `tools/call`:
@@ -111,7 +111,7 @@ console — and `render-spec` fails the **whole** app spec on one unresolvable
 reference, so a single unconnected slug would take every other server's deploy
 with it.
 
-The `-rw` slug is the same entry with no `tools:` block — the full nine are that
+The `-rw` slug is the same entry with no `tools:` block — the full ten are that
 tier, so a write tool added to the server reaches it on the next image with no
 config change — its own `path`, and `scopes: [https://www.googleapis.com/auth/spreadsheets]`,
 so it holds its own credential consented for the wider scope.
@@ -135,7 +135,7 @@ Four read:
 | `batch_get_sheet_values` | Several ranges in one round trip |
 | `find_in_spreadsheet` | Which cells contain a piece of text, as A1 addresses. The Sheets API has no server-side search, so this reads tabs and scans them — name the tabs when you can |
 
-Five write:
+Six write:
 
 | Tool | What it does |
 | --- | --- |
@@ -144,6 +144,7 @@ Five write:
 | `clear_sheet_values` | Empty a range, keeping its formatting |
 | `add_sheet` | Add a tab |
 | `create_spreadsheet` | Make a new spreadsheet file, optionally with named tabs and a frozen header row on each. Returns its id and URL |
+| `format_cells` | Style a list of ranges: fill and font colour, bold/italic/size/font, number format (currency, percent, a custom pattern like `$#,##0,,"M"`), alignment, wrapping, borders. Never touches a value |
 
 `create_spreadsheet` needs nothing wider than
 `https://www.googleapis.com/auth/spreadsheets`, the scope a `-rw` slug already
@@ -153,6 +154,18 @@ Drive, shared with no one. The tabs and header rows go in the same one request a
 the file, so a failure leaves nothing half-built — but a timed-out call that is
 retried can leave two files, so look before retrying. See
 [limitations](/limitations/#104-a-new-spreadsheet-lands-in-the-drive-root-shared-with-no-one).
+
+`format_cells` takes a list of `{ range, format }` and sends them all in one
+`spreadsheets.batchUpdate`, so a sheet is styled whole or not at all, and a range
+that names no tab is refused rather than landed on the first one. Only the keys a
+format gives are written — the request's `fields` mask names exactly them — so a
+colour set by hand, or by an earlier call, survives a call that only sets bold.
+What it builds is `repeatCell` and `updateBorders` and nothing else: there is no
+tool that takes a raw `batchUpdate` request, because the same endpoint deletes
+tabs, rows and protected ranges, and the gateway's tool policy can allow or deny
+a tool but cannot inspect what is inside one. Column widths, merged cells and
+conditional formatting are not reachable yet. It needs the same
+`https://www.googleapis.com/auth/spreadsheets` scope as every other write.
 
 There is no tool that deletes a tab: adding is recoverable and deleting is not,
 so it is left out on purpose. Nor is there one that deletes, shares or moves a
@@ -275,7 +288,7 @@ the two reads are not equivalent:
 | `UNFORMATTED_VALUE` | The stored number | The stored number, the same way |
 | Named ranges | Reported | Empty; an `.xlsx`'s defined names are formulas, not grid ranges |
 | `gid` | The Sheets gid | The workbook's own sheet id — stable in the file, and what `sheet_gid` resolves |
-| Writes | All the write tools | **None.** The four that edit a file refuse and name the conversion |
+| Writes | All the write tools | **None.** The five that edit a file refuse and name the conversion |
 | Size | Read a range at a time | Read whole: 20MB and 500,000 cells, refused past that |
 
 Legacy `.xls`, `.xlsb` and `.ods` are refused by name rather than attempted, and

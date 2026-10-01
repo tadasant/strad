@@ -2,9 +2,10 @@
  * The slice of the Google Sheets API v4 surface this server reads.
  *
  * The shapes are narrow on purpose. Reads model only what the renderers touch;
- * the write side models one batchUpdate request (`addSheet`) and nothing else,
+ * the write side models one batchUpdate reply (`addSheet`) and nothing else,
  * because no tool takes a raw request object — see batch-update.ts. The create
- * body is built, and typed, in create-spreadsheet.ts.
+ * body is built, and typed, in create-spreadsheet.ts, and the formatting
+ * requests in format-cells.ts.
  *
  * The real resources are much larger than these interfaces; every one of them
  * keeps an index signature so a caller asking for the raw JSON gets the whole

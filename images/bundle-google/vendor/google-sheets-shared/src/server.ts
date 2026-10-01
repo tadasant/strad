@@ -6,6 +6,7 @@ import { withOfficeFallback } from './office/client.js';
 import type { Spreadsheet, SheetProperties, ValueRange, BatchGetValuesResponse } from './types.js';
 import type { ReadValuesOptions, ValueInputOption } from './google-sheets-client/lib/values.js';
 import type { CreateSpreadsheetRequest } from './google-sheets-client/lib/create-spreadsheet.js';
+import type { FormatEntry, FormatCellsResult } from './google-sheets-client/lib/format-cells.js';
 import type {
   UpdateValuesResponse,
   AppendValuesResponse,
@@ -87,7 +88,7 @@ export function missingCredentials(env: EnvLike): string[] {
   return GOOGLE_SHEETS_ENV_NAMES.filter((name) => !env[name]);
 }
 
-/** Everything the tools can ask Google for. Read first, then the five writes. */
+/** Everything the tools can ask Google for. Read first, then the six writes. */
 export interface IGoogleSheetsClient {
   getSpreadsheet(spreadsheetId: string): Promise<Spreadsheet>;
   getValues(
@@ -118,6 +119,11 @@ export interface IGoogleSheetsClient {
     properties: { title: string; index?: number; rowCount?: number; columnCount?: number }
   ): Promise<SheetProperties>;
   createSpreadsheet(request: CreateSpreadsheetRequest): Promise<Spreadsheet>;
+  formatCells(
+    spreadsheetId: string,
+    entries: FormatEntry[],
+    defaultSheetId?: number
+  ): Promise<FormatCellsResult>;
 }
 
 /**
@@ -320,6 +326,15 @@ class OAuthGoogleSheetsClient implements IGoogleSheetsClient {
     const { createSpreadsheet } = await import('./google-sheets-client/lib/create-spreadsheet.js');
     return this.withAuth((headers) => createSpreadsheet(headers, request));
   }
+
+  async formatCells(
+    spreadsheetId: string,
+    entries: FormatEntry[],
+    defaultSheetId?: number
+  ): Promise<FormatCellsResult> {
+    const { formatCells } = await import('./google-sheets-client/lib/format-cells.js');
+    return this.withAuth((headers) => formatCells(headers, spreadsheetId, entries, defaultSheetId));
+  }
 }
 
 export type ClientFactory = () => IGoogleSheetsClient;
@@ -396,7 +411,7 @@ export function createDefaultClient(env: EnvLike = process.env): IGoogleSheetsCl
  * The `-ro` / `-rw` split is NOT made here. strad's gateway carries a `tools:`
  * allow-list per slug and enforces it on `tools/list` and on `tools/call`
  * (src/gateway/toolPolicy.ts), so `google-sheets-tadas412-ro` is this same server
- * with the five write tools withheld. Deciding it in the container instead would
+ * with the six write tools withheld. Deciding it in the container instead would
  * mean a container per tier per account — six of them — which is the architecture
  * this bundle exists to have deleted.
  *

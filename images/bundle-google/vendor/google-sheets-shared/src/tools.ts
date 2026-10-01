@@ -10,6 +10,7 @@ import { appendSheetRowsTool } from './tools/append-sheet-rows.js';
 import { clearSheetValuesTool } from './tools/clear-sheet-values.js';
 import { addSheetTool } from './tools/add-sheet.js';
 import { createSpreadsheetTool } from './tools/create-spreadsheet.js';
+import { formatCellsTool } from './tools/format-cells.js';
 
 interface Tool {
   name: string;
@@ -50,6 +51,7 @@ export const WRITE_TOOLS = [
   'clear_sheet_values',
   'add_sheet',
   'create_spreadsheet',
+  'format_cells',
 ] as const;
 
 const ALL_TOOLS: ToolFactory[] = [
@@ -64,6 +66,7 @@ const ALL_TOOLS: ToolFactory[] = [
   clearSheetValuesTool,
   addSheetTool,
   createSpreadsheetTool,
+  formatCellsTool,
 ];
 
 export function createRegisterTools(clientFactory: ClientFactory) {

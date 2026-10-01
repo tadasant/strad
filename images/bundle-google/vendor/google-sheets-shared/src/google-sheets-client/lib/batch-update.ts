@@ -9,10 +9,11 @@ export interface BatchUpdateResponse {
 }
 
 /**
- * `spreadsheets.batchUpdate`, with ONE request type reachable from a tool:
- * `addSheet`. The endpoint itself can delete sheets, rewrite protected ranges and
- * move a file's data around; nothing here builds those requests and no tool takes
- * a raw request object, so the write surface is exactly what tools/ exposes.
+ * `spreadsheets.batchUpdate` for `addSheet`. The endpoint itself can delete
+ * sheets, rewrite protected ranges and move a file's data around; nothing here
+ * builds those requests and no tool takes a raw request object, so the write
+ * surface is exactly what tools/ exposes. The only other requests built are
+ * format-cells.ts's `repeatCell` and `updateBorders`.
  */
 export async function addSheet(
   headers: Record<string, string>,

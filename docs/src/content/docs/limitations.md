@@ -3212,7 +3212,7 @@ What differs from a native spreadsheet:
   stable within the file, and the same number `sheet_gid` resolves.
 - **No write tool works.** Writing one back would need a Drive write scope, a
   re-encoded workbook and a last-writer-wins race against whoever has the file
-  open in the Sheets UI. The four write tools that edit a file refuse and name
+  open in the Sheets UI. The five write tools that edit a file refuse and name
   the conversion.
 - The file is read **whole**: 20MB downloaded, 500,000 cells parsed, both
   refused past that with a message. A native spreadsheet is read a range at a

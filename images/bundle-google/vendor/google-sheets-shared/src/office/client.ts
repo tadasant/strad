@@ -22,6 +22,7 @@ import type {
   ClearValuesResponse,
 } from '../google-sheets-client/lib/values.js';
 import type { CreateSpreadsheetRequest } from '../google-sheets-client/lib/create-spreadsheet.js';
+import type { FormatEntry, FormatCellsResult } from '../google-sheets-client/lib/format-cells.js';
 import {
   OfficeWorkbookLoader,
   readWithOfficeFallback,
@@ -120,6 +121,16 @@ class OfficeAwareClient implements IGoogleSheetsClient {
    */
   createSpreadsheet(request: CreateSpreadsheetRequest): Promise<Spreadsheet> {
     return this.sheets.createSpreadsheet(request);
+  }
+
+  formatCells(
+    spreadsheetId: string,
+    entries: FormatEntry[],
+    defaultSheetId?: number
+  ): Promise<FormatCellsResult> {
+    return writeRefusingOfficeFiles('format_cells', spreadsheetId, () =>
+      this.sheets.formatCells(spreadsheetId, entries, defaultSheetId)
+    );
   }
 }
 
