@@ -181,6 +181,10 @@ test("every write tool refuses an Office file and says what to do", async () => 
     { name: "append_sheet_rows", arguments: { spreadsheet_id: FILE_ID, range: "'Q1 2026'!A:C", values: [[1]] } },
     { name: "clear_sheet_values", arguments: { spreadsheet_id: FILE_ID, range: "'Q1 2026'!B2" } },
     { name: "add_sheet", arguments: { spreadsheet_id: FILE_ID, title: "New" } },
+    {
+      name: "format_cells",
+      arguments: { spreadsheet_id: FILE_ID, formats: [{ range: "'Q1 2026'!A1:C1", format: { bold: true } }] },
+    },
   ];
   for (const call of calls) {
     const result = await mcp.callTool(call);

@@ -5371,7 +5371,7 @@ a provenance line saying so, because the read is not equivalent:
   `sheet_gid` then resolves.
 - **No write tool works.** Writing one back would be a Drive WRITE scope, a
   re-encoded workbook and a last-writer-wins race against whoever has the file
-  open. The four write tools that edit a file refuse and name the conversion.
+  open. The five write tools that edit a file refuse and name the conversion.
 - One workbook is read **whole**: 20MB downloaded (bounded on the stream, since
   Drive's `size` is optional), 500,000 cells parsed, 128MB inflated — each
   refused past that with a message. A native spreadsheet is read a range at a

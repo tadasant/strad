@@ -19,9 +19,11 @@ const METADATA_FIELDS =
 
 export async function getSpreadsheet(
   headers: Record<string, string>,
-  spreadsheetId: string
+  spreadsheetId: string,
+  /** Narrower still, for a caller that needs only part of the metadata. */
+  fields: string = METADATA_FIELDS
 ): Promise<Spreadsheet> {
-  const url = `${SHEETS_BASE_URL}/${encodeURIComponent(spreadsheetId)}?fields=${encodeURIComponent(METADATA_FIELDS)}`;
+  const url = `${SHEETS_BASE_URL}/${encodeURIComponent(spreadsheetId)}?fields=${encodeURIComponent(fields)}`;
   const response = await fetch(url, { method: 'GET', headers });
 
   if (!response.ok) {

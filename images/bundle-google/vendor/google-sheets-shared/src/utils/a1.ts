@@ -98,7 +98,7 @@ export function unquoteSheetTitle(title: string): string {
  * `'Done`, and splitting at the last one works for that example and breaks on
  * `'A!B'` with no cell range at all.
  */
-function splitA1(range: string, isKnownTab?: (title: string) => boolean): { title?: string; cells: string } {
+export function splitA1(range: string, isKnownTab?: (title: string) => boolean): { title?: string; cells: string } {
   if (range.startsWith("'")) {
     let i = 1;
     for (;;) {
@@ -129,6 +129,35 @@ function splitA1(range: string, isKnownTab?: (title: string) => boolean): { titl
 }
 
 const CELL_RANGE = /^\$?[A-Za-z]{0,3}\$?\d*(?::\$?[A-Za-z]{0,3}\$?\d*)?$/;
+
+/**
+ * Whether a cell range (the part after the `!`) is A1 that {@link parseA1Range}
+ * reads as written. Anything else — a named range, a typo, `A1:`, `A:3` — parses
+ * as SOME range there, usually wider than meant, which a read can live with and
+ * a write that styles cells cannot.
+ *
+ * Each side must name something, a row 0 does not exist, and a bare column
+ * cannot pair with a bare row: `A:3` is not a block of cells.
+ */
+export function isCellRange(cells: string): boolean {
+  const sides = cells.split(':');
+  if (sides.length > 2) return false;
+  const kinds = sides.map((side) => {
+    const match = /^\$?([A-Za-z]{0,3})\$?(\d*)$/.exec(side);
+    if (!match) return undefined;
+    const [, letters, digits] = match;
+    if (digits && Number(digits) === 0) return undefined;
+    if (letters && digits) return 'cell';
+    if (letters) return 'column';
+    if (digits) return 'row';
+    return undefined;
+  });
+  if (kinds.some((kind) => kind === undefined)) return false;
+  if (kinds.length === 1) return true;
+  const [left, right] = kinds;
+  if (left === 'row' || right === 'row') return left === right;
+  return true;
+}
 
 /** One end of a cell range: column letters, row digits, either may be absent. */
 function parseCorner(cell: string): { row?: number; column?: number } {

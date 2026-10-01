@@ -627,7 +627,7 @@ servers:
         - batch_get_sheet_values
         - find_in_spreadsheet
 
-  # The write tier: no `tools:` block, because the full nine ARE this tier. Its
+  # The write tier: no `tools:` block, because the full ten ARE this tier. Its
   # consent is for the wider https://www.googleapis.com/auth/spreadsheets, so
   # Google enforces the split as well as the gateway.
   - slug: google-sheets-rw
