@@ -140,34 +140,46 @@ export function buildFormatRequests(
       typeof p?.sheetId === 'number' && typeof p?.title === 'string'
     );
   const known = () => tabs.map((t) => `"${t.title}" (gid ${t.sheetId})`).join(', ') || '(none)';
-
-  if (defaultSheetId !== undefined && !tabs.some((t) => t.sheetId === defaultSheetId)) {
-    throw new Error(`No tab with gid ${defaultSheetId} in this spreadsheet. It has: ${known()}`);
-  }
+  // Sheets matches a tab title ignoring case, and refuses two titles that differ
+  // only by it, so an exact match first and then a case-blind one is unambiguous.
+  const tabNamed = (title: string) =>
+    tabs.find((t) => t.title === title) ??
+    tabs.find((t) => t.title.toLowerCase() === title.toLowerCase());
+  const isKnownTab = (title: string) => tabNamed(title) !== undefined;
 
   const requests: Array<Record<string, unknown>> = [];
   const applied: AppliedFormat[] = [];
 
   entries.forEach((entry, i) => {
     const where = `formats[${i}] ("${entry.range}")`;
-    const isKnownTab = (title: string) => tabs.some((t) => t.title === title);
-    const { cells } = splitA1(entry.range.trim(), isKnownTab);
+    const trimmed = entry.range.trim();
+    // A quoted title must be followed by `!` or nothing: `'Offer A'B2:D20`
+    // would otherwise lose its cells and style the whole tab.
+    if (trimmed.startsWith("'") && !/^'(?:[^']|'')*'(!|$)/.test(trimmed)) {
+      throw new Error(`${where}: a quoted tab title must be followed by "!" and the cells.`);
+    }
+    const { cells } = splitA1(trimmed, isKnownTab);
     if (cells && !isCellRange(cells)) {
       throw new Error(
         `${where}: "${cells}" is not an A1 cell range. Write it like B2:D20, A:C or 3:3; ` +
           'named ranges are not accepted here.'
       );
     }
-    const parsed = parseA1Range(entry.range, isKnownTab);
+    const parsed = parseA1Range(trimmed, isKnownTab);
 
     let tab: { sheetId: number; title: string } | undefined;
     if (parsed.title !== undefined) {
-      tab = tabs.find((t) => t.title === parsed.title);
+      tab = tabNamed(parsed.title);
       if (!tab) {
         throw new Error(`${where}: no tab titled "${parsed.title}". This spreadsheet has: ${known()}`);
       }
     } else if (defaultSheetId !== undefined) {
+      // Checked only here, where it is used: a stale `#gid=` on a pasted URL
+      // does not sink a call whose every range names its own tab.
       tab = tabs.find((t) => t.sheetId === defaultSheetId);
+      if (!tab) {
+        throw new Error(`${where}: no tab with gid ${defaultSheetId}. This spreadsheet has: ${known()}`);
+      }
     } else {
       // The write tools' rule: a range with no tab lands on the FIRST tab, which
       // is rarely the one a caller who read some other gid meant to style.

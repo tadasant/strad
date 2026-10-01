@@ -164,7 +164,7 @@ What it builds is `repeatCell` and `updateBorders` and nothing else: there is no
 tool that takes a raw `batchUpdate` request, because the same endpoint deletes
 tabs, rows and protected ranges, and the gateway's tool policy can allow or deny
 a tool but cannot inspect what is inside one. Column widths, merged cells and
-conditional formatting are not reachable yet. It needs the same
+conditional formatting are not reachable. It needs the same
 `https://www.googleapis.com/auth/spreadsheets` scope as every other write.
 
 There is no tool that deletes a tab: adding is recoverable and deleting is not,

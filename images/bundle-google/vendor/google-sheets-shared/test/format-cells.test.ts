@@ -89,7 +89,34 @@ test("a range with no tab is refused, unless sheet_gid says which tab", () => {
   assert.equal(one("B2:D5", { bold: true }, 777).repeatCell.range.sheetId, 777);
   // A range that names its own tab wins over the default.
   assert.equal(one("Summary!A1", { bold: true }, 777).repeatCell.range.sheetId, 0);
-  assert.throws(() => one("B2", { bold: true }, 999), /No tab with gid 999/);
+  assert.throws(() => one("B2", { bold: true }, 999), /no tab with gid 999/);
+  // A stale default only matters to an entry that needs it.
+  assert.equal(one("Summary!A1", { bold: true }, 999).repeatCell.range.sheetId, 0);
+});
+
+test("tab titles match ignoring case, the way Sheets matches them", () => {
+  assert.equal(one("'offer a'!A1", { bold: true }).repeatCell.range.sheetId, 777);
+  assert.deepEqual(one("q1", { bold: true }, 777).repeatCell.range, { sheetId: 42 });
+});
+
+test("malformed A1 is refused rather than widened to a whole tab", () => {
+  for (const range of [
+    "'Offer A'B2:D20",
+    "'Offer A' !A1",
+    "Summary!A1:",
+    "Summary!:",
+    "Summary!$",
+    "Summary!A:3",
+    "Summary!3:A",
+    "Summary!A1:B2:C3",
+    "Summary!AAAA1",
+  ]) {
+    assert.throws(() => one(range, { bold: true }), /not an A1 cell range|must be followed by "!"/, range);
+  }
+  // Half-open forms Sheets does accept still parse.
+  for (const range of ["Summary!B2:D", "Summary!A:C", "Summary!3:5", "Summary!$A$1:$B$2"]) {
+    assert.doesNotThrow(() => one(range, { bold: true }), range);
+  }
 });
 
 test("an unknown tab, a named range or row 0 is refused rather than guessed at", () => {
@@ -195,6 +222,20 @@ test("borders: outer and inner expand, a named side overrides, colour defaults t
     endColumnIndex: 6,
   });
   assert.equal(applied[0].fields.length, 6);
+});
+
+test("an inner shorthand yields to a named inner side", () => {
+  const b = one("Summary!A1:C3", {
+    borders: { inner: { style: "DOTTED" }, inner_vertical: { style: "NONE" } },
+  }).updateBorders;
+  assert.equal(b.innerHorizontal.style, "DOTTED");
+  assert.deepEqual(b.innerVertical, { style: "NONE" });
+  assert.equal(b.top, undefined);
+});
+
+test("an empty pattern is no pattern: the type's default", () => {
+  const req = one("Summary!A1", { number_format: { type: "CURRENCY", pattern: "" } }).repeatCell;
+  assert.deepEqual(req.cell.userEnteredFormat.numberFormat, { type: "CURRENCY" });
 });
 
 test("an unnamed side is left out, so the API keeps it; NONE removes one", () => {
@@ -316,6 +357,20 @@ test("a pasted URL's #gid= is the tab for a range that names none", async () => 
   assert.equal(result.isError, undefined, textOf(result));
   assert.match(textOf(result), /'Offer A'!B2:B9 — textFormat\.italic/);
   assert.equal(JSON.parse(calls[1].body).requests[0].repeatCell.range.sheetId, 777);
+});
+
+test("an explicit sheet_gid outranks the URL's #gid=", async () => {
+  const mcp = await connect(wireClient());
+  const result = await mcp.callTool({
+    name: "format_cells",
+    arguments: {
+      spreadsheet_id: `https://docs.google.com/spreadsheets/d/${ID}/edit#gid=777`,
+      sheet_gid: 42,
+      formats: [{ range: "A1", format: { bold: true } }],
+    },
+  });
+  assert.equal(result.isError, undefined, textOf(result));
+  assert.equal(JSON.parse(calls[1].body).requests[0].repeatCell.range.sheetId, 42);
 });
 
 test("one bad entry sends NOTHING: the sheet is styled whole or not at all", async () => {

@@ -52,7 +52,7 @@ const formatSchema = z
     underline: z.boolean().optional(),
     strikethrough: z.boolean().optional(),
     font_size: z.number().int().min(1).max(400).optional(),
-    font_family: z.string().trim().min(1).optional(),
+    font_family: z.string().trim().min(1).max(100).optional(),
     number_format: z
       .object({ type: z.enum(NUMBER_FORMAT_TYPES), pattern: z.string().optional() })
       .strict()
@@ -134,7 +134,7 @@ Formatted 3 ranges in 1Bxi… (3 requests).
 - Banding or highlighting rows that need attention
 - Boxing a table with an outer border and light inner gridlines
 
-To undo a style, set it back: bold false, background_color "#ffffff", a border style NONE, number_format { "type": "NUMBER" }. Column widths, merged cells and conditional formatting are not reachable here. An uploaded .xlsx is refused; it must be saved as a Google Sheet first.`;
+Nothing here clears a property back to "unset"; to undo a style, set a neutral value — bold false, background_color "#ffffff" (a white fill), a border style NONE, number_format { "type": "NUMBER" }. Tab titles match ignoring case. Column widths, merged cells and conditional formatting are not reachable here. An uploaded .xlsx is refused; it must be saved as a Google Sheet first.`;
 
 /** A refused argument reads as a sentence per issue, not as Zod's JSON dump. */
 function describeError(error: unknown): string {
@@ -163,7 +163,7 @@ export function formatCellsTool(_server: Server, clientFactory: ClientFactory) {
       type: 'object' as const,
       properties: {
         spreadsheet_id: { type: 'string', description: PARAM_DESCRIPTIONS.spreadsheet_id },
-        sheet_gid: { type: 'number', description: PARAM_DESCRIPTIONS.sheet_gid },
+        sheet_gid: { type: 'integer', description: PARAM_DESCRIPTIONS.sheet_gid },
         formats: {
           type: 'array',
           description: PARAM_DESCRIPTIONS.formats,
@@ -183,7 +183,7 @@ export function formatCellsTool(_server: Server, clientFactory: ClientFactory) {
                   italic: { type: 'boolean' },
                   underline: { type: 'boolean' },
                   strikethrough: { type: 'boolean' },
-                  font_size: { type: 'number', description: 'Points.' },
+                  font_size: { type: 'integer', description: 'Points.' },
                   font_family: { type: 'string' },
                   number_format: {
                     type: 'object',
