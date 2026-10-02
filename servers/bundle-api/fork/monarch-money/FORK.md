@@ -152,14 +152,14 @@ site in `src/tools/accounts.ts`.
 
 ## The second divergence: authentication that survives Monarch's move to a cookie
 
-Monarch's web app stopped authenticating with `Authorization: Token <…>`. It
-sends an HttpOnly Django session cookie (`sessionid`/`session_id` plus
-`csrftoken`) to `https://api.monarch.com/graphql`, with `X-CSRFToken`, `Origin:
-https://app.monarch.com` and `client-platform: web`. A browser therefore no
-longer shows anyone a token to copy, so `MONARCH_SESSION_TOKEN` stopped being
-something a human could produce. And when the last pasted token died, nothing
-said why: every tool answered "Not authenticated with Monarch Money", told the
-user to run a login script that this image does not ship, and an agent session
+Monarch's web app authenticates with an HttpOnly Django session cookie
+(`sessionid`/`session_id` plus `csrftoken`) sent to
+`https://api.monarch.com/graphql`, with `X-CSRFToken`, `Origin:
+https://app.monarch.com` and `client-platform: web`, and no `Authorization:
+Token <…>` header. A browser shows nobody a token to copy, so
+`MONARCH_SESSION_TOKEN` is not something a human can produce. When the last
+pasted token died, nothing said why: every tool answered "Not authenticated
+with Monarch Money" and pointed at a login script this image does not ship, and an agent session
 waited eleven days on it.
 
 ### The deltas
@@ -210,9 +210,10 @@ CAPTCHA. Sources, all checked on 2026-10-02:
 So the outcome depends on the account, the IP's reputation and whether the
 device is trusted, and nobody has shown which of those decides it. The server
 tries one login when a request is refused. It reports `CAPTCHA_REQUIRED` and
-the bot block by name rather than as "MFA required". After a failure it waits
-15 minutes before trying again, so a login that cannot succeed does not push
-the account into a lockout. When login fails, the cookie is the fallback.
+the bot block by name rather than as "MFA required". It waits 15 minutes
+after ANY login attempt before the next one — including one that succeeded
+but minted a credential Monarch then refused — so a login that cannot help
+does not run once per tool call and push the account into a lockout. When login fails, the cookie is the fallback.
 
 ### The cookie, made durable on strad
 
@@ -230,9 +231,12 @@ it. That is why there is no keepalive. What the server does instead:
   is persisted through core's `paramsWritable:` write-back to
   `/strad/{env}/mcp/<MONARCH_COOKIE_SLUG>/static/MONARCH_COOKIE`. A cookie
   Monarch refuses is stored nowhere.
-- **Re-issued sessions are kept.** If Monarch answers with a `Set-Cookie` that
-  changes the session cookie or `csrftoken`, the new value replaces the old in
-  the environment and is persisted the same way.
+- **Re-issued sessions are kept.** If a SUCCESSFUL response carries a
+  `Set-Cookie` that changes the session cookie or `csrftoken`, the new value
+  replaces the old in the environment and is persisted the same way, writes
+  serialised so the newest lands last. Every other cookie is ignored, so an
+  analytics or edge cookie rotating does not churn the parameter store, and a
+  refusal that clears the session cannot write a dead cookie anywhere.
 - **Expiry is loud.** Every auth failure names the credential ("Monarch cookie
   expired or was signed out (Monarch answered 401)"), says whether a re-login
   was tried and how it failed, and gives the refresh steps.

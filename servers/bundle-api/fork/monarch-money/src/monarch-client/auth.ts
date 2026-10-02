@@ -36,8 +36,8 @@ export interface LoginResult {
   token?: string;
   /**
    * The session cookie the login response set (`sessionid`/`csrftoken`), when
-   * it set one. Monarch's web login moved from a token to this cookie; a login
-   * that yields only the cookie is still a successful login.
+   * it set one. A login that yields only the cookie is still a successful
+   * login.
    */
   cookie?: string;
   user?: { id?: string; email?: string; name?: string } | null;

@@ -54,15 +54,16 @@ export function authErrorMessage(err: MonarchAuthError): string {
     head = `Monarch cookie expired or was signed out${status}.`;
   } else if (err.method === 'token') {
     head =
-      `Monarch rejected the session token${status}. Monarch's web app no longer exposes a token ` +
-      'to copy, so replace it with the session cookie, MONARCH_COOKIE, which takes precedence.';
+      `Monarch rejected the session token${status}. Monarch's web app exposes no token to ` +
+      'copy, so replace it with the session cookie, MONARCH_COOKIE, which takes precedence.';
   } else {
     head = `Not authenticated with Monarch Money: Monarch refused the request's credential${status}: ${err.message.replace(/\.?$/, '.')}`;
   }
+  const hint = err.hint ? ` ${err.hint}` : '';
   const login = err.loginFailure
     ? ` A headless re-login with MONARCH_EMAIL/MONARCH_PASSWORD was attempted and did not succeed: ${err.loginFailure}.`
     : '';
-  return `${head}${login} ${COOKIE_REFRESH_STEPS}`;
+  return `${head}${hint}${login} ${COOKIE_REFRESH_STEPS}`;
 }
 
 /**

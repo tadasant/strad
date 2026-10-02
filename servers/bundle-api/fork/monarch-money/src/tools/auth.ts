@@ -50,7 +50,7 @@ The cookie is a credential: it is never echoed back or logged.
 - Restore access after the session cookie expires
 - Move the server from a pasted token to cookie auth`;
 
-const TOKEN_DESCRIPTION = `Save a pre-obtained Monarch Money bearer token to encrypted on-disk storage. Prefer \`set_session_cookie\`: Monarch's web app no longer exposes a token to copy, and \`MONARCH_COOKIE\` / \`MONARCH_SESSION_TOKEN\` in the environment take precedence over a stored token.
+const TOKEN_DESCRIPTION = `Save a pre-obtained Monarch Money bearer token to encrypted on-disk storage. Prefer \`set_session_cookie\`: Monarch's web app exposes no token to copy, and \`MONARCH_COOKIE\` / \`MONARCH_SESSION_TOKEN\` in the environment take precedence over a stored token.
 
 The token is written to \`~/.monarch-money-mcp/session.enc\` (or \`MONARCH_STATE_DIR/session.enc\` when set), encrypted with AES-256-GCM. Once saved, all other tools will pick it up automatically — no env var configuration needed.
 
@@ -166,41 +166,32 @@ export function authTools(
     handler: async (args): Promise<ToolResult> => {
       try {
         const parsed = TokenSchema.parse(args ?? {});
+        // Verified with THIS token, not with whatever the precedence picks —
+        // an environment cookie or token would otherwise vouch for it.
+        let me: { id: string; email: string; name: string };
+        try {
+          me = await auth.verify({ method: 'token', token: parsed.token, source: 'stored' });
+        } catch (err) {
+          const why = err instanceof MonarchAuthError ? authErrorMessage(err) : String(err instanceof Error ? err.message : err);
+          return errorResult(`Token validation failed; the token was NOT persisted.\n${why}`);
+        }
         const existing = await sessionStore.load().catch(() => null);
         await sessionStore.save({
           token: parsed.token,
-          email: parsed.email ?? existing?.email,
+          via: 'token',
+          email: parsed.email ?? me.email ?? existing?.email,
           obtainedAt: new Date().toISOString(),
           deviceUuid: existing?.deviceUuid,
         });
-        try {
-          const client = await clientFactory();
-          const me = await client.whoami();
-          return ok(
-            `Saved session token to ${sessionStore.path()} and validated against Monarch.\n` +
-              `Authenticated as: ${me.email} (id: ${me.id}).`
-          );
-        } catch (err) {
-          // Roll back to the prior session if there was one. We never want to
-          // leave a bad token persisted, but we also can't wipe the cached
-          // deviceUuid — losing it would re-trigger Monarch's email-OTP gate
-          // on the next env-var login from this install.
-          if (existing && existing.token) {
-            await sessionStore.save(existing);
-          } else if (existing?.deviceUuid) {
-            await sessionStore.save({
-              token: '',
-              obtainedAt: new Date().toISOString(),
-              email: existing.email,
-              deviceUuid: existing.deviceUuid,
-            });
-          } else {
-            await sessionStore.clear();
-          }
-          return errorResult(
-            `Token validation failed; the token was NOT persisted.\n${err instanceof Error ? err.message : String(err)}`
-          );
-        }
+        const status = await auth.status();
+        const shadowed =
+          status.source === 'MONARCH_COOKIE' || status.source === 'MONARCH_SESSION_TOKEN'
+            ? ` Note: ${status.source} is set in the environment and takes precedence over a stored token.`
+            : '';
+        return ok(
+          `Saved session token to ${sessionStore.path()} and validated against Monarch.\n` +
+            `Authenticated as: ${me.email} (id: ${me.id}).${shadowed}`
+        );
       } catch (err) {
         return errorFromException(err);
       }

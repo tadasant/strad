@@ -149,14 +149,27 @@ describe('the cookie as a credential', () => {
     expect(hint).not.toContain('zzz');
   });
 
-  test('Set-Cookie folds in a rotated session and ignores cookies nobody sent', () => {
+  test('Set-Cookie folds in a re-issued session and ignores every other cookie', () => {
     expect(
       mergeSetCookies(COOKIE, ['sessionid=sess-new; Path=/; HttpOnly', 'tracking=1; Path=/'])
     ).toBe('csrftoken=csrf-fake; sessionid=sess-new; _ga=GA1.1.x');
     expect(mergeSetCookies(COOKIE, ['sessionid=sess-fake; Path=/'])).toBeNull();
     expect(mergeSetCookies(COOKIE, ['tracking=1'])).toBeNull();
-    expect(mergeSetCookies(COOKIE, ['_ga=; Max-Age=0'])).toBe(
-      'csrftoken=csrf-fake; sessionid=sess-fake'
+    // A cookie the request CARRIED that is not the session — analytics, edge —
+    // rotating on its own is not a reason to write the parameter store.
+    expect(mergeSetCookies(COOKIE, ['_ga=GA1.1.rotated; Path=/'])).toBeNull();
+    expect(mergeSetCookies(COOKIE, ['_ga=; Max-Age=0'])).toBeNull();
+    expect(mergeSetCookies(COOKIE, ['csrftoken=csrf-new'])).toBe(
+      'csrftoken=csrf-new; sessionid=sess-fake; _ga=GA1.1.x'
+    );
+    expect(mergeSetCookies('session_id=a; csrftoken=b', ['session_id=c'])).toBe(
+      'session_id=c; csrftoken=b'
+    );
+  });
+
+  test('bytes a header cannot carry are dropped, so fetch never quotes the cookie in an error', () => {
+    expect(normaliseCookieHeader('sessionid=a\u0000b; csrftoken=c\u00e9')).toBe(
+      'sessionid=ab; csrftoken=c'
     );
   });
 });
@@ -245,7 +258,7 @@ describe('a refusal says which credential and how to fix it', () => {
   test('a rejected token says to move to the cookie', () => {
     const err = new MonarchAuthError('x', 'rejected', 401);
     err.method = 'token';
-    expect(authErrorMessage(err)).toMatch(/no longer exposes a token.*MONARCH_COOKIE/);
+    expect(authErrorMessage(err)).toMatch(/exposes no token.*MONARCH_COOKIE/);
   });
 });
 
@@ -411,6 +424,7 @@ describe('set_session_cookie', () => {
     expect(out.isError).toBeUndefined();
     expect(out.content[0].text).toContain('authenticated as me@example.com');
     expect(out.content[0].text).toContain('lasts until the process restarts');
+    expect(out.content[0].text).toContain('next parameter refresh');
     expect(out.content[0].text).not.toContain('sess-fake');
   });
 
@@ -453,6 +467,125 @@ describe('check_authentication', () => {
   test('createMCPServer exposes the one auth manager its tools share', () => {
     const created = createMCPServer({ version: 't', sessionStore: createMemorySessionStore(), env: {} });
     expect(created.auth).toBeInstanceOf(MonarchAuthManager);
+  });
+});
+
+describe('review hardening', () => {
+  const loginEnv = (): NodeJS.ProcessEnv => ({
+    MONARCH_COOKIE: COOKIE,
+    MONARCH_EMAIL: 'me@example.com',
+    MONARCH_PASSWORD: 'pw',
+  });
+
+  test('a login that mints a refused credential is not re-run on the next call', async () => {
+    let logins = 0;
+    const { auth } = manager(loginEnv(), (req) => {
+      if (req.url === LOGIN) {
+        logins++;
+        return { status: 200, body: { token: 'minted' } };
+      }
+      return { status: 401, body: {} };
+    });
+    const first = (await auth
+      .transport()
+      .request({ query: '{ x }' })
+      .catch((e: unknown) => e)) as MonarchAuthError;
+    expect(first.loginFailure).toMatch(/refused the credential it minted/);
+    const second = (await auth
+      .transport()
+      .request({ query: '{ x }' })
+      .catch((e: unknown) => e)) as MonarchAuthError;
+    expect(second.loginFailure).toMatch(/not retried for another \d+ min/);
+    expect(logins).toBe(1);
+  });
+
+  test('a cookie installed while a refused request was in flight is not superseded by the login', async () => {
+    const env = loginEnv();
+    const FRESH = 'csrftoken=c2; sessionid=s2';
+    const { auth, seen } = manager(env, (req) => {
+      if (req.url === LOGIN) return { status: 200, body: { token: 'minted' } };
+      if (req.headers.Cookie === COOKIE) {
+        // A refresh lands mid-flight, before the refusal comes back.
+        env.MONARCH_COOKIE = FRESH;
+        return { status: 401, body: {} };
+      }
+      return { status: 200, body: ME };
+    });
+    await auth.transport().request({ query: '{ me { id } }' });
+    await auth.transport().request({ query: '{ me { id } }' });
+    expect(seen.at(-1)!.headers.Cookie).toBe(FRESH);
+  });
+
+  test('a refusal that clears the session writes nothing', async () => {
+    const env: NodeJS.ProcessEnv = { MONARCH_COOKIE: COOKIE };
+    const persisted: string[] = [];
+    const { auth } = manager(
+      env,
+      () => ({ status: 401, body: {}, setCookie: ['sessionid=; Max-Age=0; Path=/'] }),
+      { persistCookie: async (c) => void persisted.push(c) }
+    );
+    await auth.transport().request({ query: '{ x }' }).catch(() => undefined);
+    await new Promise((r) => setImmediate(r));
+    expect(env.MONARCH_COOKIE).toBe(COOKIE);
+    expect(persisted).toEqual([]);
+  });
+
+  test('two re-issues in quick succession persist in order, newest last', async () => {
+    const env: NodeJS.ProcessEnv = { MONARCH_COOKIE: COOKIE };
+    const persisted: string[] = [];
+    let n = 0;
+    const { auth } = manager(
+      env,
+      () => ({ status: 200, body: ME, setCookie: [`sessionid=rot-${++n}; Path=/`] }),
+      {
+        persistCookie: async (c) => {
+          await new Promise((r) => setTimeout(r, c.includes('rot-1') ? 20 : 0));
+          persisted.push(c);
+        },
+      }
+    );
+    await auth.transport().request({ query: '{ me { id } }' });
+    await auth.transport().request({ query: '{ me { id } }' });
+    await new Promise((r) => setTimeout(r, 60));
+    expect(persisted.at(-1)).toContain('sessionid=rot-2');
+    expect(env.MONARCH_COOKIE).toContain('sessionid=rot-2');
+  });
+
+  test('a refused cookie with no session cookie in it says the wrong header was copied', async () => {
+    const { auth } = manager({ MONARCH_COOKIE: '_ga=x; csrftoken=y' }, () => ({ status: 401, body: {} }));
+    const err = (await auth
+      .transport()
+      .request({ query: '{ x }' })
+      .catch((e: unknown) => e)) as MonarchAuthError;
+    expect(authErrorMessage(err)).toContain('no `sessionid`/`session_id`');
+  });
+
+  test('monarch_login_with_token verifies the token it was given, not the environment cookie', async () => {
+    const env: NodeJS.ProcessEnv = { MONARCH_COOKIE: COOKIE };
+    const store = createMemorySessionStore();
+    const { auth } = manager(env, (req) =>
+      req.headers.Cookie === COOKIE ? { status: 200, body: ME } : { status: 401, body: {} }
+    );
+    const tool = authTools(async () => {
+      throw new Error('unused');
+    }, store, auth).find((t) => t.name === 'monarch_login_with_token')!;
+    const out = await tool.handler({ token: 'bad-token' });
+    expect(out.isError).toBe(true);
+    expect(out.content[0].text).toContain('was NOT persisted');
+    expect(await store.load()).toBeNull();
+  });
+
+  test('a stored token is saved once it verifies, with a note when the environment shadows it', async () => {
+    const env: NodeJS.ProcessEnv = { MONARCH_COOKIE: COOKIE };
+    const store = createMemorySessionStore();
+    const { auth } = manager(env, () => ({ status: 200, body: ME }));
+    const tool = authTools(async () => {
+      throw new Error('unused');
+    }, store, auth).find((t) => t.name === 'monarch_login_with_token')!;
+    const out = await tool.handler({ token: 'good-token' });
+    expect(out.isError).toBeUndefined();
+    expect(out.content[0].text).toContain('MONARCH_COOKIE is set in the environment');
+    expect((await store.load())?.token).toBe('good-token');
   });
 });
 

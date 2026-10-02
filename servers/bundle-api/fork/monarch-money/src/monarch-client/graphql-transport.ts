@@ -58,7 +58,7 @@ export interface CreateGraphQLTransportOptions {
    */
   deviceUuid?: string;
   /**
-   * Called with a response's `Set-Cookie` headers, when it carried any. The
+   * Called with a 2xx response's `Set-Cookie` headers, when it carried any. The
    * auth manager folds them into the live cookie so a session Monarch
    * re-issues survives a restart (see `mergeSetCookies`).
    */
@@ -83,6 +83,8 @@ export class MonarchAuthError extends Error {
   method?: AuthMethod | 'none';
   /** Set when a re-login was attempted after the refusal and did not succeed. */
   loginFailure?: string;
+  /** Names-only advice about the refused credential (see `cookieHint`). */
+  hint?: string;
   constructor(
     message = 'Monarch session token is missing or invalid',
     public readonly reason: AuthFailureReason = 'rejected',
@@ -129,8 +131,12 @@ export function createGraphQLTransport(options: CreateGraphQLTransportOptions): 
         body: JSON.stringify({ query, variables: variables ?? {} }),
       });
 
-      const setCookies = response.headers.getSetCookie?.() ?? [];
-      if (setCookies.length > 0) options.onSetCookie?.(setCookies);
+      // Only a SUCCESSFUL response may re-issue the session: a refusal that
+      // clears `sessionid` must not become a stored cookie with no session.
+      if (response.ok) {
+        const setCookies = response.headers.getSetCookie?.() ?? [];
+        if (setCookies.length > 0) options.onSetCookie?.(setCookies);
+      }
 
       const text = await response.text();
 

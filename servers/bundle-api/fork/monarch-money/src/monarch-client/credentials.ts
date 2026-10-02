@@ -2,11 +2,10 @@
  * The credentials Monarch's API accepts, and the headers each one travels as.
  *
  * Monarch's web app authenticates with an HttpOnly Django session cookie
- * (`sessionid`, plus `csrftoken`) against `https://api.monarch.com/graphql`.
- * It no longer sends an `Authorization: Token …` header, so a browser no longer
- * shows anyone a token to copy — the cookie is what a human can lift out of
- * DevTools today. The token form still works for a token minted by the REST
- * login (`auth.ts`), and for a token pasted before the change.
+ * (`sessionid`, plus `csrftoken`) against `https://api.monarch.com/graphql`,
+ * and sends no `Authorization: Token …` header, so the cookie is the
+ * credential a human can lift out of DevTools. The token form serves a token
+ * minted by the REST login (`auth.ts`) or pasted by hand.
  *
  * Nothing here logs, and no error built here carries a credential's bytes.
  */
@@ -40,7 +39,14 @@ export const MONARCH_WEB_ORIGIN = 'https://app.monarch.com';
  */
 export function normaliseCookieHeader(raw: string | undefined): string | null {
   if (raw === undefined) return null;
-  let value = raw.replace(/[\r\n]+/g, ' ').trim();
+  // Line breaks become spaces; any other byte outside visible ASCII is dropped.
+  // A header value carrying one makes `fetch` throw an error that QUOTES the
+  // whole value, and that error would reach a tool result.
+  let value = raw
+    .replace(/[\r\n]+/g, ' ')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[^\x20-\x7e]/g, '')
+    .trim();
   value = value.replace(/^cookie\s*:\s*/i, '');
   if (
     value.length >= 2 &&
@@ -81,7 +87,8 @@ export function csrfTokenFrom(cookie: string): string | undefined {
  * The names Monarch's session cookie has been observed under. pbassham's client
  * documents `sessionid`; two other clients observed `session_id`. Neither is
  * REQUIRED before a cookie is sent — Monarch's answer is the test — but a
- * refused cookie carrying neither gets a hint that the wrong header was copied.
+ * refused cookie carrying neither gets a hint (`MonarchAuthError.hint`) that
+ * the wrong header was copied.
  */
 export const SESSION_COOKIE_NAMES = ['sessionid', 'session_id'] as const;
 
@@ -125,14 +132,14 @@ export function authHeaders(
 
 /**
  * Fold a response's `Set-Cookie` headers into a cookie, returning the new value
- * when any cookie it already carries — or a session cookie or `csrftoken` — changed,
- * and null when nothing did.
+ * when the SESSION changed — a session cookie (`SESSION_COOKIE_NAMES`) or
+ * `csrftoken` set to a new value or deleted — and null otherwise.
  *
- * This is how a session Monarch re-issues (a rotated `sessionid`, a fresh
- * `csrftoken`) is kept rather than lost when the process restarts. A cookie the
- * request did not carry and Monarch did not authenticate with is ignored, so
- * analytics cookies a response sets do not churn the stored value. An expiry in
- * the past or `Max-Age=0` deletes.
+ * This is how a session Monarch re-issues is kept rather than lost when the
+ * process restarts. Every other cookie is ignored, including ones the request
+ * carried: a DevTools copy holds analytics and edge cookies that rotate on
+ * their own schedule, and each change would otherwise be a parameter-store
+ * write. An expiry in the past or `Max-Age=0` deletes.
  */
 export function mergeSetCookies(
   cookie: string,
@@ -140,6 +147,7 @@ export function mergeSetCookies(
   now: Date = new Date()
 ): string | null {
   if (setCookies.length === 0) return null;
+  const tracked = new Set<string>([...SESSION_COOKIE_NAMES, 'csrftoken']);
   const pairs = parseCookieHeader(cookie);
   let changed = false;
   for (const header of setCookies) {
@@ -148,12 +156,7 @@ export function mergeSetCookies(
     if (eq <= 0) continue;
     const name = first.slice(0, eq).trim();
     const value = first.slice(eq + 1).trim();
-    if (
-      !pairs.has(name) &&
-      name !== 'csrftoken' &&
-      !(SESSION_COOKIE_NAMES as readonly string[]).includes(name)
-    )
-      continue;
+    if (!tracked.has(name)) continue;
     let expired = value === '';
     for (const attr of attrs) {
       const [k, ...rest] = attr.split('=');

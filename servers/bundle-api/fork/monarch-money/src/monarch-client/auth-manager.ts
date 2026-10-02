@@ -32,6 +32,7 @@
  */
 import { generateDeviceUuid, login, type LoginTransportOptions } from './auth.js';
 import {
+  cookieHint,
   mergeSetCookies,
   normaliseCookieHeader,
   type MonarchCredential,
@@ -90,6 +91,12 @@ export interface AuthStatus {
 interface Resolved {
   credential: MonarchCredential;
   source: CredentialSource;
+  /**
+   * The environment credentials as they stood when THIS request resolved. A
+   * refusal supersedes these, not whatever the environment holds by the time
+   * a login finishes — a cookie installed mid-flight is newer than the refusal.
+   */
+  env: { cookie: string | null; token: string | null };
 }
 
 export interface SetCookieResult {
@@ -113,7 +120,15 @@ export class MonarchAuthManager {
    */
   private superseded: { cookie: string | null; token: string | null } | null = null;
   private loginInFlight: Promise<Resolved> | null = null;
-  private lastLoginFailure: { at: number; message: string } | null = null;
+  /**
+   * The last login ATTEMPT, whatever it returned. The cooldown runs from every
+   * attempt, not only a failed one: a login that succeeds and mints something
+   * Monarch then refuses would otherwise run once per tool call — the exact
+   * pattern that earns an account a CAPTCHA or a lockout.
+   */
+  private lastLogin: { at: number; failure: string | null } | null = null;
+  /** Serialises cookie write-backs so an older value cannot land last. */
+  private persistChain: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: AuthManagerOptions) {
     this.env = options.env ?? process.env;
@@ -154,35 +169,35 @@ export class MonarchAuthManager {
   private async resolve(): Promise<Resolved | null> {
     const cookie = this.envCookie();
     const token = this.envToken();
+    const env = { cookie, token };
+    const fromEnv = (): Resolved | null => {
+      if (cookie)
+        return { credential: { method: 'cookie', cookie }, source: 'MONARCH_COOKIE', env };
+      if (token)
+        return {
+          credential: { method: 'token', token, source: 'env' },
+          source: 'MONARCH_SESSION_TOKEN',
+          env,
+        };
+      return null;
+    };
     const stale =
       this.superseded !== null &&
       this.superseded.cookie === cookie &&
       this.superseded.token === token;
     if (!stale) {
-      if (cookie) return { credential: { method: 'cookie', cookie }, source: 'MONARCH_COOKIE' };
-      if (token)
-        return {
-          credential: { method: 'token', token, source: 'env' },
-          source: 'MONARCH_SESSION_TOKEN',
-        };
+      const live = fromEnv();
+      if (live) return live;
     }
     const stored = await this.loadStored();
     if (stored?.token) {
       const source = stored.via === 'login' ? 'login' : 'stored';
-      return { credential: { method: 'token', token: stored.token, source }, source };
+      return { credential: { method: 'token', token: stored.token, source }, source, env };
     }
     if (stored?.cookie) {
-      return { credential: { method: 'cookie', cookie: stored.cookie }, source: 'login' };
+      return { credential: { method: 'cookie', cookie: stored.cookie }, source: 'login', env };
     }
-    if (stale) {
-      if (cookie) return { credential: { method: 'cookie', cookie }, source: 'MONARCH_COOKIE' };
-      if (token)
-        return {
-          credential: { method: 'token', token, source: 'env' },
-          source: 'MONARCH_SESSION_TOKEN',
-        };
-    }
-    return null;
+    return stale ? fromEnv() : null;
   }
 
   private async deviceUuid(): Promise<string | undefined> {
@@ -222,6 +237,9 @@ export class MonarchAuthManager {
     } catch (err) {
       if (!(err instanceof MonarchAuthError)) throw err;
       err.method = resolved.credential.method;
+      if (resolved.credential.method === 'cookie') {
+        err.hint = cookieHint(resolved.credential.cookie) ?? undefined;
+      }
       if (!this.canLogin()) throw err;
       let fresh: Resolved;
       try {
@@ -233,7 +251,12 @@ export class MonarchAuthManager {
       try {
         return await fn(fresh.credential, await this.deviceUuid(), fresh.source);
       } catch (retryErr) {
-        if (retryErr instanceof MonarchAuthError) retryErr.method = fresh.credential.method;
+        if (retryErr instanceof MonarchAuthError) {
+          retryErr.method = fresh.credential.method;
+          retryErr.loginFailure =
+            'the login succeeded, but Monarch refused the credential it minted';
+          if (this.lastLogin) this.lastLogin.failure = `headless login: ${retryErr.loginFailure}`;
+        }
         throw retryErr;
       }
     }
@@ -268,8 +291,10 @@ export class MonarchAuthManager {
   }
 
   /**
-   * Keep a session Monarch re-issued. Only an ENVIRONMENT cookie is written
-   * back to the environment (and persisted), and only while the environment
+   * Keep a session Monarch re-issued on a SUCCESSFUL response (the transport
+   * only reports `Set-Cookie` on a 2xx, so a refusal that clears the session
+   * cannot write a dead cookie anywhere). Only an ENVIRONMENT cookie is written
+   * back to the environment and persisted, and only while the environment
    * still holds the cookie the request was sent with — a value that changed
    * underneath this request is newer than anything this response knows about.
    */
@@ -282,23 +307,32 @@ export class MonarchAuthManager {
     }
     if (source !== 'MONARCH_COOKIE' || this.envCookie() !== used) return;
     this.env.MONARCH_COOKIE = merged;
-    if (this.options.persistCookie) {
-      this.options.persistCookie(merged).catch((err: unknown) =>
+    const persist = this.options.persistCookie;
+    if (!persist) return;
+    // Chained, and each link writes the environment's value AT ITS TURN, so
+    // two rotations in quick succession persist in order and the last write is
+    // the newest cookie.
+    this.persistChain = this.persistChain.then(async () => {
+      const current = this.envCookie();
+      if (!current) return;
+      try {
+        await persist(current);
+      } catch (err) {
         logWarning(
           'monarch-money',
           `Monarch re-issued the session cookie and it could not be persisted: ${errText(err)}. ` +
-            `This process uses the new value; the next restart reads the old one.`
-        )
-      );
-    }
+            `This process uses the new value until a restart or a parameter refresh.`
+        );
+      }
+    });
   }
 
   private async updateStored(patch: Partial<SessionState>): Promise<void> {
     try {
       const existing = await this.loadStored();
       await this.options.sessionStore.save({
-        token: existing?.token ?? '',
-        obtainedAt: existing?.obtainedAt ?? new Date(this.now()).toISOString(),
+        token: '',
+        obtainedAt: new Date(this.now()).toISOString(),
         ...existing,
         ...patch,
       });
@@ -310,23 +344,26 @@ export class MonarchAuthManager {
   /** Single-flight, rate-limited REST login. Throws with the reason it failed. */
   private relogin(replacing: Resolved | null): Promise<Resolved> {
     if (this.loginInFlight) return this.loginInFlight;
-    const last = this.lastLoginFailure;
+    const last = this.lastLogin;
     if (last && this.now() - last.at < this.cooldownMs) {
       const minutes = Math.ceil((this.cooldownMs - (this.now() - last.at)) / 60000);
+      const why = last.failure ?? 'a headless login already ran and its credential was refused';
       return Promise.reject(
-        new Error(`${last.message} (not retried for another ${minutes} min, to avoid a lockout)`)
+        new Error(`${why} (not retried for another ${minutes} min, to avoid a lockout)`)
       );
     }
-    const envAtFailure = { cookie: this.envCookie(), token: this.envToken() };
+    this.lastLogin = { at: this.now(), failure: null };
     this.loginInFlight = this.doLogin()
       .then((fresh) => {
-        this.lastLoginFailure = null;
-        if (replacing && replacing.source !== 'stored') this.superseded = envAtFailure;
+        if (replacing && replacing.source !== 'stored' && replacing.source !== 'login') {
+          this.superseded = replacing.env;
+        }
         return fresh;
       })
       .catch((err: unknown) => {
-        this.lastLoginFailure = { at: this.now(), message: `headless login failed: ${errText(err)}` };
-        throw new Error(this.lastLoginFailure.message, { cause: err });
+        const failure = `headless login failed: ${errText(err)}`;
+        this.lastLogin = { at: this.lastLogin?.at ?? this.now(), failure };
+        throw new Error(failure, { cause: err });
       })
       .finally(() => {
         this.loginInFlight = null;
@@ -366,10 +403,37 @@ export class MonarchAuthManager {
       deviceUuid,
     };
     await this.options.sessionStore.save(next);
+    const env = { cookie: this.envCookie(), token: this.envToken() };
     if (result.token) {
-      return { credential: { method: 'token', token: result.token, source: 'login' }, source: 'login' };
+      return {
+        credential: { method: 'token', token: result.token, source: 'login' },
+        source: 'login',
+        env,
+      };
     }
-    return { credential: { method: 'cookie', cookie: result.cookie! }, source: 'login' };
+    return { credential: { method: 'cookie', cookie: result.cookie! }, source: 'login', env };
+  }
+
+  /**
+   * Ask Monarch who `credential` belongs to, with exactly that credential —
+   * not whatever the precedence would pick. No re-login, no fallback.
+   */
+  async verify(credential: MonarchCredential): Promise<{ id: string; email: string; name: string }> {
+    try {
+      const data = await createGraphQLTransport({
+        endpoint: this.endpoint,
+        credential,
+        fetchImpl: this.fetchImpl,
+        deviceUuid: await this.deviceUuid(),
+      }).request<{ me: { id: string; email: string; name: string } }>({ query: Q_ME });
+      return data.me;
+    } catch (err) {
+      if (err instanceof MonarchAuthError) {
+        err.method = credential.method;
+        if (credential.method === 'cookie') err.hint = cookieHint(credential.cookie) ?? undefined;
+      }
+      throw err;
+    }
   }
 
   /**
@@ -380,38 +444,27 @@ export class MonarchAuthManager {
   async setCookie(raw: string): Promise<SetCookieResult & { me: { id: string; email: string; name: string } }> {
     const cookie = normaliseCookieHeader(raw);
     if (!cookie) throw new Error('That is not a Cookie header: it holds no name=value pairs.');
-    const credential: MonarchCredential = { method: 'cookie', cookie };
-    let data: { me: { id: string; email: string; name: string } };
-    try {
-      data = await createGraphQLTransport({
-        endpoint: this.endpoint,
-        credential,
-        fetchImpl: this.fetchImpl,
-        deviceUuid: await this.deviceUuid(),
-      }).request<{ me: { id: string; email: string; name: string } }>({ query: Q_ME });
-    } catch (err) {
-      if (err instanceof MonarchAuthError) err.method = 'cookie';
-      throw err;
-    }
+    const me = await this.verify({ method: 'cookie', cookie });
 
     this.env.MONARCH_COOKIE = cookie;
     this.superseded = null;
+    // Without a write-back the value is this process's alone. If the
+    // deployment also RE-READS MONARCH_COOKIE from the store (paramsRefresh:),
+    // the next pass puts the stored value back — so say both.
+    const ephemeral =
+      'so it lasts until the process restarts, or until the next parameter refresh if this ' +
+      'slug re-reads MONARCH_COOKIE from the store.';
     if (!this.options.persistCookie) {
-      return {
-        me: data.me,
-        persisted: false,
-        persistNote:
-          'No write-back is configured, so this cookie lasts until the process restarts.',
-      };
+      return { me, persisted: false, persistNote: `No write-back is configured, ${ephemeral}` };
     }
     try {
       await this.options.persistCookie(cookie);
-      return { me: data.me, persisted: true };
+      return { me, persisted: true };
     } catch (err) {
       return {
-        me: data.me,
+        me,
         persisted: false,
-        persistNote: `It could not be persisted (${errText(err)}), so it lasts until the process restarts.`,
+        persistNote: `It could not be persisted (${errText(err)}), ${ephemeral}`,
       };
     }
   }
@@ -431,7 +484,7 @@ export class MonarchAuthManager {
 
   async status(): Promise<AuthStatus> {
     const resolved = await this.resolve();
-    const last = this.lastLoginFailure;
+    const last = this.lastLogin;
     return {
       method: resolved ? resolved.credential.method : 'none',
       ...(resolved ? { source: resolved.source } : {}),
@@ -439,7 +492,9 @@ export class MonarchAuthManager {
       totpSecret: !!trimOrNull(this.env.MONARCH_TOTP_SECRET),
       cookiePersistence: !!this.options.persistCookie,
       ...(this.options.persistTarget ? { persistTarget: this.options.persistTarget } : {}),
-      ...(last && this.now() - last.at < this.cooldownMs ? { lastLoginFailure: last.message } : {}),
+      ...(last?.failure && this.now() - last.at < this.cooldownMs
+        ? { lastLoginFailure: last.failure }
+        : {}),
     };
   }
 

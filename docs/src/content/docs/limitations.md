@@ -3363,8 +3363,6 @@ See `HACKS.md` #109.
 
 ---
 
----
-
 ### 110. monarch-money's session cookie expires, and refreshing it is still a human step
 
 Monarch's web app moved to an HttpOnly session cookie. Scripted logins now meet a CAPTCHA on a growing share of accounts: `403 {"error_code":"CAPTCHA_REQUIRED"}`, or the edge's `403 {"You":"Shall Not Pass"}`. So the monarch fork runs on `MONARCH_COOKIE`, the whole `Cookie` request header from a signed-in browser. That cookie expires when Monarch decides it does. The one available observation suggests an API call does not extend it, so strad does not poll to keep it alive.
