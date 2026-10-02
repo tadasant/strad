@@ -74,7 +74,7 @@
 #
 # The allow-lists below are derived from each upstream's own tool-group
 # definitions, so the counts stay honest: slack 7/13 · tailscale 7/15 ·
-# monarch 10/23 · gmail 5/7/8 · google-docs 4/10/11 · google-calendar 4/7 ·
+# monarch 10/24 · gmail 5/7/8 · google-docs 4/10/11 · google-calendar 4/7 ·
 # 1Password 5/9 · telegram 5/6 · bill-spend 4/5. test/staging-config.test.ts
 # asserts every one of those numbers.
 
@@ -421,7 +421,7 @@ servers:
         - get_key
 
   # ---------------------------------------------------------------------------
-  # Monarch Money — 23 tools full, 10 read-only.
+  # Monarch Money — 24 tools full, 10 read-only.
   # ---------------------------------------------------------------------------
   - slug: monarch-money-readwrite
     kind: supplementary-image

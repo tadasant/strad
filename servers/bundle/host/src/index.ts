@@ -175,6 +175,8 @@ interface Mount {
    * only where the per-request path has been read and it really does re-read.
    */
   liveEnv?: boolean;
+  /** Gateway slugs served at this mount's path besides `slug`; see `RefreshableMount`. */
+  servedAs?: readonly string[];
   /** Optional non-MCP upload endpoint exposed beside this mount. */
   upload?: (token: string, body: Buffer) => Promise<{
     content: Array<{ type: "text"; text: string }>;
@@ -249,6 +251,15 @@ async function buildMounts(): Promise<Mount[]> {
     tree: "bundle-api",
     serverName: "mcp-server-monarch-money",
     capabilities: { tools: {} },
+    // Its auth manager reads MONARCH_COOKIE and MONARCH_SESSION_TOKEN out of
+    // `process.env` on EVERY request, so a cookie `paramsRefresh:` re-reads is
+    // used by the next call with no restart.
+    liveEnv: true,
+    servedAs: [
+      "monarch-money-readwrite",
+      "monarch-money-readonly",
+      monarchCookieSlug(),
+    ],
     register: (s) => api.monarch.registerHandlers(s),
   });
 
@@ -446,6 +457,26 @@ type Factory = (opts: Record<string, unknown>) => Created;
  */
 const SLACK_PUBLIC_SLUG_VAR = "SLACK_PUBLIC_SLUG";
 
+/** The variable monarch's session cookie lives in, on the box and in the store. */
+const MONARCH_COOKIE_VAR = "MONARCH_COOKIE";
+
+/**
+ * The env var naming the GATEWAY slug whose namespace monarch's cookie is
+ * persisted to — the one that lists `MONARCH_COOKIE` under `paramsWritable:`.
+ *
+ * It cannot be derived, for slack's reason: `monarch-money-readwrite` and
+ * `monarch-money-readonly` are two slugs at one `path: /monarch-money`, one
+ * mount and one `process.env`. The cookie is ONE value for both, so it is
+ * written to one slug's namespace and the other reads the same environment.
+ * Unset falls back to `monarch-money-readwrite`, the slug that carries the
+ * manage tools.
+ */
+const MONARCH_COOKIE_SLUG_VAR = "MONARCH_COOKIE_SLUG";
+
+function monarchCookieSlug(): string {
+  return process.env[MONARCH_COOKIE_SLUG_VAR]?.trim() || "monarch-money-readwrite";
+}
+
 function slackDownloadConfig():
   | {
       publicSlug: string;
@@ -518,19 +549,28 @@ async function loadApiTree(): Promise<ApiTree> {
     "bundle-api",
     "fork/monarch-money/build/index.js",
   )) as {
-    createMCPServer: Factory;
+    createMCPServer: (opts: Record<string, unknown>) => Created & {
+      auth: { warm: () => Promise<void> };
+    };
     createFileSessionStore: () => unknown;
-    resolveSession: (opts: { sessionStore: unknown }) => Promise<unknown>;
   };
 
-  // Warm monarch's session in the BACKGROUND: it may perform a real network
-  // login, and a slow login must not delay the other twenty servers' readiness.
-  const sessionStore = monarchMod.createFileSessionStore();
-  void monarchMod
-    .resolveSession({ sessionStore })
-    .catch((err: unknown) =>
-      logWarn(`monarch-money: background session resolution failed: ${errMessage(err)}`),
-    );
+  // A cookie set at runtime (`set_session_cookie`, or a session Monarch
+  // re-issues) is written back through core to THIS slug's own namespace —
+  // `paramsWritable: [MONARCH_COOKIE]` is the fence, and core refuses a slug or
+  // a name the config did not list. See monarchCookieSlug for why the slug is
+  // configured rather than derived.
+  const cookieSlug = monarchCookieSlug();
+  const cookieParams = paramStoreFor(cookieSlug);
+  const monarchCreated = monarchMod.createMCPServer({
+    version: VERSION,
+    sessionStore: monarchMod.createFileSessionStore(),
+    persistCookie: (cookie: string) => cookieParams.put(MONARCH_COOKIE_VAR, cookie),
+    persistTarget: `the strad parameter store (${cookieSlug} / ${MONARCH_COOKIE_VAR})`,
+  });
+  // Warm a headless login in the BACKGROUND: it is a real network call, and a
+  // slow login must not delay the other mounts' readiness. Never throws.
+  void monarchCreated.auth.warm();
 
   return {
     slack: slack.createMCPServer({ version: VERSION, download: slackDownloadConfig() }),
@@ -539,7 +579,7 @@ async function loadApiTree(): Promise<ApiTree> {
       apiKey: process.env.SERPAPI_API_KEY,
     }),
     tailscale: tailscale.createMCPServer({ version: VERSION }),
-    monarch: monarchMod.createMCPServer({ version: VERSION, sessionStore }),
+    monarch: monarchCreated,
     gcs: gcs.createMCPServer({ version: VERSION }),
     flights: flights.createMCPServer({ version: VERSION }),
   };

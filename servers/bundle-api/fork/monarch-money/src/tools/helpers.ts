@@ -26,18 +26,52 @@ export function errorResult(message: string): ToolResult {
   return { content: [{ type: 'text', text: message }], isError: true };
 }
 
-export const AUTH_HINT =
-  'Not authenticated with Monarch Money. Run the login script (`npm run login` from the server package, ' +
-  'or `node scripts/login.js`) to obtain a session token, or call `monarch_login_with_token` with a ' +
-  'pre-obtained token.';
+/**
+ * How a human gets Monarch a fresh credential, in the one place it is written.
+ * Every auth failure ends with this, because an expired session is the failure
+ * this server sees most and the fix is the same each time.
+ */
+export const COOKIE_REFRESH_STEPS =
+  'To refresh it: sign in at https://app.monarch.com, open DevTools → Network, select any ' +
+  'request to api.monarch.com/graphql, and copy the whole value of its `Cookie` request header. ' +
+  'Then either call `set_session_cookie` with it (verified against Monarch before anything is ' +
+  'saved; on strad it is persisted to the parameter store when the slug lists MONARCH_COOKIE ' +
+  'under paramsWritable:), or set MONARCH_COOKIE for this server in strad\'s console at ' +
+  '/ui/secrets.';
 
 /**
- * Convert a thrown error into a user-facing tool result. Auth errors get a
- * dedicated hint pointing at the login flow; everything else is surfaced
- * verbatim so the user can see Monarch's GraphQL message.
+ * The message for a refused or missing credential: WHICH credential, WHY, and
+ * the exact step that fixes it. Never carries a credential's bytes.
+ */
+export function authErrorMessage(err: MonarchAuthError): string {
+  const status = err.status ? ` (Monarch answered ${err.status})` : '';
+  let head: string;
+  if (err.reason === 'missing') {
+    head = 'Not authenticated with Monarch Money: no credential is configured (MONARCH_COOKIE, MONARCH_SESSION_TOKEN, or MONARCH_EMAIL + MONARCH_PASSWORD).';
+  } else if (err.reason === 'csrf') {
+    head = `Monarch cookie rejected by the CSRF check${status}: the cookie must include \`csrftoken\` as well as the session cookie. Copy the whole Cookie header, not part of it.`;
+  } else if (err.method === 'cookie') {
+    head = `Monarch cookie expired or was signed out${status}.`;
+  } else if (err.method === 'token') {
+    head =
+      `Monarch rejected the session token${status}. Monarch's web app no longer exposes a token ` +
+      'to copy, so replace it with the session cookie, MONARCH_COOKIE, which takes precedence.';
+  } else {
+    head = `Not authenticated with Monarch Money: Monarch refused the request's credential${status}: ${err.message.replace(/\.?$/, '.')}`;
+  }
+  const login = err.loginFailure
+    ? ` A headless re-login with MONARCH_EMAIL/MONARCH_PASSWORD was attempted and did not succeed: ${err.loginFailure}.`
+    : '';
+  return `${head}${login} ${COOKIE_REFRESH_STEPS}`;
+}
+
+/**
+ * Convert a thrown error into a user-facing tool result. Auth errors say which
+ * credential failed and how to refresh it; everything else is surfaced verbatim
+ * so the user can see Monarch's GraphQL message.
  */
 export function errorFromException(err: unknown): ToolResult {
-  if (err instanceof MonarchAuthError) return errorResult(AUTH_HINT);
+  if (err instanceof MonarchAuthError) return errorResult(authErrorMessage(err));
   const message = err instanceof Error ? err.message : String(err);
   return errorResult(`Monarch Money error: ${message}`);
 }

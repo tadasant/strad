@@ -20,11 +20,9 @@ import type {
   TransactionRule,
   TransactionRuleInput,
 } from '../types.js';
-import {
-  createGraphQLTransport,
-  type GraphQLTransport,
-  MonarchAuthError,
-} from './graphql-transport.js';
+import { type GraphQLTransport, MonarchAuthError } from './graphql-transport.js';
+import type { MonarchAuthManager } from './auth-manager.js';
+import { authHeaders } from './credentials.js';
 import * as ops from './operations.js';
 
 /**
@@ -141,7 +139,7 @@ export type BalanceHistoryUploader = (args: {
 
 export interface MonarchClientOptions {
   transport: GraphQLTransport;
-  /** Pre-loaded session, if any. Used for `isAuthenticated()`. */
+  /** Pre-loaded session, if any. `saveSessionToken` carries its email and device id forward. */
   session: SessionState | null;
   /** Persist session tokens (and clear them) via this hook. */
   onSessionChange?: (state: SessionState | null) => Promise<void>;
@@ -208,7 +206,6 @@ export class MonarchClient implements IMonarchClient {
   }
 
   async isAuthenticated(): Promise<boolean> {
-    if (!this.session) return false;
     try {
       await this.options.transport.request<{ me: { id: string } }>({
         query: ops.Q_ME,
@@ -1205,72 +1202,62 @@ function restBaseFromGraphqlEndpoint(endpoint: string): string {
 }
 
 /**
- * Build a `MonarchClient` against the live API for a given session token.
+ * Build a `MonarchClient` against the live API. Every request — GraphQL and the
+ * balance-history REST upload alike — authenticates through `auth`, which picks
+ * the credential per request and re-logs-in on a refusal (`auth-manager.ts`).
  */
 export function buildMonarchClient(opts: {
-  session: SessionState;
+  auth: MonarchAuthManager;
+  session: SessionState | null;
   endpoint?: string;
   fetchImpl?: typeof fetch;
   onSessionChange?: (state: SessionState | null) => Promise<void>;
 }): MonarchClient {
   const endpoint = opts.endpoint ?? 'https://api.monarch.com/graphql';
   const fetchImpl = opts.fetchImpl ?? fetch;
-  const transport = createGraphQLTransport({
-    endpoint,
-    token: opts.session.token,
-    fetchImpl,
-    deviceUuid: opts.session.deviceUuid,
-  });
+  const transport = opts.auth.transport();
 
-  // Live implementation of the balance-history CSV upload (step 1 of
-  // `setAccountBalanceHistory`). Mirrors the multipart form the Monarch web app
-  // posts: the CSV file, an `account_files_mapping` binding the file to the
-  // account id, and a `files_column_mapping` telling the `monarch_csv` parser
-  // which columns are `date`/`balance` (indexes 0/1 in the CSV we build). The
-  // JSON response carries the staging `session_key`.
   const restBase = restBaseFromGraphqlEndpoint(endpoint);
-  const uploadBalanceHistoryCsv: BalanceHistoryUploader = async ({ accountId, csv }) => {
-    const filename = 'upload.csv';
-    const form = new FormData();
-    form.append('files', new Blob([csv], { type: 'text/csv' }), filename);
-    form.append('account_files_mapping', JSON.stringify({ [filename]: accountId }));
-    form.append('files_column_mapping', JSON.stringify({ [filename]: { date: 0, balance: 1 } }));
-    const headers: Record<string, string> = {
-      Authorization: `Token ${opts.session.token}`,
-      'client-platform': 'web',
-    };
-    if (opts.session.deviceUuid) headers['device-uuid'] = opts.session.deviceUuid;
+  const uploadBalanceHistoryCsv: BalanceHistoryUploader = ({ accountId, csv }) =>
+    opts.auth.withCredential(async (credential, deviceUuid) => {
+      const filename = 'upload.csv';
+      const form = new FormData();
+      form.append('files', new Blob([csv], { type: 'text/csv' }), filename);
+      form.append('account_files_mapping', JSON.stringify({ [filename]: accountId }));
+      form.append('files_column_mapping', JSON.stringify({ [filename]: { date: 0, balance: 1 } }));
 
-    const response = await fetchImpl(`${restBase}/account-balance-history/upload/`, {
-      method: 'POST',
-      headers,
-      body: form,
+      const response = await fetchImpl(`${restBase}/account-balance-history/upload/`, {
+        method: 'POST',
+        headers: authHeaders(credential, deviceUuid),
+        body: form,
+      });
+      const text = await response.text();
+      if (response.status === 401 || response.status === 403) {
+        throw new MonarchAuthError(
+          `Monarch returned ${response.status} uploading balance history.`,
+          /csrf/i.test(text) ? 'csrf' : 'rejected',
+          response.status
+        );
+      }
+      if (!response.ok) {
+        throw new Error(
+          `Balance-history upload failed: ${response.status} ${response.statusText}` +
+            (text ? ` - ${text.slice(0, 200)}` : '')
+        );
+      }
+      let parsed: { session_key?: string };
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        throw new Error(`Balance-history upload returned a non-JSON response: ${text.slice(0, 200)}`);
+      }
+      if (!parsed.session_key) {
+        throw new Error(
+          'Balance-history upload did not return a session_key; cannot apply the change.'
+        );
+      }
+      return { sessionKey: parsed.session_key };
     });
-    const text = await response.text();
-    if (response.status === 401 || response.status === 403) {
-      throw new MonarchAuthError(
-        `Monarch returned ${response.status} uploading balance history — re-authenticate.`
-      );
-    }
-    if (!response.ok) {
-      throw new Error(
-        `Balance-history upload failed: ${response.status} ${response.statusText}` +
-          (text ? ` - ${text.slice(0, 200)}` : '')
-      );
-    }
-    let parsed: { session_key?: string };
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      throw new Error(`Balance-history upload returned a non-JSON response: ${text.slice(0, 200)}`);
-    }
-    if (!parsed.session_key) {
-      throw new Error(
-        'Balance-history upload did not return a session_key; cannot apply the change.'
-      );
-    }
-    return { sessionKey: parsed.session_key };
-  };
 
   return new MonarchClient({
     transport,

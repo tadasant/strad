@@ -9,6 +9,8 @@
  * operation, surface auth/network errors, and return the typed `data` payload.
  */
 
+import { authHeaders, type AuthMethod, type MonarchCredential } from './credentials.js';
+
 export interface GraphQLError {
   message: string;
   path?: (string | number)[];
@@ -44,7 +46,8 @@ export interface GraphQLTransport {
 
 export interface CreateGraphQLTransportOptions {
   endpoint?: string;
-  token: string;
+  /** How this transport authenticates — a session cookie or a token. See `credentials.ts`. */
+  credential: MonarchCredential;
   fetchImpl?: typeof fetch;
   /** Optional client identifier sent in the `x-cio-client-platform` header. */
   clientPlatform?: string;
@@ -54,12 +57,37 @@ export interface CreateGraphQLTransportOptions {
    * device identity that login negotiated.
    */
   deviceUuid?: string;
+  /**
+   * Called with a response's `Set-Cookie` headers, when it carried any. The
+   * auth manager folds them into the live cookie so a session Monarch
+   * re-issues survives a restart (see `mergeSetCookies`).
+   */
+  onSetCookie?: (setCookies: string[]) => void;
 }
 
 const DEFAULT_ENDPOINT = 'https://api.monarch.com/graphql';
 
+/** Why Monarch did not accept the request's credential. */
+export type AuthFailureReason =
+  /** Monarch answered 401/403 or a "not authenticated" GraphQL error. */
+  | 'rejected'
+  /** Django refused the request's CSRF pairing — a cookie without its `csrftoken`. */
+  | 'csrf'
+  /** No credential is configured at all. */
+  | 'missing'
+  /** The configured credential is malformed and was never sent. */
+  | 'malformed';
+
 export class MonarchAuthError extends Error {
-  constructor(message = 'Monarch session token is missing or invalid') {
+  /** Which credential was refused. Set by the auth manager when it knows. */
+  method?: AuthMethod | 'none';
+  /** Set when a re-login was attempted after the refusal and did not succeed. */
+  loginFailure?: string;
+  constructor(
+    message = 'Monarch session token is missing or invalid',
+    public readonly reason: AuthFailureReason = 'rejected',
+    public readonly status?: number
+  ) {
     super(message);
     this.name = 'MonarchAuthError';
   }
@@ -90,12 +118,10 @@ export function createGraphQLTransport(options: CreateGraphQLTransportOptions): 
     }): Promise<T> {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        Authorization: `Token ${options.token}`,
         'x-cio-client-platform': clientPlatform,
         'x-cio-site-id': 'monarch-money-mcp',
-        'client-platform': 'web',
+        ...authHeaders(options.credential, options.deviceUuid),
       };
-      if (options.deviceUuid) headers['device-uuid'] = options.deviceUuid;
 
       const response = await fetchImpl(endpoint, {
         method: 'POST',
@@ -103,13 +129,31 @@ export function createGraphQLTransport(options: CreateGraphQLTransportOptions): 
         body: JSON.stringify({ query, variables: variables ?? {} }),
       });
 
-      if (response.status === 401 || response.status === 403) {
-        throw new MonarchAuthError(
-          `Monarch returned ${response.status} ${response.statusText} — re-authenticate via the login script.`
-        );
-      }
+      const setCookies = response.headers.getSetCookie?.() ?? [];
+      if (setCookies.length > 0) options.onSetCookie?.(setCookies);
 
       const text = await response.text();
+
+      // EVERY 401/403 is an authentication failure here — never "MFA required".
+      // MFA is a property of the LOGIN endpoint (auth.ts); GraphQL either
+      // accepts the credential or does not. The one 403 that means something
+      // else is Django's CSRF refusal, which a cookie missing its `csrftoken`
+      // earns, and which re-pasting the same cookie would not fix.
+      if (response.status === 401 || response.status === 403) {
+        if (/csrf/i.test(text)) {
+          throw new MonarchAuthError(
+            `Monarch refused the request's CSRF check (${response.status}). The cookie must ` +
+              `include \`csrftoken\` alongside \`sessionid\` — copy the whole Cookie header.`,
+            'csrf',
+            response.status
+          );
+        }
+        throw new MonarchAuthError(
+          `Monarch returned ${response.status} ${response.statusText}`.trim(),
+          'rejected',
+          response.status
+        );
+      }
 
       // Parse BEFORE branching on the HTTP status. Monarch answers a
       // malformed-for-the-schema query with `400` AND a well-formed GraphQL
@@ -131,7 +175,11 @@ export function createGraphQLTransport(options: CreateGraphQLTransportOptions): 
           /unauthor|not authenticated|forbidden/i.test(e.message)
         );
         if (isAuthError) {
-          throw new MonarchAuthError(parsed.errors.map((e) => e.message).join('; '));
+          throw new MonarchAuthError(
+            parsed.errors.map((e) => e.message).join('; '),
+            'rejected',
+            response.status
+          );
         }
         throw new MonarchGraphQLError(
           `Monarch GraphQL errors: ${parsed.errors.map(describeError).join('; ')}`,

@@ -3362,3 +3362,24 @@ State is written to GCS on a two-second debounce and on shutdown, so a crash los
 See `HACKS.md` #109.
 
 ---
+
+---
+
+### 110. monarch-money's session cookie expires, and refreshing it is still a human step
+
+Monarch's web app moved to an HttpOnly session cookie. Scripted logins now meet a CAPTCHA on a growing share of accounts: `403 {"error_code":"CAPTCHA_REQUIRED"}`, or the edge's `403 {"You":"Shall Not Pass"}`. So the monarch fork runs on `MONARCH_COOKIE`, the whole `Cookie` request header from a signed-in browser. That cookie expires when Monarch decides it does. The one available observation suggests an API call does not extend it, so strad does not poll to keep it alive.
+
+What strad does instead:
+
+- **Re-reads the cookie on every request.** `MONARCH_COOKIE` outranks `MONARCH_SESSION_TOKEN` and is read per request. With `params: true` and `paramsRefresh: [MONARCH_COOKIE]` on the slug, a value rotated in `/ui/secrets` reaches the running container without a deploy.
+- **Accepts a new cookie over `/mcp`.** `set_session_cookie` checks the cookie against Monarch first. Only then does it use the cookie and persist it through `paramsWritable: [MONARCH_COOKIE]`. Persistence goes to the namespace of the slug named by `MONARCH_COOKIE_SLUG` (default `monarch-money-readwrite`).
+- **Keeps a re-issued session.** When Monarch re-issues the session with `Set-Cookie`, strad keeps the new value the same way.
+- **Says which credential died.** Every auth failure names the credential, says whether a re-login was tried, and gives the refresh steps.
+
+Headless re-login (`MONARCH_EMAIL`, `MONARCH_PASSWORD`, `MONARCH_TOTP_SECRET`, `MONARCH_DEVICE_UUID`) is opt-in and best-effort. The public evidence splits by account and by egress IP. It runs at most once every 15 minutes, so a login that cannot succeed does not lock the account.
+
+**How you would know.** A tool call answers `Monarch cookie expired or was signed out (Monarch answered 401).`, followed by the refresh steps. `check_authentication` reports `method`, `source`, and whether a runtime-set cookie survives a restart (`cookiePersistence`).
+
+**Undo:** a browser extension on the signed-in profile could read the cookie with `chrome.cookies` and push it to strad itself, with no human step. That belongs on the strad-hostd browser bridge.
+
+See `HACKS.md` #110.

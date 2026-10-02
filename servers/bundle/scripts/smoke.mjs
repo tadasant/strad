@@ -55,7 +55,7 @@ const EXPECT = {
   slack: 13, // upstream's 9 plus the fork's four DM tools
   "serpapi-hotels": 3,
   tailscale: 15,
-  "monarch-money": 23,
+  "monarch-money": 24,
   gcs: 9, // 13 minus the 4 bucket-level tools, which GCS_BUCKET hides
   // upload_file, refresh_link, list_files, download_file, set_sensitivity,
   // delete_file — the artifact store's whole surface.

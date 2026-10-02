@@ -294,7 +294,12 @@ export interface SplitInput {
 }
 
 export interface SessionState {
+  /** A bearer token. Empty when the session is a cookie (`cookie`) or holds only a device id. */
   token: string;
+  /** A session cookie a headless login was answered with, when it set one. */
+  cookie?: string;
+  /** `login` when a headless login minted this session, rather than a pasted token. */
+  via?: 'login' | 'token';
   obtainedAt: string;
   email?: string;
   /**

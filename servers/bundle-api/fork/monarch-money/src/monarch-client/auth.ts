@@ -12,6 +12,7 @@
  * accepted, subsequent password logins from the same uuid skip the OTP gate.
  */
 import { randomUUID } from 'crypto';
+import { cookieHint, mergeSetCookies } from './credentials.js';
 
 const DEFAULT_LOGIN_ENDPOINT = 'https://api.monarch.com/auth/login/';
 
@@ -31,7 +32,14 @@ export interface LoginInput {
 }
 
 export interface LoginResult {
-  token: string;
+  /** The bearer token Monarch's login answered with, when it answered with one. */
+  token?: string;
+  /**
+   * The session cookie the login response set (`sessionid`/`csrftoken`), when
+   * it set one. Monarch's web login moved from a token to this cookie; a login
+   * that yields only the cookie is still a successful login.
+   */
+  cookie?: string;
   user?: { id?: string; email?: string; name?: string } | null;
 }
 
@@ -46,6 +54,18 @@ export class MonarchTotpRequiredError extends Error {
   constructor(message = 'Monarch requires a TOTP code to continue login.') {
     super(message);
     this.name = 'MonarchTotpRequiredError';
+  }
+}
+
+/**
+ * Monarch demanded a CAPTCHA. No unattended client can answer one, so this is
+ * the verdict on headless login for this account and this network — the
+ * session cookie (`MONARCH_COOKIE`) is the path that remains.
+ */
+export class MonarchCaptchaRequiredError extends Error {
+  constructor(message = 'Monarch requires a CAPTCHA to log in.') {
+    super(message);
+    this.name = 'MonarchCaptchaRequiredError';
   }
 }
 
@@ -64,6 +84,15 @@ export interface LoginTransportOptions {
   endpoint?: string;
   /** Override fetch (used by tests). */
   fetchImpl?: typeof fetch;
+}
+
+/**
+ * The `name=value` pairs of a response's `Set-Cookie` headers as one `Cookie`
+ * header value, or undefined when they carry no session cookie.
+ */
+function cookieFromSetCookies(setCookies: readonly string[]): string | undefined {
+  const merged = mergeSetCookies('', setCookies);
+  return merged && cookieHint(merged) === null ? merged : undefined;
 }
 
 export function generateDeviceUuid(): string {
@@ -129,10 +158,12 @@ export async function login(
     // Non-JSON response (e.g., HTML error page). Fall through to status mapping.
   }
 
-  if (res.ok && parsed?.token) {
+  const loginCookie = cookieFromSetCookies(res.headers.getSetCookie?.() ?? []);
+  if (res.ok && (parsed?.token || loginCookie)) {
     return {
-      token: parsed.token,
-      user: (parsed.user ?? null) as LoginResult['user'],
+      ...(parsed?.token ? { token: parsed.token } : {}),
+      ...(loginCookie ? { cookie: loginCookie } : {}),
+      user: (parsed?.user ?? null) as LoginResult['user'],
     };
   }
 
@@ -143,10 +174,22 @@ export async function login(
   // detail string is human-prose that has changed in the past and is shared
   // between MFA modes (e.g. a generic "MFA required" could be either OTP
   // type). We only fall back to detail-matching when no error_code is set.
+  // Checked FIRST: a CAPTCHA challenge is the one answer no retry, code or
+  // device pairing gets past, and it must not be mistaken for an MFA prompt.
+  // `{"You":"Shall Not Pass"}` is the edge's bot block, which answers before
+  // the login view runs at all — the same verdict by another door.
+  if (/captcha/i.test(code) || /captcha/i.test(detail)) {
+    throw new MonarchCaptchaRequiredError(detail);
+  }
+  if (res.status === 403 && /shall not pass/i.test(text)) {
+    throw new MonarchCaptchaRequiredError(
+      'Monarch\'s bot protection refused the login request (403 "Shall Not Pass").'
+    );
+  }
   if (code === 'EMAIL_OTP_REQUIRED') {
     throw new MonarchEmailOtpRequiredError(detail);
   }
-  if (code === 'TOTP_REQUIRED') {
+  if (code === 'TOTP_REQUIRED' || code === 'MFA_REQUIRED') {
     throw new MonarchTotpRequiredError(detail);
   }
   if (!code && /email.*otp/i.test(detail)) {

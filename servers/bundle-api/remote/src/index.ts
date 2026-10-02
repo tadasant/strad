@@ -36,7 +36,6 @@ import { createMCPServer as createTailscale } from "tailscale-vpn-mcp-server-sha
 import {
   createMCPServer as createMonarch,
   createFileSessionStore,
-  resolveSession,
 } from "monarch-money-mcp-server-shared";
 import { createMCPServer as createGcs } from "gcs-mcp-server-shared";
 import { createMCPServer as createGoogleFlights } from "google-flights-mcp-server-shared";
@@ -220,27 +219,21 @@ async function buildServers(): Promise<RegisteredServer[]> {
     toggleEnvVar: "TOOL_GROUPS",
   });
 
-  // monarch-money: warm the session store in the BACKGROUND. It reads MONARCH_*
-  // credentials from the environment and may perform a real network login; we
-  // deliberately do NOT await it, so a slow login never delays this component
-  // coming healthy or the other six servers' readiness. The store is the source
-  // of truth and monarch's client reloads it per call, so at worst the FIRST
-  // monarch tool call races the warm — and the in-protocol auth tools recover
-  // either way. Failure is non-fatal: log and carry on.
-  const monarchSessionStore = createFileSessionStore();
-  void resolveSession({ sessionStore: monarchSessionStore }).catch((err) => {
-    log(
-      `monarch-money: background session resolution failed (auth tools remain available): ${errMessage(err)}`,
-    );
+  // monarch-money: credentials are read from the environment PER REQUEST
+  // (MONARCH_COOKIE > MONARCH_SESSION_TOKEN > the session store). When headless
+  // login is the only credential, warm it in the BACKGROUND — a real network
+  // login must never delay this component coming healthy. `warm()` never
+  // throws; a failed login is the first tool call's error.
+  const monarch = createMonarch({
+    version: VERSION,
+    sessionStore: createFileSessionStore(),
   });
+  void monarch.auth.warm();
   servers.push({
     slug: "monarch-money",
     serverName: "mcp-server-monarch-money",
     capabilities: { tools: {} },
-    registerHandlers: createMonarch({
-      version: VERSION,
-      sessionStore: monarchSessionStore,
-    }).registerHandlers,
+    registerHandlers: monarch.registerHandlers,
     toggleEnvVar: "MONARCH_ENABLED_TOOL_GROUPS",
   });
 

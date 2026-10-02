@@ -14,7 +14,8 @@ this package — the image is the artifact.
 
 ## Why it is forked
 
-One defect, and the shape of it is why it could not wait for a round trip
+Two divergences. The second, Monarch's move to cookie authentication, has its
+own section below. The first was one defect, and the shape of it is why it could not wait for a round trip
 through upstream: **`get_accounts(includeHoldings: true)` returned
 `"holdings": []` for every account, on a workspace where fourteen accounts held
 forty-four positions.** Not an error, not a missing key — a well-formed empty
@@ -149,12 +150,104 @@ so the two responses have always agreed — but they are two requests, and the
 mismatch would be an undercount rather than a failure. It is noted at the call
 site in `src/tools/accounts.ts`.
 
+## The second divergence: authentication that survives Monarch's move to a cookie
+
+Monarch's web app stopped authenticating with `Authorization: Token <…>`. It
+sends an HttpOnly Django session cookie (`sessionid`/`session_id` plus
+`csrftoken`) to `https://api.monarch.com/graphql`, with `X-CSRFToken`, `Origin:
+https://app.monarch.com` and `client-platform: web`. A browser therefore no
+longer shows anyone a token to copy, so `MONARCH_SESSION_TOKEN` stopped being
+something a human could produce. And when the last pasted token died, nothing
+said why: every tool answered "Not authenticated with Monarch Money", told the
+user to run a login script that this image does not ship, and an agent session
+waited eleven days on it.
+
+### The deltas
+
+| File | Delta |
+| --- | --- |
+| `src/monarch-client/credentials.ts` | New. Two credential shapes, `cookie` and `token`, and the headers each one is sent with. Normalises a DevTools copy (a leading `Cookie:`, wrapping quotes, line breaks). `mergeSetCookies` folds a re-issued session into the cookie |
+| `src/monarch-client/auth-manager.ts` | New. Resolves the credential **per request** from the live environment: `MONARCH_COOKIE` > `MONARCH_SESSION_TOKEN` > session store. On a refusal it runs one headless re-login (when configured) and retries the request once. `setCookie` verifies a cookie before storing it |
+| `src/monarch-client/totp.ts` | New. RFC 6238, so `MONARCH_TOTP_SECRET` (the seed) can answer 2FA unattended. `MONARCH_TOTP` is a one-time code and dies after 30 s |
+| `src/monarch-client/graphql-transport.ts` | Takes a `credential` instead of a `token`. Every 401/403 is a `MonarchAuthError` with a `reason` (`rejected`, `csrf`, `missing`), and never an MFA prompt. Reports `Set-Cookie` back to the manager |
+| `src/monarch-client/auth.ts` | Classifies `CAPTCHA_REQUIRED` and the edge's `403 {"You":"Shall Not Pass"}` as `MonarchCaptchaRequiredError`, and `MFA_REQUIRED` as a TOTP prompt. A login that only sets a session cookie still succeeds |
+| `src/monarch-client/client.ts` | `buildMonarchClient` takes the auth manager. The balance-history REST upload authenticates through it too |
+| `src/tools/auth.ts` | New `set_session_cookie` (manage). `check_authentication` reports `method`/`source`/`headlessLogin`/`cookiePersistence` |
+| `src/tools/helpers.ts` | `authErrorMessage`: which credential failed, why, and the exact refresh steps. Replaces the old hint about a login script |
+| `src/auto-auth.ts` | Deleted. Boot-time resolution is `auth.warm()`, which logs in ahead of the first request only when login is the sole credential |
+
+### Environment
+
+| Variable | Meaning |
+| --- | --- |
+| `MONARCH_COOKIE` | The whole `Cookie` request header from a signed-in request to `api.monarch.com`. Takes precedence over every other credential |
+| `MONARCH_SESSION_TOKEN` | A bearer token. Still honoured |
+| `MONARCH_EMAIL`, `MONARCH_PASSWORD` | Opt-in headless re-login, tried once when a request is refused or no credential exists |
+| `MONARCH_TOTP_SECRET` | The authenticator seed (base32, or the `otpauth://` URI), for 2FA during that login |
+| `MONARCH_DEVICE_UUID` | Pins the `device-uuid` Monarch trusts after one paired login. Without it a container whose disk does not survive a deploy is a new device on every launch |
+| `MONARCH_TOTP`, `MONARCH_EMAIL_OTP` | One-time codes, as before. Useful once, by hand, to pair a device |
+| `MONARCH_COOKIE_SLUG` | Bundle host only: which gateway slug's namespace a runtime-set cookie is persisted to. Default `monarch-money-readwrite` |
+
+### Headless login: best-effort, and the evidence for why
+
+Some Monarch accounts can still log in headlessly through `POST
+/auth/login/`, and some cannot. Since about mid-May 2026 a growing share get a
+CAPTCHA. Sources, all checked on 2026-10-02:
+
+- **Blocked.** pbassham/monarch-money-api `ccfe005` (2026-09-16) added
+  `MONARCH_COOKIE` because Monarch "blocks scripted logins with bot protection".
+  bradleyseanf/monarchmoneycommunity#40 (2026-05-15) recorded `403
+  {"detail":"CAPTCHA is required to proceed.","error_code":"CAPTCHA_REQUIRED"}`,
+  and that repo's maintainer hit it by 2026-06-04. hammem/monarchmoney#171
+  reported logins refused from a cloud function and accepted from a home IP.
+  echomodel/monarch-access#19 (2026-09-26) saw a `feat-cookie-auth-web` flag
+  set and `403 {"You":"Shall Not Pass"}` from the login endpoint.
+- **Working.** jamiew/monarch-mcp (2026-09-15) runs live tests on a fresh
+  email/password/MFA-seed login. tyvsmith/monarch-money-remote-mcp#1 (merged
+  2026-09-11) reports headless login verified from Cloud Run, on a trusted
+  device UUID.
+
+So the outcome depends on the account, the IP's reputation and whether the
+device is trusted, and nobody has shown which of those decides it. The server
+tries one login when a request is refused. It reports `CAPTCHA_REQUIRED` and
+the bot block by name rather than as "MFA required". After a failure it waits
+15 minutes before trying again, so a login that cannot succeed does not push
+the account into a lockout. When login fails, the cookie is the fallback.
+
+### The cookie, made durable on strad
+
+The cookie still expires, and how long it lasts is not established. pbassham
+says about 60 days, with no source. One observation, a single sample, saw the
+expiry stay put after an API call, so polling the API probably does not extend
+it. That is why there is no keepalive. What the server does instead:
+
+- **Re-read live.** On a `paramsRefresh: [MONARCH_COOKIE]` slug, a cookie
+  rotated in the store reaches this process within the refresh interval with
+  no restart. The mount is `liveEnv`, and the manager reads `process.env` per
+  request.
+- **Settable over `/mcp`.** `set_session_cookie` runs a `me` query with the
+  cookie. If Monarch accepts it, the cookie goes into the live environment and
+  is persisted through core's `paramsWritable:` write-back to
+  `/strad/{env}/mcp/<MONARCH_COOKIE_SLUG>/static/MONARCH_COOKIE`. A cookie
+  Monarch refuses is stored nowhere.
+- **Re-issued sessions are kept.** If Monarch answers with a `Set-Cookie` that
+  changes the session cookie or `csrftoken`, the new value replaces the old in
+  the environment and is persisted the same way.
+- **Expiry is loud.** Every auth failure names the credential ("Monarch cookie
+  expired or was signed out (Monarch answered 401)"), says whether a re-login
+  was tried and how it failed, and gives the refresh steps.
+
+`test/auth.test.ts` pins all of it: the header set, live precedence, the
+re-login and its cooldown, the CAPTCHA classification, verify-before-store, the
+`Set-Cookie` fold, the RFC 6238 vectors, and that no message echoes a cookie.
+
 ## The sharp edge
 
 A FORK has no upstream to diff against and no sync script to notice its loss: a
 re-vendor that pastes `monarch-money/shared/src` over `fork/monarch-money/src`
 reverts all of this with nothing to say so. What stands in for a drift test is
-`test/holdings.test.ts`, run by `ci.yml`'s `servers (bundle-api)` leg.
+`test/holdings.test.ts` and `test/auth.test.ts`, run by `ci.yml`'s
+`servers (bundle-api)` leg.
 
 It asserts the two properties whose absence made a wrong answer look like a
 right one:
@@ -201,4 +294,5 @@ restore the `COPY` line in EACH of `servers/bundle/Dockerfile` and
 and move `fork/monarch-money` back to `upstream/monarch-money` in the
 `bundle-api` workspaces and build script while dropping it from the test script.
 `get_accounts(includeHoldings: true)` then reports every account as holding
-nothing again.
+nothing again, and the server goes back to a bearer token that Monarch's web
+app no longer issues.

@@ -5674,3 +5674,44 @@ to scan a QR. The four variables are seeded at `/ui/secrets`.
 it. Short of that: a key-rotation path (read under a previous key, write under
 the new one), and moving the Signal store to a database with transactions if
 strad ever has one.
+
+## 110. monarch-money's session cookie still expires, and a human still copies it
+
+Monarch's web app authenticates with an HttpOnly session cookie, and a growing
+share of accounts get a CAPTCHA on a scripted login (`403 CAPTCHA_REQUIRED`, or
+the edge's `403 {"You":"Shall Not Pass"}`) — sources in
+`servers/bundle-api/fork/monarch-money/FORK.md`. So the monarch fork's durable
+path is a cookie a human lifted out of a signed-in browser, and that cookie
+expires on Monarch's schedule, which nobody has measured. One sample says an API
+call does not slide it, which is why there is no keepalive.
+
+What strad does about it, without anyone opening a shell:
+
+- `MONARCH_COOKIE` outranks `MONARCH_SESSION_TOKEN` and is read from
+  `process.env` per request. With `params: true` and `paramsRefresh:
+[MONARCH_COOKIE]` on the slug, a value rotated in `/ui/secrets` reaches the
+  running container within `paramRefreshSeconds`.
+- `set_session_cookie` (manage) verifies a cookie with a `me` query, then puts
+  it in the live environment, then persists it through core's
+  `paramsWritable: [MONARCH_COOKIE]` write-back into
+  `/strad/{env}/mcp/<MONARCH_COOKIE_SLUG>/static/MONARCH_COOKIE`. That slug
+  defaults to `monarch-money-readwrite`, because `-readwrite` and `-readonly`
+  share one mount and one environment. The write reaches one parameter, the
+  one the config names. A cookie Monarch refuses is stored nowhere.
+- A `Set-Cookie` that re-issues the session replaces the old value and is
+  persisted the same way.
+- `MONARCH_EMAIL` + `MONARCH_PASSWORD` (+ `MONARCH_TOTP_SECRET`,
+  `MONARCH_DEVICE_UUID`) turn on one headless re-login per refusal, retried at
+  most once every 15 minutes. Whether it gets past Monarch depends on the
+  account and on the egress IP. Until someone runs it, it is best-effort.
+
+**What it costs.** The refresh is still a human copying a request header out of
+DevTools, every time the cookie dies, unless headless login works for the
+account. The cookie also travels through an agent's context when it is set over
+`/mcp`. Tool arguments are never recorded by telemetry, and the tool does not
+echo the cookie, but the agent's transcript does hold it.
+
+**Undo / the real fix.** A browser extension on the signed-in profile can read
+the HttpOnly cookie with `chrome.cookies` and push it to strad on its own. That
+would close the loop with no human step. It belongs on the strad-hostd browser
+bridge, once that bridge has a seam for it.

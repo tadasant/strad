@@ -1,43 +1,58 @@
 import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
 import type { SessionStore } from '../monarch-client/session-store.js';
-import { errorFromException, errorResult, ok, okJSON, type ToolResult } from './helpers.js';
+import {
+  authErrorMessage,
+  errorFromException,
+  errorResult,
+  ok,
+  okJSON,
+  type ToolResult,
+} from './helpers.js';
+import type { MonarchAuthManager } from '../monarch-client/auth-manager.js';
+import { MonarchAuthError } from '../monarch-client/graphql-transport.js';
 import type { RegisteredTool } from '../tools.js';
 
-const CHECK_DESCRIPTION = `Check whether the Monarch Money MCP server has a valid session, and return setup instructions when it does not.
+const CHECK_DESCRIPTION = `Check whether the Monarch Money MCP server can authenticate, which credential it is using, and what to do when it cannot.
 
 When authenticated, returns:
 \`\`\`json
 {
   "authenticated": true,
+  "method": "cookie",
+  "source": "MONARCH_COOKIE",
   "email": "you@example.com",
   "id": "user_123",
   "name": "Your Name",
-  "sessionPath": "/home/you/.monarch-money-mcp/session.enc",
-  "obtainedAt": "2026-01-15T12:34:56.000Z"
+  "headlessLogin": false,
+  "cookiePersistence": true
 }
 \`\`\`
 
-When not authenticated, returns a multi-line string explaining the four ways to authenticate the server:
+\`method\` is \`cookie\` (Monarch's browser session cookie) or \`token\` (a bearer token). \`source\` says where it came from: \`MONARCH_COOKIE\`, \`MONARCH_SESSION_TOKEN\`, \`login\` (minted by a headless login with \`MONARCH_EMAIL\`/\`MONARCH_PASSWORD\`), or \`stored\` (saved by \`monarch_login_with_token\`). Precedence is cookie > token > stored, and a refused credential triggers one headless re-login when email and password are configured.
 
-1. **Env-var token (simplest, headless)** — Set \`MONARCH_SESSION_TOKEN=<token>\` in the server's environment. Useful for sandboxed or unattended deployments.
-2. **Env-var email + password** — Set \`MONARCH_EMAIL\` and \`MONARCH_PASSWORD\`. The server runs Monarch's REST login at startup. The first time from a new install Monarch sends an email OTP — read the code, set \`MONARCH_EMAIL_OTP=<code>\`, and restart. Set \`MONARCH_TOTP=<code>\` if your account has 2FA enabled.
-3. **Login script (interactive)** — Run \`npm run login\` from the server package directory.
-4. **Pass an existing token via tool** — Call \`monarch_login_with_token\` with a token you obtained another way.
-
-Once authenticated, the session persists across restarts. The encryption key is derived from \`MONARCH_SESSION_PASSPHRASE\` when set, otherwise from the host + user — making the encrypted file machine-bound by default.
+When not authenticated, returns an error naming the credential that failed and the exact steps to refresh it.
 
 **Use cases:**
 - Confirm the server is ready before running other tools
 - Diagnose auth errors from other tools
-- Discover where the encrypted session file lives on disk
-- Get setup instructions for a fresh install`;
+- Find out whether a refreshed cookie will survive a restart (\`cookiePersistence\`)`;
 
-const TOKEN_DESCRIPTION = `Save a pre-obtained Monarch Money session token to encrypted on-disk storage.
+const SET_COOKIE_DESCRIPTION = `Install a fresh Monarch Money session cookie — the fix when other tools report that the Monarch cookie expired.
+
+Monarch's web app authenticates with an HttpOnly session cookie. To get one: sign in at https://app.monarch.com, open DevTools → Network, select any request to api.monarch.com/graphql, and copy the whole value of its \`Cookie\` request header. A leading \`Cookie:\` and wrapping quotes are tolerated.
+
+The cookie is verified against Monarch FIRST (a \`me\` query); a cookie Monarch refuses is not saved anywhere. Once verified it is used immediately, and — when the deployment configured a write-back (on strad: the slug lists \`MONARCH_COOKIE\` under \`paramsWritable:\`) — persisted, so the next restart reads it too. The result says whether it was persisted.
+
+The cookie is a credential: it is never echoed back or logged.
+
+**Use cases:**
+- Restore access after the session cookie expires
+- Move the server from a pasted token to cookie auth`;
+
+const TOKEN_DESCRIPTION = `Save a pre-obtained Monarch Money bearer token to encrypted on-disk storage. Prefer \`set_session_cookie\`: Monarch's web app no longer exposes a token to copy, and \`MONARCH_COOKIE\` / \`MONARCH_SESSION_TOKEN\` in the environment take precedence over a stored token.
 
 The token is written to \`~/.monarch-money-mcp/session.enc\` (or \`MONARCH_STATE_DIR/session.enc\` when set), encrypted with AES-256-GCM. Once saved, all other tools will pick it up automatically — no env var configuration needed.
-
-This tool is for users who already have a valid session token. Most users should run the login script (\`npm run login\`) instead, which performs the email/password/TOTP exchange for you.
 
 The tool will validate the token by calling Monarch's \`me\` endpoint before saving. An invalid token returns an error and is not persisted.
 
@@ -48,7 +63,8 @@ The tool will validate the token by calling Monarch's \`me\` endpoint before sav
 
 export function authTools(
   clientFactory: ClientFactory,
-  sessionStore: SessionStore
+  sessionStore: SessionStore,
+  auth: MonarchAuthManager
 ): RegisteredTool[] {
   const StatusSchema = z.object({});
   const checkAuthentication: RegisteredTool = {
@@ -58,23 +74,65 @@ export function authTools(
     inputSchema: { type: 'object', properties: {}, required: [] },
     handler: async (args): Promise<ToolResult> => {
       StatusSchema.parse(args ?? {});
-      const path = sessionStore.path();
       try {
-        const session = await sessionStore.load();
-        if (!session || !session.token) {
-          return ok(buildSetupInstructions(path));
-        }
         const client = await clientFactory();
         const me = await client.whoami();
+        // Read AFTER the call: a refusal on the way may have re-logged-in, and
+        // what answers is the credential that is in use now.
+        const status = await auth.status();
         return okJSON({
           authenticated: true,
+          method: status.method,
+          source: status.source,
           email: me.email,
           id: me.id,
           name: me.name,
-          sessionPath: path,
-          obtainedAt: session.obtainedAt,
+          headlessLogin: status.headlessLogin,
+          totpSecret: status.totpSecret,
+          cookiePersistence: status.cookiePersistence,
+          ...(status.persistTarget ? { persistTarget: status.persistTarget } : {}),
         });
       } catch (err) {
+        return errorFromException(err);
+      }
+    },
+  };
+
+  const CookieSchema = z.object({
+    cookie: z.string().min(1),
+  });
+  const setSessionCookie: RegisteredTool = {
+    name: 'set_session_cookie',
+    description: SET_COOKIE_DESCRIPTION,
+    groups: ['manage'],
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cookie: {
+          type: 'string',
+          description:
+            'The whole value of the `Cookie` request header from a signed-in request to api.monarch.com.',
+        },
+      },
+      required: ['cookie'],
+    },
+    handler: async (args): Promise<ToolResult> => {
+      try {
+        const { cookie } = CookieSchema.parse(args ?? {});
+        const result = await auth.setCookie(cookie);
+        const durability = result.persisted
+          ? `Persisted${auth.persistTarget ? ` to ${auth.persistTarget}` : ''}, so it survives a restart.`
+          : result.persistNote;
+        return ok(
+          `Monarch accepted the cookie: authenticated as ${result.me.email} (id: ${result.me.id}). ` +
+            `It is in use now. ${durability}`
+        );
+      } catch (err) {
+        if (err instanceof MonarchAuthError) {
+          return errorResult(
+            `The cookie was NOT saved: ${authErrorMessage(err)}`
+          );
+        }
         return errorFromException(err);
       }
     },
@@ -149,28 +207,5 @@ export function authTools(
     },
   };
 
-  return [checkAuthentication, loginWithToken];
-}
-
-function buildSetupInstructions(sessionPath: string): string {
-  return (
-    `Not authenticated with Monarch Money.\n\n` +
-    `Encrypted session path: ${sessionPath}\n\n` +
-    `Option 1 — env-var session token (simplest, headless):\n` +
-    `  MONARCH_SESSION_TOKEN=<token>   Pasted token; resolved at startup, persisted to disk.\n\n` +
-    `Option 2 — env-var email + password (server-side login):\n` +
-    `  MONARCH_EMAIL=<email>\n` +
-    `  MONARCH_PASSWORD=<password>\n` +
-    `  MONARCH_TOTP=<code>             Required if your account has 2FA enabled.\n` +
-    `  MONARCH_EMAIL_OTP=<code>        Required on the first login from a new install.\n` +
-    `                                  Monarch will email you the code; provide it and restart.\n\n` +
-    `Option 3 — interactive CLI:\n` +
-    `  cd <server-package> && npm run login\n\n` +
-    `Option 4 — pass an existing token via tool:\n` +
-    `  Call the 'monarch_login_with_token' tool with token=<your-session-token>.\n\n` +
-    `Other environment variables:\n` +
-    `  MONARCH_SESSION_PASSPHRASE  Override the encryption passphrase (default: host+user).\n` +
-    `  MONARCH_STATE_DIR           Override the storage directory (default: ~/.monarch-money-mcp).\n\n` +
-    `After authenticating, call 'check_authentication' again to verify the session.`
-  );
+  return [checkAuthentication, setSessionCookie, loginWithToken];
 }
