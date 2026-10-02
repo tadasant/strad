@@ -426,7 +426,7 @@ jobs:
   #
   # The smoke test is the honest half. It lists tools from every mount of the
   # RUNNING container and asserts the full-capability counts (slack 13, tailscale
-  # 15, monarch 23, gmail 8, docs 11, calendar 7, 1Password 9, secrets 4, …).
+  # 15, monarch 24, gmail 8, docs 11, calendar 7, 1Password 9, secrets 4, …).
   # Those are the numbers the gateway's read-only allow-lists are carved out of, so
   # if an upstream grows a tool, this is where we find out — not in production. For
   # secrets the count is a security assertion: a FIFTH tool on a server whose

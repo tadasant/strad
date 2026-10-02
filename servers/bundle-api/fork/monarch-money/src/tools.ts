@@ -2,6 +2,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { ClientFactory } from './server.js';
 import type { SessionStore } from './monarch-client/session-store.js';
+import type { MonarchAuthManager } from './monarch-client/auth-manager.js';
 import { authTools } from './tools/auth.js';
 import { accountTools } from './tools/accounts.js';
 import { netWorthTools } from './tools/networth.js';
@@ -73,10 +74,14 @@ export function filterTools(tools: RegisteredTool[], config: ToolFilterConfig): 
   return filtered;
 }
 
-export function createRegisterTools(clientFactory: ClientFactory, sessionStore: SessionStore) {
+export function createRegisterTools(
+  clientFactory: ClientFactory,
+  sessionStore: SessionStore,
+  auth: MonarchAuthManager
+) {
   return (server: Server) => {
     const allTools: RegisteredTool[] = [
-      ...authTools(clientFactory, sessionStore),
+      ...authTools(clientFactory, sessionStore, auth),
       ...accountTools(clientFactory),
       ...netWorthTools(clientFactory),
       ...transactionReadTools(clientFactory),

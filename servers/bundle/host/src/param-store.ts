@@ -75,6 +75,13 @@ export function paramStoreFor(
 export interface RefreshableMount {
   slug: string;
   /**
+   * Gateway slugs this mount is served as when they are not `slug` — several
+   * slugs at one `path:` (monarch's `-readwrite` and `-readonly` at
+   * `/monarch-money`). A plan names gateway slugs, so without these the boot
+   * log would say no mount reads a variable that one does.
+   */
+  servedAs?: readonly string[];
+  /**
    * True when this mount reads its credential out of `process.env` late enough
    * that a refreshed value reaches it — a client built per request, rather than
    * one memoised at mount time.
@@ -110,7 +117,11 @@ export function startParamRefresh(opts: {
   if (plan.length === 0) return null;
 
   const seconds = paramRefreshSeconds(env);
-  const bySlug = new Map(opts.mounts.map((m) => [m.slug, m]));
+  const bySlug = new Map<string, RefreshableMount>();
+  for (const m of opts.mounts) {
+    for (const alias of m.servedAs ?? []) bySlug.set(alias, m);
+  }
+  for (const m of opts.mounts) bySlug.set(m.slug, m);
   const clientFor = opts.clientFor ?? ((slug: string) => paramStoreFor(slug, env));
 
   for (const target of plan) {

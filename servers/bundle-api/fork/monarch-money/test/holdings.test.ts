@@ -417,7 +417,7 @@ describe('get_accounts(includeHoldings: true)', () => {
 describe('graphql transport error classification', () => {
   test('classifies the real 400 from the broken query, locations and all', async () => {
     const transport = createGraphQLTransport({
-      token: 't',
+      credential: { method: 'token', token: 't', source: 'env' },
       fetchImpl: fetchReturning(
         ACCOUNT_HOLDINGS_400.status,
         ACCOUNT_HOLDINGS_400.statusText,
@@ -439,7 +439,7 @@ describe('graphql transport error classification', () => {
 
   test('a 400 with no GraphQL body is still a plain transport error', async () => {
     const transport = createGraphQLTransport({
-      token: 't',
+      credential: { method: 'token', token: 't', source: 'env' },
       fetchImpl: fetchReturning(400, 'Bad Request', '<html>nginx</html>'),
     });
 
@@ -450,7 +450,7 @@ describe('graphql transport error classification', () => {
 
   test('a 401 is an auth error before anything else', async () => {
     const transport = createGraphQLTransport({
-      token: 't',
+      credential: { method: 'token', token: 't', source: 'env' },
       fetchImpl: fetchReturning(401, 'Unauthorized', { errors: [{ message: 'nope' }] }),
     });
 
@@ -461,7 +461,7 @@ describe('graphql transport error classification', () => {
     // The reorder moved this shape from "throw at the parse" to "fall through
     // two later checks", so it is pinned rather than assumed.
     const transport = createGraphQLTransport({
-      token: 't',
+      credential: { method: 'token', token: 't', source: 'env' },
       fetchImpl: fetchReturning(200, 'OK', '<html>a login page</html>'),
     });
 
@@ -470,7 +470,7 @@ describe('graphql transport error classification', () => {
 
   test('a 5xx carrying GraphQL errors is classified too', async () => {
     const transport = createGraphQLTransport({
-      token: 't',
+      credential: { method: 'token', token: 't', source: 'env' },
       fetchImpl: fetchReturning(502, 'Bad Gateway', { errors: [{ message: 'upstream died' }] }),
     });
 
@@ -479,7 +479,7 @@ describe('graphql transport error classification', () => {
 
   test('a 200 with no data and no errors is an error, not an empty result', async () => {
     const transport = createGraphQLTransport({
-      token: 't',
+      credential: { method: 'token', token: 't', source: 'env' },
       fetchImpl: fetchReturning(200, 'OK', {}),
     });
 

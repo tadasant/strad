@@ -28,10 +28,21 @@ export {
   MonarchEmailOtpRequiredError,
   MonarchTotpRequiredError,
   MonarchLoginRejectedError,
+  MonarchCaptchaRequiredError,
   type LoginInput,
   type LoginResult,
 } from './monarch-client/auth.js';
 
-export { resolveSession, type AutoAuthOptions } from './auto-auth.js';
+export {
+  MonarchAuthManager,
+  type AuthManagerOptions,
+  type AuthStatus,
+} from './monarch-client/auth-manager.js';
+
+export {
+  normaliseCookieHeader,
+  mergeSetCookies,
+  type MonarchCredential,
+} from './monarch-client/credentials.js';
 
 export * from './types.js';

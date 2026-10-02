@@ -755,16 +755,35 @@ servers:
     path: /google-flights
     entitlements: [admin]
 
+  # Monarch's web app authenticates with an HttpOnly session cookie, so the
+  # durable credential is MONARCH_COOKIE: the whole `Cookie` request header of a
+  # signed-in request to api.monarch.com, copied from DevTools. It outranks
+  # MONARCH_SESSION_TOKEN, which is still honoured.
+  #
+  # As written, the cookie lives in this server's own namespace,
+  # /strad/{env}/mcp/monarch-money/static/MONARCH_COOKIE, and both lists below
+  # name it. paramsRefresh re-reads it into the running container, so a cookie
+  # rotated at /ui/secrets is used without a deploy. paramsWritable lets
+  # `set_session_cookie` (verified against Monarch first) and a session Monarch
+  # re-issues persist it back. MONARCH_COOKIE_SLUG tells the bundle host which
+  # slug's namespace that is. It defaults to `monarch-money-readwrite`, because
+  # a read-only and a read-write slug usually share this one path.
+  #
+  # Optional, best-effort headless re-login on a refused cookie (a CAPTCHA
+  # blocks it for some accounts; see limitation #110):
+  #   MONARCH_EMAIL, MONARCH_PASSWORD, MONARCH_TOTP_SECRET (the authenticator
+  #   seed), MONARCH_DEVICE_UUID (pins one trusted device across deploys).
   - slug: monarch-money
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
     bundle: bundle
     path: /monarch-money
     entitlements: [admin]
+    params: true
+    paramsRefresh: [MONARCH_COOKIE]
+    paramsWritable: [MONARCH_COOKIE]
     env:
-      # A session token, minted out-of-band. The server does not log in from
-      # credentials here.
-      MONARCH_SESSION_TOKEN: "${MONARCH_SESSION_TOKEN}"
+      MONARCH_COOKIE_SLUG: monarch-money
 
   # `title`/`description` are what a human sees in /console. GCS_BUCKET pins every
   # operation to one bucket — a literal value, not a secret, and it is also what
