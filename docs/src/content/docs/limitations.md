@@ -3180,7 +3180,7 @@ The rule assumes a box strad deploys to. This one is a personal laptop strad hol
 
 An unanswered consent dialog is a denial by default, so with nobody at the laptop every `request_control` fails with `timeout`. `consent.onTimeout: "allow"` changes that, and [the design page](/servers/hostd-design/#fail-closed-and-the-tension-with-the-original-ask) says what it costs.
 
-The macOS halves have not run anywhere but a bare CI runner: the `osascript` dialog, the LaunchAgents, the installer's `cloudflared` branch, and Chrome 144's debugging toggle against a real default profile. The two computer-use servers add steps of their own; see #108.
+The macOS halves have not run anywhere but a bare CI runner: the `osascript` dialog, the LaunchAgents, the installer's `cloudflared` branch, and Chrome 144's debugging toggle against a real default profile. The two computer-use servers add steps of their own; see #108. The Chrome extension adds one more, and the trade-off that goes with it; see #111.
 
 **How you would know.** `troubleshoot_host` reports `offline` when the daemon, the tunnel or the laptop is down, and also when the owner has switched remote control off. `http://127.0.0.1:7312` on the machine says which.
 

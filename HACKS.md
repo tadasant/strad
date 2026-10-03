@@ -5299,7 +5299,8 @@ design defect, and this entry is the marker that rule asks for:
   LaunchAgent and runs `cloudflared tunnel login`, which opens a browser.
 - macOS TCC prompts ("node would like to access files in your Documents
   folder") can only be answered at the screen.
-- Chrome's remote debugging is a toggle at `chrome://inspect/#remote-debugging`.
+- Chrome's remote debugging is a toggle at `chrome://inspect/#remote-debugging`,
+  or the extension of #111, installed from `chrome://extensions` or a profile.
 - The Cloudflare Access application and its service token are made in
   Cloudflare's dashboard.
 - An upgrade is `git pull` and the install script again.
