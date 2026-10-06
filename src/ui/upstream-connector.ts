@@ -20,7 +20,10 @@ import {
   clientSource,
   completeUpstreamAuthorization,
   discoverUpstream,
+  checkTokenEndpoint,
   heldVariables,
+  parseSuppliedDocument,
+  protectedResourceCandidates,
   registerPublicClient,
   shown,
   storeUpstreamWrites,
@@ -32,6 +35,7 @@ import {
   upstreamPlan,
   upstreamWrites,
   type ClientSource,
+  type MetadataDocument,
   type UpstreamConnector,
   type UpstreamPlan,
   type UpstreamTerms,
@@ -43,6 +47,11 @@ import {
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
 import { storeForPath } from "./store-client.ts";
+import {
+  BRIGHTDATA_KEY_VARIABLE,
+  brightDataFetch,
+  proxiedOn403,
+} from "../connectors/discovery-proxy.ts";
 import {
   clientReadDetail,
   clientReadFailure,
@@ -161,8 +170,14 @@ export async function readUpstreamState(
 // POST /ui/:server/connect
 // ---------------------------------------------------------------------------
 
+/** The Connect form's two optional fields: metadata a human pasted. */
+const PASTE_FIELDS = {
+  resource: "resource_metadata",
+  authorizationServer: "authorization_server_metadata",
+} as const;
+
 export async function handleUpstreamConnect(
-  _req: Request,
+  req: Request,
   res: Response,
   opts: ConnectorUiOptions,
   entry: UpstreamConnector,
@@ -171,6 +186,21 @@ export async function handleUpstreamConnect(
   const slug = entry.server.slug;
   const plan = upstreamPlan(entry);
 
+  // What was pasted, raw, so a refusal can hand it back in the form rather
+  // than make a human fetch and paste it again. Re-rendered escaped, into a
+  // page only this signed-in human sees; never logged or evented.
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const pasted = {
+    resource:
+      typeof body[PASTE_FIELDS.resource] === "string"
+        ? (body[PASTE_FIELDS.resource] as string)
+        : "",
+    authorizationServer:
+      typeof body[PASTE_FIELDS.authorizationServer] === "string"
+        ? (body[PASTE_FIELDS.authorizationServer] as string)
+        : "",
+  };
+
   // 409 AND NEVER A 5xx, rendered in place: see `handleConnect` for why the
   // App Platform edge makes that a rule. Every one is an event.
   const refuse = async (
@@ -178,6 +208,7 @@ export async function handleUpstreamConnect(
     message: string,
     state?: UpstreamState,
     detail: Record<string, string | number> = {},
+    blocked?: { document: MetadataDocument; url: string },
   ): Promise<void> => {
     connectFailed("begin", slug, reason, detail);
     await renderUpstreamConnectorPage(res, opts, entry, {
@@ -185,6 +216,9 @@ export async function handleUpstreamConnect(
       status: 409,
       state,
       flash: { tone: "error", message },
+      ...(blocked || pasted.resource || pasted.authorizationServer
+        ? { paste: { values: pasted, ...(blocked ? { blocked } : {}) } }
+        : {}),
     });
   };
 
@@ -211,10 +245,30 @@ export async function handleUpstreamConnect(
   // of these two.
   const redirectUri = connectorRedirectUri(opts.config)!;
   const fetchImpl = opts.connectorFetch ?? fetch;
+  const proxy = entry.oauth.discoveryProxy;
+  const metadataFetch = proxy
+    ? proxiedOn403(
+        fetchImpl,
+        brightDataFetch(
+          {
+            apiKey: proxyKeyReader(opts, proxy.apiKeyFrom ?? slug),
+            zone: proxy.zone,
+          },
+          fetchImpl,
+        ),
+      )
+    : undefined;
 
   let terms: UpstreamTerms;
   let scopes: string[];
   try {
+    const supplied = {
+      resource: parseSuppliedDocument(pasted.resource, "resource"),
+      authorizationServer: parseSuppliedDocument(
+        pasted.authorizationServer,
+        "authorization_server",
+      ),
+    };
     const discovery = await discoverUpstream(
       {
         upstreamUrl: plan.url!,
@@ -222,6 +276,8 @@ export async function handleUpstreamConnect(
           ? { resourceOverride: plan.resource.value }
           : {}),
         scopes: plan.scopes,
+        supplied,
+        ...(metadataFetch ? { metadataFetch } : {}),
       },
       fetchImpl,
     );
@@ -244,6 +300,11 @@ export async function handleUpstreamConnect(
           `registered or written.`,
       );
     }
+
+    // The exchange and every refresh go here from strad's egress. A firewall
+    // in front of it is fatal however the metadata was read, so it is asked
+    // before anything is registered and before anyone signs in.
+    await checkTokenEndpoint(discovery.tokenEndpoint, fetchImpl);
 
     let source: ClientSource | null = clientSource(
       plan,
@@ -369,6 +430,7 @@ export async function handleUpstreamConnect(
         err.message,
         state,
         err.status === undefined ? {} : { status: err.status },
+        err.blocked,
       );
       return;
     }
@@ -377,6 +439,66 @@ export async function handleUpstreamConnect(
     // upstream's words, and the catch of last resort handles it.
     throw err;
   }
+}
+
+/**
+ * The discovery proxy's API key, read once, on first use, from the `apiKeyFrom`
+ * slug's own namespace (`oauth/` then `static/`) with the console's admin
+ * credential — the same store read a seeded client id takes. Every failure is
+ * `proxy_key_unreadable`, naming where the key was looked for and never what
+ * the store said.
+ */
+function proxyKeyReader(
+  opts: ConnectorUiOptions,
+  keySlug: string,
+): () => Promise<string> {
+  let once: Promise<string> | undefined;
+  const where = staticNamespace(opts.config.gateway.env, keySlug);
+  const refuse = (why: string) =>
+    new UpstreamConnectError(
+      "proxy_key_unreadable",
+      `A metadata document answered strad 403 and this server reads it through ` +
+        `BrightData, but ${why} Seed ${BRIGHTDATA_KEY_VARIABLE} under ${where} ` +
+        `(the console's Secrets page), or paste the document below. Nothing ` +
+        `was registered or written.`,
+    );
+  const read = async (): Promise<string> => {
+    const prefix = `/strad/${opts.config.gateway.env}/mcp/${keySlug}/`;
+    const resolved = storeForPath(
+      opts.config,
+      opts.secrets,
+      `${where}${BRIGHTDATA_KEY_VARIABLE}`,
+      { parametersStore: opts.parametersStore },
+    );
+    if (!resolved.store) {
+      throw refuse(`no parameter store reaches ${prefix}.`);
+    }
+    let metas: ParameterMeta[];
+    try {
+      metas = await resolved.store.list(prefix);
+    } catch {
+      throw refuse(`strad could not list ${prefix}.`);
+    }
+    const meta = heldVariables(opts.config, keySlug, metas).get(
+      BRIGHTDATA_KEY_VARIABLE,
+    );
+    if (!meta) {
+      throw refuse(
+        `${BRIGHTDATA_KEY_VARIABLE} is not seeded for "${keySlug}".`,
+      );
+    }
+    let value: string;
+    try {
+      value = await resolved.store.reveal(meta.path);
+    } catch {
+      throw refuse(`strad could not read ${meta.path}.`);
+    }
+    if (value.trim() === "") {
+      throw refuse(`${meta.path} is empty.`);
+    }
+    return value.trim();
+  };
+  return () => (once ??= read());
 }
 
 // ---------------------------------------------------------------------------
@@ -540,6 +662,75 @@ export interface UpstreamPageExtras {
   status?: number;
   flash?: { tone: "ok" | "error"; message: string };
   state?: UpstreamState;
+  /**
+   * The pasted-metadata form, opened: what was posted, and the document strad
+   * was refused, when that is why it is open.
+   */
+  paste?: {
+    values: { resource: string; authorizationServer: string };
+    blocked?: { document: MetadataDocument; url: string };
+  };
+}
+
+/**
+ * The form for a Connect whose metadata strad cannot read itself.
+ *
+ * Closed until something asks for it — a `metadata_blocked` refusal, or a
+ * paste that was itself refused — because for an upstream that answers strad
+ * it is noise. The address in each label is one strad validated, the one it
+ * was refused at; a human opens it in their own browser, where the firewall's
+ * view of a cloud provider's egress does not apply.
+ */
+function pasteForm(
+  action: string,
+  upstreamUrl: string,
+  paste: UpstreamPageExtras["paste"],
+): string {
+  const values = paste?.values ?? { resource: "", authorizationServer: "" };
+  const blocked = paste?.blocked;
+  const resourceUrl =
+    blocked?.document === "resource"
+      ? blocked.url
+      : (() => {
+          try {
+            return protectedResourceCandidates(upstreamUrl)[0]!;
+          } catch {
+            return null;
+          }
+        })();
+  const asUrl =
+    blocked?.document === "authorization_server" ? blocked.url : null;
+  const link = (url: string) =>
+    `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer"><code>${esc(shown(url))}</code></a>`;
+  const open = paste !== undefined;
+  return `
+<section class="panel">
+  <details${open ? " open" : ""}>
+    <summary><h2 style="display:inline">Connect with metadata you paste</h2>
+      <span class="panel-note">for an upstream whose firewall blocks this deployment</span></summary>
+    <p class="field-h">Discovery reads two public documents. When a firewall refuses them to this
+      deployment's cloud addresses, read them in your own browser instead and paste them here. strad
+      checks a pasted document the way it checks a fetched one, and still makes the registration,
+      the code exchange and every refresh itself — so it first checks the token endpoint answers it.</p>
+    <form method="post" action="${esc(action)}" style="display:grid;gap:1rem">
+      <label class="field">
+        <span class="field-l">Protected-resource metadata</span>
+        <span class="field-h">${resourceUrl ? `Open ${link(resourceUrl)} and paste the whole JSON.` : "The upstream's RFC 9728 document."}</span>
+        <textarea class="in" name="${PASTE_FIELDS.resource}" rows="6" spellcheck="false" style="width:100%">${esc(values.resource)}</textarea>
+      </label>
+      <label class="field">
+        <span class="field-l">Authorization server metadata <em>(optional)</em></span>
+        <span class="field-h">${
+          asUrl
+            ? `strad was refused ${link(asUrl)} too. Open it and paste the whole JSON.`
+            : "Only if strad then reports this one blocked as well; it names the address."
+        }</span>
+        <textarea class="in" name="${PASTE_FIELDS.authorizationServer}" rows="6" spellcheck="false" style="width:100%">${esc(values.authorizationServer)}</textarea>
+      </label>
+      <div><button class="btn btn-primary">Connect with this metadata</button></div>
+    </form>
+  </details>
+</section>`;
 }
 
 function describeField(
@@ -683,12 +874,20 @@ ${button(
 
 ${flash}
 ${statusBlock}
+${state.kind === "ready" || state.kind === "connected" ? pasteForm(action, entry.server.url, extras.paste) : ""}
 
 <section class="panel">
   <div class="panel-head"><h2>What Connect does</h2>
     <span class="panel-note">MCP authorization · discovered, not configured</span></div>
   <ol class="scope-list">
-    <li>Asks <code>${esc(entry.server.url)}</code> for its protected-resource metadata (RFC 9728), and that names the authorization server (RFC 8414).</li>
+    <li>Asks <code>${esc(entry.server.url)}</code> for its protected-resource metadata (RFC 9728), and that names the authorization server (RFC 8414).${
+      entry.oauth.discoveryProxy
+        ? ` A document that answers strad 403 is read again through BrightData, a third-party proxy, with
+      <code>${esc(BRIGHTDATA_KEY_VARIABLE)}</code> from <code>${esc(
+        entry.oauth.discoveryProxy.apiKeyFrom ?? slug,
+      )}</code>'s namespace. Only those two public documents go through it.`
+        : ""
+    }</li>
     <li>Uses ${clientLine}, with the redirect URI below.</li>
     <li>Sends you to sign in, with PKCE and <code>resource=</code> (RFC 8707), asking for ${
       plan.scopes

@@ -648,6 +648,42 @@ const ServerBase = z.object({
 });
 
 /**
+ * `oauthRefresh.discoveryProxy:` — read the upstream's OAuth metadata through a
+ * third-party unblocking proxy, for an upstream whose firewall refuses this
+ * deployment's cloud egress on its discovery documents only.
+ *
+ *     oauthRefresh:
+ *       ...
+ *       discoveryProxy:
+ *         via: brightdata
+ *         apiKeyFrom: strad-fetch
+ *
+ * It covers the console Connect's metadata GETs and NOTHING else: the
+ * protected-resource document and the authorization server's. Those are
+ * public and carry no credential. The MCP probe, the client registration, the
+ * code exchange and every refresh still go out from strad directly — a code or
+ * a refresh token through a third party is a credential handed to it — and
+ * Connect checks the token endpoint answers strad before anyone signs in.
+ *
+ * It is a workaround for the upstream's bot protection, and it sends the
+ * upstream's metadata URLs to the proxy. Opt in per slug, deliberately.
+ * See src/connectors/discovery-proxy.ts.
+ */
+const DiscoveryProxySchema = z.object({
+  /** The proxy. BrightData's Web Unlocker request API is the one strad speaks. */
+  via: z.literal("brightdata"),
+  /**
+   * The slug whose own namespace holds `BRIGHTDATA_API_KEY` — `strad-fetch`,
+   * which already escalates to BrightData, so one key serves both. Defaults to
+   * this server. The console reads it with its admin credential at Connect
+   * time; no running server is handed it.
+   */
+  apiKeyFrom: z.string().min(1).optional(),
+  /** The Web Unlocker zone. strad-fetch's own is the default. */
+  zone: z.string().min(1).default("mcp_server_unlocker"),
+});
+
+/**
  * `oauthRefresh:` — this upstream takes short-lived OAuth access tokens, and
  * strad holds the refresh token that mints them.
  *
@@ -694,6 +730,8 @@ const OAuthRefreshSchema = z.object({
    * Omit for a provider that does not know the parameter.
    */
   resource: z.string().min(1).optional(),
+  /** Read Connect's metadata through a proxy. See {@link DiscoveryProxySchema}. */
+  discoveryProxy: DiscoveryProxySchema.optional(),
 });
 
 /**
@@ -1912,6 +1950,17 @@ export const StradConfig = z
           `sets oauthRefresh.tokenUrl to "${o.tokenUrl}". It must be an https ` +
             `URL (plain http is allowed only for a loopback host): the refresh ` +
             `token travels in the request body.`,
+        );
+      }
+      const keyFrom = o.discoveryProxy?.apiKeyFrom;
+      if (
+        keyFrom !== undefined &&
+        !cfg.servers.some((other) => other.slug === keyFrom)
+      ) {
+        issue(
+          `sets oauthRefresh.discoveryProxy.apiKeyFrom to "${keyFrom}", which ` +
+            `is not a configured server. It names the slug whose own ` +
+            `namespace holds BRIGHTDATA_API_KEY.`,
         );
       }
       if (variable !== null && s.enabled) {

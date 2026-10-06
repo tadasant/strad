@@ -314,6 +314,26 @@ servers:
   #     refreshToken: ${GRANOLA_REFRESH_TOKEN}
   #     resource: https://mcp.granola.ai/mcp
   #   mayBeUnseeded: [GRANOLA_REFRESH_TOKEN]
+  #
+  # An upstream whose firewall serves strad's cloud egress a 403 on its OAuth
+  # metadata (Rippling's does) can have Connect re-read just those two public
+  # documents through BrightData. It works around the upstream's bot
+  # protection, so opt in per slug. Registration, the exchange and every
+  # refresh still go out from strad. The key is BRIGHTDATA_API_KEY in
+  # apiKeyFrom's namespace.
+  #
+  # - slug: rippling
+  #   kind: remote-http
+  #   url: https://mcp.rippling.com/mcp
+  #   entitlements: [admin]
+  #   oauthRefresh:
+  #     tokenUrl: ${RIPPLING_TOKEN_URL}
+  #     clientId: ${RIPPLING_CLIENT_ID}
+  #     refreshToken: ${RIPPLING_REFRESH_TOKEN}
+  #     resource: ${RIPPLING_RESOURCE}
+  #     discoveryProxy: { via: brightdata, apiKeyFrom: strad-fetch }
+  #   mayBeUnseeded:
+  #     [RIPPLING_TOKEN_URL, RIPPLING_CLIENT_ID, RIPPLING_REFRESH_TOKEN, RIPPLING_RESOURCE]
 
   # --- kind: local-tunnel ---------------------------------------------------
   # An MCP server running on a machine YOU own — a laptop, a desktop — reached

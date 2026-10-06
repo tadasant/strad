@@ -1,3 +1,4 @@
+import express from "express";
 import type { Express, Request, RequestHandler, Response } from "express";
 import type { StradConfig } from "../config/schema.ts";
 import { asyncRoute } from "../http/async-route.ts";
@@ -161,6 +162,12 @@ export function mountConnector(
     `${SERVER_ROUTE}/connect`,
     gate,
     refuseTokenSession,
+    // After both locks, and scoped to this route so it cannot change how /mcp
+    // parses a body. The one form that posts fields is a `remote-http`
+    // Connect's pasted metadata (src/ui/upstream-connector.ts); an
+    // authorization server listing hundreds of scopes is tens of kilobytes,
+    // and form encoding inflates it.
+    express.urlencoded({ extended: false, limit: "256kb" }),
     asyncRoute((req, res) => handleConnect(req, res, opts), renderUnexpected),
   );
 
