@@ -213,7 +213,11 @@ export async function startFakeOAuth(
     });
     if (auth.tokenBlocked) {
       app.get("/token", (_req, res) => {
-        res.status(403).type("html").send("<html>blocked</html>");
+        res
+          .status(403)
+          .set("cf-ray", "8a1b2c3d4e5f-EWR")
+          .type("html")
+          .send("<html>blocked</html>");
       });
     }
     app.post("/register", express.json(), (req: Request, res: Response) => {

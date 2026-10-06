@@ -585,11 +585,13 @@ What happens behind the button, in order:
    drops the process's cached reading of the store, and the minter takes the new
    lineage on the next request.
 
-Between steps 1 and 2, strad GETs the token endpoint once. A `403` page there
-(`token_endpoint_blocked`) means the code exchange and every refresh would be
-refused too, so Connect stops before it registers a client or sends anyone to
-sign in. An OAuth server answers that GET with an error of its own, usually a
-`405` or a `400`, and Connect carries on.
+Between steps 1 and 2, strad GETs the token endpoint once. A `403` page signed
+by a firewall (`cf-ray`, `cf-mitigated` or `server: cloudflare`, or
+`server: AkamaiGHost`) is `token_endpoint_blocked`. It means the code exchange
+and every refresh would be refused too, so Connect stops before it registers a
+client or sends anyone to sign in. Anything else passes: an OAuth server answers
+that GET with an error of its own, usually a `405` or a `400`, and a `403` page
+nobody signed is what an ordinary server sends a GET on a POST-only path.
 
 A literal `tokenUrl` that is not the discovered token endpoint is refused before
 anything is registered: a refresh token minted at one endpoint and spent at
@@ -612,8 +614,13 @@ paste** form on the page. It links the document strad was refused. Open it in
 your own browser, copy the whole JSON into the box, and submit. If the
 authorization server's document is refused next, the page links that one and
 keeps what you already pasted. strad checks a pasted document the way it checks a
-fetched one: `resource` must cover the upstream, the issuer must match, every
-endpoint must be https, and S256 must be offered.
+fetched one, and more strictly. A fetched document may omit `resource` or
+`issuer`, but a pasted one must carry both, because nothing but its own text
+vouches for it. `resource` must cover the upstream, the issuer must be the one
+the protected-resource document names, every endpoint must be https, and S256
+must be offered when methods are listed. It still cannot tell you whether the
+endpoints a pasted document names are the upstream's real ones. Paste only what
+the linked address showed you.
 
 **Proxy.** With `oauthRefresh.discoveryProxy:`, a metadata document that answers
 strad `403` is read again through BrightData's Web Unlocker, so the button stays
@@ -633,7 +640,9 @@ strad. The proxy accepts GET only, so no code, client or token goes through it.
 This sends the upstream's metadata URLs to a third party and gets around the
 upstream's bot protection, which is why it is opt-in per slug. Its refusals are
 `proxy_key_unreadable` (no key where `apiKeyFrom` points) and `proxy_failed`
-(BrightData itself said no, or answered without the target's status).
+(BrightData itself said no, or answered without the target's status). An
+unblocking proxy can take tens of seconds per document, so each metadata read on
+such a slug gets 60 seconds rather than discovery's usual 10.
 
 ### What it refuses, and how it says so
 
@@ -645,7 +654,7 @@ words, with nothing registered or written. The one that matters most:
   refusing the deployment's egress. Rippling's Cloudflare does exactly this to a
   DigitalOcean address. The page names the URL and the status, and opens the
   paste form linking it.
-- **`token_endpoint_blocked`.** The token endpoint answered a `403` page. Nothing
+- **`token_endpoint_blocked`.** The token endpoint answered a firewall's `403` page. Nothing
   above helps: the refresh runs from strad on every expiry, so the upstream has to
   allow the deployment's egress.
 

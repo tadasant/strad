@@ -64,6 +64,27 @@ describe("brightDataFetch", () => {
       bd(() => Response.json({ status_code: 404, body: "nope" })).f,
     );
     expect((await notFound(TARGET)).status).toBe(404);
+
+    // Statuses the Fetch API cannot carry a body for, or at all, still answer.
+    for (const [given, seen] of [
+      [205, 205],
+      [304, 304],
+      [101, 502],
+      [700, 502],
+    ] as const) {
+      const p = brightDataFetch(
+        { apiKey: key, zone: "z" },
+        bd(() => Response.json({ status_code: given, body: "x" })).f,
+      );
+      expect((await p(TARGET)).status).toBe(seen);
+    }
+    const fractional = brightDataFetch(
+      { apiKey: key, zone: "z" },
+      bd(() => Response.json({ status_code: 200.5, body: "{}" })).f,
+    );
+    await expect(fractional(TARGET)).rejects.toMatchObject({
+      code: "proxy_failed",
+    });
   });
 
   it("refuses anything but a GET, before the proxy is asked", async () => {

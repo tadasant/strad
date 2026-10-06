@@ -85,6 +85,13 @@ export const UPSTREAM_PROVIDER = "mcp";
 /** Each discovery request's deadline. The token exchange keeps its own. */
 export const DISCOVERY_TIMEOUT_MS = 10_000;
 
+/**
+ * A metadata read's deadline when it may go through `discoveryProxy:` — the
+ * direct attempt, the key read and an unblocking proxy that solves the
+ * upstream's challenge, which routinely takes tens of seconds on its own.
+ */
+export const PROXIED_DISCOVERY_TIMEOUT_MS = 60_000;
+
 type RemoteHttp = Extract<ServerConfig, { kind: "remote-http" }>;
 
 /** A `remote-http` server with `oauthRefresh:`, narrowed. */
@@ -326,9 +333,10 @@ async function getJson(
   url: string,
   fetchImpl: typeof fetch,
   allowed: (url: string) => boolean,
+  timeoutMs: number = DISCOVERY_TIMEOUT_MS,
 ): Promise<Fetched> {
   return withRequestDeadline(
-    DISCOVERY_TIMEOUT_MS,
+    timeoutMs,
     async (signal) => {
       let res: Response;
       try {
@@ -369,7 +377,10 @@ async function getJson(
     () =>
       new UpstreamConnectError(
         "upstream_unreachable",
-        `${shown(url)} did not answer within ${DISCOVERY_TIMEOUT_MS / 1000}s. ` +
+        `${shown(url)} did not answer within ${timeoutMs / 1000}s` +
+          (timeoutMs === DISCOVERY_TIMEOUT_MS
+            ? `. `
+            : `, counting a read through this server's discovery proxy. `) +
           `Nothing was registered or written.`,
       ),
   );
@@ -439,6 +450,25 @@ export function parseSuppliedDocument(
 }
 
 /**
+ * Does this answer carry a web application firewall's own marks?
+ *
+ * A plain 403 page to a bare GET is also what an ordinary server sends for a
+ * POST-only path, so the token check refuses only on a 403 a firewall signed:
+ * Cloudflare's `cf-ray` / `cf-mitigated` / `server: cloudflare`, or Akamai's
+ * `server: AkamaiGHost`. A firewall that signs nothing passes, and the
+ * consent's own exchange is where it shows.
+ */
+function firewallAnswer(res: Response): boolean {
+  const server = (res.headers.get("server") ?? "").toLowerCase();
+  return (
+    res.headers.has("cf-ray") ||
+    res.headers.has("cf-mitigated") ||
+    server === "cloudflare" ||
+    server.startsWith("akamaighost")
+  );
+}
+
+/**
  * Does the token endpoint answer this deployment at all?
  *
  * Asked BEFORE a human is sent to sign in, because the code exchange and every
@@ -448,9 +478,10 @@ export function parseSuppliedDocument(
  *
  * The question is a bare GET: no grant, no client, nothing a token endpoint
  * would act on. A token endpoint answers it 405, 400 or 404, often as JSON. A
- * firewall answers it with a 403 page, and a 403 that is not JSON is the only
- * answer that refuses here — anything else means the deployment reached the
- * server behind the address, which is all this can tell.
+ * firewall answers it with a 403 page, and a non-JSON 403 carrying a
+ * firewall's marks (`firewallAnswer`) is the only answer that refuses here —
+ * anything else means the deployment reached the server behind the address,
+ * which is all this can tell.
  */
 export async function checkTokenEndpoint(
   tokenEndpoint: string,
@@ -488,7 +519,7 @@ export async function checkTokenEndpoint(
       ),
   );
   const type = res.headers.get("content-type") ?? "";
-  if (res.status === 403 && !/json/i.test(type)) {
+  if (res.status === 403 && !/json/i.test(type) && firewallAnswer(res)) {
     throw new UpstreamConnectError(
       "token_endpoint_blocked",
       `The token endpoint ${where} answered HTTP 403 to strad with a page, ` +
@@ -715,6 +746,9 @@ export async function discoverUpstream(
   const { upstreamUrl } = input;
   const allowed = (url: string) => endpointAllowed(upstreamUrl, url);
   const metadataFetch = input.metadataFetch ?? fetchImpl;
+  const metadataTimeout = input.metadataFetch
+    ? PROXIED_DISCOVERY_TIMEOUT_MS
+    : DISCOVERY_TIMEOUT_MS;
   const first = await probe(upstreamUrl, fetchImpl);
 
   // THE PROTECTED-RESOURCE DOCUMENT. The challenge's own pointer first, then
@@ -742,9 +776,25 @@ export async function discoverUpstream(
     // first well-known path. Named so every refusal below can say which.
     prm = input.supplied.resource;
     prmUrl = candidates[0]!;
+    // A fetched document is vouched for by the address it came from; a pasted
+    // one only by what it says. So the fields a fetched one MAY omit, a pasted
+    // one must carry, and every check below that hangs on them then runs.
+    if (typeof prm.resource !== "string" || prm.resource === "") {
+      throw new UpstreamConnectError(
+        "metadata_invalid",
+        `The pasted protected-resource metadata names no resource, so strad ` +
+          `cannot check it describes ${shown(upstreamUrl)}. Paste the whole ` +
+          `document. Nothing was registered or written.`,
+      );
+    }
   }
   for (const candidate of prm ? [] : candidates) {
-    const got = await getJson(candidate, metadataFetch, allowed);
+    const got = await getJson(
+      candidate,
+      metadataFetch,
+      allowed,
+      metadataTimeout,
+    );
     if (got.status === 404 || got.status === 410) continue;
     if (got.status === 401 || got.status === 403) {
       throw blocked(candidate, got.status, "resource");
@@ -823,12 +873,27 @@ export async function discoverUpstream(
   const asCandidates = authorizationServerCandidates(issuer);
   let asMeta: Record<string, unknown> | null = null;
   let asUrl = "";
+  let sawPage = false;
   if (input.supplied?.authorizationServer) {
     asMeta = input.supplied.authorizationServer;
     asUrl = asCandidates[0]!;
+    if (typeof asMeta.issuer !== "string" || asMeta.issuer === "") {
+      throw new UpstreamConnectError(
+        "metadata_invalid",
+        `The pasted authorization server metadata names no issuer, so strad ` +
+          `cannot check it belongs to ${shown(issuer)}, the server the ` +
+          `upstream points at. Paste the whole document. Nothing was ` +
+          `registered or written.`,
+      );
+    }
   }
   for (const candidate of asMeta ? [] : asCandidates) {
-    const got = await getJson(candidate, metadataFetch, allowed);
+    const got = await getJson(
+      candidate,
+      metadataFetch,
+      allowed,
+      metadataTimeout,
+    );
     if (got.status === 404 || got.status === 410) continue;
     if (got.status === 401 || got.status === 403) {
       throw blocked(candidate, got.status, "authorization_server");
@@ -845,7 +910,10 @@ export async function discoverUpstream(
     // hold it. Single-page apps answer every unknown path with their HTML
     // shell: app.rippling.com serves one at the RFC 8414 path and its real
     // document at the OpenID Connect one.
-    if (!got.json || typeof got.json !== "object") continue;
+    if (!got.json || typeof got.json !== "object") {
+      sawPage = true;
+      continue;
+    }
     asMeta = got.json as Record<string, unknown>;
     asUrl = candidate;
     break;
@@ -854,9 +922,12 @@ export async function discoverUpstream(
     throw new UpstreamConnectError(
       "metadata_unavailable",
       `The authorization server ${shown(issuer)} publishes no metadata at any ` +
-        `of the RFC 8414 or OpenID Connect well-known paths. Nothing was ` +
-        `registered or written.`,
-      404,
+        `of the RFC 8414 or OpenID Connect well-known paths` +
+        (sawPage
+          ? ` — at least one answered with a page rather than a JSON document. `
+          : `. `) +
+        `Nothing was registered or written.`,
+      sawPage ? undefined : 404,
     );
   }
 

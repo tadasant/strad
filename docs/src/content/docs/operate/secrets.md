@@ -1565,6 +1565,14 @@ process's cached reading, so the next request is served with no redeploy. A
 token by hand in `/ui/secrets` still works and is rotated where it was seeded. See
 [Connectors](/operate/connectors/#remote-http-with-oauthrefresh-connect-an-upstream-mcp-server).
 
+A slug with `oauthRefresh.discoveryProxy:` has Connect read one more value, and
+only when a metadata document answered strad `403`: `BRIGHTDATA_API_KEY`, from
+the `apiKeyFrom` slug's own `oauth/` then `static/` namespace, through the
+console's admin credential. On prod that is the key `strad-fetch` already holds,
+so there is nothing new to seed. It is read at Connect time and never put on any
+server's environment, so it adds nothing to the deploy gate. See
+[Connectors](/operate/connectors/#blocked-metadata-paste-it-or-proxy-it).
+
 ## Migrating
 
 `envFallback: true` (the default) puts the environment behind the store, so names

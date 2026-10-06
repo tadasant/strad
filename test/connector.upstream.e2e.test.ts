@@ -716,6 +716,14 @@ describe("metadata a human pasted, for an upstream that blocks strad's egress", 
     expect(html).toContain("is not a JSON object");
     expect(html).not.toContain("<b>not json</b>");
     expect(html).toContain("&lt;b&gt;not json&lt;/b&gt;");
+
+    // A paste that tries to close the textarea is handed back inert.
+    const hostile = await connect(h, {
+      resource_metadata: "</textarea><script>alert(1)</script>",
+    });
+    const back = await hostile.text();
+    expect(back).not.toContain("<script>alert(1)</script>");
+    expect(back).toContain("&lt;/textarea&gt;&lt;script&gt;");
     expect(h.oauth.registrations).toHaveLength(0);
     expect(await listed(h.fake, OAUTH_NS)).toEqual([]);
   });

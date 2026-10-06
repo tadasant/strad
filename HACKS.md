@@ -5739,7 +5739,8 @@ the process's cached reading.
   the two metadata GETs and nothing else:
   - **Pasted metadata.** A `metadata_blocked` refusal opens a form on the page
     that links the refused document; a human opens it in their own browser and
-    pastes the JSON. strad checks it as if it had fetched it. Manual: two
+    pastes the JSON. strad checks it as if it had fetched it, and also
+    requires its `resource` and `issuer`. Manual: two
     copy-pastes on a blocked upstream.
   - **`oauthRefresh.discoveryProxy: { via: brightdata }`.** A document that
     answers strad `403` is re-read through BrightData's Web Unlocker, with
@@ -5750,7 +5751,8 @@ the process's cached reading.
     method but GET.
     Registration, the code exchange and every refresh still go out from strad.
     Connect GETs the token endpoint first and refuses (`token_endpoint_blocked`)
-    on a non-JSON `403`, before anything is registered or anyone signs in: a
+    on a non-JSON `403` a firewall signed (`cf-ray`, `server: cloudflare`,
+    `AkamaiGHost`), before anything is registered or anyone signs in: a
     firewall there means no refresh would ever succeed, and neither workaround
     helps.
 - The transaction cookie is HMAC-signed, not encrypted, so a client strad

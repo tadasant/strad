@@ -1,4 +1,4 @@
-import { UpstreamConnectError } from "./upstream.ts";
+import { shown, UpstreamConnectError } from "./upstream.ts";
 
 /**
  * `oauthRefresh.discoveryProxy: { via: brightdata }` — a `fetch` for Connect's
@@ -76,7 +76,7 @@ export function brightDataFetch(
       await res.body?.cancel().catch(() => undefined);
       throw new UpstreamConnectError(
         "proxy_failed",
-        `BrightData would not fetch ${url} for strad (HTTP ${res.status}). ` +
+        `BrightData would not fetch ${shown(url)} for strad (HTTP ${res.status}). ` +
           `A 401 or 403 there is the API key or the zone, not the upstream. ` +
           `Nothing was registered or written.`,
         res.status,
@@ -92,26 +92,28 @@ export function brightDataFetch(
       status_code?: unknown;
       body?: unknown;
     } | null;
-    if (!e || typeof e.status_code !== "number") {
+    if (
+      !e ||
+      typeof e.status_code !== "number" ||
+      !Number.isInteger(e.status_code)
+    ) {
       throw new UpstreamConnectError(
         "proxy_failed",
-        `BrightData answered for ${url} without the target's status, so strad ` +
+        `BrightData answered for ${shown(url)} without the target's status, so strad ` +
           `cannot tell a document from a refusal. Nothing was registered or ` +
           `written.`,
       );
     }
     const body = typeof e.body === "string" ? e.body : "";
-    // The target's status, and its body as the body. No `url` on the answer:
-    // the proxy does not follow redirects for strad, so there is no final
-    // address to check beyond the one asked for, which discovery already
-    // allowed.
-    return new Response(
-      e.status_code === 204 || e.status_code === 304 ? null : body,
-      {
-        status:
-          e.status_code < 200 || e.status_code > 599 ? 502 : e.status_code,
-        headers: { "content-type": "application/json" },
-      },
-    );
+    // The target's status, and its body as the body. A status the Fetch API
+    // cannot carry (1xx, or past 599) is a 502; the no-body ones get none. No
+    // `url` on the answer, so `getJson`'s final-address check has nothing to
+    // look at: whether the proxy followed a redirect is the proxy's to say,
+    // and its envelope does not.
+    const status = e.status_code;
+    return new Response([204, 205, 304].includes(status) ? null : body, {
+      status: status < 200 || status > 599 ? 502 : status,
+      headers: { "content-type": "application/json" },
+    });
   }) as typeof fetch;
 }

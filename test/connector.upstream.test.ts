@@ -352,6 +352,32 @@ describe("discoverUpstream", () => {
         scripted({ [UP]: challenge }),
       ),
     ).rejects.toMatchObject({ code: "issuer_mismatch" });
+
+    // A pasted document must carry what a fetched one may omit.
+    await expect(
+      discoverUpstream(
+        {
+          upstreamUrl: UP,
+          scopes: null,
+          supplied: { resource: { authorization_servers: [AS] } },
+        },
+        scripted({ [UP]: challenge }),
+      ),
+    ).rejects.toMatchObject({ code: "metadata_invalid" });
+    const { issuer: _dropped, ...noIssuer } = asMeta().json;
+    await expect(
+      discoverUpstream(
+        {
+          upstreamUrl: UP,
+          scopes: null,
+          supplied: {
+            resource: { resource: UP, authorization_servers: [AS] },
+            authorizationServer: noIssuer,
+          },
+        },
+        scripted({ [UP]: challenge }),
+      ),
+    ).rejects.toThrow(/names no issuer/);
   });
 
   it("an HTML 200 at the RFC 8414 path is a single-page app, not metadata: the OpenID path is tried next", async () => {
@@ -594,11 +620,15 @@ describe("parseSuppliedDocument", () => {
 });
 
 describe("checkTokenEndpoint", () => {
-  const answer = (status: number, type: string) =>
+  const answer = (
+    status: number,
+    type: string,
+    extra: Record<string, string> = {},
+  ) =>
     (async () =>
       new Response("x", {
         status,
-        headers: { "content-type": type },
+        headers: { "content-type": type, ...extra },
       })) as unknown as typeof fetch;
 
   it("a 403 page is a firewall; an OAuth server's answer to a bare GET is not", async () => {
@@ -607,9 +637,26 @@ describe("checkTokenEndpoint", () => {
     await expect(
       checkTokenEndpoint(
         "https://mcp.rippling.com/token",
-        answer(403, "text/html; charset=UTF-8"),
+        answer(403, "text/html; charset=UTF-8", {
+          server: "cloudflare",
+          "cf-ray": "a466dc386bf85e4b-EWR",
+        }),
       ),
     ).rejects.toMatchObject({ code: "token_endpoint_blocked", status: 403 });
+    await expect(
+      checkTokenEndpoint(
+        "https://x.example/token",
+        answer(403, "text/html", { server: "AkamaiGHost" }),
+      ),
+    ).rejects.toMatchObject({ code: "token_endpoint_blocked" });
+    // A 403 page nobody signed is what an ordinary server sends a GET on a
+    // POST-only path: it passes, and the exchange is where a real refusal shows.
+    await expect(
+      checkTokenEndpoint(
+        "https://x.example/token",
+        answer(403, "text/html", { server: "nginx" }),
+      ),
+    ).resolves.toBeUndefined();
     for (const [status, type] of [
       [405, "text/html; charset=utf-8"],
       [400, "application/json"],

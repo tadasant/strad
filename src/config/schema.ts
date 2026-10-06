@@ -648,30 +648,6 @@ const ServerBase = z.object({
 });
 
 /**
- * `oauthRefresh:` — this upstream takes short-lived OAuth access tokens, and
- * strad holds the refresh token that mints them.
- *
- *   - slug: granola
- *     kind: remote-http
- *     url: https://mcp.granola.ai/mcp
- *     oauthRefresh:
- *       tokenUrl: https://mcp-auth.granola.ai/oauth2/token
- *       clientId: ${GRANOLA_CLIENT_ID}
- *       refreshToken: ${GRANOLA_REFRESH_TOKEN}
- *       resource: https://mcp.granola.ai/mcp
- *
- * strad sends `Authorization: Bearer <access token>` itself, minting a new one
- * before the old one expires or when the upstream answers 401. A provider that
- * rotates refresh tokens on use has the new one written back to the parameter
- * store through core's admin credential, so a restart reads the live one. See
- * src/gateway/adapters/oauth-refresh.ts.
- *
- * Every field is resolved per operation like `url:` and `headers:`, through the
- * server's own namespace first. `refreshToken` and `clientSecret` must each be
- * exactly one `${NAME}` — a literal is a credential committed to the config, and
- * the write-back needs a NAME to write to. The `superRefine` below enforces it.
- */
-/**
  * `oauthRefresh.discoveryProxy:` — read the upstream's OAuth metadata through a
  * third-party unblocking proxy, for an upstream whose firewall refuses this
  * deployment's cloud egress on its discovery documents only.
@@ -707,6 +683,30 @@ const DiscoveryProxySchema = z.object({
   zone: z.string().min(1).default("mcp_server_unlocker"),
 });
 
+/**
+ * `oauthRefresh:` — this upstream takes short-lived OAuth access tokens, and
+ * strad holds the refresh token that mints them.
+ *
+ *   - slug: granola
+ *     kind: remote-http
+ *     url: https://mcp.granola.ai/mcp
+ *     oauthRefresh:
+ *       tokenUrl: https://mcp-auth.granola.ai/oauth2/token
+ *       clientId: ${GRANOLA_CLIENT_ID}
+ *       refreshToken: ${GRANOLA_REFRESH_TOKEN}
+ *       resource: https://mcp.granola.ai/mcp
+ *
+ * strad sends `Authorization: Bearer <access token>` itself, minting a new one
+ * before the old one expires or when the upstream answers 401. A provider that
+ * rotates refresh tokens on use has the new one written back to the parameter
+ * store through core's admin credential, so a restart reads the live one. See
+ * src/gateway/adapters/oauth-refresh.ts.
+ *
+ * Every field is resolved per operation like `url:` and `headers:`, through the
+ * server's own namespace first. `refreshToken` and `clientSecret` must each be
+ * exactly one `${NAME}` — a literal is a credential committed to the config, and
+ * the write-back needs a NAME to write to. The `superRefine` below enforces it.
+ */
 const OAuthRefreshSchema = z.object({
   /** The token endpoint. https, or http to a loopback host. May be a `${NAME}`. */
   tokenUrl: z.string().min(1),
