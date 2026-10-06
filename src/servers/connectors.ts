@@ -1,5 +1,6 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { INSTANCE_PATH_PREFIX, INSTANCE_TREES } from "../secrets/param-route.ts";
+import { oauthParameterPath } from "../secrets/parameters/index.ts";
 import type {
   BuiltinContext,
   BuiltinModule,
@@ -654,15 +655,20 @@ function describeAuthorization(
       completedBy: "human",
       tokenUrl: entry.oauthRefresh.tokenUrl,
       humanUrl: consolePage,
-      credentialPath: `/strad/${env}/mcp/${slug}/static/${variable}`,
+      // Where the console's Connect writes it: the slug's own `oauth/` kind,
+      // which the resolver and the rotation write-back both read first.
+      credentialPath: oauthParameterPath(env, slug, variable),
       instructions:
         "strad mints this upstream's access tokens itself from a long-lived refresh " +
         "token, and rotates the stored one when the provider issues a new one — so " +
-        "the authorization happens ONCE. Obtaining that first refresh token is a " +
-        "browser handshake with the provider, which an agent cannot do. Ask the " +
-        "person you are working with to complete it and put the result at " +
-        "`credentialPath` through the secrets surface. Nothing else is needed here: " +
-        "the entry already names it.",
+        "the authorization happens ONCE, and it is a browser sign-in an agent " +
+        "cannot do. Give the person you are working with `humanUrl`: the page " +
+        "there has a Connect button that discovers the upstream's authorization " +
+        "server, registers a client where the upstream allows it, runs the " +
+        "sign-in and writes the refresh token to `credentialPath`. If the page " +
+        "refuses — for example, the upstream's metadata answers 403 to strad — it " +
+        "says why. Once they say it is connected, the server works on its next " +
+        "call with no further action from you.",
     });
   }
 

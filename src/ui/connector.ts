@@ -46,6 +46,15 @@ import {
   type ConnectorTerms,
 } from "../connectors/index.ts";
 import { CONNECTOR_CALLBACK_PATH } from "../connectors/index.ts";
+import {
+  UPSTREAM_PROVIDER,
+  upstreamConnectorFor,
+  type UpstreamErrorCode,
+} from "../connectors/upstream.ts";
+import {
+  handleUpstreamCallback,
+  handleUpstreamConnect,
+} from "./upstream-connector.ts";
 import { errorSummary } from "../util/error-text.ts";
 import { ServiceAccountAuthError } from "../secrets/parameters/service-account.ts";
 import {
@@ -115,6 +124,13 @@ export interface ConnectorUiOptions extends ConnectorDeps {
    * real Express app, real cookies, real sealed state and the real store.
    */
   connectorFetch?: typeof fetch;
+  /**
+   * Called after a Connect wrote values a running server resolves — the
+   * `remote-http` flow, whose `${NAME}`s core reads per request. Drops this
+   * process's cached reading so the slug serves on its next request rather
+   * than after a TTL. Absent: nothing is cached, or nothing reads it here.
+   */
+  afterUpstreamWrite?: () => void;
 }
 
 /** Mount the three connector routes. `gate` is the console's SSO middleware. */
@@ -175,10 +191,14 @@ export function mountConnector(
  * cannot see: one is about the console's own key, the other only surfaces when
  * the value is actually read.
  */
-type ConnectRefusal =
+export type ConnectRefusal =
   | Exclude<ConnectorState["kind"], "ready" | "connected">
   | "no_session_key"
-  | "client_unreadable";
+  | "client_unreadable"
+  // The `remote-http` flow's own words: src/ui/upstream-connector.ts.
+  | "not_connectable"
+  | "env_provider"
+  | UpstreamErrorCode;
 
 /**
  * `strad.connector_connect_failed`: the DEPLOYMENT could not carry a connect
@@ -195,7 +215,7 @@ type ConnectRefusal =
  * Every field is the config's or a word from a closed set. `error` is on no
  * allowlist, so the store's own one-line summary reaches stderr only.
  */
-function connectFailed(
+export function connectFailed(
   stage: "begin" | "callback",
   slug: string,
   reason: ConnectRefusal,
@@ -211,7 +231,7 @@ function connectFailed(
 }
 
 /** The event fields a failed client read adds, beside `reason`. */
-function clientReadDetail(
+export function clientReadDetail(
   variable: string,
   read: ClientRead,
   err: unknown,
@@ -232,6 +252,15 @@ async function handleConnect(
   const slug = req.params.server ?? "";
   const signedInAs = signedInLabel(res);
   const entry = connectorFor(opts.config, slug);
+
+  // A `remote-http` server minting with `oauthRefresh:` has its own flow — the
+  // upstream is discovered rather than configured — behind the same route, the
+  // same gate and the same callback. See src/ui/upstream-connector.ts.
+  const upstream = entry ? null : upstreamConnectorFor(opts.config, slug);
+  if (upstream) {
+    await handleUpstreamConnect(req, res, opts, upstream);
+    return;
+  }
 
   // NO EVENT. There is no connector here to have failed, and `slug` is the
   // caller's own path segment rather than a config value, so it may not reach
@@ -469,6 +498,14 @@ async function handleCallback(
         `"${opts.config.gateway.env}". Nothing was written.`,
       403,
     );
+    return;
+  }
+
+  // The `remote-http` flow, by the provider SEALED into the transaction — never
+  // by anything in the request. Everything above (state, session, deployment)
+  // has already been checked for it exactly as for an `oauth:` connector.
+  if (tx.provider === UPSTREAM_PROVIDER) {
+    await handleUpstreamCallback(req, res, opts, tx, refuse);
     return;
   }
 
@@ -950,7 +987,7 @@ type ClientReadFailure =
   | "unexpected";
 
 /** A failed client read: the sentence for the page, the words for the event. */
-interface ClientRead {
+export interface ClientRead {
   sentence: string;
   failure: ClientReadFailure;
   /** The store's HTTP status, when it answered with one. */
@@ -989,7 +1026,7 @@ const SECRET_ACCESS = /^GET (projects\/[^/\s]+\/secrets\/[^/\s]+)\/versions\//;
  * while reading a payload can quote a window of it, and here the payload is an
  * OAuth client secret.
  */
-function clientReadFailure(
+export function clientReadFailure(
   err: unknown,
   variable: string,
   path: string,
@@ -1455,7 +1492,7 @@ function refusalMessage(code: string, terms: ConnectorTerms): string {
   }
 }
 
-function notice(
+export function notice(
   tone: "info" | "warn" | "error",
   title: string,
   sub: string,
@@ -1466,7 +1503,7 @@ function notice(
 </div>`;
 }
 
-function renderUnexpected(res: Response, err: unknown): void {
+export function renderUnexpected(res: Response, err: unknown): void {
   // THE CLASS, NOT THE OBJECT. A store client's exception can quote a rendered
   // value, and this is the one handler every route funnels into — logging `err`
   // here would undo the discipline the rest of the file keeps.

@@ -238,16 +238,27 @@ held in memory and a restart reads a token the provider has already killed. See
 [Secrets](/operate/secrets/#oauthrefresh--a-rotating-refresh-token-on-a-remote-http-server)
 for where it writes, and [Limitations](/limitations/) #91.
 
-**What it does not do.** strad does not run the authorization for a `remote-http`
-server. The first refresh token comes from an out-of-band consent (for Granola,
-dynamic client registration and PKCE against its authorize endpoint), and a human
-seeds it in `/ui/secrets`.
+**The first refresh token comes from the console.** A `remote-http` server with
+`oauthRefresh:` gets a **Connect** button on `/ui/<slug>`. strad discovers the
+upstream's authorization server, registers a client (or uses the configured one),
+runs code + PKCE with `resource=`, and writes what it learned under the
+`${NAME}`s this block already declares, in the slug's own `oauth/` namespace. So
+the block needs no extra fields; how each one is written decides what Connect
+does with it:
 
-strad *does* run an in-console authorize flow for arbitrary providers — that is
-`oauth: { provider: generic }` — but only on a `supplementary-image` slug, because
-the renderer delivers a connector's variables by injecting them onto a container
-and a `remote-http` server has none. Wiring the two together, so a `remote-http`
-upstream could be authorized from the console and then refreshed, is still open.
+| Field          | Exactly one `${NAME}`                                                                                 | A literal                                                            |
+| -------------- | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `tokenUrl`     | written with the discovered token endpoint                                                            | must equal the discovered one, or Connect refuses                    |
+| `clientId`     | written with a client strad registers; seeded by hand when the upstream offers no registration       | a pre-registered client, used as is; nothing is registered           |
+| `refreshToken` | written (always a `${NAME}`)                                                                          | —                                                                    |
+| `resource`     | written with the resource the token is bound to                                                       | sent as `resource=` on the consent too                               |
+| `scope`        | not supported: Connect asks for scopes before anything is stored                                      | the scopes to request; omitted, strad asks for what the upstream advertises |
+| `clientSecret` | a confidential client a human registered and seeded; strad never registers one                        | —                                                                    |
+
+`url:` must be a literal, because discovery starts from it. With every name in
+`mayBeUnseeded:`, the slug deploys inactive and starts serving on the request
+after Connect. See [Connectors](/operate/connectors/#remote-http-with-oauthrefresh-connect-an-upstream-mcp-server)
+and [Limitations](/limitations/) #111.
 
 ### 2. `local-tunnel`
 

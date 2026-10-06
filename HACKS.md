@@ -4689,12 +4689,12 @@ it could not check: on anything but a definite 404 for the server's own path it
 does not fall through to the gateway's, because writing a layer the reader never
 reaches is a token nothing spends, which is worse than a held one.
 
-**Undo.** Seed the refresh token as a parameter in the store, under
-`/strad/{env}/mcp/{slug}/static/` or `/strad/{env}/gateway/static/`, and run
-under `gcp-parameter-store`. Nothing about the minter changes; the write-back
-finds a parameter and lands. The other half — strad running the authorization
-itself so the first token never passes through a human's clipboard — is
-tadasant/strad#32.
+**Undo.** Run under `gcp-parameter-store` and get the refresh token into the
+store — with the console's **Connect** on the slug's page, which writes it under
+`/strad/{env}/mcp/{slug}/oauth/`, or seeded by hand under the server's `static/`
+or the gateway's namespace. Nothing about the minter changes; the write-back
+finds a parameter and lands, checking `oauth/` first. The authorization strad
+runs itself, and what it cannot do, is #111.
 
 ---
 
@@ -5715,3 +5715,41 @@ echo the cookie, but the agent's transcript does hold it.
 the HttpOnly cookie with `chrome.cookies` and push it to strad on its own. That
 would close the loop with no human step. It belongs on the strad-hostd browser
 bridge, once that bridge has a seam for it.
+
+## 111. A `remote-http` Connect discovers its upstream, registers only public clients, and has met no real one
+
+**What.** `POST /ui/<slug>/connect` on a `remote-http` server with
+`oauthRefresh:` runs the MCP authorization flow from strad's own egress
+(`src/connectors/upstream.ts`, `src/ui/upstream-connector.ts`): an
+unauthenticated `initialize` for the `401`'s `resource_metadata`, the RFC 9728
+and RFC 8414 documents, RFC 7591 registration, code + PKCE with `resource=`. It
+writes the `${NAME}`s the block declares under the slug's `oauth/` kind and drops
+the process's cached reading.
+
+- Whether it works for a given upstream is decided by that upstream's firewall.
+  Rippling's Cloudflare serves `/mcp` its `401` and serves the protected-resource
+  metadata `403` to a DigitalOcean address (the Zimmer host, 2026-10-06). App
+  Platform's egress was not tested: the staging console needs
+  `ADMIN_BOOTSTRAP_TOKEN`, which no agent holds. Connect refuses with that
+  sentence before registering anything.
+- The transaction cookie is HMAC-signed, not encrypted, so a client strad
+  registers is always public (`token_endpoint_auth_method: none`); a confidential
+  registration answer is refused. A confidential client is registered by hand and
+  seeded, and its secret is read from the store at the callback.
+- Every Connect registers a fresh client and abandons the last one at the
+  upstream.
+- No identity proof, as with `provider: generic`.
+- Other core replicas see the write within `ttlSeconds`.
+- The token URL, client id and resource are written before the refresh token; a
+  store failure between them leaves a mismatched set until the next Connect.
+
+**Why.** Encrypting the transaction to carry a client secret, or holding a
+pending registration server-side, would add a second sealing primitive or the
+server-side state `src/connectors/state.ts` exists to avoid, for upstreams that
+the MCP spec already steers toward public clients. A WAF on someone else's
+metadata is not something strad can route around without an egress it does not
+have.
+
+**Undo.** For a blocked upstream, get the deployment's egress allowed, or
+authorize elsewhere and seed by hand. Verify against a real upstream that allows
+App Platform egress, and record it here.

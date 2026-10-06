@@ -1,6 +1,7 @@
 import type { Response } from "express";
 import { readCookies, type Sealer } from "../auth/session.ts";
 import type { Principal } from "../auth/index.ts";
+import type { UpstreamTerms } from "./upstream.ts";
 
 /**
  * The in-flight connector authorization, as a signed cookie.
@@ -100,6 +101,14 @@ export interface ConnectorTxPayload {
   variable: string;
   sid: string;
   next: string;
+  /**
+   * What a `remote-http` Connect discovered and registered, for the callback to
+   * exchange against — present only on a transaction sealed under
+   * `UPSTREAM_PROVIDER`. The client id is public by definition; this payload is
+   * SIGNED, not encrypted, which is why a registered client is always a public
+   * one (see src/connectors/upstream.ts).
+   */
+  upstream?: UpstreamTerms;
   exp: number;
 }
 

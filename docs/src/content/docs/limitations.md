@@ -3004,7 +3004,7 @@ The write-back also stops at a parameter it could not check: on anything but a d
 
 **How you would know.** `strad.param_write_failed` fires for the slug on every rotation it could not persist, and the stderr line names the `${NAME}` and the reason. After the restart, the slug reads `degraded` on `/healthz` and its calls say the refresh token was refused.
 
-**Undo:** seed the refresh token in the store under the server's namespace or the gateway's, under `gcp-parameter-store`. The console authorize flow that seeds a credential without a human clipboard ([tadasant/strad#32](https://github.com/tadasant/strad/issues/32)) now exists as `oauth: { provider: generic }`, but only for a `supplementary-image` slug — a connector's variables are delivered by injection onto a container, and a `remote-http` server has none — so a `remote-http` upstream's first refresh token is still seeded by hand.
+**Undo:** run under `gcp-parameter-store` and get the refresh token into the store — with **Connect** on the slug's console page, which stores it under the slug's `oauth/` kind, or seeded by hand under the server's namespace or the gateway's. Connect means a `remote-http` upstream's first refresh token need not pass through a human's clipboard; see [Connectors](/operate/connectors/#remote-http-with-oauthrefresh-connect-an-upstream-mcp-server) and #111 for what that flow cannot do.
 
 See `HACKS.md` #91.
 
@@ -3381,3 +3381,23 @@ Headless re-login (`MONARCH_EMAIL`, `MONARCH_PASSWORD`, `MONARCH_TOTP_SECRET`, `
 **Undo:** a browser extension on the signed-in profile could read the cookie with `chrome.cookies` and push it to strad itself, with no human step. That belongs on the strad-hostd browser bridge.
 
 See `HACKS.md` #110.
+
+---
+
+### 111. Connect on a `remote-http` server discovers everything, registers public clients only, and has never met a real upstream
+
+A `remote-http` server with `oauthRefresh:` has a **Connect** button that runs the MCP authorization flow from the console: protected-resource metadata, the authorization server's metadata, dynamic client registration, code + PKCE with `resource=`. Its limits:
+
+- **A firewall decides whether it works at all.** Discovery and every refresh are requests from strad's own egress — a cloud provider's addresses. Rippling's Cloudflare answers its `/mcp` with the expected `401` and its protected-resource metadata with `403` from a DigitalOcean address (observed from the host Zimmer runs on, 2026-10-06; App Platform's egress was not tested, because no agent holds a staging console credential). When that happens Connect refuses before anything is registered, and says the metadata URL answered `403` and why. Nothing in strad's config changes it: the upstream has to allow the deployment's egress.
+- **Public clients only, when strad registers one.** The transaction that carries a registered client from the button to the callback is a signed cookie, not an encrypted one, so strad registers with `token_endpoint_auth_method: none` and refuses a confidential answer. A server that needs a client secret gets a client a human registered at the upstream, seeded under the `clientId` and `clientSecret` `${NAME}`s.
+- **A fresh client on every Connect.** Each Connect registers a new client and stops using the old one; nothing deletes the old registration at the upstream.
+- **No identity is proved.** As with `provider: generic`, strad stores whichever account signed in. The page says `account: not checked`.
+- **Other replicas catch up on their TTL.** Connect drops the cached reading of the process that served it. Another core replica sees the new values within `ttlSeconds`; core runs one instance today.
+- **A partial write is possible.** The token URL, client id and resource are written before the refresh token. A store failure between them leaves a mismatched set until the next Connect; the page says so.
+- **Never run against a real upstream.** The flow is tested end to end against a fake authorization server over real sockets (`test/connector.upstream.e2e.test.ts`), not against Rippling, Granola or any other real provider.
+
+**How you would know.** The connect POST answers `409` with the reason on the page, and `strad.connector_connect_failed` carries a closed `reason` (`metadata_blocked`, `registration_confidential`, `no_client`, …) and the HTTP `status`.
+
+**Undo:** for a blocked upstream, ask its owner to allow the deployment's egress, or authorize from a machine it does allow and seed the refresh token by hand. For a confidential-only upstream, register a client by hand and seed it.
+
+See `HACKS.md` #111.

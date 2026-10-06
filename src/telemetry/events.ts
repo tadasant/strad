@@ -403,6 +403,10 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      * — rather than a consent being refused: no public URL, no session key, a
      * connector that is not ready, or an OAuth client the console could not
      * read. `reason` is one of those, from a closed set in src/ui/connector.ts.
+     * A `remote-http` Connect adds its discovery words to the same set
+     * (`metadata_blocked`, `registration_confidential`, `no_client`, …, the
+     * `UpstreamErrorCode`s in src/connectors/upstream.ts), each strad's own;
+     * `status` is then the HTTP status that decided it.
      * It ends `_failed`, and so ships at ERROR, because the human did nothing
      * wrong in any of those branches.
      *

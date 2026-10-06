@@ -12,6 +12,7 @@ import {
 } from "../secrets/param-route.ts";
 import {
   gatewayParameterPath,
+  oauthParameterPath,
   parameterPath,
   isUsableValue,
   serverParameterPath,
@@ -631,13 +632,16 @@ export function createStoreRefreshHandler(
  *
  * ## Where it writes: where the reader reads
  *
- * A server's `${NAME}` resolves from `/strad/{env}/mcp/{slug}/static/` first
- * and the gateway namespace second (src/secrets/provider). The write follows the
- * same order and stops at the first path that exists: the server's own path, or
- * — only on a definite 404 there — the gateway path. A path that could not be
- * checked stops the walk, because writing the second layer while the first may
- * hold the value would persist a token nothing reads. Neither path existing
- * means the value came from the environment (`envFallback`), which strad cannot
+ * A server's `${NAME}` resolves from its own `/strad/{env}/mcp/{slug}/oauth/`
+ * first, its `static/` second and the gateway namespace third
+ * (src/secrets/provider). The write follows the same order and stops at the
+ * first path that exists — moving on only after a definite 404. `oauth/` is
+ * where the console's Connect stores a token it minted
+ * (src/ui/upstream-connector.ts), so it is the one a rotation of that token
+ * must land in; a token seeded by hand under `static/` is rotated there. A path
+ * that could not be checked stops the walk, because writing a lower layer while
+ * a higher one may hold the value would persist a token nothing reads. None of
+ * the three existing means the value came from the environment (`envFallback`), which strad cannot
  * write; so does `gateway.secrets.provider: env`. Both are reported, never
  * thrown: a rotation that cannot be persisted still serves this process, and
  * the next restart is the one that fails — which is what the stderr line says.
@@ -686,6 +690,7 @@ export function createParameterWriteBack(
 
     const env = opts.config.gateway.env;
     for (const path of [
+      oauthParameterPath(env, slug, variable),
       parameterPath(env, slug, variable),
       gatewayParameterPath(env, variable),
     ]) {

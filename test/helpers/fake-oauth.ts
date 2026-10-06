@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Server as HttpServer } from "node:http";
 import { Server as McpServer } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -28,6 +28,17 @@ import express, { type Request, type Response } from "express";
  *
  * Expiry is judged by `Date.now()`, so a test that fakes `Date` moves the
  * upstream's clock and strad's together.
+ *
+ * With `mcpAuth`, it is also the AUTHORIZATION SERVER an MCP client discovers
+ * (the MCP authorization spec, end to end): the upstream's 401 carries
+ * `WWW-Authenticate: Bearer resource_metadata=…`, the protected-resource
+ * metadata (RFC 9728) names this server as issuer, its RFC 8414 metadata names
+ * `/authorize`, `/token` and — unless turned off — `/register` (RFC 7591).
+ * `/authorize` consents at once as `consentAs` and redirects with a code, and
+ * `/token` runs the authorization-code grant: PKCE S256, the client id, the
+ * redirect URI and the `resource` must all match what `/authorize` saw. A
+ * refresh token issued that way is bound to its client, and a refresh that
+ * presents another client id is `invalid_client`.
  */
 
 interface Issued {
@@ -64,6 +75,26 @@ export interface TokenRequest {
   resource: string | undefined;
   /** The raw Authorization header, when the client authenticated with Basic. */
   authorization: string | undefined;
+  code?: string;
+  codeVerifier?: string;
+  redirectUri?: string;
+}
+
+export interface McpAuthOptions {
+  /** Offer `/register`. Default true. */
+  registration?: boolean;
+  /** `/register` answers with a confidential client. */
+  confidential?: boolean;
+  /** Serve the protected-resource metadata with this status instead. */
+  prmStatus?: number;
+  /** `scopes_supported` on the protected-resource metadata. */
+  scopes?: string[];
+  /** `/register` refuses with this status. */
+  registrationStatus?: number;
+  /** The authorization-code grant answers without a `refresh_token`. */
+  omitRefreshToken?: boolean;
+  /** The authorization-code grant drops the connection without answering. */
+  dropExchange?: boolean;
 }
 
 export interface FakeOAuthOptions {
@@ -71,6 +102,8 @@ export interface FakeOAuthOptions {
   expiresIn?: number | null;
   /** Issue a new refresh token on every refresh, and kill the one just used. */
   rotate?: boolean;
+  /** Act as the upstream's MCP authorization server. See the header. */
+  mcpAuth?: McpAuthOptions;
 }
 
 export interface FakeOAuth {
@@ -98,6 +131,12 @@ export interface FakeOAuth {
   /** Resolves when `n` token requests have ARRIVED (held or not). */
   arrived: (n: number) => Promise<void>;
   options: FakeOAuthOptions;
+  /** Who `/authorize` consents as. Default `alice`. */
+  consentAs: (principal: string) => void;
+  /** Every `/register` body, in order. */
+  registrations: Record<string, unknown>[];
+  /** Every `/authorize` query, in order. */
+  authorizations: URLSearchParams[];
   close: () => Promise<void>;
 }
 
@@ -114,8 +153,96 @@ export async function startFakeOAuth(
   let releaseHeld = (): void => {};
   const arrivals: { n: number; resolve: () => void }[] = [];
   let counter = 0;
+  let consenter = "alice";
+  const registrations: Record<string, unknown>[] = [];
+  const authorizations: URLSearchParams[] = [];
+  const codes = new Map<
+    string,
+    {
+      clientId: string;
+      redirectUri: string;
+      challenge: string;
+      resource: string | null;
+      principal: string;
+    }
+  >();
+  /** refresh token -> the client it was issued to, for code-issued tokens. */
+  const refreshClients = new Map<string, string>();
+  let base = "";
 
   const app = express();
+
+  const auth = options.mcpAuth;
+  if (auth) {
+    app.get(
+      "/.well-known/oauth-protected-resource/mcp/:principal",
+      (req: Request, res: Response) => {
+        if (auth.prmStatus) {
+          res.status(auth.prmStatus).type("html").send("<html>blocked</html>");
+          return;
+        }
+        res.json({
+          resource: `${base}/mcp/${req.params.principal}`,
+          authorization_servers: [base],
+          ...(auth.scopes ? { scopes_supported: auth.scopes } : {}),
+        });
+      },
+    );
+    app.get("/.well-known/oauth-authorization-server", (_req, res) => {
+      res.json({
+        issuer: base,
+        authorization_endpoint: `${base}/authorize`,
+        token_endpoint: `${base}/token`,
+        ...(auth.registration === false
+          ? {}
+          : { registration_endpoint: `${base}/register` }),
+        response_types_supported: ["code"],
+        code_challenge_methods_supported: ["S256"],
+        scopes_supported: [...(auth.scopes ?? []), "offline_access"],
+      });
+    });
+    app.post("/register", express.json(), (req: Request, res: Response) => {
+      const body = req.body as Record<string, unknown>;
+      registrations.push(body);
+      if (auth.registrationStatus) {
+        res.status(auth.registrationStatus).json({
+          error: "access_denied",
+          error_description: "UPSTREAM-REGISTRATION-TEXT",
+        });
+        return;
+      }
+      const clientId = `client-${registrations.length}`;
+      res.status(201).json(
+        auth.confidential
+          ? {
+              client_id: clientId,
+              client_secret: "dcr-SECRET-CANARY",
+              token_endpoint_auth_method: "client_secret_basic",
+            }
+          : {
+              client_id: clientId,
+              token_endpoint_auth_method: "none",
+              redirect_uris: body.redirect_uris,
+            },
+      );
+    });
+    app.get("/authorize", (req: Request, res: Response) => {
+      const q = new URLSearchParams(req.url.split("?")[1] ?? "");
+      authorizations.push(q);
+      const code = `code-${randomUUID()}`;
+      codes.set(code, {
+        clientId: q.get("client_id") ?? "",
+        redirectUri: q.get("redirect_uri") ?? "",
+        challenge: q.get("code_challenge") ?? "",
+        resource: q.get("resource"),
+        principal: consenter,
+      });
+      const to = new URL(q.get("redirect_uri") ?? "");
+      to.searchParams.set("code", code);
+      to.searchParams.set("state", q.get("state") ?? "");
+      res.redirect(302, to.toString());
+    });
+  }
 
   app.post(
     "/token",
@@ -131,6 +258,9 @@ export async function startFakeOAuth(
           scope: body.scope,
           resource: body.resource,
           authorization: req.get("authorization"),
+          code: body.code,
+          codeVerifier: body.code_verifier,
+          redirectUri: body.redirect_uri,
         });
         for (const a of arrivals.splice(0)) {
           if (tokenRequests.length >= a.n) a.resolve();
@@ -143,8 +273,49 @@ export async function startFakeOAuth(
           res.status(failure.status).json(failure.body ?? {});
           return;
         }
+        if (auth?.dropExchange && body.grant_type === "authorization_code") {
+          req.socket.destroy();
+          return;
+        }
+        if (auth && body.grant_type === "authorization_code") {
+          const issued = codes.get(body.code ?? "");
+          codes.delete(body.code ?? "");
+          const challenge = createHash("sha256")
+            .update(body.code_verifier ?? "")
+            .digest("base64url");
+          if (
+            !issued ||
+            issued.clientId !== body.client_id ||
+            issued.redirectUri !== body.redirect_uri ||
+            issued.challenge !== challenge ||
+            issued.resource !== (body.resource ?? null)
+          ) {
+            res.status(400).json({ error: "invalid_grant" });
+            return;
+          }
+          counter += 1;
+          const refresh = `rt-${issued.principal}-code-${counter}-${randomUUID()}`;
+          refreshTokens.set(refresh, {
+            principal: issued.principal,
+            live: true,
+          });
+          refreshClients.set(refresh, issued.clientId);
+          res.json({
+            access_token: `at-unused-${counter}`,
+            token_type: "Bearer",
+            expires_in: 3600,
+            ...(auth.omitRefreshToken ? {} : { refresh_token: refresh }),
+            scope: "mcp:read",
+          });
+          return;
+        }
         if (body.grant_type !== "refresh_token") {
           res.status(400).json({ error: "unsupported_grant_type" });
+          return;
+        }
+        const boundTo = refreshClients.get(body.refresh_token ?? "");
+        if (boundTo !== undefined && boundTo !== body.client_id) {
+          res.status(401).json({ error: "invalid_client" });
           return;
         }
         const owner = refreshTokens.get(body.refresh_token ?? "");
@@ -176,6 +347,7 @@ export async function startFakeOAuth(
           owner.live = false;
           const next = `rt-${owner.principal}-${counter}-${randomUUID()}`;
           refreshTokens.set(next, { principal: owner.principal, live: true });
+          if (boundTo !== undefined) refreshClients.set(next, boundTo);
           answer.refresh_token = next;
         }
         res.json(answer);
@@ -235,6 +407,14 @@ export async function startFakeOAuth(
             : null,
       });
       if (!live) {
+        if (auth) {
+          res.set(
+            "www-authenticate",
+            `Bearer realm="OAuth", resource_metadata="${base}/.well-known/` +
+              `oauth-protected-resource/mcp/${req.params.principal}", ` +
+              `error="invalid_token"`,
+          );
+        }
         res.status(401).json({ error: "invalid_token" });
         return;
       }
@@ -263,7 +443,7 @@ export async function startFakeOAuth(
   });
   const addr = server.address();
   if (typeof addr === "string" || !addr) throw new Error("no port");
-  const base = `http://127.0.0.1:${addr.port}`;
+  base = `http://127.0.0.1:${addr.port}`;
 
   return {
     base,
@@ -298,6 +478,11 @@ export async function startFakeOAuth(
         ? Promise.resolve()
         : new Promise((resolve) => arrivals.push({ n, resolve })),
     options,
+    consentAs: (principal) => {
+      consenter = principal;
+    },
+    registrations,
+    authorizations,
     close: () =>
       new Promise<void>((r) => {
         server.closeAllConnections();

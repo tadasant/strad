@@ -147,12 +147,23 @@ export interface TokenRequestInput {
   /** The provider's token endpoint. */
   endpoint: string;
   clientId: string;
-  clientSecret: string;
+  /**
+   * The client secret, for a confidential client. `undefined` is a PUBLIC
+   * client (RFC 6749 §2.1) — a dynamically registered MCP client with
+   * `token_endpoint_auth_method: none` — which sends its `client_id` in the body
+   * and authenticates with nothing but the PKCE verifier.
+   */
+  clientSecret: string | undefined;
   redirectUri: string;
   code: string;
   verifier: string;
   /** How the client credentials travel. See the config's `clientAuth:`. */
   clientAuth?: "post" | "basic";
+  /**
+   * RFC 8707 `resource`, repeated on the token request. An MCP authorization
+   * server binds the issued tokens to it. Omitted when absent.
+   */
+  resource?: string;
 }
 
 /** What a token endpoint may hand back that strad reads. Nothing else is looked at. */
@@ -176,7 +187,8 @@ export async function exchangeAuthorizationCode(
   input: TokenRequestInput,
   fetchImpl: typeof fetch = fetch,
 ): Promise<TokenResponse> {
-  const basic = input.clientAuth === "basic";
+  const secret = input.clientSecret;
+  const basic = input.clientAuth === "basic" && secret !== undefined;
   const body = new URLSearchParams({
     code: input.code,
     redirect_uri: input.redirectUri,
@@ -188,7 +200,8 @@ export async function exchangeAuthorizationCode(
   // common and harmless, and several providers key their rate limiting on it.
   // The SECRET is what moves.
   body.set("client_id", input.clientId);
-  if (!basic) body.set("client_secret", input.clientSecret);
+  if (secret !== undefined && !basic) body.set("client_secret", secret);
+  if (input.resource !== undefined) body.set("resource", input.resource);
 
   const headers: Record<string, string> = {
     "content-type": "application/x-www-form-urlencoded",
@@ -197,12 +210,12 @@ export async function exchangeAuthorizationCode(
     // "the exchange succeeded and strad could not read it".
     accept: "application/json",
   };
-  if (basic) {
+  if (basic && secret !== undefined) {
     // §2.3.1 again: both halves are form-urlencoded BEFORE base64, which matters
     // for the providers whose secrets carry `+` or `/`. `formEncode` is the
     // refresh minter's, reused rather than re-expressed — `encodeURIComponent`
     // is NOT the same function (it renders a space as `%20`, not `+`).
-    const credential = `${formEncode(input.clientId)}:${formEncode(input.clientSecret)}`;
+    const credential = `${formEncode(input.clientId)}:${formEncode(secret)}`;
     // Bracket notation, as in the refresh minter. The dotted spelling is how a
     // door READS an inbound header, and `test/auth-header.doors.test.ts` greps
     // the whole file for it — comments included. This header is one strad SENDS.
@@ -215,6 +228,10 @@ export async function exchangeAuthorizationCode(
     async (signal) => {
       const res = await fetchImpl(input.endpoint, {
         method: "POST",
+        // A 307/308 would resend the code, the verifier and any client secret
+        // to wherever it pointed. The refresh minter refuses redirects for the
+        // same reason; a redirect here lands as `exchange_failed`.
+        redirect: "manual",
         headers,
         body,
         signal,

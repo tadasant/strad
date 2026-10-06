@@ -299,8 +299,10 @@ servers:
   # again on a 401), and writes a rotated refresh token back to the store so a
   # restart reads the live one. `refreshToken` and `clientSecret` must each be
   # exactly one ${NAME}: a credential lives in the store, and the write-back
-  # needs a name. The first refresh token comes from an out-of-band consent
-  # and is seeded in /ui/secrets. See docs: servers/interface.
+  # needs a name. The first refresh token comes from the slug's console page:
+  # Connect discovers the upstream's authorization server, registers a client
+  # where it can, and writes every ${NAME} here that it learned. See docs:
+  # servers/interface and operate/connectors.
   #
   # - slug: granola
   #   kind: remote-http
