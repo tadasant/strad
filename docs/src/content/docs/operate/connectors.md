@@ -560,7 +560,9 @@ What happens behind the button, in order:
    names the authorization server, whose metadata comes from the RFC 8414 path,
    then the two OpenID Connect paths. An upstream with no protected-resource
    metadata that still answers `401` is taken as its own authorization server
-   (the MCP spec's fallback). Every endpoint must be https.
+   (the MCP spec's fallback). Every endpoint the upstream names must be
+   https; plain http is followed only when the configured `url:` is itself on
+   loopback, which is a local test rig and never a deployment.
 2. **Pick a client.** A literal `clientId` is a pre-registered client and is used
    as is. A `${NAME}` is registered fresh (RFC 7591) when the server offers
    registration and the block declares no `clientSecret`: a **public** client,

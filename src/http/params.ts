@@ -640,8 +640,8 @@ export function createStoreRefreshHandler(
  * (src/ui/upstream-connector.ts), so it is the one a rotation of that token
  * must land in; a token seeded by hand under `static/` is rotated there. A path
  * that could not be checked stops the walk, because writing a lower layer while
- * a higher one may hold the value would persist a token nothing reads. Neither path existing
- * means the value came from the environment (`envFallback`), which strad cannot
+ * a higher one may hold the value would persist a token nothing reads. None of
+ * the three existing means the value came from the environment (`envFallback`), which strad cannot
  * write; so does `gateway.secrets.provider: env`. Both are reported, never
  * thrown: a rotation that cannot be persisted still serves this process, and
  * the next restart is the one that fails — which is what the stderr line says.

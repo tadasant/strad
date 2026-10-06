@@ -3004,7 +3004,7 @@ The write-back also stops at a parameter it could not check: on anything but a d
 
 **How you would know.** `strad.param_write_failed` fires for the slug on every rotation it could not persist, and the stderr line names the `${NAME}` and the reason. After the restart, the slug reads `degraded` on `/healthz` and its calls say the refresh token was refused.
 
-**Undo:** run under `gcp-parameter-store` and get the refresh token into the store — with **Connect** on the slug's console page, which stores it under the slug's `oauth/` kind, or seeded by hand under the server's namespace or the gateway's. A `remote-http` upstream's first refresh token no longer has to pass through a human's clipboard; see [Connectors](/operate/connectors/#remote-http-with-oauthrefresh-connect-an-upstream-mcp-server) and #111 for what that flow cannot do.
+**Undo:** run under `gcp-parameter-store` and get the refresh token into the store — with **Connect** on the slug's console page, which stores it under the slug's `oauth/` kind, or seeded by hand under the server's namespace or the gateway's. Connect means a `remote-http` upstream's first refresh token need not pass through a human's clipboard; see [Connectors](/operate/connectors/#remote-http-with-oauthrefresh-connect-an-upstream-mcp-server) and #111 for what that flow cannot do.
 
 See `HACKS.md` #91.
 

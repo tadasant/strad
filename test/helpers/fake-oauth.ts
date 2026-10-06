@@ -89,6 +89,12 @@ export interface McpAuthOptions {
   prmStatus?: number;
   /** `scopes_supported` on the protected-resource metadata. */
   scopes?: string[];
+  /** `/register` refuses with this status. */
+  registrationStatus?: number;
+  /** The authorization-code grant answers without a `refresh_token`. */
+  omitRefreshToken?: boolean;
+  /** The authorization-code grant drops the connection without answering. */
+  dropExchange?: boolean;
 }
 
 export interface FakeOAuthOptions {
@@ -198,6 +204,13 @@ export async function startFakeOAuth(
     app.post("/register", express.json(), (req: Request, res: Response) => {
       const body = req.body as Record<string, unknown>;
       registrations.push(body);
+      if (auth.registrationStatus) {
+        res.status(auth.registrationStatus).json({
+          error: "access_denied",
+          error_description: "UPSTREAM-REGISTRATION-TEXT",
+        });
+        return;
+      }
       const clientId = `client-${registrations.length}`;
       res.status(201).json(
         auth.confidential
@@ -260,6 +273,10 @@ export async function startFakeOAuth(
           res.status(failure.status).json(failure.body ?? {});
           return;
         }
+        if (auth?.dropExchange && body.grant_type === "authorization_code") {
+          req.socket.destroy();
+          return;
+        }
         if (auth && body.grant_type === "authorization_code") {
           const issued = codes.get(body.code ?? "");
           codes.delete(body.code ?? "");
@@ -287,7 +304,7 @@ export async function startFakeOAuth(
             access_token: `at-unused-${counter}`,
             token_type: "Bearer",
             expires_in: 3600,
-            refresh_token: refresh,
+            ...(auth.omitRefreshToken ? {} : { refresh_token: refresh }),
             scope: "mcp:read",
           });
           return;

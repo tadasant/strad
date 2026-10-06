@@ -4,11 +4,13 @@ import {
   authorizationServerCandidates,
   bearerChallenge,
   discoverUpstream,
+  endpointAllowed,
   protectedResourceCandidates,
   registerPublicClient,
   resourceCovers,
   upstreamConnectorFor,
   upstreamPlan,
+  upstreamWrites,
   UpstreamConnectError,
 } from "../src/connectors/upstream.ts";
 import { consoleView } from "../src/ui/roster-page.ts";
@@ -379,5 +381,79 @@ describe("registerPublicClient", () => {
     ).catch((e: Error) => e);
     expect(refused).toMatchObject({ code: "registration_failed", status: 403 });
     expect((refused as Error).message).not.toContain("UPSTREAM-TEXT-CANARY");
+  });
+});
+
+describe("endpointAllowed", () => {
+  it("https always; loopback http only when the configured upstream is loopback", () => {
+    expect(endpointAllowed(UP, "https://auth.example/x")).toBe(true);
+    expect(endpointAllowed(UP, "http://127.0.0.1:8080/admin")).toBe(false);
+    expect(endpointAllowed(UP, "http://auth.example/x")).toBe(false);
+    expect(
+      endpointAllowed("http://127.0.0.1:9/mcp", "http://127.0.0.1:9/token"),
+    ).toBe(true);
+    expect(
+      endpointAllowed("http://127.0.0.1:9/mcp", "http://auth.example/token"),
+    ).toBe(false);
+  });
+
+  it("refuses an https upstream's metadata that points core at its own loopback", async () => {
+    const f = scripted({
+      [UP]: {
+        status: 401,
+        headers: {
+          "www-authenticate": `Bearer resource_metadata="http://127.0.0.1:8080/internal"`,
+        },
+      },
+    });
+    await expect(
+      discoverUpstream({ upstreamUrl: UP, scopes: null }, f),
+    ).rejects.toMatchObject({ code: "insecure_endpoint" });
+    expect(f.calls).toEqual([UP]);
+  });
+});
+
+describe("bearerChallenge, adversarially", () => {
+  it("does not read a scope= inside a quoted value", () => {
+    expect(
+      bearerChallenge(
+        `Bearer resource_metadata="https://x.example/prm?scope=admin", error="invalid_token"`,
+      ),
+    ).toEqual({
+      resourceMetadata: "https://x.example/prm?scope=admin",
+      scope: null,
+    });
+  });
+});
+
+describe("upstreamWrites", () => {
+  it("writes the refresh token LAST, and only the ${NAME} fields", () => {
+    const config = configOf(`
+      tokenUrl: "\${RIPPLING_TOKEN_URL}"
+      clientId: literal-client
+      refreshToken: "\${RIPPLING_REFRESH_TOKEN}"
+      resource: "\${RIPPLING_RESOURCE}"`);
+    const entry = upstreamConnectorFor(config, "rippling")!;
+    const writes = upstreamWrites(
+      config,
+      entry,
+      upstreamPlan(entry),
+      {
+        clientId: "literal-client",
+        registered: false,
+        tokenUrl: "https://a/token",
+        resource: UP,
+        issuer: "https://a",
+      },
+      "rt",
+    );
+    expect(writes.map((w) => [w.variable, w.secret])).toEqual([
+      ["RIPPLING_TOKEN_URL", false],
+      ["RIPPLING_RESOURCE", false],
+      ["RIPPLING_REFRESH_TOKEN", true],
+    ]);
+    expect(
+      writes.every((w) => w.path.startsWith("/strad/test/mcp/rippling/oauth/")),
+    ).toBe(true);
   });
 });

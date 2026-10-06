@@ -71,18 +71,24 @@ export function staticNamespace(env: string, slug: string): string {
  * Build the oauth-kind namespace for a server slug, e.g.
  * `/strad/staging/mcp/gcs/oauth/`.
  *
- * Everything under it is written as a SECRET parameter — the value in Secret
- * Manager, a `__REF__` pointer in Parameter Manager — so the `secrets` MCP
- * server lists it and can never read it.
+ * The CREDENTIAL under it is written as a SECRET parameter — the value in
+ * Secret Manager, a `__REF__` pointer in Parameter Manager — so the `secrets`
+ * MCP server lists it and can never read it. A `remote-http` Connect also
+ * writes what it DISCOVERED beside its refresh token — the token URL, the client
+ * id it registered, the resource — as plain parameters: none is a secret, and
+ * each is as minted, by strad, as the token they belong to.
  *
  * TWO WRITERS, AND ONE CREDENTIAL.
  *
- * The console's OAuth callback (src/ui/connector.ts) MINTS the credential: it
- * `create()`s the parameter, grants the `secretAccessor` a `:render` needs, and
- * records who consented to what in the note. Nothing else creates one.
+ * The console's OAuth callback (src/ui/connector.ts, and for a `remote-http`
+ * server src/ui/upstream-connector.ts) MINTS the credential: it `create()`s the
+ * parameter, grants the `secretAccessor` a `:render` needs, and records who
+ * consented to what in the note. Nothing else creates one.
  *
  * The parameter write-back route (src/http/params.ts) `rotate()`s it, for a
- * provider whose refresh tokens are single-use, as X's are. That is the SAME
+ * provider whose refresh tokens are single-use, as X's are — and so does core's
+ * `oauthRefresh:` write-back in the same file, for a token a `remote-http`
+ * Connect stored. That is the SAME
  * credential continuing under the same variable:
  * the provider handed the new value back in exchange for the old one, so the
  * lineage this kind names is unchanged, and the write goes through core's admin
@@ -91,10 +97,11 @@ export function staticNamespace(env: string, slug: string): string {
  * consent note alone — so a rotation cannot conjure a credential the console
  * never minted, and cannot erase the record of who consented.
  *
- * Whether the write-back may address this kind at all is decided by the CONFIG
- * — only a variable the server names on its `oauth:` connector is a candidate
- * here — and among the candidates it takes the highest kind the store holds.
- * Never by the request; see `kindsOf`.
+ * Whether the bundle write-back route may address this kind at all is decided by
+ * the CONFIG — only a variable the server names on its `oauth:` connector is a
+ * candidate here — and among the candidates it takes the highest kind the store
+ * holds. Never by the request; see `kindsOf`. Core's `oauthRefresh:` write-back
+ * walks the kinds in read order for the one `${NAME}` the block names.
  */
 export function oauthNamespace(env: string, slug: string): string {
   return serverKindNamespace(env, slug, "oauth");

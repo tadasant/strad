@@ -236,8 +236,42 @@ export class UpstreamConnectError extends Error {
   }
 }
 
+/**
+ * May discovery send a request to `url`, found in metadata `upstreamUrl`
+ * pointed at?
+ *
+ * https, always — every URL past the configured `url:` is one the UPSTREAM
+ * chose, and plain http to a loopback host is the one exception
+ * `tokenUrlAllowed` makes for a token endpoint a human configured. Here it
+ * would let a third party's metadata point core at its own loopback ports. So
+ * loopback http is honoured only when the configured upstream is itself on
+ * loopback: a local test rig, never a deployment.
+ */
+export function endpointAllowed(upstreamUrl: string, url: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+  if (u.protocol === "https:") return true;
+  return (
+    tokenUrlAllowed(url) &&
+    tokenUrlAllowed(upstreamUrl) &&
+    isLoopback(upstreamUrl)
+  );
+}
+
+function isLoopback(raw: string): boolean {
+  try {
+    return ["localhost", "127.0.0.1", "[::1]"].includes(new URL(raw).hostname);
+  } catch {
+    return false;
+  }
+}
+
 /** `origin + pathname` of a URL strad validated: no query, no fragment. */
-function shown(url: string): string {
+export function shown(url: string): string {
   try {
     const u = new URL(url);
     return u.pathname === "/" ? u.origin : `${u.origin}${u.pathname}`;
@@ -250,7 +284,7 @@ function shown(url: string): string {
 // Discovery
 // ---------------------------------------------------------------------------
 
-/** What discovery established. Every URL in it passed `tokenUrlAllowed`. */
+/** What discovery established. Every URL in it passed `endpointAllowed`. */
 export interface UpstreamDiscovery {
   /** The protected-resource metadata document read, or null when none was found. */
   resourceMetadataUrl: string | null;
@@ -273,10 +307,15 @@ interface Fetched {
  * GET a metadata document, bounded. The body is read as JSON and nothing else.
  *
  * Redirects are followed — a metadata path that 301s to its trailing-slash twin
- * is ordinary — but the URL the answer finally came from must still pass
- * `tokenUrlAllowed`, so a redirect cannot walk discovery onto plain http.
+ * is ordinary — and the URL the answer finally came from must still pass
+ * `allowed`, so an answer from a plain-http address is never USED. The hops in
+ * between have been requested by then: unauthenticated GETs carrying nothing.
  */
-async function getJson(url: string, fetchImpl: typeof fetch): Promise<Fetched> {
+async function getJson(
+  url: string,
+  fetchImpl: typeof fetch,
+  allowed: (url: string) => boolean,
+): Promise<Fetched> {
   return withRequestDeadline(
     DISCOVERY_TIMEOUT_MS,
     async (signal) => {
@@ -294,7 +333,7 @@ async function getJson(url: string, fetchImpl: typeof fetch): Promise<Fetched> {
             `before any HTTP answer. Nothing was registered or written.`,
         );
       }
-      if (res.url && !tokenUrlAllowed(res.url)) {
+      if (res.url && !allowed(res.url)) {
         await res.body?.cancel().catch(() => undefined);
         throw new UpstreamConnectError(
           "insecure_endpoint",
@@ -346,17 +385,26 @@ export function bearerChallenge(header: string | null): {
   resourceMetadata: string | null;
   scope: string | null;
 } {
-  if (!header || !/\bbearer\b/i.test(header)) {
-    return { resourceMetadata: null, scope: null };
+  const none = { resourceMetadata: null, scope: null };
+  const at = header ? /(^|[\s,])bearer(\s|$)/i.exec(header) : null;
+  if (!header || !at) return none;
+  // Walk the challenge's parameters in order, so a `scope=` inside a quoted
+  // value — a metadata URL with a query string — is consumed with that value
+  // rather than matched on its own. A bare token that is not a parameter is
+  // the next challenge's scheme, and ends this one.
+  const params = new Map<string, string>();
+  const re =
+    /\s*,?\s*([A-Za-z0-9_-]+)\s*(?:=\s*(?:"((?:[^"\\]|\\.)*)"|([^\s,]+)))?/y;
+  re.lastIndex = at.index + at[0].length;
+  for (let m = re.exec(header); m; m = re.exec(header)) {
+    const value = m[2] ?? m[3];
+    if (value === undefined) break;
+    const name = m[1]!.toLowerCase();
+    if (!params.has(name)) params.set(name, value);
   }
-  const param = (name: string): string | null => {
-    const re = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|([^\\s,]+))`, "i");
-    const m = re.exec(header);
-    return m ? (m[1] ?? m[2] ?? null) : null;
-  };
   return {
-    resourceMetadata: param("resource_metadata"),
-    scope: param("scope"),
+    resourceMetadata: params.get("resource_metadata") ?? null,
+    scope: params.get("scope") ?? null,
   };
 }
 
@@ -487,6 +535,7 @@ function httpsField(
   meta: Record<string, unknown>,
   field: string,
   where: string,
+  allowed: (url: string) => boolean,
 ): string {
   const value = meta[field];
   if (typeof value !== "string" || value === "") {
@@ -497,7 +546,7 @@ function httpsField(
         `registered or written.`,
     );
   }
-  if (!tokenUrlAllowed(value)) {
+  if (!allowed(value)) {
     throw new UpstreamConnectError(
       "insecure_endpoint",
       `The authorization server metadata at ${shown(where)} names a ${field} ` +
@@ -524,6 +573,7 @@ export async function discoverUpstream(
   fetchImpl: typeof fetch = fetch,
 ): Promise<UpstreamDiscovery> {
   const { upstreamUrl } = input;
+  const allowed = (url: string) => endpointAllowed(upstreamUrl, url);
   const first = await probe(upstreamUrl, fetchImpl);
 
   // THE PROTECTED-RESOURCE DOCUMENT. The challenge's own pointer first, then
@@ -531,7 +581,7 @@ export async function discoverUpstream(
   const candidates: string[] = [];
   const pointer = first.challenge.resourceMetadata;
   if (pointer) {
-    if (!tokenUrlAllowed(pointer)) {
+    if (!allowed(pointer)) {
       throw new UpstreamConnectError(
         "insecure_endpoint",
         `${shown(upstreamUrl)} points at protected-resource metadata that is ` +
@@ -547,7 +597,7 @@ export async function discoverUpstream(
   let prm: Record<string, unknown> | null = null;
   let prmUrl: string | null = null;
   for (const candidate of candidates) {
-    const got = await getJson(candidate, fetchImpl);
+    const got = await getJson(candidate, fetchImpl, allowed);
     if (got.status === 404 || got.status === 410) continue;
     if (got.status === 401 || got.status === 403) {
       throw blocked(candidate, got.status);
@@ -615,7 +665,7 @@ export async function discoverUpstream(
     }
     issuer = new URL(upstreamUrl).origin;
   }
-  if (!tokenUrlAllowed(issuer)) {
+  if (!allowed(issuer)) {
     throw new UpstreamConnectError(
       "insecure_endpoint",
       `The authorization server ${shown(issuer)} is not https. Nothing was ` +
@@ -626,7 +676,7 @@ export async function discoverUpstream(
   let asMeta: Record<string, unknown> | null = null;
   let asUrl = "";
   for (const candidate of authorizationServerCandidates(issuer)) {
-    const got = await getJson(candidate, fetchImpl);
+    const got = await getJson(candidate, fetchImpl, allowed);
     if (got.status === 404 || got.status === 410) continue;
     if (got.status === 401 || got.status === 403) {
       throw blocked(candidate, got.status);
@@ -675,12 +725,13 @@ export async function discoverUpstream(
     asMeta,
     "authorization_endpoint",
     asUrl,
+    allowed,
   );
-  const tokenEndpoint = httpsField(asMeta, "token_endpoint", asUrl);
+  const tokenEndpoint = httpsField(asMeta, "token_endpoint", asUrl, allowed);
   const registrationEndpoint =
     typeof asMeta.registration_endpoint === "string" &&
     asMeta.registration_endpoint !== ""
-      ? httpsField(asMeta, "registration_endpoint", asUrl)
+      ? httpsField(asMeta, "registration_endpoint", asUrl, allowed)
       : null;
 
   // PKCE is not optional on this flow. A server that SAYS which methods it
@@ -791,9 +842,10 @@ export async function registerPublicClient(
             `The registration endpoint ${where} refused to register a client ` +
               `(HTTP ${res.status}). Either it only registers clients that ` +
               `present an initial access token, or this deployment's egress is ` +
-              `blocked. If the upstream will issue a client id by hand, seed ` +
-              `it under the clientId \${NAME} and Connect uses it instead. ` +
-              `Nothing was written.`,
+              `blocked. If the upstream will issue a client id by hand, ` +
+              `register it with this deployment's redirect URI, seed it under ` +
+              `this server's own static/ namespace as the clientId \${NAME}, ` +
+              `and Connect uses it instead. Nothing was written.`,
             res.status,
           );
         }
@@ -968,19 +1020,32 @@ export async function completeUpstreamAuthorization(
   },
   fetchImpl: typeof fetch = fetch,
 ): Promise<UpstreamGrant> {
-  const json = await exchangeAuthorizationCode(
-    {
-      endpoint: input.terms.tokenUrl,
-      clientId: input.terms.clientId,
-      clientSecret: input.clientSecret,
-      clientAuth: input.clientAuth,
-      redirectUri: input.redirectUri,
-      code: input.code,
-      verifier: input.verifier,
-      resource: input.terms.resource,
-    },
-    fetchImpl,
-  );
+  // A transport failure or an unparseable 200 is the EXCHANGE failing, not the
+  // store: everything here runs before a single write, and the page must not
+  // tell a human their stored values may be half-replaced when nothing was.
+  let json: Awaited<ReturnType<typeof exchangeAuthorizationCode>>;
+  try {
+    json = await exchangeAuthorizationCode(
+      {
+        endpoint: input.terms.tokenUrl,
+        clientId: input.terms.clientId,
+        clientSecret: input.clientSecret,
+        clientAuth: input.clientAuth,
+        redirectUri: input.redirectUri,
+        code: input.code,
+        verifier: input.verifier,
+        resource: input.terms.resource,
+      },
+      fetchImpl,
+    );
+  } catch (err) {
+    if (err instanceof ConnectorError) throw err;
+    throw new ConnectorError(
+      "exchange_failed",
+      `The code exchange with the upstream's token endpoint failed before an ` +
+        `answer strad could read. Nothing was written.`,
+    );
+  }
   const refreshToken = stringField(json, "refresh_token");
   if (!refreshToken) {
     throw new ConnectorError(

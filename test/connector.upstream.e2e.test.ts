@@ -470,3 +470,137 @@ describe("refusals before anything is registered or written", () => {
     expect(await listed(h.fake, OAUTH_NS)).toEqual([]);
   });
 });
+
+/** Connect and consent, then land the callback on `on` (default: the same app). */
+async function consentTo(
+  h: Harness,
+  on: Harness = h,
+): Promise<{ callback: Response; begin: Response }> {
+  const begin = await connect(h);
+  expect(begin.status).toBe(302);
+  const cookie = begin.headers
+    .getSetCookie()
+    .find((c) => c.startsWith(`${CONNECTOR_TX_COOKIE}=`))!
+    .split(";")[0]!;
+  const consent = await fetch(begin.headers.get("location")!, {
+    redirect: "manual",
+  });
+  const back = new URL(consent.headers.get("location")!);
+  const callback = await fetch(`${on.base}/ui/oauth/callback${back.search}`, {
+    headers: { ...auth, cookie },
+    redirect: "manual",
+  });
+  return { callback, begin };
+}
+
+describe("the callback's own refusals", () => {
+  it("refuses a transaction whose upstream config changed mid-flow, and writes nothing", async () => {
+    const before = await harness();
+    // The same deployment after a deploy that re-pointed the upstream: same
+    // session key, same env, same store shape — different oauthRefresh terms.
+    const after = await harness();
+    const { callback } = await consentTo(before, after);
+    expect(callback.status).toBe(409);
+    expect(await callback.text()).toContain("configuration changed mid-flow");
+    expect(await listed(after.fake, OAUTH_NS)).toEqual([]);
+    expect(await listed(before.fake, OAUTH_NS)).toEqual([]);
+  });
+
+  it("no refresh token in the exchange: refused, nothing written, and the page says what to try", async () => {
+    const h = await harness({
+      mcpAuth: { scopes: ["mcp:read"], omitRefreshToken: true },
+    });
+    const { callback } = await consentTo(h);
+    expect(callback.headers.get("location")).toBe(
+      `/ui/${SLUG}?error=no_refresh_token`,
+    );
+    expect(await listed(h.fake, OAUTH_NS)).toEqual([]);
+    const page = await (
+      await fetch(`${h.base}/ui/${SLUG}?error=no_refresh_token`, {
+        headers: auth,
+      })
+    ).text();
+    expect(page).toContain("issued no refresh token");
+  });
+
+  it("a token endpoint that drops the connection is exchange_failed, not a store failure", async () => {
+    const h = await harness({
+      mcpAuth: { scopes: ["mcp:read"], dropExchange: true },
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { callback } = await consentTo(h);
+    expect(callback.headers.get("location")).toBe(
+      `/ui/${SLUG}?error=exchange_failed`,
+    );
+    expect(await listed(h.fake, OAUTH_NS)).toEqual([]);
+  });
+});
+
+describe("configured clients", () => {
+  it("a literal clientId with a seeded secret: no registration, Basic auth, the secret read from the store", async () => {
+    const h = await harness(
+      {},
+      `
+      tokenUrl: "\${RIPPLING_TOKEN_URL}"
+      clientId: hand-registered
+      clientSecret: "\${RIPPLING_CLIENT_SECRET}"
+      refreshToken: "\${RIPPLING_REFRESH_TOKEN}"
+      resource: https://override.example/resource
+    mayBeUnseeded: [RIPPLING_TOKEN_URL, RIPPLING_CLIENT_SECRET, RIPPLING_REFRESH_TOKEN]`,
+    );
+    await h.fake.store.create({
+      path: `${STATIC_NS}RIPPLING_CLIENT_SECRET`,
+      secret: true,
+      value: "configured-SECRET-CANARY",
+    });
+    const { begin, callback } = await consentTo(h);
+    const q = new URL(begin.headers.get("location")!).searchParams;
+    expect(q.get("client_id")).toBe("hand-registered");
+    // A literal resource is the config's word, on the consent as on every refresh.
+    expect(q.get("resource")).toBe("https://override.example/resource");
+    expect(h.oauth.registrations).toHaveLength(0);
+    expect(callback.headers.get("location")).toBe(`/ui/${SLUG}?connected=1`);
+
+    const exchange = h.oauth.tokenRequests.find(
+      (r) => r.grantType === "authorization_code",
+    )!;
+    expect(exchange.clientSecret).toBeUndefined();
+    expect(
+      Buffer.from(
+        exchange.authorization!.replace(/^Basic /, ""),
+        "base64",
+      ).toString(),
+    ).toBe("hand-registered:configured-SECRET-CANARY");
+    // Only the ${NAME}s were strad's to write.
+    expect(await listed(h.fake, OAUTH_NS)).toEqual([
+      "RIPPLING_REFRESH_TOKEN",
+      "RIPPLING_TOKEN_URL",
+    ]);
+    // The secret never reached the cookie, the redirect or the page.
+    expect(begin.headers.get("location")).not.toContain("CANARY");
+    expect(begin.headers.getSetCookie().join("")).not.toContain("CANARY");
+  });
+
+  it("a registration endpoint that refuses falls back to a seeded client id", async () => {
+    const h = await harness({
+      mcpAuth: { scopes: ["mcp:read"], registrationStatus: 403 },
+    });
+    const refused = await connect(h);
+    expect(refused.status).toBe(409);
+    const html = await refused.text();
+    expect(html).toContain("refused to register a client (HTTP 403)");
+    expect(html).not.toContain("UPSTREAM-REGISTRATION-TEXT");
+
+    await h.fake.store.create({
+      path: `${STATIC_NS}RIPPLING_CLIENT_ID`,
+      secret: false,
+      value: "hand-registered-client",
+    });
+    const { begin, callback } = await consentTo(h);
+    expect(
+      new URL(begin.headers.get("location")!).searchParams.get("client_id"),
+    ).toBe("hand-registered-client");
+    expect(callback.headers.get("location")).toBe(`/ui/${SLUG}?connected=1`);
+    expect(await whoami(await h.mcp())).toBe("tadas");
+  });
+});

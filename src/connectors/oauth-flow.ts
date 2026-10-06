@@ -228,6 +228,10 @@ export async function exchangeAuthorizationCode(
     async (signal) => {
       const res = await fetchImpl(input.endpoint, {
         method: "POST",
+        // A 307/308 would resend the code, the verifier and any client secret
+        // to wherever it pointed. The refresh minter refuses redirects for the
+        // same reason; a redirect here lands as `exchange_failed`.
+        redirect: "manual",
         headers,
         body,
         signal,

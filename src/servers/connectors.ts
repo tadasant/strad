@@ -668,7 +668,7 @@ function describeAuthorization(
         "sign-in and writes the refresh token to `credentialPath`. If the page " +
         "refuses — for example, the upstream's metadata answers 403 to strad — it " +
         "says why. Once they say it is connected, the server works on its next " +
-        "call with no further action from you."
+        "call with no further action from you.",
     });
   }
 

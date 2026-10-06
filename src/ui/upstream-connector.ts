@@ -22,6 +22,7 @@ import {
   discoverUpstream,
   heldVariables,
   registerPublicClient,
+  shown,
   storeUpstreamWrites,
   UPSTREAM_PROVIDER,
   UpstreamConnectError,
@@ -30,6 +31,7 @@ import {
   upstreamNote,
   upstreamPlan,
   upstreamWrites,
+  type ClientSource,
   type UpstreamConnector,
   type UpstreamPlan,
   type UpstreamTerms,
@@ -236,14 +238,14 @@ export async function handleUpstreamConnect(
         "token_url_mismatch",
         `This server's oauthRefresh.tokenUrl is ${plan.tokenUrl.value}, but ` +
           `the upstream's authorization server advertises ` +
-          `${discovery.tokenEndpoint}. A refresh token minted at one would be ` +
+          `${shown(discovery.tokenEndpoint)}. A refresh token minted at one would be ` +
           `spent at the other, so strad will not begin. Make tokenUrl a ` +
           `\${NAME} and Connect writes the discovered one. Nothing was ` +
           `registered or written.`,
       );
     }
 
-    const source = clientSource(
+    let source: ClientSource | null = clientSource(
       plan,
       discovery.registrationEndpoint !== null,
       state.held,
@@ -254,7 +256,7 @@ export async function handleUpstreamConnect(
       throw new UpstreamConnectError(
         "no_client",
         (discovery.registrationEndpoint === null
-          ? `The authorization server ${discovery.issuer} offers no dynamic ` +
+          ? `The authorization server ${shown(discovery.issuer)} offers no dynamic ` +
             `client registration`
           : `This server declares oauthRefresh.clientSecret, so strad cannot ` +
             `register a client for it (it registers public clients only)`) +
@@ -279,20 +281,37 @@ export async function handleUpstreamConnect(
       );
     }
 
-    let clientId: string;
+    let clientId: string | null = null;
     if (source.kind === "literal") {
       clientId = source.clientId;
     } else if (source.kind === "register") {
-      clientId = await registerPublicClient(
-        {
-          registrationEndpoint: discovery.registrationEndpoint!,
-          redirectUri,
-          clientName: `strad (${opts.config.gateway.env}) ${slug}`,
-          scopes: discovery.scopes,
-        },
-        fetchImpl,
-      );
-    } else {
+      try {
+        clientId = await registerPublicClient(
+          {
+            registrationEndpoint: discovery.registrationEndpoint!,
+            redirectUri,
+            clientName: `strad (${opts.config.gateway.env}) ${slug}`,
+            scopes: discovery.scopes,
+          },
+          fetchImpl,
+        );
+      } catch (err) {
+        // A registration endpoint that REFUSES (401/403: it wants an initial
+        // access token, or a firewall stands in front of it) is the case the
+        // refusal tells a human to answer by seeding a client id. When one is
+        // seeded, use it rather than refusing again on every Connect.
+        const variable =
+          plan.clientId?.mode === "write" ? plan.clientId.variable : null;
+        const seeded = variable ? state.held.get(variable) : undefined;
+        const refused =
+          err instanceof UpstreamConnectError &&
+          err.code === "registration_failed" &&
+          (err.status === 401 || err.status === 403);
+        if (!refused || !variable || !seeded) throw err;
+        source = { kind: "seeded", variable, path: seeded.path };
+      }
+    }
+    if (source.kind === "seeded") {
       try {
         clientId = await state.store.reveal(source.path);
       } catch (err) {
@@ -307,6 +326,7 @@ export async function handleUpstreamConnect(
         return;
       }
     }
+    if (clientId === null) throw new Error("unreachable: no client id");
 
     terms = {
       clientId,
@@ -435,8 +455,17 @@ export async function handleUpstreamCallback(
     const path =
       meta?.path ??
       `${staticNamespace(opts.config.gateway.env, slug)}${variable}`;
+    if (!meta) {
+      // Checked at the connect POST too; this is the value going missing while
+      // the human was at the upstream.
+      connectFailed("callback", slug, "client_unreadable", {
+        variable,
+        failure: "not_found",
+      });
+      back("?error=client_unreadable");
+      return;
+    }
     try {
-      if (!meta) throw new Error("NotSeeded");
       clientSecret = await state.store.reveal(path);
     } catch (err) {
       const read = clientReadFailure(err, variable, path);
