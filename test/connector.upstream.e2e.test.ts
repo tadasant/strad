@@ -72,6 +72,7 @@ async function harness(
       resource: "\${RIPPLING_RESOURCE}"
     mayBeUnseeded:
       [RIPPLING_TOKEN_URL, RIPPLING_CLIENT_ID, RIPPLING_REFRESH_TOKEN, RIPPLING_RESOURCE]`,
+  more: { servers?: string; connectorFetch?: typeof fetch } = {},
 ): Promise<Harness> {
   const oauth = await startFakeOAuth({
     mcpAuth: { scopes: ["mcp:read"] },
@@ -111,7 +112,7 @@ servers:
     url: ${oauth.mcpUrl("tadas")}
     entitlements: [admin]
     oauthRefresh:${oauthRefresh}
-`);
+${more.servers ?? ""}`);
 
   // A DAY. The gateway's resolver will not re-read the store on its own inside
   // this test, so a slug that starts serving does so because Connect dropped
@@ -150,6 +151,7 @@ servers:
     secrets,
     secretProvider: providers,
     parametersStore: () => fake.store,
+    ...(more.connectorFetch ? { connectorFetch: more.connectorFetch } : {}),
   });
   const strad: HttpServer = await new Promise((resolve) => {
     const s = app.listen(0, "127.0.0.1", () => resolve(s));
@@ -184,22 +186,28 @@ servers:
 
 const auth = { authorization: `Bearer ${BOOTSTRAP}` };
 
-async function connect(h: Harness): Promise<Response> {
+async function connect(
+  h: Harness,
+  fields: Record<string, string> = {},
+): Promise<Response> {
   return fetch(`${h.base}/ui/${SLUG}/connect`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded", ...auth },
-    body: "",
+    body: new URLSearchParams(fields).toString(),
     redirect: "manual",
   });
 }
 
 /** Connect, consent at the fake, and land the callback. Returns the callback answer. */
-async function roundTrip(h: Harness): Promise<{
+async function roundTrip(
+  h: Harness,
+  fields: Record<string, string> = {},
+): Promise<{
   begin: Response;
   authorizeUrl: URL;
   callback: Response;
 }> {
-  const begin = await connect(h);
+  const begin = await connect(h, fields);
   expect(begin.status).toBe(302);
   const cookie = begin.headers
     .getSetCookie()
@@ -386,6 +394,28 @@ describe("refusals before anything is registered or written", () => {
     // The upstream's body is not quoted.
     expect(html).not.toContain("blocked</html>");
     expect(h.oauth.registrations).toHaveLength(0);
+    expect(await listed(h.fake, OAUTH_NS)).toEqual([]);
+    // The way forward is on the page, opened, linking the refused document.
+    expect(html).toContain("<details open>");
+    expect(html).toContain('name="resource_metadata"');
+    expect(html).toContain(
+      `href="${h.oauth.base}/.well-known/oauth-protected-resource/mcp/tadas"`,
+    );
+  });
+
+  it("a firewall in front of the token endpoint refuses before anyone signs in, pasted metadata or not", async () => {
+    const h = await harness({
+      mcpAuth: { scopes: ["mcp:read"], tokenBlocked: true },
+    });
+    const res = await connect(h);
+    expect(res.status).toBe(409);
+    const html = await res.text();
+    expect(html).toContain(
+      `The token endpoint ${h.oauth.base}/token answered HTTP 403`,
+    );
+    expect(html).toContain("Pasting metadata does not get around this");
+    expect(h.oauth.registrations).toHaveLength(0);
+    expect(h.oauth.authorizations).toHaveLength(0);
     expect(await listed(h.fake, OAUTH_NS)).toEqual([]);
   });
 
@@ -602,5 +632,211 @@ describe("configured clients", () => {
     ).toBe("hand-registered-client");
     expect(callback.headers.get("location")).toBe(`/ui/${SLUG}?connected=1`);
     expect(await whoami(await h.mcp())).toBe("tadas");
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("metadata a human pasted, for an upstream that blocks strad's egress", () => {
+  const prmFor = (h: Harness) =>
+    JSON.stringify({
+      resource: h.oauth.mcpUrl("tadas"),
+      authorization_servers: [h.oauth.base],
+      scopes_supported: ["mcp:read"],
+    });
+
+  it("a pasted protected-resource document completes the Connect the 403 stopped, and /mcp is served", async () => {
+    const h = await harness({
+      mcpAuth: { prmStatus: 403, scopes: ["mcp:read"] },
+    });
+    expect((await connect(h)).status).toBe(409);
+
+    const { authorizeUrl, callback } = await roundTrip(h, {
+      resource_metadata: prmFor(h),
+    });
+    // Everything after the document is strad's own: it registered, sent the
+    // human to the discovered endpoint with the pasted resource, and exchanged.
+    expect(h.oauth.registrations).toHaveLength(1);
+    expect(authorizeUrl.searchParams.get("resource")).toBe(
+      h.oauth.mcpUrl("tadas"),
+    );
+    expect(authorizeUrl.searchParams.get("scope")).toBe(
+      "mcp:read offline_access",
+    );
+    expect(callback.headers.get("location")).toBe(`/ui/${SLUG}?connected=1`);
+    expect(await whoami(await h.mcp())).toBe("tadas");
+  });
+
+  it("an authorization server document refused too is named, and both pasted complete it", async () => {
+    const h = await harness({
+      mcpAuth: { prmStatus: 403, asMetaStatus: 403, scopes: ["mcp:read"] },
+    });
+    const first = await connect(h, { resource_metadata: prmFor(h) });
+    expect(first.status).toBe(409);
+    const html = await first.text();
+    expect(html).toContain(
+      `${h.oauth.base}/.well-known/oauth-authorization-server answered HTTP 403`,
+    );
+    expect(html).toContain(
+      `href="${h.oauth.base}/.well-known/oauth-authorization-server"`,
+    );
+    // What was pasted is handed back, escaped, so it need not be pasted again.
+    expect(html).toContain("&quot;authorization_servers&quot;");
+
+    const asDoc = JSON.stringify({
+      issuer: h.oauth.base,
+      authorization_endpoint: `${h.oauth.base}/authorize`,
+      token_endpoint: `${h.oauth.base}/token`,
+      registration_endpoint: `${h.oauth.base}/register`,
+      code_challenge_methods_supported: ["S256"],
+      scopes_supported: ["mcp:read", "offline_access"],
+    });
+    const { callback } = await roundTrip(h, {
+      resource_metadata: prmFor(h),
+      authorization_server_metadata: asDoc,
+    });
+    expect(callback.headers.get("location")).toBe(`/ui/${SLUG}?connected=1`);
+    expect(await whoami(await h.mcp())).toBe("tadas");
+  });
+
+  it("a pasted document is checked like a fetched one, and junk is refused without being quoted", async () => {
+    const h = await harness({ mcpAuth: { prmStatus: 403 } });
+    const other = await connect(h, {
+      resource_metadata: JSON.stringify({
+        resource: "https://elsewhere.example/mcp",
+        authorization_servers: [h.oauth.base],
+      }),
+    });
+    expect(other.status).toBe(409);
+    expect(await other.text()).toContain("will not bind a credential");
+
+    const junk = await connect(h, { resource_metadata: "<b>not json</b>" });
+    expect(junk.status).toBe(409);
+    const html = await junk.text();
+    expect(html).toContain("is not a JSON object");
+    expect(html).not.toContain("<b>not json</b>");
+    expect(html).toContain("&lt;b&gt;not json&lt;/b&gt;");
+    expect(h.oauth.registrations).toHaveLength(0);
+    expect(await listed(h.fake, OAUTH_NS)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("discoveryProxy: the metadata a firewall refuses strad, read through BrightData", () => {
+  const PROXY_REFRESH = `
+      tokenUrl: "\${RIPPLING_TOKEN_URL}"
+      clientId: "\${RIPPLING_CLIENT_ID}"
+      refreshToken: "\${RIPPLING_REFRESH_TOKEN}"
+      resource: "\${RIPPLING_RESOURCE}"
+      discoveryProxy:
+        via: brightdata
+        apiKeyFrom: strad-fetch
+    mayBeUnseeded:
+      [RIPPLING_TOKEN_URL, RIPPLING_CLIENT_ID, RIPPLING_REFRESH_TOKEN, RIPPLING_RESOURCE]`;
+  const STRAD_FETCH = `
+  - slug: strad-fetch
+    kind: builtin
+    module: "./servers/echo.js"
+    entitlements: [admin]
+`;
+  const KEY_PATH = "/strad/test/mcp/strad-fetch/static/BRIGHTDATA_API_KEY";
+
+  /**
+   * strad's egress, with BrightData's request API stood in for: a POST there
+   * is answered by fetching the target from "an address the firewall lets
+   * through" and wrapping the answer in the Web Unlocker's JSON envelope.
+   */
+  function withFakeBrightData() {
+    const proxied: { url: string; zone: string; authorization: string }[] = [];
+    const f = (async (input: unknown, init?: RequestInit) => {
+      if (String(input) !== "https://api.brightdata.com/request") {
+        return fetch(input as string, init);
+      }
+      const body = JSON.parse(String(init?.body)) as {
+        url: string;
+        zone: string;
+        format: string;
+      };
+      expect(body.format).toBe("json");
+      proxied.push({
+        url: body.url,
+        zone: body.zone,
+        authorization: new Headers(init?.headers).get("authorization") ?? "",
+      });
+      const target = await fetch(body.url, {
+        headers: { "x-unblocked": "1" },
+      });
+      return Response.json({
+        status_code: target.status,
+        headers: {},
+        body: await target.text(),
+      });
+    }) as typeof fetch;
+    return { f, proxied };
+  }
+
+  it("click Connect, sign in, done: only the refused document goes through the proxy, with strad-fetch's key", async () => {
+    const bd = withFakeBrightData();
+    const h = await harness(
+      { mcpAuth: { prmStatus: 403, scopes: ["mcp:read"] } },
+      PROXY_REFRESH,
+      { servers: STRAD_FETCH, connectorFetch: bd.f },
+    );
+    await h.fake.store.create({
+      path: KEY_PATH,
+      secret: true,
+      value: "bd-KEY-CANARY",
+    });
+    const page = await (
+      await fetch(`${h.base}/ui/${SLUG}`, { headers: auth })
+    ).text();
+    expect(page).toContain("read again through BrightData");
+
+    const { begin, callback } = await roundTrip(h);
+    expect(callback.headers.get("location")).toBe(`/ui/${SLUG}?connected=1`);
+    expect(await whoami(await h.mcp())).toBe("tadas");
+
+    // ONE document went through it: the protected-resource metadata that
+    // answered 403. The authorization server's answered strad directly, and
+    // the probe, the registration and the exchange never touch the proxy.
+    expect(bd.proxied).toEqual([
+      {
+        url: `${h.oauth.base}/.well-known/oauth-protected-resource/mcp/tadas`,
+        zone: "mcp_server_unlocker",
+        authorization: "Bearer bd-KEY-CANARY",
+      },
+    ]);
+    expect(h.oauth.registrations).toHaveLength(1);
+    // The key reached nothing but the proxy's Authorization header.
+    expect(begin.headers.get("location")).not.toContain("CANARY");
+    expect(begin.headers.getSetCookie().join("")).not.toContain("CANARY");
+  });
+
+  it("an upstream that serves strad sends nothing to the proxy, and its key is never read", async () => {
+    const bd = withFakeBrightData();
+    const h = await harness({}, PROXY_REFRESH, {
+      servers: STRAD_FETCH,
+      connectorFetch: bd.f,
+    });
+    const { callback } = await roundTrip(h);
+    expect(callback.headers.get("location")).toBe(`/ui/${SLUG}?connected=1`);
+    expect(bd.proxied).toEqual([]);
+  });
+
+  it("no key seeded where apiKeyFrom points: says where to seed it, and nothing is registered", async () => {
+    const bd = withFakeBrightData();
+    const h = await harness({ mcpAuth: { prmStatus: 403 } }, PROXY_REFRESH, {
+      servers: STRAD_FETCH,
+      connectorFetch: bd.f,
+    });
+    const res = await connect(h);
+    expect(res.status).toBe(409);
+    const html = await res.text();
+    expect(html).toContain(
+      "Seed BRIGHTDATA_API_KEY under /strad/test/mcp/strad-fetch/static/",
+    );
+    expect(bd.proxied).toEqual([]);
+    expect(h.oauth.registrations).toHaveLength(0);
   });
 });

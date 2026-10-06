@@ -3,8 +3,10 @@ import { parseConfig } from "../src/config/load.ts";
 import {
   authorizationServerCandidates,
   bearerChallenge,
+  checkTokenEndpoint,
   discoverUpstream,
   endpointAllowed,
+  parseSuppliedDocument,
   protectedResourceCandidates,
   registerPublicClient,
   resourceCovers,
@@ -266,6 +268,119 @@ describe("discoverUpstream", () => {
     expect((err as Error).message).toContain("firewall");
   });
 
+  it("a 403 names the document and the URL a human can open instead", async () => {
+    const prmBlocked = await discoverUpstream(
+      { upstreamUrl: UP, scopes: null },
+      scripted({ [UP]: challenge, [PRM]: { status: 403 } }),
+    ).catch((e: UpstreamConnectError) => e);
+    expect(prmBlocked).toMatchObject({
+      blocked: { document: "resource", url: PRM },
+    });
+    expect((prmBlocked as Error).message).toContain("paste the JSON");
+
+    const asBlocked = await discoverUpstream(
+      { upstreamUrl: UP, scopes: null },
+      scripted({
+        [UP]: challenge,
+        [PRM]: { json: { resource: UP, authorization_servers: [AS] } },
+        [AS_META]: { status: 403 },
+      }),
+    ).catch((e: UpstreamConnectError) => e);
+    expect(asBlocked).toMatchObject({
+      code: "metadata_blocked",
+      blocked: { document: "authorization_server", url: AS_META },
+    });
+  });
+
+  it("a supplied document is read in place of the fetch, and checked the same way", async () => {
+    const f = scripted({ [UP]: challenge, [AS_META]: asMeta() });
+    const d = await discoverUpstream(
+      {
+        upstreamUrl: UP,
+        scopes: null,
+        supplied: {
+          resource: { resource: UP, authorization_servers: [AS] },
+        },
+      },
+      f,
+    );
+    expect(f.calls).not.toContain(PRM);
+    expect(d.resourceMetadataUrl).toBe(PRM);
+    expect(d.tokenEndpoint).toBe(`${AS}/token`);
+
+    // Both supplied: only the MCP probe goes out.
+    const g = scripted({ [UP]: challenge });
+    const both = await discoverUpstream(
+      {
+        upstreamUrl: UP,
+        scopes: null,
+        supplied: {
+          resource: { resource: UP, authorization_servers: [AS] },
+          authorizationServer: asMeta().json,
+        },
+      },
+      g,
+    );
+    expect(g.calls).toEqual([UP]);
+    expect(both.registrationEndpoint).toBe(`${AS}/register`);
+
+    await expect(
+      discoverUpstream(
+        {
+          upstreamUrl: UP,
+          scopes: null,
+          supplied: {
+            resource: {
+              resource: "https://other.example/mcp",
+              authorization_servers: [AS],
+            },
+          },
+        },
+        scripted({ [UP]: challenge }),
+      ),
+    ).rejects.toMatchObject({ code: "resource_mismatch" });
+    await expect(
+      discoverUpstream(
+        {
+          upstreamUrl: UP,
+          scopes: null,
+          supplied: {
+            resource: { resource: UP, authorization_servers: [AS] },
+            authorizationServer: asMeta({ issuer: "https://x.example" }).json,
+          },
+        },
+        scripted({ [UP]: challenge }),
+      ),
+    ).rejects.toMatchObject({ code: "issuer_mismatch" });
+  });
+
+  it("an HTML 200 at the RFC 8414 path is a single-page app, not metadata: the OpenID path is tried next", async () => {
+    const calls: string[] = [];
+    const f = (async (input: unknown) => {
+      const url = String(input);
+      calls.push(url);
+      if (url === UP) {
+        return new Response("", { status: 401, headers: challenge.headers });
+      }
+      if (url === PRM) {
+        return Response.json({ resource: UP, authorization_servers: [AS] });
+      }
+      if (url === AS_META) {
+        return new Response("<!doctype html><html></html>", {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        });
+      }
+      if (url === `${AS}/.well-known/openid-configuration`) {
+        return Response.json(asMeta().json);
+      }
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    const d = await discoverUpstream({ upstreamUrl: UP, scopes: null }, f);
+    expect(d.authorizationEndpoint).toBe(`${AS}/authorize`);
+    expect(calls).toContain(`${AS}/.well-known/openid-configuration`);
+  });
+
   it("refuses metadata that describes a different resource", async () => {
     const f = scripted({
       [UP]: challenge,
@@ -455,5 +570,67 @@ describe("upstreamWrites", () => {
     expect(
       writes.every((w) => w.path.startsWith("/strad/test/mcp/rippling/oauth/")),
     ).toBe(true);
+  });
+});
+
+describe("parseSuppliedDocument", () => {
+  it("empty is not supplied; a JSON object is; anything else is refused unquoted", () => {
+    expect(parseSuppliedDocument("", "resource")).toBeUndefined();
+    expect(parseSuppliedDocument("  \n", "resource")).toBeUndefined();
+    expect(parseSuppliedDocument(undefined, "resource")).toBeUndefined();
+    expect(parseSuppliedDocument(' {"a": 1} ', "resource")).toEqual({ a: 1 });
+    for (const bad of ["[1]", "null", "42", "<html>CANARY</html>"]) {
+      let err: unknown;
+      try {
+        parseSuppliedDocument(bad, "authorization_server");
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toMatchObject({ code: "metadata_invalid" });
+      expect((err as Error).message).toContain("authorization server metadata");
+      expect((err as Error).message).not.toContain("CANARY");
+    }
+  });
+});
+
+describe("checkTokenEndpoint", () => {
+  const answer = (status: number, type: string) =>
+    (async () =>
+      new Response("x", {
+        status,
+        headers: { "content-type": type },
+      })) as unknown as typeof fetch;
+
+  it("a 403 page is a firewall; an OAuth server's answer to a bare GET is not", async () => {
+    // What the two real hosts answer a DigitalOcean address: Cloudflare's
+    // block page on mcp.rippling.com, a 405 from app.rippling.com's endpoint.
+    await expect(
+      checkTokenEndpoint(
+        "https://mcp.rippling.com/token",
+        answer(403, "text/html; charset=UTF-8"),
+      ),
+    ).rejects.toMatchObject({ code: "token_endpoint_blocked", status: 403 });
+    for (const [status, type] of [
+      [405, "text/html; charset=utf-8"],
+      [400, "application/json"],
+      [403, "application/json"],
+      [404, "text/html"],
+    ] as const) {
+      await expect(
+        checkTokenEndpoint(
+          "https://app.rippling.com/api/o/token/",
+          answer(status, type),
+        ),
+      ).resolves.toBeUndefined();
+    }
+  });
+
+  it("a connection that fails is upstream_unreachable", async () => {
+    const f = (async () => {
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch;
+    await expect(
+      checkTokenEndpoint("https://auth.example/token", f),
+    ).rejects.toMatchObject({ code: "upstream_unreachable" });
   });
 });

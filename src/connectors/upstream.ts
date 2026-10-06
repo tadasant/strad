@@ -214,6 +214,9 @@ export type UpstreamErrorCode =
   | "upstream_unreachable"
   | "metadata_blocked"
   | "metadata_unavailable"
+  | "token_endpoint_blocked"
+  | "proxy_failed"
+  | "proxy_key_unreadable"
   | "metadata_invalid"
   | "resource_mismatch"
   | "issuer_mismatch"
@@ -224,12 +227,20 @@ export type UpstreamErrorCode =
   | "registration_confidential"
   | "no_client";
 
+/** Which metadata document a refusal is about, when it is about one. */
+export type MetadataDocument = "resource" | "authorization_server";
+
 export class UpstreamConnectError extends Error {
   constructor(
     readonly code: UpstreamErrorCode,
     message: string,
     /** The HTTP status that decided it, when one did. A number, never text. */
     readonly status?: number,
+    /**
+     * For `metadata_blocked`: the document strad was refused, and the URL a
+     * human can open in their own browser to read it instead.
+     */
+    readonly blocked?: { document: MetadataDocument; url: string },
   ) {
     super(message);
     this.name = "UpstreamConnectError";
@@ -327,6 +338,8 @@ async function getJson(
         });
       } catch (err) {
         if (signal.aborted) throw err;
+        // A discovery proxy's own refusal is already in strad's words.
+        if (err instanceof UpstreamConnectError) throw err;
         throw new UpstreamConnectError(
           "upstream_unreachable",
           `strad could not reach ${shown(url)} at all: the connection failed ` +
@@ -362,19 +375,131 @@ async function getJson(
   );
 }
 
-/** A 403 on a metadata document, in the words that tell a human whose problem it is. */
-function blocked(url: string, status: number): UpstreamConnectError {
+/**
+ * A 403 on a metadata document, in the words that tell a human whose problem
+ * it is — and what they can do about it from where they sit.
+ *
+ * A metadata document is PUBLIC: the same bytes for every reader. So a human
+ * whose own browser is not behind the firewall's block can read it and paste
+ * it into the Connect form, and strad validates the pasted document exactly as
+ * it validates a fetched one. That moves the one blocked GET to a residential
+ * address and nothing else: registration, the code exchange and every refresh
+ * still go out from strad, which is why the page checks the token endpoint
+ * answers before it sends anyone to sign in.
+ */
+function blocked(
+  url: string,
+  status: number,
+  document: MetadataDocument,
+): UpstreamConnectError {
   return new UpstreamConnectError(
     "metadata_blocked",
     `${shown(url)} answered HTTP ${status} to strad. A metadata document is ` +
       `public by design, so a refusal here is almost always a web application ` +
       `firewall (Cloudflare, typically) blocking this deployment's outbound ` +
-      `addresses — a cloud provider's — rather than an OAuth answer. Nothing in ` +
-      `strad's config changes that: the upstream has to allow this ` +
-      `deployment's egress, or this server cannot be connected from here. ` +
-      `Nothing was registered or written.`,
+      `addresses — a cloud provider's — rather than an OAuth answer. Open that ` +
+      `address in your own browser, paste the JSON it shows into the form ` +
+      `below, and Connect again: strad checks a pasted document the way it ` +
+      `checks a fetched one. Nothing was registered or written.`,
     status,
+    { document, url },
   );
+}
+
+/**
+ * A metadata document a human pasted into the Connect form, as JSON.
+ *
+ * Empty is "not supplied". Anything else must be one JSON object, or the
+ * Connect refuses — and the refusal does not quote it back: what was pasted
+ * is not strad's text, and a stray paste can be anything.
+ */
+export function parseSuppliedDocument(
+  text: unknown,
+  document: MetadataDocument,
+): Record<string, unknown> | undefined {
+  if (typeof text !== "string" || text.trim() === "") return undefined;
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = undefined;
+  }
+  if (!json || typeof json !== "object" || Array.isArray(json)) {
+    throw new UpstreamConnectError(
+      "metadata_invalid",
+      `The pasted ${
+        document === "resource"
+          ? "protected-resource metadata"
+          : "authorization server metadata"
+      } is not a JSON object. Paste the whole document the address shows, ` +
+        `from the opening { to the closing }. Nothing was registered or written.`,
+    );
+  }
+  return json as Record<string, unknown>;
+}
+
+/**
+ * Does the token endpoint answer this deployment at all?
+ *
+ * Asked BEFORE a human is sent to sign in, because the code exchange and every
+ * refresh after it go to this URL from strad's own egress. A firewall that
+ * blocks the metadata may block this too, and finding that out after the
+ * consent is a wasted sign-in and a refusal with nothing to act on.
+ *
+ * The question is a bare GET: no grant, no client, nothing a token endpoint
+ * would act on. A token endpoint answers it 405, 400 or 404, often as JSON. A
+ * firewall answers it with a 403 page, and a 403 that is not JSON is the only
+ * answer that refuses here — anything else means the deployment reached the
+ * server behind the address, which is all this can tell.
+ */
+export async function checkTokenEndpoint(
+  tokenEndpoint: string,
+  fetchImpl: typeof fetch,
+): Promise<void> {
+  const where = shown(tokenEndpoint);
+  const res = await withRequestDeadline(
+    DISCOVERY_TIMEOUT_MS,
+    async (signal) => {
+      try {
+        const r = await fetchImpl(tokenEndpoint, {
+          method: "GET",
+          redirect: "manual",
+          headers: { accept: "application/json" },
+          signal,
+        });
+        await r.body?.cancel().catch(() => undefined);
+        return r;
+      } catch (err) {
+        if (signal.aborted) throw err;
+        throw new UpstreamConnectError(
+          "upstream_unreachable",
+          `strad could not reach the token endpoint ${where}: the connection ` +
+            `failed before any HTTP answer. The code exchange and every ` +
+            `refresh go there, so strad did not send you to sign in. Nothing ` +
+            `was registered or written.`,
+        );
+      }
+    },
+    () =>
+      new UpstreamConnectError(
+        "upstream_unreachable",
+        `The token endpoint ${where} did not answer within ` +
+          `${DISCOVERY_TIMEOUT_MS / 1000}s. Nothing was registered or written.`,
+      ),
+  );
+  const type = res.headers.get("content-type") ?? "";
+  if (res.status === 403 && !/json/i.test(type)) {
+    throw new UpstreamConnectError(
+      "token_endpoint_blocked",
+      `The token endpoint ${where} answered HTTP 403 to strad with a page, ` +
+        `not an OAuth error — a firewall refusing this deployment's egress. ` +
+        `The code exchange and every refresh after it go there from strad, so ` +
+        `a consent would mint a credential strad could never spend. Pasting ` +
+        `metadata does not get around this: the upstream has to allow this ` +
+        `deployment's outbound addresses. Nothing was registered or written.`,
+      403,
+    );
+  }
 }
 
 /**
@@ -569,11 +694,27 @@ export async function discoverUpstream(
     upstreamUrl: string;
     resourceOverride?: string;
     scopes: string[] | null;
+    /**
+     * Metadata documents a human pasted, read in place of fetching them —
+     * the answer to `metadata_blocked`. Each is checked exactly as a fetched
+     * one is. See `blocked`.
+     */
+    supplied?: {
+      resource?: Record<string, unknown>;
+      authorizationServer?: Record<string, unknown>;
+    };
+    /**
+     * The `fetch` the two metadata documents are read with, when it is not
+     * strad's own egress — `oauthRefresh.discoveryProxy:`. The MCP probe never
+     * goes through it. See src/connectors/discovery-proxy.ts.
+     */
+    metadataFetch?: typeof fetch;
   },
   fetchImpl: typeof fetch = fetch,
 ): Promise<UpstreamDiscovery> {
   const { upstreamUrl } = input;
   const allowed = (url: string) => endpointAllowed(upstreamUrl, url);
+  const metadataFetch = input.metadataFetch ?? fetchImpl;
   const first = await probe(upstreamUrl, fetchImpl);
 
   // THE PROTECTED-RESOURCE DOCUMENT. The challenge's own pointer first, then
@@ -596,11 +737,17 @@ export async function discoverUpstream(
 
   let prm: Record<string, unknown> | null = null;
   let prmUrl: string | null = null;
-  for (const candidate of candidates) {
-    const got = await getJson(candidate, fetchImpl, allowed);
+  if (input.supplied?.resource) {
+    // The document the human was sent to read: the challenge's pointer, or the
+    // first well-known path. Named so every refusal below can say which.
+    prm = input.supplied.resource;
+    prmUrl = candidates[0]!;
+  }
+  for (const candidate of prm ? [] : candidates) {
+    const got = await getJson(candidate, metadataFetch, allowed);
     if (got.status === 404 || got.status === 410) continue;
     if (got.status === 401 || got.status === 403) {
-      throw blocked(candidate, got.status);
+      throw blocked(candidate, got.status, "resource");
     }
     if (got.status < 200 || got.status >= 300) {
       throw new UpstreamConnectError(
@@ -673,13 +820,18 @@ export async function discoverUpstream(
     );
   }
 
+  const asCandidates = authorizationServerCandidates(issuer);
   let asMeta: Record<string, unknown> | null = null;
   let asUrl = "";
-  for (const candidate of authorizationServerCandidates(issuer)) {
-    const got = await getJson(candidate, fetchImpl, allowed);
+  if (input.supplied?.authorizationServer) {
+    asMeta = input.supplied.authorizationServer;
+    asUrl = asCandidates[0]!;
+  }
+  for (const candidate of asMeta ? [] : asCandidates) {
+    const got = await getJson(candidate, metadataFetch, allowed);
     if (got.status === 404 || got.status === 410) continue;
     if (got.status === 401 || got.status === 403) {
-      throw blocked(candidate, got.status);
+      throw blocked(candidate, got.status, "authorization_server");
     }
     if (got.status < 200 || got.status >= 300) {
       throw new UpstreamConnectError(
@@ -689,13 +841,11 @@ export async function discoverUpstream(
         got.status,
       );
     }
-    if (!got.json || typeof got.json !== "object") {
-      throw new UpstreamConnectError(
-        "metadata_invalid",
-        `${shown(candidate)} did not answer with a JSON document. Nothing was ` +
-          `registered or written.`,
-      );
-    }
+    // A 200 that is not a JSON object is not metadata, and the next path may
+    // hold it. Single-page apps answer every unknown path with their HTML
+    // shell: app.rippling.com serves one at the RFC 8414 path and its real
+    // document at the OpenID Connect one.
+    if (!got.json || typeof got.json !== "object") continue;
     asMeta = got.json as Record<string, unknown>;
     asUrl = candidate;
     break;

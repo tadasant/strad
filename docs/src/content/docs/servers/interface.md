@@ -257,7 +257,27 @@ does with it:
 
 `url:` must be a literal, because discovery starts from it. With every name in
 `mayBeUnseeded:`, the slug deploys inactive and starts serving on the request
-after Connect. See [Connectors](/operate/connectors/#remote-http-with-oauthrefresh-connect-an-upstream-mcp-server)
+after Connect.
+
+One optional field is for Connect alone. `discoveryProxy:` is for an upstream
+whose firewall refuses strad's cloud egress on its metadata documents:
+
+```yaml
+oauthRefresh:
+  # ...
+  discoveryProxy:
+    via: brightdata # the only proxy strad speaks: BrightData's Web Unlocker
+    apiKeyFrom: strad-fetch # whose namespace holds BRIGHTDATA_API_KEY; default: this slug
+    zone: mcp_server_unlocker # the default, strad-fetch's zone
+```
+
+A metadata document that answers strad `403` is read again through the proxy.
+Nothing else goes through it. The MCP probe, registration, the code exchange and
+every refresh go out from strad, and the proxy accepts GET only. `apiKeyFrom`
+must name a configured slug. The key is read by the console at Connect time, and
+no running server is handed it. This works around the upstream's bot protection
+and sends its metadata URLs to a third party, so opt in deliberately.
+Without it, the page offers to take the document pasted from your own browser. See [Connectors](/operate/connectors/#remote-http-with-oauthrefresh-connect-an-upstream-mcp-server)
 and [Limitations](/limitations/) #111.
 
 ### 2. `local-tunnel`

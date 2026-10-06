@@ -5727,11 +5727,32 @@ writes the `${NAME}`s the block declares under the slug's `oauth/` kind and drop
 the process's cached reading.
 
 - Whether it works for a given upstream is decided by that upstream's firewall.
-  Rippling's Cloudflare serves `/mcp` its `401` and serves the protected-resource
-  metadata `403` to a DigitalOcean address (the Zimmer host, 2026-10-06). App
-  Platform's egress was not tested: the staging console needs
-  `ADMIN_BOOTSTRAP_TOKEN`, which no agent holds. Connect refuses with that
-  sentence before registering anything.
+  From a DigitalOcean droplet (the Zimmer host, 2026-10-06) Rippling's
+  Cloudflare answers `/mcp` with its `401`, bearer or not, and serves a `403`
+  block page on EVERY other path on `mcp.rippling.com`, both `.well-known`
+  documents included. Prod's App Platform egress got the same `403` on the
+  protected-resource metadata that day. `app.rippling.com` —
+  its OpenID configuration, its token endpoint (`/api/o/token/`) and an RFC 7591
+  registration endpoint (`/api/o/register/`) that its metadata does not
+  advertise — answers normally. What `mcp.rippling.com`'s own metadata names
+  was never read from a cloud address. Two ways past the block, both covering
+  the two metadata GETs and nothing else:
+  - **Pasted metadata.** A `metadata_blocked` refusal opens a form on the page
+    that links the refused document; a human opens it in their own browser and
+    pastes the JSON. strad checks it as if it had fetched it. Manual: two
+    copy-pastes on a blocked upstream.
+  - **`oauthRefresh.discoveryProxy: { via: brightdata }`.** A document that
+    answers strad `403` is re-read through BrightData's Web Unlocker, with
+    `BRIGHTDATA_API_KEY` from the `apiKeyFrom` slug's namespace
+    (`strad-fetch`'s). This is a deliberate workaround for the upstream's bot
+    protection, and it hands the upstream's metadata URLs to a third party.
+    Nothing carrying a credential goes through it — the function refuses any
+    method but GET.
+    Registration, the code exchange and every refresh still go out from strad.
+    Connect GETs the token endpoint first and refuses (`token_endpoint_blocked`)
+    on a non-JSON `403`, before anything is registered or anyone signs in: a
+    firewall there means no refresh would ever succeed, and neither workaround
+    helps.
 - The transaction cookie is HMAC-signed, not encrypted, so a client strad
   registers is always public (`token_endpoint_auth_method: none`); a confidential
   registration answer is refused. A confidential client is registered by hand and
@@ -5747,9 +5768,11 @@ the process's cached reading.
 pending registration server-side, would add a second sealing primitive or the
 server-side state `src/connectors/state.ts` exists to avoid, for upstreams that
 the MCP spec already steers toward public clients. A WAF on someone else's
-metadata is not something strad can route around without an egress it does not
-have.
+metadata cannot be routed around by strad alone. Pasting moves one public GET to
+a human's browser. The proxy moves it to a third party, a choice the
+deployment's owner made for one slug. Neither carries a credential, and the
+refresh path, which runs on every token expiry, never leaves strad's egress.
 
-**Undo.** For a blocked upstream, get the deployment's egress allowed, or
-authorize elsewhere and seed by hand. Verify against a real upstream that allows
-App Platform egress, and record it here.
+**Undo.** Get the upstream to allow the deployment's egress, and drop
+`discoveryProxy:`. Verify against a real upstream that allows App Platform
+egress, and record it here.

@@ -87,6 +87,10 @@ export interface McpAuthOptions {
   confidential?: boolean;
   /** Serve the protected-resource metadata with this status instead. */
   prmStatus?: number;
+  /** Serve the authorization server metadata with this status instead. */
+  asMetaStatus?: number;
+  /** A firewall in front of `/token`: a GET there is a 403 page. */
+  tokenBlocked?: boolean;
   /** `scopes_supported` on the protected-resource metadata. */
   scopes?: string[];
   /** `/register` refuses with this status. */
@@ -177,7 +181,9 @@ export async function startFakeOAuth(
     app.get(
       "/.well-known/oauth-protected-resource/mcp/:principal",
       (req: Request, res: Response) => {
-        if (auth.prmStatus) {
+        // `x-unblocked` stands for a request from an address the firewall
+        // lets through: the e2e suite's stand-in for BrightData sends it.
+        if (auth.prmStatus && !req.get("x-unblocked")) {
           res.status(auth.prmStatus).type("html").send("<html>blocked</html>");
           return;
         }
@@ -189,6 +195,10 @@ export async function startFakeOAuth(
       },
     );
     app.get("/.well-known/oauth-authorization-server", (_req, res) => {
+      if (auth.asMetaStatus) {
+        res.status(auth.asMetaStatus).type("html").send("<html>blocked</html>");
+        return;
+      }
       res.json({
         issuer: base,
         authorization_endpoint: `${base}/authorize`,
@@ -201,6 +211,11 @@ export async function startFakeOAuth(
         scopes_supported: [...(auth.scopes ?? []), "offline_access"],
       });
     });
+    if (auth.tokenBlocked) {
+      app.get("/token", (_req, res) => {
+        res.status(403).type("html").send("<html>blocked</html>");
+      });
+    }
     app.post("/register", express.json(), (req: Request, res: Response) => {
       const body = req.body as Record<string, unknown>;
       registrations.push(body);
