@@ -3,6 +3,7 @@ import { parseConfig } from "../src/config/load.ts";
 import { createParameterWriteBack } from "../src/http/params.ts";
 import {
   gatewayParameterPath,
+  oauthParameterPath,
   parameterPath,
   ParameterStoreError,
   type ParameterStore,
@@ -202,5 +203,28 @@ describe("createParameterWriteBack", () => {
       expect.stringContaining("gateway.secrets.provider is env"),
     ]);
     expect(h.warnings()[0]).not.toContain("rt-1-never-shown");
+  });
+});
+
+describe("createParameterWriteBack: the oauth/ kind the console's Connect writes", () => {
+  it("rotates the server's oauth/ copy first — the one the resolver reads — and leaves static/ alone", async () => {
+    const h = harness();
+    const OAUTH_PATH = oauthParameterPath("test", "granola", VARIABLE);
+    await h.fake.store.create({
+      path: OAUTH_PATH,
+      secret: true,
+      value: "rt-0",
+    });
+    await h.fake.store.create({
+      path: SERVER_PATH,
+      secret: true,
+      value: "rt-hand-seeded",
+    });
+
+    await h.writeBack("granola", VARIABLE, "rt-1", () => true);
+
+    expect(await h.fake.store.reveal(OAUTH_PATH)).toBe("rt-1");
+    expect(await h.fake.store.reveal(SERVER_PATH)).toBe("rt-hand-seeded");
+    expect(h.invalidations()).toBe(1);
   });
 });

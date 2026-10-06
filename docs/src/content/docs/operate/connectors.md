@@ -315,6 +315,11 @@ A slug therefore reads its own credential or it reads nothing.
 no connector page at all. Both are the same failure: a consent that succeeds and
 writes a real Google credential into a namespace no render will ever read.
 
+A `remote-http` server has no container to inject onto, and its consent runs
+differently: see [`remote-http` with
+`oauthRefresh:`](#remote-http-with-oauthrefresh-connect-an-upstream-mcp-server)
+below.
+
 ## What the flow refuses
 
 The browser proposes almost nothing. The connect action carries no fields; the
@@ -508,6 +513,116 @@ payload on stderr and is not exported.
   at ERROR, and it is throttled the same way.
 
 Nothing derived from a credential is exported — see [Telemetry](/operate/telemetry/).
+
+## `remote-http` with `oauthRefresh:`: connect an upstream MCP server
+
+A [`remote-http`](/servers/interface/#oauthrefresh--a-bearer-that-expires-minted-by-strad)
+server with `oauthRefresh:` already mints its access tokens from a refresh token
+and writes a rotated one back. Its console page, `/ui/<slug>`, is where the
+first refresh token comes from. There is nothing to add to the config: the
+`oauthRefresh:` block's own `${NAME}`s are what Connect writes.
+
+```yaml
+- slug: rippling
+  kind: remote-http
+  url: https://mcp.rippling.com/mcp
+  entitlements: [zimmer]
+  oauthRefresh:
+    tokenUrl: "${RIPPLING_TOKEN_URL}"
+    clientId: "${RIPPLING_CLIENT_ID}"
+    refreshToken: "${RIPPLING_REFRESH_TOKEN}"
+    resource: "${RIPPLING_RESOURCE}"
+  mayBeUnseeded:
+    [
+      RIPPLING_TOKEN_URL,
+      RIPPLING_CLIENT_ID,
+      RIPPLING_REFRESH_TOKEN,
+      RIPPLING_RESOURCE,
+    ]
+```
+
+:::caution
+Discovery and every refresh go out from strad's own egress, a cloud provider's
+addresses, and some upstreams' firewalls refuse them. Rippling's protected-resource
+metadata answers `403` to a DigitalOcean address. Connect says so and stops, but
+nothing in strad can get around it. See [Known limitations](/limitations/) #111.
+:::
+
+That slug deploys inactive (`unconfigured`). A human opens `/ui/rippling`, clicks
+**Connect**, signs in at the upstream, and lands back on the page. The request
+after that is served. Nothing is redeployed.
+
+What happens behind the button, in order:
+
+1. **Discover.** strad sends the upstream an unauthenticated `initialize` and reads
+   the `401`'s `WWW-Authenticate: Bearer resource_metadata="…"` (RFC 9728),
+   falling back to `/.well-known/oauth-protected-resource{path}`. That document
+   names the authorization server, whose metadata comes from the RFC 8414 path,
+   then the two OpenID Connect paths. An upstream with no protected-resource
+   metadata that still answers `401` is taken as its own authorization server
+   (the MCP spec's fallback). Every endpoint must be https.
+2. **Pick a client.** A literal `clientId` is a pre-registered client and is used
+   as is. A `${NAME}` is registered fresh (RFC 7591) when the server offers
+   registration and the block declares no `clientSecret`: a **public** client,
+   `token_endpoint_auth_method: none`, whose one redirect URI is this
+   deployment's `/ui/oauth/callback`. With no registration endpoint, or with a
+   `clientSecret`, the value already seeded under the slug's own namespace is
+   used, and its absence is a refusal that names the redirect URI to register
+   and where to seed the id.
+3. **Authorize.** Code + PKCE (S256) with `resource=` (RFC 8707). Scopes are the
+   literal `oauthRefresh.scope:`, or else what the `401` asked for, or else the
+   resource's `scopes_supported`, plus `offline_access` when the authorization
+   server lists it. With none of those, `scope` is left off.
+4. **Exchange and store.** The callback exchanges the code at the discovered
+   token endpoint, with the same client and `resource`, and insists on a refresh
+   token. Then it writes, under `/strad/{env}/mcp/{slug}/oauth/`: the token URL,
+   the client id (only when strad registered it) and the resource for whichever
+   of them are `${NAME}`s, and the refresh token last, as a secret parameter. It
+   drops the process's cached reading of the store, and the minter takes the new
+   lineage on the next request.
+
+A literal `tokenUrl` that is not the discovered token endpoint is refused before
+anything is registered: a refresh token minted at one endpoint and spent at
+another is a slug that never works. `url:` and `scope:` must be literals, and a
+`${NAME}` inside a longer string is reported on the page instead of a button.
+
+**Rotation lands where Connect wrote.** Core's `oauthRefresh:` write-back
+checks the slug's `oauth/` path first, then `static/`, then the gateway's, the
+order the resolver reads in. See
+[Secrets](/operate/secrets/#oauthrefresh--a-rotating-refresh-token-on-a-remote-http-server).
+
+### What it refuses, and how it says so
+
+Every refusal before the redirect is a `409` on the slug's page, in strad's own
+words, with nothing registered or written. The one that matters most:
+
+- **`metadata_blocked`.** A metadata document answered `401` or `403`. Metadata
+  is public by design, so this is nearly always a web application firewall
+  refusing the deployment's egress. Rippling's Cloudflare does exactly this to a
+  DigitalOcean address. The page names the URL and the status, and says the
+  upstream has to allow the deployment.
+
+The rest: `upstream_unreachable`, `metadata_unavailable`, `metadata_invalid`,
+`resource_mismatch` (the metadata describes another resource), `issuer_mismatch`,
+`insecure_endpoint`, `pkce_unsupported` (S256 not listed), `token_url_mismatch`,
+`registration_failed`, `registration_confidential` (a client secret came back),
+`no_client`, `not_connectable`, and `env_provider`: under
+`gateway.secrets.provider: env` the gateway reads its names from the environment,
+so a store write would reach nothing. No upstream response body is quoted. The
+only upstream-supplied text on the page is a URL strad parsed and checked.
+
+After the redirect, the callback runs every check the `oauth:` flow runs (state,
+session, deployment), then refuses a transaction whose upstream URL or
+`oauthRefresh:` block changed mid-flow, and maps an exchange failure to
+`?error=exchange_failed`, `exchange_timed_out`, `no_refresh_token`,
+`client_unreadable` or `store_failed`.
+
+### What it does not do
+
+It proves no identity (the page says `account: not checked`), it registers a new
+client on every Connect and never deletes the old one, and it has been tested
+against a fake authorization server rather than a real provider. See
+[Known limitations](/limitations/) #111.
 
 ## Limits
 

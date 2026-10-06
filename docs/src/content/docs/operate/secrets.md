@@ -448,10 +448,10 @@ client](/operate/secrets-iam/#an-oauth-connector-reads-its-own-oauth-client).
 The canonical path is `/strad/{env}/mcp/{slug}/{kind}/{VARIABLE}`, and `kind`
 names **where the value came from**:
 
-| Kind     | Written by                                                                                                                                                               | Typical contents                                                  |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------- |
-| `static` | a human, in the console, who creates it; the write-back route, which rotates an existing one for a `paramsWritable:` name                                                | an API key, an OAuth client id and client secret                  |
-| `oauth`  | strad's own consent callback, which creates it; the write-back route, which rotates it for a [`paramsWritable:`](#paramswritable--a-credential-that-rotates-on-use) name | the refresh token (or long-lived access token) a human authorized |
+| Kind     | Written by                                                                                                                                                                                                  | Typical contents                                                                                                                                                 |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `static` | a human, in the console, who creates it; the write-back route, which rotates an existing one for a `paramsWritable:` name                                                                                   | an API key, an OAuth client id and client secret                                                                                                                 |
+| `oauth`  | strad's own consent callback, which creates it; the write-back route, which rotates it for a [`paramsWritable:`](#paramswritable--a-credential-that-rotates-on-use) name; core's `oauthRefresh:` write-back | the refresh token (or long-lived access token) a human authorized; for a `remote-http` Connect, also the discovered token URL, registered client id and resource |
 
 Both resolve the same way. Everything on this page that is true of a `static`
 parameter is true of an `oauth` one: `params: true` injects it, a `${NAME}`
@@ -1516,11 +1516,13 @@ taken out (`createParameterWriteBack` in `src/http/params.ts`): the same
 reading, the same `strad.param_written` / `strad.param_write_failed` events.
 
 **It writes where the reader reads.** A server's `${NAME}` resolves from
-`/strad/{env}/mcp/{slug}/static/` first and `/strad/{env}/gateway/static/`
-second, so the write follows the same order and stops at the first parameter
-that exists: the server's own, or — only on a definite 404 there — the
-gateway's. A parameter that could not be checked stops the walk, because writing
-the second layer while the first may still hold the value would persist a token
+`/strad/{env}/mcp/{slug}/oauth/` first, `/strad/{env}/mcp/{slug}/static/` second
+and `/strad/{env}/gateway/static/` third, so the write follows the same order and
+stops at the first parameter that exists, moving on only after a definite 404.
+`oauth/` is where the console's Connect stores the token it minted, so a rotation
+of that token lands there; a token seeded by hand under `static/` is rotated
+there. A parameter that could not be checked stops the walk, because writing a
+lower layer while a higher one may still hold the value would persist a token
 nothing reads. The rotated value is held in memory for the life of the process
 either way; what the write buys is the next restart.
 
@@ -1554,10 +1556,14 @@ use, whichever spends the token second is refused and re-reads the store within
 slug is dead until a human authorizes again. Same window `paramsWritable:` has,
 recorded in the same limitation.
 
-**The first token is seeded by a human.** strad does not run the authorization;
-the refresh token comes from an out-of-band consent and lands in `/ui/secrets`
-like any other secret parameter. A `mayBeUnseeded:` entry for the name lets the
-slug deploy ahead of it.
+**The first token comes from Connect.** The slug's console page runs the
+authorization against the upstream — discovery, a registered client, code +
+PKCE — and writes the refresh token (and the token URL, client id and resource,
+where those are `${NAME}`s) under the slug's **`oauth` kind**, then drops this
+process's cached reading, so the next request is served with no redeploy. A
+`mayBeUnseeded:` entry for each name lets the slug deploy ahead of it. Seeding the
+token by hand in `/ui/secrets` still works and is rotated where it was seeded. See
+[Connectors](/operate/connectors/#remote-http-with-oauthrefresh-connect-an-upstream-mcp-server).
 
 ## Migrating
 

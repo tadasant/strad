@@ -68,6 +68,11 @@ import {
   grantAuthority,
   isConnectorClientPath,
 } from "../connectors/index.ts";
+import { upstreamConnectorFor } from "../connectors/upstream.ts";
+import {
+  renderUpstreamConnectorPage,
+  upstreamFlash,
+} from "./upstream-connector.ts";
 import {
   forgetDeploymentDiagnosis,
   readDeploymentSecretStatus,
@@ -316,6 +321,7 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     parametersStore: opts.parametersStore,
     connectorFetch: opts.connectorFetch,
     runtimeConfig: opts.runtimeConfig,
+    afterUpstreamWrite: () => forgetStoreReading(opts),
   });
 
   // `/tokens` — mint and revoke the credentials /mcp accepts. Same gate, same
@@ -517,6 +523,27 @@ async function handleServerView(
         // repair for it is one button. See `offersClientRepair`.
         repair: offersClientRepair(req.query),
       },
+    );
+    return;
+  }
+
+  // A `remote-http` server that mints its bearer with `oauthRefresh:` gets the
+  // same kind of page: its Connect. See src/ui/upstream-connector.ts.
+  const upstream = upstreamConnectorFor(opts.config, slug);
+  if (upstream) {
+    await renderUpstreamConnectorPage(
+      res,
+      {
+        config: opts.config,
+        secrets: opts.secrets,
+        env: opts.env,
+        sessions: opts.sessions,
+        parametersStore: opts.parametersStore,
+        connectorFetch: opts.connectorFetch,
+        runtimeConfig: opts.runtimeConfig,
+      },
+      upstream,
+      { signedInAs, flash: upstreamFlash(req.query, upstream) },
     );
     return;
   }

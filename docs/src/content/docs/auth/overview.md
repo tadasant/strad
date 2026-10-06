@@ -1219,6 +1219,19 @@ proof of identity in either flow is a second place to get it wrong.
 under which provider and terms, is read from the sealed transaction cookie and
 never from the request.
 
+**A `remote-http` server with `oauthRefresh:` connects through the same two
+routes.** Its terms are not configured but **discovered**: the connect POST asks
+the upstream for its protected-resource metadata (RFC 9728) and its authorization
+server's metadata (RFC 8414), registers a public client (RFC 7591) whose one
+redirect URI is `/ui/oauth/callback`, and seals what it found — the client id, the
+token endpoint, the resource and the issuer — into the same signed transaction
+under provider `mcp`. The callback dispatches on that sealed provider after every
+check above has passed. Two consequences of the cookie being signed and not
+encrypted: strad only ever registers a **public** client (a secret would ride in
+the browser), and a configured confidential client's secret is read from the
+store at the callback, never carried. No identity is proved, exactly as for
+`generic`. See [Connectors](/operate/connectors/#remote-http-with-oauthrefresh-connect-an-upstream-mcp-server).
+
 ### `provider: generic` proves no identity, and says so
 
 A Google connector checks the verified `email` claim against the `account:` the

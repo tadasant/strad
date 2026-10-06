@@ -641,9 +641,10 @@ describe("the OAuth handoff an agent can actually perform", () => {
     expect(body.completedBy).toBe("human");
     expect(body.humanUrl).toBe("https://strad.example.com/ui/upstream-oauth");
     expect(body.credentialPath).toBe(
-      "/strad/test/mcp/upstream-oauth/static/UPSTREAM_OAUTH_REFRESH_TOKEN",
+      "/strad/test/mcp/upstream-oauth/oauth/UPSTREAM_OAUTH_REFRESH_TOKEN",
     );
     expect(String(body.instructions)).toContain("agent cannot");
+    expect(String(body.instructions)).toContain("Connect button");
 
     await call(client, "remove_connector", { slug: "upstream-oauth" });
     await client.close();

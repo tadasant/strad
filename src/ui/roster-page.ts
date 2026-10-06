@@ -3,6 +3,7 @@ import type { ServerConfig, StradConfig } from "../config/schema.ts";
 import type { EntrySource, ServerOverlay } from "../config/overlay.ts";
 import { RUNTIME_CREATABLE_KINDS } from "../config/overlay.ts";
 import { connectorFor } from "../connectors/index.ts";
+import { upstreamConnectorFor } from "../connectors/upstream.ts";
 import { entitledServers } from "../gateway/entitlements.ts";
 import {
   connectUrl,
@@ -185,7 +186,8 @@ export type ConsoleView = "connector" | "secrets" | "gcs" | "overview";
 
 /**
  * Asked in the order `handleServerView` in `src/ui/index.ts` asks it: an
- * enabled `oauth:` connector first, then the parameter store, then the bucket.
+ * enabled `oauth:` connector first, then an enabled `remote-http` minting with
+ * `oauthRefresh:` (its Connect page), then the parameter store, then the bucket.
  * A row that reads a slug differently from the route labels a working page as
  * something else, so this is the one reading both use.
  */
@@ -194,6 +196,7 @@ export function consoleView(
   server: ServerConfig,
 ): ConsoleView {
   if (connectorFor(config, server.slug)) return "connector";
+  if (upstreamConnectorFor(config, server.slug)) return "connector";
   if (serverLooksSecrets(server)) return "secrets";
   if (serverLooksGcs(server)) return "gcs";
   return "overview";
