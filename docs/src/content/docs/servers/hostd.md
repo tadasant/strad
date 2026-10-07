@@ -148,7 +148,7 @@ prompt from Chrome. Under the unattended setting below, the dialog refuses
 nothing. A prompt injection in one agent's page reaches all of those accounts.
 What remains is the daemon's: a key per server, a grant per task, the audit
 log, and the kill switch, which also detaches the debugger from every tab.
-Keep these slugs `admin`-only. See [limitation #111](/limitations/).
+Keep these slugs `admin`-only. See [limitation #112](/limitations/).
 :::
 
 ## Register the slugs
