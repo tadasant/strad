@@ -6,9 +6,16 @@ import {
   oauthParameterPath,
   parameterPath,
   ParameterStoreError,
+  type ParameterResolver,
   type ParameterStore,
 } from "../src/secrets/parameters/index.ts";
-import { createFakeGcp } from "../src/secrets/parameters/fake.ts";
+import {
+  createFakeGcp,
+  PARAMETER_VIEWER_PERMISSIONS,
+  RESOLVER_PERMISSIONS,
+  WRITE_ONLY_CONSOLE_PERMISSIONS,
+  type FakeGcp,
+} from "../src/secrets/parameters/fake.ts";
 import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
 
 /**
@@ -64,15 +71,22 @@ servers:
 function harness(
   provider: "env" | "gcp-parameter-store" = "gcp-parameter-store",
   wrap: (store: ParameterStore) => ParameterStore = (s) => s,
+  clients: {
+    /** The store client the write goes through. Default: all-powerful. */
+    admin?: (fake: FakeGcp) => ParameterStore;
+    /** What the read before the write goes through. Default: all-powerful. */
+    reader?: (fake: FakeGcp) => ParameterResolver | null;
+  } = {},
 ) {
   const fake = createFakeGcp();
-  const store = wrap(fake.store);
+  const store = wrap(clients.admin ? clients.admin(fake) : fake.store);
   let invalidations = 0;
   const writeBack = createParameterWriteBack({
     config: configWith(provider),
     env: {},
     secrets: {},
     parametersStore: () => store,
+    reader: clients.reader ? clients.reader(fake) : fake.store,
     secretProvider: sharedSecretProviders({
       name: "memory",
       get: async () => null,
@@ -82,11 +96,27 @@ function harness(
     }),
   });
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  // `event()` writes every record as one JSON line, to stdout or stderr.
+  const lines = [
+    vi.spyOn(console, "log").mockImplementation(() => {}),
+    vi.spyOn(console, "error").mockImplementation(() => {}),
+  ];
   return {
     fake,
     writeBack,
     invalidations: () => invalidations,
     warnings: () => warn.mock.calls.map((c) => String(c[0])),
+    events: (evt: string) =>
+      lines
+        .flatMap((spy) => spy.mock.calls.map((c) => String(c[0])))
+        .flatMap((line) => {
+          try {
+            const parsed = JSON.parse(line) as Record<string, unknown>;
+            return parsed.evt === evt ? [parsed] : [];
+          } catch {
+            return [];
+          }
+        }),
   };
 }
 
@@ -226,5 +256,171 @@ describe("createParameterWriteBack: the oauth/ kind the console's Connect writes
     expect(await h.fake.store.reveal(OAUTH_PATH)).toBe("rt-1");
     expect(await h.fake.store.reveal(SERVER_PATH)).toBe("rt-hand-seeded");
     expect(h.invalidations()).toBe(1);
+  });
+});
+
+describe("createParameterWriteBack: prod's IAM split (strad#398)", () => {
+  const OAUTH_PATH = oauthParameterPath("test", "granola", VARIABLE);
+  const prod = {
+    admin: (fake: FakeGcp) => fake.storeAs(WRITE_ONLY_CONSOLE_PERMISSIONS),
+    reader: (fake: FakeGcp) => fake.storeAs(RESOLVER_PERMISSIONS),
+  };
+
+  it("a console that cannot read still writes back: the check reads through the resolver", async () => {
+    const h = harness("gcp-parameter-store", undefined, prod);
+    // What Connect leaves: a SECRET parameter, its value stored base64url.
+    // A value with a byte that encoding changes, so a check handed the stored
+    // form instead of the value would refuse.
+    const seeded = "rt-0/with+bytes=";
+    await h.fake.store.create({
+      path: OAUTH_PATH,
+      secret: true,
+      value: seeded,
+    });
+    // The console's own read is the 403 the prod write-back used to make.
+    await expect(prod.admin(h.fake).reveal(OAUTH_PATH)).rejects.toThrow(/403/);
+
+    const asked: string[] = [];
+    await h.writeBack("granola", VARIABLE, "rt-1", (current) => {
+      asked.push(current);
+      return current === seeded;
+    });
+
+    expect(asked).toEqual([seeded]);
+    expect(await h.fake.store.reveal(OAUTH_PATH)).toBe("rt-1");
+    expect(h.warnings()).toEqual([]);
+    expect(h.events("strad.param_written")).toEqual([
+      { evt: "strad.param_written", slug: "granola", variable: VARIABLE },
+    ]);
+    expect(h.events("strad.param_write_failed")).toEqual([]);
+  });
+
+  it("a read the resolver is refused stops the walk, and the event names the reason and the status", async () => {
+    const h = harness("gcp-parameter-store", undefined, {
+      ...prod,
+      // A resolver without `parameterAccessor`: lists, cannot render.
+      reader: (fake) => fake.storeAs(PARAMETER_VIEWER_PERMISSIONS),
+    });
+    await h.fake.store.create({
+      path: OAUTH_PATH,
+      secret: true,
+      value: "rt-0",
+    });
+    await h.fake.store.create({
+      path: GATEWAY_PATH,
+      secret: true,
+      value: "rt-g",
+    });
+
+    await h.writeBack("granola", VARIABLE, "rt-1-never-shown", () => true);
+
+    expect(await h.fake.store.reveal(OAUTH_PATH)).toBe("rt-0");
+    expect(await h.fake.store.reveal(GATEWAY_PATH)).toBe("rt-g");
+    expect(h.events("strad.param_write_failed")).toEqual([
+      {
+        evt: "strad.param_write_failed",
+        slug: "granola",
+        variable: VARIABLE,
+        reason: "read_failed",
+        status: 403,
+      },
+    ]);
+    expect(h.warnings()[0]).toContain("403");
+    expect(h.warnings()[0]).not.toContain("rt-1-never-shown");
+  });
+
+  it("refuses when the resolver reads a different project from the one the write would land in", async () => {
+    const h = harness("gcp-parameter-store", undefined, {
+      reader: (fake) => ({ ...fake.store, projectId: "some-other-project" }),
+    });
+    await h.fake.store.create({
+      path: OAUTH_PATH,
+      secret: true,
+      value: "rt-0",
+    });
+
+    await h.writeBack("granola", VARIABLE, "rt-1", () => true);
+
+    expect(await h.fake.store.reveal(OAUTH_PATH)).toBe("rt-0");
+    expect(h.events("strad.param_write_failed")).toMatchObject([
+      { reason: "store_mismatch" },
+    ]);
+    expect(h.warnings()[0]).toContain("some-other-project");
+  });
+
+  it("every refusal carries a reason from the closed set", async () => {
+    const reseeded = harness();
+    await reseeded.fake.store.create({
+      path: OAUTH_PATH,
+      secret: true,
+      value: "rt-carol",
+    });
+    await reseeded.writeBack("granola", VARIABLE, "rt-x", () => false);
+    expect(reseeded.events("strad.param_write_failed")).toMatchObject([
+      { reason: "not_ours" },
+    ]);
+    vi.restoreAllMocks();
+
+    const nowhere = harness();
+    await nowhere.writeBack("granola", VARIABLE, "rt-x", () => true);
+    expect(nowhere.events("strad.param_write_failed")).toMatchObject([
+      { reason: "not_held" },
+    ]);
+    vi.restoreAllMocks();
+
+    const env = harness("env");
+    await env.writeBack("granola", VARIABLE, "rt-x", () => true);
+    expect(env.events("strad.param_write_failed")).toMatchObject([
+      { reason: "env_provider" },
+    ]);
+    vi.restoreAllMocks();
+
+    const noReader = harness("gcp-parameter-store", undefined, {
+      reader: () => null,
+    });
+    await noReader.fake.store.create({
+      path: OAUTH_PATH,
+      secret: true,
+      value: "rt-0",
+    });
+    await noReader.writeBack("granola", VARIABLE, "rt-x", () => true);
+    expect(noReader.events("strad.param_write_failed")).toMatchObject([
+      { reason: "no_reader" },
+    ]);
+    expect(await noReader.fake.store.reveal(OAUTH_PATH)).toBe("rt-0");
+  });
+});
+
+describe("renderPath: one parameter, read the way the gateway reads it", () => {
+  const OAUTH_PATH = oauthParameterPath("test", "granola", VARIABLE);
+
+  it("hands back the decoded value of a secret parameter, live", async () => {
+    const fake = createFakeGcp();
+    const resolver = fake.storeAs(RESOLVER_PERMISSIONS);
+    await fake.store.create({
+      path: OAUTH_PATH,
+      secret: true,
+      value: 'a"b/c+=',
+    });
+    expect(await resolver.renderPath!(OAUTH_PATH)).toBe('a"b/c+=');
+    await fake.store.rotate(OAUTH_PATH, "rt-2");
+    expect(await resolver.renderPath!(OAUTH_PATH)).toBe("rt-2");
+  });
+
+  it("is a 404 for an absent parameter, and for a path whose id folds onto another — before any render", async () => {
+    const fake = createFakeGcp();
+    // No render permission at all: a 404 here proves nothing was dereferenced.
+    const viewer = fake.storeAs(PARAMETER_VIEWER_PERMISSIONS);
+    await expect(viewer.renderPath!(OAUTH_PATH)).rejects.toMatchObject({
+      status: 404,
+    });
+    await fake.store.create({ path: OAUTH_PATH, secret: true, value: "rt-0" });
+    await expect(
+      viewer.renderPath!(OAUTH_PATH.replace(VARIABLE, VARIABLE.toLowerCase())),
+    ).rejects.toMatchObject({ status: 404 });
+    // And the parameter itself is a refusal, not a miss.
+    await expect(viewer.renderPath!(OAUTH_PATH)).rejects.toMatchObject({
+      status: 403,
+    });
   });
 });

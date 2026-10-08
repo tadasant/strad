@@ -1067,6 +1067,43 @@ export function createGcpParameterStore(
     );
   }
 
+  /**
+   * One parameter's CURRENT value, read the way the gateway reads it: `:render`.
+   *
+   * `reveal` above is the console's read, and on prod the console holds no read
+   * at all — secrets-iam.md §1 withholds `secretmanager.versions.access`, and
+   * the `oauth/` kind is never granted back. This is the resolver's read, which
+   * is the one a running gateway's `${NAME}` came through, so a caller comparing
+   * against that value compares like with like. Live: the snapshot is never
+   * consulted, because the question is what the store holds NOW.
+   */
+  async function renderPath(path: string): Promise<string> {
+    const id = parameterId(path);
+    // The raw envelope first, so a path whose id folds onto ANOTHER parameter
+    // is the same 404 `reveal` gives, before anything is dereferenced.
+    const cur = await currentEnvelope(id);
+    if (!cur) throw new ParameterStoreError(`no such parameter: ${path}`, 404);
+    assertSamePath(cur.envelope, path);
+    const resource = `${pmParent}/parameters/${id}/versions/${cur.versionId}`;
+    const rendered = (await pm("GET", `${resource}:render`)) as {
+      renderedPayload?: string;
+      payload?: { data?: string };
+    };
+    const data = rendered.renderedPayload ?? rendered.payload?.data;
+    // Not a 404: the parameter exists, and a caller walking layers must not
+    // read "rendered nothing" as "is not here".
+    if (data == null) throw new UnreadablePayloadError(resource);
+    try {
+      // Dropped, not chained, for `renderOne`'s reason: the rendered payload is
+      // the secret, and `JSON.parse` quotes a window of it.
+      return decodeEnvelopeValue(
+        decodeEnvelope(Buffer.from(data, "base64").toString("utf8")),
+      );
+    } catch {
+      throw new UnreadablePayloadError(resource);
+    }
+  }
+
   async function destroy(path: string): Promise<void> {
     const id = parameterId(path);
     // Verify the id names THIS path before deleting anything. A delete is the
@@ -1399,6 +1436,7 @@ export function createGcpParameterStore(
 
   return {
     backend: "gcp",
+    projectId: cfg.projectId,
     list,
     listDetailed,
     isSecret,
@@ -1406,6 +1444,7 @@ export function createGcpParameterStore(
     rotate: writing(rotate, (path) => path),
     setNote: writing(setNote, (path) => path),
     reveal,
+    renderPath,
     destroy: writing(destroy, (path) => path),
     // `writing`, even though it writes no parameter: it changes whether this
     // namespace RENDERS, and a resolver-configured client memoises a failed

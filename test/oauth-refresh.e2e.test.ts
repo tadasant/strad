@@ -684,6 +684,7 @@ describe("refresh-token rotation", () => {
       config: configOf(servers),
       env: {},
       secrets: {},
+      reader: null,
     });
     const registry = await registryOf(servers, provider, writeBack);
 

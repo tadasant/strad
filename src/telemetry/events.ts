@@ -301,10 +301,13 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      * variable name of its choosing into the ingestor by spelling a URL. The
      * failure event carries no `error`: what an operator needs is that this
      * server's next restart is now holding a dead credential, and the store
-     * client's exception can quote a rendered value.
+     * client's exception can quote a rendered value. What it carries instead is
+     * `reason`, from a closed set this repo wrote (`WriteBackRefusal` in
+     * src/http/params.ts), and the store's numeric HTTP `status` when one
+     * answered — enough to tell a 403 from an outage without core's stderr.
      */
     "strad.param_written": ["slug", "variable"],
-    "strad.param_write_failed": ["slug", "variable"],
+    "strad.param_write_failed": ["slug", "variable", "reason", "status"],
     /**
      * The `/mcp` system-token roster changed, or could not be read.
      *

@@ -9,7 +9,12 @@ import { CONNECTOR_TX_COOKIE } from "../src/connectors/state.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import { createParameterWriteBack } from "../src/http/params.ts";
-import { createFakeGcp, type FakeGcp } from "../src/secrets/parameters/fake.ts";
+import {
+  createFakeGcp,
+  RESOLVER_PERMISSIONS,
+  WRITE_ONLY_CONSOLE_PERMISSIONS,
+  type FakeGcp,
+} from "../src/secrets/parameters/fake.ts";
 import { buildSecretProviders } from "../src/secrets/provider/index.ts";
 import {
   startFakeOAuth,
@@ -72,7 +77,16 @@ async function harness(
       resource: "\${RIPPLING_RESOURCE}"
     mayBeUnseeded:
       [RIPPLING_TOKEN_URL, RIPPLING_CLIENT_ID, RIPPLING_REFRESH_TOKEN, RIPPLING_RESOURCE]`,
-  more: { servers?: string; connectorFetch?: typeof fetch } = {},
+  more: {
+    servers?: string;
+    connectorFetch?: typeof fetch;
+    /**
+     * Run with production's IAM split instead of one all-powerful client: the
+     * console writes through `WRITE_ONLY_CONSOLE_PERMISSIONS` and the gateway
+     * reads through `RESOLVER_PERMISSIONS`, two clients over the same store.
+     */
+    prodIam?: boolean;
+  } = {},
 ): Promise<Harness> {
   const oauth = await startFakeOAuth({
     mcpAuth: { scopes: ["mcp:read"] },
@@ -127,7 +141,13 @@ ${more.servers ?? ""}`);
     STRAD_TOKENS: JSON.stringify([token.record]),
   };
   const secrets = { ADMIN_KEY };
-  const providers = buildSecretProviders({ config, env, resolver: fake.store });
+  const admin = more.prodIam
+    ? fake.storeAs(WRITE_ONLY_CONSOLE_PERMISSIONS)
+    : fake.store;
+  const resolver = more.prodIam
+    ? fake.storeAs(RESOLVER_PERMISSIONS)
+    : fake.store;
+  const providers = buildSecretProviders({ config, env, resolver });
   const registry = await Registry.build({
     config,
     secrets: providers,
@@ -137,8 +157,9 @@ ${more.servers ?? ""}`);
       config,
       env,
       secrets,
-      parametersStore: () => fake.store,
+      parametersStore: () => admin,
       secretProvider: providers,
+      reader: resolver,
     }),
   });
   cleanup.push(() => registry.close());
@@ -150,7 +171,7 @@ ${more.servers ?? ""}`);
     env,
     secrets,
     secretProvider: providers,
-    parametersStore: () => fake.store,
+    parametersStore: () => admin,
     ...(more.connectorFetch ? { connectorFetch: more.connectorFetch } : {}),
   });
   const strad: HttpServer = await new Promise((resolve) => {
@@ -350,6 +371,31 @@ describe("Connect on an unseeded remote-http slug", () => {
     expect(connected).toContain("a client strad registered");
     expect(connected).not.toContain(stored);
     expect(connected).not.toContain("rt-tadas");
+  });
+
+  it("with prod's IAM split, the first rotation after Connect is written back (strad#398)", async () => {
+    // The console credential cannot read the refresh token it just stored —
+    // `oauth/` is never granted to it — so the write-back's "is this still
+    // ours" read has to go through the resolver, the identity the minter's own
+    // value came from. Reading it through the console 403'd, and every first
+    // rotation after a Connect was refused and held in memory only.
+    const h = await harness({ rotate: true }, undefined, { prodIam: true });
+    const { callback } = await roundTrip(h);
+    expect(callback.headers.get("location")).toBe(`/ui/${SLUG}?connected=1`);
+    const stored = await h.fake.store.reveal(
+      `${OAUTH_NS}RIPPLING_REFRESH_TOKEN`,
+    );
+
+    const client = await h.mcp();
+    expect(await whoami(client)).toBe("tadas");
+
+    await vi.waitFor(async () => {
+      const now = await h.fake.store.reveal(
+        `${OAUTH_NS}RIPPLING_REFRESH_TOKEN`,
+      );
+      expect(now).not.toBe(stored);
+      expect(h.oauth.liveRefreshTokens()).toContain(now);
+    });
   });
 
   it("Reconnect rotates every stored value in place", async () => {
