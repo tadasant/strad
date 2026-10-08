@@ -148,19 +148,22 @@ export function inlineConfigYaml(raw: string): InlineConfigResult {
 /**
  * What `STRAD_CONFIG_YAML` holds when the document travels compressed.
  *
- * A YAML SCALAR, so it parses — and then fails the schema at its root, because
- * a config is a mapping. That is the whole job. An image from before
- * `STRAD_CONFIG_YAML_GZ_B64` existed does not look for it; left with no
- * `STRAD_CONFIG_YAML` either, it would read the config file its image ships,
- * which is the stock zero-server one, and boot a healthy gateway that serves
- * nothing. With this beside the compressed form, that image refuses to start
- * instead, App Platform keeps the deployment it has, and the variable that
- * failed explains itself. An image that reads the compressed form never looks
- * at this.
+ * A config that fails the schema, ON PURPOSE, and says why in the failure. An
+ * image from before `STRAD_CONFIG_YAML_GZ_B64` existed does not look for it;
+ * left with no `STRAD_CONFIG_YAML` either, it would read the config file its
+ * image ships, which is the stock zero-server one, and boot a healthy gateway
+ * that serves nothing. With this beside the compressed form, that image refuses
+ * to start instead, and App Platform keeps the deployment it has.
+ *
+ * It fails on `version` and `auth`, which every schema there has ever been
+ * requires — that is the refusal. The explanation rides in a role NAME, because
+ * a schema error quotes its path and never its value: the boot error reads
+ * `roles.refused: this strad image predates …`. An image that reads the
+ * compressed form never looks at this.
  */
 export const CONFIG_TRIPWIRE =
-  `"this deployment's config is in ${CONFIG_GZ_ENV}, which this strad ` +
-  `image is too old to read. Deploy the core image the spec was rendered for."`;
+  `roles:\n  "refused: this strad image predates ${CONFIG_GZ_ENV}, which ` +
+  `holds the config; deploy the core image this spec was rendered for": {}\n`;
 
 /** One env var `render-spec` bakes the config into. */
 export interface ConfigEnv {

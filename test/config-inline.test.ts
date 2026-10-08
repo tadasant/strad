@@ -327,9 +327,12 @@ describe("boot reads the compressed config", () => {
     // compressed variable exists, so it reads STRAD_CONFIG_YAML. It must fail
     // to start there — NOT skip past it to the stock config file it ships,
     // which would boot a healthy gateway with zero servers.
+    // And the refusal says why, in the one part of a schema error that is
+    // quoted: the path.
     await expect(
       loadConfigDocument(NO_FILE, { STRAD_CONFIG_YAML: CONFIG_TRIPWIRE }),
-    ).rejects.toThrow(/invalid config at STRAD_CONFIG_YAML/);
-    expect(() => parseConfig(CONFIG_TRIPWIRE)).toThrow(/\(root\)/);
+    ).rejects.toThrow(
+      /invalid config at STRAD_CONFIG_YAML:[\s\S]*roles\.refused: this strad image predates STRAD_CONFIG_YAML_GZ_B64/,
+    );
   });
 });

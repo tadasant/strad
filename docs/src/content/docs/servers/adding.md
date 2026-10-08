@@ -306,7 +306,8 @@ does not surface them.
 ## 5. Deploy
 
 - **Stock image (`remote-http` / `supplementary-image`):** no rebuild. The config
-  is supplied via `STRAD_CONFIG_YAML`; a release runs `render-spec` → App
+  is supplied inline (`STRAD_CONFIG_YAML_GZ_B64`, or `STRAD_CONFIG_YAML` when
+  small); a release runs `render-spec` → App
   Platform, and any new container(s) implied by the server list are materialized
   automatically.
 - **`builtin`:** requires building an image that compiles the module in — the

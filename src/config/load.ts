@@ -114,10 +114,17 @@ export function decodeCompressedConfig(value: string): string {
   const text = value.trim();
   const bytes = Buffer.from(text, "base64");
   if (bytes.length === 0 || bytes.toString("base64") !== text) {
-    throw new Error(`${CONFIG_GZ_ENV} is not valid base64.`);
+    throw new Error(
+      `${CONFIG_GZ_ENV} is not valid base64 (one line, standard alphabet, ` +
+        `padded — \`gzip -c | base64 -w0\`).`,
+    );
   }
   try {
-    return gunzipSync(bytes).toString("utf8");
+    // Bounded, so a damaged-but-valid stream cannot balloon at boot. A config
+    // is tens of KB; 16 MiB is a ceiling no real one approaches.
+    return gunzipSync(bytes, { maxOutputLength: 16 * 1024 * 1024 }).toString(
+      "utf8",
+    );
   } catch (err) {
     throw new Error(
       `${CONFIG_GZ_ENV} is base64 but not gzip ` +
