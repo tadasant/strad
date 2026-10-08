@@ -37,7 +37,7 @@ names against the built image.
 
 Required: `WHATSAPP_STATE_ENCRYPTION_KEY` (32 bytes, base64 or hex),
 `WHATSAPP_GCS_BUCKET`, `WHATSAPP_GCS_CLIENT_EMAIL`, `WHATSAPP_GCS_PRIVATE_KEY`.
-Optional: `WHATSAPP_GCS_PROJECT_ID`, `WHATSAPP_GCS_PREFIX` (default `whatsapp`),
+Optional: `WHATSAPP_GCS_PREFIX` (default `whatsapp`),
 `WHATSAPP_DEVICE_NAME` (default `Zimmer`), `WHATSAPP_BUFFER_MAX_MESSAGES` (1000),
 `WHATSAPP_BUFFER_MAX_AGE_DAYS` (30).
 
@@ -82,8 +82,9 @@ processes on one account, 401 and 440, logout, a state sealed under another
 key, and no configuration; a send that fails after delivery, overlapping pair
 calls, logout racing a flush, a message held through a chat-load failure, and
 403. The auth-state round trip runs against real Baileys, the console guard
-against real libsignal, and `GcsBlobStore` against the real
-`@google-cloud/storage` client pointed at a local stand-in for the GCS JSON API
-(`test/gcs.test.ts`) — which is what checks that a read reports the generation
-a later conditional write needs.
+against real libsignal, and `GcsBlobStore` — strad's own GCS JSON-API client on Node's
+`fetch` — against a local stand-in for the JSON API and the token endpoint
+(`test/gcs.test.ts`). That is what checks that a read reports the generation a
+later conditional write needs, that the signed JWT verifies, and that a body
+cut off mid-read is retried.
 Nothing in CI talks to WhatsApp. Every identifier in the fixtures is invented.

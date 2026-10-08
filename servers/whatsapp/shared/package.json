@@ -10,14 +10,11 @@
     "test": "npm run build && vitest run --config vitest.config.ts"
   },
   "dependencies": {
-    "@google-cloud/storage": "^7.21.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "baileys": "7.0.0-rc14"
   },
   "devDependencies": {
     "@types/node": "^22.10.6",
-    "gaxios": "^6.7.1",
-    "google-auth-library": "^9.15.1",
     "typescript": "^5.7.3",
     "vitest": "^4.1.9"
   },

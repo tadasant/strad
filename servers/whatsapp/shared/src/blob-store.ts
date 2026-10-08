@@ -8,7 +8,7 @@
  * write that silently overwrote the other process's state is how a Signal
  * session gets corrupted without anybody seeing it. See `store.ts`.
  */
-import { Storage, type StorageOptions } from "@google-cloud/storage";
+import { createSign, randomBytes } from "node:crypto";
 import { errMessage, logWarning } from "./logging.js";
 
 export interface BlobRead {
@@ -41,6 +41,33 @@ export class TransientStoreError extends Error {
   }
 }
 
+/**
+ * GCS, or Google's token endpoint, answered with a non-2xx status. `code` is
+ * the status, as a number — which is what tells {@link isTransientTransportError}
+ * that the far end DID answer.
+ */
+export class GcsHttpError extends Error {
+  constructor(
+    readonly code: number,
+    what: string,
+    detail: string,
+  ) {
+    super(`${what}: HTTP ${code}${detail ? `: ${detail}` : ""}`);
+    this.name = "GcsHttpError";
+  }
+}
+
+/**
+ * The service-account token request failed, so the object request it was for
+ * was never sent. That is what makes an unconditional write safe to replay.
+ */
+export class TokenFetchFailed extends Error {
+  constructor(cause: unknown) {
+    super(`the service-account token request failed: ${errMessage(cause)}`, { cause });
+    this.name = "TokenFetchFailed";
+  }
+}
+
 export interface BlobStore {
   read(name: string): Promise<BlobRead | null>;
   /**
@@ -62,15 +89,13 @@ export interface GcsBlobStoreOptions {
   bucket: string;
   clientEmail: string;
   privateKey: string;
-  projectId?: string;
   /**
-   * Tests only: a local stand-in for the GCS JSON API. With a custom endpoint
-   * the client sends no credentials, which is what lets the suite drive the
-   * REAL client library end to end.
+   * Tests only: a local stand-in for the GCS JSON API, serving both the
+   * `/storage/v1` and `/upload/storage/v1` paths.
    */
   apiEndpoint?: string;
-  /** Tests only: stands in for the service-account token fetch. */
-  authClient?: StorageOptions["authClient"];
+  /** Tests only: a local stand-in for Google's OAuth 2.0 token endpoint. */
+  tokenUrl?: string;
   /** Tests only: the transport-retry budget. */
   retry?: Partial<TransportRetry>;
 }
@@ -80,13 +105,13 @@ export interface TransportRetry {
   attempts: number;
   /** The first backoff; each later one doubles, plus up to 50% jitter. */
   baseDelayMs: number;
-  /**
-   * No new try starts once this long has passed since the first. Each try is
-   * itself a stack of retries — gaxios tries the token POST three times, and
-   * `autoRetry` retries ECONNRESET-class failures on idempotent calls with
-   * multi-second backoff — so the attempt count alone does not bound the wait.
-   */
+  /** No new try starts once this long has passed since the first. */
   deadlineMs: number;
+  /**
+   * One request, response body included. undici's own limits are minutes long,
+   * and a call that hangs holds the tool call that is waiting on it.
+   */
+  requestTimeoutMs: number;
 }
 
 /**
@@ -98,12 +123,17 @@ export const DEFAULT_TRANSPORT_RETRY: TransportRetry = {
   attempts: 4,
   baseDelayMs: 250,
   deadlineMs: 15_000,
+  requestTimeoutMs: 30_000,
 };
 
-const status = (err: unknown): number | undefined => {
-  const code = (err as { code?: unknown })?.code;
-  return typeof code === "number" ? code : undefined;
-};
+const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const GCS_API = "https://storage.googleapis.com";
+const SCOPE = "https://www.googleapis.com/auth/devstorage.read_write";
+/** A token is refreshed this long before Google says it expires. */
+const TOKEN_REFRESH_MARGIN_MS = 5 * 60_000;
+
+/** The statuses GCS documents as retryable. Only ever on a replayable call. */
+const RETRY_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 
 const TRANSIENT_CODES = new Set([
   "ERR_STREAM_PREMATURE_CLOSE",
@@ -114,89 +144,235 @@ const TRANSIENT_CODES = new Set([
   "EAI_AGAIN",
   "ECONNREFUSED",
   "UND_ERR_SOCKET",
+  "UND_ERR_CLOSED",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
 ]);
 
-/** node-fetch 2's own timeout has no `code`, only `type: "request-timeout"`. */
-const TRANSIENT_TYPES = new Set(["request-timeout"]);
+/** `AbortSignal.timeout()` rejects with a DOMException named `TimeoutError`. */
+const TRANSIENT_NAMES = new Set(["TimeoutError"]);
 
 const TRANSIENT_TEXT =
   /premature close|socket hang up|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|EAI_AGAIN|network timeout at|network socket disconnected|other side closed|unexpected connection closure/i;
 
+type ErrLike = {
+  code?: unknown;
+  status?: unknown;
+  response?: { status?: unknown };
+  message?: unknown;
+  name?: unknown;
+  cause?: unknown;
+  error?: unknown;
+};
+
 /**
  * A request that never got a whole answer: the connection closed mid-body, was
  * reset, or timed out. Anything carrying an HTTP status is NOT one of these —
- * GCS answered, and the client's own `autoRetry` already owns 429 and 5xx.
- *
- * Why this exists: node-fetch 2 (under gaxios 6 and the storage client)
- * reports a chunked response cut off before its last chunk as "Invalid
- * response body while trying to fetch <url>: Premature close", code
- * `ERR_STREAM_PREMATURE_CLOSE`. On the service-account token fetch, gtoken's
- * own three tries are all `autoRetry` gives it — the token request is not an
- * API call — and they are back to back, within a second. On an object call,
- * the storage client's connection-problem test does not recognise the code at
- * all.
+ * GCS answered. Walks `cause`, because native fetch reports every one of these
+ * as `TypeError: fetch failed` or `TypeError: terminated` with the socket's
+ * error, and its code, underneath.
  */
 export function isTransientTransportError(err: unknown): boolean {
   for (let e: unknown = err, depth = 0; e && depth < 5; depth++) {
-    const o = e as {
-      code?: unknown;
-      status?: unknown;
-      response?: { status?: unknown };
-      message?: unknown;
-      cause?: unknown;
-      error?: unknown;
-      type?: unknown;
-    };
+    const o = e as ErrLike;
+    // First: a DOMException carries a numeric `code` (23 for a timeout) that
+    // is not an HTTP status.
+    if (typeof o.name === "string" && TRANSIENT_NAMES.has(o.name)) return true;
     if (typeof o.code === "number" || typeof o.status === "number") return false;
     if (typeof o.response?.status === "number") return false;
     if (typeof o.code === "string" && TRANSIENT_CODES.has(o.code)) return true;
-    if (typeof o.type === "string" && TRANSIENT_TYPES.has(o.type)) return true;
     if (typeof o.message === "string" && TRANSIENT_TEXT.test(o.message)) return true;
     e = o.cause ?? o.error;
   }
   return false;
 }
 
+/** The HTTP status somewhere in the chain, if the far end answered. */
+function httpStatus(err: unknown): number | undefined {
+  for (let e: unknown = err, depth = 0; e && depth < 5; depth++) {
+    if (e instanceof GcsHttpError) return e.code;
+    e = (e as ErrLike).cause;
+  }
+  return undefined;
+}
+
 /**
- * The failure came from the token fetch, so the object request it was for was
- * never sent. gaxios puts the request's config on its error; the storage
- * client's object requests (teeny-request) carry none.
+ * An error and every cause under it, with codes: `fetch failed <- other side
+ * closed [UND_ERR_SOCKET]`. The top-level message of a native-fetch failure
+ * says nothing on its own; the cause is the diagnosis.
  */
-function failedBeforeSending(err: unknown): boolean {
-  const url = (err as { config?: { url?: unknown } })?.config?.url;
-  return /\/token(?:[?#]|$)/.test(String(url ?? ""));
+export function describeError(err: unknown): string {
+  const parts: string[] = [];
+  for (let e: unknown = err, depth = 0; e && depth < 5; depth++) {
+    const o = e as ErrLike;
+    const code = typeof o.code === "string" ? ` [${o.code}]` : "";
+    parts.push(`${errMessage(e)}${code}`);
+    e = o.cause;
+  }
+  return parts.join(" <- ");
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+const b64url = (data: Buffer | string) => Buffer.from(data).toString("base64url");
+
+const enc = encodeURIComponent;
+
+/**
+ * The bucket, over the GCS JSON API, on Node's own `fetch`.
+ *
+ * Not `@google-cloud/storage`: that client, and the token fetch under it, run
+ * on gaxios 6 and node-fetch 2. node-fetch 2.7 decides a CHUNKED response was
+ * cut short by a heuristic — any `data` listener still on the socket when the
+ * response closes — and on prod's `bundle-whatsapp-tadas` every token POST
+ * failed that test, three tries out of three, on every call (`HACKS.md` #109).
+ * undici's parser knows whether it saw the last chunk, so a body this reports
+ * as cut off was cut off, and the error under `cause` says by what.
+ *
+ * Six requests, and nothing else: a token POST, an object's metadata, a
+ * download pinned to a generation, a multipart upload with a generation
+ * precondition, a delete, and a paged list.
+ */
 export class GcsBlobStore implements BlobStore {
-  private readonly storage: Storage;
   private readonly bucketName: string;
+  private readonly clientEmail: string;
+  private readonly privateKey: string;
+  private readonly api: string;
+  private readonly tokenUrl: string;
   private readonly retry: TransportRetry;
+  private token?: { value: string; expiresAt: number };
+  private pendingToken?: Promise<string>;
 
   constructor(options: GcsBlobStoreOptions) {
     this.bucketName = options.bucket;
+    this.clientEmail = options.clientEmail;
+    this.privateKey = options.privateKey;
+    this.api = (options.apiEndpoint ?? GCS_API).replace(/\/+$/, "");
+    this.tokenUrl = options.tokenUrl ?? GOOGLE_TOKEN_URL;
     this.retry = { ...DEFAULT_TRANSPORT_RETRY, ...options.retry };
-    this.storage = new Storage({
-      ...(options.projectId ? { projectId: options.projectId } : {}),
-      credentials: {
-        client_email: options.clientEmail,
-        private_key: options.privateKey,
-      },
-      retryOptions: { autoRetry: true, maxRetries: 3 },
-      ...(options.apiEndpoint ? { apiEndpoint: options.apiEndpoint } : {}),
-      ...(options.authClient
-        ? { authClient: options.authClient, useAuthWithCustomEndpoint: true }
-        : {}),
-    });
   }
 
   /**
-   * Every GCS call goes through here, so the token fetch each one may trigger
-   * is covered with it. A read and a list change nothing, a delete is
-   * idempotent here (404 is success), and a conditional write that landed
-   * before its response was lost fails its own precondition on the replay —
-   * which `StateStore` already answers by re-reading. Those always replay.
+   * A service-account JWT, signed here, traded for an access token. Cached
+   * until five minutes before it expires; concurrent callers share one fetch.
+   */
+  private accessToken(): Promise<string> {
+    if (this.token && Date.now() < this.token.expiresAt) {
+      return Promise.resolve(this.token.value);
+    }
+    this.pendingToken ??= this.fetchToken().finally(() => {
+      this.pendingToken = undefined;
+    });
+    return this.pendingToken;
+  }
+
+  private async fetchToken(): Promise<string> {
+    const now = Math.floor(Date.now() / 1000);
+    const unsigned =
+      b64url(JSON.stringify({ alg: "RS256", typ: "JWT" })) +
+      "." +
+      b64url(
+        JSON.stringify({
+          iss: this.clientEmail,
+          scope: SCOPE,
+          aud: this.tokenUrl,
+          iat: now,
+          exp: now + 3600,
+        }),
+      );
+    let signature: string;
+    try {
+      signature = createSign("RSA-SHA256").update(unsigned).sign(this.privateKey, "base64url");
+    } catch {
+      // The crypto error says nothing useful, and the key must not reach a log.
+      throw new Error(
+        "WHATSAPP_GCS_PRIVATE_KEY is not a usable PEM private key. It is the " +
+          "`private_key` field of the service account's JSON key, BEGIN and END " +
+          "lines included.",
+      );
+    }
+    const res = await fetch(this.tokenUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        assertion: `${unsigned}.${signature}`,
+      }),
+      signal: AbortSignal.timeout(this.retry.requestTimeoutMs),
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      // Google's own words (`invalid_grant: account not found`); no credential.
+      let detail = "";
+      try {
+        const body = JSON.parse(text) as { error?: unknown; error_description?: unknown };
+        detail = [body.error, body.error_description].filter((x) => typeof x === "string").join(": ");
+      } catch {
+        // Not JSON: the status alone.
+      }
+      throw new GcsHttpError(res.status, "token request", detail);
+    }
+    const body = JSON.parse(text) as { access_token?: unknown; expires_in?: unknown };
+    if (typeof body.access_token !== "string" || !body.access_token) {
+      throw new Error("Google's token endpoint answered without an access_token");
+    }
+    const ttlMs = (typeof body.expires_in === "number" ? body.expires_in : 3600) * 1000;
+    this.token = {
+      value: body.access_token,
+      expiresAt: Date.now() + Math.max(0, ttlMs - TOKEN_REFRESH_MARGIN_MS),
+    };
+    return body.access_token;
+  }
+
+  /**
+   * One authenticated request, its body read to the end INSIDE the call, so a
+   * body cut off mid-read is retried with the request rather than surfacing
+   * after it. Non-2xx is a {@link GcsHttpError} carrying the status.
+   */
+  private async send(
+    what: string,
+    method: string,
+    url: string,
+    init: { body?: Buffer; contentType?: string } = {},
+  ): Promise<{ status: number; body: Buffer }> {
+    let token: string;
+    try {
+      token = await this.accessToken();
+    } catch (err) {
+      throw new TokenFetchFailed(err);
+    }
+    const res = await fetch(url, {
+      method,
+      headers: {
+        authorization: `Bearer ${token}`,
+        ...(init.contentType ? { "content-type": init.contentType } : {}),
+      },
+      ...(init.body ? { body: init.body } : {}),
+      signal: AbortSignal.timeout(this.retry.requestTimeoutMs),
+    });
+    const body = Buffer.from(await res.arrayBuffer());
+    if (res.status === 401) this.token = undefined;
+    if (!res.ok) {
+      let detail = "";
+      try {
+        const parsed = JSON.parse(body.toString("utf8")) as { error?: { message?: unknown } };
+        if (typeof parsed.error?.message === "string") detail = parsed.error.message;
+      } catch {
+        // Not JSON: the status alone.
+      }
+      throw new GcsHttpError(res.status, what, detail);
+    }
+    return { status: res.status, body };
+  }
+
+  /**
+   * Every GCS call goes through here, the token fetch each one may trigger
+   * included. A read and a list change nothing, a delete is idempotent here
+   * (404 is success), and a conditional write that landed before its response
+   * was lost fails its own precondition on the replay — which `StateStore`
+   * already answers by re-reading. Those always replay, on a transport error
+   * and on a retryable status (408, 429, 5xx).
    *
    * An UNCONDITIONAL write (`replayable: false`) replays only when the token
    * fetch failed, so the write was never sent. Otherwise it may have landed,
@@ -213,17 +389,20 @@ export class GcsBlobStore implements BlobStore {
       try {
         return await call();
       } catch (err) {
-        if (!isTransientTransportError(err)) throw err;
-        if (
+        const transport = isTransientTransportError(err);
+        const status = httpStatus(err);
+        if (!transport && !(status !== undefined && RETRY_STATUSES.has(status))) throw err;
+        const last =
           attempt >= this.retry.attempts ||
           Date.now() - started >= this.retry.deadlineMs ||
-          (!replayable && !failedBeforeSending(err))
-        ) {
-          throw new TransientStoreError(operation, attempt, err);
+          (!replayable && !(err instanceof TokenFetchFailed));
+        if (last) {
+          // A status is GCS's own answer, and says more than "dropped" would.
+          throw transport ? new TransientStoreError(operation, attempt, err) : err;
         }
         logWarning(
-          `GCS ${operation}: transient transport error (try ${attempt}/` +
-            `${this.retry.attempts}), retrying: ${errMessage(err)}`,
+          `GCS ${operation}: ${transport ? "transient transport error" : `HTTP ${status}`} ` +
+            `(try ${attempt}/${this.retry.attempts}), retrying: ${describeError(err)}`,
         );
         const backoff = this.retry.baseDelayMs * 2 ** (attempt - 1);
         await sleep(backoff + Math.random() * backoff * 0.5);
@@ -231,45 +410,43 @@ export class GcsBlobStore implements BlobStore {
     }
   }
 
-  private file(name: string) {
-    return this.storage.bucket(this.bucketName).file(name);
+  private objectUrl(name: string, query = ""): string {
+    return `${this.api}/storage/v1/b/${enc(this.bucketName)}/o/${enc(name)}${query}`;
   }
 
   /**
    * The generation comes from the object's METADATA, and the bytes from a
-   * download pinned to that generation. `download()` alone reads no metadata —
-   * `file.metadata` stays empty — and a read that reported no generation would
-   * make every later conditional write fail its precondition, forever.
-   *
-   * Pinned, so the bytes and the generation describe the same write. If the
-   * object is replaced between the two calls the pinned download 404s, and the
-   * read starts over.
+   * download pinned to that generation, so the two describe the same write. A
+   * read that reported no generation would make every later conditional write
+   * fail its precondition, forever. If the object is replaced between the two
+   * calls the pinned download 404s, and the read starts over.
    */
   async read(name: string): Promise<BlobRead | null> {
     for (let attempt = 0; attempt < 3; attempt++) {
       let generation: string;
       try {
-        const [metadata] = await this.transport(`reading ${name}`, () =>
-          this.file(name).getMetadata(),
+        const { body } = await this.transport(`reading ${name}`, () =>
+          this.send(`reading ${name}`, "GET", this.objectUrl(name, "?fields=generation")),
         );
-        generation = String(metadata.generation ?? "");
+        generation = String((JSON.parse(body.toString("utf8")) as { generation?: unknown }).generation ?? "");
       } catch (err) {
-        if (status(err) === 404) return null;
+        if (httpStatus(err) === 404 && !(err instanceof TokenFetchFailed)) return null;
         throw err;
       }
       if (!/^\d+$/.test(generation)) {
         throw new Error(`GCS returned no generation for ${name}`);
       }
       try {
-        const [data] = await this.transport(`reading ${name}`, () =>
-          this.storage
-            .bucket(this.bucketName)
-            .file(name, { generation: Number(generation) })
-            .download(),
+        const { body } = await this.transport(`reading ${name}`, () =>
+          this.send(
+            `reading ${name}`,
+            "GET",
+            this.objectUrl(name, `?alt=media&generation=${generation}`),
+          ),
         );
-        return { data, generation };
+        return { data: body, generation };
       } catch (err) {
-        if (status(err) !== 404) throw err;
+        if (httpStatus(err) !== 404 || err instanceof TokenFetchFailed) throw err;
       }
     }
     throw new Error(`${name} kept changing while it was being read`);
@@ -280,31 +457,40 @@ export class GcsBlobStore implements BlobStore {
     data: Buffer,
     ifGeneration?: string | null,
   ): Promise<string> {
-    const file = this.file(name);
-    const preconditionOpts =
-      ifGeneration === undefined
-        ? undefined
-        : { ifGenerationMatch: ifGeneration === null ? 0 : Number(ifGeneration) };
+    const conditional = ifGeneration !== undefined;
+    const query = new URLSearchParams({ uploadType: "multipart" });
+    if (conditional) query.set("ifGenerationMatch", ifGeneration === null ? "0" : ifGeneration);
+    const url = `${this.api}/upload/storage/v1/b/${enc(this.bucketName)}/o?${query}`;
+    const boundary = `strad-${randomBytes(12).toString("hex")}`;
+    const body = Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\ncontent-type: application/json; charset=UTF-8\r\n\r\n` +
+          JSON.stringify({ name, contentType: "application/octet-stream", cacheControl: "no-store" }) +
+          `\r\n--${boundary}\r\ncontent-type: application/octet-stream\r\n\r\n`,
+      ),
+      data,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+    let response: Buffer;
     try {
-      await this.transport(
+      ({ body: response } = await this.transport(
         `writing ${name}`,
         () =>
-          file.save(data, {
-            resumable: false,
-            contentType: "application/octet-stream",
-            // A conditional write is safe to retry: a replay of one that landed
-            // fails its own precondition rather than writing twice.
-            ...(preconditionOpts ? { preconditionOpts } : {}),
-            metadata: { cacheControl: "no-store" },
+          this.send(`writing ${name}`, "POST", url, {
+            body,
+            contentType: `multipart/related; boundary=${boundary}`,
           }),
-        preconditionOpts !== undefined,
-      );
+        conditional,
+      ));
     } catch (err) {
-      if (status(err) === 412) throw new PreconditionFailed(name);
+      if (httpStatus(err) === 412 && !(err instanceof TokenFetchFailed)) {
+        throw new PreconditionFailed(name);
+      }
       throw err;
     }
-    // A save DOES set `file.metadata` (the upload's response body).
-    const generation = String(file.metadata?.generation ?? "");
+    const generation = String(
+      (JSON.parse(response.toString("utf8")) as { generation?: unknown }).generation ?? "",
+    );
     if (!/^\d+$/.test(generation)) {
       throw new Error(`GCS returned no generation after writing ${name}`);
     }
@@ -313,17 +499,34 @@ export class GcsBlobStore implements BlobStore {
 
   async delete(name: string): Promise<void> {
     try {
-      await this.transport(`deleting ${name}`, () => this.file(name).delete());
+      await this.transport(`deleting ${name}`, () =>
+        this.send(`deleting ${name}`, "DELETE", this.objectUrl(name)),
+      );
     } catch (err) {
-      if (status(err) !== 404) throw err;
+      if (httpStatus(err) !== 404 || err instanceof TokenFetchFailed) throw err;
     }
   }
 
   async list(prefix: string): Promise<string[]> {
-    const [files] = await this.transport(`listing ${prefix}`, () =>
-      this.storage.bucket(this.bucketName).getFiles({ prefix, autoPaginate: true }),
-    );
-    return files.map((f) => f.name);
+    const names: string[] = [];
+    let pageToken: string | undefined;
+    do {
+      const query = new URLSearchParams({ prefix, fields: "items(name),nextPageToken" });
+      if (pageToken) query.set("pageToken", pageToken);
+      const url = `${this.api}/storage/v1/b/${enc(this.bucketName)}/o?${query}`;
+      const { body } = await this.transport(`listing ${prefix}`, () =>
+        this.send(`listing ${prefix}`, "GET", url),
+      );
+      const page = JSON.parse(body.toString("utf8")) as {
+        items?: { name?: unknown }[];
+        nextPageToken?: unknown;
+      };
+      for (const item of page.items ?? []) {
+        if (typeof item.name === "string") names.push(item.name);
+      }
+      pageToken = typeof page.nextPageToken === "string" ? page.nextPageToken : undefined;
+    } while (pageToken);
+    return names;
   }
 }
 
