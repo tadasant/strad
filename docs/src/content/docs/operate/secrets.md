@@ -2035,18 +2035,26 @@ holding `{"<slug>": ["VARIABLE", ...]}` — names only, and names are what the
 console prints anyway. The component reports presence for each one on the
 presence route, and the server is graded on them like anything else.
 
-Where the component reports no parameters for a slug — it did not answer, ran an
-image without the manifest, or the deploy resolved none — core asks the **store**
-instead. Its resolver already holds a snapshot of the whole store, so each of the
-server's own namespaces (`oauth/` then `static/`) is a slice of a roster it already
-enumerated, and the render is memoised per snapshot. A parameter that renders
-reads `plumbed`, with a detail saying it came from the store and reaches a
-supplementary image's container at the next deploy. One that will not render
-reads `cannot render`. Only a partial reading, or namespaces that hold nothing,
-leave the `unverified` sentence standing. An empty namespace cannot tell "nobody
-seeded it" from "a connector consent that has not happened", so it claims
-neither. The component's own answer always wins when it gives one, because it is
-about the process serving requests.
+Where the component **did not answer at all** — unreachable, an image that
+predates the presence route, or no private URL bound — core asks the **store**
+instead. So does a `params: true` builtin or a store-served instance, which read
+the store at runtime anyway. Its resolver already holds a snapshot of the whole
+store, so each of the server's own namespaces (`oauth/` then `static/`) is a
+slice of a roster it already enumerated, and the render is memoised per snapshot.
+The cost is that core now renders every managed parameter of those servers once
+per snapshot (`ttlSeconds`), and holds the rendered values in that snapshot as it
+already does for the gateway namespace. Only names reach the page. A parameter
+that renders reads `plumbed`, with a detail saying it came from the store and
+reaches a supplementary image's container at the next deploy. One the store
+refuses reads `cannot render`. A partial reading, a transient failure (a 429, a
+5xx, a timeout), or namespaces that hold nothing leave the `unverified` sentence
+standing. An empty namespace cannot tell "nobody seeded it" from "a connector
+consent that has not happened", so it claims neither.
+
+A component that **answered** and named nothing for the slug keeps its word: it
+has said its container holds none of them, and a value seeded since the last
+deploy does not make that a green. The `unverified` sentence stands there too,
+with the reason the component gave.
 
 **It stands whatever else the server declares**, and that is the point. The
 managed namespace is a requirement of its own, ranked `unobservable` — above
