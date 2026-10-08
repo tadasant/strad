@@ -3484,3 +3484,43 @@ gmail's `send_email` asks a human first, at the URL the `/mcp` request names in
   the prompt or sending it to one address for everybody.
 
 See `HACKS.md` #113.
+
+---
+
+### 114. A WhatsApp attachment buffered before descriptors were kept is recovered from the phone, best effort
+
+[`whatsapp_get_attachment`](/servers/whatsapp/#attachments) needs the media key
+and CDN path a message carried when it arrived. The buffer keeps them for every
+media message it ingests. A message buffered before it did has neither, and they
+cannot be derived, so the bridge asks the paired phone to send the message again
+(a resend of the message, and an on-demand history sync before the next one) and
+waits 30 seconds for the answer.
+
+- **It needs the phone.** Online, with WhatsApp able to run, and still holding
+  the message. An offline phone is an error that says to retry; a phone that has
+  deleted it is an error for good, and the file has to be sent again.
+- **It has not met a real phone in CI.** The suite drives both requests through a
+  fake socket that answers the way Baileys delivers an answer. Whether a given
+  phone honours a resend for a message that decrypted fine the first time is
+  WhatsApp's behaviour, not the bridge's.
+- **An expired CDN copy needs the phone too.** WhatsApp forgets a file after a
+  while; the phone re-uploads it on request, and a phone that cannot leaves the
+  file unreadable.
+- **Spent links live in memory.** The `/whatsapp` component runs one instance,
+  so that is the whole ledger, but a restart forgets it: a link used once before
+  a deploy could be used again after it, inside its 15 minutes.
+- **The download transport is strad's own.** Baileys 7.0.0-rc14's
+  `downloadMediaMessage` crashes its host on a dropped CDN connection and never
+  calls its re-upload hook, so the bridge fetches with its own abortable `fetch`
+  and keeps only Baileys' key derivation.
+
+**How you would know.** The attachment's `available: false` and
+`unavailable_reason` in `whatsapp_get_messages`, and the error text of
+`whatsapp_get_attachment`. The container logs one line per recovery attempt,
+with no chat or file named.
+
+**Undo:** the recovery goes away once every message older than the change has
+aged out of the buffer (30 days by default). The transport goes back to Baileys
+when its download forwards source errors and tests the status it sets.
+
+See `HACKS.md` #114.

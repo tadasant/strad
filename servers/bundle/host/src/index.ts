@@ -1213,7 +1213,7 @@ async function loadTelegram(
  * opens a socket only when its four variables are present, and a component's
  * environment is its own servers' `env:` maps — so the container a
  * `path: /whatsapp` slug is bundled onto connects, and every other container
- * running this image lists the six tools degraded and never touches WhatsApp.
+ * running this image lists the seven tools degraded and never touches WhatsApp.
  * Two sockets on one linked device kick each other off, which is why the
  * component that holds it must run one instance (the renderer refuses more).
  *
@@ -1222,12 +1222,16 @@ async function loadTelegram(
  * instance in this process.
  *
  * `close` is what the shutdown path calls, so a deploy's SIGTERM flushes the
- * Signal state to GCS before the process exits.
+ * Signal state to GCS before the process exits. `download` serves the links
+ * `whatsapp_get_attachment` mints, addressed to the gateway slug named by
+ * `WHATSAPP_PUBLIC_SLUG` — every WhatsApp slug is `path: /whatsapp`, so, as
+ * with slack's, the slug cannot be derived here.
  */
 async function loadWhatsApp(): Promise<Mount> {
   const mod = (await loadFromTree("whatsapp", "shared/build/index.js")) as {
     createMCPServer: (options: { version: string; env: NodeJS.ProcessEnv }) => Created & {
       close: () => Promise<void>;
+      handleDownload: (token: string) => Promise<DownloadOutcome>;
     };
     missingCredentials: (env?: NodeJS.ProcessEnv) => string[];
   };
@@ -1242,6 +1246,10 @@ async function loadWhatsApp(): Promise<Mount> {
     capabilities: { tools: {} },
     degraded: missingCredentialsDegraded(mod.missingCredentials(env)),
     register: (s) => created.registerHandlers(s),
+    // whatsapp_get_attachment's single-use links land here, through core's
+    // `/mcp-download/:slug/:token`. The tree verifies the token, fetches and
+    // decrypts the file from WhatsApp, and stores nothing.
+    download: created.handleDownload,
     close: () => created.close(),
   };
 }

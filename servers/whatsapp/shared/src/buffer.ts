@@ -12,7 +12,7 @@
  * book) is read at boot, and a chat's messages are read the first time a tool
  * or an incoming message touches that chat.
  */
-import type { StoredMessage } from "./normalize.js";
+import type { MediaDescriptor, StoredMessage } from "./normalize.js";
 
 export interface ChatMeta {
   id: string;
@@ -166,6 +166,9 @@ export class MessageBuffer {
           quoted_message_id: message.quoted_message_id ?? existing.quoted_message_id,
           quoted_participant: message.quoted_participant ?? existing.quoted_participant,
           mentioned: message.mentioned.length ? message.mentioned : existing.mentioned,
+          // A redelivery that carries a descriptor is the fresher one (a
+          // re-requested message comes back with a CDN path that works).
+          ...(message.media ?? existing.media ? { media: message.media ?? existing.media } : {}),
         }
       : message;
     chat.byId.set(message.id, merged);
@@ -186,6 +189,34 @@ export class MessageBuffer {
       chat.byId.set(id, { ...existing, sent_by_bridge: true });
       this.dirtyChats.add(chatId);
     }
+  }
+
+  /** A re-upload moved the file on WhatsApp's CDN: keep where it is now. */
+  async setMediaLocation(
+    chatId: string,
+    id: string,
+    location: Pick<MediaDescriptor, "direct_path" | "url">,
+  ): Promise<void> {
+    const chat = await this.chat(chatId);
+    const existing = chat.byId.get(id);
+    if (!existing?.media) return;
+    chat.byId.set(id, { ...existing, media: { ...existing.media, ...location } });
+    this.dirtyChats.add(chatId);
+  }
+
+  /** A descriptor learned after the message itself (a history copy, a resend). */
+  async setMedia(chatId: string, id: string, media: MediaDescriptor): Promise<void> {
+    const chat = await this.chat(chatId);
+    const existing = chat.byId.get(id);
+    if (!existing) return;
+    chat.byId.set(id, { ...existing, media });
+    this.dirtyChats.add(chatId);
+  }
+
+  /** The oldest buffered message newer than `message`, in the same chat. */
+  async nextAfter(chatId: string, message: StoredMessage): Promise<StoredMessage | undefined> {
+    const all = [...(await this.chat(chatId)).byId.values()].sort(byTime);
+    return all.find((m) => byTime(m, message) > 0);
   }
 
   async edit(chatId: string, id: string, text: string | null): Promise<void> {

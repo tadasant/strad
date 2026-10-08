@@ -1,16 +1,8 @@
-import { afterEach, test } from "vitest";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import {
-  createMCPServer,
-  GcsHttpError,
-  MemoryBlobStore,
-  TransientStoreError,
-  type WhatsAppConfig,
-} from "../src/index.js";
+import { GcsHttpError, MemoryBlobStore, TransientStoreError } from "../src/index.js";
 import {
   ADA_PN,
   fakeWhatsApp,
@@ -21,7 +13,6 @@ import {
   SELF_LID,
   SELF_PN,
   waitFor,
-  type FakeWhatsApp,
 } from "./fake-socket.js";
 import { PAIRING_BROWSER } from "../src/socket.js";
 
@@ -43,113 +34,21 @@ import { PAIRING_BROWSER } from "../src/socket.js";
  *   7. Logout and remote logout; an unreadable state; no configuration.
  */
 
-const NOW = 1_790_000_000;
-const clock = () => NOW * 1000;
+import {
+  call,
+  clock,
+  config,
+  connect,
+  NOW,
+  open,
+  pairAndConnect,
+} from "./harness.js";
 
-function config(key = randomBytes(32)): WhatsAppConfig {
-  return {
-    encryptionKey: key,
-    bucket: "test-bucket",
-    clientEmail: "bridge@example.iam.gserviceaccount.com",
-    privateKey: "unused",
-    prefix: "whatsapp",
-    bufferMaxMessages: 1000,
-    bufferMaxAgeDays: 30,
-  };
-}
-
-const FAST_PACING = {
-  minGapMs: 0,
-  perMinute: 3,
-  perHour: 60,
-  typingBaseMs: 0,
-  typingPerCharMs: 0,
-  typingMaxMs: 0,
-};
-
-const open: Array<() => Promise<unknown>> = [];
-afterEach(async () => {
-  while (open.length) await open.pop()!();
-});
-
-async function connect(
-  options: {
-    blobs?: MemoryBlobStore;
-    fake?: FakeWhatsApp;
-    cfg?: WhatsAppConfig;
-    env?: NodeJS.ProcessEnv;
-    clock?: () => number;
-  } = {},
-) {
-  const blobs = options.blobs ?? new MemoryBlobStore();
-  const fake = options.fake ?? fakeWhatsApp(clock);
-  const created = createMCPServer({
-    version: "test",
-    ...(options.env ? { env: options.env } : { config: options.cfg ?? config() }),
-    blobs,
-    socketFactory: fake.factory,
-    bridgeOptions: {
-      clock: options.clock ?? clock,
-      sleep: async () => {},
-      pacing: FAST_PACING,
-      flushDelayMs: 1,
-      reconnectBaseMs: 1,
-      replacedDelayMs: 1,
-      pairingReadyTimeoutMs: 500,
-    },
-  });
-  await created.registerHandlers(created.server);
-  const mcp = new Client({ name: "test", version: "1" }, { capabilities: {} });
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await Promise.all([mcp.connect(clientTransport), created.server.connect(serverTransport)]);
-  const close = async () => {
-    await created.close();
-    await mcp.close();
-    await created.server.close();
-  };
-  open.push(close);
-  return { mcp, blobs, fake, created, close };
-}
-
-async function call(mcp: Client, name: string, args: Record<string, unknown> = {}) {
-  const res = (await mcp.callTool({ name, arguments: args })) as {
-    content: { type: string; text: string }[];
-    structuredContent?: Record<string, unknown>;
-    isError?: boolean;
-  };
-  const text = res.content[0]?.text ?? "";
-  const images = res.content.filter((c) => c.type === "image") as unknown as {
-    data: string;
-    mimeType: string;
-  }[];
-  let json: any;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    json = undefined;
-  }
-  return { isError: res.isError === true, text, json, structured: res.structuredContent, images };
-}
-
-/** Pair through the tool, and have the phone accept the code. */
-async function pairAndConnect(mcp: Client, fake: FakeWhatsApp) {
-  const pairing = call(mcp, "whatsapp_pair", { phone_number: "15550000001" });
-  await waitFor(() => fake.sockets.length === 1);
-  fake.latest().offerPairing();
-  const result = await pairing;
-  const first = fake.latest();
-  first.acceptPairing();
-  first.close(515); // WhatsApp asks for a fresh stream after pair-success
-  await waitFor(() => fake.sockets.length === 2);
-  fake.latest().open();
-  await waitFor(async () => (await call(mcp, "whatsapp_status")).json?.connected === true);
-  return result;
-}
-
-test("tools/list: the six contract tools, with honest annotations", async () => {
+test("tools/list: the seven contract tools, with honest annotations", async () => {
   const { mcp } = await connect();
   const { tools } = await mcp.listTools();
   assert.deepEqual(tools.map((t) => t.name).sort(), [
+    "whatsapp_get_attachment",
     "whatsapp_get_messages",
     "whatsapp_list_chats",
     "whatsapp_logout",
@@ -158,7 +57,12 @@ test("tools/list: the six contract tools, with honest annotations", async () => 
     "whatsapp_status",
   ]);
   const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
-  for (const read of ["whatsapp_status", "whatsapp_list_chats", "whatsapp_get_messages"]) {
+  for (const read of [
+    "whatsapp_status",
+    "whatsapp_list_chats",
+    "whatsapp_get_messages",
+    "whatsapp_get_attachment",
+  ]) {
     assert.equal(byName[read]!.annotations?.readOnlyHint, true, read);
   }
   assert.equal(byName.whatsapp_logout!.annotations?.destructiveHint, true);
@@ -769,7 +673,7 @@ test("a state sealed under another key is reported, not silently replaced", asyn
 test("unconfigured: tools list, every call names the missing variables", async () => {
   const { mcp } = await connect({ env: {} });
   const { tools } = await mcp.listTools();
-  assert.equal(tools.length, 6);
+  assert.equal(tools.length, 7);
   const res = await call(mcp, "whatsapp_status");
   assert.equal(res.isError, true);
   for (const name of [

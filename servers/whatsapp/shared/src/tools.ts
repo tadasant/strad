@@ -3,6 +3,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { getAttachmentTool } from "./tools/get-attachment.js";
 import { getMessagesTool } from "./tools/get-messages.js";
 import { listChatsTool } from "./tools/list-chats.js";
 import { logoutTool } from "./tools/logout.js";
@@ -14,7 +15,7 @@ import { statusTool } from "./tools/status.js";
 /**
  * Tool groups, so a deployment can hand out a least-privileged surface.
  *
- * - `readonly`  is it healthy, which chats, what was said
+ * - `readonly`  is it healthy, which chats, what was said, what was attached
  * - `readwrite` + posting as the account
  * - `admin`     + pairing and unlinking the account
  *
@@ -50,6 +51,7 @@ const ENTRIES: Entry[] = [
   { factory: statusTool, groups: ["readonly", "readwrite", "admin"] },
   { factory: listChatsTool, groups: ["readonly", "readwrite", "admin"] },
   { factory: getMessagesTool, groups: ["readonly", "readwrite", "admin"] },
+  { factory: getAttachmentTool, groups: ["readonly", "readwrite", "admin"] },
   { factory: sendMessageTool, groups: ["readwrite", "admin"] },
   { factory: pairTool, groups: ["admin"] },
   { factory: logoutTool, groups: ["admin"] },

@@ -34,7 +34,10 @@ export function getMessagesTool(bridge: BridgeFactory): ToolDefinition {
       "`sent_by_bridge` marks messages this bridge posted (skip them to avoid " +
       "answering yourself). `mentions_self` / `reply_to_self` are about the " +
       "paired account. `text` is the text or the media caption; `type` names " +
-      "the kind, and media bytes are never returned.\n\n" +
+      "the kind. A media message also carries `attachment` (`file_name`, " +
+      "`mime_type`, `size_bytes`, `page_count?`, `available`, and " +
+      "`unavailable_reason` when not); whatsapp_get_attachment reads the file, " +
+      "a private file of the paired account. No bytes here.\n\n" +
       `${UNOFFICIAL}\n\n` +
       'Example: {"chat_id":"120363012345678901@g.us","chat_name":"Wedding planning",' +
       '"self_jid":"15551234567@s.whatsapp.net","has_more":false,"messages":[{' +

@@ -43,7 +43,44 @@ export interface StoredMessage {
   /** Who wrote the quoted message, as WhatsApp reports it (phone JID or LID). */
   quoted_participant: string | null;
   mentioned: string[];
+  /**
+   * What a later download needs, for a media message: WhatsApp's media key and
+   * CDN path. Absent on a record buffered before descriptors were kept, and on
+   * every non-media message. Sealed with the rest of the chat object, and never
+   * returned by a tool — the media key decrypts the file.
+   */
+  media?: MediaDescriptor;
 }
+
+/**
+ * The fields of a media message (`documentMessage`, `imageMessage`, …) that
+ * the CDN download (socket.ts) and Baileys' `updateMediaMessage` read, as JSON:
+ * bytes as base64, Longs as numbers. `kind` is the content key itself, so the
+ * message can be rebuilt as `{ [kind]: { … } }` for Baileys to classify.
+ */
+export interface MediaDescriptor {
+  kind: string;
+  media_key: string | null;
+  direct_path: string | null;
+  url: string | null;
+  file_enc_sha256: string | null;
+  file_sha256: string | null;
+  file_length: number | null;
+  mimetype: string | null;
+  file_name: string | null;
+  media_key_timestamp: number | null;
+  page_count: number | null;
+  /** The key exactly as WhatsApp addressed the message: a re-upload request names it. */
+  key: { remote_jid: string; from_me: boolean; id: string; participant: string | null };
+}
+
+export const MEDIA_TYPES: ReadonlySet<MessageType> = new Set([
+  "image",
+  "video",
+  "audio",
+  "document",
+  "sticker",
+]);
 
 /** A change to a message already buffered, carried by a protocol message. */
 export type Mutation =
@@ -187,6 +224,8 @@ export interface Classified {
   context: RawContextInfo | null;
   /** For a reaction, the message reacted to. */
   target_id?: string | null;
+  /** For media, the content key and its object. */
+  media?: { kind: string; body: Record<string, unknown> };
 }
 
 const str = (v: unknown): string | null =>
@@ -216,6 +255,7 @@ export function classify(content: RawContent | null): Classified | null {
         type,
         text: str(media.caption),
         context: (media.contextInfo ?? null) as RawContextInfo | null,
+        media: { kind: key, body: media },
       };
     }
   }
@@ -262,6 +302,94 @@ export function mutationOf(
     return { kind: "edit", chat_id: chatId, id: protocol.key.id, text: edited?.text ?? null };
   }
   return null;
+}
+
+/** Protobuf bytes as base64, whichever shape they arrived in. */
+function bytes64(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v === "string") return v === "" ? null : v;
+  if (v instanceof Uint8Array) return v.length ? Buffer.from(v).toString("base64") : null;
+  // Baileys' BufferJSON form, should a message ever round-trip through it.
+  const json = v as { type?: unknown; data?: unknown };
+  if (json.type === "Buffer" && Array.isArray(json.data)) {
+    return json.data.length ? Buffer.from(json.data as number[]).toString("base64") : null;
+  }
+  return null;
+}
+
+const num = (v: unknown): number | null => {
+  if (v === null || v === undefined) return null;
+  const n =
+    typeof v === "object" && typeof (v as { toNumber?: unknown }).toNumber === "function"
+      ? (v as { toNumber(): number }).toNumber()
+      : Number(v);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
+};
+
+/** The download descriptor of a media object, or null when it has no key. */
+export function mediaDescriptorOf(
+  kind: string,
+  body: Record<string, unknown>,
+  key: RawKey,
+): MediaDescriptor | null {
+  const mediaKey = bytes64(body.mediaKey);
+  if (!mediaKey || !key.id || !key.remoteJid) return null;
+  return {
+    kind,
+    media_key: mediaKey,
+    direct_path: str(body.directPath),
+    url: str(body.url),
+    file_enc_sha256: bytes64(body.fileEncSha256),
+    file_sha256: bytes64(body.fileSha256),
+    file_length: num(body.fileLength),
+    mimetype: str(body.mimetype),
+    file_name: str(body.fileName),
+    media_key_timestamp: num(body.mediaKeyTimestamp),
+    page_count: num(body.pageCount),
+    key: {
+      remote_jid: key.remoteJid,
+      from_me: key.fromMe === true,
+      id: key.id,
+      participant: key.participant ?? null,
+    },
+  };
+}
+
+/** The message Baileys' download and re-upload functions take, rebuilt. */
+export function mediaMessageOf(d: MediaDescriptor): RawMessage {
+  const b = (v: string | null) => (v ? Buffer.from(v, "base64") : undefined);
+  const body: Record<string, unknown> = {
+    mediaKey: b(d.media_key),
+    ...(d.direct_path ? { directPath: d.direct_path } : {}),
+    ...(d.url ? { url: d.url } : {}),
+    ...(d.file_enc_sha256 ? { fileEncSha256: b(d.file_enc_sha256) } : {}),
+    ...(d.file_sha256 ? { fileSha256: b(d.file_sha256) } : {}),
+    ...(d.file_length !== null ? { fileLength: d.file_length } : {}),
+    ...(d.mimetype ? { mimetype: d.mimetype } : {}),
+    ...(d.file_name ? { fileName: d.file_name } : {}),
+    ...(d.media_key_timestamp !== null ? { mediaKeyTimestamp: d.media_key_timestamp } : {}),
+  };
+  return {
+    key: {
+      remoteJid: d.key.remote_jid,
+      fromMe: d.key.from_me,
+      id: d.key.id,
+      ...(d.key.participant ? { participant: d.key.participant } : {}),
+    },
+    message: { [d.kind]: body },
+  };
+}
+
+/** Read the (possibly refreshed) CDN location back off a rebuilt message. */
+export function refreshedLocation(
+  d: MediaDescriptor,
+  message: RawMessage,
+): Pick<MediaDescriptor, "direct_path" | "url"> {
+  const body = (unwrap(message.message)?.[d.kind] ?? null) as Record<string, unknown> | null;
+  return {
+    direct_path: str(body?.directPath) ?? d.direct_path,
+    url: str(body?.url) ?? d.url,
+  };
 }
 
 // --- the whole message ----------------------------------------------------------
@@ -346,6 +474,9 @@ export function normalizeMessage(
   if (!sender) return { kind: "skip" };
 
   const context = classified.context;
+  const media = classified.media
+    ? mediaDescriptorOf(classified.media.kind, classified.media.body, key)
+    : null;
   const quotedId =
     classified.type === "reaction"
       ? (classified.target_id ?? null)
@@ -369,6 +500,7 @@ export function normalizeMessage(
       mentioned: (context?.mentionedJid ?? [])
         .map((j) => normalizeJid(j))
         .filter((j): j is string => j !== null),
+      ...(media ? { media } : {}),
     },
   };
 }

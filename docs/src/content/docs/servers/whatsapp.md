@@ -40,13 +40,15 @@ speaking, under their own name.
 | `whatsapp_status`       | readonly  | Paired? Connected? Healthy only when both are true                    |
 | `whatsapp_list_chats`   | readonly  | Chats and groups, newest activity first — where a chat id comes from |
 | `whatsapp_get_messages` | readonly  | One chat's buffered messages, oldest first, with a forward cursor    |
+| `whatsapp_get_attachment` | readonly | Read one message's file: a PDF's text, an image, a one-time link    |
 | `whatsapp_send_message` | readwrite | Post a text message as the paired account, optionally quoting one    |
 | `whatsapp_pair`         | admin     | Start pairing: a code to enter on the phone, or a QR to scan          |
 | `whatsapp_logout`       | admin     | Unlink, and delete everything persisted                              |
 
 Every successful result is a JSON object in `structuredContent` and the same
 JSON as the first text item. `whatsapp_pair {"method":"qr"}` adds one more item
-after it: the QR as an MCP `image` block (`image/png`). A failure is an MCP error result (`isError: true`)
+after it: the QR as an MCP `image` block (`image/png`). `whatsapp_get_attachment`
+adds the file's text, or the image, the same way. A failure is an MCP error result (`isError: true`)
 whose text says what went wrong and what to do next. Timestamps are integer UNIX seconds. Chat ids are WhatsApp JIDs:
 `…@g.us` for a group, `…@s.whatsapp.net` (or `…@lid`) for a person.
 
@@ -66,7 +68,11 @@ bridge answers itself), `from_me` (the paired account sent it, from any device),
 `mentions_self` and `reply_to_self` (matched against the account's phone JID
 **and** its LID, since WhatsApp addresses group members by either), `type`
 (`text`, `image`, `video`, `audio`, `document`, `sticker`, `reaction`, `other`),
-and `text` (the text, or a media caption). System notices and protocol messages
+and `text` (the text, or a media caption). A media message — `document`,
+`image`, `video`, `audio`, `sticker` — also carries `attachment`: `file_name`,
+`mime_type`, `size_bytes`, `page_count` when the document states one, and
+`available`, with `unavailable_reason` when it is false (see
+[Attachments](#attachments)). System notices and protocol messages
 are not messages and never appear. An edit replaces a buffered message's text;
 a delete-for-everyone removes it.
 
@@ -108,6 +114,7 @@ a tool or handed to an agent.
 | `WHATSAPP_GCS_PREFIX`           | config | Optional. The folder inside the bucket. Default `whatsapp`                  |
 | `WHATSAPP_BUFFER_MAX_MESSAGES`  | config | Optional. Default 1000                                                      |
 | `WHATSAPP_BUFFER_MAX_AGE_DAYS`  | config | Optional. Default 30                                                        |
+| `WHATSAPP_PUBLIC_SLUG`          | config | Optional. The gateway slug attachment links are addressed to (below)        |
 
 Under the prefix the server writes:
 
@@ -283,17 +290,95 @@ The device is marked `markOnlineOnConnect: false`, so the phone keeps getting
 notifications — on a personal number, the person is still told about their own
 messages.
 
+## Attachments
+
+`whatsapp_get_attachment {chat_id, message_id}` reads the file a media message
+carries. **These are the private files of the paired account** — whatever anyone
+sent it: contracts, IDs, photos — and the tool description says so. It is in the
+`readonly` group, because reading an attachment is reading.
+
+What the buffer keeps, per media message, is what a later download needs:
+WhatsApp's media key, the CDN path and URL, both SHA-256s, the length, MIME type,
+filename, page count and the message's original key. It is sealed with the rest
+of the chat object and never returned by a tool. Live messages and history-sync
+messages both keep it.
+
+A call fetches the encrypted file from WhatsApp's CDN, checks its SHA-256 and
+MAC, decrypts it, checks the plaintext SHA-256, and returns:
+
+- the file's name, MIME type, size and page count, as JSON;
+- for a PDF or a text file, the text, at most **200 KB**, with
+  `text_truncated: true` and a note when there was more. PDF text comes from
+  [`unpdf`](https://github.com/unjs/unpdf) (Mozilla's pdf.js, no native code, no
+  network), page by page, in a worker thread with a bounded heap that is
+  terminated at the cap or after 20 s, so a hostile PDF cannot stall the
+  bundle's event loop. A scanned PDF with no text layer says so;
+- for an image or a sticker up to 5 MB, an MCP `image` block;
+- always, a **single-use link** to the file through core's
+  `/mcp-download/<slug>/<token>`, the route [Slack attachments](/servers/slack-attachments/)
+  use, with a `curl` line. It expires in 15 minutes and needs no credential.
+
+Video and audio are the link only.
+
+**Limits.** A file over **25 MB** is refused — before the download when the
+message declares its size, and mid-stream when it does not. A download is
+abandoned after **60 s**, a phone that never answers a re-upload included. Two
+downloads run at once; more wait their turn. Only WhatsApp's own hosts
+(`https://*.whatsapp.net`) are fetched, with no redirects: the URL in a media
+message is written by whoever sent it. Nothing is written to disk or to the
+bucket, and no line logs a filename or a byte of content.
+
+**An expired copy.** WhatsApp's CDN forgets a file after a while and answers 404
+or 410. The bridge then asks the phone to upload it again (Baileys'
+`updateMediaMessage`), fetches once more, and keeps the new location for the
+next read. That needs the socket connected and the phone online.
+
+**Messages buffered before descriptors were kept** show `available: false` and
+say why. `whatsapp_get_attachment` asks the phone to send the message again, two
+ways at once: a resend of that one message, and an on-demand history sync of the
+50 messages before the next one buffered. Either answer is ingested like any
+other message, with its descriptor, and the call waits up to 30 s for it. A
+history copy of a message already buffered adds only its descriptor, so it
+cannot undo an edit. If the phone does not answer — offline, or it no longer
+has the message — the error says so, and a later call asks again. This is best effort and has not been exercised against a real phone
+in CI.
+
+**The transport is strad's, not Baileys'.** Baileys 7.0.0-rc14's
+`downloadMediaMessage` pipes the CDN response into its decipher without
+listening for the response's errors, so a connection dropped mid-file is an
+uncaught exception in the bundle process, and its re-upload hook never fires
+(it tests `error.status`; its own errors carry `output.statusCode`). The bridge
+uses Baileys' key derivation and CDN host rule, and its own abortable `fetch`.
+
+### The link
+
+The token is the payload **sealed** (AES-256-GCM), not merely signed: it names a
+chat, which is a phone number or a group, and a URL path reaches the edge access
+log. The key is derived from the component's `STRAD_INTERNAL_TOKEN`, the gateway
+slug and a fingerprint of `WHATSAPP_STATE_ENCRYPTION_KEY`, so a link presented to
+the other account's container does not open there. The file is fetched again
+when the link is presented; nothing is stored. A link spent on a fetch that
+produced no bytes is handed back, so a retry works. Spent links are remembered
+in memory, which the one-instance component makes the whole ledger; a restart
+forgets them, and the 15-minute expiry still holds.
+
+Every WhatsApp slug is served at `path: /whatsapp`, so the container cannot know
+which slug the gateway routes to it: `WHATSAPP_PUBLIC_SLUG` names it, as
+`SLACK_PUBLIC_SLUG` does for Slack. Any slug on the same component works. Unset,
+or outside a strad deployment (no `STRAD_PUBLIC_URL` or `STRAD_INTERNAL_TOKEN`),
+the file is still read and the result carries `download_url: null` with the
+reason; the boot log names what was missing.
+
 ## Logging
 
-Nothing logs a message's text, a key, or a pairing code. Baileys' own logger is
+Nothing logs a message's text, an attachment's name or contents, a key, or a pairing code. Baileys' own logger is
 silenced (at debug it prints decrypted messages), and every line and every tool
 error runs through a redactor that removes key-shaped runs and PEM blocks. A
 phone number is not redacted: it is what an operator needs to see.
 
 ## What is not here
 
-- **Media.** `type` names an attachment and `text` carries its caption; the bytes
-  are never downloaded.
+- **Sending media.** The bridge reads attachments; it sends text only.
 - **Reactions as a tool.** Reactions others send arrive as `type: "reaction"`
   messages; the bridge does not send them.
 - **A second account in one deployment.** One linked device is one account. A

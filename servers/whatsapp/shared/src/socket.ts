@@ -16,7 +16,8 @@
  * It is unofficial, and so is everything built on it: see the README.
  */
 import { installConsoleGuard } from "./logging.js";
-import type { RawMessage } from "./normalize.js";
+import { createDecipheriv, createHash, createHmac, timingSafeEqual } from "node:crypto";
+import type { RawKey, RawMessage } from "./normalize.js";
 
 /** The subset of Baileys' auth state this server builds and persists. */
 export interface AuthState {
@@ -57,6 +58,24 @@ export interface WaSocket {
   ): Promise<RawMessage | undefined>;
   sendPresenceUpdate(type: "composing" | "paused", jid: string): Promise<void>;
   groupFetchAllParticipating(): Promise<Record<string, GroupInfo>>;
+  /**
+   * Ask the phone to re-upload a media message whose CDN copy has expired.
+   * Resolves with the same message, its `directPath` and `url` rewritten.
+   */
+  updateMediaMessage(message: RawMessage): Promise<RawMessage>;
+  /** Ask the phone to resend one message; the answer arrives as `messages.upsert`. */
+  requestPlaceholderResend(key: RawKey): Promise<string | undefined>;
+  /**
+   * Ask the phone for up to `count` messages OLDER than the given one; the
+   * answer arrives as an ON_DEMAND `messaging-history.set`.
+   */
+  fetchMessageHistory(count: number, oldestMsgKey: RawKey, oldestMsgTimestampMs: number): Promise<string>;
+  /**
+   * Forget that a resend was asked for this message id. Baileys remembers
+   * each ask for an hour and silently skips a repeat; the bridge forgets one
+   * that went unanswered, so a retry once the phone is online asks again.
+   */
+  forgetPlaceholderResend(id: string): void;
   logout(): Promise<void>;
   end(error?: Error): void;
 }
@@ -144,6 +163,7 @@ export const createBaileysSocket: SocketFactory = async (options) => {
   } catch {
     version = undefined;
   }
+  const resends = new ExpiringCache(60 * 60_000);
   const socket = makeWASocket({
     auth: options.auth as never,
     browser: [...options.browser],
@@ -164,8 +184,179 @@ export const createBaileysSocket: SocketFactory = async (options) => {
       jid.endsWith("@broadcast") ||
       jid.endsWith("@newsletter"),
     getMessage: options.getMessage as never,
+    placeholderResendCache: resends as never,
   });
-  return socket as unknown as WaSocket;
+  return Object.assign(socket, {
+    forgetPlaceholderResend: (id: string) => resends.del(id),
+  }) as unknown as WaSocket;
+};
+
+/** Baileys' `CacheStore`, as a Map with a TTL, so an entry can be deleted from outside. */
+class ExpiringCache {
+  private readonly entries = new Map<string, { value: unknown; expires: number }>();
+
+  constructor(private readonly ttlMs: number) {}
+
+  get<T>(key: string): T | undefined {
+    const hit = this.entries.get(key);
+    if (!hit) return undefined;
+    if (hit.expires <= Date.now()) {
+      this.entries.delete(key);
+      return undefined;
+    }
+    return hit.value as T;
+  }
+
+  set<T>(key: string, value: T): void {
+    for (const [k, v] of this.entries) if (v.expires <= Date.now()) this.entries.delete(k);
+    this.entries.set(key, { value, expires: Date.now() + this.ttlMs });
+  }
+
+  del(key: string): void {
+    this.entries.delete(key);
+  }
+
+  flushAll(): void {
+    this.entries.clear();
+  }
+}
+
+/**
+ * Fetch and decrypt one media message from WhatsApp's CDN, refusing it once
+ * it passes `maxBytes`. An HTTP failure rejects with the status on `status`
+ * (404 and 410 mean the copy expired; see the bridge).
+ */
+export type MediaDownloader = (
+  message: RawMessage,
+  options: { signal: AbortSignal; maxBytes: number },
+) => Promise<Buffer>;
+
+export class MediaTooLarge extends Error {
+  constructor(readonly bytes: number) {
+    super(`media passed the cap at ${bytes} bytes`);
+    this.name = "MediaTooLarge";
+  }
+}
+
+/** AES-CBC pads to a 16-byte block, and WhatsApp appends a 10-byte MAC. */
+const ENCRYPTION_OVERHEAD = 16 + 10;
+
+/**
+ * WHY NOT BAILEYS' `downloadMediaMessage`. In the pinned 7.0.0-rc14 it has
+ * two defects this server cannot live with:
+ *
+ *   - its fetch takes no signal, and it decrypts with `fetched.pipe(output)`,
+ *     which forwards no error from the SOURCE. A CDN connection that drops
+ *     mid-file, or one abandoned on a timeout, emits an `error` nothing
+ *     listens for — an uncaught exception in a process that hosts every other
+ *     server in the bundle;
+ *   - its `reuploadRequest` hook checks `error.status`, but its own Boom
+ *     carries the code as `output.statusCode`, so an expired URL is never
+ *     re-uploaded.
+ *
+ * So the transport is here, on Node's `fetch` with an AbortSignal, and every
+ * failure is a rejection. What is Baileys' is the cryptography that defines
+ * the format: `getMediaKeys` (the HKDF expansion per media type) and the
+ * CDN host rule. This also checks what Baileys does not: the 10-byte MAC and
+ * `fileEncSha256`, before a byte is decrypted. The bridge checks the
+ * plaintext against `fileSha256`.
+ */
+export const cdnMediaDownloader: MediaDownloader = (message, options) =>
+  createCdnMediaDownloader()(message, options);
+
+/**
+ * WhatsApp's media hosts, over TLS. The URL and host a media message names
+ * were written by whoever SENT it, so without this a message could make this
+ * container fetch any address it likes the moment someone reads its
+ * "attachment".
+ */
+export function isWhatsAppCdn(url: URL): boolean {
+  return (
+    url.protocol === "https:" &&
+    (url.hostname === "whatsapp.net" || url.hostname.endsWith(".whatsapp.net"))
+  );
+}
+
+/** The downloader, with the host rule injectable for a test's local CDN. */
+export const createCdnMediaDownloader = (
+  isAllowed: (url: URL) => boolean = isWhatsAppCdn,
+): MediaDownloader => async (message, { signal, maxBytes }) => {
+  const mod = await loadBaileys();
+  const [kind, raw] = Object.entries(message.message ?? {})[0] ?? [];
+  const body = (raw ?? {}) as {
+    mediaKey?: Uint8Array;
+    directPath?: string;
+    url?: string;
+    fileEncSha256?: Uint8Array;
+  };
+  if (!kind || !body.mediaKey) throw new Error("not a media message");
+  const mediaType = kind.replace(/Message$/, "") as Parameters<BaileysModule["getMediaKeys"]>[1];
+  const keys = await mod.getMediaKeys(body.mediaKey, mediaType);
+  const iv = Buffer.from(keys.iv!);
+  const cipherKey = Buffer.from(keys.cipherKey!);
+  const macKey = Buffer.from(keys.macKey!);
+  let host: string | undefined;
+  try {
+    host = body.url ? new URL(body.url).host : undefined;
+  } catch {
+    host = undefined;
+  }
+  const url = body.directPath ? mod.getUrlFromDirectPath(body.directPath, host) : body.url;
+  if (!url) throw new Error("the message names no media URL");
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("the message names a media URL that does not parse");
+  }
+  if (!isAllowed(parsed)) {
+    throw new Error("the message names a media host that is not WhatsApp's; not fetched");
+  }
+
+  // No redirects: a 3xx could leave WhatsApp's hosts after the check above.
+  const response = await fetch(parsed, {
+    headers: { Origin: mod.DEFAULT_ORIGIN },
+    signal,
+    redirect: "error",
+  });
+  if (!response.ok || !response.body) {
+    await response.body?.cancel().catch(() => {});
+    throw Object.assign(new Error(`WhatsApp's media server answered ${response.status}`), {
+      status: response.status,
+    });
+  }
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes + ENCRYPTION_OVERHEAD) {
+    await response.body.cancel().catch(() => {});
+    throw new MediaTooLarge(declared);
+  }
+  const chunks: Buffer[] = [];
+  let size = 0;
+  const reader = response.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > maxBytes + ENCRYPTION_OVERHEAD) {
+      await reader.cancel().catch(() => {});
+      throw new MediaTooLarge(size);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  const all = Buffer.concat(chunks);
+  if (all.length < ENCRYPTION_OVERHEAD) throw new Error("the media file is truncated");
+  if (body.fileEncSha256 && body.fileEncSha256.length) {
+    const digest = createHash("sha256").update(all).digest();
+    if (!digest.equals(Buffer.from(body.fileEncSha256))) {
+      throw new Error("the encrypted file does not match its checksum");
+    }
+  }
+  const enc = all.subarray(0, all.length - 10);
+  const mac = all.subarray(all.length - 10);
+  const expected = createHmac("sha256", macKey).update(Buffer.concat([iv, enc])).digest().subarray(0, 10);
+  if (!timingSafeEqual(mac, expected)) throw new Error("the media file failed its MAC check");
+  const decipher = createDecipheriv("aes-256-cbc", cipherKey, iv);
+  return Buffer.concat([decipher.update(enc), decipher.final()]);
 };
 
 /**

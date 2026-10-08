@@ -24,13 +24,14 @@ refused past 6/minute or 60/hour) to keep the risk down, not to remove it.
 | `whatsapp_status`       | readonly  | `connected && paired` is the only healthy state         |
 | `whatsapp_list_chats`   | readonly  | where a chat id (JID) comes from                        |
 | `whatsapp_get_messages` | readonly  | the buffer, oldest first; `after` is an inclusive cursor |
+| `whatsapp_get_attachment` | readonly | one message's file: PDF text, an image block, a one-time link |
 | `whatsapp_send_message` | readwrite | posts AS the account; recorded `sent_by_bridge: true`   |
 | `whatsapp_pair`         | admin     | a pairing code, or `{"method":"qr"}` a QR PNG — no shell |
 | `whatsapp_logout`       | admin     | unlink and delete everything persisted                  |
 
 The names and shapes are a contract with Zimmer's `whatsapp` trigger, which
 polls `whatsapp_get_messages` every minute. Do not rename a tool or a field
-without changing Zimmer in step. `servers/bundle/scripts/smoke.mjs` pins the six
+without changing Zimmer in step. `servers/bundle/scripts/smoke.mjs` pins the seven
 names against the built image.
 
 ## Environment
@@ -38,7 +39,11 @@ names against the built image.
 Required: `WHATSAPP_STATE_ENCRYPTION_KEY` (32 bytes, base64 or hex),
 `WHATSAPP_GCS_BUCKET`, `WHATSAPP_GCS_CLIENT_EMAIL`, `WHATSAPP_GCS_PRIVATE_KEY`.
 Optional: `WHATSAPP_GCS_PREFIX` (default `whatsapp`),
-`WHATSAPP_BUFFER_MAX_MESSAGES` (1000), `WHATSAPP_BUFFER_MAX_AGE_DAYS` (30).
+`WHATSAPP_BUFFER_MAX_MESSAGES` (1000), `WHATSAPP_BUFFER_MAX_AGE_DAYS` (30),
+`WHATSAPP_PUBLIC_SLUG` — the gateway slug attachment download links are
+addressed to. Unset (or outside strad, with no `STRAD_PUBLIC_URL` /
+`STRAD_INTERNAL_TOKEN`), attachments are still read and the result says why
+there is no link.
 
 There is no device-name variable. The pairing identity is Baileys'
 `Browsers.macOS("Chrome")` preset (`PAIRING_BROWSER` in `src/socket.ts`), so the
@@ -53,9 +58,11 @@ every bundle container except the one this slug is bundled onto.
 
 | File              | What it owns                                                                     |
 | ----------------- | -------------------------------------------------------------------------------- |
-| `src/socket.ts`   | the ONLY Baileys import (lazy), the `WaSocket` seam, the in-memory auth state     |
+| `src/socket.ts`   | the ONLY Baileys import (lazy), the `WaSocket` seam, the in-memory auth state, the CDN downloader |
 | `src/bridge.ts`   | lifecycle: start, pair, reconnect/backoff, ingest, flush, the tool operations     |
-| `src/normalize.ts`| wire message → buffered record; which messages exist, `type`, `text`, quotes      |
+| `src/normalize.ts`| wire message → buffered record; which messages exist, `type`, `text`, quotes, the media descriptor |
+| `src/attachment.ts`| attachment metadata, the size/time caps, PDF text (`unpdf`)                     |
+| `src/download-link.ts`| the sealed single-use download token                                         |
 | `src/buffer.ts`   | per-chat buffer, caps, the `after`/`has_more` read, sticky `sent_by_bridge`      |
 | `src/store.ts`    | what is persisted where, the lease, conditional auth writes                       |
 | `src/crypto.ts`   | AES-256-GCM with the object name as AAD                                           |
@@ -83,7 +90,14 @@ preconditions: pairing and the 515 restart, restore after a restart, the
 get_messages cursor, the `_self` flags against a phone JID and a LID, edits and
 deletes, history sync, `sent_by_bridge` surviving an echo, pacing refusals, two
 processes on one account, 401 and 440, logout, a state sealed under another
-key, and no configuration; a send that fails after delivery, overlapping pair
+key, and no configuration; attachments (`test/attachments.test.ts`) — the
+descriptor kept live and from history sync and across a restart, a PDF's text,
+an image block, the single-use link, an expired copy re-uploaded by the phone,
+the size and time caps, a re-upload the phone never answers, a media URL off
+WhatsApp's hosts, a tampered file, a dropped CDN connection, a history copy
+that must not undo an edit, and a pre-descriptor message recovered from the
+phone — against a local stand-in for
+WhatsApp's CDN serving really encrypted bytes; a send that fails after delivery, overlapping pair
 calls, logout racing a flush, a message held through a chat-load failure, and
 403. The auth-state round trip runs against real Baileys, the console guard
 against real libsignal, and `GcsBlobStore` — strad's own GCS JSON-API client on Node's
