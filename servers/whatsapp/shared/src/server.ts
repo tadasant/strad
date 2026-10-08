@@ -63,7 +63,6 @@ export function createMCPServer(options: CreateMCPServerOptions) {
             bucket: config.bucket,
             clientEmail: config.clientEmail,
             privateKey: config.privateKey,
-            ...(config.projectId ? { projectId: config.projectId } : {}),
           }),
         socketFactory: options.socketFactory ?? createBaileysSocket,
         ...options.bridgeOptions,

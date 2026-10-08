@@ -2,7 +2,12 @@
  * What every tool file needs: the tool shape, the result envelope, argument
  * parsing, and the one error path.
  */
-import { isTransientTransportError, TransientStoreError } from "../blob-store.js";
+import {
+  GcsHttpError,
+  isTransientTransportError,
+  TokenFetchFailed,
+  TransientStoreError,
+} from "../blob-store.js";
 import { BridgeError, type WhatsAppBridge } from "../bridge.js";
 import { ConfigError } from "../config.js";
 import { SealError } from "../crypto.js";
@@ -84,7 +89,11 @@ export async function guard(
       err instanceof SealError ||
       err instanceof RateLimited ||
       err instanceof SupersededError ||
-      err instanceof TransientStoreError
+      err instanceof TransientStoreError ||
+      // GCS's own refusal (403, 401, a bad key): an object name in it could
+      // carry "429" and read as a WhatsApp rate limit below.
+      err instanceof GcsHttpError ||
+      err instanceof TokenFetchFailed
     ) {
       return fail(err);
     }

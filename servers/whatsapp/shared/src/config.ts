@@ -22,8 +22,6 @@ export const ENV = {
   /** A service account that can read, write and delete objects in it. */
   clientEmail: "WHATSAPP_GCS_CLIENT_EMAIL",
   privateKey: "WHATSAPP_GCS_PRIVATE_KEY",
-  /** Optional. The project the bucket bills to. */
-  projectId: "WHATSAPP_GCS_PROJECT_ID",
   /** Optional. Object prefix inside the bucket. Default `whatsapp`. */
   prefix: "WHATSAPP_GCS_PREFIX",
   /** Optional. The name the phone shows under Linked devices. Default `Zimmer`. */
@@ -53,7 +51,6 @@ export interface WhatsAppConfig {
   bucket: string;
   clientEmail: string;
   privateKey: string;
-  projectId?: string;
   /** No leading or trailing slash. */
   prefix: string;
   deviceName: string;
@@ -162,7 +159,6 @@ export function loadConfig(
     clientEmail: read(env, ENV.clientEmail)!,
     // App Platform env vars carry a PEM with escaped newlines.
     privateKey: read(env, ENV.privateKey)!.replace(/\\n/g, "\n"),
-    projectId: read(env, ENV.projectId),
     prefix,
     deviceName,
     bufferMaxMessages: positiveInt(

@@ -104,7 +104,6 @@ a tool or handed to an agent.
 | `WHATSAPP_GCS_BUCKET`           | config | A **private** bucket                                                        |
 | `WHATSAPP_GCS_CLIENT_EMAIL`     | config | A service account with `roles/storage.objectAdmin` on that bucket, and no more |
 | `WHATSAPP_GCS_PRIVATE_KEY`      | secret | That service account's private key (PEM; `\n`-escaped is fine)              |
-| `WHATSAPP_GCS_PROJECT_ID`       | config | Optional                                                                    |
 | `WHATSAPP_GCS_PREFIX`           | config | Optional. The folder inside the bucket. Default `whatsapp`                  |
 | `WHATSAPP_DEVICE_NAME`          | config | Optional. What the phone's Linked devices list calls this. Default `Zimmer` |
 | `WHATSAPP_BUFFER_MAX_MESSAGES`  | config | Optional. Default 1000                                                      |
@@ -189,17 +188,26 @@ state — a session that silently stops decrypting. So:
   the lease before trying again, so two live processes cannot ping-pong.
 - **SIGTERM flushes.** The bundle host closes the mount on shutdown, which writes
   any pending state before exit.
-- **A dropped connection to GCS is retried.** Every bucket call, and the
-  service-account token fetch it may need, is retried on a transport error (a
-  connection closed mid-response, reset, refused or timed out): up to four
-  tries, backing off from 250 ms, and no new try after 15 seconds. An HTTP error
-  is not retried here; the GCS client already retries 429 and 5xx. A write
-  that is not conditional replays only if the token fetch failed, since one
-  that may have landed could overwrite a newer process's lease. When the budget
-  runs out, a tool answers with a message ending `transient; retry` and does
-  not echo the transport's error. A send is the exception: a connection that
-  drops during `whatsapp_send_message` may have come after the message went
-  out, so that error says to check `whatsapp_get_messages` before retrying.
+- **A dropped connection to GCS is retried.** The bridge reaches the bucket
+  through its own small GCS JSON-API client on Node's built-in `fetch`, with a
+  service-account token it signs itself. It does not use `@google-cloud/storage`,
+  whose node-fetch 2 transport failed every token request on prod (see
+  [Limitations](/limitations/) #109). Every bucket call, and the token fetch it
+  may need, is retried on a transport error (a connection closed mid-response,
+  reset, refused or timed out), and on 408, 429 or 5xx when the call is safe to
+  repeat: up to four tries, backing off from 250 ms, no new try after 15
+  seconds, and 30 seconds at most for any one request. A 401 gets one more try
+  with a fresh token. A write that is not conditional replays only when it
+  certainly was not applied (the token fetch failed, or GCS answered 401 or
+  429), since one that may have landed could overwrite a newer process's lease. Each retry writes one
+  `[whatsapp] WARN GCS …` line to the container's stderr with the error's full
+  cause chain and codes. When the budget runs out on a dropped connection or a
+  retryable status, a tool answers with a message ending `transient; retry`
+  and does not echo the transport's error. Any other refusal (403, a rejected
+  key) is reported as GCS worded it. A
+  send is the exception: a connection that drops during
+  `whatsapp_send_message` may have come after the message went out, so that
+  error says to check `whatsapp_get_messages` before retrying.
 
 Every other container that runs the bundle image — the main `bundle`,
 `bundle-zimmer-secrets` — lists `/whatsapp`'s tools degraded and never connects,

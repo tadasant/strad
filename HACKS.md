@@ -5696,20 +5696,35 @@ requirement. What that costs:
   debounce and on SIGTERM. A crash loses up to that window: the same
   retry-receipt recovery for keys, and messages RECEIVED in it are missing
   from the buffer. A SENT message's id is written before it is sent.
-- **The bucket is reached through node-fetch 2.** `@google-cloud/storage` 7
-  talks to GCS, and fetches its service-account token, through gaxios 6 and
-  node-fetch 2, which reports a chunked response cut off before its last chunk
-  as `Premature close`. The token POST gets only gtoken's own three tries, back
-  to back inside a second; on an object call the client's connection-problem
-  test does not know that error at all. So `GcsBlobStore` retries every call
-  itself on a transport error (no HTTP status): up to 4 tries, 250 ms backoff
-  doubling, no new try after 15 s. Each try still carries the library's own
-  retries, so a GCS that stays unreachable can hold a call for most of a
-  minute. An unconditional write replays only when the token fetch failed,
-  because one that may have landed could overwrite a newer process's lease.
-  Past the budget a tool says `transient; retry`. A response cut short of its
-  `content-length` hangs node-fetch 2 instead, and only the client's own request
-  timeout ends it.
+- **The bucket is reached by a hand-written GCS client, not
+  `@google-cloud/storage`.** That client, and its service-account token fetch,
+  run on gaxios 6 and node-fetch 2. node-fetch 2.7 calls a chunked response
+  `Premature close` whenever any `data` listener is still on the socket as the
+  response closes. On prod's `bundle-whatsapp-tadas`, on 0.4.106, every token
+  POST to `www.googleapis.com/oauth2/v4/token` failed that way: three tries
+  out of three, inside each of four outer tries, on every call. The same
+  library, in the same image, works from the `bundle` component and from
+  anywhere it was tried by hand, and what leaves the listener there was never
+  found: there is no shell on that box, by design. So `GcsBlobStore` signs its
+  own service-account JWT (RS256, `node:crypto`), trades it at
+  `oauth2.googleapis.com/token`, and makes five JSON-API requests (metadata,
+  pinned download, multipart upload with `ifGenerationMatch`, delete, paged
+  list) on Node's own `fetch`. undici's parser knows whether it saw the last
+  chunk, so a body reported cut off was cut off. Every call still runs inside
+  `transport()`: up to 4 tries, 250 ms backoff doubling, no new try after
+  15 s, a 30 s cap on each request. A transport error retries, and so do 408,
+  429 and 5xx when the call is replayable; a 401 gets one more try with a
+  fresh token. An unconditional write replays only when it certainly was not
+  applied (the token fetch failed, or GCS answered 401 or 429), because one
+  that may have landed could overwrite a newer process's lease. Each retry logs
+  the error's whole `cause` chain with its codes. Past the budget a tool says
+  `transient; retry`. The 15 s bounds when a try may START, not how long it
+  runs: a try is a token request and an object request of up to 30 s each, and
+  a read is two calls in a row, so a GCS that hangs rather than refuses can
+  hold one tool call for a few minutes. The
+  cost is a second GCS client to keep honest: `test/gcs.test.ts` drives this
+  one against a fake JSON API and a fake token endpoint that checks the JWT's
+  signature, and nothing in CI talks to real GCS.
 - **No history API.** A linked device gets one history sync when it pairs and
   whatever its socket receives after. A gap WhatsApp does not replay on
   reconnect is a gap in `whatsapp_get_messages`.

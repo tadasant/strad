@@ -26,6 +26,7 @@ export {
 export {
   DEFAULT_TRANSPORT_RETRY,
   GcsBlobStore,
+  GcsHttpError,
   isTransientTransportError,
   MemoryBlobStore,
   PreconditionFailed,
