@@ -138,9 +138,6 @@ if [ -n "$HOSTNAME_ARG" ]; then
   TUNNEL_ID="$(cloudflared tunnel list --output json | node -e \
     'const n=process.argv[1];let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).find(t=>t.name===n).id))' "$TUNNEL_NAME")"
 
-  say "Routing $HOSTNAME_ARG to the tunnel"
-  cloudflared tunnel route dns "$TUNNEL_NAME" "$HOSTNAME_ARG" || echo "   (the DNS record may already exist; continuing)"
-
   # The ingress names the MCP port and NOTHING else. The control page listens on
   # another port, and this file is the reason no request from outside can reach it.
   PORT="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).port ?? 7311)' "$STATE/config.json")"
@@ -154,6 +151,14 @@ ingress:
   - service: http_status:404
 YAML
   chmod 600 "$STATE/cloudflared.yml"
+
+  # `--config` is load-bearing. Without it cloudflared reads
+  # ~/.cloudflared/config.yml, and when that file belongs to another tunnel
+  # (the one serving Anki, say) its `tunnel:` wins over the name given here:
+  # the DNS record is pointed at the wrong tunnel and the command succeeds.
+  say "Routing $HOSTNAME_ARG to the tunnel"
+  cloudflared tunnel --config "$STATE/cloudflared.yml" route dns "$TUNNEL_NAME" "$HOSTNAME_ARG" \
+    || echo "   (the DNS record may already exist; continuing)"
 
   node -e '
     const fs = require("fs"), [file, configPath, binary] = process.argv.slice(1);
