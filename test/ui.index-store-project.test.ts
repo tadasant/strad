@@ -86,6 +86,10 @@ servers:
     entitlements: [admin]
     env:
       SHOP_PASSWORD: "\${SHOP_PASSWORD}"
+    # Waived, so its absence from the store is a real absence: render-spec
+    # omits a waived name rather than baking it from the deploy environment,
+    # and the console keeps the row \`not seeded\` with every route to set it.
+    mayBeUnseeded: [SHOP_PASSWORD]
   - slug: secrets
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest

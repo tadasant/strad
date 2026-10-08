@@ -1727,33 +1727,44 @@ only failures cannot give it.
 
 It is behind `requireConsoleUi`, the same gate as `/console`.
 
-### Two badges, and where they sit
+### Four badges, and where they sit
 
-Every enabled entry carries exactly one of two badges, in a column of its own, so
+Every enabled entry carries exactly one of four badges, in a column of its own, so
 that on a 35-row roster the one thing that varies from line to line is in the same
 place every time. Most servers declare no `title:`, so the name _is_ the slug and
 printing it again beside itself was pure duplication; where a `title:` does
 differ, the slug still renders beside the name, because there it is information
 rather than an echo.
 
-| Badge   | What it claims                                                                                                                                   |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `READY` | Every `${NAME}` this server references was **observed** to resolve, or it references none at all. **Not** a claim the credential works.          |
-| `ISSUE` | Anything else — including "could not be checked from here". Click it: it opens a popout naming the secret, the state, and the exact path to fix. |
+| Badge        | What it claims                                                                                                                                            |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `READY`      | Everything this server needs was **observed** to be present, or it needs nothing at all. **Not** a claim the credential works.                            |
+| `ISSUE`      | Something is **known to be wrong**: not seeded, a parameter that will not render, or a placeholder. The only badge the header's "issues" counts.          |
+| `INACTIVE`   | Short only of names the config lists under `mayBeUnseeded:`, so it was deployed inactive on purpose. A plan halfway through, not a fault.                 |
+| `UNVERIFIED` | This page could not establish the answer either way: the value is somewhere core cannot read and nothing that can read it answered, or the store did not. |
 
-`ISSUE` is a real `<button>` bound to a per-entry `<dialog>`, so it is
-keyboard-reachable and announced as a control. Without JavaScript the buttons hide
-and every panel renders inline at the foot of the page.
+Every badge with something behind it is a real `<button>` bound to a per-entry
+`<dialog>`, so it is keyboard-reachable and announced as a control. Without
+JavaScript the buttons hide and every panel renders inline at the foot of the page.
 
-**"Could not be checked" is an `ISSUE`, deliberately.** A bundle-scoped value is
-genuinely invisible to core and may well be fine — but `READY` has to mean
-observed, or a total store outage renders a fleet of reassuring badges over an
-unusable gateway. The popout carries the distinction; the badge does not pretend.
+**"Could not be checked" is neither green nor red, deliberately.** `READY` has to
+mean observed, or a total store outage renders a fleet of reassuring badges over an
+unusable gateway. And `ISSUE` has to mean broken, or the headline count is the
+number of servers this page could not see: prod's roster once read 29 issues, most
+of them serving. So `UNVERIFIED` gets a grey, dashed chip and a count of its own,
+and stays out of the issue count. `INACTIVE` is blue for the same reason — it is
+parked, not broken — and keeps its own group so a deferral stays on the page until
+somebody seeds it.
+
+One mapping decides all of this, `badgeFor` in `src/ui/secret-status.ts`, and
+the roster, the per-server overview and
+[`/api/secrets/readiness`](#get-apisecretsreadiness--the-same-answer-for-a-machine)
+all bucket by it.
 
 ### Grouping and ordering
 
-Three headings, worst first: **needs attention**, then **ready**, then
-**disabled**, each with its count. The entries something has to be done about are
+Five headings, worst first: **needs attention** (`ISSUE`), **inactive**,
+**unverified**, **ready**, then **disabled**, each with its count. The entries something has to be done about are
 why anyone opens this page, and sorting the greens to the top is what puts exactly
 the wrong rows below the fold on a 35-entry roster.
 
@@ -1832,15 +1843,36 @@ See [the console playground](/auth/overview/#the-console-playground).
 The popout names which of these it is, because "not seeded", "cannot render" and
 "could not be checked" want three different responses.
 
-| State           | Badge   | What it means                                                                                                                       |
-| --------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `ready`         | `READY` | Every `${NAME}` this server references was observed to resolve. **Not** a claim the credential works — see below.                   |
-| `no secrets`    | `READY` | The server declares no references at all. Nothing to seed.                                                                          |
-| `not seeded`    | `ISSUE` | The backend answered, and there is no such secret. The one unambiguous state, and the one the fix guidance is for.                  |
-| `cannot render` | `ISSUE` | The parameter **exists** and its value cannot be produced. Neither absent nor healthy: creating it again fails with 409. Rotate it. |
-| `check value`   | `ISSUE` | A value exists and is evidently filler — an unexpanded `${...}`, a well-known "change-me" string, an empty string.                  |
-| `unverified`    | `ISSUE` | The component holding the value did not answer, so nothing established it either way. The row says which of the two reasons it is.  |
-| `unknown`       | `ISSUE` | The secret backend could not be consulted. Not absent.                                                                              |
+| State                 | Badge        | What it means                                                                                                                       |
+| --------------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `ready`               | `READY`      | Everything this server needs was observed to be present. **Not** a claim the credential works — see below.                          |
+| `no secrets`          | `READY`      | The server declares no references at all. Nothing to seed.                                                                          |
+| `not seeded`          | `ISSUE`      | Nothing has a value for it, and something that would know said so. The one unambiguous state, and the one the fix guidance is for.  |
+| `cannot render`       | `ISSUE`      | The parameter **exists** and its value cannot be produced. Neither absent nor healthy: creating it again fails with 409. Rotate it. |
+| `check value`         | `ISSUE`      | A value exists and is evidently filler — an unexpanded `${...}`, a well-known "change-me" string, an empty string.                  |
+| `awaiting credential` | `INACTIVE`   | Not seeded yet, and the server listed the name under `mayBeUnseeded:`, so it was deployed inactive on purpose.                      |
+| `unverified`          | `UNVERIFIED` | The value is somewhere core cannot read, and nothing that can read it answered. The row says why.                                   |
+| `unknown`             | `UNVERIFIED` | The secret backend could not be consulted. Not absent.                                                                              |
+
+#### Not in the store is not the same as not seeded
+
+On a store-backed deployment, a `${NAME}` that only a supplementary image's `env:`
+uses is baked onto that component at deploy time, and `render-spec` reads it as
+`available[name] ?? process.env[name]`: the store first, then the deploy
+environment, which the deploy workflow fills from `strad-<env>-*` in Secret
+Manager. A deployment midway through moving its `env:` names into the store keeps
+the rest there, and core cannot see them. So when the store does not hold such a
+name and the bundle did not answer the presence probe, the row reads `not checked`
+and the server `UNVERIFIED`, not `not seeded`: the render refuses a missing value,
+so it had one at the last successful deploy. Prod's roster once called twenty
+working servers `not seeded` on exactly this shape.
+
+Two exceptions keep it `not seeded`, because the reasoning is false about them: a
+name the server waived (`mayBeUnseeded:`), which the render omits rather than
+refuses, and a store-served instance, which is served from the store and never
+from a deploy. And when the bundle **does** answer and does not hold the key, that
+is a real absence on the container, and it stays `not seeded` whatever the store
+says.
 
 Both badges open. A `READY` entry carries a positive claim — which secret, from
 which source, established by which process — and that is usually what somebody
@@ -1976,16 +2008,16 @@ store-admin credential.
 An `unknown` row carries no badge — a backend that could not be consulted cannot be
 named as the source either.
 
-### The headline is three-way, not two
+### The headline counts what is broken
 
-The banner above the roster reads "N servers need attention" when something is
-actionable, and "Every server is READY" when nothing is. Neither is true
-during an outage, so there is a third: **"N servers could not be checked"**,
-followed by "nothing is known to be broken, and nothing is confirmed healthy
-either." `unknown` and `unverified` are not problems and
-they are not health, and a green headline over a page of `unknown` rows would be
-the page lying in the one place everybody reads. The presence route shrinks that
-third case to near-nothing; it does not remove it, and it must not.
+The header shows `ready` and `issues`, plus `inactive` and `unverified` when either
+is not zero. `issues` counts the `ISSUE` badge and nothing else. The banner reads
+"N servers need attention" when there is an issue, then names the inactive and
+unverified ones after it as what they are. With no issue it reads "Nothing is
+known to be broken", followed by the same counts, and only an all-`READY` roster
+gets "Every server is READY". A green headline over a page of `unknown` rows would
+be the page lying in the one place everybody reads, so a store outage lands on
+"nothing is known to be broken", never on the green line.
 
 ### A `params: true` server is graded on its managed parameters
 
@@ -2003,9 +2035,18 @@ holding `{"<slug>": ["VARIABLE", ...]}` — names only, and names are what the
 console prints anyway. The component reports presence for each one on the
 presence route, and the server is graded on them like anything else.
 
-Where the component reports no parameters for a slug — an image without the
-manifest, or a deploy that resolved none — the `unverified` sentence stands,
-because nothing established anything.
+Where the component reports no parameters for a slug — it did not answer, ran an
+image without the manifest, or the deploy resolved none — core asks the **store**
+instead. Its resolver already holds a snapshot of the whole store, so each of the
+server's own namespaces (`oauth/` then `static/`) is a slice of a roster it already
+enumerated, and the render is memoised per snapshot. A parameter that renders
+reads `plumbed`, with a detail saying it came from the store and reaches a
+supplementary image's container at the next deploy. One that will not render
+reads `cannot render`. Only a partial reading, or namespaces that hold nothing,
+leave the `unverified` sentence standing. An empty namespace cannot tell "nobody
+seeded it" from "a connector consent that has not happened", so it claims
+neither. The component's own answer always wins when it gives one, because it is
+about the process serving requests.
 
 **It stands whatever else the server declares**, and that is the point. The
 managed namespace is a requirement of its own, ranked `unobservable` — above
@@ -2013,8 +2054,8 @@ managed namespace is a requirement of its own, ranked `unobservable` — above
 and never overwrites a red. Grading the entry on the `${NAME}` references it
 happens to declare BESIDE its parameters hands it a `READY` for having checked a
 part rather than the whole, with the credentials it takes from the store checked
-by nothing. That is worse than saying nothing: a reader investigates an `ISSUE`
-badge and nobody investigates a green one. `echo` in `infra/strad.staging.yaml`
+by nothing. That is worse than saying nothing: a reader investigates an
+`UNVERIFIED` badge and nobody investigates a green one. `echo` in `infra/strad.staging.yaml`
 is that shape — `params: true` and one `${STRAD_ENV}` in its `options:` — and it
 reads `unverified`.
 
@@ -2076,7 +2117,7 @@ answer the second one, which is precisely why the entry is not `READY`.
 The two families share a shape and almost no vocabulary, which is why a builtin takes three more reasons rather than a widened predicate. Every line of the panel is per-reason, including the ones that read like boilerplate: the chip ("not checked"), and steps that say "rebuild the image and bump its pin" or "redeploy the component", are all false about a builtin core mounts, whose values this process does hold. `delegated` is the exception that proves the split — its values are genuinely elsewhere, so it keeps the container chip and takes the builtin's account of when a write lands. A confidently wrong panel is worse than an inert badge, which is why a builtin got no panel at all before [#264](https://github.com/tadasant/strad/issues/264) and its badge degraded to inert text instead.
 
 The panel is still not a green. Nothing here was observed, the state stays
-`unverified`, and the badge stays `ISSUE` — the change is that the badge now
+`unverified`, and the badge stays `UNVERIFIED` — the change is that the badge now
 leads somewhere. That holds for a builtin too: `in-process` says the parameters
 resolve somewhere this page cannot see, not that they resolve.
 
@@ -2357,7 +2398,9 @@ curl -H "Authorization: Bearer $STRAD_API_KEY" \
   "servers": {
     "total": 12,
     "ready": 8,
-    "issues": 4,
+    "issues": 2,
+    "inactive": 0,
+    "unverified": 2,
     "states": {
       "ready": 5,
       "no-secrets": 3,
@@ -2387,6 +2430,15 @@ curl -H "Authorization: Bearer $STRAD_API_KEY" \
       ]
     }
   ],
+  "inactive": [],
+  "unverified": [
+    {
+      "slug": "remote-filesystem-tmp-public",
+      "state": "unverified",
+      "summary": "Its credentials are managed parameters under …",
+      "secrets": []
+    }
+  ],
   "boot": [
     {
       "name": "STRAD_TOKENS",
@@ -2406,19 +2458,25 @@ a route to it. That flag is also what tells two entries apart where one name
 carries both claims, which is a shape `issues[].secrets` can hold: `name` alone
 is not a key.
 
+**`issues[]`, `inactive[]` and `unverified[]` are the console's badges.** Each
+server that is not `READY` lands in exactly one of them, by the same `badgeFor`
+the roster uses, with the same entry shape. `issues[]` and `servers.issues` are
+what is known to be broken; a deferral and an unchecked server are in their own
+lists and counts, so a caller asking "is anything broken" reads `servers.issues`.
+
 `state` on a server and on a secret takes any of the values in the table above,
 `unrenderable` included. The field is additive: `ready` keeps its meaning (a
 conservative presence claim, `false` whenever any server is not `ready` or
 `no-secrets`), and a consumer keying on `ready`, `env`, `store`,
-`servers.total`/`ready`/`issues`, `issues[].slug`/`summary` or `boot[]` needs no
-change for it. A consumer that exhaustively switches on the state gets one more
+`servers.total`/`ready`, `issues[].slug`/`summary` or `boot[]` needs no change
+for it. A consumer that exhaustively switches on the state gets one more
 arm.
 
 **`ready: false` is the resting state of any deployment carrying an unchecked
 managed namespace, and there is no seeding that clears it.** `unverified` is a
-server state like any other, so a `params: true` server whose parameters no
-component manifested puts the deployment in `issues[]` and holds `ready` at
-`false` — with an empty `secrets[]`, because the entry has no outstanding
+server state like any other, so a `params: true` server whose parameters neither
+a component nor the store answered for puts the deployment in `unverified[]` and
+holds `ready` at `false` — with an empty `secrets[]`, because the entry has no outstanding
 `${NAME}` to list, and the sentence in `summary` carrying the whole of it. Where
 the server is a `supplementary-image` the exit is real: rebuild and repin the
 component so it manifests `STRAD_PARAM_KEYS`, and the rows fill in. Where it is a
@@ -2458,8 +2516,8 @@ and reports its age in `store.diagnosis`.
 
 **`ready` means observed.** It is `true` only when the store is wired, every
 enabled server's secrets resolved, _and_ every required boot key is present. A
-server that could not be checked makes it `false`, exactly as it makes the console
-badge `ISSUE`. `servers.states` carries the full breakdown for a caller that wants
+server that could not be checked makes it `false` — and so does an inactive one —
+though neither is counted in `servers.issues`. `servers.states` carries the full breakdown for a caller that wants
 to treat `unverified` differently from `missing`.
 
 **`store` is separate from `servers`.** "Can this gateway reach the store at all"

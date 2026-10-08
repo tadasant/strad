@@ -402,12 +402,11 @@ describe("readiness when everything resolves", () => {
 });
 
 describe("readiness on a server whose managed namespace nobody checked", () => {
-  // `unverified` is a server state like any other, so a `params: true` entry
-  // that nothing manifested holds `ready` at false. That is the point rather
-  // than a side effect — a machine gate that answered true while the console
-  // said ISSUE would be the two doors disagreeing — but it is worth pinning,
-  // because the shape reaches `issues[]` with an EMPTY `secrets[]` and a caller
-  // reading only that array would see an issue with nothing in it.
+  // `unverified` holds `ready` at false — true has to mean observed — but it is
+  // NOT an issue. It lands in `unverified[]`, the console's UNVERIFIED badge,
+  // so `issues[]` and the roster's "Needs attention" group are the same
+  // servers. The entry carries an EMPTY `secrets[]`, and the summary carries
+  // the answer.
   const cfg = parseConfig(`
 version: 1
 gateway: { name: strad, env: ${ENV_NAME} }
@@ -426,7 +425,7 @@ servers:
     env: { SOME_KEY: "\${SOME_REF}" }
 `);
 
-  it("holds ready:false with an issue carrying no outstanding secret", () => {
+  it("holds ready:false and files it under unverified, not issues", () => {
     const [status] = deriveServerStatuses(
       cfg,
       [
@@ -459,13 +458,16 @@ servers:
     expect(report.ready).toBe(false);
     expect(report.servers.states.unverified).toBe(1);
     expect(report.servers.states.ready).toBe(0);
-    expect(report.issues).toHaveLength(1);
-    expect(report.issues[0]!.slug).toBe("craigslist");
-    expect(report.issues[0]!.state).toBe("unverified");
+    expect(report.issues).toEqual([]);
+    expect(report.servers.issues).toBe(0);
+    expect(report.servers.unverified).toBe(1);
+    expect(report.unverified).toHaveLength(1);
+    expect(report.unverified[0]!.slug).toBe("craigslist");
+    expect(report.unverified[0]!.state).toBe("unverified");
     // The resolving name is NOT an outstanding secret, so it is filtered out and
     // the sentence in `summary` carries the whole of the answer.
-    expect(report.issues[0]!.secrets).toEqual([]);
-    expect(report.issues[0]!.summary).toContain(
+    expect(report.unverified[0]!.secrets).toEqual([]);
+    expect(report.unverified[0]!.summary).toContain(
       "/strad/test/mcp/craigslist/static/",
     );
   });
@@ -680,5 +682,75 @@ describe("readiness in bundle mode", () => {
     });
     expect(res.status).toBe(404);
     shut();
+  });
+});
+
+describe("readiness buckets servers by the console's badge", () => {
+  // `issues` is what is known to be broken, and nothing else. A deferral and
+  // an unchecked server each get a list of their own, so the JSON and the
+  // roster's groups are the same servers under the same names.
+  const cfg = parseConfig(`
+version: 1
+gateway: { name: strad, env: ${ENV_NAME} }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+servers:
+  - slug: broken
+    kind: remote-http
+    url: https://broken.example.com/mcp
+    headers: { Authorization: "Bearer \${BROKEN_TOKEN}" }
+    entitlements: [admin]
+  - slug: parked
+    kind: remote-http
+    url: https://parked.example.com/mcp
+    headers: { Authorization: "Bearer \${PARKED_TOKEN}" }
+    entitlements: [admin]
+    mayBeUnseeded: [PARKED_TOKEN]
+  - slug: fine
+    kind: remote-http
+    url: https://fine.example.com/mcp
+    headers: { Authorization: "Bearer \${FINE_TOKEN}" }
+    entitlements: [admin]
+`);
+  const row = (name: string, slug: string, state: "missing" | "present") => ({
+    requirement: {
+      name,
+      deliveries: ["gateway" as const],
+      slugs: [slug],
+      consoleKeys: [],
+      paramsSlugs: [],
+    },
+    state,
+    source: "GSM" as const,
+    detail: "",
+    evidence: { by: "store" as const },
+  });
+  const statuses = deriveServerStatuses(cfg, [
+    row("BROKEN_TOKEN", "broken", "missing"),
+    row("PARKED_TOKEN", "parked", "missing"),
+    row("FINE_TOKEN", "fine", "present"),
+  ]);
+  const report = buildReadiness({
+    config: cfg,
+    env: ENV,
+    reading: { statuses, boot: [], storeDiagnosis: null },
+  });
+
+  it("counts only the broken server as an issue", () => {
+    expect(report.issues.map((i) => i.slug)).toEqual(["broken"]);
+    expect(report.servers.issues).toBe(1);
+  });
+
+  it("files a mayBeUnseeded deferral under inactive", () => {
+    expect(report.inactive.map((i) => i.slug)).toEqual(["parked"]);
+    expect(report.inactive[0]!.state).toBe("unconfigured");
+    expect(report.servers.inactive).toBe(1);
+    expect(report.servers.unverified).toBe(0);
+    expect(report.unverified).toEqual([]);
+  });
+
+  it("still holds ready:false while anything is short of READY", () => {
+    expect(report.ready).toBe(false);
+    expect(report.servers.ready).toBe(1);
   });
 });

@@ -1,9 +1,12 @@
 import type { ServerConfig } from "../config/schema.ts";
-import { badgeFor } from "./roster-page.ts";
 import { CONNECTORS_PREFIX, connectorsPath } from "./paths.ts";
 import { connectUrl, playgroundHref } from "./playground.ts";
 import { esc, layout } from "./render.ts";
-import type { ServerSecretStatus } from "./secret-status.ts";
+import {
+  badgeFor,
+  type EntryBadge,
+  type ServerSecretStatus,
+} from "./secret-status.ts";
 
 /**
  * `/ui/<slug>` for a server with no dedicated view — the read-only overview.
@@ -56,7 +59,7 @@ export function renderServerOverview(opts: ServerOverviewOptions): string {
   const secrets = !server.enabled
     ? `<p class="ov-note">Disabled. strad does not mount this server, so it needs no secrets and carries no badge.</p>`
     : status && badge
-      ? `<p class="ov-badge"><span class="chip ${badge === "READY" ? "chip-ok" : "chip-bad"} chip-badge">${badge}</span>
+      ? `<p class="ov-badge"><span class="chip ${BADGE_CHIP[badge]} chip-badge">${badge}</span>
     <span class="ov-summary">${esc(status.summary)}</span></p>
   <p class="ov-note">The <a href="${CONNECTORS_PREFIX}">connectors roster</a> has the per-secret detail behind this badge.</p>`
       : `<p class="ov-note">No secret status is recorded for this server.</p>`;
@@ -152,8 +155,18 @@ function hostOf(url: string): string {
   }
 }
 
+/** The roster's badge colours, so a slug's two pages agree. */
+const BADGE_CHIP: Record<EntryBadge, string> = {
+  READY: "chip-ok",
+  ISSUE: "chip-bad",
+  INACTIVE: "chip-inactive",
+  UNVERIFIED: "chip-unverified",
+};
+
 const OVERVIEW_CSS = `<style>
 .chip-bad{color:#e8776b;border-color:color-mix(in srgb,#e8776b 45%,var(--g5))}
+.chip-unverified{color:var(--g3);border-color:var(--g4);border-style:dashed}
+.chip-inactive{color:#9db4e8;border-color:color-mix(in srgb,#9db4e8 42%,var(--g5))}
 .chip-ok{color:var(--text-accent);border-color:color-mix(in srgb,var(--accent) 45%,var(--g5))}
 .chip-badge{font-weight:600;letter-spacing:.08em}
 /* .scope carries margin-left:auto for the ONE chip a browse header usually has.

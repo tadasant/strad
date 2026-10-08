@@ -1540,7 +1540,8 @@ fails CI on the PR rather than the deploy after it.
   See [Auth](/auth/overview/#console-login-tokens-the-automated-actors-door).
 - **`/connectors`** and `/ui/:server`, also core-only, are the human-facing
   server console, behind the same gate as `/`. `/connectors` is the roster: every
-  configured server with its scope, a `READY` or `ISSUE` secret badge, a link to
+  configured server with its scope, a `READY`, `ISSUE`, `INACTIVE` or `UNVERIFIED`
+  secret badge (only `ISSUE` counts as an issue), a link to
   its own `/ui/<slug>` page, and — where `gateway.configStore.enabled` is set and
   the store is writable — Edit / Disable / Remove and an "add a connector" menu.
   The roster and the badges are served whether or not there is a store; only the

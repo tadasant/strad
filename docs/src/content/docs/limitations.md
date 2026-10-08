@@ -1080,7 +1080,19 @@ Under `provider: env` a `supplementary-image` server's `env:` is baked onto its 
 bundle and never broadcast to core, where the console renders. Core still cannot
 _read_ those values; it asks the component that holds them instead, and the
 component answers in presence and never in values. `unverified` survives only
-where nothing could answer.
+where nothing could answer, and it is its own `UNVERIFIED` badge, kept out of the
+issue count.
+
+Two answers are one step weaker than they look. A store-backed deployment's
+supplementary `env:` name that the store does not hold reads `UNVERIFIED` when its
+bundle does not answer the presence probe, not `not seeded`: render-spec falls
+back to the deploy environment (`strad-<env>-*`) for it, core cannot see that, and
+a missing value would have failed the render. So a value deleted from Secret
+Manager after the last deploy, on a bundle that is not answering, is not caught
+here until the next deploy refuses it. And a `params: true` server whose component
+named no parameters is graded on the store instead, so its `plumbed` means "in the
+store and renders", which reaches a supplementary image's container only at the
+next deploy.
 
 An upstream `initialize` probe per server would close the first gap, at the cost of
 a page that makes N authenticated calls to third parties on every load. That is

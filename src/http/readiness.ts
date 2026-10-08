@@ -21,9 +21,12 @@ import {
 import type { BundlePresence } from "../gateway/bundle-presence.ts";
 import type { StoreDiagnostics } from "../secrets/store-diagnostics.ts";
 import {
+  badgeFor,
   readDeploymentSecretStatus,
   storeProject,
   tally,
+  type EntryBadge,
+  type ServerSecretStatus,
   type SecretReading,
   type SecretState,
   type ServerState,
@@ -83,10 +86,11 @@ export interface ReadinessReport {
    * key is present.
    *
    * It is deliberately conservative. A server whose secrets could not be checked
-   * from this process (`unverified`) or whose backend did not answer (`unknown`)
-   * makes this `false`, because `true` has to mean "observed", not "not known to
-   * be broken". `servers.states` below carries the distinction for a caller that
-   * wants to treat them differently.
+   * from this process (`unverified`), whose backend did not answer (`unknown`),
+   * or that is parked on a `mayBeUnseeded:` waiver (`unconfigured`) makes this
+   * `false`, because `true` has to mean "observed", not "not known to be
+   * broken". `issues` is the narrower question — what is known to be broken —
+   * and `unverified` and `inactive` carry the rest.
    */
   ready: boolean;
   /** `gateway.env` — which deployment answered. */
@@ -98,13 +102,29 @@ export interface ReadinessReport {
     total: number;
     /** Observed to have everything they reference. */
     ready: number;
-    /** Everything else, including "could not be checked". */
+    /**
+     * Known to be broken: not seeded, unrenderable, or a placeholder. The
+     * console's ISSUE badge, and the only count that means "fix something".
+     */
     issues: number;
+    /** Deployed inactive on purpose (`mayBeUnseeded:`). The INACTIVE badge. */
+    inactive: number;
+    /** Could not be checked, or the store did not answer. The UNVERIFIED badge. */
+    unverified: number;
     /** The full breakdown, for a caller that wants more than the boolean. */
     states: Record<ServerState, number>;
   };
-  /** One entry per non-ready server, worst first. Never a value. */
+  /**
+   * One entry per server badged ISSUE, worst first. Never a value.
+   *
+   * Bucketed by the console's own `badgeFor`, so this list and the roster's
+   * "Needs attention" group are the same servers.
+   */
   issues: ServerIssue[];
+  /** Servers badged INACTIVE, same shape. */
+  inactive: ServerIssue[];
+  /** Servers badged UNVERIFIED, worst first, same shape. */
+  unverified: ServerIssue[];
   /** The gateway's own boot keys. Without STRAD_TOKENS nothing else matters. */
   boot: BootKey[];
 }
@@ -155,7 +175,7 @@ export interface StoreDiagnosis {
 
 export interface ServerIssue {
   slug: string;
-  /** The per-server state: missing / placeholder / unverified / unknown. */
+  /** The per-server state, e.g. missing / placeholder / unverified / unknown. */
   state: ServerState;
   /** One sentence, the same one the console entry carries. */
   summary: string;
@@ -231,8 +251,54 @@ export function buildReadiness(opts: BuildReadinessOptions): ReadinessReport {
   const store = storeReadiness(config, env, reading.storeDiagnosis);
   const states = tally(reading.statuses);
 
-  const issues: ServerIssue[] = reading.statuses
-    .filter((s) => s.state !== "ready" && s.state !== "no-secrets")
+  const entriesFor = (badge: EntryBadge) =>
+    serverIssues(
+      config,
+      reading.statuses.filter((s) => badgeFor(s.state) === badge),
+    );
+  const issues = entriesFor("ISSUE");
+  const inactive = entriesFor("INACTIVE");
+  const unverified = entriesFor("UNVERIFIED");
+
+  const boot: BootKey[] = reading.boot.map((b) => ({
+    name: b.observation.requirement.name,
+    state: b.observation.state,
+    required: b.required,
+    detail: b.observation.detail,
+  }));
+
+  const bootOk = boot.every((b) => !b.required || b.state === "present");
+
+  return {
+    ready:
+      store.wired &&
+      issues.length === 0 &&
+      inactive.length === 0 &&
+      unverified.length === 0 &&
+      bootOk,
+    env: config.gateway.env,
+    store,
+    servers: {
+      total: reading.statuses.length,
+      ready: states.ready + states["no-secrets"],
+      issues: issues.length,
+      inactive: inactive.length,
+      unverified: unverified.length,
+      states,
+    },
+    issues,
+    inactive,
+    unverified,
+    boot,
+  };
+}
+
+/** One entry per server, worst first, carrying only what is not present. */
+function serverIssues(
+  config: StradConfig,
+  statuses: ServerSecretStatus[],
+): ServerIssue[] {
+  return statuses
     .map((s) => ({
       slug: s.server.slug,
       state: s.state,
@@ -277,29 +343,6 @@ export function buildReadiness(opts: BuildReadinessOptions): ReadinessReport {
         })),
     }))
     .sort((a, b) => ISSUE_RANK[b.state] - ISSUE_RANK[a.state]);
-
-  const boot: BootKey[] = reading.boot.map((b) => ({
-    name: b.observation.requirement.name,
-    state: b.observation.state,
-    required: b.required,
-    detail: b.observation.detail,
-  }));
-
-  const bootOk = boot.every((b) => !b.required || b.state === "present");
-
-  return {
-    ready: store.wired && issues.length === 0 && bootOk,
-    env: config.gateway.env,
-    store,
-    servers: {
-      total: reading.statuses.length,
-      ready: states.ready + states["no-secrets"],
-      issues: issues.length,
-      states,
-    },
-    issues,
-    boot,
-  };
 }
 
 /**
