@@ -659,6 +659,15 @@ plus two that shape how this server gets its values:
   reads its own names; two slugs on one path are one instance, and the render
   fails rather than pick a winner.
 
+- **`confirmations`** (default `false`) — this server has a tool that asks a
+  human before it acts (gmail's `send_email`), so core forwards the caller's
+  `X-Elicitation-Url` to it on every `tools/call`. Off, core forwards nothing and
+  the confirmed tool refuses every call. The URL is a credential for that
+  session's prompts, which is why a mount that does not ask is never handed it,
+  even a sibling on the same bundle. Needs `gateway.elicitation.allowedUrlPrefixes`
+  and a `timeoutMs` long enough for a human. `supplementary-image` only. See
+  [Confirming a tool before it acts](/servers/confirmations/).
+
 - **`paramsWritable`** (default `[]`) — the variables this server may **write
   back** to its own `/strad/{env}/mcp/{slug}/` namespace, and read fresh at boot
   rather than trusting the value the deploy baked. A name the same server also
@@ -1038,6 +1047,28 @@ already deployed and declaring none of `env:`, `params:`, `paramsWritable:`,
 `paramsRefresh:`, `consoleEnv:`, `consoleStores:` or `mcpStores:`, a
 store-served instance on `/_instance/{tree}/{its own slug}` with `params: true`,
 and a `builtin` never. Full model: [Runtime config](/operate/runtime-config/).
+
+## `gateway.elicitation`
+
+```yaml
+gateway:
+  elicitation:
+    allowedUrlPrefixes:
+      - https://zimmer.tadasant.com/api/v1/elicitations/session/
+```
+
+The URL prefixes a caller's `X-Elicitation-Url` must sit under. That header is
+where a confirmed tool, gmail's `send_email`, asks a human before it acts, and
+the bundle fetches it. Each entry is an `https` URL in normal form whose path
+ends in `/` (plain `http` only for a loopback host), with no query, fragment or
+userinfo. A header outside every prefix is refused with that reason. The default
+is empty, which accepts none, so every confirmed tool refuses.
+
+The slug carrying the tool opts in separately with `confirmations: true` on its
+`supplementary-image` entry; core forwards the caller's URL to no other mount.
+It also needs a `timeoutMs` long enough for a human to answer, because the
+prompt's deadline is that timeout less a margin of at most 15 seconds. The whole
+mechanism is [Confirming a tool before it acts](/servers/confirmations/).
 
 ## `auth.staticTokens`
 

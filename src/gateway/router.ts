@@ -28,6 +28,10 @@ import {
   parseServersParam,
   resolveSelection,
 } from "./entitlements.ts";
+import {
+  ELICITATION_URL_HEADER,
+  elicitationChannelFrom,
+} from "./elicitation.ts";
 import { buildGatewayServer } from "./mcpServer.ts";
 import type { Mode, Registry } from "./registry.ts";
 import { compileToolPolicies } from "./toolPolicy.ts";
@@ -369,6 +373,14 @@ export function createMcpHandler(opts: McpHandlerOptions) {
     // carries none (see clientCapabilities.ts).
     const clientCapabilities = clientCapabilitiesFromInitialize(req.body);
 
+    // Where a human confirms a tool that needs one, if the caller named it.
+    // Read per request like everything else here; never logged, because the
+    // URL's path is the credential for that session's prompts.
+    const elicitation = elicitationChannelFrom(
+      req.headers[ELICITATION_URL_HEADER],
+      opts.config.gateway.elicitation?.allowedUrlPrefixes ?? [],
+    );
+
     // --- build a one-shot MCP server for exactly this request ---------------
     // The protocol half — list, call, resources, and capability enforced on the
     // action — is `buildGatewayServer`, shared with the console playground so
@@ -385,6 +397,7 @@ export function createMcpHandler(opts: McpHandlerOptions) {
       principalRoles: principal.roles,
       log,
       clientCapabilities,
+      elicitation,
       // Did the CALLER name these servers, or is this "everything I'm entitled
       // to"? It decides whether a broken upstream is an error or a smaller
       // toolset. See listToolsFor.

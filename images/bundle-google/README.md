@@ -37,6 +37,16 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   imports as `dist/gmail.js`. `test/gmail.test.ts` is its suite. The requirement
   is strad's, not upstream's, so the fix lives here rather than as a vendor
   delta — see the `fix-a-defect-in-vendored-upstream-code` skill.
+- `src/confirm.ts` — **`send_email` asks a human first**, at the URL the CALL
+  carries (`_meta["dev.strad/elicitation"]`, put there by strad core from the
+  caller's `X-Elicitation-Url` for a slug with `confirmations: true`), never at
+  a container-wide one. It wraps the server the vendored tools register on, so
+  the tree and the elicitation library both stay verbatim, and it speaks the
+  approval protocol itself: no redirects, no response body in an error, every
+  request aborted at the deadline. It refuses the send when the call carries no
+  channel or the container's `ELICITATION_*` env would route around it.
+  `test/confirm.test.ts` is its suite. See
+  `docs/src/content/docs/servers/confirmations.md`.
 - `vendor/` — the upstream `shared/` factories, vendored verbatim from
   `github.com/pulsemcp/mcp-servers/experimental/{gmail,google-calendar,google-docs}`,
   plus `@pulsemcp/mcp-elicitation`. Wired as npm workspaces. The only edit to

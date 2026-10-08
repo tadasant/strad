@@ -215,7 +215,12 @@ authenticated the request. It grants nothing, since whether this caller may reac
 these slugs was settled before any adapter ran; it is there for an in-process
 server whose _answer_ depends on who is asking. One does: the roster editor
 bounds a write by what its author already reaches
-([runtime config](/operate/runtime-config/#a-runtime-write-reaches-no-mount-its-author-cannot-already-reach)). Per-hop upstream timeouts are set explicitly to
+([runtime config](/operate/runtime-config/#a-runtime-write-reaches-no-mount-its-author-cannot-already-reach)).
+The third thing it carries is the caller's confirmation channel: the
+`X-Elicitation-Url` a `/mcp` request named, checked against
+`gateway.elicitation.allowedUrlPrefixes`. The HTTP adapter forwards it as core's
+own `_meta`, and only to a `supplementary-image` slug that declares
+`confirmations: true`, where gmail's `send_email` asks a human before it sends ([confirmations](/servers/confirmations/)). Per-hop upstream timeouts are set explicitly to
 `120_000` ms, because the MCP SDK defaults to 60s at every hop and would silently
 kill long tool calls.
 

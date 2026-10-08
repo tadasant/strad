@@ -41,6 +41,7 @@ import {
   TROUBLESHOOT_TOOL,
 } from "./troubleshoot.ts";
 import type { ClientCapabilities } from "./clientCapabilities.ts";
+import type { ElicitationChannel } from "./elicitation.ts";
 import type { Mode, Registry } from "./registry.ts";
 import {
   toolAllowed,
@@ -104,6 +105,13 @@ export interface GatewayServerOptions {
   principalRoles?: readonly string[];
   log: (event: Record<string, unknown>) => void;
   clientCapabilities?: ClientCapabilities;
+  /**
+   * The caller's confirmation channel, already checked against the allowlist.
+   * Only `/mcp` sets it; the console playground and the flow-through route
+   * have no human on the line, so a confirmed tool refuses there. See
+   * src/gateway/elicitation.ts.
+   */
+  elicitation?: ElicitationChannel;
   /**
    * Present exactly when the caller NAMED its servers, in which case an
    * unlistable upstream fails the listing rather than shrinking it. See
@@ -331,6 +339,7 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
             : adapter.callTool(parsed.tool, args, {
                 clientCapabilities,
                 principal,
+                elicitation: opts.elicitation,
               }),
       );
 

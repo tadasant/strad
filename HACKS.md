@@ -5840,3 +5840,37 @@ real extension: it gets a nonce and nothing else.
 the default profile would retire the extension; nothing suggests it will.
 Widening the entitlement past `admin` should not happen while this is the
 posture.
+
+## 113. A confirmation reaches the session the CALLER names, and the console has none
+
+**What.** gmail's `send_email` asks a human before it sends, at the URL the
+`/mcp` request names in `X-Elicitation-Url` (`src/gateway/elicitation.ts`,
+`images/bundle-google/src/confirm.ts`). Four properties follow, stated rather
+than worked around:
+
+1. **strad trusts the caller to name its own session.** The allowlist
+   (`gateway.elicitation.allowedUrlPrefixes`) decides where the bundle may fetch,
+   not whose session it is. A caller holding another session's URL can raise a
+   prompt on that session. It cannot answer one: Zimmer's token route creates
+   and polls and does not respond, so the person who sees the prompt still
+   decides. The URL is per session and minted from Zimmer's secret, so holding
+   another session's means having read that session's environment.
+2. **The console cannot send mail.** The playground has no prompt surface, so a
+   human signed in to `/ui` gets the same refusal as a headless caller with no
+   header.
+3. **The wait is bounded by the slug's `timeoutMs`, and only from strad's
+   side.** The bundle aborts its requests and stops accepting answers a margin
+   before core's hop times out (at most 15 seconds), so strad never sends after
+   telling its caller the call failed. A caller whose own timeout is shorter
+   than the slug's, or an ingress that drops a long-held response, is outside
+   that bound. At the 120s default a human has 105s. Nothing in this repo has
+   measured how long App Platform's ingress holds an `/mcp` response open while
+   a human decides.
+4. **A container-wide `ELICITATION_*` setting is a refusal, not a fallback.**
+   `ELICITATION_ENABLED=false`, `ELICITATION_REQUEST_URL` or `ELICITATION_POLL_URL`
+   on the bundle makes `send_email` refuse every call, because the vendored tool
+   reads them from `process.env` and would skip the prompt or send it to one
+   address for everybody.
+
+**Undo.** 2 is a console prompt that answers the same protocol. 3 is a measured
+ingress bound, recorded here. 1 and 4 are the design.

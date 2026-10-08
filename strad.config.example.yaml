@@ -102,6 +102,17 @@ gateway:
     # one. Two store reads per interval per core instance.
     pollSeconds: 60
 
+  # Where a caller's confirmation channel may point. A tool that needs a human's
+  # yes (gmail's `send_email`) asks at the URL the caller sends in its
+  # `X-Elicitation-Url` header, and the bundle fetches it, so the URL must sit
+  # under one of these prefixes: an `https` URL whose path ends in `/` (plain
+  # `http` only for a loopback host). Empty, the default, accepts none, and
+  # every confirmed tool refuses. The slug with the tool also needs
+  # `confirmations: true`, and a `timeoutMs` long enough for a human to answer.
+  # See docs/servers/confirmations.
+  elicitation:
+    allowedUrlPrefixes: [] # e.g. [https://zimmer.tadasant.com/api/v1/elicitations/session/]
+
 auth:
   # Humans. Verified against the Google Workspace `hd` claim — NOT the email
   # suffix, which a personal account can spell however it likes.

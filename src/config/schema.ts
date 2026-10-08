@@ -1,6 +1,7 @@
 import { RESERVED_AUTHORIZE_PARAMS } from "../connectors/oauth-flow.ts";
 import { z } from "zod";
 import { MAX_VARIABLE_LENGTH, isEnvName, secretRefsIn } from "./env-name.ts";
+import { elicitationPrefixProblem } from "../gateway/elicitation.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
 import { normaliseNamespace } from "../secrets/parameters/namespace.ts";
 import {
@@ -890,6 +891,15 @@ const SupplementaryImageServer = ServerBase.extend({
    */
   params: z.boolean().default(false),
   /**
+   * This server has a tool that asks a human before it acts (gmail's
+   * `send_email`), so core forwards the caller's confirmation channel to it on
+   * every `tools/call`. Off by default: the channel's URL is a credential for
+   * that session's prompts, and a mount that does not ask has no business
+   * holding it. With it off, a confirmed tool on this slug refuses every call.
+   * See src/gateway/elicitation.ts.
+   */
+  confirmations: z.boolean().default(false),
+  /**
    * Variables this server may WRITE BACK to its own managed parameter.
    *
    * The case is a credential that rotates ON USE — X's OAuth refresh tokens are
@@ -1600,6 +1610,37 @@ const ConfigStoreConfig = z
   })
   .default({ enabled: false, pollSeconds: 60 });
 
+/**
+ * Where a caller's confirmation channel may point.
+ *
+ * A tool that needs a human's yes (gmail's `send_email`) asks at the URL the
+ * CALLER names in its `X-Elicitation-Url` header, and the bundle fetches that
+ * URL. So the URL must start with one of these prefixes: the approval route of
+ * a service you trust, not merely its host, so a caller cannot aim the fetch at
+ * some other path there. Each is an `https` URL whose path ends in `/` (plain
+ * `http` only for a loopback host), with no query, fragment or userinfo.
+ * Empty, the default, accepts none, and every confirmed tool refuses. The
+ * rule itself is `elicitationPrefixProblem` in src/gateway/elicitation.ts.
+ *
+ *   gateway:
+ *     elicitation:
+ *       allowedUrlPrefixes:
+ *         - https://zimmer.tadasant.com/api/v1/elicitations/session/
+ */
+const ElicitationConfig = z
+  .object({
+    allowedUrlPrefixes: z
+      .array(
+        z.string().superRefine((value, ctx) => {
+          const problem = elicitationPrefixProblem(value);
+          if (problem)
+            ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
+        }),
+      )
+      .default([]),
+  })
+  .default({ allowedUrlPrefixes: [] });
+
 // ---------------------------------------------------------------------------
 // Root
 // ---------------------------------------------------------------------------
@@ -1617,8 +1658,15 @@ export const StradConfig = z
         env: z.string().default("dev"),
         secrets: SecretsConfig,
         configStore: ConfigStoreConfig,
+        elicitation: ElicitationConfig,
       })
-      .default({ name: "strad", env: "dev", secrets: {}, configStore: {} }),
+      .default({
+        name: "strad",
+        env: "dev",
+        secrets: {},
+        configStore: {},
+        elicitation: {},
+      }),
 
     auth: AuthConfig,
 

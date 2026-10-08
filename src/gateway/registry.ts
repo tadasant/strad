@@ -352,6 +352,9 @@ export class Registry {
                   ),
                 })),
               timeoutMs: server.timeoutMs,
+              // Only a slug that declared a confirmed tool holds the caller's
+              // channel. See src/gateway/elicitation.ts.
+              forwardElicitation: server.confirmations,
             }),
           );
           slugs.push(server.slug);
