@@ -42,6 +42,7 @@ let counter = 1_000;
  * ERR_STREAM_PREMATURE_CLOSE).
  */
 let truncateNext = 0;
+const TOKEN_PATH = "/oauth2/v4/token";
 let server: Server;
 let endpoint = "";
 
@@ -69,11 +70,12 @@ beforeAll(async () => {
     req.on("end", () => {
       const url = new URL(req.url!, "http://x");
       seen.push(`${req.method} ${url.pathname}${url.search}`);
-      if (url.pathname === "/token" || truncateNext > 0) {
-        if (url.pathname !== "/token") truncateNext--;
+      if (url.pathname === TOKEN_PATH || truncateNext > 0) {
+        if (url.pathname !== TOKEN_PATH) truncateNext--;
         res.writeHead(200, { "content-type": "application/json" });
-        res.write('{"access_token":"tr');
-        setTimeout(() => res.socket?.destroy(), 5);
+        // Destroyed only once the partial chunk is flushed, so the client always
+        // sees a truncated body rather than, under load, no body at all.
+        res.write('{"access_token":"tr', () => res.socket?.destroy());
         return;
       }
       const json = (code: number, body: unknown) => {
@@ -140,7 +142,7 @@ beforeAll(async () => {
 
 afterAll(() => new Promise<void>((r) => server.close(() => r())));
 
-const FAST = { attempts: 4, baseDelayMs: 1 };
+const FAST = { attempts: 4, baseDelayMs: 1, deadlineMs: 10_000 };
 
 const store = (extra: Partial<ConstructorParameters<typeof GcsBlobStore>[0]> = {}) =>
   new GcsBlobStore({
@@ -168,7 +170,7 @@ class FlakyTokenClient extends OAuth2Client {
     this.fetches++;
     if (this.failures > 0) {
       this.failures--;
-      await request({ url: `${endpoint}/token`, method: "POST", responseType: "json", retry: false });
+      await request({ url: `${endpoint}${TOKEN_PATH}`, method: "POST", responseType: "json", retry: false });
     }
     return { Authorization: "Bearer test-token" };
   }
@@ -220,7 +222,7 @@ test("the real client: auth survives a restart and keeps being written", async (
 });
 
 test("the real stack's Premature close is what the classifier calls transient", async () => {
-  const err = await request({ url: `${endpoint}/token`, method: "POST", responseType: "json", retry: false })
+  const err = await request({ url: `${endpoint}${TOKEN_PATH}`, method: "POST", responseType: "json", retry: false })
     .then(() => assert.fail("the truncated body should not parse"))
     .catch((e: unknown) => e);
   assert.match((err as Error).message, /Invalid response body while trying to fetch .*: Premature close/);
@@ -229,6 +231,15 @@ test("the real stack's Premature close is what the classifier calls transient", 
   assert.equal(isTransientTransportError(Object.assign(new Error("ECONNRESET?"), { code: 503 })), false);
   assert.equal(isTransientTransportError(new Error("invalid_grant")), false);
   assert.equal(isTransientTransportError(new PreconditionFailed("x")), false);
+  // node-fetch 2's own timeout carries a `type`, not a `code`.
+  const timeout = Object.assign(new Error("network timeout at: https://storage.googleapis.com/x"), {
+    type: "request-timeout",
+  });
+  assert.equal(isTransientTransportError(timeout), true);
+  assert.equal(
+    isTransientTransportError(new Error("request to https://x failed, reason: connect ECONNREFUSED 1.2.3.4:443")),
+    true,
+  );
 });
 
 test("a token fetch that closes prematurely once is retried, and the call succeeds", async () => {
@@ -247,20 +258,48 @@ test("an object read, write and list cut off mid-body once are retried", async (
   assert.equal(truncateNext, 0, "the write's first try was cut off");
   truncateNext = 1;
   assert.equal((await gcs.read("wa4/a.bin"))?.data.toString(), "one");
+  assert.equal(truncateNext, 0, "the read's first try was cut off");
   truncateNext = 1;
   assert.deepEqual(await gcs.list("wa4/"), ["wa4/a.bin"]);
+  assert.equal(truncateNext, 0, "the list's first try was cut off");
   truncateNext = 1;
   await gcs.delete("wa4/a.bin");
+  assert.equal(truncateNext, 0, "the delete's first try was cut off");
   assert.equal(await gcs.read("wa4/a.bin"), null);
 });
 
 test("past the budget, the error says transient; retry — and not the transport's text", async () => {
   const auth = new FlakyTokenClient(99);
-  const gcs = store({ authClient: auth, retry: { attempts: 3, baseDelayMs: 1 } });
+  const gcs = store({ authClient: auth, retry: { attempts: 3, baseDelayMs: 1, deadlineMs: 10_000 } });
   const err = await gcs.read("wa5/none.bin").catch((e: unknown) => e);
   assert.ok(err instanceof TransientStoreError);
   assert.equal(auth.fetches, 3, "bounded: exactly the budget, no more");
   assert.match(err.message, /transient; retry/);
   assert.doesNotMatch(err.message, /Premature close|googleapis|oauth2|127\.0\.0\.1/);
   assert.match(String((err.cause as Error).message), /Premature close/);
+});
+
+test("an unconditional write replays only when the token fetch failed — it was never sent", async () => {
+  // Token fetch cut off: the object request was never made, so the replay is safe.
+  const auth = new FlakyTokenClient(1);
+  await store({ authClient: auth }).write("wa6/lease.json", Buffer.from("a"));
+  assert.equal(auth.fetches, 2);
+
+  // The object request itself cut off: it may have landed, and a replay could
+  // overwrite another process's write in between. Reported, not replayed.
+  const before = seen.length;
+  truncateNext = 1;
+  const err = await store()
+    .write("wa6/lease.json", Buffer.from("b"))
+    .catch((e: unknown) => e);
+  assert.ok(err instanceof TransientStoreError);
+  assert.equal(seen.slice(before).filter((l) => l.startsWith("POST /upload")).length, 1);
+});
+
+test("the deadline stops new tries even with attempts left", async () => {
+  const auth = new FlakyTokenClient(99);
+  const gcs = store({ authClient: auth, retry: { attempts: 50, baseDelayMs: 20, deadlineMs: 50 } });
+  const err = await gcs.read("wa7/none.bin").catch((e: unknown) => e);
+  assert.ok(err instanceof TransientStoreError);
+  assert.ok(auth.fetches < 50 && auth.fetches >= 2, `stopped by the deadline after ${auth.fetches}`);
 });

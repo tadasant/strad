@@ -767,7 +767,7 @@ test("a 403 (a banned or restricted account) stops reconnecting", async () => {
 });
 
 test("a transport error reaches whatsapp_pair as transient; retry, not the raw string", async () => {
-  // What production returned, verbatim, before the store retried it.
+  // The token fetch's error, as node-fetch 2 words it.
   const RAW =
     "Invalid response body while trying to fetch " +
     "https://www.googleapis.com/oauth2/v4/token: Premature close";
@@ -798,4 +798,16 @@ test("a transport error reaches whatsapp_pair as transient; retry, not the raw s
   blobs.mode = "ok";
   await pairAndConnect(mcp, fake);
   assert.equal((await call(mcp, "whatsapp_status")).json.paired, true);
+});
+
+test("a dropped connection during a send does not say retry: it may have gone out", async () => {
+  const { mcp, fake } = await connect();
+  await pairAndConnect(mcp, fake);
+  fake.latest().sendMessage = async () => {
+    throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+  };
+  const r = await call(mcp, "whatsapp_send_message", { chat_id: GROUP, text: "hi" });
+  assert.equal(r.isError, true);
+  assert.match(r.text, /may or may not have gone out/);
+  assert.doesNotMatch(r.text, /transient; retry|socket hang up/);
 });

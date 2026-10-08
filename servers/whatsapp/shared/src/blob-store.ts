@@ -80,14 +80,25 @@ export interface TransportRetry {
   attempts: number;
   /** The first backoff; each later one doubles, plus up to 50% jitter. */
   baseDelayMs: number;
+  /**
+   * No new try starts once this long has passed since the first. Each try is
+   * itself a stack of retries — gaxios tries the token POST three times, and
+   * `autoRetry` retries ECONNRESET-class failures on idempotent calls with
+   * multi-second backoff — so the attempt count alone does not bound the wait.
+   */
+  deadlineMs: number;
 }
 
 /**
- * 4 tries over roughly two seconds. Enough to ride out a connection the far end
- * closed mid-response, and short enough that a tool call still answers well
- * inside a client's timeout when GCS is genuinely unreachable.
+ * Up to 4 tries, 250 ms backoff doubling, and no new try after 15 s. Enough to
+ * ride out a connection the far end closed mid-response; a GCS that stays
+ * unreachable still fails the call rather than holding it for minutes.
  */
-export const DEFAULT_TRANSPORT_RETRY: TransportRetry = { attempts: 4, baseDelayMs: 250 };
+export const DEFAULT_TRANSPORT_RETRY: TransportRetry = {
+  attempts: 4,
+  baseDelayMs: 250,
+  deadlineMs: 15_000,
+};
 
 const status = (err: unknown): number | undefined => {
   const code = (err as { code?: unknown })?.code;
@@ -101,23 +112,29 @@ const TRANSIENT_CODES = new Set([
   "ETIMEDOUT",
   "EPIPE",
   "EAI_AGAIN",
+  "ECONNREFUSED",
   "UND_ERR_SOCKET",
 ]);
 
+/** node-fetch 2's own timeout has no `code`, only `type: "request-timeout"`. */
+const TRANSIENT_TYPES = new Set(["request-timeout"]);
+
 const TRANSIENT_TEXT =
-  /premature close|socket hang up|ECONNRESET|ETIMEDOUT|EPIPE|EAI_AGAIN|network socket disconnected|other side closed|unexpected connection closure/i;
+  /premature close|socket hang up|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|EAI_AGAIN|network timeout at|network socket disconnected|other side closed|unexpected connection closure/i;
 
 /**
  * A request that never got a whole answer: the connection closed mid-body, was
  * reset, or timed out. Anything carrying an HTTP status is NOT one of these —
  * GCS answered, and the client's own `autoRetry` already owns 429 and 5xx.
  *
- * Why this exists: the service-account token fetch (gtoken → gaxios 6 →
- * node-fetch 2) sits outside `autoRetry`, and the storage client's own
- * connection-problem test does not recognise node-fetch's `Premature close` on
- * an object read or write either. Either one surfaced to a caller as
- * "Invalid response body while trying to fetch …/oauth2/v4/token: Premature
- * close", and failed `whatsapp_pair` outright.
+ * Why this exists: node-fetch 2 (under gaxios 6 and the storage client)
+ * reports a chunked response cut off before its last chunk as "Invalid
+ * response body while trying to fetch <url>: Premature close", code
+ * `ERR_STREAM_PREMATURE_CLOSE`. On the service-account token fetch, gtoken's
+ * own three tries are all `autoRetry` gives it — the token request is not an
+ * API call — and they are back to back, within a second. On an object call,
+ * the storage client's connection-problem test does not recognise the code at
+ * all.
  */
 export function isTransientTransportError(err: unknown): boolean {
   for (let e: unknown = err, depth = 0; e && depth < 5; depth++) {
@@ -128,14 +145,26 @@ export function isTransientTransportError(err: unknown): boolean {
       message?: unknown;
       cause?: unknown;
       error?: unknown;
+      type?: unknown;
     };
     if (typeof o.code === "number" || typeof o.status === "number") return false;
     if (typeof o.response?.status === "number") return false;
     if (typeof o.code === "string" && TRANSIENT_CODES.has(o.code)) return true;
+    if (typeof o.type === "string" && TRANSIENT_TYPES.has(o.type)) return true;
     if (typeof o.message === "string" && TRANSIENT_TEXT.test(o.message)) return true;
     e = o.cause ?? o.error;
   }
   return false;
+}
+
+/**
+ * The failure came from the token fetch, so the object request it was for was
+ * never sent. gaxios puts the request's config on its error; the storage
+ * client's object requests (teeny-request) carry none.
+ */
+function failedBeforeSending(err: unknown): boolean {
+  const url = (err as { config?: { url?: unknown } })?.config?.url;
+  return /\/token(?:[?#]|$)/.test(String(url ?? ""));
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -164,19 +193,32 @@ export class GcsBlobStore implements BlobStore {
 
   /**
    * Every GCS call goes through here, so the token fetch each one may trigger
-   * is covered with it. Retrying is safe for all four operations: a read and a
-   * list change nothing, a delete is idempotent here (404 is success), an
-   * unconditional write rewrites the same bytes, and a conditional write that
-   * landed before its response was lost fails its own precondition on the
-   * replay — which `StateStore` already answers by re-reading.
+   * is covered with it. A read and a list change nothing, a delete is
+   * idempotent here (404 is success), and a conditional write that landed
+   * before its response was lost fails its own precondition on the replay —
+   * which `StateStore` already answers by re-reading. Those always replay.
+   *
+   * An UNCONDITIONAL write (`replayable: false`) replays only when the token
+   * fetch failed, so the write was never sent. Otherwise it may have landed,
+   * and a replay a moment later could overwrite what another process wrote in
+   * between — for the lease, a newer process's claim.
    */
-  private async transport<T>(operation: string, call: () => Promise<T>): Promise<T> {
+  private async transport<T>(
+    operation: string,
+    call: () => Promise<T>,
+    replayable = true,
+  ): Promise<T> {
+    const started = Date.now();
     for (let attempt = 1; ; attempt++) {
       try {
         return await call();
       } catch (err) {
         if (!isTransientTransportError(err)) throw err;
-        if (attempt >= this.retry.attempts) {
+        if (
+          attempt >= this.retry.attempts ||
+          Date.now() - started >= this.retry.deadlineMs ||
+          (!replayable && !failedBeforeSending(err))
+        ) {
           throw new TransientStoreError(operation, attempt, err);
         }
         logWarning(
@@ -244,15 +286,18 @@ export class GcsBlobStore implements BlobStore {
         ? undefined
         : { ifGenerationMatch: ifGeneration === null ? 0 : Number(ifGeneration) };
     try {
-      await this.transport(`writing ${name}`, () =>
-        file.save(data, {
-          resumable: false,
-          contentType: "application/octet-stream",
-          // A conditional write is safe to retry: a replay of one that landed
-          // fails its own precondition rather than writing twice.
-          ...(preconditionOpts ? { preconditionOpts } : {}),
-          metadata: { cacheControl: "no-store" },
-        }),
+      await this.transport(
+        `writing ${name}`,
+        () =>
+          file.save(data, {
+            resumable: false,
+            contentType: "application/octet-stream",
+            // A conditional write is safe to retry: a replay of one that landed
+            // fails its own precondition rather than writing twice.
+            ...(preconditionOpts ? { preconditionOpts } : {}),
+            metadata: { cacheControl: "no-store" },
+          }),
+        preconditionOpts !== undefined,
       );
     } catch (err) {
       if (status(err) === 412) throw new PreconditionFailed(name);

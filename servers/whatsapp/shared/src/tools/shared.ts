@@ -67,7 +67,14 @@ export function fail(err: unknown): ToolResult {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 
-export async function guard(run: () => Promise<ToolResult>): Promise<ToolResult> {
+/**
+ * `sends`: the tool posts to WhatsApp, so a dropped connection may have come
+ * after the message went out, and "retry" could post it twice.
+ */
+export async function guard(
+  run: () => Promise<ToolResult>,
+  { sends = false }: { sends?: boolean } = {},
+): Promise<ToolResult> {
   try {
     return await run();
   } catch (err) {
@@ -86,8 +93,12 @@ export async function guard(run: () => Promise<ToolResult>): Promise<ToolResult>
     if (isTransientTransportError(err)) {
       return fail(
         new Error(
-          "A network connection this bridge depends on closed before it " +
-            "answered. This is a transient network error: transient; retry the call.",
+          sends
+            ? "A network connection closed before WhatsApp confirmed the send, so " +
+                "the message may or may not have gone out. Check " +
+                "whatsapp_get_messages for it (sent_by_bridge: true) before retrying."
+            : "A network connection this bridge depends on closed before it " +
+                "answered. This is a transient network error: transient; retry the call.",
         ),
       );
     }
