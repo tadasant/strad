@@ -183,6 +183,12 @@ export interface ParameterAdmin {
  */
 export interface ParameterResolver {
   /**
+   * The project this client reads, where the backend has one. What lets a
+   * caller holding two clients — one that reads, one that writes — check they
+   * mean the same store before trusting one about the other.
+   */
+  readonly projectId?: string;
+  /**
    * VARIABLE_NAME -> value, for every parameter under `namespace`.
    *
    * FAIL FAST: one parameter that cannot be rendered fails the whole call. That

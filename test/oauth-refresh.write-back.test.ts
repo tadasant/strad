@@ -12,6 +12,8 @@ import {
 import {
   createFakeGcp,
   PARAMETER_VIEWER_PERMISSIONS,
+  RESOLVER_PERMISSIONS,
+  WRITE_ONLY_CONSOLE_PERMISSIONS,
   type FakeGcp,
 } from "../src/secrets/parameters/fake.ts";
 import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
@@ -117,37 +119,6 @@ function harness(
         }),
   };
 }
-
-/**
- * The prod console credential: secrets-iam.md §1's two custom roles. Writes,
- * lists and deletes, and holds neither read path.
- */
-const WRITE_ONLY_CONSOLE: readonly string[] = [
-  "secretmanager.secrets.create",
-  "secretmanager.secrets.delete",
-  "secretmanager.secrets.get",
-  "secretmanager.secrets.list",
-  "secretmanager.secrets.getIamPolicy",
-  "secretmanager.secrets.setIamPolicy",
-  "secretmanager.versions.add",
-  "secretmanager.versions.list",
-  "parametermanager.parameters.create",
-  "parametermanager.parameters.delete",
-  "parametermanager.parameters.get",
-  "parametermanager.parameters.list",
-  "parametermanager.parameters.update",
-  "parametermanager.parameterVersions.create",
-  "parametermanager.parameterVersions.delete",
-  "parametermanager.parameterVersions.get",
-  "parametermanager.parameterVersions.list",
-  "parametermanager.parameterVersions.update",
-];
-
-/** The gateway's resolver: `parameterViewer` + `parameterAccessor`. */
-const RESOLVER: readonly string[] = [
-  ...PARAMETER_VIEWER_PERMISSIONS,
-  "parametermanager.parameterVersions.render",
-];
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -291,8 +262,8 @@ describe("createParameterWriteBack: the oauth/ kind the console's Connect writes
 describe("createParameterWriteBack: prod's IAM split (strad#398)", () => {
   const OAUTH_PATH = oauthParameterPath("test", "granola", VARIABLE);
   const prod = {
-    admin: (fake: FakeGcp) => fake.storeAs(WRITE_ONLY_CONSOLE),
-    reader: (fake: FakeGcp) => fake.storeAs(RESOLVER),
+    admin: (fake: FakeGcp) => fake.storeAs(WRITE_ONLY_CONSOLE_PERMISSIONS),
+    reader: (fake: FakeGcp) => fake.storeAs(RESOLVER_PERMISSIONS),
   };
 
   it("a console that cannot read still writes back: the check reads through the resolver", async () => {
@@ -358,6 +329,25 @@ describe("createParameterWriteBack: prod's IAM split (strad#398)", () => {
     expect(h.warnings()[0]).not.toContain("rt-1-never-shown");
   });
 
+  it("refuses when the resolver reads a different project from the one the write would land in", async () => {
+    const h = harness("gcp-parameter-store", undefined, {
+      reader: (fake) => ({ ...fake.store, projectId: "some-other-project" }),
+    });
+    await h.fake.store.create({
+      path: OAUTH_PATH,
+      secret: true,
+      value: "rt-0",
+    });
+
+    await h.writeBack("granola", VARIABLE, "rt-1", () => true);
+
+    expect(await h.fake.store.reveal(OAUTH_PATH)).toBe("rt-0");
+    expect(h.events("strad.param_write_failed")).toMatchObject([
+      { reason: "store_mismatch" },
+    ]);
+    expect(h.warnings()[0]).toContain("some-other-project");
+  });
+
   it("every refusal carries a reason from the closed set", async () => {
     const reseeded = harness();
     await reseeded.fake.store.create({
@@ -398,5 +388,39 @@ describe("createParameterWriteBack: prod's IAM split (strad#398)", () => {
       { reason: "no_reader" },
     ]);
     expect(await noReader.fake.store.reveal(OAUTH_PATH)).toBe("rt-0");
+  });
+});
+
+describe("renderPath: one parameter, read the way the gateway reads it", () => {
+  const OAUTH_PATH = oauthParameterPath("test", "granola", VARIABLE);
+
+  it("hands back the decoded value of a secret parameter, live", async () => {
+    const fake = createFakeGcp();
+    const resolver = fake.storeAs(RESOLVER_PERMISSIONS);
+    await fake.store.create({
+      path: OAUTH_PATH,
+      secret: true,
+      value: 'a"b/c+=',
+    });
+    expect(await resolver.renderPath!(OAUTH_PATH)).toBe('a"b/c+=');
+    await fake.store.rotate(OAUTH_PATH, "rt-2");
+    expect(await resolver.renderPath!(OAUTH_PATH)).toBe("rt-2");
+  });
+
+  it("is a 404 for an absent parameter, and for a path whose id folds onto another — before any render", async () => {
+    const fake = createFakeGcp();
+    // No render permission at all: a 404 here proves nothing was dereferenced.
+    const viewer = fake.storeAs(PARAMETER_VIEWER_PERMISSIONS);
+    await expect(viewer.renderPath!(OAUTH_PATH)).rejects.toMatchObject({
+      status: 404,
+    });
+    await fake.store.create({ path: OAUTH_PATH, secret: true, value: "rt-0" });
+    await expect(
+      viewer.renderPath!(OAUTH_PATH.replace(VARIABLE, VARIABLE.toLowerCase())),
+    ).rejects.toMatchObject({ status: 404 });
+    // And the parameter itself is a refusal, not a miss.
+    await expect(viewer.renderPath!(OAUTH_PATH)).rejects.toMatchObject({
+      status: 403,
+    });
   });
 });

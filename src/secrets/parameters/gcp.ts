@@ -1079,32 +1079,29 @@ export function createGcpParameterStore(
    */
   async function renderPath(path: string): Promise<string> {
     const id = parameterId(path);
-    const cur = await currentVersion(id);
+    // The raw envelope first, so a path whose id folds onto ANOTHER parameter
+    // is the same 404 `reveal` gives, before anything is dereferenced.
+    const cur = await currentEnvelope(id);
     if (!cur) throw new ParameterStoreError(`no such parameter: ${path}`, 404);
-    const resource = `${pmParent}/parameters/${id}/versions/${cur.vid}`;
+    assertSamePath(cur.envelope, path);
+    const resource = `${pmParent}/parameters/${id}/versions/${cur.versionId}`;
     const rendered = (await pm("GET", `${resource}:render`)) as {
       renderedPayload?: string;
       payload?: { data?: string };
     };
     const data = rendered.renderedPayload ?? rendered.payload?.data;
-    if (data == null) {
-      throw new ParameterStoreError(
-        `parameter "${path}" rendered no payload`,
-        404,
-      );
-    }
-    let envelope: ParameterEnvelope;
-    let value: string;
+    // Not a 404: the parameter exists, and a caller walking layers must not
+    // read "rendered nothing" as "is not here".
+    if (data == null) throw new UnreadablePayloadError(resource);
     try {
       // Dropped, not chained, for `renderOne`'s reason: the rendered payload is
       // the secret, and `JSON.parse` quotes a window of it.
-      envelope = decodeEnvelope(Buffer.from(data, "base64").toString("utf8"));
-      value = decodeEnvelopeValue(envelope);
+      return decodeEnvelopeValue(
+        decodeEnvelope(Buffer.from(data, "base64").toString("utf8")),
+      );
     } catch {
       throw new UnreadablePayloadError(resource);
     }
-    assertSamePath(envelope, path);
-    return value;
   }
 
   async function destroy(path: string): Promise<void> {
@@ -1439,6 +1436,7 @@ export function createGcpParameterStore(
 
   return {
     backend: "gcp",
+    projectId: cfg.projectId,
     list,
     listDetailed,
     isSecret,

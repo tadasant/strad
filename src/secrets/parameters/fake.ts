@@ -154,6 +154,38 @@ export const PARAMETER_VIEWER_PERMISSIONS: readonly string[] = Object.freeze([
 ]);
 
 /**
+ * The prod console credential, spelled out: `docs/operate/secrets-iam.md` §1's
+ * two custom roles. It writes, lists and deletes, and holds neither read path —
+ * no `secretmanager.versions.access`, no `parameterVersions.render`.
+ */
+export const WRITE_ONLY_CONSOLE_PERMISSIONS: readonly string[] = Object.freeze([
+  "secretmanager.secrets.create",
+  "secretmanager.secrets.delete",
+  "secretmanager.secrets.get",
+  "secretmanager.secrets.list",
+  "secretmanager.secrets.getIamPolicy",
+  "secretmanager.secrets.setIamPolicy",
+  "secretmanager.versions.add",
+  "secretmanager.versions.list",
+  "parametermanager.parameters.create",
+  "parametermanager.parameters.delete",
+  "parametermanager.parameters.get",
+  "parametermanager.parameters.list",
+  "parametermanager.parameters.update",
+  "parametermanager.parameterVersions.create",
+  "parametermanager.parameterVersions.delete",
+  "parametermanager.parameterVersions.get",
+  "parametermanager.parameterVersions.list",
+  "parametermanager.parameterVersions.update",
+]);
+
+/** The gateway's resolver: `parameterViewer` + `parameterAccessor`. */
+export const RESOLVER_PERMISSIONS: readonly string[] = Object.freeze([
+  ...PARAMETER_VIEWER_PERMISSIONS,
+  RENDER_PERMISSION,
+]);
+
+/**
  * The principal a `:render` runs as — the PARAMETER, not the caller.
  *
  * Google's shape, and the shape matters: the real one is minted per parameter and

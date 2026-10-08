@@ -457,7 +457,7 @@ export function createParamWriteHandler(
         slug: found.slug,
         variable: found.variable,
         reason: "write_failed" satisfies WriteBackRefusal,
-        status,
+        ...(err instanceof ParameterStoreError ? { status } : {}),
       });
       res
         .status(status >= 400 && status < 600 ? status : 502)
@@ -640,6 +640,8 @@ export type WriteBackRefusal =
   | "no_store"
   /** No resolver to read the current value through. */
   | "no_reader"
+  /** The resolver reads one project and the writer would write another. */
+  | "store_mismatch"
   /** The read before the write failed with something other than a 404. */
   | "read_failed"
   /** The stored value is not this lineage's: a re-seed since the exchange. */
@@ -762,6 +764,19 @@ export function createParameterWriteBack(
       const resolved = storeForPath(opts.config, opts.secrets, path, opts);
       if (!resolved.store) {
         refuse("no_store", resolved.reason);
+        return;
+      }
+      // The read vouches for the write only if both mean the same store. A
+      // `consoleStores:` / `mcpStores:` path owned by another project would
+      // pass the check on the resolver's copy and rotate a copy nothing reads.
+      const reads = opts.reader?.projectId;
+      const writes = resolved.store.projectId;
+      if (reads !== undefined && writes !== undefined && reads !== writes) {
+        refuse(
+          "store_mismatch",
+          `the gateway reads it from project ${reads}, but the store that ` +
+            `owns ${path} is project ${writes}`,
+        );
         return;
       }
       let current: string;

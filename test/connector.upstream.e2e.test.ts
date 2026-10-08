@@ -11,7 +11,8 @@ import { createApp } from "../src/http/app.ts";
 import { createParameterWriteBack } from "../src/http/params.ts";
 import {
   createFakeGcp,
-  PARAMETER_VIEWER_PERMISSIONS,
+  RESOLVER_PERMISSIONS,
+  WRITE_ONLY_CONSOLE_PERMISSIONS,
   type FakeGcp,
 } from "../src/secrets/parameters/fake.ts";
 import { buildSecretProviders } from "../src/secrets/provider/index.ts";
@@ -81,8 +82,8 @@ async function harness(
     connectorFetch?: typeof fetch;
     /**
      * Run with production's IAM split instead of one all-powerful client: the
-     * console writes through `WRITE_ONLY_CONSOLE` and the gateway reads through
-     * `RESOLVER`, two clients over the same store.
+     * console writes through `WRITE_ONLY_CONSOLE_PERMISSIONS` and the gateway
+     * reads through `RESOLVER_PERMISSIONS`, two clients over the same store.
      */
     prodIam?: boolean;
   } = {},
@@ -140,8 +141,12 @@ ${more.servers ?? ""}`);
     STRAD_TOKENS: JSON.stringify([token.record]),
   };
   const secrets = { ADMIN_KEY };
-  const admin = more.prodIam ? fake.storeAs(WRITE_ONLY_CONSOLE) : fake.store;
-  const resolver = more.prodIam ? fake.storeAs(RESOLVER) : fake.store;
+  const admin = more.prodIam
+    ? fake.storeAs(WRITE_ONLY_CONSOLE_PERMISSIONS)
+    : fake.store;
+  const resolver = more.prodIam
+    ? fake.storeAs(RESOLVER_PERMISSIONS)
+    : fake.store;
   const providers = buildSecretProviders({ config, env, resolver });
   const registry = await Registry.build({
     config,
@@ -201,38 +206,6 @@ ${more.servers ?? ""}`);
 }
 
 const auth = { authorization: `Bearer ${BOOTSTRAP}` };
-
-/**
- * The prod console credential: `docs/operate/secrets-iam.md` §1's two custom
- * roles. It writes, lists and deletes, and holds neither read path — no
- * `secretmanager.versions.access`, no `parameterVersions.render`.
- */
-const WRITE_ONLY_CONSOLE: readonly string[] = [
-  "secretmanager.secrets.create",
-  "secretmanager.secrets.delete",
-  "secretmanager.secrets.get",
-  "secretmanager.secrets.list",
-  "secretmanager.secrets.getIamPolicy",
-  "secretmanager.secrets.setIamPolicy",
-  "secretmanager.versions.add",
-  "secretmanager.versions.list",
-  "parametermanager.parameters.create",
-  "parametermanager.parameters.delete",
-  "parametermanager.parameters.get",
-  "parametermanager.parameters.list",
-  "parametermanager.parameters.update",
-  "parametermanager.parameterVersions.create",
-  "parametermanager.parameterVersions.delete",
-  "parametermanager.parameterVersions.get",
-  "parametermanager.parameterVersions.list",
-  "parametermanager.parameterVersions.update",
-];
-
-/** The gateway's resolver: `parameterViewer` + `parameterAccessor`. */
-const RESOLVER: readonly string[] = [
-  ...PARAMETER_VIEWER_PERMISSIONS,
-  "parametermanager.parameterVersions.render",
-];
 
 async function connect(
   h: Harness,
