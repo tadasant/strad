@@ -2,6 +2,7 @@
  * What every tool file needs: the tool shape, the result envelope, argument
  * parsing, and the one error path.
  */
+import { isTransientTransportError, TransientStoreError } from "../blob-store.js";
 import { BridgeError, type WhatsAppBridge } from "../bridge.js";
 import { ConfigError } from "../config.js";
 import { SealError } from "../crypto.js";
@@ -66,7 +67,14 @@ export function fail(err: unknown): ToolResult {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 
-export async function guard(run: () => Promise<ToolResult>): Promise<ToolResult> {
+/**
+ * `sends`: the tool posts to WhatsApp, so a dropped connection may have come
+ * after the message went out, and "retry" could post it twice.
+ */
+export async function guard(
+  run: () => Promise<ToolResult>,
+  { sends = false }: { sends?: boolean } = {},
+): Promise<ToolResult> {
   try {
     return await run();
   } catch (err) {
@@ -75,9 +83,24 @@ export async function guard(run: () => Promise<ToolResult>): Promise<ToolResult>
       err instanceof BridgeError ||
       err instanceof SealError ||
       err instanceof RateLimited ||
-      err instanceof SupersededError
+      err instanceof SupersededError ||
+      err instanceof TransientStoreError
     ) {
       return fail(err);
+    }
+    // A dropped connection that reached here without passing through the
+    // store's retry: say what it is, not the transport's raw wording.
+    if (isTransientTransportError(err)) {
+      return fail(
+        new Error(
+          sends
+            ? "A network connection closed before WhatsApp confirmed the send, so " +
+                "the message may or may not have gone out. Check " +
+                "whatsapp_get_messages for it (sent_by_bridge: true) before retrying."
+            : "A network connection this bridge depends on closed before it " +
+                "answered. This is a transient network error: transient; retry the call.",
+        ),
+      );
     }
     const message = err instanceof Error ? err.message : String(err);
     if (/rate-overlimit|429/i.test(message)) {

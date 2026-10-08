@@ -5672,6 +5672,20 @@ requirement. What that costs:
   debounce and on SIGTERM. A crash loses up to that window: the same
   retry-receipt recovery for keys, and messages RECEIVED in it are missing
   from the buffer. A SENT message's id is written before it is sent.
+- **The bucket is reached through node-fetch 2.** `@google-cloud/storage` 7
+  talks to GCS, and fetches its service-account token, through gaxios 6 and
+  node-fetch 2, which reports a chunked response cut off before its last chunk
+  as `Premature close`. The token POST gets only gtoken's own three tries, back
+  to back inside a second; on an object call the client's connection-problem
+  test does not know that error at all. So `GcsBlobStore` retries every call
+  itself on a transport error (no HTTP status): up to 4 tries, 250 ms backoff
+  doubling, no new try after 15 s. Each try still carries the library's own
+  retries, so a GCS that stays unreachable can hold a call for most of a
+  minute. An unconditional write replays only when the token fetch failed,
+  because one that may have landed could overwrite a newer process's lease.
+  Past the budget a tool says `transient; retry`. A response cut short of its
+  `content-length` hangs node-fetch 2 instead, and only the client's own request
+  timeout ends it.
 - **No history API.** A linked device gets one history sync when it pairs and
   whatever its socket receives after. A gap WhatsApp does not replay on
   reconnect is a gap in `whatsapp_get_messages`.

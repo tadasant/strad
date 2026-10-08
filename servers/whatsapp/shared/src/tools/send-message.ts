@@ -62,6 +62,6 @@ export function sendMessageTool(bridge: BridgeFactory): ToolDefinition {
             ...(replyTo !== undefined ? { reply_to_message_id: replyTo } : {}),
           }),
         );
-      }),
+      }, { sends: true }),
   };
 }

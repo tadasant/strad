@@ -4,7 +4,12 @@ import { randomBytes } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import { createMCPServer, MemoryBlobStore, type WhatsAppConfig } from "../src/index.js";
+import {
+  createMCPServer,
+  MemoryBlobStore,
+  TransientStoreError,
+  type WhatsAppConfig,
+} from "../src/index.js";
 import {
   ADA_PN,
   fakeWhatsApp,
@@ -759,4 +764,50 @@ test("a 403 (a banned or restricted account) stops reconnecting", async () => {
   const status = await call(mcp, "whatsapp_status");
   assert.equal(status.json.last_disconnect_reason, "forbidden");
   assert.equal(status.json.paired, true);
+});
+
+test("a transport error reaches whatsapp_pair as transient; retry, not the raw string", async () => {
+  // The token fetch's error, as node-fetch 2 words it.
+  const RAW =
+    "Invalid response body while trying to fetch " +
+    "https://www.googleapis.com/oauth2/v4/token: Premature close";
+  class DroppingBlobs extends MemoryBlobStore {
+    mode: "raw" | "exhausted" | "ok" = "raw";
+    override async write(name: string, data: Buffer, ifGeneration?: string | null) {
+      if (this.mode === "raw") {
+        throw Object.assign(new Error(RAW), { code: "ERR_STREAM_PREMATURE_CLOSE" });
+      }
+      if (this.mode === "exhausted") {
+        throw new TransientStoreError(`writing ${name}`, 4, new Error(RAW));
+      }
+      return super.write(name, data, ifGeneration);
+    }
+  }
+  const blobs = new DroppingBlobs();
+  const { mcp, fake } = await connect({ blobs });
+
+  for (const mode of ["raw", "exhausted"] as const) {
+    blobs.mode = mode;
+    const r = await call(mcp, "whatsapp_pair", { phone_number: "15550000001" });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /transient; retry/);
+    assert.doesNotMatch(r.text, /Premature close|googleapis|oauth2/);
+  }
+
+  // The start is not memoised as a failure: the retry the message asks for works.
+  blobs.mode = "ok";
+  await pairAndConnect(mcp, fake);
+  assert.equal((await call(mcp, "whatsapp_status")).json.paired, true);
+});
+
+test("a dropped connection during a send does not say retry: it may have gone out", async () => {
+  const { mcp, fake } = await connect();
+  await pairAndConnect(mcp, fake);
+  fake.latest().sendMessage = async () => {
+    throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+  };
+  const r = await call(mcp, "whatsapp_send_message", { chat_id: GROUP, text: "hi" });
+  assert.equal(r.isError, true);
+  assert.match(r.text, /may or may not have gone out/);
+  assert.doesNotMatch(r.text, /transient; retry|socket hang up/);
 });

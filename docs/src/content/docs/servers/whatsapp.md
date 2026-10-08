@@ -189,6 +189,17 @@ state — a session that silently stops decrypting. So:
   the lease before trying again, so two live processes cannot ping-pong.
 - **SIGTERM flushes.** The bundle host closes the mount on shutdown, which writes
   any pending state before exit.
+- **A dropped connection to GCS is retried.** Every bucket call, and the
+  service-account token fetch it may need, is retried on a transport error (a
+  connection closed mid-response, reset, refused or timed out): up to four
+  tries, backing off from 250 ms, and no new try after 15 seconds. An HTTP error
+  is not retried here; the GCS client already retries 429 and 5xx. A write
+  that is not conditional replays only if the token fetch failed, since one
+  that may have landed could overwrite a newer process's lease. When the budget
+  runs out, a tool answers with a message ending `transient; retry` and does
+  not echo the transport's error. A send is the exception: a connection that
+  drops during `whatsapp_send_message` may have come after the message went
+  out, so that error says to check `whatsapp_get_messages` before retrying.
 
 Every other container that runs the bundle image — the main `bundle`,
 `bundle-zimmer-secrets` — lists `/whatsapp`'s tools degraded and never connects,
