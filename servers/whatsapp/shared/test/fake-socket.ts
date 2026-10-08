@@ -14,7 +14,7 @@
  */
 import { EventEmitter } from "node:events";
 import type { AuthState, SocketFactory, SocketOptions, WaSocket } from "../src/socket.js";
-import type { RawMessage } from "../src/normalize.js";
+import type { RawKey, RawMessage } from "../src/normalize.js";
 
 export const SELF_PN = "15550000001@s.whatsapp.net";
 export const SELF_LID = "900000000000001@lid";
@@ -31,6 +31,14 @@ export class FakeSocket implements WaSocket {
   loggedOut = false;
   ended = false;
   failNextSendAfterDelivery = false;
+  /** Media re-upload requests, and the URL the "phone" re-uploads to (none: it refuses). */
+  readonly reuploads: RawMessage[] = [];
+  reuploadTo: string | null = null;
+  /** Resend asks, and what the "phone" answers each with (nothing: it is offline). */
+  readonly resendRequests: RawKey[] = [];
+  readonly historyRequests: { count: number; key: RawKey; timestampMs: number }[] = [];
+  answerResend: ((key: RawKey) => RawMessage | null) | null = null;
+  answerHistory: ((key: RawKey, count: number) => RawMessage[]) | null = null;
   private counter = 0;
 
   constructor(
@@ -130,6 +138,45 @@ export class FakeSocket implements WaSocket {
         participants: [{ id: SELF_LID }, { id: GRACE_LID }, { id: ADA_PN }],
       },
     };
+  }
+
+  /**
+   * Baileys rewrites the content's `directPath` and `url` in place and
+   * resolves with the same message; a phone that cannot answers with a Boom
+   * whose `output.statusCode` is 404.
+   */
+  async updateMediaMessage(message: RawMessage): Promise<RawMessage> {
+    this.reuploads.push(message);
+    if (!this.reuploadTo) {
+      throw Object.assign(new Error("Media re-upload failed by device (NOT_FOUND)"), {
+        output: { statusCode: 404 },
+      });
+    }
+    const [kind] = Object.keys(message.message ?? {});
+    const body = (message.message as Record<string, Record<string, unknown>>)[kind!]!;
+    delete body.directPath;
+    body.url = this.reuploadTo;
+    return message;
+  }
+
+  /** The phone answers a resend as Baileys does: through `messages.upsert`. */
+  async requestPlaceholderResend(key: RawKey): Promise<string | undefined> {
+    this.resendRequests.push(key);
+    const answer = this.answerResend?.(key);
+    if (answer) {
+      setTimeout(() => this.emit("messages.upsert", { type: "notify", messages: [answer] }), 5);
+    }
+    return "RESEND1";
+  }
+
+  /** And an on-demand history request through `messaging-history.set`. */
+  async fetchMessageHistory(count: number, key: RawKey, timestampMs: number): Promise<string> {
+    this.historyRequests.push({ count, key, timestampMs });
+    const messages = this.answerHistory?.(key, count) ?? [];
+    if (messages.length) {
+      setTimeout(() => this.emit("messaging-history.set", { messages, chats: [], contacts: [] }), 5);
+    }
+    return "HISTORY1";
   }
 
   async logout(): Promise<void> {

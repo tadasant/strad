@@ -13,6 +13,7 @@
  * both reads every chat the paired account is in and posts as it. Neither is
  * ever logged, echoed in an error, or returned by a tool.
  */
+import type { DownloadLinkConfig } from "./download-link.js";
 
 export const ENV = {
   /** 32 random bytes, base64 or hex. Seals every object this server writes. */
@@ -28,7 +29,18 @@ export const ENV = {
   bufferMaxMessages: "WHATSAPP_BUFFER_MAX_MESSAGES",
   /** Optional. Days a message is kept. Default 30. */
   bufferMaxAgeDays: "WHATSAPP_BUFFER_MAX_AGE_DAYS",
+  /**
+   * The GATEWAY slug this mount is served as (`whatsapp-tadas`), which an
+   * attachment's download link is addressed to. Not derivable: every
+   * WhatsApp slug is served at `path: /whatsapp`, so this process cannot know
+   * which one the gateway routes to it. Unset means no download links.
+   */
+  publicSlug: "WHATSAPP_PUBLIC_SLUG",
 } as const;
+
+/** Rendered onto every bundle component by strad's renderer. */
+const STRAD_PUBLIC_URL = "STRAD_PUBLIC_URL";
+const STRAD_INTERNAL_TOKEN = "STRAD_INTERNAL_TOKEN";
 
 /** The variables without which this server cannot hold a login at all. */
 export const REQUIRED_ENV_NAMES = [
@@ -52,6 +64,9 @@ export interface WhatsAppConfig {
   prefix: string;
   bufferMaxMessages: number;
   bufferMaxAgeDays: number;
+  /** Where attachment download links point. Absent: no links, and the reason. */
+  downloadLink?: DownloadLinkConfig;
+  downloadUnavailable?: string;
 }
 
 export class ConfigError extends Error {
@@ -163,5 +178,39 @@ export function loadConfig(
       DEFAULT_BUFFER_MAX_AGE_DAYS,
       365,
     ),
+    ...downloadLinkConfig(env),
+  };
+}
+
+/**
+ * Download links need all three. The first two are on every strad bundle
+ * component, so their absence means this image is running outside strad; the
+ * third is per deployment. Missing any is not an error: attachments are still
+ * read, and the tool says why there is no link.
+ */
+export function downloadLinkConfig(
+  env: NodeJS.ProcessEnv,
+): Pick<WhatsAppConfig, "downloadLink" | "downloadUnavailable"> {
+  const publicBaseUrl = read(env, STRAD_PUBLIC_URL);
+  const internalToken = read(env, STRAD_INTERNAL_TOKEN);
+  const publicSlug = read(env, ENV.publicSlug);
+  const missing = [
+    publicBaseUrl ? null : STRAD_PUBLIC_URL,
+    internalToken ? null : STRAD_INTERNAL_TOKEN,
+    publicSlug ? null : ENV.publicSlug,
+  ].filter((n): n is string => n !== null);
+  if (missing.length > 0 || !publicBaseUrl || !internalToken || !publicSlug) {
+    return {
+      downloadUnavailable:
+        `no download link: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} ` +
+        `not set on this deployment`,
+    };
+  }
+  return {
+    downloadLink: {
+      publicBaseUrl: publicBaseUrl.replace(/\/+$/, ""),
+      internalToken,
+      publicSlug,
+    },
   };
 }

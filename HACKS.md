@@ -5962,3 +5962,33 @@ than worked around:
 **Undo.** 2 is a console prompt that answers the same protocol. 3 is a measured
 caller-side bound, recorded here, or a caller that always sends a progressToken.
 1 and 4 are the design.
+
+## 114. A WhatsApp attachment buffered before descriptors were kept is recovered from the phone, best effort
+
+**What.** `whatsapp_get_attachment` (`servers/whatsapp/shared/src/tools/get-attachment.ts`)
+downloads a media message with the media key and CDN path it carried on arrival,
+which `normalize.ts` keeps on the buffered record as `media`. Records buffered
+before that have neither, and nothing derives them. `recoverDescriptor` in
+`bridge.ts` asks the phone twice at once — `requestPlaceholderResend` for the
+message's key, and `fetchMessageHistory(50, …)` anchored on the next buffered
+message — and waits up to 30 s for either answer to be ingested and merged.
+
+1. **It needs the phone online and still holding the message.** Neither is
+   strad's to fix.
+2. **Untested against a real phone.** CI drives both through `test/fake-socket.ts`.
+   That a phone honours a placeholder resend for a message that decrypted fine
+   is WhatsApp's behaviour; Baileys designed the call for undecryptable ones.
+3. **Spent download links are an in-memory ledger.** One instance makes it the
+   whole ledger; a restart forgets it, within the 15-minute expiry.
+4. **The CDN transport is strad's.** Baileys 7.0.0-rc14's `downloadMediaMessage`
+   pipes `fetched` into its decipher with no error listener on `fetched` (an
+   uncaught exception in the bundle on a dropped connection) and gates its
+   `reuploadRequest` on `error.status`, which its Boom never sets.
+   `cdnMediaDownloader` in `socket.ts` uses Baileys' `getMediaKeys` and
+   `getUrlFromDirectPath` with its own `fetch`, and checks the MAC and
+   `fileEncSha256` Baileys does not.
+
+**Undo.** 1–2 lapse once pre-change messages age out of the buffer (30 days by
+default). 3 is the design while the component is single-instance. 4 reverts to
+`downloadMediaMessage` when Baileys forwards source errors and tests
+`output.statusCode`.

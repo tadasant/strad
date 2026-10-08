@@ -278,9 +278,11 @@ after a failure is a truncated file delivered under a `200`, and a half-written
 archive that looks whole is worse than an obvious error. See `streamFailure` in
 `src/http/async-route.ts`.
 
-The two users of this today are the artifact store's `get_upload_url` (in) and
-Slack's `slack_download_file` (out); the latter is described in
-[the Slack attachment flow](/servers/slack-attachments/).
+The three users of this today are the artifact store's `get_upload_url` (in),
+Slack's `slack_download_file` (out), described in
+[the Slack attachment flow](/servers/slack-attachments/), and WhatsApp's
+`whatsapp_get_attachment` (out), described under
+[WhatsApp attachments](/servers/whatsapp/#attachments).
 
 ### One connection per slug, shared — so nothing closes it unilaterally
 

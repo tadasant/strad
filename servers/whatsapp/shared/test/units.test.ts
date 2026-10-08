@@ -14,6 +14,7 @@ import {
   seal,
   SealError,
 } from "../src/index.js";
+import { mediaMessageOf } from "../src/normalize.js";
 
 const KEY_B64 = randomBytes(32).toString("base64");
 const FULL = {
@@ -238,4 +239,86 @@ describe("console guard", () => {
       globalThis.console = real;
     }
   });
+});
+
+test("a media message keeps its download descriptor; the descriptor rebuilds a Baileys message", () => {
+  const mediaKey = new Uint8Array(32).fill(7);
+  const n = normalizeMessage(
+    {
+      key: { remoteJid: "120363000000000001@g.us", id: "DOC9", participant: "900000000000002@lid" },
+      message: {
+        documentWithCaptionMessage: {
+          message: {
+            documentMessage: {
+              url: "https://mmg.whatsapp.net/v/t62/x.enc",
+              directPath: "/v/t62/x.enc",
+              mimetype: "application/pdf",
+              fileName: "Contract.pdf",
+              mediaKey,
+              fileSha256: new Uint8Array([1, 2]),
+              fileEncSha256: { type: "Buffer", data: [3, 4] },
+              fileLength: { toNumber: () => 182311 },
+              mediaKeyTimestamp: "1790000000",
+              pageCount: 4,
+              caption: "the contract",
+            },
+          },
+        },
+      },
+      messageTimestamp: 1790000000,
+    },
+    { jid: null, lid: null },
+    new Map(),
+  );
+  assert.equal(n.kind, "message");
+  if (n.kind !== "message") return;
+  assert.equal(n.message.type, "document");
+  assert.equal(n.message.text, "the contract");
+  assert.deepEqual(n.message.media, {
+    kind: "documentMessage",
+    media_key: Buffer.from(mediaKey).toString("base64"),
+    direct_path: "/v/t62/x.enc",
+    url: "https://mmg.whatsapp.net/v/t62/x.enc",
+    file_enc_sha256: Buffer.from([3, 4]).toString("base64"),
+    file_sha256: Buffer.from([1, 2]).toString("base64"),
+    file_length: 182311,
+    mimetype: "application/pdf",
+    file_name: "Contract.pdf",
+    media_key_timestamp: 1790000000,
+    page_count: 4,
+    key: {
+      remote_jid: "120363000000000001@g.us",
+      from_me: false,
+      id: "DOC9",
+      participant: "900000000000002@lid",
+    },
+  });
+  const rebuilt = mediaMessageOf(n.message.media!);
+  const body = (rebuilt.message as Record<string, Record<string, unknown>>).documentMessage!;
+  assert.deepEqual(body.mediaKey, Buffer.from(mediaKey));
+  assert.equal(body.directPath, "/v/t62/x.enc");
+  assert.equal(body.fileLength, 182311);
+
+  // No media key, no descriptor: the attachment is described, not downloadable.
+  const bare = normalizeMessage(
+    {
+      key: { remoteJid: "15550000002@s.whatsapp.net", id: "IMG9" },
+      message: { imageMessage: { mimetype: "image/jpeg" } },
+      messageTimestamp: 1790000000,
+    },
+    { jid: null, lid: null },
+    new Map(),
+  );
+  assert.ok(bare.kind === "message" && bare.message.media === undefined);
+  // A text message carries none.
+  const text = normalizeMessage(
+    {
+      key: { remoteJid: "15550000002@s.whatsapp.net", id: "T9" },
+      message: { conversation: "hi" },
+      messageTimestamp: 1790000000,
+    },
+    { jid: null, lid: null },
+    new Map(),
+  );
+  assert.ok(text.kind === "message" && !("media" in text.message));
 });

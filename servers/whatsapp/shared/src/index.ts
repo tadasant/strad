@@ -17,6 +17,8 @@ export {
   WhatsAppBridge,
   type BridgeOptions,
   type ChatSummary,
+  type DownloadOutcome,
+  type FetchedAttachment,
   type MessagesResult,
   type OutMessage,
   type PairResult,
@@ -41,11 +43,21 @@ export { normalizeMessage, normalizeJid, type StoredMessage } from "./normalize.
 export { DEFAULT_PACING, Pacer, RateLimited, type PacingLimits } from "./pacing.js";
 export {
   createBaileysSocket,
+  cdnMediaDownloader,
   createMemoryAuth,
   DISCONNECT,
+  type MediaDownloader,
   type SocketFactory,
   type WaSocket,
 } from "./socket.js";
 export { StateStore, SupersededError } from "./store.js";
 export { parseToolGroups, registerTools, toolDefinitions, toolNames, type ToolGroup } from "./tools.js";
 export { redact } from "./logging.js";
+export {
+  attachmentMeta,
+  MAX_ATTACHMENT_BYTES,
+  MAX_TEXT_BYTES,
+  pdfText,
+  type AttachmentMeta,
+} from "./attachment.js";
+export { deriveDownloadKey, mintDownloadToken, verifyDownloadToken } from "./download-link.js";

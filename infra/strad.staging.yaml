@@ -1213,6 +1213,9 @@ servers:
       # Plain config. Staging's own folder, so it can never share a login with
       # production even if both point at one bucket.
       WHATSAPP_GCS_PREFIX: whatsapp/staging
+      # The slug whatsapp_get_attachment's download links are addressed to. Not
+      # derivable: every WhatsApp slug is `path: /whatsapp`.
+      WHATSAPP_PUBLIC_SLUG: whatsapp-zimmer
 
   # ---------------------------------------------------------------------------
   # telegram — strad's own server, and the one that speaks MTProto as a PERSON.

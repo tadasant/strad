@@ -89,10 +89,10 @@ const EXPECT = {
   // get_me, list_chats, get_chat, get_chat_history, search_messages, and the one
   // write tool, send_message — which `telegram-ro` is the allow-list without.
   telegram: 6,
-  // The WhatsApp bridge's contract with Zimmer's poller: three reads, the one
-  // send, and pair/logout. Named below as well as counted — Zimmer calls these
+  // The WhatsApp bridge's contract with Zimmer's poller: four reads (the
+  // attachment read included), the one send, and pair/logout. Named below as well as counted — Zimmer calls these
   // by name every minute, so a rename is an outage there, not a new count here.
-  whatsapp: 6,
+  whatsapp: 7,
   // list_coding_fields, list_coding_options, list_transactions,
   // get_transaction_coding, and the one write tool, set_transaction_coding —
   // which `bill-spend-ro` is the allow-list without. The count is also a
@@ -142,7 +142,8 @@ const TELEGRAM_TOOLS = new Set([
 
 const WHATSAPP_TOOLS = new Set([
   "whatsapp_status", "whatsapp_list_chats", "whatsapp_get_messages",
-  "whatsapp_send_message", "whatsapp_pair", "whatsapp_logout",
+  "whatsapp_get_attachment", "whatsapp_send_message", "whatsapp_pair",
+  "whatsapp_logout",
 ]);
 
 const BILL_SPEND_TOOLS = new Set([

@@ -1,8 +1,13 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { GcsBlobStore, type BlobStore } from "./blob-store.js";
-import { WhatsAppBridge, type BridgeOptions } from "./bridge.js";
-import { loadConfig, missingCredentials, type WhatsAppConfig } from "./config.js";
-import { errMessage, logWarning } from "./logging.js";
+import { WhatsAppBridge, type BridgeOptions, type DownloadOutcome } from "./bridge.js";
+import {
+  downloadLinkConfig,
+  loadConfig,
+  missingCredentials,
+  type WhatsAppConfig,
+} from "./config.js";
+import { errMessage, logInfo, logWarning, redact } from "./logging.js";
 import { createBaileysSocket, type SocketFactory } from "./socket.js";
 import { parseToolGroups, registerTools, type ToolGroup } from "./tools.js";
 import type { BridgeFactory } from "./tools/shared.js";
@@ -73,6 +78,14 @@ export function createMCPServer(options: CreateMCPServerOptions) {
   const bridgeFactory: BridgeFactory = async () => getBridge();
 
   const configured = options.config !== undefined || missingCredentials(env).length === 0;
+  if (configured && !options.config) {
+    const link = downloadLinkConfig(env);
+    logInfo(
+      link.downloadLink
+        ? `attachments: download links will be minted for gateway slug "${link.downloadLink.publicSlug}"`
+        : `attachments: ${link.downloadUnavailable}; whatsapp_get_attachment returns no link`,
+    );
+  }
   if ((options.autoStart ?? true) && configured) {
     try {
       void getBridge()
@@ -97,5 +110,20 @@ export function createMCPServer(options: CreateMCPServerOptions) {
     await bridge?.close();
   };
 
-  return { server, registerHandlers, close, bridge: () => bridge };
+  /**
+   * The bundle host's `/whatsapp/download/:token`: a signed link minted by
+   * whatsapp_get_attachment, presented through core's `/mcp-download/:slug/`.
+   * A container that does not hold this account answers 404 without building
+   * a bridge.
+   */
+  const handleDownload = async (token: string): Promise<DownloadOutcome> => {
+    if (!configured) return { ok: false, status: 404, error: "not_configured" };
+    try {
+      return await getBridge().handleDownload(token);
+    } catch (err) {
+      return { ok: false, status: 503, error: redact(errMessage(err)) };
+    }
+  };
+
+  return { server, registerHandlers, close, handleDownload, bridge: () => bridge };
 }
