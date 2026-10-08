@@ -34,7 +34,6 @@ describe("config", () => {
     const cfg = loadConfig(FULL);
     assert.equal(cfg.encryptionKey.length, 32);
     assert.equal(cfg.prefix, "whatsapp");
-    assert.equal(cfg.deviceName, "Zimmer");
     assert.equal(cfg.bufferMaxMessages, 1000);
     assert.equal(cfg.bufferMaxAgeDays, 30);
     assert.match(cfg.privateKey, /\nabc\n/);
@@ -179,6 +178,29 @@ describe("auth state (real Baileys)", () => {
     assert.ok(Buffer.isBuffer(got["a.0"]));
     await restored.state.keys.set({ session: { "a.0": null } });
     assert.deepEqual(await restored.state.keys.get("session", ["a.0"]), {});
+  });
+});
+
+describe("pairing identity (real Baileys)", () => {
+  test("is Baileys' own macOS Chrome preset, so the phone accepts the code", async () => {
+    const { PAIRING_BROWSER } = await import("../src/socket.js");
+    const baileys = await import("baileys");
+    assert.deepEqual([...PAIRING_BROWSER], baileys.Browsers.macOS("Chrome"));
+    // What Baileys puts in the link_code_companion_reg stanza: a known
+    // platform id (1 = Chrome) and "<browser> (<os>)" as the display.
+    assert.equal(baileys.getCompanionPlatformId([...PAIRING_BROWSER]), "1");
+    assert.equal(`${PAIRING_BROWSER[1]} (${PAIRING_BROWSER[0]})`, "Chrome (Mac OS)");
+  });
+
+  test("the QR PNG decodes back to the exact payload", async () => {
+    const { qrPng } = await import("../src/socket.js");
+    const { PNG } = await import("pngjs");
+    const jsQR = (await import("jsqr")).default;
+    const payload =
+      "https://wa.me/settings/linked_devices#2@abc,bm9pc2Vub2lzZQ==,aWRlbnRpdHk=,YWR2c2VjcmV0,1";
+    const png = PNG.sync.read(await qrPng(payload));
+    const decoded = jsQR(new Uint8ClampedArray(png.data), png.width, png.height);
+    assert.equal(decoded?.data, payload);
   });
 });
 

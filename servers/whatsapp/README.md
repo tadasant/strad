@@ -25,7 +25,7 @@ refused past 6/minute or 60/hour) to keep the risk down, not to remove it.
 | `whatsapp_list_chats`   | readonly  | where a chat id (JID) comes from                        |
 | `whatsapp_get_messages` | readonly  | the buffer, oldest first; `after` is an inclusive cursor |
 | `whatsapp_send_message` | readwrite | posts AS the account; recorded `sent_by_bridge: true`   |
-| `whatsapp_pair`         | admin     | pairing code for the phone — no QR, no shell            |
+| `whatsapp_pair`         | admin     | a pairing code, or `{"method":"qr"}` a QR PNG — no shell |
 | `whatsapp_logout`       | admin     | unlink and delete everything persisted                  |
 
 The names and shapes are a contract with Zimmer's `whatsapp` trigger, which
@@ -38,8 +38,12 @@ names against the built image.
 Required: `WHATSAPP_STATE_ENCRYPTION_KEY` (32 bytes, base64 or hex),
 `WHATSAPP_GCS_BUCKET`, `WHATSAPP_GCS_CLIENT_EMAIL`, `WHATSAPP_GCS_PRIVATE_KEY`.
 Optional: `WHATSAPP_GCS_PREFIX` (default `whatsapp`),
-`WHATSAPP_DEVICE_NAME` (default `Zimmer`), `WHATSAPP_BUFFER_MAX_MESSAGES` (1000),
-`WHATSAPP_BUFFER_MAX_AGE_DAYS` (30).
+`WHATSAPP_BUFFER_MAX_MESSAGES` (1000), `WHATSAPP_BUFFER_MAX_AGE_DAYS` (30).
+
+There is no device-name variable. The pairing identity is Baileys'
+`Browsers.macOS("Chrome")` preset (`PAIRING_BROWSER` in `src/socket.ts`), so the
+phone lists the device as Chrome on Mac OS: a custom OS name is what the phone
+refuses a pairing code over ("Couldn't link device").
 
 Missing any required variable is a supported state: the tools list and every
 call fails naming what is missing, and the server never opens a socket. That is

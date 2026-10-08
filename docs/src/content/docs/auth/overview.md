@@ -922,6 +922,14 @@ the tool-call span carries the slug, the tool name, the argument count and byte
 size and nothing else, tagged `strad.surface=playground` so a human poking at a
 tool is not counted as an agent calling it.
 
+**A result is shown as it arrived**, one block per content item, then
+`structuredContent`, then the raw JSON-RPC result. Text is written with
+`textContent`, never parsed as HTML. The one item drawn rather than printed is an
+`image` block of a raster type (`image/png`, `image/jpeg`, `image/gif`,
+`image/webp`) whose `data` is plain base64: it becomes an `<img>` on a `data:`
+URL. That is what makes `whatsapp_pair {"method":"qr"}` scannable from a laptop.
+SVG is markup and stays printed as JSON, as does any payload that is not base64.
+
 ### `/api/secrets/readiness` is not a console surface
 
 The one authenticated surface on core that the Google gate does **not** guard.

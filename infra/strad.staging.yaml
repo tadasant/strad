@@ -1213,7 +1213,6 @@ servers:
       # Plain config. Staging's own folder, so it can never share a login with
       # production even if both point at one bucket.
       WHATSAPP_GCS_PREFIX: whatsapp/staging
-      WHATSAPP_DEVICE_NAME: Zimmer (staging)
 
   # ---------------------------------------------------------------------------
   # telegram — strad's own server, and the one that speaks MTProto as a PERSON.
