@@ -3446,12 +3446,16 @@ gmail's `send_email` asks a human first, at the URL the `/mcp` request names in
   token route creates and polls, and only a human in Zimmer's UI responds.
 - **The console cannot send mail.** The playground has no prompt surface, so it
   gets the same refusal as a caller with no header.
-- **The wait is bounded by the slug's `timeoutMs`, from strad's side only.** The
-  bundle stops accepting answers a margin before core's hop times out, so strad
-  never sends after telling its caller the call failed. A caller with a shorter
-  timeout of its own, or an ingress that drops a long-held response, is outside
-  that bound. At the 120s default a human has 105s. How long App Platform's
-  ingress holds an `/mcp` response open has not been measured.
+- **A window is only as long as the caller's hop holds it.** strad's own hop
+  holds any `timeoutMs`, because the bundle sends keepalives. The caller's hop
+  to core belongs to the caller's client and any ingress in front of strad, and
+  core relays keepalives only to a caller that sent a progressToken. A longer
+  window than that hop holds is safe but useless: the drop reaches the bundle
+  and the answer becomes `cancel`, so strad never sends after its caller was
+  told the call failed. What remains is a send whose request had already
+  reached Gmail when the drop arrived. How long App
+  Platform's ingress, or Zimmer's client, holds a silent `/mcp` response has
+  not been measured.
 - **A container-wide `ELICITATION_ENABLED=false`, `ELICITATION_REQUEST_URL` or
   `ELICITATION_POLL_URL` on the bundle refuses every send**, rather than skipping
   the prompt or sending it to one address for everybody.

@@ -10,15 +10,25 @@
  *     container-wide URL makes the tool refuse rather than skip or misroute;
  *   - with a channel, the approval request goes to THAT URL (and only that
  *     one), the poll follows the Zimmer protocol, and only `accept` sends;
- *   - two concurrent calls with two channels never cross.
+ *   - two concurrent calls with two channels never cross;
+ *   - a call that is DROPPED while the human decides (cancelled, or its HTTP
+ *     response closed) never sends, even when the human then says yes;
+ *   - a waiting call sends keepalive progress, and the edge headers core
+ *     forwards go on the POST and every poll.
  *
  * The approval endpoint here is a stand-in for Zimmer's
  * `/api/v1/elicitations/session/<token>`: POST creates, GET `<url>/<id>` polls.
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import type { IGmailClient } from "gmail-workspace-mcp-server-shared";
+import {
+  createRegisterTools,
+  type IGmailClient,
+} from "gmail-workspace-mcp-server-shared";
+import express from "express";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
@@ -30,6 +40,10 @@ import {
   CONFIRMED_TOOLS,
   ELICITATION_META_KEY,
   channelFrom,
+  gateGmailSends,
+  guardSends,
+  isGmailSend,
+  withConfirmation,
 } from "../src/confirm.js";
 import { createMCPServer } from "../src/gmail.js";
 
@@ -40,10 +54,12 @@ type Answer = "accept" | "decline" | "pending" | "unchecked";
 interface Seen {
   path: string;
   body: Record<string, unknown>;
+  headers: IncomingMessage["headers"];
 }
 
 const created: Seen[] = [];
 const polled: string[] = [];
+const polledHeaders: IncomingMessage["headers"][] = [];
 /** The answer each session path gives on its next poll. */
 const answers = new Map<string, Answer>();
 
@@ -78,11 +94,12 @@ const endpoint = createServer(async (req, res) => {
   res.setHeader("content-type", "application/json");
   if (req.method === "POST") {
     const body = JSON.parse(await read(req)) as Record<string, unknown>;
-    created.push({ path, body });
+    created.push({ path, body, headers: req.headers });
     res.end(JSON.stringify({ action: "pending" }));
     return;
   }
   polled.push(path);
+  polledHeaders.push(req.headers);
   const session = path.slice(0, path.lastIndexOf("/"));
   const answer = answers.get(session) ?? "pending";
   if (answer === "pending") res.end(JSON.stringify({ action: "pending" }));
@@ -116,6 +133,7 @@ beforeAll(() => {
 afterEach(() => {
   created.length = 0;
   polled.length = 0;
+  polledHeaders.length = 0;
   answers.clear();
   for (const name of ENV_NAMES) delete process.env[name];
 });
@@ -369,6 +387,7 @@ test("channelFrom: only a web URL from core's own key counts", () => {
       url: "https://z.example/s/1-a",
       slug: undefined,
       ttlMs: undefined,
+      headers: undefined,
     },
   );
 });
@@ -476,4 +495,283 @@ test("ELICITATION_ENABLED=FALSE, in capitals, is the same refusal", async () => 
   });
   assert.match(text(res), /ELICITATION_ENABLED=false/);
   assert.equal(sent.length, 0);
+});
+
+// --- a call that goes away ---------------------------------------------------
+
+/**
+ * The same registration `src/gmail.ts` performs, with the clocks shortened:
+ * the vendored tools over `withConfirmation`, the mailbox behind `guardSends`.
+ */
+async function serverFor(client: IGmailClient): Promise<Server> {
+  const server = new Server(
+    { name: "gmail", version: "test" },
+    { capabilities: { tools: {} } },
+  );
+  createRegisterTools(() => guardSends(client), undefined)(
+    withConfirmation(server, {
+      account: "tadas@tadasant.com",
+      client: () => client,
+      pollIntervalMs: 20,
+      keepaliveMs: 30,
+    }),
+  );
+  return server;
+}
+
+async function connectFast(client: IGmailClient): Promise<Client> {
+  const server = await serverFor(client);
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(a);
+  const mcp = new Client({ name: "core", version: "test" });
+  await mcp.connect(b);
+  return mcp;
+}
+
+const until = async (check: () => boolean, ms = 5_000): Promise<void> => {
+  const started = Date.now();
+  while (!check()) {
+    if (Date.now() - started > ms) throw new Error("timed out waiting");
+    await new Promise((r) => setTimeout(r, 10));
+  }
+};
+const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+test("a call cancelled while the human decides never sends, even on a later yes", async () => {
+  const { sent, client } = mailbox();
+  const mcp = await connectFast(client);
+  const controller = new AbortController();
+  const call = mcp.callTool(
+    {
+      name: "send_email",
+      arguments: SEND,
+      _meta: meta({ url: `${base}/session/drop-1`, ttlMs: 30_000 }),
+    },
+    undefined,
+    { signal: controller.signal },
+  );
+  await until(() => polled.length > 0);
+  controller.abort();
+  await assert.rejects(call);
+  // The human approves after the caller has gone.
+  answers.set("/session/drop-1", "accept");
+  await settle(200);
+  assert.equal(sent.length, 0);
+  const polls = polled.length;
+  await settle(100);
+  assert.equal(polled.length, polls, "polling stopped with the call");
+});
+
+test("a call whose HTTP response closes never sends: the hop core's fetch drops", async () => {
+  // The real shape of the incident: core's fetch gives up on a silent body and
+  // closes the socket. No MCP cancel is sent; the response just closes.
+  const { sent, client } = mailbox();
+  const app = express();
+  app.use(express.json());
+  app.post("/gmail", async (req, res) => {
+    const server = await serverFor(client);
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+    });
+    res.on("close", () => {
+      void transport.close();
+      void server.close();
+    });
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  });
+  const http = app.listen(0, "127.0.0.1");
+  await new Promise((r) => http.once("listening", r));
+  const url = `http://127.0.0.1:${(http.address() as AddressInfo).port}/gmail`;
+  try {
+    const controller = new AbortController();
+    const call = fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "send_email",
+          arguments: SEND,
+          _meta: meta({ url: `${base}/session/drop-2`, ttlMs: 30_000 }),
+        },
+      }),
+      signal: controller.signal,
+    }).then((r) => r.text());
+    await until(() => polled.length > 0);
+    controller.abort();
+    await assert.rejects(call);
+    answers.set("/session/drop-2", "accept");
+    await settle(200);
+    assert.equal(sent.length, 0);
+  } finally {
+    http.closeAllConnections();
+    await new Promise((r) => http.close(r));
+  }
+});
+
+test("a call dropped between the approval and the send is refused at the send", async () => {
+  // A reply reads the original message after the approval and before sending:
+  // the one gap askHuman's own check cannot see.
+  answers.set("/session/drop-3", "accept");
+  const { sent, client } = mailbox();
+  const controller = new AbortController();
+  (client as unknown as Record<string, unknown>).getMessage = async () => {
+    controller.abort();
+    await settle(100);
+    return { id: "o1", threadId: "t1", payload: { headers: [] } };
+  };
+  const mcp = await connectFast(client);
+  const call = mcp.callTool(
+    {
+      name: "send_email",
+      arguments: { ...SEND, reply_to_email_id: "o1", thread_id: "t1" },
+      _meta: meta({ url: `${base}/session/drop-3`, ttlMs: 30_000 }),
+    },
+    undefined,
+    { signal: controller.signal },
+  );
+  await assert.rejects(call);
+  await settle(200);
+  assert.equal(created.length, 1, "the human was asked");
+  assert.equal(sent.length, 0);
+});
+
+test("a waiting call sends keepalive progress against core's token", async () => {
+  const { client } = mailbox();
+  const mcp = await connectFast(client);
+  const beats: number[] = [];
+  const call = mcp.callTool(
+    {
+      name: "send_email",
+      arguments: SEND,
+      _meta: meta({ url: `${base}/session/beat`, ttlMs: 30_000 }),
+    },
+    undefined,
+    { onprogress: (p) => beats.push(p.progress) },
+  );
+  await until(() => beats.length >= 3);
+  answers.set("/session/beat", "decline");
+  const res = await call;
+  assert.match(text(res), /cancelled/);
+  assert.deepEqual(beats.slice(0, 3), [1, 2, 3]);
+});
+
+test("core's edge headers go on the POST and every poll, and cannot replace content-type", async () => {
+  const { client } = mailbox();
+  const mcp = await connectFast(client);
+  const call = mcp.callTool({
+    name: "send_email",
+    arguments: SEND,
+    _meta: meta({
+      url: `${base}/session/edge`,
+      ttlMs: 30_000,
+      headers: {
+        "CF-Access-Client-Id": "id.access",
+        "CF-Access-Client-Secret": "s3cret",
+        "Content-Type": "text/plain",
+        "bad name": "x",
+      },
+    }),
+  });
+  await until(() => polled.length >= 2);
+  answers.set("/session/edge", "decline");
+  await call;
+  for (const headers of [created[0]!.headers, ...polledHeaders]) {
+    assert.equal(headers["cf-access-client-id"], "id.access");
+    assert.equal(headers["cf-access-client-secret"], "s3cret");
+    assert.equal(headers["content-type"], "application/json");
+  }
+});
+
+test("channelFrom: headers keep only string values under sendable names", () => {
+  const channel = channelFrom(
+    meta({
+      url: "https://z.example/s/1-a",
+      headers: { "CF-Access-Client-Id": "a", n: 1, Host: "evil", "a b": "c" },
+    }),
+  );
+  assert.deepEqual(channel && "url" in channel && channel.headers, {
+    "CF-Access-Client-Id": "a",
+  });
+});
+
+test("a call dropped during the send's own token mint is refused at the send request", async () => {
+  // The vendored sendMessage mints a token and reads the sender before its
+  // POST; a drop in there passes the client-method check. The request gate is
+  // what refuses it. The real fetch is stubbed so nothing leaves the test.
+  const real = globalThis.fetch;
+  const posted: string[] = [];
+  globalThis.fetch = (async (
+    input: Parameters<typeof fetch>[0],
+    init?: RequestInit,
+  ) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (isGmailSend(url)) {
+      posted.push(url);
+      return new Response(JSON.stringify({ id: "m1", threadId: "t1" }));
+    }
+    return real(input, init);
+  }) as typeof fetch;
+  gateGmailSends();
+  try {
+    answers.set("/session/drop-4", "accept");
+    const { client } = mailbox();
+    const controller = new AbortController();
+    (client as unknown as Record<string, unknown>).sendMessage = async () => {
+      controller.abort(); // the drop lands during the mint
+      await settle(100);
+      const res = await fetch(
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+        { method: "POST", body: "{}" },
+      );
+      return res.json();
+    };
+    const mcp = await connectFast(client);
+    await assert.rejects(
+      mcp.callTool(
+        {
+          name: "send_email",
+          arguments: SEND,
+          _meta: meta({ url: `${base}/session/drop-4`, ttlMs: 30_000 }),
+        },
+        undefined,
+        { signal: controller.signal },
+      ),
+    );
+    await settle(200);
+    assert.equal(created.length, 1, "the human was asked");
+    assert.deepEqual(posted, [], "the send request never left");
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
+test("isGmailSend: only Gmail's two send requests", () => {
+  const base = "https://gmail.googleapis.com/gmail/v1/users/me";
+  assert.equal(isGmailSend(`${base}/messages/send`), true);
+  assert.equal(isGmailSend(`${base}/drafts/send`), true);
+  assert.equal(isGmailSend(`${base}/messages`), false);
+  assert.equal(isGmailSend("https://example.com/messages/send"), false);
+  assert.equal(isGmailSend("not a url"), false);
+});
+
+test("the reserved confirmation-header names match core's schema rule", () => {
+  // Core refuses these names in config (`confirmationHeaderProblem`) and this
+  // tree drops them on receipt. Two hand-kept lists, held together here.
+  const names = (path: string): string[] => {
+    const src = readFileSync(join(import.meta.dirname, path), "utf8");
+    const body = /const RESERVED_HEADERS = new Set\(\[([^\]]*)\]\)/.exec(src);
+    assert.ok(body, `no RESERVED_HEADERS in ${path}`);
+    return [...body[1]!.matchAll(/"([^"]+)"/g)].map((m) => m[1]!).sort();
+  };
+  assert.deepEqual(
+    names("../src/confirm.ts"),
+    names("../../../src/gateway/elicitation.ts"),
+  );
 });

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -33,8 +34,15 @@ import {
   type SelfClassifyingError,
 } from "../../telemetry/index.ts";
 import { remedyText, type HostState, type LocalHost } from "../troubleshoot.ts";
-import { elicitationMeta } from "../elicitation.ts";
-import type { CallContext, CallToolResult, ServerAdapter } from "./types.ts";
+import { elicitationMeta, type ElicitationChannel } from "../elicitation.ts";
+import { ServerUnconfiguredError } from "../unconfigured.ts";
+import { SecretNotFoundError } from "../../secrets/provider/index.ts";
+import type {
+  CallContext,
+  CallProgress,
+  CallToolResult,
+  ServerAdapter,
+} from "./types.ts";
 import { errorText } from "../../util/error-text.ts";
 import {
   isRetryableStatus,
@@ -42,6 +50,20 @@ import {
   sleep,
   type RetryBudget,
 } from "../../http/retry.ts";
+
+/**
+ * The abort signal of the `tools/call` whose POST is being sent, if it has one.
+ *
+ * The SDK client cancels a request by sending `notifications/cancelled` and
+ * rejecting its promise. It does NOT abort the HTTP request: the POST's fetch
+ * carries the transport's signal, not the call's. Against a STATELESS upstream
+ * that means a cancelled call keeps running, because the cancellation arrives
+ * on a new POST at a new server instance that never saw the request. So the
+ * fetch wrapper reads this and aborts the POST itself, which closes the
+ * upstream's response, which is what aborts its handler. A confirmed tool's
+ * whole safety rests on that: see src/gateway/elicitation.ts.
+ */
+const callSignal = new AsyncLocalStorage<AbortSignal>();
 
 /** Where this adapter connects, and with what credential. */
 export interface HttpEndpoint {
@@ -268,6 +290,13 @@ export class HttpServerAdapter implements ServerAdapter {
        */
       forwardElicitation?: boolean;
       /**
+       * The headers the bundle sends on its approval requests, resolved per
+       * call (the slug's `confirmationHeaders:`). Only read when a channel is
+       * forwarded. A resolution failure refuses THAT call's channel, so the
+       * confirmed tool refuses and every other tool on the slug is untouched.
+       */
+      confirmationHeaders?: () => Promise<Record<string, string>>;
+      /**
        * The machine behind a `local-tunnel`, as the config describes it.
        *
        * Present for that kind alone. It is what turns "this upstream failed"
@@ -399,15 +428,19 @@ export class HttpServerAdapter implements ServerAdapter {
             // reconnect it. A deadline meant for "is anyone home" has no
             // business on a stream that is supposed to stay open.
             const isGet = (init?.method ?? "GET").toUpperCase() === "GET";
+            // A call's own signal, on that call's POST only (see callSignal).
+            const call = isGet ? undefined : callSignal.getStore();
+            const own =
+              call && init?.signal
+                ? AbortSignal.any([init.signal, call])
+                : (call ?? init?.signal);
             if (!handshaking || isGet || connectTimeoutMs === undefined) {
-              return fetch(url, { ...init, headers });
+              return fetch(url, { ...init, headers, signal: own });
             }
             // Compose rather than replace: the SDK sets its own signal on this
             // request, and dropping it would strip the caller's cancellation.
             const deadline = AbortSignal.timeout(connectTimeoutMs);
-            const signal = init?.signal
-              ? AbortSignal.any([init.signal, deadline])
-              : deadline;
+            const signal = own ? AbortSignal.any([own, deadline]) : deadline;
             return fetch(url, { ...init, headers, signal });
           },
         },
@@ -669,11 +702,13 @@ export class HttpServerAdapter implements ServerAdapter {
     conn: Conn,
     op: string,
     run: (client: Client) => Promise<T>,
+    /** The caller cancelled: its failure says nothing about the connection. */
+    callerGone?: () => boolean,
   ): Promise<T> {
     try {
       return await this.hop(op, () => run(conn.client));
     } catch (err) {
-      if (isConnectionFault(err)) this.retire(conn);
+      if (isConnectionFault(err) && !callerGone?.()) this.retire(conn);
       if (isUnauthorized(err)) this.opts.onUnauthorized?.(conn.endpoint);
       // A request failure CAN be an offline verdict, and usually is the first
       // one anyone sees: the connection is cached, so shutting a laptop is
@@ -797,27 +832,101 @@ export class HttpServerAdapter implements ServerAdapter {
     // Core's own `_meta`, never the client's: the router forwards a client's
     // name and arguments and nothing else, which is what lets the upstream
     // trust this key.
+    const confirmed = this.opts.forwardElicitation === true;
     const _meta =
-      this.opts.forwardElicitation && ctx?.elicitation
-        ? elicitationMeta(ctx.elicitation, this.slug, this.opts.timeoutMs)
+      confirmed && ctx?.elicitation
+        ? elicitationMeta(
+            await this.withConfirmationHeaders(ctx.elicitation),
+            this.slug,
+            this.opts.timeoutMs,
+          )
         : undefined;
+    // A confirmed slug's call is torn down the moment the caller goes away or
+    // the hop's deadline passes, so the bundle never confirms into the void.
+    // Its keepalives come back as progress, and go on to the caller if it
+    // asked for progress. Every other slug keeps the SDK's defaults.
+    // What tears this call's own POST down: the caller leaving, or a moment
+    // after the SDK's own timeout has already failed the call. The SDK is
+    // handed the caller's signal alone, so a timeout still reads as the SDK's
+    // RequestTimeout rather than as an aborted fetch. Built at send time, so
+    // the deadline starts with the SDK's timer.
+    const POST_GRACE_MS = 1_000;
+    const signalFor = () =>
+      confirmed
+        ? AbortSignal.any(
+            [
+              AbortSignal.timeout(this.opts.timeoutMs + POST_GRACE_MS),
+              ctx?.signal,
+            ].filter((s): s is AbortSignal => s !== undefined),
+          )
+        : undefined;
+    const callerGone = () => ctx?.signal?.aborted === true;
     return this.authorized(async () => {
       const conn = await this.leased();
-      const res = await this.lease(conn, "call_tool", (client) =>
-        client.callTool(
-          {
-            name: this.restore(name),
-            arguments: args,
-            ...(_meta ? { _meta } : {}),
-          },
-          undefined,
-          {
-            timeout: this.opts.timeoutMs,
-          },
-        ),
+      // The call's signal scopes this call's own POST and nothing else: not the
+      // handshake above, which a concurrent caller may be joined to.
+      const res = await this.lease(
+        conn,
+        "call_tool",
+        (client) => {
+          const signal = signalFor();
+          const send = () =>
+            client.callTool(
+              {
+                name: this.restore(name),
+                arguments: args,
+                ...(_meta ? { _meta } : {}),
+              },
+              undefined,
+              {
+                timeout: this.opts.timeoutMs,
+                ...(signal
+                  ? {
+                      ...(ctx?.signal ? { signal: ctx.signal } : {}),
+                      // Always set on a confirmed call: it is what makes the SDK
+                      // put a progressToken on the request, and the bundle only
+                      // sends keepalives against one.
+                      onprogress: (p: CallProgress) => ctx?.onProgress?.(p),
+                    }
+                  : {}),
+              },
+            );
+          return signal ? callSignal.run(signal, send) : send();
+        },
+        callerGone,
       );
       return res as unknown as CallToolResult;
     });
+  }
+
+  /**
+   * The channel with this slug's `confirmationHeaders:` on it. A header that
+   * cannot be resolved refuses the channel rather than sending the approval
+   * request without it: Access would answer 401, and the reason would be lost.
+   * The names are config-authored; no value reaches the refusal.
+   */
+  private async withConfirmationHeaders(
+    channel: ElicitationChannel,
+  ): Promise<ElicitationChannel> {
+    if ("refused" in channel || !this.opts.confirmationHeaders) return channel;
+    try {
+      const headers = await this.opts.confirmationHeaders();
+      return Object.keys(headers).length > 0
+        ? { ...channel, headers }
+        : channel;
+    } catch (err) {
+      const missing =
+        err instanceof ServerUnconfiguredError
+          ? err.names
+          : err instanceof SecretNotFoundError
+            ? [err.secretName]
+            : [];
+      const names =
+        missing.length > 0 ? ` (${missing.join(", ")} not seeded)` : "";
+      return {
+        refused: `strad could not resolve this slug's confirmationHeaders${names}`,
+      };
+    }
   }
 
   /**

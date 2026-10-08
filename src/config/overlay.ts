@@ -450,6 +450,30 @@ export const DEPLOY_ONLY_FIELDS = [
 ] as const;
 
 /**
+ * Fields on a `supplementary-image` that only the CHECKED-IN config may set,
+ * on create or edit, for a reason other than delivery.
+ *
+ * `confirmations:` hands a caller's approval URL to a mount, and
+ * `confirmationHeaders:` sends a value core resolves out of the store to that
+ * URL, a path the caller picks under `gateway.elicitation.allowedUrlPrefixes`.
+ * A roster write could otherwise aim any `${NAME}` the namespace or the shared
+ * layer resolves off the box. Where a stored credential is sent is a decision
+ * for a reviewed change to the checked-in config, not for a roster write.
+ */
+export const CHECKED_IN_ONLY_FIELDS = [
+  "confirmations",
+  "confirmationHeaders",
+] as const;
+
+/** Set to anything but its default. */
+function isDeclared(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (isPlainObject(value)) return Object.keys(value).length > 0;
+  return value !== false;
+}
+
+/**
  * The deploy-only fields a runtime write MAY declare on a store-served instance
  * — `path: /_instance/{tree}/{its own slug}` — because the instance honours them
  * without a deploy.
@@ -499,6 +523,16 @@ export function assertCreatable(
   }
 
   if (kind !== "supplementary-image") return;
+
+  const checkedIn = CHECKED_IN_ONLY_FIELDS.filter((f) => isDeclared(entry[f]));
+  if (checkedIn.length > 0) {
+    throw new NotRuntimeCreatable(
+      `A supplementary server added at runtime may not declare ` +
+        `${checkedIn.join(", ")}: they send a caller's approval URL, and a ` +
+        `credential resolved from the store, off the box. Where that goes is ` +
+        `set in the checked-in config and shipped by a deploy.`,
+    );
+  }
 
   // A STORE-SERVED INSTANCE is the one supplementary shape that brings its own
   // credential without a deploy: its path names a tree and its own slug, and
@@ -585,7 +619,14 @@ export function assertCreatable(
 export function immutableFields(kind: string): readonly string[] {
   switch (kind) {
     case "supplementary-image":
-      return ["kind", "image", "bundle", "path", ...DEPLOY_ONLY_FIELDS];
+      return [
+        "kind",
+        "image",
+        "bundle",
+        "path",
+        ...DEPLOY_ONLY_FIELDS,
+        ...CHECKED_IN_ONLY_FIELDS,
+      ];
     case "builtin":
       return ["kind", "module", "bundle", "params"];
     default:
@@ -608,7 +649,12 @@ export function assertEditable(
 
   // `path:` is the one field in the list the deploy does not "deliver", so the
   // stock sentence would be a wrong explanation of it rather than a terse one.
-  const delivered = changed.filter((field) => field !== "path");
+  const checkedIn = changed.filter((field) =>
+    (CHECKED_IN_ONLY_FIELDS as readonly string[]).includes(field),
+  );
+  const delivered = changed.filter(
+    (field) => field !== "path" && !checkedIn.includes(field),
+  );
   const why =
     (delivered.length > 0
       ? `The deploy is what delivers ${delivered.join(", ")}. `
@@ -618,6 +664,11 @@ export function assertEditable(
         `the credential there belongs to the container — so re-pointing it ` +
         `would reach an upstream this entry was never authorised for, under ` +
         `the entitlements: and tools: it already has. `
+      : "") +
+    (checkedIn.length > 0
+      ? `${checkedIn.join(", ")} decide${checkedIn.length > 1 ? "" : "s"} ` +
+        `where a caller's approval URL and a stored credential are sent off ` +
+        `the box, which only the checked-in config may say. `
       : "");
 
   throw new ImmutableFieldChanged(

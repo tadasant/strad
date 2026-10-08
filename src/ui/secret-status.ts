@@ -169,6 +169,10 @@ function requirementsOf(
   // The gateway proxies to a supplementary image over the private network, so a
   // `headers:` ref is resolved by the gateway process, not by the container.
   for (const value of Object.values(server.headers)) push(value, "gateway");
+  // `confirmationHeaders:` too: core resolves them per call, for the bundle.
+  for (const value of Object.values(server.confirmationHeaders)) {
+    push(value, "gateway");
+  }
   for (const [key, value] of Object.entries(server.consoleEnv)) {
     push(value, "console", key);
   }

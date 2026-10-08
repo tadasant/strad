@@ -52,14 +52,16 @@ sequenceDiagram
   participant H as Human
   C->>Core: tools/call send_email + X-Elicitation-Url
   Core->>Core: under gateway.elicitation.allowedUrlPrefixes? slug has confirmations: true?
-  Core->>B: tools/call, _meta["dev.strad/elicitation"] = {url, slug, ttlMs}
-  B->>Z: POST url (slug, mailbox, To, Subject)
+  Core->>B: tools/call, _meta["dev.strad/elicitation"] = {url, slug, ttlMs, headers}
+  B->>Z: POST url (slug, mailbox, To, Subject) + confirmationHeaders
   Z->>H: push notification, banner
-  loop every 5s until answered or the deadline
-    B->>Z: GET url/request-id
+  loop every 5s until answered, the deadline, or the call is dropped
+    B->>Z: GET url/request-id + confirmationHeaders
+    B-->>Core: progress keepalive (every 30s)
+    Core-->>C: progress, if the caller sent a progressToken
   end
   H->>Z: approve
-  B->>B: send
+  B->>B: still wanted? then send
   B-->>Core: result
   Core-->>C: result
 ```
@@ -91,7 +93,18 @@ sequenceDiagram
   core's word.
 
 The forwarded entry also carries a deadline, `ttlMs`: the slug's `timeoutMs`
-less a margin of a quarter of it, at most 15 seconds.
+less a margin of a quarter of it, at most 15 seconds. It carries the slug's
+`confirmationHeaders:` too, resolved by core, when the slug declares any (see
+[the edge](#the-edge-in-front-of-the-approval-url)).
+
+Core also ties the upstream request to the caller. A confirmed slug's
+`tools/call` is torn down the moment the caller's `/mcp` response closes, or the
+hop's `timeoutMs` runs out. That means the HTTP request to the bundle itself,
+not only the promise core was waiting on. The MCP SDK's own cancel does not do
+that: it sends `notifications/cancelled`, which a stateless bundle receives on a
+new request at a new server instance that never saw the call, and it leaves the
+original request open. So core aborts that request's own fetch, and closing it
+is what tells the bundle the call is gone.
 
 ## What the bundle does with it
 
@@ -119,16 +132,72 @@ this one comes from a caller:
   what the bundle's network position can see.
 - **Every request is aborted at the deadline, and an answer read after it
   counts as `expired`.** The bundle stops accepting answers a margin before core
-  stops waiting for the call. Without that, an approval could land after the
-  caller was told the call failed, and the mail would go out anyway, possibly
-  twice if the caller retried. What the bundle cannot see is a caller whose own
-  timeout is shorter than the slug's `timeoutMs`.
+  stops waiting for the call.
+- **A dropped call never sends.** The call's own abort signal fires when its
+  response to core closes, whether core's hop timed out, core's caller went
+  away, or the caller cancelled. It aborts the approval requests and the wait
+  between polls, and it turns any answer into `cancel`. Then the send itself is
+  checked twice. The mailbox refuses `sendMessage` and `sendDraft`, which
+  covers the reads the tool makes between the approval and the send: a reply
+  looks up the original message first. And the Gmail send request is gated on
+  the same signal, which covers the token mint and sender lookup the vendored
+  client does inside `sendMessage`. A send request for a dropped call never
+  leaves, and one in flight is aborted with the call. Without these, an
+  approval landing after the caller was told the call failed would still send,
+  and send twice if the caller retried.
+- **A long wait stays open.** While a human decides, nothing else crosses the
+  wire, and Node's `fetch` in core drops a response body that has been silent
+  for 300 seconds. So the bundle sends a progress notification every 30
+  seconds, against the progressToken core puts on every confirmed call. Core
+  relays it to its own caller when that caller sent a progressToken of its own.
+
+What is left is a send whose request had already reached Gmail when the drop
+arrived. Anything that drops before that point is a cancel.
 
 The prompt names the strad slug and the mailbox, then the vendored message's
 To, Cc, Bcc and Subject. A send of a saved draft (`from_draft_id`) would
 otherwise show only the draft's id, which a human cannot judge, so the layer
 reads the draft and adds its recipients and subject. If the draft cannot be
 read, the prompt says so and advises declining.
+
+## The edge in front of the approval URL
+
+The approval service can sit behind an edge that wants strad's own credential
+before it lets a request through. Cloudflare Access with a service token is the
+case: without `CF-Access-Client-Id` and `CF-Access-Client-Secret`, the POST
+gets a 401 from Access and the approval service never sees it.
+
+The slug declares those headers, and core resolves them on every call, the same
+way it resolves `headers:`: from the slug's own namespace first, then the shared
+one.
+
+```yaml
+  - slug: gmail-rw-external
+    confirmations: true
+    confirmationHeaders:
+      CF-Access-Client-Id: "${ZIMMER_CF_ACCESS_CLIENT_ID}"
+      CF-Access-Client-Secret: "${ZIMMER_CF_ACCESS_CLIENT_SECRET}"
+```
+
+- They go on the POST and on every poll, and only to a URL core has already held
+  to `gateway.elicitation.allowedUrlPrefixes`. The caller picks the URL, so
+  they reach any path under an allowed prefix. Keep the prefix as narrow as the
+  approval route (`…/api/v1/elicitations/session/`), never a whole host.
+- They are strad's credential, never the caller's: nothing in them comes from
+  the `/mcp` request.
+- The bundle sets `content-type` itself. A `confirmationHeaders:` name that
+  would collide with what the bundle owns (`content-type`, `content-length`,
+  `transfer-encoding`, `connection`, `host`) is a config error.
+- If a ref cannot be resolved, the channel reaches the bundle as a refusal that
+  names the variable, so `send_email` refuses and says why. The slug's other
+  tools are unaffected. List the names in `mayBeUnseeded:` to deploy before they
+  are seeded.
+- `confirmationHeaders:` without `confirmations: true` is a config error,
+  because nothing would ever send them.
+- Only the checked-in config sets either field. A runtime roster write may not
+  add, change or remove `confirmations:` or `confirmationHeaders:`, on a new
+  entry or an existing one, because together they decide where a stored
+  credential is sent.
 
 ## When it refuses
 
@@ -142,6 +211,7 @@ read, the prompt says so and advises declining.
 | The call came from the console playground, or through a flow-through grant      | Neither has a session to ask. The console is a human, but it has no prompt surface.           |
 | The bundle container sets `ELICITATION_ENABLED=false`                           | The vendored tool would skip the prompt entirely.                                              |
 | The bundle container sets `ELICITATION_REQUEST_URL` or `ELICITATION_POLL_URL`   | The vendored tool would prefer that container-wide URL, which cannot name the calling session. |
+| A `confirmationHeaders:` ref is not seeded                                      | Without the edge credential the approval request would be refused at the edge.                 |
 
 An `admin` token is not an exception. It holds every role and still has no
 human attached, so it gets the same refusal unless it names a channel.
@@ -168,8 +238,12 @@ servers:
     # …
     confirmations: true
     # How long a human has to answer, plus the margin. The default 120s gives
-    # a human 105s.
-    timeoutMs: 900000
+    # a human 105s. See "How long a window can be" below before raising it.
+    timeoutMs: 240000
+    # Only when an edge in front of the approval URL wants strad's credential.
+    confirmationHeaders:
+      CF-Access-Client-Id: "${ZIMMER_CF_ACCESS_CLIENT_ID}"
+      CF-Access-Client-Secret: "${ZIMMER_CF_ACCESS_CLIENT_SECRET}"
 ```
 
 A prefix is an `https` URL in normal form whose path ends in `/`, so it cannot
@@ -182,6 +256,24 @@ that URL as `ELICITATION_REQUEST_URL` in its environment. Zimmer resolves
 `${VAR}` in an MCP entry's headers from its own secrets rather than from the
 session, so the header has to be written by Zimmer when it renders a session's
 MCP config, not referenced from the catalog.
+
+## How long a window can be
+
+Two hops carry the call, and strad controls one of them.
+
+- **Core to the bundle** holds any `timeoutMs`. The keepalives keep its body
+  from going silent, so the 300-second limit in Node's `fetch` never fires.
+- **The caller to core** is the caller's own client, and whatever proxies sit in
+  front of strad's public URL. strad cannot see their limits. If the caller sent
+  a progressToken, the relayed keepalives cross this hop too. If it did not,
+  core's response stays silent until the human answers, and a client or
+  ingress that drops a silent response ends the call there.
+
+A window longer than the caller's hop can hold is not unsafe: the drop reaches
+the bundle, and the call becomes a `cancel` that sends nothing. It is just a
+window nobody can use. So size `timeoutMs` to the caller's hop. strad has no
+config guard for this, because the limit belongs to the caller and not to the
+config.
 
 ## Why not native elicitation
 

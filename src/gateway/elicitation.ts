@@ -39,8 +39,14 @@ export const ELICITATION_URL_HEADER = "x-elicitation-url";
 /** The `_meta` key core forwards the channel under. Mirrored in the bundle. */
 export const ELICITATION_META_KEY = "dev.strad/elicitation";
 
-/** A channel to forward, or the reason the caller's was refused. */
-export type ElicitationChannel = { url: string } | { refused: string };
+/**
+ * A channel to forward, or the reason the caller's was refused. `headers` are
+ * the slug's own `confirmationHeaders:`, resolved by core: what the far end's
+ * edge wants of strad (a Cloudflare Access service token), never anything the
+ * caller sent.
+ */
+export type ElicitationChannel =
+  { url: string; headers?: Record<string, string> } | { refused: string };
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
@@ -148,6 +154,32 @@ export function elicitationChannelFrom(
 }
 
 /**
+ * Why a `confirmationHeaders:` name cannot be sent, or null when it can.
+ *
+ * The bundle builds its approval requests itself: it sets `content-type`, the
+ * body and the framing, so a configured name for any of those is refused
+ * rather than silently dropped. The same rule is applied again where the
+ * headers are read, in images/bundle-google/src/confirm.ts.
+ */
+export function confirmationHeaderProblem(name: string): string | null {
+  if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(name)) {
+    return "not a valid HTTP header name";
+  }
+  if (RESERVED_HEADERS.has(name.toLowerCase())) {
+    return "the bundle sets this header itself";
+  }
+  return null;
+}
+
+const RESERVED_HEADERS = new Set([
+  "content-type",
+  "content-length",
+  "transfer-encoding",
+  "connection",
+  "host",
+]);
+
+/**
  * How long the human gets: shorter than the hop, so the bundle stops
  * accepting an answer before core stops waiting.
  *
@@ -171,6 +203,11 @@ export function elicitationMeta(
     [ELICITATION_META_KEY]:
       "refused" in channel
         ? { refused: channel.refused }
-        : { url: channel.url, slug, ttlMs: confirmationTtlMs(timeoutMs) },
+        : {
+            url: channel.url,
+            slug,
+            ttlMs: confirmationTtlMs(timeoutMs),
+            ...(channel.headers ? { headers: channel.headers } : {}),
+          },
   };
 }

@@ -108,7 +108,13 @@ gateway:
   # under one of these prefixes: an `https` URL whose path ends in `/` (plain
   # `http` only for a loopback host). Empty, the default, accepts none, and
   # every confirmed tool refuses. The slug with the tool also needs
-  # `confirmations: true`, and a `timeoutMs` long enough for a human to answer.
+  # `confirmations: true`, and a `timeoutMs` long enough for a human to answer
+  # and no longer than the caller's own hop holds a silent response. If an edge
+  # in front of the approval URL wants strad's credential (a Cloudflare Access
+  # service token), the slug declares it in `confirmationHeaders:`, e.g.
+  #   confirmationHeaders:
+  #     CF-Access-Client-Id: "${ZIMMER_CF_ACCESS_CLIENT_ID}"
+  #     CF-Access-Client-Secret: "${ZIMMER_CF_ACCESS_CLIENT_SECRET}"
   # See docs/servers/confirmations.
   elicitation:
     allowedUrlPrefixes: [] # e.g. [https://zimmer.tadasant.com/api/v1/elicitations/session/]

@@ -243,6 +243,7 @@ export function runtimeRefsBySlug(
       }
     } else {
       for (const value of Object.values(server.headers)) add(value);
+      for (const value of Object.values(server.confirmationHeaders)) add(value);
     }
     if (refs.size > 0) out.set(server.slug, refs);
   }

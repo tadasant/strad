@@ -50,7 +50,7 @@ import {
   type IGmailClient,
   type ServiceAccountCredentials,
 } from "gmail-workspace-mcp-server-shared";
-import { withConfirmation } from "./confirm.js";
+import { guardSends, withConfirmation } from "./confirm.js";
 
 export type EnvLike = Readonly<Record<string, string | undefined>>;
 
@@ -324,8 +324,10 @@ export function createMCPServer(options: CreateMCPServerOptions): {
     const factory = clientFactory ?? ((): IGmailClient => createDefaultClient(env));
     // `send_email` asks a human first, at the address the CALL carries rather
     // than one this container holds. See ./confirm.ts.
+    // The mailbox the tools see refuses to send for a call that has been
+    // dropped, whatever the tool does between the approval and the send.
     createRegisterTools(
-      factory,
+      (): IGmailClient => guardSends(factory()),
       parseEnabledToolGroups(env.GMAIL_ENABLED_TOOLGROUPS),
     )(
       withConfirmation(target, {

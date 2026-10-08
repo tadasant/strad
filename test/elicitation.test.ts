@@ -7,6 +7,11 @@
  * forge the key by sending `_meta` of its own, and a URL off the allowlist
  * arrives as a refusal with its reason rather than vanishing.
  *
+ * And the call itself, for a confirmed slug: the slug's `confirmationHeaders:`
+ * ride with the channel, a caller that goes away (or a hop that runs out of
+ * time) tears the upstream request down so the bundle never sends into the
+ * void, and the bundle's keepalives reach a caller that asked for progress.
+ *
  * The bundle half — the confirmed tool refusing without a channel, and asking
  * at the forwarded URL with one — is `images/bundle-google/test/confirm.test.ts`.
  */
@@ -135,6 +140,49 @@ gateway: { elicitation: { allowedUrlPrefixes: ["${ZIMMER}/"] } }
   });
 });
 
+describe("confirmationHeaders config", () => {
+  const withHeaders = (confirmations: boolean, headers: string) => `
+version: 1
+auth: {}
+roles: { admin: { servers: ["*"] } }
+bundles: [{ name: bundle }]
+servers:
+  - slug: gmail-rw-external
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /gmail
+    confirmations: ${confirmations}
+    confirmationHeaders: ${headers}
+    entitlements: [admin]
+`;
+
+  it("is accepted beside confirmations: true", () => {
+    const cfg = parseConfig(
+      withHeaders(true, `{ CF-Access-Client-Id: "\${EDGE_ID}" }`),
+    );
+    const server = cfg.servers[0];
+    expect(
+      server?.kind === "supplementary-image" && server.confirmationHeaders,
+    ).toEqual({ "CF-Access-Client-Id": "${EDGE_ID}" });
+  });
+
+  it("is refused without confirmations: true, where nothing would send it", () => {
+    expect(() =>
+      parseConfig(withHeaders(false, `{ CF-Access-Client-Id: "x" }`)),
+    ).toThrow(/declares confirmationHeaders but not confirmations: true/);
+  });
+
+  it.each(["Content-Type", "host", "bad name"])(
+    "refuses %s, a name the bundle owns or cannot send",
+    (name) => {
+      expect(() =>
+        parseConfig(withHeaders(true, `{ "${name}": "x" }`)),
+      ).toThrow(/confirmationHeaders/);
+    },
+  );
+});
+
 // --- end to end -------------------------------------------------------------
 
 /** An MCP upstream that records the `_meta` of every tools/call it serves. */
@@ -147,10 +195,32 @@ function recordingUpstream(seen: unknown[]): HttpServer {
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [
         { name: "send_email", inputSchema: { type: "object", properties: {} } },
+        { name: "hold", inputSchema: { type: "object", properties: {} } },
       ],
     }));
-    server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       seen.push(request.params._meta);
+      if (request.params.name === "hold") {
+        // A confirmation that is still waiting: beat, then wait to be dropped.
+        const record = { aborted: false, at: Date.now() };
+        held.push(record);
+        const token = request.params._meta?.progressToken;
+        for (let i = 1; i <= 3 && token !== undefined; i++) {
+          await extra.sendNotification({
+            method: "notifications/progress",
+            params: { progressToken: token, progress: i, message: "waiting" },
+          });
+        }
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 3_000);
+          extra.signal.addEventListener("abort", () => {
+            clearTimeout(timer);
+            record.aborted = true;
+            record.at = Date.now() - record.at;
+            resolve();
+          });
+        });
+      }
       return { content: [{ type: "text", text: "ok" }] };
     });
     const transport = new StreamableHTTPServerTransport({
@@ -175,6 +245,7 @@ async function listen(server: HttpServer): Promise<string> {
 }
 
 const bundleSeen: unknown[] = [];
+const held: Array<{ aborted: boolean; at: number }> = [];
 const thirdPartySeen: unknown[] = [];
 const token = mintToken({ env: "test", label: "admin", roles: ["admin"] });
 let coreUrl = "";
@@ -201,6 +272,34 @@ servers:
     timeoutMs: 600000
     confirmations: true
     entitlements: [admin]
+  - slug: gmail-edge
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /gmail-edge
+    confirmations: true
+    confirmationHeaders:
+      CF-Access-Client-Id: "\${EDGE_ID}"
+      CF-Access-Client-Secret: "\${EDGE_SECRET}"
+    entitlements: [admin]
+  - slug: gmail-unseeded
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /gmail-unseeded
+    confirmations: true
+    confirmationHeaders:
+      CF-Access-Client-Id: "\${NOT_SEEDED_ID}"
+    mayBeUnseeded: [NOT_SEEDED_ID]
+    entitlements: [admin]
+  - slug: gmail-short
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /gmail-short
+    timeoutMs: 400
+    confirmations: true
+    entitlements: [admin]
   - slug: slack
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
@@ -218,7 +317,9 @@ servers:
   };
   const registry = await Registry.build({
     config: cfg,
-    secrets: sharedSecretProviders(new EnvSecretProvider({})),
+    secrets: sharedSecretProviders(
+      new EnvSecretProvider({ EDGE_ID: "id.access", EDGE_SECRET: "s3cret" }),
+    ),
     mode: "core",
     env,
   });
@@ -248,6 +349,8 @@ async function call(
   slug: string,
   headers: Record<string, string>,
   meta?: Record<string, unknown>,
+  tool = "send_email",
+  onprogress?: (p: { progress: number }) => void,
 ) {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { StreamableHTTPClientTransport } =
@@ -263,11 +366,15 @@ async function call(
   const client = new Client({ name: "zimmer", version: "1" });
   await client.connect(transport);
   try {
-    return await client.callTool({
-      name: `${slug}__send_email`,
-      arguments: {},
-      ...(meta ? { _meta: meta } : {}),
-    });
+    return await client.callTool(
+      {
+        name: `${slug}__${tool}`,
+        arguments: {},
+        ...(meta ? { _meta: meta } : {}),
+      },
+      undefined,
+      onprogress ? { onprogress } : undefined,
+    );
   } finally {
     await client.close();
   }
@@ -284,6 +391,8 @@ describe("/mcp forwards the channel to strad's own containers only", () => {
           slug: "gmail-rw-external",
           ttlMs: confirmationTtlMs(600_000),
         },
+        // The SDK's own, for the hop: what the bundle's keepalives answer to.
+        progressToken: expect.any(Number),
       },
     ]);
   });
@@ -291,7 +400,7 @@ describe("/mcp forwards the channel to strad's own containers only", () => {
   it("no header: nothing is forwarded, so the confirmed tool refuses", async () => {
     bundleSeen.length = 0;
     await call("gmail-rw-external", {});
-    expect(bundleSeen).toEqual([undefined]);
+    expect(bundleSeen).toEqual([{ progressToken: expect.any(Number) }]);
   });
 
   it("an origin off the allowlist arrives as a refusal carrying the reason", async () => {
@@ -304,6 +413,7 @@ describe("/mcp forwards the channel to strad's own containers only", () => {
         [ELICITATION_META_KEY]: {
           refused: expect.stringMatching(/attacker\.example that is not under/),
         },
+        progressToken: expect.any(Number),
       },
     ]);
   });
@@ -317,7 +427,7 @@ describe("/mcp forwards the channel to strad's own containers only", () => {
         [ELICITATION_META_KEY]: { url: "https://attacker.example/collect" },
       },
     );
-    expect(bundleSeen).toEqual([undefined]);
+    expect(bundleSeen).toEqual([{ progressToken: expect.any(Number) }]);
   });
 
   it("a sibling mount on the same bundle without `confirmations: true` never receives it", async () => {
@@ -330,5 +440,103 @@ describe("/mcp forwards the channel to strad's own containers only", () => {
     thirdPartySeen.length = 0;
     await call("third-party", { "x-elicitation-url": SESSION_URL });
     expect(thirdPartySeen).toEqual([undefined]);
+  });
+});
+
+describe("a confirmed slug's call", () => {
+  it("carries the slug's confirmationHeaders, resolved by core, with the channel", async () => {
+    bundleSeen.length = 0;
+    await call("gmail-edge", { "x-elicitation-url": SESSION_URL });
+    expect(bundleSeen[0]).toMatchObject({
+      [ELICITATION_META_KEY]: {
+        url: SESSION_URL,
+        headers: {
+          "CF-Access-Client-Id": "id.access",
+          "CF-Access-Client-Secret": "s3cret",
+        },
+      },
+    });
+  });
+
+  it("an unseeded confirmation header refuses the channel, naming the variable and no value", async () => {
+    bundleSeen.length = 0;
+    const res = await call("gmail-unseeded", {
+      "x-elicitation-url": SESSION_URL,
+    });
+    // The tool still ran (and, on a real bundle, refused): the slug is not
+    // down, only its confirmation channel is.
+    expect(res.isError).not.toBe(true);
+    expect(bundleSeen).toEqual([
+      {
+        [ELICITATION_META_KEY]: {
+          refused: expect.stringMatching(/NOT_SEEDED_ID not seeded/),
+        },
+        progressToken: expect.any(Number),
+      },
+    ]);
+  });
+
+  it("a caller that goes away tears the upstream request down, even on a busy connection", async () => {
+    held.length = 0;
+    // A second call on the same slug keeps the pooled connection leased, so
+    // retiring it on the failure would not close the dropped call's request:
+    // only aborting that request's own fetch does.
+    const busy = call(
+      "gmail-rw-external",
+      { "x-elicitation-url": SESSION_URL },
+      undefined,
+      "hold",
+    );
+    await expect.poll(() => held.length).toBe(1);
+    const controller = new AbortController();
+    const pending = fetch(`${coreUrl}/mcp?servers=gmail-rw-external`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token.plaintext}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "x-elicitation-url": SESSION_URL,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "gmail-rw-external__hold", arguments: {} },
+      }),
+      signal: controller.signal,
+    }).then((r) => r.text());
+    await expect.poll(() => held.length).toBe(2);
+    controller.abort();
+    await expect(pending).rejects.toThrow();
+    await expect.poll(() => held[1]?.aborted, { timeout: 1_000 }).toBe(true);
+    expect(held[0]!.aborted).toBe(false);
+    await busy;
+  });
+
+  it("a hop that runs out of time tears the upstream request down too", async () => {
+    held.length = 0;
+    await expect(
+      call(
+        "gmail-short",
+        { "x-elicitation-url": SESSION_URL },
+        undefined,
+        "hold",
+      ),
+    ).rejects.toThrow();
+    await expect.poll(() => held[0]?.aborted, { timeout: 2_000 }).toBe(true);
+    expect(held[0]!.at).toBeLessThan(2_000);
+  });
+
+  it("the bundle's keepalives reach a caller that asked for progress", async () => {
+    held.length = 0;
+    const beats: number[] = [];
+    await call(
+      "gmail-short",
+      { "x-elicitation-url": SESSION_URL },
+      undefined,
+      "hold",
+      (p) => beats.push(p.progress),
+    ).catch(() => {});
+    expect(beats).toEqual([1, 2, 3]);
   });
 });

@@ -146,14 +146,18 @@ function useTheStore(slug: string): string {
 export function assertSecretsByReference(entry: Record<string, unknown>): void {
   const slug = typeof entry.slug === "string" ? entry.slug : "";
 
-  const headers = entry.headers;
-  if (isPlainObject(headers)) {
+  // `confirmationHeaders:` is the same kind of map, sent by the bundle rather
+  // than by core, and it carries an edge credential just as often.
+  for (const field of ["headers", "confirmationHeaders"] as const) {
+    const headers = entry[field];
+    if (!isPlainObject(headers)) continue;
     const literal = Object.keys(headers).filter(
       (name) => !isCredentialReference(headers[name]),
     );
     if (literal.length > 0) {
       throw new LiteralCredential(
-        `${literal.map((n) => `${n}:`).join(", ")} ` +
+        `${field === "headers" ? "" : `${field} `}` +
+          `${literal.map((n) => `${n}:`).join(", ")} ` +
           `${literal.length > 1 ? "carry values" : "carries a value"} rather ` +
           `than a reference, and a runtime write may not store one. A header ` +
           `value must be one \${NAME}, optionally after an auth scheme ` +

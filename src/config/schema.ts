@@ -1,7 +1,10 @@
 import { RESERVED_AUTHORIZE_PARAMS } from "../connectors/oauth-flow.ts";
 import { z } from "zod";
 import { MAX_VARIABLE_LENGTH, isEnvName, secretRefsIn } from "./env-name.ts";
-import { elicitationPrefixProblem } from "../gateway/elicitation.ts";
+import {
+  confirmationHeaderProblem,
+  elicitationPrefixProblem,
+} from "../gateway/elicitation.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
 import { normaliseNamespace } from "../secrets/parameters/namespace.ts";
 import {
@@ -900,6 +903,22 @@ const SupplementaryImageServer = ServerBase.extend({
    */
   confirmations: z.boolean().default(false),
   /**
+   * Headers the bundle sends on its approval requests (the POST and every
+   * poll), for the edge in front of the approval URL rather than for the
+   * approval service itself: a Cloudflare Access service token is the case.
+   *
+   *     confirmationHeaders:
+   *       CF-Access-Client-Id: "${ZIMMER_CF_ACCESS_CLIENT_ID}"
+   *       CF-Access-Client-Secret: "${ZIMMER_CF_ACCESS_CLIENT_SECRET}"
+   *
+   * Resolved by CORE, per call, out of this slug's own namespace before the
+   * shared one, exactly like `headers:`, and forwarded with the channel. They
+   * only ever go to a URL core held to `gateway.elicitation.allowedUrlPrefixes`.
+   * A ref that cannot be resolved refuses the confirmed tool alone; the
+   * slug's other tools are unaffected. Requires `confirmations: true`.
+   */
+  confirmationHeaders: HeaderMap,
+  /**
    * Variables this server may WRITE BACK to its own managed parameter.
    *
    * The case is a credential that rotates ON USE — X's OAuth refresh tokens are
@@ -1698,6 +1717,36 @@ export const StradConfig = z
       seen.add(s.slug);
     }
 
+    // CONFIRMATION HEADERS GO WITH A CONFIRMATION CHANNEL, AND ONLY ADD.
+    //
+    // On a slug that forwards no channel they would be resolved by nothing and
+    // sent nowhere, which reads as a configured edge credential that is not.
+    // And the bundle owns `content-type` and the framing of its own requests,
+    // so a name it would have to drop or obey is refused here instead.
+    for (const s of cfg.servers) {
+      if (s.kind !== "supplementary-image") continue;
+      const names = Object.keys(s.confirmationHeaders);
+      if (names.length > 0 && !s.confirmations) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `server "${s.slug}" declares confirmationHeaders but not ` +
+            "confirmations: true, so nothing would ever send them.",
+          path: ["servers"],
+        });
+      }
+      for (const name of names) {
+        const problem = confirmationHeaderProblem(name);
+        if (problem) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `server "${s.slug}" confirmationHeaders "${name}": ${problem}`,
+            path: ["servers"],
+          });
+        }
+      }
+    }
+
     // THE OAUTH DOMAIN CONSTRAINT MUST NAME A DOMAIN.
     //
     // `auth.mcpOAuth.hostedDomain` falls back to `auth.google.hostedDomain`, so
@@ -2248,6 +2297,7 @@ export const StradConfig = z
         }
       } else {
         for (const value of Object.values(s.headers)) scan(value);
+        for (const value of Object.values(s.confirmationHeaders)) scan(value);
       }
       for (const { field, variable } of named) {
         if (!referenced.has(variable)) continue;

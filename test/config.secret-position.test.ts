@@ -116,6 +116,30 @@ describe("the positions a runtime write may not carry a value in", () => {
     }
   });
 
+  it("refuses a literal confirmation header the same way, and accepts a ref", () => {
+    const entry = (value: string) => ({
+      slug: "gmail-rw-external",
+      kind: "supplementary-image",
+      confirmations: true,
+      confirmationHeaders: {
+        "CF-Access-Client-Id": "${ZIMMER_CF_ACCESS_CLIENT_ID}",
+        "CF-Access-Client-Secret": value,
+      },
+    });
+    let message = "";
+    try {
+      assertSecretsByReference(entry(SECRET));
+    } catch (err) {
+      expect(err).toBeInstanceOf(LiteralCredential);
+      message = (err as Error).message;
+    }
+    expect(message).toContain("confirmationHeaders CF-Access-Client-Secret:");
+    expect(message).not.toContain(SECRET);
+    expect(() =>
+      assertSecretsByReference(entry("${ZIMMER_CF_ACCESS_CLIENT_SECRET}")),
+    ).not.toThrow();
+  });
+
   it("refuses a literal that is not a secret, and says why it does not guess", () => {
     // `Notion-Version: 2022-06-28` is harmless and is refused anyway. A rule
     // that let it through would be a rule about what a secret LOOKS like, and
