@@ -21,7 +21,11 @@ import {
   type ServerParamKind,
 } from "../secrets/parameters/index.ts";
 import { connectorVariables } from "../deploy/server-namespaces.ts";
-import { storeForPath, type StoreClientOptions } from "../ui/store-client.ts";
+import {
+  forgetConsoleStores,
+  storeForPath,
+  type StoreClientOptions,
+} from "../ui/store-client.ts";
 import { forgetDeploymentDiagnosis } from "../ui/secret-status.ts";
 import { event } from "../telemetry/index.ts";
 import { errorSummary } from "../util/error-text.ts";
@@ -578,6 +582,7 @@ export function createStoreRefreshHandler(
     lastRefreshAt = now();
     opts.secretProvider?.invalidate();
     forgetDeploymentDiagnosis({ env: opts.env, store: opts.diagnosticStore });
+    forgetConsoleStores();
     event({ evt: "strad.store_refreshed", refreshed: true });
   };
 

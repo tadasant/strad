@@ -27,6 +27,7 @@ import {
   validateVariableName,
   variableOf,
   type Capabilities,
+  type ParameterListing,
   type ParameterMeta,
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
@@ -50,7 +51,7 @@ import { renderConnectors } from "./roster-page.ts";
 import { renderServerOverview } from "./server-overview.ts";
 import { originFor, playgroundAccess } from "./playground.ts";
 import { entitledServers } from "../gateway/entitlements.ts";
-import { storeFor } from "./store-client.ts";
+import { forgetConsoleStores, storeFor } from "./store-client.ts";
 import { mountTokensConsole } from "./tokens.ts";
 import {
   CONNECTORS_PREFIX,
@@ -1263,6 +1264,9 @@ async function handleSecretAction(
         // next tool call on a `params: true` builtin and the next `/ui` load
         // all reach Parameter Manager. Nothing is written.
         forgetStoreReading(opts);
+        // And the console's own reading, which a write through strad patches
+        // but a write from anywhere else does not reach.
+        forgetConsoleStores();
         await renderSecretsPage(res, view, store_, opts, {
           signedInAs,
           namespace,
@@ -1384,12 +1388,19 @@ async function renderSecretsPage(
   const reveal = revealPosture(selected.revealEnabled, caps);
   const revealNonSecret = revealPosture(selected.revealEnabled, caps, false);
 
-  let parameters: ParameterMeta[] = [];
-  let flash = extras.flash;
+  // `listDetailed` where the store has it: a parameter that could not be read
+  // is NAMED under the rows that could, rather than failing the whole listing
+  // into "No parameters in this namespace yet". A listing that failed outright
+  // is `listFailure`, which the page renders as its own state — an empty
+  // namespace and an unread one are different facts.
+  let listing: ParameterListing = { parameters: [], unreadable: [] };
+  let listFailure: string | undefined;
   try {
-    parameters = await store.list(namespace);
+    listing = store.listDetailed
+      ? await store.listDetailed(namespace)
+      : { parameters: await store.list(namespace), unreadable: [] };
   } catch (err) {
-    flash = flash ?? { tone: "error", message: describe(err) };
+    listFailure = describe(err);
   }
 
   res
@@ -1400,14 +1411,20 @@ async function renderSecretsPage(
         view,
         store: selected,
         config: opts.config,
-        parameters,
+        parameters: listing.parameters,
+        unreadable: listing.unreadable.map((u) => ({
+          id: u.id,
+          reason: describe(u.error),
+        })),
+        listFailure,
+        readAt: listing.readAt,
         namespace,
         resolver: resolverConfigured(opts.env),
         reveal,
         revealNonSecret,
         siblingPages,
         signedInAs: extras.signedInAs,
-        flash,
+        flash: extras.flash,
         revealed: extras.revealed,
         bulk: extras.bulk,
       }),

@@ -101,7 +101,17 @@ export interface FakeBinding {
 
 interface FakeParameter {
   labels: Record<string, string>;
-  versions: { id: string; data: string; disabled?: boolean }[];
+  versions: {
+    id: string;
+    data: string;
+    disabled?: boolean;
+    /**
+     * Stamped on create, as Parameter Manager does. The store client keys its
+     * envelope cache on it, so a test that hands a version none is a version
+     * that client never caches.
+     */
+    createTime?: string;
+  }[];
 }
 
 const PROJECT = "strad-secrets-test";
@@ -206,6 +216,8 @@ export interface FakeGcpOptions {
 }
 
 export function createFakeGcp(opts: FakeGcpOptions = {}): FakeGcp {
+  /** Keeps two versions created in one millisecond from sharing a `createTime`. */
+  let versionSeq = 0;
   const parameters = new Map<string, FakeParameter>();
   const secrets = new Map<string, string[]>();
   const secretPolicies = new Map<string, FakeBinding[]>();
@@ -392,6 +404,7 @@ export function createFakeGcp(opts: FakeGcpOptions = {}): FakeGcp {
             name: `${paramParent}/${id}/versions/${v.id}`,
             payload: { data: v.data },
             disabled: v.disabled,
+            createTime: v.createTime,
           })),
         });
       }
@@ -401,6 +414,7 @@ export function createFakeGcp(opts: FakeGcpOptions = {}): FakeGcp {
         const vid = q.get("parameter_version_id")!;
         param.versions.push({
           id: vid,
+          createTime: new Date(Date.now() + versionSeq++).toISOString(),
           data: (body as { payload: { data: string } }).payload.data,
         });
         return json(200, { name: `${paramParent}/${id}/versions/${vid}` });

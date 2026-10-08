@@ -42,6 +42,7 @@ import {
   UnreadablePayloadError,
   type ConsoleReadGrant,
   type CreateParameterInput,
+  type ParameterListing,
   type ParameterMeta,
   type ParameterStore,
   type ResolvedNamespace,
@@ -98,12 +99,13 @@ export interface GcpParameterStoreConfig {
    * How long one reading of the whole store may be reused, in ms.
    *
    * `0` — the default — means never: every `list()` and `resolve()` reaches
-   * the store. That is the right answer for a client that WRITES and then
-   * re-lists in the same breath (the console's admin client), because a held
-   * reading reports a parameter someone else just created as absent.
+   * the store.
    *
-   * The runtime resolver and the two deploy-time readers set it. See
-   * `snapshot()` for what is held and what drops it.
+   * The runtime resolver, the two deploy-time readers and the console's admin
+   * client set it. A write through a client that holds a reading re-reads the
+   * parameter it touched, so a client that writes and re-lists in one breath
+   * still sees its own write. See `snapshot()` for what is held and what
+   * changes it.
    */
   snapshotTtlMs?: number;
   /** Injected in tests so the snapshot's age is not measured on the wall clock. */
@@ -113,6 +115,35 @@ export interface GcpParameterStoreConfig {
 const DEFAULT_PM_BASE = "https://parametermanager.googleapis.com";
 const DEFAULT_SM_BASE = "https://secretmanager.googleapis.com";
 const DEFAULT_TIMEOUT_MS = 10_000;
+
+/** How many store requests one enumeration or render keeps in flight. */
+const FANOUT = 10;
+
+/**
+ * `fn` over every item, at most `width` at a time, results in input order.
+ *
+ * A pool, not fixed batches: a batch waits for its slowest member before the
+ * next one starts, so a single read that backs off for a second on a `429`
+ * idles the other nine lanes for that second.
+ */
+async function pooled<T, R>(
+  items: readonly T[],
+  width: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const lane = async (): Promise<void> => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i] as T);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(width, items.length) }, lane),
+  );
+  return out;
+}
 
 /**
  * The HTTP status behind a failure, for the two error types this client raises.
@@ -152,6 +183,39 @@ export function createGcpParameterStore(
   const now = cfg.now ?? Date.now;
   let cached: MintedToken | undefined;
   let held: Snapshot | undefined;
+  /**
+   * Parameters a write through this client has touched since `held` was taken.
+   * The next read re-reads exactly these and splices them into the held roster,
+   * instead of enumerating the whole project again. See `snapshot()`.
+   */
+  const dirty = new Set<string>();
+  /**
+   * Every envelope this process has read, keyed by parameter id, with the
+   * version it was read from.
+   *
+   * A Parameter Manager version is immutable — its payload cannot be edited,
+   * only a new version written — so once a version has been read, reading it
+   * again can only return the same bytes. An enumeration still LISTS every
+   * parameter's versions to learn which one is current, but it only GETs the
+   * ones that moved. That halves what a re-read costs, and it takes the billed
+   * verb (`GetParameterVersion`) out of a re-read entirely when nothing changed.
+   *
+   * The key is the version id AND its `createTime`, because a parameter deleted
+   * and re-created under the same path starts again at `v1`. A listing that
+   * reports no `createTime` is never cached. Bounded by the parameter count:
+   * an id the last enumeration did not see is dropped.
+   */
+  const envelopes = new Map<
+    string,
+    {
+      key: string;
+      read: {
+        envelope: ParameterEnvelope;
+        versionId: string;
+        createTime?: string;
+      };
+    }
+  >();
 
   /**
    * The bearer every call carries, minted once per hour and shared.
@@ -283,9 +347,25 @@ export function createGcpParameterStore(
    * namespace filter is applied to.
    */
   interface RosterEntry {
+    id: string;
     envelope: ParameterEnvelope;
     versionId: string;
     createTime?: string;
+  }
+
+  /**
+   * One enumeration's outcome: what was read, and what could not be.
+   *
+   * A parameter whose version read failed is kept apart rather than failing the
+   * whole enumeration. The strict readers — `list()`, and through it `resolve()`
+   * — still throw on any of them, because a parameter they cannot see may be one
+   * a child process needs. The console's `listDetailed()` shows the rest and
+   * names the ones it could not read, so one throttled request out of a hundred
+   * no longer renders an empty namespace.
+   */
+  interface Roster {
+    entries: RosterEntry[];
+    unreadable: { id: string; error: unknown }[];
   }
 
   /**
@@ -300,7 +380,7 @@ export function createGcpParameterStore(
    */
   interface Snapshot {
     at: number;
-    roster: Promise<RosterEntry[]>;
+    roster: Promise<Roster>;
     rendered: Map<string, Promise<ResolvedNamespace>>;
   }
 
@@ -319,6 +399,19 @@ export function createGcpParameterStore(
    * three halves that read them.
    */
   async function currentVersionId(id: string): Promise<string | undefined> {
+    return (await currentVersion(id))?.vid;
+  }
+
+  /**
+   * The current version's id, and the `createTime` the listing reported for it.
+   *
+   * The `createTime` is what makes the version a cache key (see `envelopes`):
+   * a version id alone is not one, because a parameter deleted and re-created
+   * under the same path starts again at `v1`.
+   */
+  async function currentVersion(
+    id: string,
+  ): Promise<{ vid: string; createTime?: string } | undefined> {
     const versions: RawVersion[] = [];
     let pageToken: string | undefined;
     do {
@@ -332,7 +425,10 @@ export function createGcpParameterStore(
       pageToken = page.nextPageToken;
     } while (pageToken);
 
-    return rankVersions(versions)?.vid;
+    const ranked = rankVersions(versions);
+    if (!ranked) return undefined;
+    const raw = versions.find((v) => versionIdOf(v.name) === ranked.vid);
+    return { vid: ranked.vid, createTime: raw?.createTime };
   }
 
   async function addVersion(
@@ -395,8 +491,14 @@ export function createGcpParameterStore(
     versionId: string;
     createTime?: string;
   } | null> {
-    const vid = await currentVersionId(id);
-    if (!vid) return null;
+    const cur = await currentVersion(id);
+    if (!cur) return null;
+    const { vid } = cur;
+    // A version's payload never changes once written, so a version this
+    // process has already read is not read again. See `envelopes`.
+    const key = cur.createTime ? `${vid}@${cur.createTime}` : undefined;
+    const known = key ? envelopes.get(id) : undefined;
+    if (known && known.key === key) return { ...known.read };
     const resource = `${pmParent}/parameters/${id}/versions/${vid}`;
     const raw = (await pm("GET", resource)) as RawVersion;
     const data = raw.payload?.data;
@@ -407,7 +509,9 @@ export function createGcpParameterStore(
     } catch {
       throw new UnreadablePayloadError(resource);
     }
-    return { envelope, versionId: vid, createTime: raw.createTime };
+    const read = { envelope, versionId: vid, createTime: raw.createTime };
+    if (key) envelopes.set(id, { key, read });
+    return { ...read };
   }
 
   /**
@@ -501,11 +605,13 @@ export function createGcpParameterStore(
    * The namespace is INSIDE the envelope, not on a label, so there is no way to
    * ask the store for one namespace: enumerating means reading a version of
    * every parameter and filtering afterwards. That is what makes this expensive
-   * — P billed `GetParameterVersion` calls for P parameters, however small the
-   * namespace asked for — and why `snapshot()` exists.
+   * — one `ListParameterVersions` per parameter to find its current version,
+   * plus one `GetParameterVersion` for each whose current version this process
+   * has not read before (see `envelopes`) — and why `snapshot()` exists.
+   * `strad#308` is the redesign that would take the per-parameter read away.
    */
-  async function enumerate(): Promise<RosterEntry[]> {
-    const params: { id: string }[] = [];
+  async function enumerate(): Promise<Roster> {
+    const ids: string[] = [];
     let pageToken: string | undefined;
     do {
       const qs = new URLSearchParams({ pageSize: "100" });
@@ -517,30 +623,70 @@ export function createGcpParameterStore(
       for (const raw of page.parameters ?? []) {
         if (raw.labels?.["managed-by"] !== "strad") continue;
         const id = raw.name?.split("/").pop();
-        if (id) params.push({ id });
+        if (id) ids.push(id);
       }
       pageToken = page.nextPageToken;
     } while (pageToken);
 
-    // One version read per parameter to recover its envelope (path, secret,
-    // note) and whether it has a value. Bounded fan-out: a store of 500
-    // parameters must not open 500 connections to render one page.
-    const out: RosterEntry[] = [];
-    const FANOUT = 10;
-    for (let i = 0; i < params.length; i += FANOUT) {
-      const batch = await Promise.all(
-        params.slice(i, i + FANOUT).map(async ({ id }) => {
-          const cur = await currentEnvelope(id).catch((err) => {
-            if (err instanceof ParameterStoreError && err.status === 404)
-              return null;
-            throw err;
-          });
-          return cur ? { ...cur } : null;
-        }),
-      );
-      for (const e of batch) if (e) out.push(e);
-    }
-    return out;
+    const roster = await readEntries(ids);
+    // Bound the envelope cache by what the store holds: a parameter deleted
+    // elsewhere stops being remembered at the next enumeration.
+    const seen = new Set(ids);
+    for (const id of envelopes.keys()) if (!seen.has(id)) envelopes.delete(id);
+    return roster;
+  }
+
+  /**
+   * Read the current envelope of each of `ids`, keeping failures apart.
+   *
+   * A `404` is a parameter deleted between the listing and the read, and is
+   * simply absent. Anything else is UNREADABLE — carried with its error, so a
+   * strict reader can throw exactly what it would have thrown, and the console
+   * can show the rest.
+   *
+   * Bounded fan-out: a store of 500 parameters must not open 500 connections to
+   * render one page. A pool rather than fixed batches, so one slow read holds up
+   * one lane instead of the nine requests queued behind it.
+   */
+  async function readEntries(ids: string[]): Promise<Roster> {
+    const roster: Roster = { entries: [], unreadable: [] };
+    await pooled(ids, FANOUT, async (id) => {
+      try {
+        const cur = await currentEnvelope(id);
+        if (cur) roster.entries.push({ id, ...cur });
+      } catch (err) {
+        if (err instanceof ParameterStoreError && err.status === 404) return;
+        roster.unreadable.push({ id, error: err });
+      }
+    });
+    return roster;
+  }
+
+  /**
+   * The held roster with `ids` re-read and spliced in — what a write through
+   * this client costs the next reader, instead of a whole enumeration.
+   *
+   * A write knows exactly which parameter it touched, so that parameter is the
+   * only thing the held reading can be wrong about BECAUSE of the write. A
+   * create appears, a delete disappears (its read is a `404`), a rotate or a
+   * note moves to its new version.
+   */
+  async function patched(
+    base: Promise<Roster>,
+    ids: string[],
+  ): Promise<Roster> {
+    const [old, fresh] = await Promise.all([base, readEntries(ids)]);
+    const drop = new Set(ids);
+    return {
+      entries: [
+        ...old.entries.filter((e) => !drop.has(e.id)),
+        ...fresh.entries,
+      ],
+      unreadable: [
+        ...old.unreadable.filter((u) => !drop.has(u.id)),
+        ...fresh.unreadable,
+      ],
+    };
   }
 
   /**
@@ -554,13 +700,18 @@ export function createGcpParameterStore(
    * timer. With 34 parameters and a minute's TTL that was 388 billed reads a
    * minute (`test/secrets.read-accounting.test.ts`), around the clock, to
    * re-learn values that change a few times a month. Everything now slices
-   * this: one enumeration per TTL (P version reads), plus one render per
-   * parameter in each namespace actually asked for.
+   * this: one enumeration per TTL, plus one render per parameter in each
+   * namespace actually asked for.
    *
-   * What drops it, in order of how often it happens:
+   * What changes it, in order of how often it happens:
    *
-   *   - a WRITE through this client (`writing()` below) — the console's admin
-   *     client and the write-back route both write and re-read in one breath;
+   *   - a WRITE through this client (`writing()` below) that succeeded marks
+   *     the parameter it touched, and the next read re-reads that one parameter
+   *     and keeps the rest — the console's admin client writes and re-lists in
+   *     one breath, and a whole enumeration per click is what made every
+   *     console action slow. The render memo is dropped with it, since a value
+   *     may have moved. A write that FAILED drops the reading outright: it may
+   *     have half-landed, on more than the one parameter;
    *   - `forget()`, which the runtime provider calls on `invalidate()` — the
    *     path a console write takes to reach the resolver, which is a different
    *     client instance holding a different credential — and on a MISS, so a
@@ -571,37 +722,64 @@ export function createGcpParameterStore(
    *
    * The PROMISE is held, not its result, so namespaces resolved concurrently
    * share one enumeration instead of racing to start several. A rejected
-   * enumeration is evicted — a refused read must not be the answer for the whole TTL.
+   * enumeration is evicted — a refused read must not be the answer for the
+   * whole TTL — and so is one that could not read every parameter, so the next
+   * reader tries the missing ones again rather than inheriting the gap.
    * With the TTL off, every call is a fresh snapshot, and the memo it carries
    * lives exactly as long as the call.
    */
   function snapshot(): Snapshot {
     if (snapshotTtlMs > 0 && held && now() - held.at < snapshotTtlMs) {
-      return held;
+      if (dirty.size === 0) return held;
+      const ids = [...dirty];
+      dirty.clear();
+      // `at` is kept: everything but the re-read parameters is still a claim
+      // about the store as of the original enumeration.
+      return hold({
+        at: held.at,
+        roster: patched(held.roster, ids),
+        rendered: new Map(),
+      });
     }
+    dirty.clear();
     const fresh: Snapshot = {
       at: now(),
       roster: enumerate(),
       rendered: new Map(),
     };
-    if (snapshotTtlMs > 0) {
-      held = fresh;
-      fresh.roster.catch(() => {
-        if (held === fresh) held = undefined;
-      });
-    }
-    return fresh;
+    return snapshotTtlMs > 0 ? hold(fresh) : fresh;
+  }
+
+  function hold(snap: Snapshot): Snapshot {
+    held = snap;
+    snap.roster.then(
+      (r) => {
+        if (r.unreadable.length > 0 && held === snap) held = undefined;
+      },
+      () => {
+        if (held === snap) held = undefined;
+      },
+    );
+    return snap;
   }
 
   /**
    * Drop the snapshot, so the next read reaches the store.
    *
-   * Every write through this client calls it. The runtime provider calls it on
-   * `invalidate()` and when a `${NAME}` it was asked for is absent — the two
-   * signals, besides the TTL, on which a running gateway re-reads the store.
+   * A write through this client that fails calls it. The runtime provider
+   * calls it on `invalidate()` and when a `${NAME}` it was asked for is absent
+   * — the two signals, besides the TTL, on which a running gateway re-reads the
+   * store. The console's "Re-read the store" reaches it through
+   * `forgetConsoleStores` (`src/ui/store-client.ts`).
    */
   function forget(): void {
     held = undefined;
+    dirty.clear();
+  }
+
+  /** A write through this client landed on `id`. See `snapshot()`. */
+  function touched(id: string): void {
+    if (held) dirty.add(id);
   }
 
   /** How old the held snapshot is, in ms. `Infinity` when nothing is held. */
@@ -610,12 +788,9 @@ export function createGcpParameterStore(
   }
 
   /** The roster's slice under `namespace`, as the console sees it. */
-  async function listFrom(
-    roster: Promise<RosterEntry[]>,
-    namespace: string,
-  ): Promise<ParameterMeta[]> {
+  function slice(entries: RosterEntry[], namespace: string): ParameterMeta[] {
     const out: ParameterMeta[] = [];
-    for (const { envelope, versionId, createTime } of await roster) {
+    for (const { envelope, versionId, createTime } of entries) {
       const { path, secret, note } = envelope;
       if (!path.startsWith(namespace)) continue;
       out.push({
@@ -632,8 +807,47 @@ export function createGcpParameterStore(
     return out;
   }
 
+  /**
+   * The STRICT slice: any parameter the enumeration could not read fails it,
+   * with that parameter's own error. An unreadable parameter's namespace is
+   * inside the envelope nobody could read, so there is no telling whether it
+   * belongs to this one — and the resolver must not start a child without it.
+   */
+  async function listFrom(
+    roster: Promise<Roster>,
+    namespace: string,
+  ): Promise<ParameterMeta[]> {
+    const { entries, unreadable } = await roster;
+    if (unreadable[0]) throw unreadable[0].error;
+    return slice(entries, namespace);
+  }
+
   async function list(namespace: string): Promise<ParameterMeta[]> {
     return listFrom(snapshot().roster, namespace);
+  }
+
+  /**
+   * The console's listing: the slice, plus the parameters that could not be
+   * read and plausibly belong to it.
+   *
+   * "Plausibly" is by id. The id is a fold of the path (`parameterId`), so a
+   * parameter under this namespace has an id that starts with the namespace's
+   * own fold. That can over-report a sibling namespace that folds alike; it
+   * cannot under-report one under this namespace, which is the direction that
+   * matters for a page claiming to be the whole list.
+   */
+  async function listDetailed(namespace: string): Promise<ParameterListing> {
+    const snap = snapshot();
+    const { entries, unreadable } = await snap.roster;
+    const prefix = parameterId(namespace).slice(0, 54);
+    return {
+      parameters: slice(entries, namespace),
+      unreadable: unreadable
+        .filter((u) => u.id.startsWith(prefix))
+        .map((u) => ({ id: u.id, error: u.error }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+      readAt: snap.at,
+    };
   }
 
   async function create(input: CreateParameterInput): Promise<ParameterMeta> {
@@ -952,17 +1166,12 @@ export function createGcpParameterStore(
     // tolerable while the loop stopped at the first failure; it is not now that
     // every parameter is rendered on its own, because a namespace-wide 403 would
     // otherwise cost N round trips end to end on the deploy path.
-    const FANOUT = 10;
-    for (let i = 0; i < metas.length; i += FANOUT) {
-      const batch = await Promise.all(
-        metas
-          .slice(i, i + FANOUT)
-          .map((meta) => renderOne(meta.path, meta.latestVersion)),
-      );
-      for (const outcome of batch) {
-        if ("value" in outcome) values[outcome.variable] = outcome.value;
-        else unrenderable.push(outcome);
-      }
+    const outcomes = await pooled(metas, FANOUT, (meta) =>
+      renderOne(meta.path, meta.latestVersion),
+    );
+    for (const outcome of outcomes) {
+      if ("value" in outcome) values[outcome.variable] = outcome.value;
+      else unrenderable.push(outcome);
     }
     return { values, unrenderable, readAt: snap.at };
   }
@@ -1090,21 +1299,27 @@ export function createGcpParameterStore(
   }
 
   /**
-   * A write, with the snapshot dropped either way.
+   * A write, and what it does to the snapshot.
    *
-   * `finally`, not "on success": a write that throws may still have landed —
-   * `create()` rolls back with best-effort DELETEs that are allowed to fail — so
-   * the only safe assumption after any write is that the snapshot is stale.
+   * A write that SUCCEEDED changed one known parameter, so it marks that one
+   * for re-reading (`touched`). A write that THREW may still have landed —
+   * `create()` rolls back with best-effort DELETEs that are allowed to fail —
+   * so the only safe assumption after it is that the whole snapshot is stale.
    */
   function writing<A extends unknown[], T>(
     fn: (...args: A) => Promise<T>,
+    pathOf: (...args: A) => string,
   ): (...args: A) => Promise<T> {
     return async (...args: A) => {
+      let out: T;
       try {
-        return await fn(...args);
-      } finally {
+        out = await fn(...args);
+      } catch (err) {
         forget();
+        throw err;
       }
+      touched(parameterId(pathOf(...args)));
+      return out;
     };
   }
 
@@ -1159,11 +1374,12 @@ export function createGcpParameterStore(
   return {
     backend: "gcp",
     list,
-    create: writing(create),
-    rotate: writing(rotate),
-    setNote: writing(setNote),
+    listDetailed,
+    create: writing(create, (input) => input.path),
+    rotate: writing(rotate, (path) => path),
+    setNote: writing(setNote, (path) => path),
     reveal,
-    destroy: writing(destroy),
+    destroy: writing(destroy, (path) => path),
     // `writing`, even though it writes no parameter: it changes whether this
     // namespace RENDERS, and a resolver-configured client memoises a failed
     // render for the length of its TTL (a 403 is the store's settled answer, so
@@ -1171,7 +1387,7 @@ export function createGcpParameterStore(
     // and the next read still reporting the refusal it just fixed. The
     // verification read inside is live either way — `reveal` never consults the
     // snapshot.
-    grantConsoleRead: writing(grantConsoleRead),
+    grantConsoleRead: writing(grantConsoleRead, (path) => path),
     resolve,
     resolveDetailed,
     forget,

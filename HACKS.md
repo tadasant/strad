@@ -3614,11 +3614,35 @@ next reader renders again); a `400` is, until the TTL or a write. The console's
 diagnosis is now as old as the reading and prints that age rather than the
 pass's.
 
-**What is still true.** The console's ADMIN client leaves the reuse OFF, because
-it writes and re-lists in one breath, and a held reading answers a freshly-written
-parameter with "absent". A single read still costs P, and nothing bounds P: a
-store that grew to 500 parameters would cost 1000 version reads for one
-enumeration, per process, however few namespaces it needed.
+Then the CONSOLE. Its admin client held nothing, so every load of a secrets page
+and every action on it enumerated the project live: at production's ~130
+parameters, 261 requests per page load (two per parameter, ten at a time), 525
+for a reveal, which lists and then re-renders. That is what made every console
+click slow, and a few clicks inside a minute were enough to exhaust the quota:
+one `.../versions` listing came back `429`, the enumeration threw, and the page
+rendered "No parameters in this namespace yet". Three changes, counted in
+`test/console.read-accounting.test.ts`:
+
+- The admin client holds a reading for five minutes (`CONSOLE_SNAPSHOT_TTL_MS`
+  in `src/ui/store-client.ts`). A write through it no longer drops the reading:
+  it marks the one parameter it touched, and the next read re-reads that one
+  and keeps the rest, so a rotate-and-re-render costs about three requests
+  instead of 264. The **Re-read the store** button and `refresh_gateway` drop
+  it outright (`forgetConsoleStores`).
+- Every client remembers the envelopes it has read, keyed by version id and
+  `createTime`. A version is immutable, so a re-enumeration still lists every
+  parameter's versions (P requests, none of them billed) but GETs only the ones
+  that moved.
+- A parameter whose read fails is kept apart instead of failing the
+  enumeration. The console shows the rest and names it; the strict `list()`,
+  and so `resolve()`, still throw its error, and a reading with a gap is not
+  held.
+
+**What is still true.** A single cold read still costs 2P, and a warm one P:
+a store that grew to 500 parameters would cost 500 version listings per
+re-read, per process, however few namespaces it needed. A value written outside
+strad shows on the console within five minutes, or at once on **Re-read the
+store**.
 
 **Why not.** The real fix is to put the namespace on a parameter LABEL so the
 listing can filter server-side. That means a schema change plus a backfill of every

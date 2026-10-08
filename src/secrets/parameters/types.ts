@@ -42,6 +42,21 @@ export interface ParameterMeta {
   updatedAt?: string;
 }
 
+/** `listDetailed()`'s answer. See `ParameterAdmin.listDetailed`. */
+export interface ParameterListing {
+  parameters: ParameterMeta[];
+  /**
+   * Parameters that exist and whose current version could not be read, by
+   * store id — the path is inside the envelope nobody could read. The error is
+   * carried unclassified, as `ConsoleReadGrant.error` is: the caller that
+   * shows it reduces it to a sentence with the same function it uses for every
+   * other store failure, so the two cannot disagree about what a `429` means.
+   */
+  unreadable: { id: string; error: unknown }[];
+  /** When the reading this came from was taken, epoch ms. */
+  readAt?: number;
+}
+
 export interface CreateParameterInput {
   path: string;
   secret: boolean;
@@ -97,8 +112,24 @@ export interface ConsoleReadGrant {
 export interface ParameterAdmin {
   /** The backend name, e.g. "gcp". For display only. */
   readonly backend: string;
-  /** Every parameter whose path starts with `namespace`. Metadata, no secret value. */
+  /**
+   * Every parameter whose path starts with `namespace`. Metadata, no secret value.
+   *
+   * STRICT: a parameter the store could not read fails the call, because it may
+   * be one of this namespace's and a caller deciding what exists must not be
+   * told it does not.
+   */
   list(namespace: string): Promise<ParameterMeta[]>;
+  /**
+   * The same listing for a human to look at: what could be read, plus the
+   * parameters that could not and may belong here.
+   *
+   * Optional because it is a presentation of `list()`, not a capability; the
+   * console falls back to `list()` where it is absent. What it buys where it
+   * exists is a page that shows ninety-nine parameters and names the hundredth,
+   * instead of an empty namespace because one read was throttled.
+   */
+  listDetailed?(namespace: string): Promise<ParameterListing>;
   create(input: CreateParameterInput): Promise<ParameterMeta>;
   /** Rotate: set a new value. Non-secret → new PM version; secret → new SM version. */
   rotate(path: string, value: string): Promise<void>;

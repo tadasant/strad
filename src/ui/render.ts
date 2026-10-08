@@ -13,6 +13,7 @@ import type {
 } from "./resolve.ts";
 import type { ParameterMeta } from "../secrets/parameters/index.ts";
 import { serverConsolePath } from "./paths.ts";
+import { CONSOLE_SNAPSHOT_TTL_MS } from "./store-client.ts";
 import {
   classifyPath,
   paramsConsumers,
@@ -361,6 +362,19 @@ export interface SecretsViewOptions {
    */
   config: StradConfig;
   parameters: ParameterMeta[];
+  /**
+   * Parameters that exist and could not be read, and may belong to this
+   * namespace. The page names them under the rows it could read, so a listing
+   * one throttled request short is visibly incomplete rather than silently so.
+   */
+  unreadable?: { id: string; reason: string }[];
+  /**
+   * The listing failed outright. Rendered as its own state: "the store did not
+   * answer" and "this namespace is empty" call for different things.
+   */
+  listFailure?: string;
+  /** When the reading this page shows was taken, epoch ms. */
+  readAt?: number;
   /** The namespace being browsed. May be one the config never listed. */
   namespace: string;
   /**
@@ -489,15 +503,30 @@ export function renderSecrets(opts: SecretsViewOptions): string {
     })
     .join("\n");
 
-  const listing = parameters.length
-    ? `<div class="listing">
+  const unreadable = opts.unreadable ?? [];
+  const unreadableBanner = unreadable.length
+    ? `<div class="flash flash-error">${unreadable.length} parameter${
+        unreadable.length === 1 ? "" : "s"
+      } in this project could not be read and may belong to this namespace, so the list below may be incomplete. Re-read the store to try again. ${esc(
+        unreadable.map((u) => `${u.id}: ${u.reason}`).join("; "),
+      )}</div>`
+    : "";
+
+  const listing = opts.listFailure
+    ? `<div class="state">
+         <div class="state-icon">${KEY_SVG}</div>
+         <p class="state-title">Could not read this namespace</p>
+         <p class="state-sub">The store did not answer, so this is not an empty namespace — it is an unread one. Re-read the store to try again. Detail: ${esc(opts.listFailure)}</p>
+       </div>`
+    : parameters.length
+      ? `<div class="listing">
          <div class="group-label objects-label">
            <span>Parameters · ${parameters.length}</span>
            <span class="col-labels"><span>note</span><span>value</span><span>updated</span><span>actions</span></span>
          </div>
          ${rows}
        </div>`
-    : `<div class="state">
+      : `<div class="state">
          <div class="state-icon">${KEY_SVG}</div>
          <p class="state-title">No parameters in this namespace yet</p>
          <p class="state-sub">Add one below. Agents can see a parameter's name, kind and note — and, for a non-secret parameter, its value; never a secret value.</p>
@@ -524,8 +553,8 @@ export function renderSecrets(opts: SecretsViewOptions): string {
 ${siblingStrip(opts.siblingPages)}
 
 <section class="browse-head">
-  <div class="stat"><span class="stat-n">${parameters.length}</span><span class="stat-l">parameters</span></div>
-  <div class="stat"><span class="stat-n">${secretCount}</span><span class="stat-l">secret</span></div>
+  <div class="stat"><span class="stat-n">${opts.listFailure ? "—" : parameters.length}</span><span class="stat-l">parameters</span></div>
+  <div class="stat"><span class="stat-n">${opts.listFailure ? "—" : secretCount}</span><span class="stat-l">secret</span></div>
   ${storePicker(action, view.stores, store)}
   ${namespacePicker(action, store.namespaces, ns, store.projectId)}
   ${
@@ -536,7 +565,11 @@ ${siblingStrip(opts.siblingPages)}
   </div>`
   }
   <form method="post" action="${action}/refresh" class="inline reread-form"
-        title="This process holds one reading of the store for gateway.secrets.ttlSeconds (${config.gateway.secrets.ttlSeconds}s). A value written outside this console lands within that on its own; this drops the reading so the next read reaches Parameter Manager now. Nothing is written.">
+        title="This console holds one reading of the store for ${Math.round(CONSOLE_SNAPSHOT_TTL_MS / 60_000)} minutes, and the gateway's resolver for gateway.secrets.ttlSeconds (${config.gateway.secrets.ttlSeconds}s). A write through this console shows at once; a value written outside strad lands within those on its own. This drops both readings so the next read reaches Parameter Manager now. Nothing is written.${
+          opts.readAt === undefined
+            ? ""
+            : ` This reading was taken ${Math.max(0, Math.round((Date.now() - opts.readAt) / 60_000))} min ago.`
+        }">
     ${nsField}
     <button class="btn">Re-read the store</button>
   </form>
@@ -545,6 +578,7 @@ ${siblingStrip(opts.siblingPages)}
 ${deliveryBanner(config, resolver)}
 ${driftBanner(revealUi)}
 ${flash}
+${unreadableBanner}
 ${reveal}
 ${listing}
 
