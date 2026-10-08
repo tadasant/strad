@@ -44,6 +44,11 @@ export interface StoreDiagnostics {
   /** VARIABLE -> why its value could not be produced. Never a body. */
   unrenderable: ReadonlyMap<string, string>;
   /**
+   * The subset of `unrenderable` whose failure was transient — a 429, a 5xx,
+   * a timeout. The store did not refuse those; it did not answer.
+   */
+  transient: ReadonlySet<string>;
+  /**
    * Every VARIABLE that DID render, so "in the index" is never on its own taken
    * as evidence that a value cannot be produced. It usually means the opposite.
    */
@@ -93,6 +98,7 @@ export async function readStoreDiagnostics(
 
   const indexed = new Set<string>();
   const unrenderable = new Map<string, string>();
+  const transient = new Set<string>();
   const rendered = new Set<string>();
   let indexRead = false;
   let renderRead = false;
@@ -120,6 +126,7 @@ export async function readStoreDiagnostics(
     }
     for (const failure of resolved.unrenderable) {
       unrenderable.set(failure.variable, failure.reason);
+      if (failure.transient) transient.add(failure.variable);
       // A parameter that failed to render is in the store by definition, so it
       // belongs in the index even when the index read is the half that failed.
       indexed.add(failure.variable);
@@ -132,7 +139,15 @@ export async function readStoreDiagnostics(
   const now = opts.now ?? Date.now;
   const ageMs =
     resolved?.readAt === undefined ? 0 : Math.max(0, now() - resolved.readAt);
-  return { indexed, unrenderable, rendered, indexRead, renderRead, ageMs };
+  return {
+    indexed,
+    unrenderable,
+    transient,
+    rendered,
+    indexRead,
+    renderRead,
+    ageMs,
+  };
 }
 
 // ---------------------------------------------------------------------------

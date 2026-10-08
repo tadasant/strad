@@ -2925,6 +2925,7 @@ servers:
   const reading = (over: Partial<StoreDiagnostics> = {}): StoreDiagnostics => ({
     indexed: new Set(),
     unrenderable: new Map(),
+    transient: new Set(),
     rendered: new Set(),
     indexRead: true,
     renderRead: true,
@@ -2983,6 +2984,109 @@ servers:
     const s = derive([empty, empty]);
     expect(s.state).toBe("unverified");
     expect(s.unobservable?.reason).toBe("unreachable");
+  });
+
+  it("stays UNVERIFIED when a render failed transiently", () => {
+    // A 429 is the store not answering. It is neither "cannot render" nor a
+    // green, so the reading counts as partial.
+    const s = derive([
+      empty,
+      reading({
+        indexed: new Set(["BRIGHTDATA_API_KEY"]),
+        unrenderable: new Map([
+          ["BRIGHTDATA_API_KEY", "429 Too Many Requests"],
+        ]),
+        transient: new Set(["BRIGHTDATA_API_KEY"]),
+      }),
+    ]);
+    expect(s.state).toBe("unverified");
+    expect(badgeFor(s.state)).toBe("UNVERIFIED");
+  });
+
+  it("keeps the component's word when it answered and named nothing for the slug", () => {
+    // The component answered `ok` and its manifest lists nothing
+    // for strad-fetch, so its container holds none of them. A value seeded in
+    // the store since the last deploy must not overrule that into READY.
+    const s = deriveServerStatuses(
+      cfg,
+      [],
+      {
+        probes: new Map<string, BundleProbeOutcome>([
+          [
+            "bundle",
+            {
+              kind: "ok",
+              report: {
+                protocol: PRESENCE_PROTOCOL,
+                component: "bundle",
+                image: null,
+                bootedAt: "2026-10-08T00:00:00.000Z",
+                observedAt: "2026-10-08T00:00:01.000Z",
+                keys: {},
+                paramKeys: { "other-slug": ["X"] },
+              },
+            },
+          ],
+        ]),
+      },
+      {},
+      new Map([
+        [
+          "strad-fetch",
+          [
+            empty,
+            reading({
+              indexed: new Set(["BRIGHTDATA_API_KEY"]),
+              rendered: new Set(["BRIGHTDATA_API_KEY"]),
+            }),
+          ],
+        ],
+      ]),
+    )[0]!;
+    expect(s.state).toBe("unverified");
+    // Either of the two "it answered" reasons; never a store-derived green.
+    expect(["silent", "unmanifested"]).toContain(s.unobservable?.reason);
+  });
+
+  it("grades a params: true BUILTIN on the store, which is what it reads per call", () => {
+    const builtin = parseConfig(`
+version: 1
+gateway:
+  name: strad
+  env: prod
+  secrets: { provider: gcp-parameter-store }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles: []
+servers:
+  - slug: echo
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: core
+    entitlements: [admin]
+    params: true
+`);
+    const [s] = deriveServerStatuses(
+      builtin,
+      [],
+      undefined,
+      {},
+      new Map([
+        [
+          "echo",
+          [
+            empty,
+            reading({
+              indexed: new Set(["GREETING"]),
+              rendered: new Set(["GREETING"]),
+            }),
+          ],
+        ],
+      ]),
+    );
+    expect(s!.state).toBe("ready");
+    expect(s!.requirements[0]!.requirement.deliveries).toEqual(["gateway"]);
+    expect(s!.requirements[0]!.detail).toContain("each tool call");
   });
 
   it("stays UNVERIFIED on a partial reading", () => {

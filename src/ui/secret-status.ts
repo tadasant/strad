@@ -828,6 +828,7 @@ function gatewayHalf(
         `env:, which the deploy workflow fills from strad-${config.gateway.env}-` +
         `${requirement.name} in Secret Manager, and this process cannot see that. A ` +
         `missing value fails the render, so it had one at the last successful deploy. ` +
+        `If neither holds it now, the next deploy fails in render-spec. ` +
         `${bundleShrugReason(requirement, opts)}`,
     };
   }
@@ -1746,8 +1747,15 @@ function managedParamObservations(
  * supplementary image that is one deploy away from the container, the same
  * caveat a store-present bundle-only `${NAME}` carries, and the detail says so.
  *
- * Empty unless EVERY namespace read completed (index and render both). A partial
- * reading is not evidence that the rest is absent, and an empty one — a server
+ * ONLY WHEN THE COMPONENT GAVE NO ANSWER. A supplementary image whose component
+ * answered and named nothing for this slug (`silent`, `unmanifested`) has said
+ * its container holds none of them, and a value seeded since the last deploy
+ * must not overrule that into a green — `noComponentAnswer` keeps those on the
+ * component's word. A builtin and a store-served instance are read from the
+ * store at runtime, so for them the store is the answer whatever was probed.
+ *
+ * Empty unless EVERY namespace read completed (index and render both) with no
+ * transient failure. A partial reading is not evidence that the rest is absent, and an empty one — a server
  * whose namespaces hold nothing — produces no rows, so the entry keeps its
  * `unverified` scope: some `params: true` servers legitimately take their
  * credential from a connector consent that has not happened yet, and "nothing in
@@ -1762,6 +1770,9 @@ function storeManagedObservations(
   const readings = managedStore?.get(server.slug);
   if (!readings || readings.length === 0) return [];
   if (!readings.every((r) => r.indexRead && r.renderRead)) return [];
+  // A transient render failure is the store not answering, not refusing: the
+  // reading is partial, and a partial reading is no evidence.
+  if (readings.some((r) => r.transient.size > 0)) return [];
 
   const namespaces = serverNamespaces(config.gateway.env, server.slug);
   const names = new Set<string>();
@@ -1823,6 +1834,21 @@ function storeManagedObservations(
         (reason ? ` Reason: ${reason}` : ""),
     };
   });
+}
+
+/**
+ * Whether the store may stand in for the component on this server's managed
+ * parameters: a builtin or a store-served instance (both read the store at
+ * runtime), or a supplementary image whose component did not answer at all.
+ * A component that answered `ok` and named nothing for this slug keeps its word.
+ */
+function noComponentAnswer(
+  server: ServerConfig,
+  presence?: BundlePresence,
+): boolean {
+  if (server.kind !== "supplementary-image") return true;
+  if (isInstancePath(server.path)) return true;
+  return presence?.probes.get(server.bundle)?.kind !== "ok";
 }
 
 /**
@@ -2216,7 +2242,9 @@ export function deriveServerStatuses(
       const managedParams =
         probed.length > 0
           ? probed
-          : storeManagedObservations(config, server, managedStore);
+          : noComponentAnswer(server, presence)
+            ? storeManagedObservations(config, server, managedStore)
+            : [];
       const seenManaged = new Set<string>();
       for (const observation of managedParams) {
         if (seenManaged.has(observation.requirement.name)) continue;

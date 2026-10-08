@@ -470,7 +470,12 @@ type BadgeCounts = Record<EntryBadge, number>;
 
 function badgeCounts(entries: Entry[]): BadgeCounts {
   const out: BadgeCounts = { READY: 0, ISSUE: 0, INACTIVE: 0, UNVERIFIED: 0 };
-  for (const e of entries) if (e.badge) out[e.badge] += 1;
+  // A badgeless enabled entry is filed under "Needs attention" by `groupOf`, so
+  // it is counted the same way: nothing was established about it.
+  for (const e of entries) {
+    if (e.badge) out[e.badge] += 1;
+    else if (e.server.enabled) out.ISSUE += 1;
+  }
   return out;
 }
 
@@ -548,10 +553,10 @@ function editorNote(editable: boolean, writable: boolean): string {
 /**
  * The headline claim. It leads with the one number that means "broken".
  *
- * Every non-READY badge used to be lumped together here, so the banner said
- * "22 need attention, another 7 could not be checked" over a roster where most
- * of the 29 were serving. It now speaks in badges: ISSUE is the claim, and
- * INACTIVE and UNVERIFIED are named after it as what they are.
+ * It speaks in badges: ISSUE is the claim, and INACTIVE and UNVERIFIED are named
+ * after it as what they are. Lumping every non-READY entry into one count is
+ * how prod's banner read "22 need attention, another 7 could not be checked"
+ * over a roster where most of the 29 were serving.
  *
  * It still cannot print a green it has not earned. "Every server is READY" needs
  * every entry READY. Nothing broken plus some unverified says exactly that, and a
@@ -939,10 +944,10 @@ function hasFixDialog(entry: Entry): boolean {
  * A READY entry with no requirements (`no-secrets`) still has nothing behind it
  * and stays inert. A control that opens an empty panel is worse than no control.
  *
- * ONE branch consults `hasFixDialog` for every badge. The ISSUE branch once
- * returned a `<button>` unconditionally, so an entry with the badge and nothing
- * behind it named a `<dialog>` id nobody emitted and swallowed the click; one
- * rule for all four is what stops that drifting back.
+ * ONE branch consults `hasFixDialog` for every badge. A badge that returned a
+ * `<button>` unconditionally, over an entry with nothing behind it, would name
+ * a `<dialog>` id nobody emitted and swallow the click; one rule for all four is
+ * what keeps that from happening on any of them.
  *
  * The inert non-READY chip is a floor, not the fix. An entry that asserts "this
  * needs attention" and offers no way to find out why is the worse of the two
@@ -1004,7 +1009,7 @@ function fixDialogId(slug: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// The popout behind an ISSUE badge
+// The popout behind a badge
 // ---------------------------------------------------------------------------
 
 /**
@@ -1310,9 +1315,9 @@ function requirementBlock(
         )}. A value in the shared namespace covers all of them; one under a server's own namespace covers only that server.</p>`
     : "";
 
-  // `unrenderable` is in `isActionable`, so a row that offered no resource, no
-  // project and no console link would be telling a reader to act and then not
-  // saying where. The fix targets are the same ones — it is the same parameter.
+  // `unrenderable` is an ISSUE, so a row that offered no resource, no project
+  // and no console link would be telling a reader to act and then not saying
+  // where. The fix targets are the same ones — it is the same parameter.
   const guidance =
     state === "missing" || state === "placeholder" || state === "unrenderable"
       ? fixTargets(config, requirement, env)

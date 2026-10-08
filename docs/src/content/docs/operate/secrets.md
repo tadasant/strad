@@ -799,7 +799,7 @@ out.
 | ---------------------------------- | ----------------------------------------------------------------- |
 | `/healthz`                         | `servers[].state: "unconfigured"`, and the slug in `unconfigured` |
 | `/healthz` `degraded`              | **not** listed — nothing is broken                                |
-| `/console`                         | the chip reads `awaiting credential`, in the actionable count     |
+| `/console`                         | badge `INACTIVE`, chip `awaiting credential`; not an issue        |
 | `/api/secrets/readiness`           | `state: "unconfigured"`, ranked just under `missing`              |
 | `tools/list` for `?servers=<slug>` | an error naming the slug and the `${NAME}`                        |
 | `tools/list` with no `?servers=`   | the slug contributes no tools; every other server is unaffected   |
