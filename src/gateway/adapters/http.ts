@@ -33,7 +33,8 @@ import {
   type SelfClassifyingError,
 } from "../../telemetry/index.ts";
 import { remedyText, type HostState, type LocalHost } from "../troubleshoot.ts";
-import type { CallToolResult, ServerAdapter } from "./types.ts";
+import { elicitationMeta } from "../elicitation.ts";
+import type { CallContext, CallToolResult, ServerAdapter } from "./types.ts";
 import { errorText } from "../../util/error-text.ts";
 import {
   isRetryableStatus,
@@ -256,6 +257,16 @@ export class HttpServerAdapter implements ServerAdapter {
        * don't know what a strad slug is and name their tools plainly.
        */
       innerPrefix?: string;
+      /**
+       * Forward the caller's confirmation channel on `tools/call`, as `_meta`.
+       *
+       * Set only for a `supplementary-image` slug that declares
+       * `confirmations: true`, where a confirmed tool reads it
+       * (src/gateway/elicitation.ts). Every other mount, and every third
+       * party's URL, has no use for the caller's channel and is not handed it:
+       * the URL is a credential for that session's prompts.
+       */
+      forwardElicitation?: boolean;
       /**
        * The machine behind a `local-tunnel`, as the config describes it.
        *
@@ -781,12 +792,24 @@ export class HttpServerAdapter implements ServerAdapter {
   async callTool(
     name: string,
     args: Record<string, unknown>,
+    ctx?: CallContext,
   ): Promise<CallToolResult> {
+    // Core's own `_meta`, never the client's: the router forwards a client's
+    // name and arguments and nothing else, which is what lets the upstream
+    // trust this key.
+    const _meta =
+      this.opts.forwardElicitation && ctx?.elicitation
+        ? elicitationMeta(ctx.elicitation, this.slug, this.opts.timeoutMs)
+        : undefined;
     return this.authorized(async () => {
       const conn = await this.leased();
       const res = await this.lease(conn, "call_tool", (client) =>
         client.callTool(
-          { name: this.restore(name), arguments: args },
+          {
+            name: this.restore(name),
+            arguments: args,
+            ...(_meta ? { _meta } : {}),
+          },
           undefined,
           {
             timeout: this.opts.timeoutMs,

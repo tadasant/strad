@@ -8,6 +8,7 @@ import type { RuntimeConfig } from "../../config/runtime.ts";
 import type { WritingPrincipal } from "../../config/overlay.ts";
 import type { ServerKind } from "../../config/schema.ts";
 import type { ClientCapabilities } from "../clientCapabilities.ts";
+import type { ElicitationChannel } from "../elicitation.ts";
 import type { LocalHost } from "../troubleshoot.ts";
 
 /**
@@ -95,6 +96,14 @@ export interface CallContext {
    * request reached an adapter at all.
    */
   principal?: WritingPrincipal;
+  /**
+   * Where a human confirms this call, as the caller named it and core checked
+   * it — or why core refused it. Undefined when the caller named none, which a
+   * confirmed tool turns into a refusal. Only the HTTP adapter for a
+   * `supplementary-image` slug with `confirmations: true` forwards it; see
+   * src/gateway/elicitation.ts.
+   */
+  elicitation?: ElicitationChannel;
 }
 
 export interface CallToolResult {
