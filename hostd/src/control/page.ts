@@ -1,4 +1,5 @@
 import type { AuditEntry } from "../audit.js";
+import type { BridgeState } from "../browser/bridge.js";
 import type { GrantView } from "../consent/grants.js";
 
 export interface ControlState {
@@ -11,6 +12,8 @@ export interface ControlState {
   grants: (GrantView & { running: string[] })[];
   /** Absent when no enabled server needs the native helper. */
   helper?: { connected: boolean; error?: string };
+  /** Absent when the browser server is not enabled. */
+  extension?: BridgeState;
   audit: AuditEntry[];
   now: number;
 }
@@ -92,6 +95,14 @@ ${g.running.map((c) => `<span class="cmd">▶ ${esc(c)}</span>`).join("")}
 <h1>strad-hostd</h1><p class="sub">${esc(state.machine)} · serving ${state.servers.map((s) => `<code>${esc(s.name)}</code>`).join(", ") || "nothing"} · tunnel: ${esc(state.tunnel)}${
     state.helper
       ? ` · native helper: ${state.helper.connected ? "connected" : `not reachable${state.helper.error ? ` (${esc(state.helper.error)})` : ""}`}`
+      : ""
+  }${
+    state.extension
+      ? ` · Chrome extension: ${
+          state.extension.connected
+            ? `connected${state.extension.version ? ` (v${esc(state.extension.version)}` : ""}${state.extension.attachedTabs ? `, attached to ${state.extension.attachedTabs} tab${state.extension.attachedTabs === 1 ? "" : "s"}` : ""}${state.extension.version ? ")" : ""}`
+            : "not connected"
+        }`
       : ""
   }</p>
 ${banner}

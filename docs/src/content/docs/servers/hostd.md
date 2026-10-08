@@ -19,7 +19,10 @@ flowchart LR
   C -->|"127.0.0.1:7311"| M["MCP listener<br/>/shell/mcp · /browser/mcp<br/>/computer-headless/mcp · /computer/mcp"]
   M --> G["consent gate<br/>dialog · grants · kill switch"]
   G --> SH["shell"]
-  G --> BR["Chrome, over DevTools"]
+  G --> BR["browser"]
+  BR -->|"when connected"| EXT["bridge extension<br/>in the owner's Chrome<br/>(chrome.debugger)"]
+  BR -.->|"else DevToolsActivePort"| CH["Chrome, over DevTools"]
+  EXT -->|"ws to 127.0.0.1:7312/extension<br/>+ pairing token"| P
   G --> AX["strad-hostd-ax<br/>(its own LaunchAgent, Unix socket)"]
   AX --> ACC["Accessibility tree"]
   AX --> CG["screen capture · CGEvent input"]
@@ -29,9 +32,12 @@ flowchart LR
 ```
 
 The status page is a separate listener. The tunnel's ingress names port 7311 and
-nothing else. `strad-hostd-ax` is a second LaunchAgent the daemon talks to over
-a socket in `~/.strad-hostd`, because that is the only arrangement under which
-macOS attributes its permission grants to the helper and not to `node`.
+nothing else, which is also why the Chrome extension connects there: its
+socket, and the CRX a policy-installed Chrome fetches, are on the port nothing
+outside the machine can reach. `strad-hostd-ax` is a second LaunchAgent the
+daemon talks to over a socket in `~/.strad-hostd`, because that is the only
+arrangement under which macOS attributes its permission grants to the helper
+and not to `node`.
 
 ## Install
 
@@ -112,13 +118,38 @@ while the approval has lapsed fails with `screen_recording_denied`.
 
 ## Let Chrome be driven
 
-In the Chrome you use, open `chrome://inspect/#remote-debugging` and turn on
-remote debugging for the running browser. This needs Chrome 144 or newer.
-Launching Chrome with `--remote-debugging-port` does not work for your default
-profile: Chrome has ignored that flag there since version 136, without an error.
+The browser server has two ways into the Chrome you use, and takes the first
+that is there.
 
-Chrome asks "Allow remote debugging?" each time the daemon connects, and shows a
-banner while it is attached.
+**The extension, for a machine nobody is at.** `strad-hostd extension` on the
+Mac prints the install with your paths and pairing token: `chrome://extensions`
+› Developer mode › Load unpacked › `~/.strad-hostd/app/extension`, then the
+token pasted into its options page. It stays installed while developer mode
+does, and shows a "started debugging this browser" bar on each tab it
+attaches unless Chrome runs with `--silent-debugger-extension-api`. The daemon
+must be running, and the status page says "Chrome extension: connected" once
+it is paired. The command also writes a configuration profile that
+force-installs the extension from the daemon with the token in managed
+storage, for a Mac Chrome considers managed: on a personal Mac Chrome filters
+a force-install from outside the Web Store as a sensitive policy and installs
+nothing, so that file is for an MDM-enrolled or domain-bound machine only.
+
+**DevTools, otherwise.** Open `chrome://inspect/#remote-debugging` and turn on
+remote debugging for the running browser (Chrome 144 or newer). Chrome asks
+"Allow remote debugging?" each time the daemon connects, and only a person can
+answer, so this route cannot run unattended. Launching Chrome with
+`--remote-debugging-port` does not work for your default profile: Chrome has
+ignored that flag there since version 136, without an error.
+
+:::caution[What the extension hands over]
+With it installed, every account that Chrome is signed in to can be driven by
+anything that holds a browser key and gets past the consent dialog, with no
+prompt from Chrome. Under the unattended setting below, the dialog refuses
+nothing. A prompt injection in one agent's page reaches all of those accounts.
+What remains is the daemon's: a key per server, a grant per task, the audit
+log, and the kill switch, which also detaches the debugger from every tab.
+Keep these slugs `admin`-only. See [limitation #112](/limitations/).
+:::
 
 ## Register the slugs
 
@@ -166,6 +197,41 @@ nobody objects, set `"consent": { "onTimeout": "allow" }` in
 `~/.strad-hostd/config.json` and restart. Read the design page's consent section
 first: with that setting and nobody at the screen, the dialog protects nothing.
 
+### Unattended
+
+The configuration for a Mac nobody is sitting at, all of it:
+
+```json
+{ "consent": { "onTimeout": "allow", "windowSeconds": 3 } }
+```
+
+plus the extension above. Three seconds is the shortest window the daemon
+accepts. Every `request_control` then succeeds after three seconds unless
+someone happens to be there to reject it, and `approved_by` says `"timeout"`.
+The default stays `deny`; this is the owner's setting, in a file only they can
+write.
+
+## Several sessions from the same Mac
+
+Claude Code sessions on the Mac itself reach the same daemon over HTTP, each
+with a key of its own, rather than each spawning a `stdio` process: a `stdio`
+process cannot use the extension, and on a Mac with the helper's LaunchAgent
+installed it cannot reach the helper either, which takes one controller.
+
+```bash
+strad-hostd key add browser claude-1
+claude mcp add --transport http hostd-browser http://127.0.0.1:7311/browser/mcp \
+  --header "Authorization: Bearer <the key it printed>"
+```
+
+One `key add` per session and per server; the daemon picks a new key up at
+once. The dialog and the status page show the client's name after the
+server's, so a grant reads `browser-use-my-mbp-headless (claude-1)`. Grants are
+independent: several sessions can hold the browser at once, they share one
+`chrome.debugger` attachment per tab, and a tab one grant opened is not
+closable by another. `key revoke browser claude-1` ends that session's access
+without touching the rest.
+
 The two computer-use servers differ on one axis. `computer-use-*-headless`
 reads and operates apps through the Accessibility tree: `read_ui_tree` shows a
 window's buttons, fields and menus with ids, `perform_action` presses one,
@@ -182,6 +248,7 @@ so, its banner is red, and your first key or click ends the grant.
 | Stop one grant and what it started | the grant's **Kill** button, or `strad-hostd kill <grant_id>` |
 | Turn everything off | **Disable everything**, `strad-hostd disable`, or `touch ~/.strad-hostd/DISABLED` |
 | Turn it back on | **Turn back on**, or `strad-hostd enable` |
+| Whether the Chrome extension is paired | the status page's header, `strad-hostd status`, or `get_control_status` |
 
 The machine posts a notification when a grant starts and when it ends, naming
 the server and the purpose. With the helper installed, a banner also sits at
@@ -203,8 +270,8 @@ stop the daemon, edit `~/.strad-hostd/config.json`, unload either LaunchAgent
 or replace the helper — which is the shell slug's blast radius, and why it
 stays `admin`-only.
 
-Disabling ends every grant, kills what they started, stops the tunnel, and
-survives a reboot. A `touch`ed file takes effect within two seconds. A command
+Disabling ends every grant, kills what they started, detaches the Chrome
+extension from every tab, stops the tunnel, and survives a reboot. A `touch`ed file takes effect within two seconds. A command
 that moved itself into a new session (`setsid`, a launchd job) is out of reach of
 all of these: this is an unsandboxed shell. strad then reports the slugs `offline`.
 

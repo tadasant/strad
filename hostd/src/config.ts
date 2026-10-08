@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import { CAPABILITY_IDS, slugFor, type CapabilityId } from "./capabilities.js";
+import { keysMatch } from "./mcp/auth.js";
 
 /**
  * The daemon's state directory: config, the kill-switch file, the audit log and
@@ -37,6 +38,19 @@ const CapabilityConfig = z
      * Defaults to `<capability>-<machine>`; set it to the strad slug.
      */
     displayName: z.string().min(1).max(64).optional(),
+    /**
+     * Further keys for this server, by client name — one per local MCP
+     * client, so several Claude Code sessions on this machine each hold their
+     * own and the dialog and the status page say which one is asking.
+     * `strad-hostd key add <server> <name>` mints one; `key revoke` drops it.
+     * A client key opens exactly what `key` opens: this server, no other.
+     */
+    clientKeys: z
+      .record(
+        z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/i),
+        z.string().min(MIN_KEY_LENGTH),
+      )
+      .default({}),
   })
   .default({ enabled: false });
 
@@ -248,4 +262,80 @@ export function enableCapability(
   };
   ConfigSchema.parse(raw);
   return { changed: true, displayName };
+}
+
+/**
+ * The client a presented key belongs to: the server's own key (strad's, or
+ * whichever client holds it), or a named client key. Constant-time per
+ * candidate; the set is small.
+ */
+export function matchKey(
+  cap: Config["capabilities"][CapabilityId],
+  presented: string,
+): { ok: true; client?: string } | { ok: false } {
+  if (cap.key && keysMatch(presented, cap.key)) return { ok: true };
+  for (const [client, key] of Object.entries(cap.clientKeys)) {
+    if (keysMatch(presented, key)) return { ok: true, client };
+  }
+  return { ok: false };
+}
+
+/**
+ * Re-read every server's keys from the config file into a LIVE config, so a
+ * key minted while the daemon runs works without a restart. Only the keys
+ * move: everything else a running daemon holds was validated at boot and is
+ * wired into listeners and the tunnel.
+ */
+export function reloadKeys(live: Config, path = configPath()): void {
+  const fresh = loadConfig(path);
+  for (const id of CAPABILITY_IDS) {
+    live.capabilities[id].key = fresh.capabilities[id].key;
+    live.capabilities[id].clientKeys = fresh.capabilities[id].clientKeys;
+  }
+}
+
+/**
+ * Add a client key to a RAW config object (the file's JSON). Refuses a name
+ * already in use rather than rotating it silently: a session holding the old
+ * key would fail with no line anywhere saying why.
+ */
+export function addClientKey(
+  raw: Record<string, unknown>,
+  id: CapabilityId,
+  client: string,
+  key: string,
+): void {
+  const capabilities = (raw.capabilities ??= {}) as Record<
+    string,
+    { clientKeys?: Record<string, string> } | undefined
+  >;
+  const cap = (capabilities[id] ??= {});
+  const keys = (cap.clientKeys ??= {});
+  if (keys[client])
+    throw new Error(`${id} already has a key for "${client}"; revoke it first`);
+  // Validated on a copy: a name or key the schema refuses must not be left
+  // in the file's object for the next write to carry.
+  ConfigSchema.parse({
+    ...raw,
+    capabilities: {
+      ...capabilities,
+      [id]: { ...cap, clientKeys: { ...keys, [client]: key } },
+    },
+  });
+  keys[client] = key;
+}
+
+export function revokeClientKey(
+  raw: Record<string, unknown>,
+  id: CapabilityId,
+  client: string,
+): boolean {
+  const cap = (
+    raw.capabilities as
+      | Record<string, { clientKeys?: Record<string, string> } | undefined>
+      | undefined
+  )?.[id];
+  if (!cap?.clientKeys?.[client]) return false;
+  delete cap.clientKeys[client];
+  return true;
 }

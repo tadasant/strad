@@ -8,8 +8,8 @@ import {
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 import { CAPABILITIES, type CapabilityId } from "../capabilities.js";
-import type { Config } from "../config.js";
-import { bearerToken, keysMatch } from "./auth.js";
+import { matchKey, type Config } from "../config.js";
+import { bearerToken } from "./auth.js";
 import { buildServer, type ServerDeps } from "./server.js";
 import type { Capability } from "./tool.js";
 
@@ -48,7 +48,9 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
  * pin callers to.
  *
  * Each capability authenticates with ITS OWN key. The key strad holds for the
- * browser slug is a 401 on `/shell/mcp`.
+ * browser slug is a 401 on `/shell/mcp`. A capability may also carry named
+ * client keys, one per local MCP client; a request on one of those is served
+ * the same server, with the client's name on its dialog and its grants.
  */
 export function createMcpListener(
   config: Config,
@@ -68,9 +70,11 @@ export function createMcpListener(
       const capability = id && capabilities[id];
       if (!id || !capability) return send(res, 404, { error: "not found" });
 
-      const expected = config.capabilities[id].key;
       const presented = bearerToken(req.headers.authorization);
-      if (!expected || !presented || !keysMatch(presented, expected)) {
+      const matched = presented
+        ? matchKey(config.capabilities[id], presented)
+        : ({ ok: false } as const);
+      if (!matched.ok) {
         return send(
           res,
           401,
@@ -93,7 +97,7 @@ export function createMcpListener(
         return send(res, 400, { error: "invalid JSON body" });
       }
 
-      const server = buildServer(id, capability, deps);
+      const server = buildServer(id, capability, deps, matched.client);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
       });

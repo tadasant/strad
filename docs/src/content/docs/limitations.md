@@ -3180,7 +3180,7 @@ The rule assumes a box strad deploys to. This one is a personal laptop strad hol
 
 An unanswered consent dialog is a denial by default, so with nobody at the laptop every `request_control` fails with `timeout`. `consent.onTimeout: "allow"` changes that, and [the design page](/servers/hostd-design/#fail-closed-and-the-tension-with-the-original-ask) says what it costs.
 
-The macOS halves have not run anywhere but a bare CI runner: the `osascript` dialog, the LaunchAgents, the installer's `cloudflared` branch, and Chrome 144's debugging toggle against a real default profile. The two computer-use servers add steps of their own; see #108.
+The macOS halves have not run anywhere but a bare CI runner: the `osascript` dialog, the LaunchAgents, the installer's `cloudflared` branch, and Chrome 144's debugging toggle against a real default profile. The two computer-use servers add steps of their own; see #108. The Chrome extension adds one more, and the trade-off that goes with it; see #112.
 
 **How you would know.** `troubleshoot_host` reports `offline` when the daemon, the tunnel or the laptop is down, and also when the owner has switched remote control off. `http://127.0.0.1:7312` on the machine says which.
 
@@ -3406,3 +3406,21 @@ A `remote-http` server with `oauthRefresh:` has a **Connect** button that runs t
 **Undo:** for a blocked upstream, ask its owner to allow the deployment's egress and drop `discoveryProxy:`. If its token endpoint is blocked too, authorize from a machine it allows and seed the refresh token by hand. Even then, every refresh from strad would fail. For a confidential-only upstream, register a client by hand and seed it.
 
 See `HACKS.md` #111.
+
+### 112. The Chrome extension makes the real profile drivable with no prompt
+
+The browser server of [strad-hostd](/servers/hostd/) can reach the owner's real Chrome through an extension installed in that profile, and does so ahead of DevTools whenever the extension is connected. It exists because neither route Chrome offers into the default profile can run unattended: `--remote-debugging-port` is ignored there since Chrome 136, and the `chrome://inspect/#remote-debugging` toggle asks "Allow remote debugging?" on every connection. The extension attaches `chrome.debugger` with no per-connection prompt.
+
+That is the trade-off, and it is the owner's to make. With the extension installed and `consent.onTimeout: "allow"`, every account the owner is signed in to is drivable by anything that holds a hostd browser key and gets past a consent window nobody is at the screen to answer. A prompt injection that lands in one agent's page reaches all of them. What remains is the daemon's own: a key per server, a grant per task, the audit log, and a kill switch that also detaches the debugger from every tab. Keep the slugs `admin`-only.
+
+Installing it is done at the Mac, by hand: unpacked from `chrome://extensions` with developer mode on, paired through its options page, and it holds while developer mode does. `strad-hostd extension` also writes a configuration profile that force-installs the extension with the token in managed storage, which survives developer-mode rules and shows no "started debugging this browser" infobar — but Chrome honours a force-install from outside the Web Store only on a Mac it considers managed (MDM-enrolled or domain-bound), and on a personal Mac filters it as a sensitive policy. The profile is for a managed Mac; a personal one gets the unpacked route.
+
+The extension has run in a real Chromium in CI, through every browser tool, with two sessions sharing one attachment, the kill switch detaching it, and a rogue listener on the daemon's port getting a nonce and nothing else (the pairing token never crosses the socket; each side proves it over the other's nonce). It has not run in Google Chrome on a Mac: the unpacked route there, the profile on a managed Mac, managed storage and the absence of the infobar are reasoned from Chromium's source and not yet observed.
+
+**How you would know.** The status page at `http://127.0.0.1:7312` says "Chrome extension: connected" or "not connected", `strad-hostd status` says the same, and `get_control_status` on the browser server reports `browser: {extension, via}`. A tool call that falls back to DevTools and finds none says the extension is not connected.
+
+**Undo:** Chrome remembering an "always allow" for remote debugging on the default profile would retire the extension. Nothing suggests it will.
+
+See `HACKS.md` #112.
+
+---

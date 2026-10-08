@@ -1,7 +1,10 @@
+import { statSync } from "node:fs";
 import type { Server as HttpServer } from "node:http";
+import { join } from "node:path";
 import type { Duplex } from "node:stream";
 
 import { AuditLog } from "./audit.js";
+import { ExtensionBridge } from "./browser/bridge.js";
 import { browserCapability } from "./browser/tools.js";
 import {
   CAPABILITIES,
@@ -10,12 +13,26 @@ import {
 } from "./capabilities.js";
 import { computerCapability } from "./computer/foreground.js";
 import { computerHeadlessCapability } from "./computer/headless.js";
-import { enabledCapabilities, type Config } from "./config.js";
+import { enabledCapabilities, reloadKeys, type Config } from "./config.js";
 import { ConsentGate } from "./consent/gate.js";
 import type { Notifier } from "./consent/notifier.js";
 import { platformPrompter, type Prompter } from "./consent/prompter.js";
 import { createControlListener } from "./control/server.js";
 import { KillSwitch } from "./killswitch.js";
+import {
+  listExtensionFiles,
+  loadOrCreateSigningKey,
+  packExtension,
+  updateManifestXml,
+  type PackedExtension,
+} from "./extension/crx.js";
+import {
+  crxUrl,
+  extensionDir,
+  extensionKeyPath,
+  extensionTokenPath,
+} from "./extension/paths.js";
+import { pairingToken } from "./extension/secret.js";
 import { createMcpListener } from "./mcp/http.js";
 import type { ServerDeps } from "./mcp/server.js";
 import type { Capability } from "./mcp/tool.js";
@@ -33,6 +50,8 @@ export interface Core {
   capabilities: Partial<Record<CapabilityId, Capability>>;
   helper: HelperClient;
   presence: Presence;
+  /** The Chrome extension's bridge, when the browser server is served with a listener. */
+  bridge?: ExtensionBridge;
   runningFor: (grantId: string) => string[];
   close: () => Promise<void>;
 }
@@ -53,12 +72,26 @@ export function buildCore(
     only?: CapabilityId[];
     /** A transport to the native helper, in place of the socket-or-spawn default. Tests. */
     helperTransport?: () => Promise<Duplex>;
+    /**
+     * The Chrome extension's pairing token. Given, the browser server is
+     * served through the extension whenever one is connected; `serve` passes
+     * the state directory's, and `stdio` passes nothing because it has no
+     * listener for the extension to reach.
+     */
+    extensionToken?: string;
     log?: (line: string) => void;
   },
 ): Core {
   const log = opts.log ?? (() => {});
   const killSwitch = new KillSwitch(opts.stateDir);
   const audit = new AuditLog(opts.stateDir);
+  const bridge = opts.extensionToken
+    ? new ExtensionBridge({
+        token: opts.extensionToken,
+        disabled: () => killSwitch.isDisabled(),
+        log,
+      })
+    : undefined;
 
   // The gate and the helper each need the presence sync, which needs both.
   const late: { presence?: Presence } = {};
@@ -69,7 +102,12 @@ export function buildCore(
     audit,
     notifier: opts.notifier,
     controlUrl: opts.controlUrl,
-    onChange: () => void late.presence?.sync(),
+    onChange: () => {
+      void late.presence?.sync();
+      // Thrown, the switch has ended every grant, and each grant's backend
+      // released what it held; this is the check that holds if one did not.
+      if (killSwitch.isDisabled()) void bridge?.detachAll();
+    },
   });
 
   const helper = new HelperClient({
@@ -106,7 +144,8 @@ export function buildCore(
   const capabilities: Partial<Record<CapabilityId, Capability>> = {};
   const shell = ids.includes("shell") ? shellCapability(config) : undefined;
   if (shell) capabilities.shell = shell;
-  if (ids.includes("browser")) capabilities.browser = browserCapability(config);
+  if (ids.includes("browser"))
+    capabilities.browser = browserCapability(config, bridge);
   if (ids.includes("computer-headless"))
     capabilities["computer-headless"] = computerHeadlessCapability(
       config,
@@ -115,7 +154,11 @@ export function buildCore(
   if (ids.includes("computer"))
     capabilities.computer = computerCapability(config, helper);
 
-  const sweep = setInterval(() => gate.enforce(), ENFORCE_EVERY_MS);
+  const sweep = setInterval(() => {
+    // A `touch`ed DISABLED file calls nothing: the sweep is what notices it,
+    // ends the grants, and takes the extension off every tab.
+    if (gate.enforce() > 0 || killSwitch.isDisabled()) void bridge?.detachAll();
+  }, ENFORCE_EVERY_MS);
   sweep.unref();
   presence.start();
 
@@ -124,6 +167,7 @@ export function buildCore(
     capabilities,
     helper,
     presence,
+    bridge,
     runningFor: (grantId) =>
       shell?.processes
         .list(grantId)
@@ -135,8 +179,29 @@ export function buildCore(
       gate.grants.endAll("killed");
       await presence.close();
       for (const c of Object.values(capabilities)) await c?.close?.();
+      bridge?.close();
       helper.close();
     },
+  };
+}
+
+/** A packer that re-signs only when the extension directory's files change. */
+function memoisedPack(dir: string, keyPath: string): () => PackedExtension {
+  let last: { stamp: string; packed: PackedExtension } | undefined;
+  return () => {
+    const stamp = listExtensionFiles(dir)
+      .map((f) => {
+        const st = statSync(join(dir, f));
+        return `${f}:${st.size}:${st.mtimeMs}`;
+      })
+      .join("\n");
+    if (!last || last.stamp !== stamp) {
+      last = {
+        stamp,
+        packed: packExtension(dir, loadOrCreateSigningKey(keyPath)),
+      };
+    }
+    return last.packed;
   };
 }
 
@@ -174,6 +239,10 @@ export async function startDaemon(
     helperTransport?: () => Promise<Duplex>;
     log?: (line: string) => void;
     ephemeralPorts?: boolean;
+    /** The unpacked extension to pack and serve. Defaults to the package's own. */
+    extensionDir?: string;
+    /** Where `strad-hostd key add` wrote: re-read on `POST /reload-keys`. Omitted, keys are fixed for the run. */
+    configPath?: string;
   },
 ): Promise<RunningDaemon> {
   if (config.consent.mode === "none") {
@@ -189,10 +258,14 @@ export async function startDaemon(
     }
   }
   const log = opts.log ?? (() => {});
+  const serveBrowser = enabledCapabilities(config).includes("browser");
   const core = buildCore(config, {
     ...opts,
     log,
     controlUrl: `http://127.0.0.1:${config.controlPort}`,
+    extensionToken: serveBrowser
+      ? pairingToken(extensionTokenPath(opts.stateDir))
+      : undefined,
   });
   const tunnel = new TunnelSupervisor(config, core.deps.killSwitch, (l) =>
     log(`[tunnel] ${l}`),
@@ -208,6 +281,23 @@ export async function startDaemon(
       error: core.helper.error,
     }),
     stateDir: opts.stateDir,
+    extension: core.bridge
+      ? {
+          bridge: core.bridge,
+          // Packed on first request and again only when a file in the
+          // directory changes: signing is an RSA operation, and the route is
+          // reachable by any local page in a loop.
+          packed: memoisedPack(
+            opts.extensionDir ?? extensionDir(),
+            extensionKeyPath(opts.stateDir),
+          ),
+          updateXml: (packed, port) =>
+            updateManifestXml(packed.id, packed.version, crxUrl(port)),
+        }
+      : undefined,
+    reloadKeys: opts.configPath
+      ? () => reloadKeys(config, opts.configPath)
+      : undefined,
   });
 
   const mcpPort = await listen(mcp, opts.ephemeralPorts ? 0 : config.port);

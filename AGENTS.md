@@ -160,7 +160,12 @@ does not use it.
   serves the shell, browser and two computer-use MCP servers behind
   `local-tunnel` slugs. It is its own npm tree (`cd hostd && npm ci && npm test`)
   and is NOT under `servers/`: everything there is baked into the bundle image,
-  and this code never runs in a strad container. Root ESLint and Prettier cover
+  and this code never runs in a strad container. `hostd/extension/` is the
+  Chrome extension the browser server prefers when it is connected — the one
+  route into the owner's default profile with no per-connection prompt — and
+  the daemon packs and serves it itself (`src/extension/`); bump its
+  `manifest.json` version when it changes, or a force-installed Chrome keeps
+  the old copy. Root ESLint and Prettier cover
   its source; the root `tsc` does not. `hostd/ax/` is `strad-hostd-ax`, the Swift
   helper the computer-use servers and the on-screen banner go through; it builds
   only on macOS, and `.github/workflows/hostd-ax.yml` is the ONE job in this

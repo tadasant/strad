@@ -54,9 +54,13 @@ export function buildServer(
   id: CapabilityId,
   capability: Capability,
   deps: ServerDeps,
+  /** The client key's name, when the request came on one: it is shown with the server's. */
+  client?: string,
 ): Server {
   const { config, gate, killSwitch, audit } = deps;
   const name = displayName(config, id);
+  /** What the dialog, the grant and the status page call the caller. */
+  const caller = client ? `${name} (${client})` : name;
 
   const controlTools: Tool[] = [
     {
@@ -204,7 +208,7 @@ Idempotent: ending a grant that is already gone returns {"ended":false}.`,
         }
         const decision = await gate.request({
           capability: id,
-          server: name,
+          server: caller,
           purpose: args.purpose,
           minutes: typeof args.minutes === "number" ? args.minutes : undefined,
           signal: extra.signal,

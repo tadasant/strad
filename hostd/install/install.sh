@@ -59,7 +59,7 @@ say "Installing to $APP"
 mkdir -p "$STATE" && chmod 700 "$STATE"
 rm -rf "$APP.new"
 mkdir -p "$APP.new"
-cp -R "$HERE/build" "$HERE/package.json" "$HERE/package-lock.json" "$APP.new/"
+cp -R "$HERE/build" "$HERE/extension" "$HERE/package.json" "$HERE/package-lock.json" "$APP.new/"
 (cd "$APP.new" && npm ci --omit=dev --no-audit --no-fund)
 rm -rf "$APP" && mv "$APP.new" "$APP"
 HOSTD=("$NODE" "$APP/build/cli.js")
@@ -183,4 +183,5 @@ cat <<TXT
   Turn everything off:      $NODE $APP/build/cli.js disable     (or: touch $STATE/DISABLED)
   Print the bearer keys:    $NODE $APP/build/cli.js keys
   Check the native helper:  $NODE $APP/build/cli.js helper
+  Install the Chrome extension (unattended browser use): $NODE $APP/build/cli.js extension
 TXT

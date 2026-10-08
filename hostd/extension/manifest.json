@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "strad-hostd bridge",
+  "version": "0.1.0",
+  "description": "Lets the strad-hostd daemon on this machine drive this Chrome through chrome.debugger. It connects out to 127.0.0.1 only and does nothing until the daemon it is paired with asks.",
+  "minimum_chrome_version": "116",
+  "permissions": ["debugger", "tabs", "storage", "alarms"],
+  "background": { "service_worker": "background.js" },
+  "options_page": "options.html",
+  "storage": { "managed_schema": "schema.json" }
+}

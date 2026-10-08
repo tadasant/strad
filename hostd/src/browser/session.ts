@@ -1,6 +1,7 @@
 import type { Config } from "../config.js";
 import type { Grant } from "../consent/grants.js";
-import { CdpConnection } from "./cdp.js";
+import { CdpBackend, type BrowserBackend } from "./backend.js";
+import type { ExtensionBridge } from "./bridge.js";
 import { discoverBrowserWsUrl } from "./discover.js";
 
 export interface TabInfo {
@@ -10,81 +11,75 @@ export interface TabInfo {
   opened_by_you: boolean;
 }
 
-interface TargetInfo {
-  targetId: string;
-  type: string;
-  title: string;
-  url: string;
-}
+export const EXTENSION_ABSENT =
+  "The strad-hostd Chrome extension is not connected, so the daemon fell back to DevTools. " +
+  "On that machine, `strad-hostd extension` says how to install and pair it; the status page says whether it is connected.";
 
 /**
- * One grant's hold on the browser: a DevTools connection, the tabs it has
- * attached to, and the tabs it opened. It closes when the grant ends — the kill
- * button drops the socket, and Chrome detaches every session on it. The TABS
- * stay: a tab left in a state for the owner is half of what this is for.
+ * One grant's hold on the browser: a backend, the tabs it has attached to,
+ * and the tabs it opened. It closes when the grant ends — the kill button
+ * drops the DevTools socket, or releases the extension's attachments — and
+ * the TABS stay: a tab left in a state for the owner is half of what this is
+ * for.
+ *
+ * The backend is chosen on first use, and the extension wins when it is
+ * connected: it is the route that needs no one at the screen. Otherwise
+ * `DevToolsActivePort` or `browser.cdpUrl`, as before.
  */
 export class BrowserSession {
-  private conn?: CdpConnection;
-  private readonly sessions = new Map<string, string>();
+  private be?: BrowserBackend;
   readonly opened = new Set<string>();
 
-  constructor(private readonly config: Config) {}
+  constructor(
+    private readonly config: Config,
+    private readonly bridge?: ExtensionBridge,
+  ) {}
 
-  async connection(): Promise<CdpConnection> {
-    if (this.conn && !this.conn.isClosed) return this.conn;
-    this.sessions.clear();
-    const conn = await CdpConnection.connect(
-      await discoverBrowserWsUrl(this.config),
-    );
-    conn.on((e) => {
-      if (
-        e.method === "Target.detachedFromTarget" ||
-        e.method === "Target.targetDestroyed"
-      ) {
-        const gone = e.params.targetId as string | undefined;
-        if (gone) this.sessions.delete(gone);
-      }
-    });
-    this.conn = conn;
-    return conn;
+  async backend(): Promise<BrowserBackend> {
+    if (this.be && !this.be.isClosed) return this.be;
+    this.be?.close();
+    if (this.bridge?.connected) {
+      this.be = this.bridge.backend();
+      return this.be;
+    }
+    let url: string;
+    try {
+      url = await discoverBrowserWsUrl(this.config);
+    } catch (err) {
+      throw new Error(
+        this.bridge
+          ? `${EXTENSION_ABSENT} ${(err as Error).message}`
+          : (err as Error).message,
+      );
+    }
+    this.be = await CdpBackend.connect(url);
+    return this.be;
   }
 
   async tabs(): Promise<TabInfo[]> {
-    const conn = await this.connection();
-    const { targetInfos } = await conn.send<{ targetInfos: TargetInfo[] }>(
-      "Target.getTargets",
-    );
-    return targetInfos
-      .filter((t) => t.type === "page" && !t.url.startsWith("devtools://"))
-      .map((t) => ({
-        tab_id: t.targetId,
-        title: t.title,
-        url: t.url,
-        opened_by_you: this.opened.has(t.targetId),
-      }));
+    const tabs = await (await this.backend()).tabs();
+    return tabs.map((t) => ({
+      tab_id: t.id,
+      title: t.title,
+      url: t.url,
+      opened_by_you: this.opened.has(t.id),
+    }));
   }
 
-  /** The flat-session id for a tab, attaching on first use. */
-  async attach(tabId: string): Promise<string> {
-    const conn = await this.connection();
-    const existing = this.sessions.get(tabId);
-    if (existing) return existing;
-    let sessionId: string;
-    try {
-      ({ sessionId } = await conn.send<{ sessionId: string }>(
-        "Target.attachToTarget",
-        {
-          targetId: tabId,
-          flatten: true,
-        },
-      ));
-    } catch {
-      throw new Error(`No tab "${tabId}". list_tabs shows the tabs there are.`);
-    }
-    this.sessions.set(tabId, sessionId);
-    await conn.send("Page.enable", {}, sessionId);
-    await conn.send("Runtime.enable", {}, sessionId);
-    return sessionId;
+  /** Open a tab and remember that this grant owns it. */
+  async openTab(url: string, foreground: boolean): Promise<string> {
+    const id = await (await this.backend()).createTab(url, !foreground);
+    this.opened.add(id);
+    return id;
+  }
+
+  async activateTab(tabId: string): Promise<void> {
+    await (await this.backend()).activateTab(tabId);
+  }
+
+  async closeTab(tabId: string): Promise<void> {
+    await (await this.backend()).closeTab(tabId);
+    this.opened.delete(tabId);
   }
 
   async send<T = Record<string, unknown>>(
@@ -93,13 +88,7 @@ export class BrowserSession {
     params: Record<string, unknown> = {},
     timeoutMs?: number,
   ): Promise<T> {
-    const sessionId = await this.attach(tabId);
-    return (await this.connection()).send<T>(
-      method,
-      params,
-      sessionId,
-      timeoutMs,
-    );
+    return (await this.backend()).send<T>(tabId, method, params, timeoutMs);
   }
 
   /** Evaluate in the page and return the value, or throw the page's own error. */
@@ -139,9 +128,8 @@ export class BrowserSession {
   }
 
   close(): void {
-    this.conn?.close();
-    this.conn = undefined;
-    this.sessions.clear();
+    this.be?.close();
+    this.be = undefined;
   }
 }
 
@@ -149,12 +137,15 @@ export class BrowserSession {
 export class BrowserSessions {
   private readonly byGrant = new Map<string, BrowserSession>();
 
-  constructor(private readonly config: Config) {}
+  constructor(
+    private readonly config: Config,
+    private readonly bridge?: ExtensionBridge,
+  ) {}
 
   for(grant: Grant): BrowserSession {
     let s = this.byGrant.get(grant.id);
     if (!s) {
-      s = new BrowserSession(this.config);
+      s = new BrowserSession(this.config, this.bridge);
       this.byGrant.set(grant.id, s);
       const session = s;
       grant.signal.addEventListener(
