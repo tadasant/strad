@@ -227,18 +227,21 @@ describe("what one refresh costs the store, at production's shape", () => {
     // The test below is the one that describes production, and there the second
     // layer is free: it slices the same reading, and `listParameters` is still 1.
     expect(counts.listParameters).toBe(16);
-    expect(counts.getVersion).toBe(16 * total);
+    expect(counts.listVersions).toBe(16 * total);
     // Plus the renders each namespace actually needed.
-    expect(counts.render).toBe(
+    const renders =
       GATEWAY_NAMES.length * 2 + // shared provider, and the diagnosis
-        SLUGS.length * PER_SLUG_NAMES.length + // six per-server providers
-        PER_SLUG_NAMES.length, // the builtin's parameters, again
-    );
-    expect(billed()).toBe(592);
-    // At the 60s TTL production ran, the poller re-drove this every minute:
-    // 592 x 1440 = 852,480 billed reads a day from ONE core process, before
-    // the two bundle processes and any real traffic.
-    expect(billed() * 1440).toBe(852_480);
+      SLUGS.length * PER_SLUG_NAMES.length + // six per-server providers
+      PER_SLUG_NAMES.length; // the builtin's parameters, again
+    expect(counts.render).toBe(renders);
+    // The client remembers every version it has read, and a version never
+    // changes, so the fifteen enumerations after the first GET nothing. Before
+    // that cache each one re-read all 34 versions: 16 x 34 + 48 = 592 billed
+    // reads a tick, and at the 60s TTL production ran, re-driven every minute,
+    // 852,480 a day from ONE core process.
+    expect(counts.getVersion).toBe(total);
+    expect(billed()).toBe(total + renders);
+    expect((16 * total + renders) * 1440).toBe(852_480);
   });
 
   it("with one reading per process, a refresh costs 2 x P and the namespaces are free", async () => {
@@ -282,7 +285,11 @@ describe("what one refresh costs the store, at production's shape", () => {
     c.advance(MINUTE);
     await tick(store, providers, c.now);
     expect(counts.listParameters).toBe(2);
-    expect(billed()).toBe(2 * 68);
+    // The re-read lists every parameter's versions again but GETs none: nothing
+    // moved, and a version this process has read is never read twice. So the
+    // refresh bills the renders alone.
+    expect(counts.getVersion).toBe(total);
+    expect(billed()).toBe(68 + total);
 
     // One refresh a day at the default TTL: 68 billed reads, against the
     // 558,720 the same tick cost at a minute's TTL with one reading per

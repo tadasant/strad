@@ -55,6 +55,35 @@ export interface StoreClientOptions {
  */
 const storeCache = new Map<string, ParameterStore>();
 
+/**
+ * How long the console's admin client holds one reading of its store.
+ *
+ * Without one, every `/ui/<slug>` load and every action on it enumerated the
+ * whole project — a `ListParameterVersions` and a `GetParameterVersion` per
+ * parameter, two hundred-odd requests per page on production — which is what
+ * made the console slow and what tripped Parameter Manager's per-minute quota
+ * into a `429`. With one, a page load reads nothing; a write through this
+ * client re-reads only the parameter it wrote (see `snapshot()` in
+ * `src/secrets/parameters/gcp.ts`).
+ *
+ * Minutes rather than `gateway.secrets.ttlSeconds` (a day by default), because
+ * this is the human's view of the store and a value written with `gcloud`
+ * should show up on its own before anyone wonders where it went. Everything
+ * that writes through strad says so sooner: the console's own writes patch the
+ * reading, and the `secrets` server's `refresh_gateway` and the console's
+ * "Re-read the store" both reach `forgetConsoleStores`.
+ */
+export const CONSOLE_SNAPSHOT_TTL_MS = 5 * 60_000;
+
+/**
+ * Drop every admin client's held reading, so the next console load reads the
+ * store. The console's "Re-read the store" and `POST /_strad/store/refresh`
+ * call it.
+ */
+export function forgetConsoleStores(): void {
+  for (const store of storeCache.values()) store.forget?.();
+}
+
 export function storeFor(
   view: Extract<ServerView, { kind: "secrets" }>,
   selected: SecretsStore,
@@ -74,6 +103,7 @@ export function storeFor(
     pmApiBase: view.pmApiBase,
     smApiBase: view.smApiBase,
     tokenUrl: view.tokenUrl,
+    snapshotTtlMs: CONSOLE_SNAPSHOT_TTL_MS,
   });
   storeCache.set(key, store);
   return store;

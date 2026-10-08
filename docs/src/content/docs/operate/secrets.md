@@ -207,6 +207,20 @@ passes, so two writes ten seconds apart both land within the half-minute. The
 write-back route drops the reading too, so a credential a container rotated on
 use is current on core the moment it is persisted.
 
+The console's secrets pages read through a different client — the admin
+credential — and it holds a reading of its own, for five minutes. A page load
+or a namespace switch inside that window reads nothing. A write through the
+console re-reads only the parameter it wrote and keeps the rest, so the row you
+just rotated is current on the page the action returns and the action costs a
+few requests rather than two per parameter in the project. **Re-read the store**
+and `refresh_gateway` drop this reading too; a value written with `gcloud` shows
+on its own within five minutes. If one parameter cannot be read — a throttled
+request, say — the page lists everything else and names the one it could not
+read, rather than reporting an empty namespace. A listing that fails outright
+says so as its own state. `test/console.read-accounting.test.ts` counts it: at
+production's ~130 parameters a page load was 261 requests and a reveal 525; a
+repeat load is now 0 and an action 2 to 5.
+
 ## Adding a secret
 
 With `provider: gcp-parameter-store`:

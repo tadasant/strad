@@ -9,6 +9,7 @@
  */
 
 export {
+  type ParameterListing,
   type ParameterMeta,
   type ConsoleReadGrant,
   type CreateParameterInput,

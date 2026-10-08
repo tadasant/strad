@@ -963,14 +963,23 @@ running gateway holds it for `gateway.secrets.ttlSeconds`, a day by default,
 and every namespace it serves — the providers, a `params: true` builtin, the
 console's diagnosis — is a slice of it: one enumeration plus one render per
 parameter per TTL, ~68 billed reads at production's 34 parameters, whatever the
-server count. The console's own admin client holds nothing, because it writes
-and re-lists in one breath; instead every write through it, the console's
-**Re-read the store** button, and the `secrets` MCP server's `refresh_gateway`
-tool (which its write tools call for you) drop the gateway's reading so the
-next read reaches the store. See [what "immediately"
+server count. The console's own admin client holds a reading of its own for
+five minutes: a write through it re-reads only the parameter it touched, so a
+page load reads nothing and an action costs a few requests rather than two per
+parameter in the project. Every write through the console, its **Re-read the
+store** button, and the `secrets` MCP server's `refresh_gateway` tool (which its
+write tools call for you) drop the gateway's reading so the next read reaches
+the store; the button and `refresh_gateway` drop the console's too. See [what "immediately"
 means](/operate/secrets/#what-immediately-means) for the resulting bounds and
 [the cost model](/operate/secrets/#one-reading-of-the-store-per-process) for the
 numbers.
+
+Every client also remembers the envelopes it has read. A version is immutable,
+so a re-read lists every parameter's versions but only fetches the ones that
+moved: a cold read costs 2P requests, a warm one P, and neither bills a
+`GetParameterVersion` for a parameter that did not change. A parameter whose
+read fails no longer fails the console's listing: the page shows the rest and
+names the one it could not read. The resolver's strict read still fails on it.
 
 What is still true: a single read of the store costs P, and nothing bounds P.
 The real fix for that is to put the namespace on a parameter label so the
