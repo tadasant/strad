@@ -361,6 +361,36 @@ describe("assertCreatable", () => {
     ).not.toThrow();
   });
 
+  it("refuses confirmations and confirmationHeaders: where a stored credential goes is the checked-in config's call", () => {
+    const entry = {
+      slug: "gamma-rw",
+      kind: "supplementary-image",
+      image: "ghcr.io/example/bundle:latest",
+      bundle: "bundle",
+      path: "/gamma",
+    };
+    expect(() =>
+      assertCreatable({ ...entry, confirmations: true }, ctx),
+    ).toThrow(/may not declare confirmations: .*checked-in config/);
+    expect(() =>
+      assertCreatable(
+        {
+          ...entry,
+          confirmations: true,
+          confirmationHeaders: { "CF-Access-Client-Id": "${ANY_NAME}" },
+        },
+        ctx,
+      ),
+    ).toThrow(/confirmations, confirmationHeaders/);
+    // Their defaults are not a declaration.
+    expect(() =>
+      assertCreatable(
+        { ...entry, confirmations: false, confirmationHeaders: {} },
+        ctx,
+      ),
+    ).not.toThrow();
+  });
+
   it("refuses a builtin, because its module has to be in the image", () => {
     expect(() =>
       assertCreatable({ slug: "d", kind: "builtin", module: "./x.js" }, ctx),
@@ -484,6 +514,31 @@ describe("assertEditable", () => {
         { slug: "a", kind: "local-tunnel", url: "https://one/" },
       ),
     ).toThrow(ImmutableFieldChanged);
+  });
+
+  it("refuses an edit that adds or re-aims confirmationHeaders, and says why", () => {
+    const before = {
+      slug: "g",
+      kind: "supplementary-image",
+      image: "i:1",
+      bundle: "bundle",
+      path: "/g",
+      confirmations: true,
+      confirmationHeaders: { "CF-Access-Client-Id": "${EDGE_ID}" },
+    };
+    expect(() =>
+      assertEditable(before, {
+        ...before,
+        confirmationHeaders: { "CF-Access-Client-Id": "${SOMETHING_ELSE}" },
+      }),
+    ).toThrow(/confirmationHeaders decides where .* stored credential/);
+    expect(() =>
+      assertEditable(before, { ...before, confirmations: false }),
+    ).toThrow(ImmutableFieldChanged);
+    // An edit that leaves them alone is still an edit like any other.
+    expect(() =>
+      assertEditable(before, { ...before, title: "renamed" }),
+    ).not.toThrow();
   });
 
   it("refuses moving a supplementary entry's image or env", () => {

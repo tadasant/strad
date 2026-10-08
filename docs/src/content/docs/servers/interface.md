@@ -678,7 +678,8 @@ plus two that shape how this server gets its values:
   the confirmed tool alone, and `mayBeUnseeded:` covers these names like any
   other. A config error without `confirmations: true`, or for a name the bundle
   sets itself (`content-type`, `content-length`, `transfer-encoding`,
-  `connection`, `host`). See
+  `connection`, `host`). Checked-in config only: a runtime roster write may
+  not set or change it, nor `confirmations`. See
   [the edge in front of the approval URL](/servers/confirmations/#the-edge-in-front-of-the-approval-url).
 
 - **`paramsWritable`** (default `[]`) — the variables this server may **write

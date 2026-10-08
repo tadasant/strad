@@ -194,6 +194,10 @@ one.
   are seeded.
 - `confirmationHeaders:` without `confirmations: true` is a config error,
   because nothing would ever send them.
+- Only the checked-in config sets either field. A runtime roster write may not
+  add, change or remove `confirmations:` or `confirmationHeaders:`, on a new
+  entry or an existing one, because together they decide where a stored
+  credential is sent.
 
 ## When it refuses
 

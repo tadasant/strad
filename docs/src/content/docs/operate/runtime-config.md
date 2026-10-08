@@ -266,11 +266,20 @@ HTTP call to a container that is already running. Three conditions:
 - that bundle's component is reachable from this process, meaning the deploy has
   bound its private URL;
 - the entry declares **none** of `env`, `params`, `paramsWritable`,
-  `paramsRefresh`, `consoleEnv`, `consoleStores`, `mcpStores`.
+  `paramsRefresh`, `consoleEnv`, `consoleStores`, `mcpStores`;
+- and **neither** `confirmations` nor `confirmationHeaders`.
 
-Those seven are baked onto the container at render time and fixed at process
-spawn. A value added here would be a variable nothing on that container ever
-reads, so the save is refused rather than accepted and quietly ignored.
+The first seven are baked onto the container at render time and fixed at
+process spawn. A value added here would be a variable nothing on that container
+ever reads, so the save is refused rather than accepted and quietly ignored.
+
+The last two are refused for a different reason. `confirmations:` hands a
+caller's approval URL to a mount. `confirmationHeaders:` sends a value core
+resolves out of the store to that URL, a path the caller picks under
+`gateway.elicitation.allowedUrlPrefixes`. A roster write could otherwise aim any
+`${NAME}` the namespace or the shared layer resolves off the box, so where a
+stored credential is sent is left to the checked-in config
+([confirmations](/servers/confirmations/#the-edge-in-front-of-the-approval-url)).
 
 **The one supplementary shape that brings its own credential is a store-served
 instance**: `path: /_instance/{tree}/{its own slug}` for `telegram`,
@@ -292,11 +301,11 @@ second credential there needs a second process.
 
 ### What an edit may not move
 
-| On a…                 | Frozen                                                            |
-| --------------------- | ----------------------------------------------------------------- |
-| anything              | `kind`                                                            |
-| `supplementary-image` | `image`, `bundle`, `path`, and the seven deploy-only fields above |
-| `builtin`             | `module`, `bundle`, `params`                                      |
+| On a…                 | Frozen                                                                                                |
+| --------------------- | ----------------------------------------------------------------------------------------------------- |
+| anything              | `kind`                                                                                                |
+| `supplementary-image` | `image`, `bundle`, `path`, the seven deploy-only fields above, `confirmations`, `confirmationHeaders` |
+| `builtin`             | `module`, `bundle`, `params`                                                                          |
 
 A `remote-http` server's `url:` is re-pointable, because the adapter resolves it
 per operation. A supplementary server's `image:` is not: the image is what the
