@@ -355,6 +355,14 @@ export class Registry {
               // Only a slug that declared a confirmed tool holds the caller's
               // channel. See src/gateway/elicitation.ts.
               forwardElicitation: server.confirmations,
+              confirmationHeaders:
+                Object.keys(server.confirmationHeaders).length > 0
+                  ? () =>
+                      resolveMapAsync(
+                        server.confirmationHeaders,
+                        providerFor(server.slug),
+                      )
+                  : undefined,
             }),
           );
           slugs.push(server.slug);

@@ -5873,14 +5873,20 @@ than worked around:
 2. **The console cannot send mail.** The playground has no prompt surface, so a
    human signed in to `/ui` gets the same refusal as a headless caller with no
    header.
-3. **The wait is bounded by the slug's `timeoutMs`, and only from strad's
-   side.** The bundle aborts its requests and stops accepting answers a margin
-   before core's hop times out (at most 15 seconds), so strad never sends after
-   telling its caller the call failed. A caller whose own timeout is shorter
-   than the slug's, or an ingress that drops a long-held response, is outside
-   that bound. At the 120s default a human has 105s. Nothing in this repo has
-   measured how long App Platform's ingress holds an `/mcp` response open while
-   a human decides.
+3. **A window is only as long as the CALLER's hop holds it.** strad's own hop
+   holds any `timeoutMs`: the bundle sends a progress keepalive every 30s, so
+   the 300s body timeout in core's `fetch` never fires. The caller's hop to core
+   is the caller's client and any ingress in front of strad, and strad sees
+   neither limit. It relays the keepalives only to a caller that sent a
+   progressToken; for any other caller, core's response is silent until the
+   human answers. A window longer than that hop holds is SAFE but useless: the
+   drop closes core's request to the bundle, the bundle's call signal fires,
+   and the answer becomes `cancel`. The mailbox also refuses to send for a
+   dropped call. What remains is a race of milliseconds between an approval
+   being read and the drop arriving. Nothing in this repo has measured how long
+   App Platform's ingress, or Zimmer's MCP client, holds a silent `/mcp`
+   response open, so there is no config guard. The limit belongs to the
+   caller, not to the config.
 4. **A container-wide `ELICITATION_*` setting is a refusal, not a fallback.**
    `ELICITATION_ENABLED=false`, `ELICITATION_REQUEST_URL` or `ELICITATION_POLL_URL`
    on the bundle makes `send_email` refuse every call, because the vendored tool
@@ -5888,4 +5894,5 @@ than worked around:
    address for everybody.
 
 **Undo.** 2 is a console prompt that answers the same protocol. 3 is a measured
-ingress bound, recorded here. 1 and 4 are the design.
+caller-side bound, recorded here, or a caller that always sends a progressToken.
+1 and 4 are the design.

@@ -108,6 +108,7 @@ export function referencesBySlug(
       }
     } else {
       for (const value of Object.values(server.headers)) add(value);
+      for (const value of Object.values(server.confirmationHeaders)) add(value);
       for (const value of Object.values(server.env)) add(value);
       for (const value of Object.values(server.consoleEnv)) add(value);
     }

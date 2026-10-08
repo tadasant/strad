@@ -104,6 +104,27 @@ export interface CallContext {
    * src/gateway/elicitation.ts.
    */
   elicitation?: ElicitationChannel;
+  /**
+   * Fires when the caller has gone away: its `/mcp` response closed, or it
+   * cancelled the call. Only the HTTP adapter for a `confirmations: true` slug
+   * acts on it, by tearing down the upstream request, which is what makes the
+   * bundle drop a pending confirmation instead of sending after nobody is
+   * listening. See src/gateway/elicitation.ts.
+   */
+  signal?: AbortSignal;
+  /**
+   * Relay an upstream progress notification to the caller. Set only when the
+   * caller asked for progress (sent a `progressToken`); a confirmed tool's
+   * keepalives reach the caller through it.
+   */
+  onProgress?: (progress: CallProgress) => void;
+}
+
+/** One `notifications/progress` payload, without its token. */
+export interface CallProgress {
+  progress: number;
+  total?: number;
+  message?: string;
 }
 
 export interface CallToolResult {

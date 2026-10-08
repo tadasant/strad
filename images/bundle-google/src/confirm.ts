@@ -48,6 +48,34 @@
  * every request is aborted at the deadline, and an answer that lands after it
  * counts as expired.
  *
+ * ## A dropped call never sends
+ *
+ * A confirmation can take minutes, and the call that asked can be gone before
+ * the human answers: core's hop timed out, the caller disconnected, or it
+ * cancelled. An approval after that would send mail the caller was told had
+ * failed, and twice if it retried. So the call's own abort signal (the SDK
+ * fires it when this request's response closes, and core closes it the moment
+ * its caller goes away) is honoured at every step: it aborts the approval
+ * requests and the wait between polls, it turns any answer into `cancel`, and
+ * the mailbox itself refuses `sendMessage` / `sendDraft` once it has fired
+ * ({@link guardSends}), which covers the reads the tool makes between the
+ * approval and the send.
+ *
+ * ## Keeping a long wait open
+ *
+ * Nothing else crosses the wire while a human decides, and Node's `fetch` in
+ * core drops a response body that has been silent for 300s. So while it waits
+ * this sends a progress notification every {@link KEEPALIVE_MS}, against the
+ * progressToken core puts on every confirmed call. Core relays it on to its
+ * own caller if that caller asked for progress.
+ *
+ * ## The edge in front of the approval URL
+ *
+ * The approval service can sit behind an edge that wants strad's own
+ * credential, a Cloudflare Access service token. Core forwards the slug's
+ * `confirmationHeaders:` with the channel, and they go on the POST and every
+ * poll, to the URL core held to its allowlist and nowhere else.
+ *
  * ## Fail closed
  *
  * A confirmed tool refuses, before it runs, when:
@@ -94,6 +122,11 @@ export const CONFIRMED_TOOLS: readonly string[] = ["send_email"];
 export const POLL_INTERVAL_MS = 5_000;
 /** Without a deadline from core, give a human five minutes, the library's default. */
 const DEFAULT_TTL_MS = 5 * 60_000;
+/**
+ * How often a waiting confirmation proves the call is alive. Well under the
+ * 300s a silent response body survives in Node's `fetch`.
+ */
+export const KEEPALIVE_MS = 30_000;
 /** The most a best-effort read for the prompt (the draft, the account) may take. */
 const LOOKUP_MS = 5_000;
 
@@ -101,7 +134,35 @@ const ANSWERS = new Set(["accept", "decline", "cancel", "expired"]);
 
 /** A channel core forwarded, or the reason it refused the caller's. */
 export type Channel =
-  { url: string; slug?: string; ttlMs?: number } | { refused: string };
+  | {
+      url: string;
+      slug?: string;
+      ttlMs?: number;
+      headers?: Record<string, string>;
+    }
+  | { refused: string };
+
+/** What core's schema refuses too (`confirmationHeaderProblem`). */
+const RESERVED_HEADERS = new Set([
+  "content-type",
+  "content-length",
+  "transfer-encoding",
+  "connection",
+  "host",
+]);
+
+/** Core's `headers`, keeping only string values under sendable names. */
+function headersFrom(raw: unknown): Record<string, string> | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value !== "string") continue;
+    if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(name)) continue;
+    if (RESERVED_HEADERS.has(name.toLowerCase())) continue;
+    out[name] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 
 /**
  * Read core's `_meta` entry off a `tools/call`. Anything malformed counts as no
@@ -130,6 +191,7 @@ export function channelFrom(meta: unknown): Channel | null {
       typeof entry.ttlMs === "number" && entry.ttlMs > 0
         ? Math.floor(entry.ttlMs)
         : undefined,
+    headers: headersFrom(entry.headers),
   };
 }
 
@@ -184,28 +246,45 @@ function methodOf(schema: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-/** One request to the approval endpoint, bounded by the deadline. */
+type Outcome =
+  | { stopped: "expired" | "dropped" }
+  | { stopped?: undefined; body: unknown };
+
+/**
+ * One request to the approval endpoint, bounded by the deadline and by the
+ * call's own signal.
+ */
 async function call(
   url: string,
   init: RequestInit,
   deadline: number,
-): Promise<{ timedOut: true } | { timedOut: false; body: unknown }> {
+  headers: Record<string, string> | undefined,
+  dropped: AbortSignal | undefined,
+): Promise<Outcome> {
+  if (dropped?.aborted) return { stopped: "dropped" };
   const remaining = deadline - Date.now();
-  if (remaining <= 0) return { timedOut: true };
+  if (remaining <= 0) return { stopped: "expired" };
+  const timeout = AbortSignal.timeout(remaining);
+  const stop = (): Outcome | null =>
+    dropped?.aborted
+      ? { stopped: "dropped" }
+      : timeout.aborted
+        ? { stopped: "expired" }
+        : null;
   let response: Response;
   try {
     response = await fetch(url, {
       ...init,
-      headers: { "content-type": "application/json" },
+      // Core's edge headers first, so nothing in them can replace ours.
+      headers: { ...headers, "content-type": "application/json" },
       // A redirect is an error, never followed: the allowlist bounds where
       // this request goes, and a 3xx would let the far end move it.
       redirect: "error",
-      signal: AbortSignal.timeout(remaining),
+      signal: dropped ? AbortSignal.any([timeout, dropped]) : timeout,
     });
   } catch (err) {
-    if (err instanceof Error && err.name === "TimeoutError") {
-      return { timedOut: true };
-    }
+    const stopped = stop();
+    if (stopped) return stopped;
     // The cause is not repeated: it can describe the network beyond the
     // bundle, and this text reaches the caller.
     throw new Error("the approval endpoint could not be reached");
@@ -216,19 +295,34 @@ async function call(
     throw new Error(`the approval endpoint answered HTTP ${response.status}`);
   }
   try {
-    return { timedOut: false, body: await response.json() };
+    return { body: await response.json() };
   } catch (err) {
-    if (err instanceof Error && err.name === "TimeoutError") {
-      return { timedOut: true };
-    }
+    const stopped = stop();
+    if (stopped) return stopped;
     throw new Error("the approval endpoint did not answer with JSON");
   }
+}
+
+/** Wait `ms`, or less if `signal` fires first. */
+function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 /**
  * Ask a human, through the pulsemcp fallback-elicitation protocol: POST the
  * question to `url`, then poll `url/<request-id>` until it is answered or the
- * deadline passes. Only an answer that arrives before the deadline counts.
+ * deadline passes. Only an answer that arrives before the deadline counts, and
+ * only while the call that asked is still there: once `signal` fires, every
+ * outcome is `cancel`.
  */
 export async function askHuman(options: {
   url: string;
@@ -237,8 +331,15 @@ export async function askHuman(options: {
   toolName: string;
   deadline: number;
   pollIntervalMs?: number;
+  /** Sent on the POST and every poll. Core's, from `confirmationHeaders:`. */
+  headers?: Record<string, string>;
+  /** The call's own abort signal. */
+  signal?: AbortSignal;
 }): Promise<ElicitationResult> {
-  const { url, deadline } = options;
+  const { url, deadline, headers, signal } = options;
+  const ended = (stopped: "expired" | "dropped"): ElicitationResult => ({
+    action: stopped === "dropped" ? "cancel" : "expired",
+  });
   const requestId = randomUUID();
   const created = await call(
     url,
@@ -256,21 +357,30 @@ export async function askHuman(options: {
       }),
     },
     deadline,
+    headers,
+    signal,
   );
-  if (created.timedOut) return { action: "expired" };
+  if (created.stopped) return ended(created.stopped);
   const echoed = (created.body as { requestId?: unknown } | null)?.requestId;
   const id = typeof echoed === "string" && echoed ? echoed : requestId;
   const pollUrl = `${url.replace(/\/$/, "")}/${encodeURIComponent(id)}`;
   const interval = options.pollIntervalMs ?? POLL_INTERVAL_MS;
 
   while (Date.now() < deadline) {
-    const polled = await call(pollUrl, { method: "GET" }, deadline);
-    if (polled.timedOut) return { action: "expired" };
+    const polled = await call(
+      pollUrl,
+      { method: "GET" },
+      deadline,
+      headers,
+      signal,
+    );
+    if (polled.stopped) return ended(polled.stopped);
     const body = polled.body as { action?: unknown; content?: unknown } | null;
     const action = typeof body?.action === "string" ? body.action : "";
     if (action !== "pending") {
-      // An answer read after the deadline is an answer core may no longer be
-      // waiting for. It sends nothing.
+      // An answer read after the caller left, or after the deadline, is an
+      // answer nobody is waiting for. It sends nothing.
+      if (signal?.aborted) return ended("dropped");
       if (Date.now() >= deadline) return { action: "expired" };
       // Anything unrecognised is a no, exactly as the library treats it.
       if (!ANSWERS.has(action)) return { action: "decline" };
@@ -283,7 +393,8 @@ export async function askHuman(options: {
       };
     }
     const wait = Math.min(interval, deadline - Date.now());
-    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    if (wait > 0) await pause(wait, signal);
+    if (signal?.aborted) return ended("dropped");
   }
   return { action: "expired" };
 }
@@ -349,6 +460,49 @@ interface Scope {
   channel: Channel | null;
   deadline: number;
   args: Record<string, unknown>;
+  /** The call's abort signal: its response closed, or it was cancelled. */
+  signal?: AbortSignal;
+  /** Prove the call is alive, against core's progressToken. */
+  keepalive?: (progress: number) => void;
+}
+
+/**
+ * One scope per in-flight `tools/call`, across every mount in the process: an
+ * AsyncLocalStorage store is per async context, so two calls never share one,
+ * and {@link guardSends} reads the same store {@link withConfirmation} writes.
+ */
+const current = new AsyncLocalStorage<Scope>();
+
+/** The mailbox's two methods that send. Everything else passes through. */
+const SENDS = new Set(["sendMessage", "sendDraft"]);
+
+/**
+ * The mailbox, refusing to send once the call that asked has been dropped.
+ *
+ * `askHuman` already answers `cancel` to a dropped call, but the tool does more
+ * between an `accept` and the send: a reply reads the original message first.
+ * A call dropped in that gap would still send. This closes it at the last
+ * moment there is: the send itself.
+ */
+export function guardSends(client: IGmailClient): IGmailClient {
+  return new Proxy(client, {
+    get(t, prop, receiver) {
+      const value = Reflect.get(t, prop, receiver);
+      if (typeof value !== "function") return value;
+      if (typeof prop !== "string" || !SENDS.has(prop)) return value.bind(t);
+      return (...args: unknown[]) => {
+        if (current.getStore()?.signal?.aborted) {
+          return Promise.reject(
+            new Error(
+              "the call that asked for this was dropped before it was sent, " +
+                "so nothing was sent",
+            ),
+          );
+        }
+        return (value as (...a: unknown[]) => unknown).apply(t, args);
+      };
+    },
+  });
 }
 
 export interface ConfirmationOptions {
@@ -361,6 +515,46 @@ export interface ConfirmationOptions {
   client?: () => IGmailClient;
   /** For tests. The protocol's own default otherwise. */
   pollIntervalMs?: number;
+  /** For tests. {@link KEEPALIVE_MS} otherwise. */
+  keepaliveMs?: number;
+}
+
+/**
+ * The call's abort signal, and a keepalive that sends progress against the
+ * progressToken core put on the call. No token, no keepalive: progress without
+ * one is not a thing the protocol lets a server send.
+ */
+function callExtras(
+  meta: unknown,
+  extra: unknown,
+): { signal?: AbortSignal; keepalive?: (progress: number) => void } {
+  const e = extra as
+    | {
+        signal?: AbortSignal;
+        sendNotification?: (n: {
+          method: string;
+          params: Record<string, unknown>;
+        }) => Promise<void>;
+      }
+    | undefined;
+  const signal = e?.signal instanceof AbortSignal ? e.signal : undefined;
+  const token = (meta as { progressToken?: unknown } | undefined)
+    ?.progressToken;
+  const send = e?.sendNotification;
+  const keepalive =
+    send && (typeof token === "string" || typeof token === "number")
+      ? (progress: number) => {
+          void send({
+            method: "notifications/progress",
+            params: {
+              progressToken: token,
+              progress,
+              message: "waiting for a human to confirm",
+            },
+          }).catch(() => {});
+        }
+      : undefined;
+  return { signal, keepalive };
 }
 
 /**
@@ -371,8 +565,6 @@ export function withConfirmation(
   target: Server,
   options: ConfirmationOptions = {},
 ): Server {
-  const current = new AsyncLocalStorage<Scope>();
-
   const guard =
     (handler: Handler): Handler =>
     async (request, extra) => {
@@ -403,9 +595,11 @@ export function withConfirmation(
         params?.arguments && typeof params.arguments === "object"
           ? (params.arguments as Record<string, unknown>)
           : {};
+      const { signal, keepalive } = callExtras(params?._meta, extra);
       // The clock starts when the call arrives, which is when core's did.
-      return current.run({ channel, deadline: Date.now() + ttl, args }, () =>
-        handler(request, extra),
+      return current.run(
+        { channel, deadline: Date.now() + ttl, args, signal, keepalive },
+        () => handler(request, extra),
       );
     };
 
@@ -431,14 +625,29 @@ export function withConfirmation(
     if (typeof draftId === "string" && client) {
       message += `\n\n${await draftSummary(client(), draftId)}`;
     }
-    return askHuman({
-      url: channel.url,
-      message: via ? `[${via}]\n\n${message}` : message,
-      requestedSchema: params.requestedSchema,
-      toolName: "send_email",
-      deadline: scope.deadline,
-      pollIntervalMs: options.pollIntervalMs,
-    });
+    let beat = 0;
+    const timer = scope.keepalive
+      ? setInterval(
+          () => scope.keepalive?.(++beat),
+          options.keepaliveMs ?? KEEPALIVE_MS,
+        )
+      : undefined;
+    try {
+      const answer = await askHuman({
+        url: channel.url,
+        message: via ? `[${via}]\n\n${message}` : message,
+        requestedSchema: params.requestedSchema,
+        toolName: "send_email",
+        deadline: scope.deadline,
+        pollIntervalMs: options.pollIntervalMs,
+        headers: channel.headers,
+        signal: scope.signal,
+      });
+      // The last word on a dropped call, whatever was read.
+      return scope.signal?.aborted ? { action: "cancel" } : answer;
+    } finally {
+      if (timer) clearInterval(timer);
+    }
   };
 
   return new Proxy(target, {

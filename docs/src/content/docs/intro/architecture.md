@@ -220,7 +220,12 @@ The third thing it carries is the caller's confirmation channel: the
 `X-Elicitation-Url` a `/mcp` request named, checked against
 `gateway.elicitation.allowedUrlPrefixes`. The HTTP adapter forwards it as core's
 own `_meta`, and only to a `supplementary-image` slug that declares
-`confirmations: true`, where gmail's `send_email` asks a human before it sends ([confirmations](/servers/confirmations/)). Per-hop upstream timeouts are set explicitly to
+`confirmations: true`, where gmail's `send_email` asks a human before it sends ([confirmations](/servers/confirmations/)). With it goes that slug's
+`confirmationHeaders:`, resolved by core. For such a slug the context carries
+two more things. One is the caller's abort signal: when the caller goes away,
+or the hop's timeout runs out, core aborts that call's own HTTP request to the
+bundle, so a stateless bundle sees the drop and never sends. The other relays
+progress, so the bundle's keepalives reach a caller that asked for them. Per-hop upstream timeouts are set explicitly to
 `120_000` ms, because the MCP SDK defaults to 60s at every hop and would silently
 kill long tool calls.
 

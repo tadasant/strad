@@ -668,6 +668,19 @@ plus two that shape how this server gets its values:
   and a `timeoutMs` long enough for a human. `supplementary-image` only. See
   [Confirming a tool before it acts](/servers/confirmations/).
 
+- **`confirmationHeaders`** (default `{}`) — headers the bundle sends on its
+  approval requests, the POST and every poll, for an edge in front of the
+  approval URL: a Cloudflare Access service token
+  (`CF-Access-Client-Id: "${ZIMMER_CF_ACCESS_CLIENT_ID}"`). Values may be
+  `${SECRET_REF}`, and core resolves them per call exactly like `headers:`, from
+  the slug's own namespace before the shared one. They are sent only to a URL
+  under `gateway.elicitation.allowedUrlPrefixes`. An unresolvable ref refuses
+  the confirmed tool alone, and `mayBeUnseeded:` covers these names like any
+  other. A config error without `confirmations: true`, or for a name the bundle
+  sets itself (`content-type`, `content-length`, `transfer-encoding`,
+  `connection`, `host`). See
+  [the edge in front of the approval URL](/servers/confirmations/#the-edge-in-front-of-the-approval-url).
+
 - **`paramsWritable`** (default `[]`) — the variables this server may **write
   back** to its own `/strad/{env}/mcp/{slug}/` namespace, and read fresh at boot
   rather than trusting the value the deploy baked. A name the same server also
@@ -1067,7 +1080,11 @@ is empty, which accepts none, so every confirmed tool refuses.
 The slug carrying the tool opts in separately with `confirmations: true` on its
 `supplementary-image` entry; core forwards the caller's URL to no other mount.
 It also needs a `timeoutMs` long enough for a human to answer, because the
-prompt's deadline is that timeout less a margin of at most 15 seconds. The whole
+prompt's deadline is that timeout less a margin of at most 15 seconds. That
+`timeoutMs` should be no longer than the caller's own hop to core holds a silent
+response. A longer one is safe, since a dropped call never sends, but nobody can
+use it. If an edge in front of the approval URL wants strad's credential, the
+slug declares it in `confirmationHeaders:`. The whole
 mechanism is [Confirming a tool before it acts](/servers/confirmations/).
 
 ## `auth.staticTokens`

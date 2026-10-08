@@ -569,7 +569,10 @@ gmail's `send_email`, asks at the URL the request names in `X-Elicitation-Url`,
 and refuses when the request names none. That applies to an `admin` token and to
 the console playground as well: neither has a prompt to show, so neither sends.
 The header is checked against `gateway.elicitation.allowedUrlPrefixes`, sent
-only to a slug that declares `confirmations: true`, and never logged. See [Confirming a tool before it acts](/servers/confirmations/).
+only to a slug that declares `confirmations: true`, and never logged. When an
+edge in front of that URL wants strad's own credential, such as a Cloudflare
+Access service token, the slug's `confirmationHeaders:` carry it. Core resolves
+them, and they go only to a URL that passed the allowlist. See [Confirming a tool before it acts](/servers/confirmations/).
 
 ### Configuring it
 

@@ -42,6 +42,7 @@ import {
 } from "./troubleshoot.ts";
 import type { ClientCapabilities } from "./clientCapabilities.ts";
 import type { ElicitationChannel } from "./elicitation.ts";
+import type { CallProgress } from "./adapters/types.ts";
 import type { Mode, Registry } from "./registry.ts";
 import {
   toolAllowed,
@@ -170,7 +171,7 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
     tools: await listToolsFor(selected, registry, policies, log, explicit),
   }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const inst = instruments();
     const parsed = denamespace(request.params.name);
     if (!parsed) {
@@ -340,6 +341,8 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
                 clientCapabilities,
                 principal,
                 elicitation: opts.elicitation,
+                signal: extra.signal,
+                onProgress: progressRelay(request.params._meta, extra),
               }),
       );
 
@@ -829,4 +832,35 @@ async function readResourceFor(
 function slugFromResourceUri(uri: string): string | null {
   const match = /^ui:\/\/([^/]+)\//.exec(uri);
   return match ? (match[1] ?? null) : null;
+}
+
+/**
+ * Relay an upstream's progress to the caller, under the CALLER's token.
+ *
+ * Undefined when the caller sent no `progressToken`: a progress notification
+ * without one is not a thing the protocol lets a server send. The upstream's
+ * own token is the gateway's, minted by the SDK for the hop, and never leaves
+ * core. What a confirmed tool sends here is a keepalive while a human decides,
+ * and for a caller whose own client gives up on a silent response it is what
+ * keeps the call open. See src/gateway/elicitation.ts.
+ */
+function progressRelay(
+  meta: { progressToken?: string | number } | undefined,
+  extra: {
+    sendNotification: (n: {
+      method: "notifications/progress";
+      params: { progressToken: string | number } & CallProgress;
+    }) => Promise<void>;
+  },
+): ((progress: CallProgress) => void) | undefined {
+  const token = meta?.progressToken;
+  if (token === undefined) return undefined;
+  return (progress) => {
+    void extra
+      .sendNotification({
+        method: "notifications/progress",
+        params: { ...progress, progressToken: token },
+      })
+      .catch(() => {});
+  };
 }
