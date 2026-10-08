@@ -2589,7 +2589,7 @@ telegram-rw/static/,TELEGRAM_STRING_SESSION,,"1BV…,with,commas",GramJS session
 - Quoting is RFC 4180. A value or note holding a comma, a quote or a line break
   goes in double quotes, with a quote inside written `""`. A quoted value keeps
   its leading and trailing spaces; an unquoted field is trimmed.
-- Blank lines, `#` lines and a first line of `prefix,variable,…` are skipped. At
+- Blank lines, `#` lines and a first line of `prefix,variable,kind,…` are skipped. At
   most 100 lines at once.
 
 With JavaScript the text is one of two views. **Rows** is an editable row per
@@ -2613,6 +2613,9 @@ failure differently:
 Either way every line is reported, by number, with its outcome. The lines that did
 not land go back into the editor **without their values** — a value, secret or
 not, is never sent back to the page — so you re-type the values and nothing else.
+A line too broken to read comes back as a `#` comment naming its number. A line
+break inside a quoted value is stored as `\n`, though a browser submits a
+textarea's line breaks as `\r\n`.
 Each line is written through the same create as the single form, behind the same
 gate, refusing a login-token session the same way.
 

@@ -867,7 +867,11 @@ async function handleBulkCreate(
     return;
   }
 
-  const existing = (await store.list(namespace)).map((p) => p.path);
+  // A batch the namespace check or emptiness already refuses costs no store read.
+  const existing =
+    ctx.nsError || ctx.csv.trim() === ""
+      ? []
+      : (await store.list(namespace)).map((p) => p.path);
   const plan = planBulkCreate(ctx.csv, {
     namespace,
     namespaceError: ctx.nsError,
@@ -920,7 +924,7 @@ async function handleBulkCreate(
           `Nothing was created: ${invalid} of ${lines.length} line${lines.length === 1 ? "" : "s"} ` +
             `need fixing first. The lines are back in the editor below, without their values.`,
       },
-      { lines, refill: refillCsv(plan.lines) },
+      { lines, refill: refillCsv(plan.lines, plan.unreadable) },
       400,
     );
     return;
@@ -953,7 +957,9 @@ async function handleBulkCreate(
       report.push({ ...base, status: "failed", message: describe(err) });
     }
   }
-  if (created > 0) forgetStoreReading(opts);
+  // A create that timed out may still have landed, so any attempt drops the
+  // reading — not only a confirmed one.
+  if (plan.lines.length > 0) forgetStoreReading(opts);
 
   const failed = plan.lines.length - created;
   await page(

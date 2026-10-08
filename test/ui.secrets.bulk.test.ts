@@ -142,6 +142,24 @@ describe("parseBulkCsv", () => {
     expect(JSON.stringify(errors)).not.toContain(CANARY);
   });
 
+  it("a line break inside a quoted value is stored as LF, whatever the browser sent", () => {
+    // A textarea submits CRLF. A PEM stored with \r\n is one some parsers reject.
+    const { records, errors } = parseBulkCsv(
+      'p/,K,secret,"-----BEGIN-----\r\nabc\r\n-----END-----"\r\np/,L,secret,"a\rb"\r\np/,M,plain,v',
+    );
+    expect(errors).toEqual([]);
+    expect(records.map((r) => [r.line, r.variable, r.value])).toEqual([
+      [1, "K", "-----BEGIN-----\nabc\n-----END-----"],
+      [4, "L", "a\nb"],
+      [6, "M", "v"],
+    ]);
+  });
+
+  it("a first record that only looks like a header is data", () => {
+    const { records } = parseBulkCsv("prefix,VARIABLE,secret,x");
+    expect(records.map((r) => r.variable)).toEqual(["VARIABLE"]);
+  });
+
   it("empty input is no records and no errors", () => {
     expect(parseBulkCsv("")).toEqual({ records: [], errors: [] });
     expect(parseBulkCsv("\n\n  \n")).toEqual({ records: [], errors: [] });
@@ -432,6 +450,8 @@ describe("POST /ui/secrets/bulk", () => {
       "";
     expect(textarea).toContain("p/static/,GOOD_ONE,secret,");
     expect(textarea).toContain("seeded/static/,EXISTING,secret,");
+    // The unreadable line has no fields to give back; it returns as a comment.
+    expect(textarea).toContain("# line 8 could not be read; enter it again");
     expect(html).not.toContain(CANARY);
   });
 
@@ -468,6 +488,22 @@ describe("POST /ui/secrets/bulk", () => {
     } finally {
       fake.store.create = original;
     }
+  });
+
+  it("stores a quoted multi-line value submitted with CRLF as LF", async () => {
+    const pem = "-----BEGIN KEY-----\r\nabc\r\n-----END KEY-----";
+    const res = await bulk(`s/,PEM,secret,"${pem}",a key`);
+    expect(res.status).toBe(200);
+    expect(await fake.store.reveal(`${NS}s/PEM`)).toBe(
+      "-----BEGIN KEY-----\nabc\n-----END KEY-----",
+    );
+  });
+
+  it("an unknown store refuses the batch and writes nothing", async () => {
+    const res = await bulk("s/,A,secret,v", { project: "not-a-project" });
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("not configured on this console");
+    expect(await paths()).toEqual([`${NS}seeded/static/EXISTING`]);
   });
 
   it("a namespace outside a strict store's list refuses the whole batch", async () => {

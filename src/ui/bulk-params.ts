@@ -18,7 +18,7 @@
  * `""` inside it is one `"`. An unquoted field is trimmed; a quoted VALUE is kept
  * byte for byte, so quoting is how a value keeps leading or trailing spaces.
  * Blank lines and lines starting with `#` are skipped, and so is a first line
- * that reads `prefix,variable,…` — a header pasted from a spreadsheet.
+ * that reads `prefix,variable,kind,…` — a header pasted from a spreadsheet.
  *
  * ONE PARSER, TWO PLACES. The page previews a paste in the browser, before
  * anything is sent, and the server parses the same text again before it writes.
@@ -93,7 +93,15 @@ export function parseBulkCsv(text: string): BulkParse {
             closed = true;
             break;
           }
-          if (c === "\n") line += 1;
+          // A browser submits every line break in a textarea as CRLF. A PEM or
+          // an SSH key stored with `\r\n` is one some parsers reject, so a line
+          // break inside a value is stored as `\n`, whichever form it arrived in.
+          if (c === "\r" || c === "\n") {
+            line += 1;
+            buf += "\n";
+            i += c === "\r" && src[i + 1] === "\n" ? 2 : 1;
+            continue;
+          }
           buf += c;
           i += 1;
         }
@@ -146,7 +154,9 @@ export function parseBulkCsv(text: string): BulkParse {
       !sawRecord &&
       fields.length >= 2 &&
       first.text.trim().toLowerCase() === "prefix" &&
-      (fields[1] as { text: string }).text.trim().toLowerCase() === "variable"
+      (fields[1] as { text: string }).text.trim().toLowerCase() ===
+        "variable" &&
+      (fields[2] as { text: string }).text.trim().toLowerCase() === "kind"
     ) {
       sawRecord = true;
       continue;
@@ -356,16 +366,26 @@ export function planIsWritable(plan: BulkPlan): boolean {
  * the value; the prefix, name, kind and note come back so they do not have to
  * re-type those too.
  */
-export function refillCsv(lines: BulkPlanLine[]): string {
-  return lines
-    .map((l) =>
-      formatBulkRow({
-        prefix: l.prefix,
-        variable: l.variable,
-        kind: l.secret ? "secret" : "plain",
-        value: "",
-        note: l.note,
-      }),
+export function refillCsv(
+  lines: BulkPlanLine[],
+  unreadable: BulkParseError[] = [],
+): string {
+  // A line that could not be parsed has no fields to give back, so it returns
+  // as a comment naming it — the parser skips it, and the human sees the gap.
+  const gaps = unreadable.map(
+    (e) => `# line ${e.line} could not be read; enter it again`,
+  );
+  return gaps
+    .concat(
+      lines.map((l) =>
+        formatBulkRow({
+          prefix: l.prefix,
+          variable: l.variable,
+          kind: l.secret ? "secret" : "plain",
+          value: "",
+          note: l.note,
+        }),
+      ),
     )
     .join("\n");
 }

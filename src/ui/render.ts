@@ -1484,7 +1484,7 @@ function bulkBox(
           <li><code>kind</code> is <code>secret</code> or <code>plain</code>. Empty means secret.</li>
           <li><code>note</code> is optional, and the column can be left off.</li>
           <li>A value or note with a comma, a quote or a line break goes in double quotes, with a quote inside written <code>""</code>: <code>"a,b"</code>, <code>"say ""hi"""</code>. Quoting also keeps a value's leading and trailing spaces.</li>
-          <li>Blank lines, lines starting with <code>#</code>, and a first line of <code>prefix,variable,…</code> are skipped.</li>
+          <li>Blank lines, lines starting with <code>#</code>, and a first line of <code>prefix,variable,kind,…</code> are skipped.</li>
           <li>At most ${MAX_BULK_RECORDS} lines at once.</li>
         </ul>
       </details>
@@ -1555,8 +1555,9 @@ function bulkClientScript(namespace: string, existing: string[]): string {
   if (!form || !text || !body || !tabs || !preview || !submit) return;
   var mode = "rows";
 
-  // parameterId's fold (src/secrets/parameters/wire.ts), for duplicate
-  // detection only: two paths that fold together are one parameter.
+  // The lowercase-and-collapse half of parameterId's fold
+  // (src/secrets/parameters/wire.ts), for duplicate detection only: two paths
+  // that fold together are one parameter.
   function fold(p) {
     return p.replace(/^\\/+/, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   }
@@ -1605,7 +1606,7 @@ function bulkClientScript(namespace: string, existing: string[]): string {
     secret.setAttribute("aria-label", "Secret");
     secretWrap.appendChild(secret);
     var value = el("input", "in in-row bulk-val");
-    value.type = "password"; value.placeholder = "value"; value.autocomplete = "off";
+    value.type = "password"; value.placeholder = "value"; value.autocomplete = "new-password";
     value.setAttribute("aria-label", "Value");
     // A password field cannot hold a line break. A multi-line value (a PEM key)
     // stays on the row object and the field says where to edit it.
@@ -1693,6 +1694,7 @@ function bulkClientScript(namespace: string, existing: string[]): string {
         (!r.variable ? "A variable name is required." : null) ||
         (r.variable.length > 200 ? "A variable name may be at most 200 characters." : null) ||
         (!ENV.test(r.variable) ? "Not a valid environment variable name." : null) ||
+        (path.length > 512 ? "A parameter path may be at most 512 characters." : null) ||
         (kind === null ? 'Kind must be "secret" or "plain".' : null) ||
         (r.value === "" ? "A value is required." : null) ||
         (new Blob([r.note]).size > 4096 ? "A note may be at most 4096 bytes." : null) ||
