@@ -203,7 +203,10 @@ export function createGcpParameterStore(
    * The key is the version id AND its `createTime`, because a parameter deleted
    * and re-created under the same path starts again at `v1`. A listing that
    * reports no `createTime` is never cached. Bounded by the parameter count:
-   * an id the last enumeration did not see is dropped.
+   * an id the last enumeration did not see is dropped. What it holds is the
+   * envelope, so a non-secret parameter's value lives in this process's memory
+   * for as long as the version is current; a secret one's envelope holds only
+   * its `__REF__` pointer.
    */
   const envelopes = new Map<
     string,
@@ -839,7 +842,11 @@ export function createGcpParameterStore(
   async function listDetailed(namespace: string): Promise<ParameterListing> {
     const snap = snapshot();
     const { entries, unreadable } = await snap.roster;
-    const prefix = parameterId(namespace).slice(0, 54);
+    // A namespace that folds to nothing — `/`, say — folds to the `p-` the id
+    // rule prefixes onto an id that does not start with a letter, which would
+    // match almost nothing. Every parameter is under such a namespace.
+    const fold = parameterId(namespace).slice(0, 54);
+    const prefix = fold === "p-" ? "" : fold;
     return {
       parameters: slice(entries, namespace),
       unreadable: unreadable
@@ -1006,6 +1013,25 @@ export function createGcpParameterStore(
     // The note lives in the envelope, so a note change is a new version that
     // carries the SAME value pointer (or literal). A secret's value is untouched.
     await addVersion(id, { ...cur.envelope, note: note || undefined });
+  }
+
+  /**
+   * Whether `path` is a secret parameter, read from its CURRENT envelope rather
+   * than any held reading. `undefined` when the parameter does not exist.
+   *
+   * The console's reveal gate decides which posture applies from this, and a
+   * held reading can be minutes old: a parameter deleted and re-created as a
+   * secret outside this client would still read as non-secret there. One
+   * version listing; the envelope itself usually comes from `envelopes`.
+   */
+  async function isSecret(path: string): Promise<boolean | undefined> {
+    const cur = await currentEnvelope(parameterId(path)).catch((err) => {
+      if (err instanceof ParameterStoreError && err.status === 404) return null;
+      throw err;
+    });
+    if (!cur) return undefined;
+    assertSamePath(cur.envelope, path);
+    return cur.envelope.secret;
   }
 
   async function reveal(path: string): Promise<string> {
@@ -1375,6 +1401,7 @@ export function createGcpParameterStore(
     backend: "gcp",
     list,
     listDetailed,
+    isSecret,
     create: writing(create, (input) => input.path),
     rotate: writing(rotate, (path) => path),
     setNote: writing(setNote, (path) => path),

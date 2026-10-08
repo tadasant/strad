@@ -13,6 +13,7 @@ import {
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
 import { withRequestDeadline } from "../util/deadline.ts";
+import { rotateOrCreate } from "./index.ts";
 import {
   buildPkceAuthorizeUrl,
   ConnectorError,
@@ -1354,17 +1355,11 @@ export async function storeUpstreamWrites(
   note: string,
 ): Promise<void> {
   for (const w of writes) {
-    const noted = w.secret ? note : undefined;
-    if (existing.has(w.path)) {
-      await store.rotate(w.path, w.value);
-      if (noted) await store.setNote(w.path, noted).catch(() => undefined);
-      continue;
-    }
-    await store.create({
+    await rotateOrCreate(store, existing.has(w.path), {
       path: w.path,
       secret: w.secret,
       value: w.value,
-      ...(noted ? { note: noted } : {}),
+      ...(w.secret ? { note } : {}),
     });
   }
 }

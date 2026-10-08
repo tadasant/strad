@@ -3,6 +3,7 @@ import type { RuntimeConfig } from "../config/runtime.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import {
   oauthParameterPath,
+  ParameterStoreError,
   serverNamespaces,
   staticNamespace,
   variableOf,
@@ -750,10 +751,52 @@ export async function storeRefreshToken(
   value: string,
   note: string,
 ): Promise<void> {
+  await rotateOrCreate(store, exists, { path, secret: true, value, note });
+}
+
+/**
+ * Write a value, rotating what is there and creating what is not — and
+ * correcting the guess when the store disagrees with it.
+ *
+ * `exists` comes from a listing, and the console's listing is a held reading
+ * that can be minutes old. A token minted by a consent flow is lost if its
+ * write fails, so a `409` on the create (it was there after all) becomes a
+ * rotate, and a `404` on the rotate (it was deleted) becomes a create.
+ *
+ * The note's failure is not the write's: it is metadata, and a refused note
+ * must not undo a stored credential.
+ */
+export async function rotateOrCreate(
+  store: ParameterStore,
+  exists: boolean,
+  w: { path: string; secret: boolean; value: string; note?: string },
+): Promise<void> {
+  const rotate = async (): Promise<void> => {
+    await store.rotate(w.path, w.value);
+    if (w.note) await store.setNote(w.path, w.note).catch(() => undefined);
+  };
+  const create = () =>
+    store.create({
+      path: w.path,
+      secret: w.secret,
+      value: w.value,
+      ...(w.note ? { note: w.note } : {}),
+    });
+  const statusOf = (err: unknown) =>
+    err instanceof ParameterStoreError ? err.status : undefined;
   if (exists) {
-    await store.rotate(path, value);
-    await store.setNote(path, note).catch(() => undefined);
+    try {
+      await rotate();
+    } catch (err) {
+      if (statusOf(err) !== 404) throw err;
+      await create();
+    }
     return;
   }
-  await store.create({ path, secret: true, value, note });
+  try {
+    await create();
+  } catch (err) {
+    if (statusOf(err) !== 409) throw err;
+    await rotate();
+  }
 }

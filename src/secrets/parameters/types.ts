@@ -130,6 +130,15 @@ export interface ParameterAdmin {
    * instead of an empty namespace because one read was throttled.
    */
   listDetailed?(namespace: string): Promise<ParameterListing>;
+  /**
+   * Whether `path` is a secret parameter, as the store holds it NOW — never
+   * from a held reading. `undefined` when there is no such parameter.
+   *
+   * Optional; a caller without it falls back to `list()`. The console's reveal
+   * gate is the reason it exists: which posture a reveal is checked against is
+   * a security decision, and a listing can be minutes old.
+   */
+  isSecret?(path: string): Promise<boolean | undefined>;
   create(input: CreateParameterInput): Promise<ParameterMeta>;
   /** Rotate: set a new value. Non-secret → new PM version; secret → new SM version. */
   rotate(path: string, value: string): Promise<void>;

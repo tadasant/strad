@@ -869,10 +869,13 @@ async function handleBulkCreate(
   }
 
   // A batch the namespace check or emptiness already refuses costs no store read.
-  const existing =
-    ctx.nsError || ctx.csv.trim() === ""
-      ? []
-      : (await store.list(namespace)).map((p) => p.path);
+  // Anything else reads the store afresh: the Duplicate column is a claim about
+  // what exists NOW, and the console's held reading can be minutes old.
+  const fresh = !(ctx.nsError || ctx.csv.trim() === "");
+  if (fresh) store.forget?.();
+  const existing = fresh
+    ? (await store.list(namespace)).map((p) => p.path)
+    : [];
   const plan = planBulkCreate(ctx.csv, {
     namespace,
     namespaceError: ctx.nsError,
@@ -1214,10 +1217,13 @@ async function handleSecretAction(
         // exactly the request this gate exists to refuse. A path with no listed
         // parameter is treated as SECRET, which is the strict answer.
         assertWellFormed(path);
-        const listed = await store
-          .list(namespace)
-          .catch((): ParameterMeta[] => []);
-        const isSecret = listed.find((p) => p.path === path)?.secret ?? true;
+        // Live, not from the console's held reading: a parameter re-created
+        // as a secret elsewhere must not be gated as the non-secret it was.
+        const isSecret = store.isSecret
+          ? ((await store.isSecret(path).catch(() => true)) ?? true)
+          : ((
+              await store.list(namespace).catch((): ParameterMeta[] => [])
+            ).find((p) => p.path === path)?.secret ?? true);
 
         const posture = revealPosture(
           store_.revealEnabled,

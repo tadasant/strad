@@ -6,6 +6,7 @@ import {
   ParameterStoreError,
   type Capabilities,
 } from "../src/secrets/parameters/index.ts";
+import { rotateOrCreate } from "../src/connectors/index.ts";
 import { renderSecrets } from "../src/ui/render.ts";
 import { resolveServerView } from "../src/ui/resolve.ts";
 import { revealPosture } from "../src/ui/reveal.ts";
@@ -276,6 +277,52 @@ describe("one unreadable parameter", () => {
       getVersion: 1,
       other: 0,
     });
+  });
+});
+
+describe("decisions a held reading must not make", () => {
+  it("isSecret() reads the current envelope, not the held reading", async () => {
+    const gcp = createFakeGcp();
+    const path = `${NS}server-0/static/FLIPPED`;
+    await gcp.store.create({ path, secret: false, value: "plain" });
+    const t = clock();
+    const { store } = consoleClient(gcp, { now: t.now });
+    expect((await store.listDetailed!(NS)).parameters[0]?.secret).toBe(false);
+
+    // Re-created as a secret outside this client, inside the TTL.
+    await gcp.store.destroy(path);
+    await gcp.store.create({ path, secret: true, value: "now-secret" });
+    expect((await store.listDetailed!(NS)).parameters[0]?.secret).toBe(false);
+    expect(await store.isSecret!(path)).toBe(true);
+    expect(await store.isSecret!(`${NS}server-0/static/NOPE`)).toBeUndefined();
+  });
+
+  it("a connector write corrects a stale exists/absent guess instead of losing the token", async () => {
+    const gcp = createFakeGcp();
+    const path = `${NS}server-0/oauth/REFRESH_TOKEN`;
+    const { store } = consoleClient(gcp, { now: clock().now });
+
+    // Guessed present, actually absent: the rotate 404s and becomes a create.
+    await rotateOrCreate(store, true, { path, secret: true, value: "t1" });
+    expect(await gcp.store.reveal(path)).toBe("t1");
+
+    // Guessed absent, actually present: the create 409s and becomes a rotate.
+    await rotateOrCreate(store, false, { path, secret: true, value: "t2" });
+    expect(await gcp.store.reveal(path)).toBe("t2");
+  });
+
+  it("an unreadable parameter is reported under a root namespace", async () => {
+    const gcp = createFakeGcp();
+    await seed(gcp);
+    const BAD = "strad-prod-mcp-server-5-static-var-5";
+    const { store } = consoleClient(gcp, {
+      now: clock().now,
+      failGet: (url) =>
+        url.split("?")[0]!.endsWith(`/parameters/${BAD}/versions`),
+    });
+    expect(
+      (await store.listDetailed!("/")).unreadable.map((u) => u.id),
+    ).toEqual([BAD]);
   });
 });
 

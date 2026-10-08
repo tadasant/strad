@@ -508,7 +508,18 @@ export function renderSecrets(opts: SecretsViewOptions): string {
     ? `<div class="flash flash-error">${unreadable.length} parameter${
         unreadable.length === 1 ? "" : "s"
       } in this project could not be read and may belong to this namespace, so the list below may be incomplete. Re-read the store to try again. ${esc(
-        unreadable.map((u) => `${u.id}: ${u.reason}`).join("; "),
+        // Grouped by reason: a burst of 429s is one sentence and a list of
+        // ids, not the same sentence once per parameter.
+        [
+          ...unreadable
+            .reduce((by, u) => {
+              by.set(u.reason, [...(by.get(u.reason) ?? []), u.id]);
+              return by;
+            }, new Map<string, string[]>())
+            .entries(),
+        ]
+          .map(([reason, ids]) => `${ids.join(", ")}: ${reason}`)
+          .join(" "),
       )}</div>`
     : "";
 
