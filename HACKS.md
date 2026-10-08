@@ -5695,8 +5695,14 @@ requirement. What that costs:
   pairing-code request carries the OS and browser, and the phone refuses a code
   whose OS it does not recognise ("Couldn't link device"): a custom name such as
   "Zimmer (read-only)" in the OS slot failed every prod pairing on 2026-10-08.
-  There is no other slot to put a name in. A QR scan does not check it, which
-  is why it looked fine until pairing by code.
+  There is no other slot to put a name in. Baileys' own README allows a
+  custom browser name for QR pairing only.
+- **The QR's text is pairing key material.** `whatsapp_pair {"method":"qr"}`
+  returns the payload as text beside the PNG, so a client that cannot draw an
+  image can still render it. That payload ends in the device's
+  `advSecretKey`, which stays in its login after pairing, so it lands in the
+  caller's transcript. It is not enough to act as the device: that needs the
+  Signal keys, which never leave the sealed state. The bridge never logs it.
 - **State in a bucket, not a database.** The Signal state and the buffer are
   sealed objects under `WHATSAPP_GCS_PREFIX` (the prefix is part of each
   object's AAD, so moving them is as breaking as a new key), written on a 2 s

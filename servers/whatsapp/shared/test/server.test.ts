@@ -281,6 +281,12 @@ test("pairs by QR: a PNG drawn here, the current ref on every call, no restart",
   assert.equal(fake.sockets.length, 1, "a QR call does not start over while one is live");
   assert.equal((await call(mcp, "whatsapp_status")).json.pairing_in_progress, true);
 
+  // Past the code TTL, the attempt is alive for as long as WhatsApp offers refs.
+  now += 150_000;
+  fake.latest().offerPairing("REF3,noise,identity,adv,1");
+  assert.equal((await call(mcp, "whatsapp_status")).json.pairing_in_progress, true);
+  assert.equal((await call(mcp, "whatsapp_pair", { method: "qr" })).json.qr, "REF3,noise,identity,adv,1");
+
   // Scanned: the same pair-success → 515 → open path as a code.
   fake.latest().acceptPairing();
   fake.latest().close(515);
@@ -304,6 +310,9 @@ test("a code call replaces a live QR attempt; method is validated", async () => 
   const bad = await call(mcp, "whatsapp_pair", { method: "smoke-signal" });
   assert.equal(bad.isError, true);
   assert.match(bad.text, /"code" or "qr"/);
+  const qrWithNumber = await call(mcp, "whatsapp_pair", { method: "qr", phone_number: "15550000001" });
+  assert.equal(qrWithNumber.isError, true);
+  assert.match(qrWithNumber.text, /is for method "code"/);
   const noNumber = await call(mcp, "whatsapp_pair", {});
   assert.equal(noNumber.isError, true);
   assert.match(noNumber.text, /phone_number/);

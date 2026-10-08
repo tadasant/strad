@@ -186,8 +186,9 @@ active" time.
 ### When pairing fails
 
 The bundle's stderr has a `[whatsapp]` line for each step a pairing reaches and
-each close, with its status and Baileys' reason — never the code, the QR or the
-number:
+each close, with its status and Baileys' reason. No pairing line carries the
+code, the QR or the number (the `connected as …` line once paired names the
+account, as it always has):
 
 ```
 [whatsapp] pairing (code): started as Chrome on Mac OS

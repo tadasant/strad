@@ -76,12 +76,12 @@ export type SocketFactory = (options: SocketOptions) => Promise<WaSocket>;
  *
  * It is NOT a place for a human-readable name. Baileys builds the pairing-code
  * request from this tuple — `companion_platform_display` is `"<browser>
- * (<os>)"` and the registration's `DeviceProps.os` is `os` — and the phone
- * REFUSES a code whose `os` it does not recognise, with nothing more specific
- * than "Couldn't link device". A QR scan does not check it, which is how a
- * custom name looked fine for so long. So the tuple is a real OS and a real
- * browser, and the phone's Linked devices list shows this device as Chrome on
- * Mac OS. `test/units.test.ts` pins it to the preset Baileys ships.
+ * (<os>)"`, a field only the code route sends — and the phone REFUSES a code
+ * whose `os` it does not recognise, with nothing more specific than "Couldn't
+ * link device". Baileys' own README allows a custom browser name for QR
+ * pairing only. So the tuple is a real OS and a real browser, and the phone's
+ * Linked devices list shows this device as Chrome on Mac OS.
+ * `test/units.test.ts` pins it to the preset Baileys ships.
  */
 export const PAIRING_BROWSER = ["Mac OS", "Chrome", "14.4.1"] as const;
 

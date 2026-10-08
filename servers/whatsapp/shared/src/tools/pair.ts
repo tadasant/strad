@@ -34,7 +34,9 @@ export function pairTool(bridge: BridgeFactory): ToolDefinition {
       "account is already paired (whatsapp_logout first).\n\n" +
       `${UNOFFICIAL}\n\n` +
       'Example: {"pairing_code":"ABCD-EFGH","expires_in_seconds":120,' +
-      '"instructions":"On the phone that holds this WhatsApp account: …"}',
+      '"instructions":"On the phone that holds this WhatsApp account: …"}\n' +
+      'Example (qr): {"method":"qr","qr":"2@…","expires_in_seconds":60,' +
+      '"instructions":"…"} followed by an image block (image/png).',
     inputSchema: {
       type: "object",
       properties: {
@@ -46,8 +48,8 @@ export function pairTool(bridge: BridgeFactory): ToolDefinition {
         phone_number: {
           type: "string",
           description:
-            'Required for "code". The account\'s phone number in E.164 digits, ' +
-            'country code first, no "+": "15551234567".',
+            'Required for "code", refused for "qr". The account\'s phone number in ' +
+            'E.164 digits, country code first, no "+": "15551234567".',
         },
       },
       additionalProperties: false,
@@ -58,6 +60,11 @@ export function pairTool(bridge: BridgeFactory): ToolDefinition {
         const input = args(raw);
         const method = optionalString(input, "method") ?? "code";
         if (method === "qr") {
+          if (optionalString(input, "phone_number") !== undefined) {
+            throw new BridgeError(
+              '`phone_number` is for method "code"; a QR is scanned by whichever phone links it.',
+            );
+          }
           const { png, ...payload } = await (await bridge()).pairQr();
           const result = ok(payload);
           result.content.push({

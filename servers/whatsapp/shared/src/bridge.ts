@@ -19,8 +19,9 @@
  *   440 (replaced by another socket) waits long before trying again.
  *   logout()  unlink, and delete everything persisted.
  *
- * NOTHING here logs a message's text, a key, a pairing code, a QR payload or
- * the number being paired. What it DOES log is every connection state and
+ * NOTHING here logs a message's text, a key, a pairing code or a QR payload,
+ * and no pairing-step line names the number being paired (once paired, the
+ * account's own JID is logged on connect, which an operator needs). What it DOES log is every connection state and
  * close reason, and each step a pairing attempt reaches — "the phone accepted
  * the code" and "WhatsApp confirmed the device" are different failures, and
  * without both lines they look the same from here.
@@ -470,6 +471,10 @@ export class WhatsAppBridge {
   private onConnection(update: ConnectionUpdate, gen: number): void {
     if (update.qr) {
       this.currentQr = { payload: update.qr, at: this.clock() };
+      // A QR attempt is alive for as long as WhatsApp keeps offering refs.
+      if (this.pairing?.method === "qr") {
+        this.pairing.expiresAt = this.currentQr.at + QR_REF_TTL_MS;
+      }
       if (this.pairing?.ready) {
         logInfo(`pairing (${this.pairing.method}): WhatsApp offered a pairing session`);
         this.pairing.ready();
@@ -477,6 +482,7 @@ export class WhatsAppBridge {
       }
     }
     if (update.isNewLogin) {
+      this.currentQr = null;
       logInfo("pairing: WhatsApp confirmed the device (pair-success); expecting a restart (515)");
     }
     if (update.connection === "connecting") {
@@ -1134,9 +1140,13 @@ export class WhatsAppBridge {
   async pairQr(): Promise<QrPairResult> {
     await this.ready();
     this.requireReadable();
+    if (this.closed) throw new BridgeError("The bridge is shutting down.");
     const live =
       this.pairing?.method === "qr" && this.socket !== null && this.currentQr !== null;
-    if (!live) await this.openPairingSocket("qr");
+    if (!live) {
+      const { mine } = await this.openPairingSocket("qr");
+      if (mine !== this.generation) throw supersededPairing();
+    }
     const qr = this.currentQr;
     if (!qr) {
       throw new BridgeError(
