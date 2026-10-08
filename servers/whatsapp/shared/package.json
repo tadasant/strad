@@ -16,6 +16,8 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.6",
+    "gaxios": "^6.7.1",
+    "google-auth-library": "^9.15.1",
     "typescript": "^5.7.3",
     "vitest": "^4.1.9"
   },

@@ -2,6 +2,7 @@
  * What every tool file needs: the tool shape, the result envelope, argument
  * parsing, and the one error path.
  */
+import { isTransientTransportError, TransientStoreError } from "../blob-store.js";
 import { BridgeError, type WhatsAppBridge } from "../bridge.js";
 import { ConfigError } from "../config.js";
 import { SealError } from "../crypto.js";
@@ -75,9 +76,20 @@ export async function guard(run: () => Promise<ToolResult>): Promise<ToolResult>
       err instanceof BridgeError ||
       err instanceof SealError ||
       err instanceof RateLimited ||
-      err instanceof SupersededError
+      err instanceof SupersededError ||
+      err instanceof TransientStoreError
     ) {
       return fail(err);
+    }
+    // A dropped connection that reached here without passing through the
+    // store's retry: say what it is, not the transport's raw wording.
+    if (isTransientTransportError(err)) {
+      return fail(
+        new Error(
+          "A network connection this bridge depends on closed before it " +
+            "answered. This is a transient network error: transient; retry the call.",
+        ),
+      );
     }
     const message = err instanceof Error ? err.message : String(err);
     if (/rate-overlimit|429/i.test(message)) {

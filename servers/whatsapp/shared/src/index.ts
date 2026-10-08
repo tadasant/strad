@@ -24,10 +24,14 @@ export {
 } from "./bridge.js";
 
 export {
+  DEFAULT_TRANSPORT_RETRY,
   GcsBlobStore,
+  isTransientTransportError,
   MemoryBlobStore,
   PreconditionFailed,
+  TransientStoreError,
   type BlobStore,
+  type TransportRetry,
 } from "./blob-store.js";
 
 export { MessageBuffer, type ChatMeta } from "./buffer.js";
