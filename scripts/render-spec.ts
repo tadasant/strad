@@ -63,7 +63,7 @@
  */
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { parseConfig } from "../src/config/load.ts";
+import { CONFIG_GZ_ENV, parseConfig } from "../src/config/load.ts";
 import {
   bootEnvGaps,
   collectSecretRefs,
@@ -71,7 +71,7 @@ import {
   renderAppSpec,
   type EnvVar,
 } from "../src/deploy/appspec.ts";
-import { inlineConfigYaml } from "../src/deploy/config-inline.ts";
+import { bakeConfigEnv } from "../src/deploy/config-inline.ts";
 import {
   formatSpecSizeError,
   formatSpecSizeWarning,
@@ -213,7 +213,12 @@ for (const old of legacyInstanceSizes(config)) {
 // of prod's 64,531 bytes on 2026-08-30), and an App Platform spec has a size the
 // API refuses past. See src/deploy/config-inline.ts for the ceiling this ran
 // into and for why the round trip is checked rather than assumed.
-const inlined = inlineConfigYaml(raw);
+//
+// And then gzipped, when that is smaller — which for any real deployment it is,
+// by about three quarters. Boot decodes it; an image too old to is refused by
+// the tripwire baked beside it rather than booted on its stock config.
+const baked = bakeConfigEnv(raw);
+const inlined = baked.inlined;
 if (inlined.keptRawBecause) {
   console.error(
     `[render-spec] STRAD_CONFIG_YAML: inlining the config verbatim ` +
@@ -226,15 +231,25 @@ if (inlined.keptRawBecause) {
       `deployed).`,
   );
 }
+if (baked.keptPlainBecause) {
+  console.error(
+    `[render-spec] ${CONFIG_GZ_ENV}: not emitted — ` +
+      `${baked.keptPlainBecause}.`,
+  );
+} else {
+  console.error(
+    `[render-spec] ${CONFIG_GZ_ENV}: the document travels gzipped, ` +
+      `${baked.specBytes} spec bytes instead of ${baked.plainSpecBytes}; ` +
+      `STRAD_CONFIG_YAML carries the tripwire for an image too old to read it.`,
+  );
+}
 
-const envs: EnvVar[] = [
-  {
-    key: "STRAD_CONFIG_YAML",
-    value: inlined.yaml,
-    scope: "RUN_TIME",
-    type: "GENERAL",
-  },
-];
+const envs: EnvVar[] = baked.envs.map(({ key, value }) => ({
+  key,
+  value,
+  scope: "RUN_TIME",
+  type: "GENERAL",
+}));
 
 /**
  * Which of the two secret paths this deployment declared.

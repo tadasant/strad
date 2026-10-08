@@ -148,7 +148,7 @@ read per interval to learn about servers it does not serve.
 flowchart TB
     subgraph read["Read — boot, and every pollSeconds"]
         PM["/strad/{env}/gateway/config/SERVERS<br/>(Parameter Manager)"]
-        FILE["the checked-in document<br/>STRAD_CONFIG_YAML or STRAD_CONFIG"]
+        FILE["the checked-in document<br/>STRAD_CONFIG_YAML(_GZ_B64) or STRAD_CONFIG"]
         MERGE["mergeOverlay()<br/>removals dropped · upserts applied by slug"]
         PM --> MERGE
         FILE --> MERGE

@@ -1,9 +1,12 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { LARGEST_ACCEPTED_SPEC_BYTES } from "../src/deploy/spec-size.ts";
+import { decodeCompressedConfig } from "../src/config/load.ts";
+import { CONFIG_TRIPWIRE } from "../src/deploy/config-inline.ts";
 
 /**
  * The size gate, driven through the real `scripts/render-spec.ts`.
@@ -17,7 +20,23 @@ import { LARGEST_ACCEPTED_SPEC_BYTES } from "../src/deploy/spec-size.ts";
  * valid field on a server entry — rather than by lowering the ceiling with
  * `--max-spec-bytes`, so the refusal these tests see is the DEFAULT one that
  * prod will render against.
+ *
+ * The description is `noise`, not a run of one character: the config travels
+ * gzipped when that is smaller (src/deploy/config-inline.ts), and 150,000 `x`s
+ * gzip to almost nothing. Text gzip cannot shrink is what a config that has
+ * really outgrown the ceiling looks like to this gate.
  */
+
+/** `n` characters gzip cannot shrink: base64 of a hash chain, so deterministic. */
+function noise(n: number): string {
+  let out = "";
+  let block = createHash("sha256").update("strad").digest();
+  while (out.length < n) {
+    block = createHash("sha256").update(block).digest();
+    out += block.toString("base64url");
+  }
+  return out.slice(0, n);
+}
 
 const CORE = `ghcr.io/tadasant/strad:sha-${"a".repeat(40)}`;
 
@@ -98,7 +117,7 @@ describe("render-spec, the size of what it emits", () => {
     // ~150,000 bytes of description: past the 141,342-byte spec App Platform
     // refused on 2026-08-30, so this is the shape of the render that took prod
     // down, not a synthetic one.
-    const out = render(config("x".repeat(150_000)));
+    const out = render(config(noise(150_000)));
     expect(out.status).toBe(1);
     // Nothing on stdout. `doctl apps update --spec` is fed this stream, and a
     // truncated-but-present spec is worse than none.
@@ -110,7 +129,7 @@ describe("render-spec, the size of what it emits", () => {
   });
 
   it("names the driver in the refusal, which the DigitalOcean 400 does not", () => {
-    const out = render(config("x".repeat(150_000)));
+    const out = render(config(noise(150_000)));
     expect(out.stderr).toMatch(/Where the bytes are:/);
     expect(out.stderr).toMatch(/core: [\d,]+ bytes of env over \d+ var\(s\)/);
     expect(out.stderr).toContain("STRAD_CONFIG_YAML");
@@ -123,7 +142,8 @@ describe("render-spec, the size of what it emits", () => {
     // build log. A distinctive token rather than a run of one character: a
     // run of `x`s would be absent from any message that merely truncated the
     // value, while this is absent only if no config text travels at all.
-    const out = render(config(`secret-${"cfgtoken".repeat(20_000)}`));
+    const out = render(config(`secret-cfgtoken-${noise(150_000)}-cfgtoken`));
+    expect(out.status).toBe(1);
     expect(out.stderr).not.toContain("cfgtoken");
   });
 
@@ -131,10 +151,7 @@ describe("render-spec, the size of what it emits", () => {
     // The escape hatch. prod renders this script straight from `main`, so an
     // operator who learns App Platform takes more must be able to say so
     // without waiting on a PR here.
-    const out = render(config("x".repeat(150_000)), [
-      "--max-spec-bytes",
-      "500000",
-    ]);
+    const out = render(config(noise(150_000)), ["--max-spec-bytes", "500000"]);
     expect(out.status).toBe(0);
     expect(Buffer.byteLength(out.stdout, "utf8")).toBeGreaterThan(150_000);
     expect(JSON.parse(out.stdout).name).toBe("strad-staging");
@@ -144,16 +161,35 @@ describe("render-spec, the size of what it emits", () => {
     // A spec under the ceiling is a spec App Platform is observed to take, so
     // this may never fail a deploy — but the two outages were both growth
     // nobody was watching, so it has to be said out loud.
-    const out = render(config("x".repeat(50_000)), [
-      "--max-spec-bytes",
-      "60000",
-    ]);
+    const out = render(config(noise(50_000)), ["--max-spec-bytes", "60000"]);
     expect(out.status).toBe(0);
     expect(out.stderr).toMatch(
       /::warning::the rendered app spec is [\d,]+ bytes, 8\d% of the 60,000-byte ceiling/,
     );
     expect(out.stderr).toMatch(/bytes of headroom left/);
     expect(JSON.parse(out.stdout).name).toBe("strad-staging");
+  });
+
+  it("fits a config whose plain form would be over the ceiling, by gzipping it", () => {
+    // The 2026-10-08 shape: a config with nothing left to strip, and a spec
+    // that only fits once it travels compressed. ~160,000 bytes of ordinary
+    // prose is past the refusal plain, and a few KB gzipped.
+    const prose = "a sentence a config might carry, written out again. ";
+    const out = render(config(prose.repeat(3_000)));
+    expect(out.status).toBe(0);
+    expect(out.stderr).toMatch(
+      /\[render-spec\] STRAD_CONFIG_YAML_GZ_B64: the document travels gzipped, \d+ spec bytes instead of \d+;/,
+    );
+    const envs = (
+      JSON.parse(out.stdout) as {
+        services: { envs: { key: string; value: string }[] }[];
+      }
+    ).services[0]!.envs;
+    const gz = envs.find((e) => e.key === "STRAD_CONFIG_YAML_GZ_B64")!.value;
+    expect(decodeCompressedConfig(gz)).toContain(prose.repeat(3_000).trim());
+    expect(envs.find((e) => e.key === "STRAD_CONFIG_YAML")!.value).toBe(
+      CONFIG_TRIPWIRE,
+    );
   });
 
   it("refuses a --max-spec-bytes that is not a number, before doing any work", () => {

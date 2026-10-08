@@ -1371,12 +1371,16 @@ into an outage, and this dialect's upstream is a draft, so new keys are expected
 
 ## Where the config comes from
 
-Config is loaded from two sources, in priority order (`src/config/load.ts`):
+Config is loaded from three sources, in priority order (`src/config/load.ts`):
 
-1. **`STRAD_CONFIG_YAML`** — an inline YAML document. This is how the stock OSS
+1. **`STRAD_CONFIG_YAML_GZ_B64`** — the same inline document, gzipped and
+   base64'd. `render-spec` emits it when that is smaller, which for any real
+   config it is. A value that does not decode is a boot failure, never a fall
+   through to the next source.
+2. **`STRAD_CONFIG_YAML`** — an inline YAML document. This is how the stock OSS
    image is configured with **zero rebuild**: hand it a config via env and it
    runs.
-2. **`STRAD_CONFIG`** — a path to a file. This is how an image that **bakes its
+3. **`STRAD_CONFIG`** — a path to a file. This is how an image that **bakes its
    config in** works (e.g. `tadasant-internal`).
 
 Either source may be written in the YAML interface or in the [`mcp.json`
@@ -1387,8 +1391,9 @@ document transform rather than a second parse.
 `STRAD_CONFIG_YAML` is the config **document**, not the config **file**: a spec
 rendered by `render-spec` carries it re-emitted without its comments, because an
 App Platform spec has a size the API refuses past and a strad config is mostly
-prose. The values are identical — the round trip is checked before it is used —
-so nothing about how a config is written changes. See [the deploy
+prose, and gzipped when that is smaller still. The values are identical — both
+round trips are checked before they are used — so nothing about how a config is
+written changes. See [the deploy
 model](/operate/deploy-model/#the-config-travels-without-its-prose-and-the-spec-has-a-size).
 
 The full, annotated example lives at

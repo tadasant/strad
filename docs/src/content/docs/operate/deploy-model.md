@@ -428,9 +428,9 @@ written, because a deploy is the only thing that could deliver it. See
 
 ## The config travels without its prose, and the spec has a size
 
-`STRAD_CONFIG_YAML` is the config document, inline on the core component. It is
-not the config _file_: `render-spec` re-emits the document without its comments
-before baking it (`src/deploy/config-inline.ts`).
+The config document travels inline on the core component. It is not the config
+_file_: `render-spec` re-emits the document without its comments, and then, when
+that is smaller, gzips it (`src/deploy/config-inline.ts`).
 
 A strad config is mostly prose, deliberately — a `bundles:` entry explains why an
 instance size is what it is, and that comment is why the next person does not
@@ -444,6 +444,29 @@ to the original document — before the schema sees either, so a key Zod would s
 still has to survive — and it is used only if it holds the same values _and_ is
 smaller. Either check failing bakes the file verbatim and says so in the deploy
 log. A spec that fits and configures a different gateway is not an improvement.
+
+**Then it is gzipped, under the same rule.** Stripping is not the end of it: on
+2026-10-08 prod's stripped document was 34,018 bytes with no prose left, and the
+spec was over the ceiling again. YAML is repetitive text, so `render-spec` gzips
+the stripped document and bakes it base64'd as `STRAD_CONFIG_YAML_GZ_B64` —
+8,240 bytes for that document, which took prod's spec from 132,740 to 106,202.
+The value is decoded with the function boot decodes it with and must come back
+byte for byte, and it is used only if it costs fewer spec bytes than the plain
+form. A small config gzips larger, and travels as plain `STRAD_CONFIG_YAML`. The
+deploy log says which.
+
+| Variable                   | Holds                                                                     |
+| -------------------------- | ------------------------------------------------------------------------- |
+| `STRAD_CONFIG_YAML_GZ_B64` | the stripped document, gzipped and base64'd. Boot reads this first.       |
+| `STRAD_CONFIG_YAML`        | the stripped document when it travels plain; otherwise a tripwire, below. |
+
+The tripwire is a YAML scalar, which parses and then fails the schema at its
+root. An image from before the compressed form does not look for
+`STRAD_CONFIG_YAML_GZ_B64`, so without it that image would find no inline config
+and boot on the zero-server file it ships — a healthy gateway that serves
+nothing. With it, the image refuses to start and App Platform keeps the
+deployment it has. Render with the tooling of the core image you deploy;
+tadasant-internal's prod workflow already does.
 
 Why it matters: **an App Platform spec has a size the API refuses past, and
 DigitalOcean does not document what it is.** What is known is two runs on
