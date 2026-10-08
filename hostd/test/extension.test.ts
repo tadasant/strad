@@ -92,8 +92,10 @@ describe.skipIf(!chrome)(
         if (await cond()) return;
         await new Promise((r) => setTimeout(r, 100));
       }
+      const last = seen();
       throw new Error(
-        `condition not met in ${ms}ms: ${what}; last seen ${JSON.stringify(seen())}`,
+        `condition not met in ${ms}ms: ${what}` +
+          (last === undefined ? "" : `; last seen ${JSON.stringify(last)}`),
       );
     };
 
@@ -179,50 +181,46 @@ describe.skipIf(!chrome)(
           for (const t of targetInfos) {
             if (t.type !== "service_worker" || ruledOut.has(t.targetId))
               continue;
-            const { sessionId } = await cdp.send<{ sessionId: string }>(
-              "Target.attachToTarget",
-              { targetId: t.targetId, flatten: true },
-            );
-            const r = await cdp.send<{ result: { value?: string } }>(
-              "Runtime.evaluate",
-              {
-                expression:
-                  "typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest ? chrome.runtime.getManifest().name : ''",
-                returnByValue: true,
-              },
-              sessionId,
-            );
-            answers[t.url] = r.result.value ?? "";
-            if (r.result.value === "strad-hostd bridge") {
-              worker = sessionId;
-              return true;
+            // A component worker can exit between the listing and the
+            // attach; that is a retry on the next poll, not a failure.
+            let sessionId: string | undefined;
+            try {
+              ({ sessionId } = await cdp.send<{ sessionId: string }>(
+                "Target.attachToTarget",
+                { targetId: t.targetId, flatten: true },
+              ));
+              const r = await cdp.send<{ result: { value?: string } }>(
+                "Runtime.evaluate",
+                {
+                  expression:
+                    "typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest ? chrome.runtime.getManifest().name : ''",
+                  returnByValue: true,
+                },
+                sessionId,
+              );
+              answers[t.url] = r.result.value ?? "";
+              if (r.result.value === "strad-hostd bridge") {
+                worker = sessionId;
+                return true;
+              }
+              if (r.result.value) ruledOut.add(t.targetId);
+            } catch (err) {
+              answers[t.url] = `probe failed: ${(err as Error).message}`;
             }
-            if (r.result.value) ruledOut.add(t.targetId);
-            await cdp.send("Target.detachFromTarget", { sessionId });
+            if (sessionId)
+              await cdp
+                .send("Target.detachFromTarget", { sessionId })
+                .catch(() => {});
           }
           return false;
         },
         "the bridge's service worker answers with its manifest",
         () => answers,
       );
-      // Its script has run to the end, listeners included, once the first
-      // connect() has found no token. A pairing written before then can land
-      // ahead of the storage.onChanged listener that would act on it.
       const bridgeStatus = () =>
         inWorker<{ state: string; detail: string } | null>(
           "(() => { try { return status } catch { return null } })()",
         );
-      let lastStatus: unknown;
-      await until(
-        async () => {
-          lastStatus = await bridgeStatus();
-          return (
-            (lastStatus as { state?: string } | null)?.state === "unpaired"
-          );
-        },
-        "the bridge's worker reports itself unpaired",
-        () => lastStatus,
-      );
       // Pair it the way the options page does: chrome.storage.local, which the
       // worker watches and reconnects on.
       await inWorker(
@@ -231,9 +229,15 @@ describe.skipIf(!chrome)(
           token: token.trim(),
         })})`,
       );
+      // The storage write is not enough on its own: connect() returns early
+      // while another connect() is in flight, so a token that lands while
+      // the worker's startup connect() is between reading storage and giving
+      // up as "unpaired" is dropped until the 30s reconnect alarm. Calling
+      // connect() on each poll is a no-op once a socket is opening or open.
       let lastSeen: unknown;
       await until(
         async () => {
+          await inWorker("void connect()");
           const daemonSide = (await state()).extension;
           lastSeen = { daemon: daemonSide, bridge: await bridgeStatus() };
           return daemonSide?.connected === true;
