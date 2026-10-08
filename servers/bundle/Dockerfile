@@ -124,8 +124,9 @@ RUN npm run build && npm prune --omit=dev
 # ---- whatsapp -----------------------------------------------------------------
 # strad's own WhatsApp server, which is also the long-lived WhatsApp client: a
 # linked device (Baileys) whose Signal state and message buffer live in GCS,
-# sealed. Its dependencies are the MCP SDK, Baileys (with a WebAssembly Signal
-# core, so nothing native is compiled here) and @google-cloud/storage.
+# sealed. Its dependencies are the MCP SDK and Baileys (with a WebAssembly
+# Signal core, so nothing native is compiled here); it reaches GCS on Node's own
+# fetch, with no client library.
 FROM ${PW} AS build-whatsapp
 WORKDIR /src
 COPY servers/whatsapp/package.json servers/whatsapp/package-lock.json ./
