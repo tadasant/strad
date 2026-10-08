@@ -80,13 +80,21 @@ describe.skipIf(!chrome)(
       ).json()) as {
         extension?: { connected: boolean; attachedTabs: number };
       };
-    const until = async (cond: () => Promise<boolean>, ms = 10_000) => {
+    /** Poll `cond`; on timeout, say what was awaited and what was last seen. */
+    const until = async (
+      cond: () => Promise<boolean>,
+      what: string,
+      seen: () => unknown = () => undefined,
+      ms = 10_000,
+    ) => {
       const deadline = Date.now() + ms;
       while (Date.now() < deadline) {
         if (await cond()) return;
         await new Promise((r) => setTimeout(r, 100));
       }
-      throw new Error("condition not met in time");
+      throw new Error(
+        `condition not met in ${ms}ms: ${what}; last seen ${JSON.stringify(seen())}`,
+      );
     };
 
     beforeAll(async () => {
@@ -158,35 +166,63 @@ describe.skipIf(!chrome)(
       );
       // Chromium ships component extensions with workers of their own, so the
       // bridge's is found by asking each worker which manifest it belongs to.
-      const tried = new Set<string>();
-      await until(async () => {
-        const { targetInfos } = await cdp.send<{
-          targetInfos: { targetId: string; type: string; url: string }[];
-        }>("Target.getTargets");
-        for (const t of targetInfos) {
-          if (t.type !== "service_worker" || tried.has(t.targetId)) continue;
-          tried.add(t.targetId);
-          const { sessionId } = await cdp.send<{ sessionId: string }>(
-            "Target.attachToTarget",
-            { targetId: t.targetId, flatten: true },
-          );
-          const r = await cdp.send<{ result: { value?: string } }>(
-            "Runtime.evaluate",
-            {
-              expression:
-                "typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest ? chrome.runtime.getManifest().name : ''",
-              returnByValue: true,
-            },
-            sessionId,
-          );
-          if (r.result.value === "strad-hostd bridge") {
-            worker = sessionId;
-            return true;
+      // A worker is only ruled out by naming ANOTHER manifest: one caught
+      // while still starting has no extension bindings yet and answers "",
+      // and the bridge's own worker answers that way on a cold Chromium.
+      const ruledOut = new Set<string>();
+      const answers: Record<string, string> = {};
+      await until(
+        async () => {
+          const { targetInfos } = await cdp.send<{
+            targetInfos: { targetId: string; type: string; url: string }[];
+          }>("Target.getTargets");
+          for (const t of targetInfos) {
+            if (t.type !== "service_worker" || ruledOut.has(t.targetId))
+              continue;
+            const { sessionId } = await cdp.send<{ sessionId: string }>(
+              "Target.attachToTarget",
+              { targetId: t.targetId, flatten: true },
+            );
+            const r = await cdp.send<{ result: { value?: string } }>(
+              "Runtime.evaluate",
+              {
+                expression:
+                  "typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest ? chrome.runtime.getManifest().name : ''",
+                returnByValue: true,
+              },
+              sessionId,
+            );
+            answers[t.url] = r.result.value ?? "";
+            if (r.result.value === "strad-hostd bridge") {
+              worker = sessionId;
+              return true;
+            }
+            if (r.result.value) ruledOut.add(t.targetId);
+            await cdp.send("Target.detachFromTarget", { sessionId });
           }
-          await cdp.send("Target.detachFromTarget", { sessionId });
-        }
-        return false;
-      });
+          return false;
+        },
+        "the bridge's service worker answers with its manifest",
+        () => answers,
+      );
+      // Its script has run to the end, listeners included, once the first
+      // connect() has found no token. A pairing written before then can land
+      // ahead of the storage.onChanged listener that would act on it.
+      const bridgeStatus = () =>
+        inWorker<{ state: string; detail: string } | null>(
+          "(() => { try { return status } catch { return null } })()",
+        );
+      let lastStatus: unknown;
+      await until(
+        async () => {
+          lastStatus = await bridgeStatus();
+          return (
+            (lastStatus as { state?: string } | null)?.state === "unpaired"
+          );
+        },
+        "the bridge's worker reports itself unpaired",
+        () => lastStatus,
+      );
       // Pair it the way the options page does: chrome.storage.local, which the
       // worker watches and reconnects on.
       await inWorker(
@@ -195,7 +231,16 @@ describe.skipIf(!chrome)(
           token: token.trim(),
         })})`,
       );
-      await until(async () => (await state()).extension?.connected === true);
+      let lastSeen: unknown;
+      await until(
+        async () => {
+          const daemonSide = (await state()).extension;
+          lastSeen = { daemon: daemonSide, bridge: await bridgeStatus() };
+          return daemonSide?.connected === true;
+        },
+        "the daemon sees the extension connected",
+        () => lastSeen,
+      );
 
       client = await connect(daemon.mcpPort, "/browser/mcp", BROWSER_KEY);
       ({ grant_id: grantId } = resultJson<{ grant_id: string }>(
@@ -369,7 +414,10 @@ describe.skipIf(!chrome)(
       expect(resultText(refused)).toMatch(/not opened by this grant/);
 
       daemon.core.deps.gate.disableAll("test");
-      await until(async () => (await attachedInChrome()) === 0);
+      await until(
+        async () => (await attachedInChrome()) === 0,
+        "chrome.debugger is off every tab",
+      );
       expect((await state()).extension?.attachedTabs).toBe(0);
       expect((await call("list_tabs")).isError).toBe(true);
       daemon.core.deps.gate.enable();
@@ -418,7 +466,10 @@ describe.skipIf(!chrome)(
       await inWorker(
         `chrome.storage.local.set({ daemon: "ws://127.0.0.1:${port}/extension" })`,
       );
-      await until(async () => closedWith !== undefined);
+      await until(
+        async () => closedWith !== undefined,
+        "the extension hangs up on the rogue listener",
+      );
       expect(closedWith).toBe(4003);
       expect(seen.map((m) => m.type)).toEqual(["hello"]);
       expect(JSON.stringify(seen)).not.toContain(token.trim());
@@ -428,7 +479,10 @@ describe.skipIf(!chrome)(
       await inWorker(
         `chrome.storage.local.set({ daemon: "ws://127.0.0.1:${daemon.controlPort}/extension" })`,
       );
-      await until(async () => (await state()).extension?.connected === true);
+      await until(
+        async () => (await state()).extension?.connected === true,
+        "the extension reconnects to the daemon",
+      );
     });
 
     it("serves the CRX and update manifest a policy-installed Chrome would fetch", async () => {
