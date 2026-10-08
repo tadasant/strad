@@ -702,11 +702,13 @@ export class HttpServerAdapter implements ServerAdapter {
     conn: Conn,
     op: string,
     run: (client: Client) => Promise<T>,
+    /** The caller cancelled: its failure says nothing about the connection. */
+    callerGone?: () => boolean,
   ): Promise<T> {
     try {
       return await this.hop(op, () => run(conn.client));
     } catch (err) {
-      if (isConnectionFault(err)) this.retire(conn);
+      if (isConnectionFault(err) && !callerGone?.()) this.retire(conn);
       if (isUnauthorized(err)) this.opts.onUnauthorized?.(conn.endpoint);
       // A request failure CAN be an offline verdict, and usually is the first
       // one anyone sees: the connection is cached, so shutting a laptop is
@@ -843,41 +845,58 @@ export class HttpServerAdapter implements ServerAdapter {
     // the hop's deadline passes, so the bundle never confirms into the void.
     // Its keepalives come back as progress, and go on to the caller if it
     // asked for progress. Every other slug keeps the SDK's defaults.
-    const signal = confirmed
-      ? AbortSignal.any(
-          [AbortSignal.timeout(this.opts.timeoutMs), ctx?.signal].filter(
-            (s): s is AbortSignal => s !== undefined,
-          ),
-        )
-      : undefined;
-    const run = () =>
-      this.authorized(async () => {
-        const conn = await this.leased();
-        const res = await this.lease(conn, "call_tool", (client) =>
-          client.callTool(
-            {
-              name: this.restore(name),
-              arguments: args,
-              ...(_meta ? { _meta } : {}),
-            },
-            undefined,
-            {
-              timeout: this.opts.timeoutMs,
-              ...(signal
-                ? {
-                    signal,
-                    // Always set on a confirmed call: it is what makes the SDK
-                    // put a progressToken on the request, and the bundle only
-                    // sends keepalives against one.
-                    onprogress: (p: CallProgress) => ctx?.onProgress?.(p),
-                  }
-                : {}),
-            },
-          ),
-        );
-        return res as unknown as CallToolResult;
-      });
-    return signal ? callSignal.run(signal, run) : run();
+    // What tears this call's own POST down: the caller leaving, or a moment
+    // after the SDK's own timeout has already failed the call. The SDK is
+    // handed the caller's signal alone, so a timeout still reads as the SDK's
+    // RequestTimeout rather than as an aborted fetch. Built at send time, so
+    // the deadline starts with the SDK's timer.
+    const POST_GRACE_MS = 1_000;
+    const signalFor = () =>
+      confirmed
+        ? AbortSignal.any(
+            [
+              AbortSignal.timeout(this.opts.timeoutMs + POST_GRACE_MS),
+              ctx?.signal,
+            ].filter((s): s is AbortSignal => s !== undefined),
+          )
+        : undefined;
+    const callerGone = () => ctx?.signal?.aborted === true;
+    return this.authorized(async () => {
+      const conn = await this.leased();
+      // The call's signal scopes this call's own POST and nothing else: not the
+      // handshake above, which a concurrent caller may be joined to.
+      const res = await this.lease(
+        conn,
+        "call_tool",
+        (client) => {
+          const signal = signalFor();
+          const send = () =>
+            client.callTool(
+              {
+                name: this.restore(name),
+                arguments: args,
+                ...(_meta ? { _meta } : {}),
+              },
+              undefined,
+              {
+                timeout: this.opts.timeoutMs,
+                ...(signal
+                  ? {
+                      ...(ctx?.signal ? { signal: ctx.signal } : {}),
+                      // Always set on a confirmed call: it is what makes the SDK
+                      // put a progressToken on the request, and the bundle only
+                      // sends keepalives against one.
+                      onprogress: (p: CallProgress) => ctx?.onProgress?.(p),
+                    }
+                  : {}),
+              },
+            );
+          return signal ? callSignal.run(signal, send) : send();
+        },
+        callerGone,
+      );
+      return res as unknown as CallToolResult;
+    });
   }
 
   /**

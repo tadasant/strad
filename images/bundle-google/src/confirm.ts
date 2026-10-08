@@ -59,7 +59,8 @@
  * requests and the wait between polls, it turns any answer into `cancel`, and
  * the mailbox itself refuses `sendMessage` / `sendDraft` once it has fired
  * ({@link guardSends}), which covers the reads the tool makes between the
- * approval and the send.
+ * approval and the send, and so does the send request itself
+ * ({@link gateGmailSends}), which covers the token mint inside the send.
  *
  * ## Keeping a long wait open
  *
@@ -476,13 +477,67 @@ const current = new AsyncLocalStorage<Scope>();
 /** The mailbox's two methods that send. Everything else passes through. */
 const SENDS = new Set(["sendMessage", "sendDraft"]);
 
+/** The Gmail API requests that send mail: a new message, and a saved draft. */
+export function isGmailSend(input: unknown): boolean {
+  let url: URL;
+  try {
+    url = new URL(
+      input instanceof Request ? input.url : String(input as string | URL),
+    );
+  } catch {
+    return false;
+  }
+  return (
+    url.hostname === "gmail.googleapis.com" &&
+    /\/(messages|drafts)\/send$/.test(url.pathname)
+  );
+}
+
+const dropped = () =>
+  new Error(
+    "the call that asked for this was dropped before it was sent, so nothing " +
+      "was sent",
+  );
+
+/**
+ * Gate the Gmail send REQUEST on the call's signal.
+ *
+ * {@link guardSends} checks at the client method, but the vendored
+ * `sendMessage` still mints a token and reads the sender before its POST, and
+ * a call dropped during those round trips would still send. So the last check
+ * is at the request itself: a send for a dropped call is refused before it
+ * leaves, and one in flight carries the call's signal. What remains is a send
+ * whose request had already left when the drop arrived.
+ *
+ * The vendored client sends through the global `fetch`, so that is what is
+ * wrapped, once per process. Only a send to `gmail.googleapis.com` made
+ * inside a confirmed call's scope is touched; every other request, from every
+ * mount, passes through unchanged.
+ */
+export function gateGmailSends(): void {
+  const marked = globalThis.fetch as typeof fetch & { stradSendGate?: true };
+  if (marked.stradSendGate) return;
+  const original = globalThis.fetch;
+  const gated = ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const signal = current.getStore()?.signal;
+    if (!signal || !isGmailSend(input)) return original(input, init);
+    if (signal.aborted) return Promise.reject(dropped());
+    return original(input, {
+      ...init,
+      signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal,
+    });
+  }) as typeof fetch & { stradSendGate?: true };
+  gated.stradSendGate = true;
+  globalThis.fetch = gated;
+}
+
 /**
  * The mailbox, refusing to send once the call that asked has been dropped.
  *
  * `askHuman` already answers `cancel` to a dropped call, but the tool does more
  * between an `accept` and the send: a reply reads the original message first.
- * A call dropped in that gap would still send. This closes it at the last
- * moment there is: the send itself.
+ * This refuses at the client method, before the vendored send mints a token;
+ * {@link gateGmailSends} refuses again at the request.
  */
 export function guardSends(client: IGmailClient): IGmailClient {
   return new Proxy(client, {
@@ -492,12 +547,7 @@ export function guardSends(client: IGmailClient): IGmailClient {
       if (typeof prop !== "string" || !SENDS.has(prop)) return value.bind(t);
       return (...args: unknown[]) => {
         if (current.getStore()?.signal?.aborted) {
-          return Promise.reject(
-            new Error(
-              "the call that asked for this was dropped before it was sent, " +
-                "so nothing was sent",
-            ),
-          );
+          return Promise.reject(dropped());
         }
         return (value as (...a: unknown[]) => unknown).apply(t, args);
       };
@@ -565,6 +615,7 @@ export function withConfirmation(
   target: Server,
   options: ConfirmationOptions = {},
 ): Server {
+  gateGmailSends();
   const guard =
     (handler: Handler): Handler =>
     async (request, extra) => {

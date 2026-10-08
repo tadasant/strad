@@ -5881,9 +5881,9 @@ than worked around:
    progressToken; for any other caller, core's response is silent until the
    human answers. A window longer than that hop holds is SAFE but useless: the
    drop closes core's request to the bundle, the bundle's call signal fires,
-   and the answer becomes `cancel`. The mailbox also refuses to send for a
-   dropped call. What remains is a race of milliseconds between an approval
-   being read and the drop arriving. Nothing in this repo has measured how long
+   and the answer becomes `cancel`. The mailbox, and the Gmail send request
+   itself, also refuse for a dropped call. What remains is a send whose request
+   had already reached Gmail when the drop arrived. Nothing in this repo has measured how long
    App Platform's ingress, or Zimmer's MCP client, holds a silent `/mcp`
    response open, so there is no config guard. The limit belongs to the
    caller, not to the config.

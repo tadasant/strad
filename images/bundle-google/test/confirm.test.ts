@@ -40,7 +40,9 @@ import {
   CONFIRMED_TOOLS,
   ELICITATION_META_KEY,
   channelFrom,
+  gateGmailSends,
   guardSends,
+  isGmailSend,
   withConfirmation,
 } from "../src/confirm.js";
 import { createMCPServer } from "../src/gmail.js";
@@ -697,4 +699,79 @@ test("channelFrom: headers keep only string values under sendable names", () => 
   assert.deepEqual(channel && "url" in channel && channel.headers, {
     "CF-Access-Client-Id": "a",
   });
+});
+
+test("a call dropped during the send's own token mint is refused at the send request", async () => {
+  // The vendored sendMessage mints a token and reads the sender before its
+  // POST; a drop in there passes the client-method check. The request gate is
+  // what refuses it. The real fetch is stubbed so nothing leaves the test.
+  const real = globalThis.fetch;
+  const posted: string[] = [];
+  globalThis.fetch = (async (
+    input: Parameters<typeof fetch>[0],
+    init?: RequestInit,
+  ) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (isGmailSend(url)) {
+      posted.push(url);
+      return new Response(JSON.stringify({ id: "m1", threadId: "t1" }));
+    }
+    return real(input, init);
+  }) as typeof fetch;
+  gateGmailSends();
+  try {
+    answers.set("/session/drop-4", "accept");
+    const { client } = mailbox();
+    const controller = new AbortController();
+    (client as unknown as Record<string, unknown>).sendMessage = async () => {
+      controller.abort(); // the drop lands during the mint
+      await settle(100);
+      const res = await fetch(
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+        { method: "POST", body: "{}" },
+      );
+      return res.json();
+    };
+    const mcp = await connectFast(client);
+    await assert.rejects(
+      mcp.callTool(
+        {
+          name: "send_email",
+          arguments: SEND,
+          _meta: meta({ url: `${base}/session/drop-4`, ttlMs: 30_000 }),
+        },
+        undefined,
+        { signal: controller.signal },
+      ),
+    );
+    await settle(200);
+    assert.equal(created.length, 1, "the human was asked");
+    assert.deepEqual(posted, [], "the send request never left");
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
+test("isGmailSend: only Gmail's two send requests", () => {
+  const base = "https://gmail.googleapis.com/gmail/v1/users/me";
+  assert.equal(isGmailSend(`${base}/messages/send`), true);
+  assert.equal(isGmailSend(`${base}/drafts/send`), true);
+  assert.equal(isGmailSend(`${base}/messages`), false);
+  assert.equal(isGmailSend("https://example.com/messages/send"), false);
+  assert.equal(isGmailSend("not a url"), false);
+});
+
+test("the reserved confirmation-header names match core's schema rule", () => {
+  // Core refuses these names in config (`confirmationHeaderProblem`) and this
+  // tree drops them on receipt. Two hand-kept lists, held together here.
+  const names = (path: string): string[] => {
+    const src = readFileSync(join(import.meta.dirname, path), "utf8");
+    const body = /const RESERVED_HEADERS = new Set\(\[([^\]]*)\]\)/.exec(src);
+    assert.ok(body, `no RESERVED_HEADERS in ${path}`);
+    return [...body[1]!.matchAll(/"([^"]+)"/g)].map((m) => m[1]!).sort();
+  };
+  assert.deepEqual(
+    names("../src/confirm.ts"),
+    names("../../../src/gateway/elicitation.ts"),
+  );
 });

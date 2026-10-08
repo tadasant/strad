@@ -136,20 +136,23 @@ this one comes from a caller:
 - **A dropped call never sends.** The call's own abort signal fires when its
   response to core closes, whether core's hop timed out, core's caller went
   away, or the caller cancelled. It aborts the approval requests and the wait
-  between polls, it turns any answer into `cancel`, and the mailbox itself
-  refuses `sendMessage` and `sendDraft` once it has fired. That last check is
-  for the reads the tool makes between the approval and the send: a reply looks
-  up the original message first. Without it, an approval landing after the
-  caller was told the call failed would still send, and send twice if the
-  caller retried.
+  between polls, and it turns any answer into `cancel`. Then the send itself is
+  checked twice. The mailbox refuses `sendMessage` and `sendDraft`, which
+  covers the reads the tool makes between the approval and the send: a reply
+  looks up the original message first. And the Gmail send request is gated on
+  the same signal, which covers the token mint and sender lookup the vendored
+  client does inside `sendMessage`. A send request for a dropped call never
+  leaves, and one in flight is aborted with the call. Without these, an
+  approval landing after the caller was told the call failed would still send,
+  and send twice if the caller retried.
 - **A long wait stays open.** While a human decides, nothing else crosses the
   wire, and Node's `fetch` in core drops a response body that has been silent
   for 300 seconds. So the bundle sends a progress notification every 30
   seconds, against the progressToken core puts on every confirmed call. Core
   relays it to its own caller when that caller sent a progressToken of its own.
 
-What is left is a race of milliseconds: an approval read just before the drop
-reaches the bundle can still send. Everything slower than that is a cancel.
+What is left is a send whose request had already reached Gmail when the drop
+arrived. Anything that drops before that point is a cancel.
 
 The prompt names the strad slug and the mailbox, then the vendored message's
 To, Cc, Bcc and Subject. A send of a saved draft (`from_draft_id`) would
@@ -177,7 +180,9 @@ one.
 ```
 
 - They go on the POST and on every poll, and only to a URL core has already held
-  to `gateway.elicitation.allowedUrlPrefixes`.
+  to `gateway.elicitation.allowedUrlPrefixes`. The caller picks the URL, so
+  they reach any path under an allowed prefix. Keep the prefix as narrow as the
+  approval route (`…/api/v1/elicitations/session/`), never a whole host.
 - They are strad's credential, never the caller's: nothing in them comes from
   the `/mcp` request.
 - The bundle sets `content-type` itself. A `confirmationHeaders:` name that

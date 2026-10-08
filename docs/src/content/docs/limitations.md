@@ -3452,7 +3452,8 @@ gmail's `send_email` asks a human first, at the URL the `/mcp` request names in
   core relays keepalives only to a caller that sent a progressToken. A longer
   window than that hop holds is safe but useless: the drop reaches the bundle
   and the answer becomes `cancel`, so strad never sends after its caller was
-  told the call failed. What remains is a race of milliseconds. How long App
+  told the call failed. What remains is a send whose request had already
+  reached Gmail when the drop arrived. How long App
   Platform's ingress, or Zimmer's client, holds a silent `/mcp` response has
   not been measured.
 - **A container-wide `ELICITATION_ENABLED=false`, `ELICITATION_REQUEST_URL` or
