@@ -23,6 +23,7 @@ import {
   waitFor,
   type FakeWhatsApp,
 } from "./fake-socket.js";
+import { PAIRING_BROWSER } from "../src/socket.js";
 
 /**
  * The server through a REAL MCP client over an in-memory transport — the path
@@ -52,7 +53,6 @@ function config(key = randomBytes(32)): WhatsAppConfig {
     clientEmail: "bridge@example.iam.gserviceaccount.com",
     privateKey: "unused",
     prefix: "whatsapp",
-    deviceName: "Zimmer",
     bufferMaxMessages: 1000,
     bufferMaxAgeDays: 30,
   };
@@ -118,13 +118,17 @@ async function call(mcp: Client, name: string, args: Record<string, unknown> = {
     isError?: boolean;
   };
   const text = res.content[0]?.text ?? "";
+  const images = res.content.filter((c) => c.type === "image") as unknown as {
+    data: string;
+    mimeType: string;
+  }[];
   let json: any;
   try {
     json = JSON.parse(text);
   } catch {
     json = undefined;
   }
-  return { isError: res.isError === true, text, json, structured: res.structuredContent };
+  return { isError: res.isError === true, text, json, structured: res.structuredContent, images };
 }
 
 /** Pair through the tool, and have the phone accept the code. */
@@ -185,7 +189,8 @@ test("pairs by code with no shell, and persists the login sealed", async () => {
 
   const pairing = call(mcp, "whatsapp_pair", { phone_number: "+1 (555) 000-0001" });
   await waitFor(() => fake.sockets.length === 1);
-  assert.deepEqual(fake.latest().options.browser.slice(0, 2), ["Zimmer", "Chrome"]);
+  // A real OS and browser: the phone refuses a code whose OS it does not know.
+  assert.deepEqual([...fake.latest().options.browser], [...PAIRING_BROWSER]);
   fake.latest().offerPairing();
   const result = await pairing;
   assert.equal(result.isError, false, result.text);
@@ -240,6 +245,103 @@ test("a pairing attempt that lapses leaves nothing behind", async () => {
   // No reconnect loop for an unpaired device.
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(fake.sockets.length, 1);
+});
+
+test("pairs by QR: a PNG drawn here, the current ref on every call, no restart", async () => {
+  let now = NOW * 1000;
+  const { mcp, fake } = await connect({ clock: () => now });
+
+  const first = call(mcp, "whatsapp_pair", { method: "qr" });
+  await waitFor(() => fake.sockets.length === 1);
+  assert.deepEqual([...fake.latest().options.browser], [...PAIRING_BROWSER]);
+  fake.latest().offerPairing("REF1,noise,identity,adv,1");
+  const a = await first;
+  assert.equal(a.isError, false, a.text);
+  assert.equal(a.json.method, "qr");
+  assert.equal(a.json.qr, "REF1,noise,identity,adv,1");
+  assert.equal(a.json.expires_in_seconds, 60);
+  assert.match(a.json.instructions, /point the camera/);
+  assert.deepEqual(a.structured, a.json);
+  // The PNG rides as an MCP image block, never inside the JSON.
+  assert.equal(a.images.length, 1);
+  assert.equal(a.images[0]!.mimeType, "image/png");
+  const png = Buffer.from(a.images[0]!.data, "base64");
+  assert.equal(png.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+  assert.equal("png" in a.json, false);
+
+  // WhatsApp rotates the ref; the next call answers with it, on the SAME socket.
+  now += 30_000;
+  const half = await call(mcp, "whatsapp_pair", { method: "qr" });
+  assert.equal(half.json.qr, "REF1,noise,identity,adv,1");
+  assert.equal(half.json.expires_in_seconds, 30);
+  fake.latest().offerPairing("REF2,noise,identity,adv,1");
+  const b = await call(mcp, "whatsapp_pair", { method: "qr" });
+  assert.equal(b.json.qr, "REF2,noise,identity,adv,1");
+  assert.notEqual(b.images[0]!.data, a.images[0]!.data);
+  assert.equal(fake.sockets.length, 1, "a QR call does not start over while one is live");
+  assert.equal((await call(mcp, "whatsapp_status")).json.pairing_in_progress, true);
+
+  // Scanned: the same pair-success → 515 → open path as a code.
+  fake.latest().acceptPairing();
+  fake.latest().close(515);
+  await waitFor(() => fake.sockets.length === 2);
+  fake.latest().open();
+  await waitFor(async () => (await call(mcp, "whatsapp_status")).json.paired === true);
+});
+
+test("a code call replaces a live QR attempt; method is validated", async () => {
+  const { mcp, fake } = await connect();
+  const qr = call(mcp, "whatsapp_pair", { method: "qr" });
+  await waitFor(() => fake.sockets.length === 1);
+  fake.latest().offerPairing();
+  await qr;
+  const code = call(mcp, "whatsapp_pair", { phone_number: "15550000001" });
+  await waitFor(() => fake.sockets.length === 2);
+  assert.equal(fake.sockets[0]!.ended, true, "the QR socket is gone");
+  fake.latest().offerPairing();
+  assert.equal((await code).isError, false);
+
+  const bad = await call(mcp, "whatsapp_pair", { method: "smoke-signal" });
+  assert.equal(bad.isError, true);
+  assert.match(bad.text, /"code" or "qr"/);
+  const noNumber = await call(mcp, "whatsapp_pair", {});
+  assert.equal(noNumber.isError, true);
+  assert.match(noNumber.text, /phone_number/);
+});
+
+test("pairing logs every step and close reason, and never a code, QR or number", async () => {
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...a: unknown[]) => {
+    lines.push(a.map(String).join(" "));
+  };
+  try {
+    const { mcp, fake } = await connect();
+    const pairing = call(mcp, "whatsapp_pair", { phone_number: "15550000001" });
+    await waitFor(() => fake.sockets.length === 1);
+    fake.latest().offerPairing("SECRETREF,noise,identity,adv,1");
+    const result = await pairing;
+    fake.latest().phoneEnteredCode();
+    fake.latest().emit("connection.update", {
+      connection: "close",
+      lastDisconnect: { error: { message: "QR refs attempts ended", output: { statusCode: 408 } } },
+    });
+    await waitFor(() => lines.some((l) => /ended unpaired/.test(l)));
+
+    const log = lines.join("\n");
+    assert.match(log, /pairing \(code\): started as Chrome on Mac OS/);
+    assert.match(log, /WhatsApp offered a pairing session/);
+    assert.match(log, /code issued/);
+    assert.match(log, /the phone accepted the code/);
+    assert.match(log, /connection: closed 408 \(timed_out\), during a code pairing: QR refs attempts ended/);
+    assert.match(log, /ended unpaired \(pairing_code_expired\); the phone accepted the code but WhatsApp never confirmed/);
+    const code = String(result.json.pairing_code);
+    for (const secret of [code, code.replace("-", ""), "SECRETREF", "15550000001"]) {
+      assert.equal(log.includes(secret), false, `logged ${secret}`);
+    }
+  } finally {
+    console.error = original;
+  }
 });
 
 test("refuses a malformed phone number before touching WhatsApp", async () => {

@@ -41,11 +41,12 @@ speaking, under their own name.
 | `whatsapp_list_chats`   | readonly  | Chats and groups, newest activity first — where a chat id comes from |
 | `whatsapp_get_messages` | readonly  | One chat's buffered messages, oldest first, with a forward cursor    |
 | `whatsapp_send_message` | readwrite | Post a text message as the paired account, optionally quoting one    |
-| `whatsapp_pair`         | admin     | Start pairing: returns a code a human enters on the phone            |
+| `whatsapp_pair`         | admin     | Start pairing: a code to enter on the phone, or a QR to scan          |
 | `whatsapp_logout`       | admin     | Unlink, and delete everything persisted                              |
 
 Every successful result is a JSON object in `structuredContent` and the same
-JSON as the first text item. A failure is an MCP error result (`isError: true`)
+JSON as the first text item. `whatsapp_pair {"method":"qr"}` adds one more item
+after it: the QR as an MCP `image` block (`image/png`). A failure is an MCP error result (`isError: true`)
 whose text says what went wrong and what to do next. Timestamps are integer UNIX seconds. Chat ids are WhatsApp JIDs:
 `…@g.us` for a group, `…@s.whatsapp.net` (or `…@lid`) for a person.
 
@@ -105,7 +106,6 @@ a tool or handed to an agent.
 | `WHATSAPP_GCS_CLIENT_EMAIL`     | config | A service account with `roles/storage.objectAdmin` on that bucket, and no more |
 | `WHATSAPP_GCS_PRIVATE_KEY`      | secret | That service account's private key (PEM; `\n`-escaped is fine)              |
 | `WHATSAPP_GCS_PREFIX`           | config | Optional. The folder inside the bucket. Default `whatsapp`                  |
-| `WHATSAPP_DEVICE_NAME`          | config | Optional. What the phone's Linked devices list calls this. Default `Zimmer` |
 | `WHATSAPP_BUFFER_MAX_MESSAGES`  | config | Optional. Default 1000                                                      |
 | `WHATSAPP_BUFFER_MAX_AGE_DAYS`  | config | Optional. Default 30                                                        |
 
@@ -136,9 +136,11 @@ deployments sharing one prefix are two processes on one linked device.
 
 ## Pairing, with no shell
 
-Pairing is a tool call, so nobody opens a console on the container to scan a QR
-code. From the console playground (`/ui`) or an agent session entitled to the
-slug:
+Pairing is a tool call, so nobody opens a console on the container. There are two
+routes, and both run from the console playground (`/playground/<slug>`) or an
+agent session entitled to the slug.
+
+**By code** (the default):
 
 1. Call `whatsapp_pair` with the account's number in E.164 digits, no `+`:
    `{"phone_number": "15551234567"}`. It returns an 8-character code such as
@@ -148,12 +150,57 @@ slug:
    prompt to appear on the phone: WhatsApp stopped reliably sending the automatic
    "enter this code" notification to linked-device clients around August 2026
    (whatsmeow#1271, with matching Baileys reports). The manual path works.
-3. `whatsapp_status` turns `paired: true, connected: true`. The phone lists the
-   device under the name in `WHATSAPP_DEVICE_NAME`.
+3. `whatsapp_status` turns `paired: true, connected: true`.
 
-The code lives as long as the socket waits for it — at least two minutes. If it
-lapses, `whatsapp_status` says `pairing_code_expired`; call `whatsapp_pair` again.
+**Only the newest code works.** Every `whatsapp_pair` call starts a fresh
+identity on a fresh socket, so the code an earlier call returned is dead the
+moment a later one is made. The code lives as long as its socket waits — at least
+two minutes. If it lapses, `whatsapp_status` says `pairing_code_expired`.
+
+**By QR**, the second route — from the playground on a laptop, with the phone's
+camera:
+
+1. Call `whatsapp_pair` with `{"method": "qr"}`. The result carries the QR as a
+   PNG `image` block, drawn in the bundle process (the payload holds this
+   device's pairing keys, so it never goes to a QR service), plus the payload as
+   text and `expires_in_seconds`. The playground draws the image.
+2. On the phone: **WhatsApp › Settings › Linked devices › Link a device**, and
+   scan it.
+3. WhatsApp rotates the QR about once a minute. Call `{"method": "qr"}` again
+   for the current one: while a QR attempt is alive, the call returns its live
+   QR instead of starting over. A code call does start over, and kills the QR.
+
 Pairing is refused while an account is already paired: `whatsapp_logout` first.
+
+### What the phone calls this device
+
+The phone lists the device as **Chrome on Mac OS** — Baileys'
+`Browsers.macOS("Chrome")` preset, the identity every pairing presents. It is not
+configurable. The pairing-code request carries the device's OS and browser
+(`companion_platform_display` reads `Chrome (Mac OS)`), and the phone refuses a
+code whose OS it does not recognise with nothing more specific than **"Couldn't
+link device"**. A custom device name sits in exactly that slot, so there is no
+place left to put one. Tell it apart in the Linked devices list by its "last
+active" time.
+
+### When pairing fails
+
+The bundle's stderr has a `[whatsapp]` line for each step a pairing reaches and
+each close, with its status and Baileys' reason — never the code, the QR or the
+number:
+
+```
+[whatsapp] pairing (code): started as Chrome on Mac OS
+[whatsapp] pairing (code): WhatsApp offered a pairing session
+[whatsapp] pairing (code): code issued; waiting for it to be entered on the phone
+[whatsapp] pairing: the phone accepted the code; waiting for WhatsApp to confirm the device
+[whatsapp] pairing: WhatsApp confirmed the device (pair-success); expecting a restart (515)
+[whatsapp] connection: closed 515 (restart_required), during a code pairing: Stream Errored (restart required)
+```
+
+A phone that refused the code never reaches "the phone accepted the code". One
+that accepted it and still failed stops before "WhatsApp confirmed the device",
+and the `ended unpaired` warning says which.
 
 Nothing is written to GCS until WhatsApp accepts the device. Pairing a
 **different** account than the buffer belongs to discards the old buffer.

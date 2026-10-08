@@ -58,8 +58,14 @@ export class FakeSocket implements WaSocket {
   }
 
   /** WhatsApp is ready for this device to register: Baileys emits a QR ref. */
-  offerPairing(): void {
-    this.emit("connection.update", { qr: "ref,noise,identity,adv" });
+  offerPairing(qr = "ref,noise,identity,adv"): void {
+    this.emit("connection.update", { qr });
+  }
+
+  /** What Baileys does when the phone enters the code: it sends companion_finish. */
+  phoneEnteredCode(): void {
+    this.auth.creds.registered = true;
+    this.emit("creds.update", { registered: true });
   }
 
   /** What Baileys does when the phone accepts the code (pair-success). */

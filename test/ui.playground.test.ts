@@ -1,5 +1,6 @@
 import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
 import type { Server } from "node:http";
+import vm from "node:vm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { parseConfig } from "../src/config/load.ts";
@@ -10,6 +11,7 @@ import {
   connectUrl,
   degradedSurfaceNote,
   hostUnavailable,
+  IMAGE_JS,
   INGRESS_STATUS_TOKEN,
   ingressTimeoutNote,
   localTunnelNote,
@@ -542,6 +544,49 @@ describe("the playground page", () => {
     expect(html).not.toContain(BOOTSTRAP);
     // The claim the whole feature rests on, in the page's own words.
     expect(html).toContain("No model is involved");
+  });
+});
+
+describe("an image content block is drawn, not printed (IMAGE_JS)", () => {
+  const imageOf = vm.runInNewContext(`${IMAGE_JS}; imageOf`, {}) as (
+    item: unknown,
+  ) => string | null;
+  const PNG_B64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+
+  it("turns a raster image into the data: URL an <img> loads", () => {
+    expect(
+      imageOf({ type: "image", mimeType: "image/png", data: PNG_B64 }),
+    ).toBe(`data:image/png;base64,${PNG_B64}`);
+    expect(
+      imageOf({ type: "image", mimeType: "image/jpeg", data: "AAAA" }),
+    ).toBe("data:image/jpeg;base64,AAAA");
+  });
+
+  it("prints anything else as JSON: SVG, an unknown type, a payload that is not base64", () => {
+    expect(
+      imageOf({ type: "image", mimeType: "image/svg+xml", data: "PHN2Zz4=" }),
+    ).toBeNull();
+    expect(
+      imageOf({ type: "image", mimeType: "toString", data: "AAAA" }),
+    ).toBeNull();
+    expect(
+      imageOf({ type: "image", mimeType: "image/png", data: 'AAAA"><script>' }),
+    ).toBeNull();
+    expect(
+      imageOf({ type: "image", mimeType: "image/png", data: "AA AA" }),
+    ).toBeNull();
+    expect(imageOf({ type: "image", mimeType: "image/png" })).toBeNull();
+    expect(imageOf({ type: "text", text: "hi" })).toBeNull();
+    expect(imageOf(null)).toBeNull();
+  });
+
+  it("ships in the page itself", async () => {
+    const html = await (
+      await fetch(`${baseUrl}/playground/echo`, { headers: { cookie } })
+    ).text();
+    expect(html).toContain("function imageOf(item)");
+    expect(html).toContain('img.className = "pg-image"');
   });
 });
 

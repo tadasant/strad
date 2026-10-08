@@ -5690,6 +5690,13 @@ requirement. What that costs:
   that window and the new one overwrote is lost; a Signal session that loses a
   ratchet step recovers through WhatsApp's retry receipts, and a message can
   arrive late or as "waiting for this message" once.
+- **The device cannot be named.** It pairs as Baileys' `Browsers.macOS("Chrome")`
+  preset (`PAIRING_BROWSER`), so the phone lists it as Chrome on Mac OS. The
+  pairing-code request carries the OS and browser, and the phone refuses a code
+  whose OS it does not recognise ("Couldn't link device"): a custom name such as
+  "Zimmer (read-only)" in the OS slot failed every prod pairing on 2026-10-08.
+  There is no other slot to put a name in. A QR scan does not check it, which
+  is why it looked fine until pairing by code.
 - **State in a bucket, not a database.** The Signal state and the buffer are
   sealed objects under `WHATSAPP_GCS_PREFIX` (the prefix is part of each
   object's AAD, so moving them is as breaking as a new key), written on a 2 s

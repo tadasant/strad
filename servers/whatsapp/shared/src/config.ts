@@ -24,8 +24,6 @@ export const ENV = {
   privateKey: "WHATSAPP_GCS_PRIVATE_KEY",
   /** Optional. Object prefix inside the bucket. Default `whatsapp`. */
   prefix: "WHATSAPP_GCS_PREFIX",
-  /** Optional. The name the phone shows under Linked devices. Default `Zimmer`. */
-  deviceName: "WHATSAPP_DEVICE_NAME",
   /** Optional. Messages kept per chat. Default 1000. */
   bufferMaxMessages: "WHATSAPP_BUFFER_MAX_MESSAGES",
   /** Optional. Days a message is kept. Default 30. */
@@ -41,7 +39,6 @@ export const REQUIRED_ENV_NAMES = [
 ] as const;
 
 export const DEFAULT_PREFIX = "whatsapp";
-export const DEFAULT_DEVICE_NAME = "Zimmer";
 export const DEFAULT_BUFFER_MAX_MESSAGES = 1000;
 export const DEFAULT_BUFFER_MAX_AGE_DAYS = 30;
 
@@ -53,7 +50,6 @@ export interface WhatsAppConfig {
   privateKey: string;
   /** No leading or trailing slash. */
   prefix: string;
-  deviceName: string;
   bufferMaxMessages: number;
   bufferMaxAgeDays: number;
 }
@@ -148,11 +144,6 @@ export function loadConfig(
     );
   }
 
-  const deviceName = read(env, ENV.deviceName) ?? DEFAULT_DEVICE_NAME;
-  if (deviceName.length > 40) {
-    throw new ConfigError(`${ENV.deviceName} must be 40 characters or fewer.`);
-  }
-
   return {
     encryptionKey: parseEncryptionKey(read(env, ENV.encryptionKey)!),
     bucket: read(env, ENV.bucket)!,
@@ -160,7 +151,6 @@ export function loadConfig(
     // App Platform env vars carry a PEM with escaped newlines.
     privateKey: read(env, ENV.privateKey)!.replace(/\\n/g, "\n"),
     prefix,
-    deviceName,
     bufferMaxMessages: positiveInt(
       env,
       ENV.bufferMaxMessages,

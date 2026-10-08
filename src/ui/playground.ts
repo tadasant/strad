@@ -967,6 +967,22 @@ function guide(server: ServerConfig): string {
 }
 
 /**
+ * AN IMAGE BLOCK IS DRAWN, not printed: a tool that answers with a picture (a
+ * QR to scan, a screenshot) is useless as a page of base64. `imageOf` turns a
+ * content item into the `data:` URL an `<img>` loads, or null to print it as
+ * JSON like any other block. Raster types only — never SVG, which is markup —
+ * and only a payload that is base64 and nothing else, so the URL cannot be made
+ * to say anything but an image. Exported so `test/ui.playground.test.ts` can
+ * run it.
+ */
+export const IMAGE_JS = `var RASTER = { "image/png": 1, "image/jpeg": 1, "image/gif": 1, "image/webp": 1 };
+  function imageOf(item) {
+    if (!item || item.type !== "image" || !RASTER.hasOwnProperty(item.mimeType)) return null;
+    if (typeof item.data !== "string" || !/^[A-Za-z0-9+\\/]+={0,2}$/.test(item.data)) return null;
+    return "data:" + item.mimeType + ";base64," + item.data;
+  }`;
+
+/**
  * The page's own client, in plain JS.
  *
  * No build step, no framework — same rule as the rest of the console. It talks
@@ -1140,6 +1156,23 @@ function playgroundScript(server: ServerConfig): string {
     return wrap;
   }
 
+  ${IMAGE_JS}
+
+  function imageBlock(label, src) {
+    var wrap = document.createElement("div");
+    wrap.className = "pg-block";
+    var head = document.createElement("div");
+    head.className = "pg-block-head";
+    head.textContent = label;
+    var img = document.createElement("img");
+    img.className = "pg-image";
+    img.alt = label;
+    img.src = src;
+    wrap.appendChild(head);
+    wrap.appendChild(img);
+    return wrap;
+  }
+
   function renderResult(res) {
     resultEl.textContent = "";
     resultEl.hidden = false;
@@ -1161,6 +1194,11 @@ function playgroundScript(server: ServerConfig): string {
 
     (result.content || []).forEach(function (item, i) {
       var label = "content[" + i + "] · " + (item.type || "unknown");
+      var img = imageOf(item);
+      if (img) {
+        resultEl.appendChild(imageBlock(label + " · " + item.mimeType, img));
+        return;
+      }
       var text = item.type === "text" && typeof item.text === "string"
         ? item.text
         : JSON.stringify(item, null, 2);
@@ -1287,6 +1325,7 @@ const PLAYGROUND_CSS = `<style>
 .pg-actions{display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin:.7rem 0 0}
 .pg-actions .copy-note{margin:0}
 .pg-result{margin:1rem 0 0;border-top:1px solid var(--g6);padding:.8rem 0 0}
+.pg-image{display:block;max-width:100%;height:auto;margin:.4rem 0;background:#fff;image-rendering:pixelated}
 .pg-verdict{font-family:var(--font-mono);font-size:.76rem;margin:0 0 .6rem}
 .pg-ok{color:var(--text-accent)}
 .pg-bad{color:#e8776b}

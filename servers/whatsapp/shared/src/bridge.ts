@@ -12,13 +12,18 @@
  * LIFECYCLE
  *   start()   claim the lease, read the sealed state, connect if paired.
  *   pair()    fresh credentials, a socket, a pairing code for the phone.
- *   (the phone enters the code → WhatsApp restarts the stream (515) →
- *    reconnect → open, paired)
+ *   pairQr()  the same socket setup, answered with the current QR instead.
+ *   (the phone enters the code or scans the QR → WhatsApp restarts the
+ *    stream (515) → reconnect → open, paired)
  *   close / reconnect with backoff; 401 (logged out) wipes the login;
  *   440 (replaced by another socket) waits long before trying again.
  *   logout()  unlink, and delete everything persisted.
  *
- * NOTHING here logs a message's text, a key, or a pairing code.
+ * NOTHING here logs a message's text, a key, a pairing code, a QR payload or
+ * the number being paired. What it DOES log is every connection state and
+ * close reason, and each step a pairing attempt reaches — "the phone accepted
+ * the code" and "WhatsApp confirmed the device" are different failures, and
+ * without both lines they look the same from here.
  */
 import { randomBytes } from "node:crypto";
 import type { BlobStore } from "./blob-store.js";
@@ -52,6 +57,9 @@ import {
   type ConnectionUpdate,
   type GroupInfo,
   type MemoryAuth,
+  PAIRING_BROWSER,
+  QR_REF_TTL_MS,
+  qrPng,
   type SocketFactory,
   type WaSocket,
 } from "./socket.js";
@@ -107,6 +115,19 @@ export interface PairResult {
   instructions: string;
 }
 
+export interface QrPairResult {
+  method: "qr";
+  /** The payload the QR encodes. It carries this device's pairing keys. */
+  qr: string;
+  /** How long this QR has left before WhatsApp rotates it. */
+  expires_in_seconds: number;
+  instructions: string;
+  /** The same payload as a PNG, drawn in this process. Not in the JSON. */
+  png: Buffer;
+}
+
+export type PairMethod = "code" | "qr";
+
 /** A failure whose message tells the caller what to do next. */
 export class BridgeError extends Error {
   constructor(message: string) {
@@ -146,8 +167,19 @@ export const PAIRING_INSTRUCTIONS =
   "WhatsApp stopped reliably sending the automatic \"enter code\" prompt to " +
   "linked-device clients around August 2026 (whatsmeow#1271 and matching " +
   "Baileys reports), so the manual path is the one that works. When it " +
-  "succeeds, whatsapp_status reports connected: true and paired: true. If the " +
-  "code lapses first, call whatsapp_pair again for a new one.";
+  "succeeds, whatsapp_status reports connected: true and paired: true. Only " +
+  "the code from the MOST RECENT whatsapp_pair call works: each call starts " +
+  "over, and the code before it is dead. If the code lapses or the phone says " +
+  "\"Couldn't link device\", call whatsapp_pair again for a new one, or use " +
+  "{\"method\":\"qr\"} and scan instead.";
+
+export const QR_INSTRUCTIONS =
+  "On the phone that holds this WhatsApp account: open WhatsApp › Settings › " +
+  "Linked devices › Link a device, and point the camera at this QR. WhatsApp " +
+  "rotates it about once a minute; call whatsapp_pair with " +
+  "{\"method\":\"qr\"} again for the current one (it does not start over " +
+  "while this attempt is alive). When it succeeds, whatsapp_status reports " +
+  "connected: true and paired: true.";
 
 const MAX_TEXT_LENGTH = 4096;
 const BRIDGE_SENT_KEEP = 2000;
@@ -182,7 +214,15 @@ export class WhatsAppBridge {
   private connected = false;
   private lastEventAt: number | null = null;
   private lastDisconnectReason: string | null = null;
-  private pairing: { expiresAt: number; ready?: () => void } | null = null;
+  private pairing: {
+    method: PairMethod;
+    expiresAt: number;
+    ready?: () => void;
+    /** The phone answered the code (Baileys sent `companion_finish`). */
+    phoneAccepted?: boolean;
+  } | null = null;
+  /** The QR ref the live pairing socket is offering, and when it arrived. */
+  private currentQr: { payload: string; at: number } | null = null;
   private reconnectAttempts = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private flushTimer: NodeJS.Timeout | null = null;
@@ -344,6 +384,7 @@ export class WhatsAppBridge {
     const socket = this.socket;
     this.socket = null;
     this.connected = false;
+    this.currentQr = null;
     try {
       socket?.end();
     } catch {
@@ -366,9 +407,8 @@ export class WhatsAppBridge {
     const gen = this.generation;
     const socket = await this.socketFactory({
       auth: this.auth.state,
-      // `os` is what the phone's Linked devices list names this device;
-      // "Chrome" is the platform WhatsApp's pairing-code flow accepts.
-      browser: [this.config.deviceName, "Chrome", "124.0.0"],
+      // A real OS and browser, never a custom name: see PAIRING_BROWSER.
+      browser: PAIRING_BROWSER,
       getMessage: async (key) =>
         (key.id ? this.recentSent.get(key.id) : undefined) ?? undefined,
     });
@@ -387,7 +427,13 @@ export class WhatsAppBridge {
       }) as never);
 
     on<ConnectionUpdate>("connection.update", (u) => this.onConnection(u, gen));
-    on<unknown>("creds.update", () => this.markAuthDirty());
+    on<unknown>("creds.update", () => {
+      if (this.pairing && !this.pairing.phoneAccepted && this.auth?.state.creds.registered) {
+        this.pairing.phoneAccepted = true;
+        logInfo("pairing: the phone accepted the code; waiting for WhatsApp to confirm the device");
+      }
+      this.markAuthDirty();
+    });
     on<{ messages?: RawMessage[] }>("messages.upsert", (e) =>
       this.enqueue(async () => {
         for (const m of e.messages ?? []) await this.ingest(m);
@@ -422,11 +468,22 @@ export class WhatsAppBridge {
   }
 
   private onConnection(update: ConnectionUpdate, gen: number): void {
-    if (update.qr && this.pairing?.ready) {
-      this.pairing.ready();
-      this.pairing.ready = undefined;
+    if (update.qr) {
+      this.currentQr = { payload: update.qr, at: this.clock() };
+      if (this.pairing?.ready) {
+        logInfo(`pairing (${this.pairing.method}): WhatsApp offered a pairing session`);
+        this.pairing.ready();
+        this.pairing.ready = undefined;
+      }
+    }
+    if (update.isNewLogin) {
+      logInfo("pairing: WhatsApp confirmed the device (pair-success); expecting a restart (515)");
+    }
+    if (update.connection === "connecting") {
+      logInfo("connection: connecting");
     }
     if (update.connection === "open") {
+      this.currentQr = null;
       this.connected = true;
       this.reconnectAttempts = 0;
       this.lastDisconnectReason = null;
@@ -439,9 +496,20 @@ export class WhatsAppBridge {
       return;
     }
     if (update.connection === "close") {
+      const code = disconnectCode(update.lastDisconnect?.error);
+      // Baileys' own wording ("QR refs attempts ended", "Stream Errored
+      // (conflict)") says more than the number does. It is redacted on the way out.
+      const message = (update.lastDisconnect?.error as { message?: unknown } | undefined)
+        ?.message;
+      const detail = typeof message === "string" && message !== "" ? `: ${message}` : "";
+      logInfo(
+        `connection: closed ${code ?? "without a status"} (${reasonName(code)})` +
+          `${this.pairing ? `, during a ${this.pairing.method} pairing` : ""}${detail}`,
+      );
       this.connected = false;
       this.socket = null;
-      this.onClose(disconnectCode(update.lastDisconnect?.error));
+      this.currentQr = null;
+      this.onClose(code);
     }
   }
 
@@ -469,6 +537,14 @@ export class WhatsAppBridge {
       // A pairing attempt ended without the phone entering the code.
       this.lastDisconnectReason =
         code === DISCONNECT.timedOut ? "pairing_code_expired" : reasonName(code);
+      if (this.pairing) {
+        logWarning(
+          `pairing (${this.pairing.method}): ended unpaired (${this.lastDisconnectReason}); ` +
+            (this.pairing.phoneAccepted
+              ? "the phone accepted the code but WhatsApp never confirmed the device"
+              : "the phone never completed it"),
+        );
+      }
       this.pairing = null;
       this.auth = null;
       return;
@@ -1032,6 +1108,60 @@ export class WhatsAppBridge {
           'country code and no "+", e.g. "15551234567".',
       );
     }
+    const { socket, mine } = await this.openPairingSocket("code");
+
+    const code = await socket.requestPairingCode(digits);
+    if (mine !== this.generation) throw supersededPairing();
+    if (this.pairing) {
+      this.pairing.expiresAt = this.clock() + PAIRING_CODE_TTL_SECONDS * 1000;
+    }
+    logInfo("pairing (code): code issued; waiting for it to be entered on the phone");
+    const clean = code.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+    return {
+      pairing_code:
+        clean.length === 8 ? `${clean.slice(0, 4)}-${clean.slice(4)}` : clean,
+      expires_in_seconds: PAIRING_CODE_TTL_SECONDS,
+      instructions: PAIRING_INSTRUCTIONS,
+    };
+  }
+
+  /**
+   * The QR route. Unlike a code, a QR is re-readable: while a QR attempt's
+   * socket is alive, this returns the ref it is offering NOW rather than
+   * starting over, so a human can call it again after a rotation and scan
+   * what comes back.
+   */
+  async pairQr(): Promise<QrPairResult> {
+    await this.ready();
+    this.requireReadable();
+    const live =
+      this.pairing?.method === "qr" && this.socket !== null && this.currentQr !== null;
+    if (!live) await this.openPairingSocket("qr");
+    const qr = this.currentQr;
+    if (!qr) {
+      throw new BridgeError(
+        "The pairing session closed before it offered a QR. Call whatsapp_pair " +
+          'with {"method":"qr"} again.',
+      );
+    }
+    const left = Math.max(0, Math.ceil((qr.at + QR_REF_TTL_MS - this.clock()) / 1000));
+    return {
+      method: "qr",
+      qr: qr.payload,
+      expires_in_seconds: left,
+      instructions: QR_INSTRUCTIONS,
+      png: await qrPng(qr.payload),
+    };
+  }
+
+  /**
+   * Fresh credentials and a socket, and the wait for WhatsApp to offer it a
+   * pairing session (its first QR ref). Both methods start here; a call
+   * replaces any attempt already in flight, whose code or QR is then dead.
+   */
+  private async openPairingSocket(
+    method: PairMethod,
+  ): Promise<{ socket: WaSocket; mine: number }> {
     if (this.paired()) {
       throw new BridgeError(
         `Already paired as ${this.self().jid}. Pairing again would link a second ` +
@@ -1039,6 +1169,13 @@ export class WhatsAppBridge {
       );
     }
     if (this.closed) throw new BridgeError("The bridge is shutting down.");
+    if (this.pairing) {
+      logInfo(
+        `pairing (${method}): replacing an earlier ${this.pairing.method} attempt; ` +
+          "its code or QR no longer works",
+      );
+    }
+    logInfo(`pairing (${method}): started as ${PAIRING_BROWSER[1]} on ${PAIRING_BROWSER[0]}`);
 
     // A fresh identity per attempt. Nothing is persisted until WhatsApp
     // accepts it (see doFlush: auth is written only once paired).
@@ -1046,6 +1183,7 @@ export class WhatsAppBridge {
     this.authDirty = false;
     const readyForCode = new Promise<void>((resolve) => {
       this.pairing = {
+        method,
         expiresAt: this.clock() + PAIRING_CODE_TTL_SECONDS * 1000,
         ready: resolve,
       };
@@ -1056,10 +1194,6 @@ export class WhatsAppBridge {
     // This attempt's socket. A later whatsapp_pair call replaces it, and this
     // call must then neither tear that one down nor hand out a code for it.
     const mine = this.generation;
-    const superseded = () =>
-      new BridgeError(
-        "A newer whatsapp_pair call replaced this one; use the code it returned.",
-      );
 
     let timer: NodeJS.Timeout | undefined;
     const timedOut = new Promise<"timeout">((resolve) => {
@@ -1067,8 +1201,9 @@ export class WhatsAppBridge {
     });
     const outcome = await Promise.race([readyForCode, timedOut]);
     clearTimeout(timer);
-    if (mine !== this.generation) throw superseded();
+    if (mine !== this.generation) throw supersededPairing();
     if (outcome === "timeout") {
+      logWarning(`pairing (${method}): WhatsApp offered no pairing session in time`);
       this.pairing = null;
       this.dropSocket();
       this.auth = null;
@@ -1078,19 +1213,7 @@ export class WhatsAppBridge {
           "client version (see the README's ban-risk section).",
       );
     }
-
-    const code = await socket.requestPairingCode(digits);
-    if (mine !== this.generation) throw superseded();
-    if (this.pairing) {
-      this.pairing.expiresAt = this.clock() + PAIRING_CODE_TTL_SECONDS * 1000;
-    }
-    const clean = code.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
-    return {
-      pairing_code:
-        clean.length === 8 ? `${clean.slice(0, 4)}-${clean.slice(4)}` : clean,
-      expires_in_seconds: PAIRING_CODE_TTL_SECONDS,
-      instructions: PAIRING_INSTRUCTIONS,
-    };
+    return { socket, mine };
   }
 
   async logout(): Promise<{ ok: true; unlinked_on_phone: boolean }> {
@@ -1145,6 +1268,12 @@ interface Contact {
   verifiedName?: string | null;
 }
 
+function supersededPairing(): BridgeError {
+  return new BridgeError(
+    "A newer whatsapp_pair call replaced this one; use the code or QR it returned.",
+  );
+}
+
 function reasonName(code: number | undefined): string {
   switch (code) {
     case undefined:
@@ -1155,8 +1284,14 @@ function reasonName(code: number | undefined): string {
       return "timed_out";
     case DISCONNECT.connectionClosed:
       return "connection_closed";
+    case DISCONNECT.loggedOut:
+      return "logged_out";
     case DISCONNECT.badSession:
       return "bad_session";
+    case DISCONNECT.connectionReplaced:
+      return "connection_replaced";
+    case DISCONNECT.restartRequired:
+      return "restart_required";
     case 503:
       return "service_unavailable";
     default:
