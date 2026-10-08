@@ -18,6 +18,7 @@ import {
   serverParameterPath,
   ParameterStoreError,
   SERVER_PARAM_KINDS,
+  type ParameterResolver,
   type ServerParamKind,
 } from "../secrets/parameters/index.ts";
 import { connectorVariables } from "../deploy/server-namespaces.ts";
@@ -455,6 +456,8 @@ export function createParamWriteHandler(
         evt: "strad.param_write_failed",
         slug: found.slug,
         variable: found.variable,
+        reason: "write_failed" satisfies WriteBackRefusal,
+        status,
       });
       res
         .status(status >= 400 && status < 600 ? status : 502)
@@ -624,6 +627,29 @@ export function createStoreRefreshHandler(
 }
 
 /**
+ * Why the in-core write-back did not persist a rotation — the `reason` on
+ * `strad.param_write_failed`. A closed set this file wrote, so it is safe in
+ * the ingestor; the event also carries the store's HTTP `status` when one
+ * answered, and never the store's message, which can quote a rendered value.
+ * stderr keeps the full sentence.
+ */
+export type WriteBackRefusal =
+  /** `gateway.secrets.provider: env` — there is no store. */
+  | "env_provider"
+  /** No store, or no admin credential for it, covers the path. */
+  | "no_store"
+  /** No resolver to read the current value through. */
+  | "no_reader"
+  /** The read before the write failed with something other than a 404. */
+  | "read_failed"
+  /** The stored value is not this lineage's: a re-seed since the exchange. */
+  | "not_ours"
+  /** The read said go, and `rotate()` failed. */
+  | "write_failed"
+  /** No path holds the name; it resolves from the environment. */
+  | "not_held";
+
+/**
  * The same write-back, for a credential that rotated INSIDE core.
  *
  * A `remote-http` server with `oauthRefresh:` is proxied by core itself, so
@@ -657,7 +683,7 @@ export function createStoreRefreshHandler(
  *
  * ## The read before the write
  *
- * The parameter is REVEALED first, and the write goes ahead only if the value
+ * The parameter is READ first, and the write goes ahead only if the value
  * held is one the minter's lineage produced (`ours`). Between the exchange
  * that rotated the token and this write, a human can re-seed the slug with
  * another account's token in `/ui/secrets`; a blind `rotate()` after that
@@ -666,9 +692,23 @@ export function createStoreRefreshHandler(
  * that window from a store round-trip to the gap between two calls; there is
  * no compare-and-set on the store to close it entirely, and `HACKS.md` #91
  * says so.
+ *
+ * The read goes through `reader` — the gateway's RESOLVER, by `:render` — and
+ * not through the store client that writes. Two reasons. The console's
+ * credential cannot read a secret value on prod (secrets-iam.md §1, and
+ * `oauth/` is never granted back), so a `reveal()` through it is a 403 and
+ * would refuse every rotation of a token Connect stored (strad#398). And the
+ * minter's own value came through the resolver, so `ours` is asked about a
+ * value read the same way.
  */
 export function createParameterWriteBack(
-  opts: Omit<ParamsHandlerOptions, "now">,
+  opts: Omit<ParamsHandlerOptions, "now"> & {
+    /**
+     * What the "is this still ours" read goes through: the gateway's resolver.
+     * Null under the `env` provider, where there is none. See the header.
+     */
+    reader: ParameterResolver | null;
+  },
 ): (
   slug: string,
   variable: string,
@@ -676,19 +716,39 @@ export function createParameterWriteBack(
   ours: (current: string) => boolean,
 ) => Promise<void> {
   return async (slug, variable, value, ours) => {
-    const refuse = (reason: string): void => {
+    const refuse = (
+      reason: WriteBackRefusal,
+      detail: string,
+      err?: unknown,
+    ): void => {
       console.warn(
         `[strad] could not persist the rotated \${${variable}} for "${slug}": ` +
-          `${reason}. It is held in memory; a restart reads the stored one, ` +
+          `${detail}. It is held in memory; a restart reads the stored one, ` +
           `which the provider has invalidated.`,
       );
-      event({ evt: "strad.param_write_failed", slug, variable });
+      event({
+        evt: "strad.param_write_failed",
+        slug,
+        variable,
+        reason,
+        ...(err instanceof ParameterStoreError ? { status: err.status } : {}),
+      });
     };
 
     if (opts.config.gateway.secrets.provider !== "gcp-parameter-store") {
       refuse(
+        "env_provider",
         "gateway.secrets.provider is env, so the value lives in the " +
           "deployment's environment and there is no store to write to",
+      );
+      return;
+    }
+    const read = opts.reader?.renderPath?.bind(opts.reader);
+    if (!read) {
+      refuse(
+        "no_reader",
+        "this process has no resolver that can read one parameter, so it " +
+          "cannot check the stored value is still this one's before writing",
       );
       return;
     }
@@ -701,19 +761,20 @@ export function createParameterWriteBack(
     ]) {
       const resolved = storeForPath(opts.config, opts.secrets, path, opts);
       if (!resolved.store) {
-        refuse(resolved.reason);
+        refuse("no_store", resolved.reason);
         return;
       }
       let current: string;
       try {
-        current = await resolved.store.reveal(path);
+        current = await read(path);
       } catch (err) {
         if (err instanceof ParameterStoreError && err.status === 404) continue;
-        refuse(errorSummary(err));
+        refuse("read_failed", errorSummary(err), err);
         return;
       }
       if (!ours(current)) {
         refuse(
+          "not_ours",
           "the stored value is not one this process minted — it was re-seeded " +
             "since the exchange, so the rotation is left unwritten and the " +
             "seeded value stands",
@@ -723,7 +784,7 @@ export function createParameterWriteBack(
       try {
         await resolved.store.rotate(path, value);
       } catch (err) {
-        refuse(errorSummary(err));
+        refuse("write_failed", errorSummary(err), err);
         return;
       }
       opts.secretProvider?.invalidate();
@@ -732,6 +793,7 @@ export function createParameterWriteBack(
       return;
     }
     refuse(
+      "not_held",
       "neither this server's namespace nor the gateway's holds it, so it " +
         "resolves from the environment",
     );

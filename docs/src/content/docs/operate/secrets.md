@@ -1551,6 +1551,22 @@ otherwise it refuses, `strad.param_write_failed` fires, and the seed stands.
 That shrinks the window to the gap between two store calls; there is no
 compare-and-set on the store to close it.
 
+**That read goes through the resolver, not the console.** The console's
+credential cannot read a secret value on prod
+([Secrets IAM §1](/operate/secrets-iam/#1-prod-console-write-but-never-read)),
+and the `oauth/` kind Connect writes is never granted back to it, so a check
+made through it is a 403 and refuses every rotation of a token Connect stored.
+The write-back reads the parameter with the gateway's resolver instead — a live
+`:render` of that one path, the same read the minter's own value came through —
+and writes with the console's credential. The resolver writes nothing; the
+console reads nothing.
+
+**A refusal says why.** `strad.param_write_failed` carries a `reason`:
+`env_provider`, `no_store`, `no_reader`, `read_failed`, `not_ours`,
+`write_failed` or `not_held`, plus the store's HTTP `status` when one answered.
+Never the store's message, which can quote a value; stderr has the full
+sentence.
+
 **Seed the parameter first, in one of those two places.** A refresh token that
 resolves from the environment — `envFallback` under the store provider, or
 `gateway.secrets.provider: env` — cannot be written back. Every rotation is

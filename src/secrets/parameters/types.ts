@@ -203,6 +203,17 @@ export interface ParameterResolver {
    */
   resolveDetailed?(namespace: string): Promise<ResolvedNamespace>;
   /**
+   * ONE parameter's current value, by its full path, read live through
+   * `:render` — the read this resolver's `resolve()` makes, without the
+   * snapshot. A `404` when the parameter does not exist.
+   *
+   * Optional because only a writer that must check what the store holds right
+   * now needs it: the in-core refresh-token write-back (src/http/params.ts),
+   * which cannot ask the console's credential, because on prod that credential
+   * cannot read a secret value at all.
+   */
+  renderPath?(path: string): Promise<string>;
+  /**
    * Drop whatever reading of the store this resolver holds, so the next read
    * reaches it.
    *

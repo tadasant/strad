@@ -215,6 +215,7 @@ async function main(): Promise<void> {
           secrets,
           secretProvider: secretProviders,
           diagnosticStore: resolver,
+          reader: resolver,
         })
       : undefined;
 
