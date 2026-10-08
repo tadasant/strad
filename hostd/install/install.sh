@@ -156,9 +156,12 @@ YAML
   # ~/.cloudflared/config.yml, and when that file belongs to another tunnel
   # (the one serving Anki, say) its `tunnel:` wins over the name given here:
   # the DNS record is pointed at the wrong tunnel and the command succeeds.
+  # `--overwrite-dns` re-points an existing record at this tunnel, so a re-run
+  # repairs a record that was routed elsewhere: the hostname was named for this
+  # tunnel and nothing else.
   say "Routing $HOSTNAME_ARG to the tunnel"
-  cloudflared tunnel --config "$STATE/cloudflared.yml" route dns "$TUNNEL_NAME" "$HOSTNAME_ARG" \
-    || echo "   (the DNS record may already exist; continuing)"
+  cloudflared tunnel --config "$STATE/cloudflared.yml" route dns --overwrite-dns "$TUNNEL_NAME" "$HOSTNAME_ARG" \
+    || echo "   warning: could not route $HOSTNAME_ARG to $TUNNEL_NAME; check the record in the Cloudflare dashboard"
 
   node -e '
     const fs = require("fs"), [file, configPath, binary] = process.argv.slice(1);
