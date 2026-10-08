@@ -450,7 +450,7 @@ log. A spec that fits and configures a different gateway is not an improvement.
 2026-10-08 prod's stripped document was 34,018 bytes with no prose left, and the
 spec was over the ceiling again. YAML is repetitive text, so `render-spec` gzips
 the stripped document and bakes it base64'd as `STRAD_CONFIG_YAML_GZ_B64` —
-8,240 bytes for that document, which took prod's spec from 132,740 to 106,202.
+8,240 bytes for that document, which took prod's spec from 132,740 to 106,203.
 The value is decoded with the function boot decodes it with and must come back
 byte for byte, and it is used only if it costs fewer spec bytes than the plain
 form. A small config gzips larger, and travels as plain `STRAD_CONFIG_YAML`. The
@@ -461,8 +461,9 @@ deploy log says which.
 | `STRAD_CONFIG_YAML_GZ_B64` | the stripped document, gzipped and base64'd. Boot reads this first.       |
 | `STRAD_CONFIG_YAML`        | the stripped document when it travels plain; otherwise a tripwire, below. |
 
-The tripwire is a YAML scalar, which parses and then fails the schema at its
-root. An image from before the compressed form does not look for
+The tripwire is a config that fails the schema on purpose: it has no `version`
+and no `auth`, and its explanation is a role name, since a schema error quotes
+the path. An image from before the compressed form does not look for
 `STRAD_CONFIG_YAML_GZ_B64`, so without it that image would find no inline config
 and boot on the zero-server file it ships — a healthy gateway that serves
 nothing. With it, the image refuses to start — its boot error reads

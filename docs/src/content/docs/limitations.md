@@ -2687,7 +2687,7 @@ Two things changed, neither of which claims to know the limit:
   strip from a 34,018-byte document. `render-spec` now bakes the stripped document
   gzipped and base64'd as `STRAD_CONFIG_YAML_GZ_B64` whenever that is smaller,
   decoded with boot's own function and compared byte for byte before it is used.
-  Prod's spec: 132,740 → 106,202 bytes. The price: the App Platform console no
+  Prod's spec: 132,740 → 106,203 bytes. The price: the App Platform console no
   longer shows the config as text, and an image older than the compressed form
   cannot boot a spec that carries it — `STRAD_CONFIG_YAML` holds a tripwire that
   makes that image refuse to start rather than run its stock zero-server config.

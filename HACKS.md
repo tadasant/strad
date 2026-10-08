@@ -3794,9 +3794,9 @@ limit:
   when that is smaller in spec bytes, and boot decodes it. The emitted value is
   decoded with boot's own function before it is used and must come back byte for
   byte; a small config gzips larger and travels plain. `STRAD_CONFIG_YAML` beside
-  it carries a YAML scalar the schema rejects at its root, so an image too old to
+  it carries a config that fails the schema on purpose, so an image too old to
   read the compressed form refuses to boot rather than falling through to its
-  stock zero-server config file. Prod's spec: 132,740 → 106,202. The cost is that
+  stock zero-server config file. Prod's spec: 132,740 → 106,203. The cost is that
   the config is no longer readable in the App Platform console's env view — a
   `base64 -d | gunzip` away, and the file in the repo is the readable copy.
 - **`assert-spec` reports the size and where it is** — the total, plus bytes per
