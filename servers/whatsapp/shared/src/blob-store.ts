@@ -25,16 +25,16 @@ export class PreconditionFailed extends Error {
 }
 
 /**
- * GCS could not be reached cleanly, every time this process asked, within the
- * retry budget. The message is the whole caller-facing answer and carries none
+ * GCS could not be reached cleanly — the connection dropped, or it answered
+ * 408, 429 or 5xx — every time this process asked, within the retry budget. The message is the whole caller-facing answer and carries none
  * of the transport's text (a URL, a library's wording); `cause` keeps it.
  */
 export class TransientStoreError extends Error {
   constructor(operation: string, attempts: number, cause: unknown) {
     super(
-      `Google Cloud Storage dropped the connection while this bridge was ` +
-        `${operation} (${attempts} attempts). This is a transient network ` +
-        `error, not a configuration problem: transient; retry the call.`,
+      `Google Cloud Storage did not answer cleanly while this bridge was ` +
+        `${operation} (${attempts} attempts). This is a transient error, not ` +
+        `a configuration problem: transient; retry the call.`,
       { cause },
     );
     this.name = "TransientStoreError";
@@ -174,6 +174,7 @@ type ErrLike = {
  * error, and its code, underneath.
  */
 export function isTransientTransportError(err: unknown): boolean {
+  if (httpStatus(err) !== undefined) return false;
   for (let e: unknown = err, depth = 0; e && depth < 5; depth++) {
     const o = e as ErrLike;
     // First: a DOMException carries a numeric `code` (23 for a timeout) that
@@ -218,6 +219,15 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const b64url = (data: Buffer | string) => Buffer.from(data).toString("base64url");
 
 const enc = encodeURIComponent;
+
+/** A 2xx body that is not the JSON promised. Fixed text: no body in a message. */
+function parseJson<T>(body: Buffer | string, what: string): T {
+  try {
+    return JSON.parse(body.toString()) as T;
+  } catch {
+    throw new Error(`${what}: Google answered 2xx with a body that is not JSON`);
+  }
+}
 
 /**
  * The bucket, over the GCS JSON API, on Node's own `fetch`.
@@ -313,7 +323,7 @@ export class GcsBlobStore implements BlobStore {
       }
       throw new GcsHttpError(res.status, "token request", detail);
     }
-    const body = JSON.parse(text) as { access_token?: unknown; expires_in?: unknown };
+    const body = parseJson<{ access_token?: unknown; expires_in?: unknown }>(text, "token request");
     if (typeof body.access_token !== "string" || !body.access_token) {
       throw new Error("Google's token endpoint answered without an access_token");
     }
@@ -374,10 +384,14 @@ export class GcsBlobStore implements BlobStore {
    * already answers by re-reading. Those always replay, on a transport error
    * and on a retryable status (408, 429, 5xx).
    *
-   * An UNCONDITIONAL write (`replayable: false`) replays only when the token
-   * fetch failed, so the write was never sent. Otherwise it may have landed,
-   * and a replay a moment later could overwrite what another process wrote in
-   * between — for the lease, a newer process's claim.
+   * An UNCONDITIONAL write (`replayable: false`) replays only when the write
+   * was certainly not applied: the token fetch failed, so it was never sent;
+   * or GCS answered 401 or 429, which it does before touching the object.
+   * Otherwise it may have landed, and a replay a moment later could overwrite
+   * what another process wrote in between — for the lease, a newer process's
+   * claim.
+   *
+   * A 401 gets ONE more try on any call, with the token `send` just dropped.
    */
   private async transport<T>(
     operation: string,
@@ -385,23 +399,31 @@ export class GcsBlobStore implements BlobStore {
     replayable = true,
   ): Promise<T> {
     const started = Date.now();
+    let refreshed = false;
     for (let attempt = 1; ; attempt++) {
       try {
         return await call();
       } catch (err) {
         const transport = isTransientTransportError(err);
-        const status = httpStatus(err);
-        if (!transport && !(status !== undefined && RETRY_STATUSES.has(status))) throw err;
+        const answered = httpStatus(err);
+        // GCS's own status; a token-endpoint status says nothing about the object.
+        const status = err instanceof TokenFetchFailed ? undefined : answered;
+        const retryable =
+          transport ||
+          (answered !== undefined && RETRY_STATUSES.has(answered)) ||
+          (status === 401 && !refreshed);
+        if (!retryable) throw err;
+        if (status === 401) refreshed = true;
+        const notApplied = err instanceof TokenFetchFailed || status === 401 || status === 429;
         const last =
           attempt >= this.retry.attempts ||
           Date.now() - started >= this.retry.deadlineMs ||
-          (!replayable && !(err instanceof TokenFetchFailed));
+          (!replayable && !notApplied);
         if (last) {
-          // A status is GCS's own answer, and says more than "dropped" would.
-          throw transport ? new TransientStoreError(operation, attempt, err) : err;
+          throw status === 401 ? err : new TransientStoreError(operation, attempt, err);
         }
         logWarning(
-          `GCS ${operation}: ${transport ? "transient transport error" : `HTTP ${status}`} ` +
+          `GCS ${operation}: ${transport ? "transient transport error" : `HTTP ${answered}`} ` +
             `(try ${attempt}/${this.retry.attempts}), retrying: ${describeError(err)}`,
         );
         const backoff = this.retry.baseDelayMs * 2 ** (attempt - 1);
@@ -428,7 +450,7 @@ export class GcsBlobStore implements BlobStore {
         const { body } = await this.transport(`reading ${name}`, () =>
           this.send(`reading ${name}`, "GET", this.objectUrl(name, "?fields=generation")),
         );
-        generation = String((JSON.parse(body.toString("utf8")) as { generation?: unknown }).generation ?? "");
+        generation = String(parseJson<{ generation?: unknown }>(body, `reading ${name}`).generation ?? "");
       } catch (err) {
         if (httpStatus(err) === 404 && !(err instanceof TokenFetchFailed)) return null;
         throw err;
@@ -489,7 +511,7 @@ export class GcsBlobStore implements BlobStore {
       throw err;
     }
     const generation = String(
-      (JSON.parse(response.toString("utf8")) as { generation?: unknown }).generation ?? "",
+      parseJson<{ generation?: unknown }>(response, `writing ${name}`).generation ?? "",
     );
     if (!/^\d+$/.test(generation)) {
       throw new Error(`GCS returned no generation after writing ${name}`);
@@ -517,10 +539,10 @@ export class GcsBlobStore implements BlobStore {
       const { body } = await this.transport(`listing ${prefix}`, () =>
         this.send(`listing ${prefix}`, "GET", url),
       );
-      const page = JSON.parse(body.toString("utf8")) as {
-        items?: { name?: unknown }[];
-        nextPageToken?: unknown;
-      };
+      const page = parseJson<{ items?: { name?: unknown }[]; nextPageToken?: unknown }>(
+        body,
+        `listing ${prefix}`,
+      );
       for (const item of page.items ?? []) {
         if (typeof item.name === "string") names.push(item.name);
       }

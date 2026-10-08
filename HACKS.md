@@ -5707,16 +5707,21 @@ requirement. What that costs:
   anywhere it was tried by hand, and what leaves the listener there was never
   found: there is no shell on that box, by design. So `GcsBlobStore` signs its
   own service-account JWT (RS256, `node:crypto`), trades it at
-  `oauth2.googleapis.com/token`, and makes six JSON-API requests (metadata,
+  `oauth2.googleapis.com/token`, and makes five JSON-API requests (metadata,
   pinned download, multipart upload with `ifGenerationMatch`, delete, paged
   list) on Node's own `fetch`. undici's parser knows whether it saw the last
   chunk, so a body reported cut off was cut off. Every call still runs inside
   `transport()`: up to 4 tries, 250 ms backoff doubling, no new try after
   15 s, a 30 s cap on each request. A transport error retries, and so do 408,
-  429 and 5xx when the call is replayable. An unconditional write replays only
-  when the token fetch failed, because one that may have landed could
-  overwrite a newer process's lease. Each retry logs the error's whole `cause`
-  chain with its codes. Past the budget a tool says `transient; retry`. The
+  429 and 5xx when the call is replayable; a 401 gets one more try with a
+  fresh token. An unconditional write replays only when it certainly was not
+  applied (the token fetch failed, or GCS answered 401 or 429), because one
+  that may have landed could overwrite a newer process's lease. Each retry logs
+  the error's whole `cause` chain with its codes. Past the budget a tool says
+  `transient; retry`. The 15 s bounds when a try may START, not how long it
+  runs: a try is a token request and an object request of up to 30 s each, and
+  a read is two calls in a row, so a GCS that hangs rather than refuses can
+  hold one tool call for a few minutes. The
   cost is a second GCS client to keep honest: `test/gcs.test.ts` drives this
   one against a fake JSON API and a fake token endpoint that checks the JWT's
   signature, and nothing in CI talks to real GCS.

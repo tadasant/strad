@@ -196,12 +196,15 @@ state — a session that silently stops decrypting. So:
   may need, is retried on a transport error (a connection closed mid-response,
   reset, refused or timed out), and on 408, 429 or 5xx when the call is safe to
   repeat: up to four tries, backing off from 250 ms, no new try after 15
-  seconds, and 30 seconds at most for any one request. A write that is not
-  conditional replays only if the token fetch failed, since one that may have
-  landed could overwrite a newer process's lease. Each retry writes one
+  seconds, and 30 seconds at most for any one request. A 401 gets one more try
+  with a fresh token. A write that is not conditional replays only when it
+  certainly was not applied (the token fetch failed, or GCS answered 401 or
+  429), since one that may have landed could overwrite a newer process's lease. Each retry writes one
   `[whatsapp] WARN GCS …` line to the container's stderr with the error's full
-  cause chain and codes. When the budget runs out, a tool answers with a
-  message ending `transient; retry` and does not echo the transport's error. A
+  cause chain and codes. When the budget runs out on a dropped connection or a
+  retryable status, a tool answers with a message ending `transient; retry`
+  and does not echo the transport's error. Any other refusal (403, a rejected
+  key) is reported as GCS worded it. A
   send is the exception: a connection that drops during
   `whatsapp_send_message` may have come after the message went out, so that
   error says to check `whatsapp_get_messages` before retrying.

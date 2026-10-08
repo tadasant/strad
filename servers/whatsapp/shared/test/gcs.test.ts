@@ -51,16 +51,25 @@ let tokenFetches = 0;
  * Faults for the next N requests of a kind. `chunked`: a chunked response whose
  * socket closes before the terminating chunk. `short`: a response that declares
  * a `content-length` and closes before sending it — the shape node-fetch 2
- * HUNG on. `hang`: no answer at all. `status`: an answer with that HTTP status.
+ * HUNG on. `hang`: no answer at all. `stall`: headers and part of a body, then
+ * nothing. `status`: an answer with that HTTP status. `landThenCut`: the request
+ * is APPLIED, then its response is cut off — a write that landed with nobody
+ * told.
  */
 type Fault =
   | { kind: "chunked" }
   | { kind: "short" }
   | { kind: "hang" }
+  | { kind: "stall" }
+  | { kind: "landThenCut" }
   | { kind: "status"; code: number; body?: unknown };
 let tokenFaults: Fault[] = [];
 let objectFaults: Fault[] = [];
 const PAGE = 2;
+/** What the token endpoint says a token lives for. */
+let tokenTtlSeconds = 3599;
+/** Runs once, after the next metadata GET answers: an object changing mid-read. */
+let afterMetadata: (() => void) | undefined;
 
 let server: Server;
 let endpoint = "";
@@ -88,6 +97,11 @@ function applyFault(res: import("node:http").ServerResponse, fault: Fault): void
     return;
   }
   if (fault.kind === "hang") return;
+  if (fault.kind === "stall") {
+    res.writeHead(200, { "content-type": "application/json", "content-length": "500" });
+    res.write('{"generation":"');
+    return;
+  }
   if (fault.kind === "chunked") {
     res.writeHead(200, { "content-type": "application/json" });
   } else {
@@ -105,7 +119,9 @@ beforeAll(async () => {
     req.on("end", () => {
       const url = new URL(req.url!, "http://x");
       seen.push(`${req.method} ${url.pathname}${url.search}`);
+      let cutResponse = false;
       const json = (code: number, body: unknown) => {
+        if (cutResponse) return applyFault(res, { kind: "chunked" });
         res.writeHead(code, { "content-type": "application/json" });
         res.end(JSON.stringify(body));
       };
@@ -122,21 +138,25 @@ beforeAll(async () => {
         if (problem) return json(400, { error: "invalid_grant", error_description: `bad ${problem}` });
         const token = `tok-${randomBytes(6).toString("hex")}`;
         issued.add(token);
-        return json(200, { access_token: token, expires_in: 3599, token_type: "Bearer" });
+        return json(200, { access_token: token, expires_in: tokenTtlSeconds, token_type: "Bearer" });
       }
 
       const bearer = String(req.headers.authorization ?? "").replace(/^Bearer /, "");
       if (!issued.has(bearer)) return json(401, { error: { code: 401, message: "Invalid Credentials" } });
       const fault = objectFaults.shift();
-      if (fault) return applyFault(res, fault);
+      if (fault?.kind === "landThenCut") cutResponse = true;
+      else if (fault) return applyFault(res, fault);
       const notFound = () => json(404, { error: { code: 404, message: "No such object" } });
 
       const upload = url.pathname.match(/^\/upload\/storage\/v1\/b\/([^/]+)\/o$/);
       if (req.method === "POST" && upload) {
-        assert.equal(url.searchParams.get("uploadType"), "multipart");
+        // A malformed upload is a 400, as from GCS: an assert here would throw
+        // inside the server rather than fail the test.
         const body = Buffer.concat(chunks);
         const boundary = String(req.headers["content-type"] ?? "").match(/boundary=([^;]+)/)?.[1];
-        assert.ok(boundary, "a multipart upload names its boundary");
+        if (url.searchParams.get("uploadType") !== "multipart" || !boundary) {
+          return json(400, { error: { code: 400, message: "not a multipart upload" } });
+        }
         const parts = body.toString("latin1").split(`--${boundary}`).slice(1, -1);
         const part = (p: string) => p.slice(p.indexOf("\r\n\r\n") + 4, -2);
         const metadata = JSON.parse(part(parts[0]!)) as { name: string; cacheControl?: string };
@@ -167,7 +187,11 @@ beforeAll(async () => {
           res.writeHead(200, { "content-type": "application/octet-stream" });
           return res.end(obj.data);
         }
-        return json(200, { generation: String(obj.generation) });
+        json(200, { generation: String(obj.generation) });
+        const hook = afterMetadata;
+        afterMetadata = undefined;
+        hook?.();
+        return;
       }
 
       const list = url.pathname.match(/^\/storage\/v1\/b\/([^/]+)\/o$/);
@@ -195,6 +219,8 @@ afterAll(() => {
 afterEach(() => {
   tokenFaults = [];
   objectFaults = [];
+  tokenTtlSeconds = 3599;
+  afterMetadata = undefined;
   vi.restoreAllMocks();
 });
 
@@ -334,8 +360,8 @@ test("a 503 is retried on a replayable call, and NOT on an unconditional write",
   const before = seen.length;
   objectFaults = [{ kind: "status", code: 503 }];
   const err = await gcs.write("wa10/a", Buffer.from("b")).catch((e: unknown) => e);
-  assert.ok(err instanceof GcsHttpError);
-  assert.equal(err.code, 503);
+  assert.ok(err instanceof TransientStoreError, "a 503 is transient; retry, even unreplayed");
+  assert.ok(err.cause instanceof GcsHttpError && err.cause.code === 503);
   assert.equal(seen.slice(before).filter((l) => l.startsWith("POST /upload")).length, 1);
 });
 
@@ -428,4 +454,83 @@ test("the classifier: native fetch's failures are transient, an answer is not", 
   assert.equal(isTransientTransportError(new GcsHttpError(503, "reading x", "ECONNRESET?")), false);
   assert.equal(isTransientTransportError(new Error("invalid_grant")), false);
   assert.equal(isTransientTransportError(new PreconditionFailed("x")), false);
+});
+
+test("a 408 and a 429 are retried; a 429 on an unconditional write is too, since GCS applied nothing", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const gcs = store();
+  await gcs.write("wa14/a", Buffer.from("a"));
+  objectFaults = [{ kind: "status", code: 408 }, { kind: "status", code: 429 }];
+  assert.equal((await gcs.read("wa14/a"))?.data.toString(), "a");
+  assert.equal(objectFaults.length, 0);
+  objectFaults = [{ kind: "status", code: 429 }];
+  await gcs.write("wa14/a", Buffer.from("b"));
+  assert.equal(objectFaults.length, 0);
+  assert.equal(objects.get("wa14/a")?.data.toString(), "b");
+});
+
+test("a 401 drops the token and tries once more with a fresh one — unconditional write included", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const gcs = store();
+  await gcs.write("wa15/lease.json", Buffer.from("a"));
+  issued.clear(); // every token this fake issued is now revoked
+  const before = tokenFetches;
+  await gcs.write("wa15/lease.json", Buffer.from("b"));
+  assert.equal(tokenFetches - before, 1, "one fresh token");
+  assert.equal(objects.get("wa15/lease.json")?.data.toString(), "b");
+
+  // A 401 that persists is reported as GCS's answer, after exactly one more try.
+  const uploads = seen.length;
+  objectFaults = [
+    { kind: "status", code: 401 },
+    { kind: "status", code: 401 },
+  ];
+  const err = await gcs.write("wa15/lease.json", Buffer.from("c")).catch((e: unknown) => e);
+  assert.ok(err instanceof GcsHttpError && err.code === 401);
+  assert.equal(seen.slice(uploads).filter((l) => l.startsWith("POST /upload")).length, 2);
+});
+
+test("an expired token is replaced before it is used", async () => {
+  tokenTtlSeconds = 60; // inside the five-minute refresh margin: stale at once
+  const gcs = store();
+  const before = tokenFetches;
+  await gcs.read("wa16/x");
+  await gcs.read("wa16/y");
+  assert.equal(tokenFetches - before, 2);
+});
+
+test("a body that stalls mid-read is cut off by the per-request timeout and retried", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const gcs = store({ retry: { ...FAST, requestTimeoutMs: 200 } });
+  await gcs.write("wa17/a", Buffer.from("a"));
+  objectFaults = [{ kind: "stall" }];
+  assert.equal((await gcs.read("wa17/a"))?.data.toString(), "a");
+  assert.equal(objectFaults.length, 0, "the first try stalled");
+});
+
+test("an object replaced between the metadata and the download restarts the read", async () => {
+  const gcs = store();
+  await gcs.write("wa18/a", Buffer.from("old"));
+  afterMetadata = () => {
+    objects.set("wa18/a", { data: Buffer.from("new"), generation: ++counter });
+  };
+  const read = await gcs.read("wa18/a");
+  assert.equal(read?.data.toString(), "new");
+  assert.equal(read?.generation, String(objects.get("wa18/a")!.generation));
+});
+
+test("a conditional write that landed with its response lost reports PreconditionFailed on the replay", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const gcs = store();
+  objectFaults = [{ kind: "landThenCut" }];
+  await assert.rejects(gcs.write("wa19/a", Buffer.from("a"), null), PreconditionFailed);
+  assert.equal(objects.get("wa19/a")?.data.toString(), "a", "it did land");
+});
+
+test("a token endpoint 503 on an unconditional write replays — the write was never sent", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const before = tokenFetches;
+  tokenFaults = [{ kind: "status", code: 503, body: { error: "backendError" } }];
+  await store().write("wa20/lease.json", Buffer.from("a"));
+  assert.equal(tokenFetches - before, 2);
 });

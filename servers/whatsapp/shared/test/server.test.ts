@@ -6,6 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import {
   createMCPServer,
+  GcsHttpError,
   MemoryBlobStore,
   TransientStoreError,
   type WhatsAppConfig,
@@ -767,18 +768,18 @@ test("a 403 (a banned or restricted account) stops reconnecting", async () => {
 });
 
 test("a transport error reaches whatsapp_pair as transient; retry, not the raw string", async () => {
-  // The token fetch's error, as node-fetch 2 words it.
-  const RAW =
-    "Invalid response body while trying to fetch " +
-    "https://www.googleapis.com/oauth2/v4/token: Premature close";
+  // A body cut off, as native fetch words it: the socket's error underneath.
+  const RAW = "other side closed - Local: 10.0.0.2:41234, Remote: 142.250.65.74:443";
+  const dropped = () =>
+    new TypeError("terminated", {
+      cause: Object.assign(new Error(RAW), { code: "UND_ERR_SOCKET" }),
+    });
   class DroppingBlobs extends MemoryBlobStore {
     mode: "raw" | "exhausted" | "ok" = "raw";
     override async write(name: string, data: Buffer, ifGeneration?: string | null) {
-      if (this.mode === "raw") {
-        throw Object.assign(new Error(RAW), { code: "ERR_STREAM_PREMATURE_CLOSE" });
-      }
+      if (this.mode === "raw") throw dropped();
       if (this.mode === "exhausted") {
-        throw new TransientStoreError(`writing ${name}`, 4, new Error(RAW));
+        throw new TransientStoreError(`writing ${name}`, 4, dropped());
       }
       return super.write(name, data, ifGeneration);
     }
@@ -791,13 +792,27 @@ test("a transport error reaches whatsapp_pair as transient; retry, not the raw s
     const r = await call(mcp, "whatsapp_pair", { phone_number: "15550000001" });
     assert.equal(r.isError, true);
     assert.match(r.text, /transient; retry/);
-    assert.doesNotMatch(r.text, /Premature close|googleapis|oauth2/);
+    assert.doesNotMatch(r.text, /terminated|other side closed|142\.250|googleapis/);
   }
 
   // The start is not memoised as a failure: the retry the message asks for works.
   blobs.mode = "ok";
   await pairAndConnect(mcp, fake);
   assert.equal((await call(mcp, "whatsapp_status")).json.paired, true);
+});
+
+test("a GCS refusal is reported as GCS's, never as a WhatsApp rate limit", async () => {
+  class RefusingBlobs extends MemoryBlobStore {
+    override async write(name: string): Promise<string> {
+      // An object name that happens to carry "429", on a 403.
+      throw new GcsHttpError(403, `writing ${name}/c4291f.bin`, "Permission denied");
+    }
+  }
+  const { mcp } = await connect({ blobs: new RefusingBlobs() });
+  const r = await call(mcp, "whatsapp_pair", { phone_number: "15550000001" });
+  assert.equal(r.isError, true);
+  assert.match(r.text, /HTTP 403/);
+  assert.doesNotMatch(r.text, /rate-limit/i);
 });
 
 test("a dropped connection during a send does not say retry: it may have gone out", async () => {
