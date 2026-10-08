@@ -5,6 +5,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
 import { MemoryBlobStore, type WhatsAppConfig } from "../src/index.js";
+import { createCdnMediaDownloader, isWhatsAppCdn } from "../src/socket.js";
 import type { RawMessage } from "../src/normalize.js";
 import { fakeWhatsApp, GRACE_LID, GRACE_PN, GROUP, groupText, waitFor } from "./fake-socket.js";
 import { call, clock, config, connect, NOW, open, pairAndConnect } from "./harness.js";
@@ -170,8 +171,15 @@ const LINKED = (cfg: WhatsAppConfig = config()): WhatsAppConfig => ({
   },
 });
 
+/** The production downloader, with its host rule opened to the local CDN. */
+const LOCAL_CDN = { mediaDownloader: createCdnMediaDownloader(() => true) };
+
 async function paired(options: Parameters<typeof connect>[0] = {}) {
-  const session = await connect({ cfg: LINKED(), ...options });
+  const session = await connect({
+    cfg: LINKED(),
+    ...options,
+    bridgeOptions: { ...LOCAL_CDN, ...options.bridgeOptions },
+  });
   await pairAndConnect(session.mcp, session.fake);
   return session;
 }
@@ -302,7 +310,7 @@ test("the descriptor is persisted sealed and survives a restart; history sync ke
 
   const fake = fakeWhatsApp(clock);
   fake.autoOpen = true;
-  const second = await connect({ blobs, cfg, fake });
+  const second = await connect({ blobs, cfg, fake, bridgeOptions: LOCAL_CDN });
   await waitFor(async () => (await call(second.mcp, "whatsapp_status")).json.connected);
   for (const [id, text] of [["LIVE1", "Live contract"], ["SYNC1", "Synced contract"]] as const) {
     const res = (await second.mcp.callTool({
@@ -372,7 +380,7 @@ test("limits: the size cap before and during download, and the timeout", async (
   const read = await call(session.mcp, "whatsapp_get_messages", { chat_id: GROUP });
   const big = read.json.messages.find((m: any) => m.id === "BIG1").attachment;
   assert.equal(big.available, false);
-  assert.match(big.unavailable_reason, /30\.0 MB; this bridge downloads at most 25 MB/);
+  assert.match(big.unavailable_reason, /30\.0 MB; this bridge downloads at most 1 KB/);
 
   hits.length = 0;
   const r1 = await call(session.mcp, "whatsapp_get_attachment", { chat_id: GROUP, message_id: "BIG1" });
@@ -492,10 +500,62 @@ test("a phone that never answers: a clear reason, not a hang", async () => {
   assert.equal(got.isError, true);
   assert.match(got.text, /the phone did not send it again within/);
   assert.equal(session.fake.latest().historyRequests.length, 0, "no newer message to anchor on");
+  // Baileys remembers an ask for an hour and skips a repeat; an unanswered
+  // one is forgotten, so retrying once the phone is online asks again.
+  assert.deepEqual(session.fake.latest().forgottenResends, ["PRE3"]);
+});
+
+test("a phone that never answers a re-upload costs the call its timeout, not forever", async () => {
+  const session = await paired({ bridgeOptions: { media: { timeoutMs: 300 } } });
+  const { message } = mediaMessage("HANG1", pdf(["x"]), { serve: 410 });
+  session.fake.latest().hangReupload = true;
+  deliver(session, message);
+  const got = await call(session.mcp, "whatsapp_get_attachment", { chat_id: GROUP, message_id: "HANG1" });
+  assert.equal(got.isError, true);
+  assert.match(got.text, /took longer than/);
+  assert.equal(session.fake.latest().reuploads.length, 1);
+});
+
+test("a media URL off WhatsApp's hosts is never fetched", async () => {
+  assert.equal(isWhatsAppCdn(new URL("https://mmg.whatsapp.net/v/t62/x.enc")), true);
+  assert.equal(isWhatsAppCdn(new URL("http://mmg.whatsapp.net/v/t62/x.enc")), false);
+  assert.equal(isWhatsAppCdn(new URL("https://whatsapp.net.attacker.example/x")), false);
+  assert.equal(isWhatsAppCdn(new URL("https://169.254.169.254/latest")), false);
+  // The production rule, against a message a sender pointed at this host.
+  const session = await paired({ bridgeOptions: { mediaDownloader: createCdnMediaDownloader() } });
+  const { message } = mediaMessage("SSRF1", pdf(["x"]));
+  deliver(session, message);
+  hits.length = 0;
+  const got = await call(session.mcp, "whatsapp_get_attachment", { chat_id: GROUP, message_id: "SSRF1" });
+  assert.equal(got.isError, true);
+  assert.match(got.text, /not WhatsApp's; not fetched/);
+  assert.deepEqual(hits, []);
+});
+
+test("a history copy of a buffered message adds its descriptor and does not undo an edit", async () => {
+  const session = await paired();
+  const full = mediaMessage("EDIT1", pdf(["x"]), { caption: "original caption" });
+  deliver(session, {
+    ...full.message,
+    message: { documentMessage: { caption: "original caption", mimetype: "application/pdf" } },
+  });
+  session.fake.latest().emit("messages.update", [
+    {
+      key: full.message.key,
+      update: { message: { editedMessage: { message: { documentMessage: { caption: "edited caption" } } } } },
+    },
+  ]);
+  session.fake.latest().emit("messaging-history.set", { chats: [], contacts: [], messages: [full.message] });
+  await waitFor(async () => {
+    const r = await call(session.mcp, "whatsapp_get_messages", { chat_id: GROUP });
+    return r.json.messages.find((m: any) => m.id === "EDIT1")?.attachment?.available === true;
+  });
+  const r = await call(session.mcp, "whatsapp_get_messages", { chat_id: GROUP });
+  assert.equal(r.json.messages.find((m: any) => m.id === "EDIT1").text, "edited caption");
 });
 
 test("no link configuration: the file is still read, and the result says why there is no link", async () => {
-  const session = await connect();
+  const session = await connect({ bridgeOptions: LOCAL_CDN });
   await pairAndConnect(session.mcp, session.fake);
   const { message } = mediaMessage("NOLINK", pdf(["Still readable"]));
   deliver(session as never, message);

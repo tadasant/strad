@@ -54,7 +54,7 @@ export interface StoredMessage {
 
 /**
  * The fields of a media message (`documentMessage`, `imageMessage`, …) that
- * Baileys' `downloadMediaMessage` and `updateMediaMessage` read, as JSON:
+ * the CDN download (socket.ts) and Baileys' `updateMediaMessage` read, as JSON:
  * bytes as base64, Longs as numbers. `kind` is the content key itself, so the
  * message can be rebuilt as `{ [kind]: { … } }` for Baileys to classify.
  */

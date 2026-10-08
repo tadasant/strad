@@ -93,8 +93,10 @@ processes on one account, 401 and 440, logout, a state sealed under another
 key, and no configuration; attachments (`test/attachments.test.ts`) — the
 descriptor kept live and from history sync and across a restart, a PDF's text,
 an image block, the single-use link, an expired copy re-uploaded by the phone,
-the size and time caps, a tampered file, a dropped CDN connection, and a
-pre-descriptor message recovered from the phone — against a local stand-in for
+the size and time caps, a re-upload the phone never answers, a media URL off
+WhatsApp's hosts, a tampered file, a dropped CDN connection, a history copy
+that must not undo an edit, and a pre-descriptor message recovered from the
+phone — against a local stand-in for
 WhatsApp's CDN serving really encrypted bytes; a send that fails after delivery, overlapping pair
 calls, logout racing a flush, a message held through a chat-load failure, and
 403. The auth-state round trip runs against real Baileys, the console guard

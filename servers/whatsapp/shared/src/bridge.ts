@@ -215,7 +215,7 @@ export interface BridgeOptions {
   replacedDelayMs?: number;
   /** How long `pair` waits for the socket to be ready to register. */
   pairingReadyTimeoutMs?: number;
-  /** Injected in tests. Production is Baileys' `downloadMediaMessage`. */
+  /** Injected in tests. Production is `cdnMediaDownloader` (socket.ts). */
   mediaDownloader?: MediaDownloader;
   media?: Partial<MediaLimits>;
 }
@@ -254,6 +254,11 @@ const RECENT_SENT_KEEP = 200;
 const PENDING_KEEP = 5000;
 /** How many messages an on-demand history request asks the phone for. */
 const RECOVERY_HISTORY_COUNT = 50;
+/**
+ * Downloads at once. Each holds up to `maxBytes` twice (ciphertext and
+ * plaintext) in a process every other bundle server shares.
+ */
+const MAX_CONCURRENT_DOWNLOADS = 2;
 
 export class WhatsAppBridge {
   private readonly config: WhatsAppConfig;
@@ -309,6 +314,8 @@ export class WhatsAppBridge {
   private readonly spentLinks = new NonceLedger();
   /** One phone round trip per message, however many callers ask at once. */
   private readonly recovering = new Map<string, Promise<void>>();
+  private downloadsRunning = 0;
+  private readonly downloadQueue: (() => void)[] = [];
 
   constructor(options: BridgeOptions) {
     this.config = options.config;
@@ -534,7 +541,7 @@ export class WhatsAppBridge {
         for (const m of e.lidPnMappings ?? []) this.learnLid(m.lid, m.pn);
         for (const c of e.contacts ?? []) this.learnContact(c);
         for (const c of e.chats ?? []) this.learnChat(c);
-        for (const m of e.messages ?? []) await this.ingest(m);
+        for (const m of e.messages ?? []) await this.ingest(m, { historical: true });
       }),
     );
     on<Chat[]>("chats.upsert", (chats) => chats.forEach((c) => this.learnChat(c)));
@@ -787,7 +794,12 @@ export class WhatsAppBridge {
     this.scheduleFlush();
   }
 
-  private async ingest(raw: RawMessage): Promise<void> {
+  /**
+   * `historical`: a history sync, initial or on demand. A message it carries
+   * that the buffer already holds contributes only a missing media
+   * descriptor — the buffered copy has seen edits the history copy predates.
+   */
+  private async ingest(raw: RawMessage, { historical = false } = {}): Promise<void> {
     const key = raw.key;
     if (key) {
       this.learnLid(key.remoteJid, key.remoteJidAlt);
@@ -795,6 +807,13 @@ export class WhatsAppBridge {
     }
     const n = normalizeMessage(raw, this.self(), this.buffer.lidToPn);
     if (n.kind === "message") {
+      if (historical && n.message.media) {
+        const existing = await this.buffer.get(n.message.chat_id, n.message.id).catch(() => undefined);
+        if (existing) {
+          if (!existing.media) await this.buffer.setMedia(n.message.chat_id, n.message.id, n.message.media);
+          return;
+        }
+      }
       if (this.bridgeSent.has(n.message.id)) n.message.sent_by_bridge = true;
       await this.upsertOrHold(n.message);
     } else if (n.kind === "mutation") {
@@ -1080,7 +1099,7 @@ export class WhatsAppBridge {
         quoted_message_id: m.quoted_message_id,
         mentions_self: m.mentioned.some((j) => isSelf(j, self)),
         reply_to_self: replyToSelf,
-        ...(isMediaType(m.type) ? { attachment: attachmentMeta(m) } : {}),
+        ...(isMediaType(m.type) ? { attachment: attachmentMeta(m, this.media.maxBytes) } : {}),
       });
     }
     this.scheduleFlush();
@@ -1137,9 +1156,9 @@ export class WhatsAppBridge {
     }
     const d = message.media!;
     if (d.file_length !== null && d.file_length > this.media.maxBytes) {
-      throw new BridgeError(tooBigReason(d.file_length));
+      throw new BridgeError(tooBigReason(d.file_length, this.media.maxBytes));
     }
-    const { bytes, reuploaded, location } = await this.fetchMedia(d);
+    const { bytes, reuploaded, location } = await this.limited(() => this.fetchMedia(d));
     if (reuploaded) {
       await this.buffer.setMediaLocation(chatId, message.id, location);
       this.scheduleFlush();
@@ -1157,6 +1176,20 @@ export class WhatsAppBridge {
       reuploaded,
       bytes,
     };
+  }
+
+  /** At most MAX_CONCURRENT_DOWNLOADS at once; the rest wait their turn. */
+  private async limited<T>(work: () => Promise<T>): Promise<T> {
+    if (this.downloadsRunning >= MAX_CONCURRENT_DOWNLOADS) {
+      await new Promise<void>((resolve) => this.downloadQueue.push(resolve));
+    }
+    this.downloadsRunning++;
+    try {
+      return await work();
+    } finally {
+      this.downloadsRunning--;
+      this.downloadQueue.shift()?.();
+    }
   }
 
   /**
@@ -1182,7 +1215,7 @@ export class WhatsAppBridge {
         bytes = await download();
       } catch (err) {
         if (!isGone(err) || controller.signal.aborted) throw err;
-        message = await this.reupload(message);
+        message = await this.reupload(message, controller.signal);
         reuploaded = true;
         bytes = await download();
       }
@@ -1200,7 +1233,9 @@ export class WhatsAppBridge {
       return { bytes, reuploaded, location: refreshedLocation(d, message) };
     } catch (err) {
       if (err instanceof BridgeError) throw err;
-      if (err instanceof MediaTooLarge) throw new BridgeError(tooBigReason(err.bytes));
+      if (err instanceof MediaTooLarge) {
+        throw new BridgeError(tooBigReason(err.bytes, this.media.maxBytes));
+      }
       if (controller.signal.aborted) {
         throw new BridgeError(
           `Downloading the attachment took longer than ${Math.round(this.media.timeoutMs / 1000)} s ` +
@@ -1217,7 +1252,12 @@ export class WhatsAppBridge {
     }
   }
 
-  private async reupload(message: RawMessage): Promise<RawMessage> {
+  /**
+   * Baileys waits for the phone's answer with no timeout of its own, so the
+   * download's signal bounds it: a phone that never answers costs the call
+   * its 60 s, not forever.
+   */
+  private async reupload(message: RawMessage, signal: AbortSignal): Promise<RawMessage> {
     const socket = this.connected && this.paired() ? this.socket : null;
     if (!socket) {
       throw new BridgeError(
@@ -1228,8 +1268,23 @@ export class WhatsAppBridge {
       );
     }
     try {
-      return await socket.updateMediaMessage(message);
+      return await new Promise<RawMessage>((resolve, reject) => {
+        const onAbort = () => reject(signal.reason ?? new Error("aborted"));
+        if (signal.aborted) return onAbort();
+        signal.addEventListener("abort", onAbort, { once: true });
+        socket.updateMediaMessage(message).then(
+          (m) => {
+            signal.removeEventListener("abort", onAbort);
+            resolve(m);
+          },
+          (err: unknown) => {
+            signal.removeEventListener("abort", onAbort);
+            reject(err);
+          },
+        );
+      });
     } catch (err) {
+      if (signal.aborted) throw err;
       throw new BridgeError(
         "This file's copy on WhatsApp's servers has expired, and the phone did " +
           `not upload it again (${errMessage(err)}). The phone must be online and ` +
@@ -1296,26 +1351,34 @@ export class WhatsAppBridge {
               ? { participant: m.sender_alt_jid ?? m.sender_jid }
               : {}),
           };
+    const failed = (err: unknown): "failed" => {
+      logWarning(`attachment: a resend request failed: ${errMessage(err)}`);
+      return "failed";
+    };
     const asks: Promise<unknown>[] = [
-      socket.requestPlaceholderResend(keyOf(message)),
+      socket.requestPlaceholderResend(keyOf(message)).catch(failed),
     ];
-    const anchor = await this.buffer.nextAfter(chatId, message);
+    const anchor = await this.buffer.nextAfter(chatId, message).catch(() => undefined);
     if (anchor) {
       asks.push(
-        socket.fetchMessageHistory(RECOVERY_HISTORY_COUNT, keyOf(anchor), anchor.timestamp * 1000),
+        socket
+          .fetchMessageHistory(RECOVERY_HISTORY_COUNT, keyOf(anchor), anchor.timestamp * 1000)
+          .catch(failed),
       );
     }
-    for (const ask of asks) {
-      void ask.catch((err: unknown) =>
-        logWarning(`attachment: a resend request failed: ${errMessage(err)}`),
-      );
-    }
+    let allFailed = false;
+    void Promise.all(asks).then((outcomes) => {
+      allFailed = outcomes.every((o) => o === "failed");
+    });
     const deadline = Date.now() + this.media.recoveryTimeoutMs;
-    while (Date.now() < deadline) {
+    while (Date.now() < deadline && !allFailed) {
       await this.ingesting;
       if ((await this.buffer.get(chatId, message.id))?.media) return;
       await new Promise((r) => setTimeout(r, 100));
     }
+    // Unanswered: let the next call ask again rather than be skipped by
+    // Baileys' hour-long memory of this ask.
+    socket.forgetPlaceholderResend(message.id);
   }
 
   /** A single-use link to the same file, or why there is none. */
@@ -1332,7 +1395,8 @@ export class WhatsAppBridge {
     const url = `${link.publicBaseUrl}/mcp-download/${encodeURIComponent(link.publicSlug)}/${token}`;
     // Pasted into a shell, so the name is untrusted input arriving at one:
     // everything outside a safe set becomes `_`, and a leading `-` or `.` goes.
-    const safe = fileName.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^[-.]+/, "") || messageId;
+    const safe =
+      fileName.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^[-.]+/, "").slice(-200) || messageId;
     return {
       download_url: url,
       expires_at: expiresAt,
@@ -1350,9 +1414,9 @@ export class WhatsAppBridge {
     if (!this.downloadKey) return { ok: false, status: 404, error: "downloads_not_configured" };
     const verified = verifyDownloadToken(this.downloadKey, token, this.clock());
     if (!verified.ok) return verified;
-    if (!this.spentLinks.claim(verified.nonce, verified.expiresAtMs, this.clock())) {
-      return { ok: false, status: 410, error: "already_used" };
-    }
+    const claim = this.spentLinks.claim(verified.nonce, verified.expiresAtMs, this.clock());
+    if (claim === "spent") return { ok: false, status: 410, error: "already_used" };
+    if (claim === "full") return { ok: false, status: 503, error: "busy" };
     try {
       const a = await this.getAttachment({
         chat_id: verified.chatId,
@@ -1363,11 +1427,18 @@ export class WhatsAppBridge {
         filename: a.file_name,
         contentType: a.mime_type,
         contentLength: a.bytes.length,
-        body: new Blob([new Uint8Array(a.bytes)]).stream(),
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(a.bytes);
+            controller.close();
+          },
+        }),
       };
-    } catch (err) {
+    } catch {
+      // The reason is not in the body: it can name the chat, and this answer
+      // goes to whoever holds the link. whatsapp_get_attachment says why.
       this.spentLinks.release(verified.nonce);
-      return { ok: false, status: 502, error: redact(errMessage(err)) };
+      return { ok: false, status: 502, error: "download_failed" };
     }
   }
 

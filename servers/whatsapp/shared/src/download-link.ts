@@ -84,7 +84,17 @@ export function verifyDownloadToken(key: Buffer, token: string, now = Date.now()
     // Forged, truncated, or minted by another mount: all the same answer.
     return { ok: false, status: 403, error: "invalid_token" };
   }
-  if (typeof payload.exp !== "number" || payload.exp <= now) {
+  if (
+    typeof payload !== "object" ||
+    payload === null ||
+    typeof payload.c !== "string" ||
+    typeof payload.m !== "string" ||
+    typeof payload.n !== "string" ||
+    typeof payload.exp !== "number"
+  ) {
+    return { ok: false, status: 403, error: "invalid_token" };
+  }
+  if (payload.exp <= now) {
     return { ok: false, status: 410, error: "expired" };
   }
   return { ok: true, chatId: payload.c, messageId: payload.m, nonce: payload.n, expiresAtMs: payload.exp };
@@ -101,16 +111,16 @@ export class NonceLedger {
 
   constructor(private readonly max = 10_000) {}
 
-  /** True if this nonce had not been spent; marks it spent either way. */
-  claim(nonce: string, expiresAtMs: number, now = Date.now()): boolean {
+  /**
+   * Mark a nonce spent. `full` refuses rather than evicting an unexpired
+   * entry, which would make that link usable a second time.
+   */
+  claim(nonce: string, expiresAtMs: number, now = Date.now()): "ok" | "spent" | "full" {
     for (const [n, exp] of this.spent) if (exp <= now) this.spent.delete(n);
-    if (this.spent.has(nonce)) return false;
-    if (this.spent.size >= this.max) {
-      const oldest = this.spent.keys().next();
-      if (!oldest.done) this.spent.delete(oldest.value);
-    }
+    if (this.spent.has(nonce)) return "spent";
+    if (this.spent.size >= this.max) return "full";
     this.spent.set(nonce, expiresAtMs);
-    return true;
+    return "ok";
   }
 
   /** Hand a claim back: the work it was taken for produced no bytes. */

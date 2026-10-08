@@ -310,8 +310,9 @@ MAC, decrypts it, checks the plaintext SHA-256, and returns:
 - for a PDF or a text file, the text, at most **200 KB**, with
   `text_truncated: true` and a note when there was more. PDF text comes from
   [`unpdf`](https://github.com/unjs/unpdf) (Mozilla's pdf.js, no native code, no
-  network), page by page, stopping at the cap or after 20 s. A scanned PDF with
-  no text layer says so;
+  network), page by page, in a worker thread with a bounded heap that is
+  terminated at the cap or after 20 s, so a hostile PDF cannot stall the
+  bundle's event loop. A scanned PDF with no text layer says so;
 - for an image or a sticker up to 5 MB, an MCP `image` block;
 - always, a **single-use link** to the file through core's
   `/mcp-download/<slug>/<token>`, the route [Slack attachments](/servers/slack-attachments/)
@@ -321,8 +322,11 @@ Video and audio are the link only.
 
 **Limits.** A file over **25 MB** is refused — before the download when the
 message declares its size, and mid-stream when it does not. A download is
-abandoned after **60 s**, re-upload included. Nothing is written to disk or to
-the bucket, and no line logs a filename or a byte of content.
+abandoned after **60 s**, a phone that never answers a re-upload included. Two
+downloads run at once; more wait their turn. Only WhatsApp's own hosts
+(`https://*.whatsapp.net`) are fetched, with no redirects: the URL in a media
+message is written by whoever sent it. Nothing is written to disk or to the
+bucket, and no line logs a filename or a byte of content.
 
 **An expired copy.** WhatsApp's CDN forgets a file after a while and answers 404
 or 410. The bridge then asks the phone to upload it again (Baileys'
@@ -333,9 +337,10 @@ next read. That needs the socket connected and the phone online.
 say why. `whatsapp_get_attachment` asks the phone to send the message again, two
 ways at once: a resend of that one message, and an on-demand history sync of the
 50 messages before the next one buffered. Either answer is ingested like any
-other message, with its descriptor, and the call waits up to 30 s for it. If the
-phone does not answer — offline, or it no longer has the message — the error
-says so. This is best effort and has not been exercised against a real phone
+other message, with its descriptor, and the call waits up to 30 s for it. A
+history copy of a message already buffered adds only its descriptor, so it
+cannot undo an edit. If the phone does not answer — offline, or it no longer
+has the message — the error says so, and a later call asks again. This is best effort and has not been exercised against a real phone
 in CI.
 
 **The transport is strad's, not Baileys'.** Baileys 7.0.0-rc14's

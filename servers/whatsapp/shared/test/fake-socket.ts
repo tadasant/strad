@@ -39,6 +39,9 @@ export class FakeSocket implements WaSocket {
   readonly historyRequests: { count: number; key: RawKey; timestampMs: number }[] = [];
   answerResend: ((key: RawKey) => RawMessage | null) | null = null;
   answerHistory: ((key: RawKey, count: number) => RawMessage[]) | null = null;
+  /** A phone that never answers a re-upload request. */
+  hangReupload = false;
+  readonly forgottenResends: string[] = [];
   private counter = 0;
 
   constructor(
@@ -147,6 +150,7 @@ export class FakeSocket implements WaSocket {
    */
   async updateMediaMessage(message: RawMessage): Promise<RawMessage> {
     this.reuploads.push(message);
+    if (this.hangReupload) return new Promise<RawMessage>(() => {});
     if (!this.reuploadTo) {
       throw Object.assign(new Error("Media re-upload failed by device (NOT_FOUND)"), {
         output: { statusCode: 404 },
@@ -177,6 +181,10 @@ export class FakeSocket implements WaSocket {
       setTimeout(() => this.emit("messaging-history.set", { messages, chats: [], contacts: [] }), 5);
     }
     return "HISTORY1";
+  }
+
+  forgetPlaceholderResend(id: string): void {
+    this.forgottenResends.push(id);
   }
 
   async logout(): Promise<void> {

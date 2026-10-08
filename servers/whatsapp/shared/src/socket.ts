@@ -70,6 +70,12 @@ export interface WaSocket {
    * answer arrives as an ON_DEMAND `messaging-history.set`.
    */
   fetchMessageHistory(count: number, oldestMsgKey: RawKey, oldestMsgTimestampMs: number): Promise<string>;
+  /**
+   * Forget that a resend was asked for this message id. Baileys remembers
+   * each ask for an hour and silently skips a repeat; the bridge forgets one
+   * that went unanswered, so a retry once the phone is online asks again.
+   */
+  forgetPlaceholderResend(id: string): void;
   logout(): Promise<void>;
   end(error?: Error): void;
 }
@@ -157,6 +163,7 @@ export const createBaileysSocket: SocketFactory = async (options) => {
   } catch {
     version = undefined;
   }
+  const resends = new ExpiringCache(60 * 60_000);
   const socket = makeWASocket({
     auth: options.auth as never,
     browser: [...options.browser],
@@ -177,9 +184,42 @@ export const createBaileysSocket: SocketFactory = async (options) => {
       jid.endsWith("@broadcast") ||
       jid.endsWith("@newsletter"),
     getMessage: options.getMessage as never,
+    placeholderResendCache: resends as never,
   });
-  return socket as unknown as WaSocket;
+  return Object.assign(socket, {
+    forgetPlaceholderResend: (id: string) => resends.del(id),
+  }) as unknown as WaSocket;
 };
+
+/** Baileys' `CacheStore`, as a Map with a TTL, so an entry can be deleted from outside. */
+class ExpiringCache {
+  private readonly entries = new Map<string, { value: unknown; expires: number }>();
+
+  constructor(private readonly ttlMs: number) {}
+
+  get<T>(key: string): T | undefined {
+    const hit = this.entries.get(key);
+    if (!hit) return undefined;
+    if (hit.expires <= Date.now()) {
+      this.entries.delete(key);
+      return undefined;
+    }
+    return hit.value as T;
+  }
+
+  set<T>(key: string, value: T): void {
+    for (const [k, v] of this.entries) if (v.expires <= Date.now()) this.entries.delete(k);
+    this.entries.set(key, { value, expires: Date.now() + this.ttlMs });
+  }
+
+  del(key: string): void {
+    this.entries.delete(key);
+  }
+
+  flushAll(): void {
+    this.entries.clear();
+  }
+}
 
 /**
  * Fetch and decrypt one media message from WhatsApp's CDN, refusing it once
@@ -221,7 +261,26 @@ const ENCRYPTION_OVERHEAD = 16 + 10;
  * `fileEncSha256`, before a byte is decrypted. The bridge checks the
  * plaintext against `fileSha256`.
  */
-export const cdnMediaDownloader: MediaDownloader = async (message, { signal, maxBytes }) => {
+export const cdnMediaDownloader: MediaDownloader = (message, options) =>
+  createCdnMediaDownloader()(message, options);
+
+/**
+ * WhatsApp's media hosts, over TLS. The URL and host a media message names
+ * were written by whoever SENT it, so without this a message could make this
+ * container fetch any address it likes the moment someone reads its
+ * "attachment".
+ */
+export function isWhatsAppCdn(url: URL): boolean {
+  return (
+    url.protocol === "https:" &&
+    (url.hostname === "whatsapp.net" || url.hostname.endsWith(".whatsapp.net"))
+  );
+}
+
+/** The downloader, with the host rule injectable for a test's local CDN. */
+export const createCdnMediaDownloader = (
+  isAllowed: (url: URL) => boolean = isWhatsAppCdn,
+): MediaDownloader => async (message, { signal, maxBytes }) => {
   const mod = await loadBaileys();
   const [kind, raw] = Object.entries(message.message ?? {})[0] ?? [];
   const body = (raw ?? {}) as {
@@ -244,8 +303,22 @@ export const cdnMediaDownloader: MediaDownloader = async (message, { signal, max
   }
   const url = body.directPath ? mod.getUrlFromDirectPath(body.directPath, host) : body.url;
   if (!url) throw new Error("the message names no media URL");
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("the message names a media URL that does not parse");
+  }
+  if (!isAllowed(parsed)) {
+    throw new Error("the message names a media host that is not WhatsApp's; not fetched");
+  }
 
-  const response = await fetch(url, { headers: { Origin: mod.DEFAULT_ORIGIN }, signal });
+  // No redirects: a 3xx could leave WhatsApp's hosts after the check above.
+  const response = await fetch(parsed, {
+    headers: { Origin: mod.DEFAULT_ORIGIN },
+    signal,
+    redirect: "error",
+  });
   if (!response.ok || !response.body) {
     await response.body?.cancel().catch(() => {});
     throw Object.assign(new Error(`WhatsApp's media server answered ${response.status}`), {

@@ -1,4 +1,4 @@
-import { capUtf8, inlineKind, MAX_INLINE_IMAGE_BYTES, MAX_TEXT_BYTES, pdfText } from "../attachment.js";
+import { inlineKind, MAX_INLINE_IMAGE_BYTES, MAX_TEXT_BYTES, pdfText, textOf } from "../attachment.js";
 import { errMessage } from "../logging.js";
 import {
   args,
@@ -95,7 +95,7 @@ export function getAttachmentTool(bridge: BridgeFactory): ToolDefinition {
             note = `The PDF's text could not be extracted (${errMessage(err)}). Use the download link.`;
           }
         } else if (kind === "text") {
-          const capped = capUtf8(a.bytes.toString("utf8"));
+          const capped = textOf(a.bytes);
           inline = "text";
           truncated = capped.truncated;
           extra.push({ type: "text", text: capped.text });

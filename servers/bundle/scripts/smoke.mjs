@@ -90,8 +90,9 @@ const EXPECT = {
   // write tool, send_message — which `telegram-ro` is the allow-list without.
   telegram: 6,
   // The WhatsApp bridge's contract with Zimmer's poller: four reads (the
-  // attachment read included), the one send, and pair/logout. Named below as well as counted — Zimmer calls these
-  // by name every minute, so a rename is an outage there, not a new count here.
+  // attachment read included), the one send, and pair/logout. Named below as
+  // well as counted — Zimmer calls these by name every minute, so a rename is
+  // an outage there, not a new count here.
   whatsapp: 7,
   // list_coding_fields, list_coding_options, list_transactions,
   // get_transaction_coding, and the one write tool, set_transaction_coding —

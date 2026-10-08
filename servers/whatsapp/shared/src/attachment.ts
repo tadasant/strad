@@ -12,6 +12,9 @@
  * crafted PDF could run code through, and font faces are not loaded at all
  * here, because only text is wanted.
  */
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
 import type { MediaDescriptor, MessageType, StoredMessage } from "./normalize.js";
 import { MEDIA_TYPES } from "./normalize.js";
 
@@ -47,7 +50,10 @@ export function isMediaType(type: MessageType): boolean {
   return MEDIA_TYPES.has(type);
 }
 
-export function attachmentMeta(m: StoredMessage): AttachmentMeta | undefined {
+export function attachmentMeta(
+  m: StoredMessage,
+  maxBytes = MAX_ATTACHMENT_BYTES,
+): AttachmentMeta | undefined {
   if (!isMediaType(m.type)) return undefined;
   const d = m.media;
   if (!d) {
@@ -59,21 +65,23 @@ export function attachmentMeta(m: StoredMessage): AttachmentMeta | undefined {
       unavailable_reason: NO_DESCRIPTOR_REASON,
     };
   }
-  const tooBig = d.file_length !== null && d.file_length > MAX_ATTACHMENT_BYTES;
+  const tooBig = d.file_length !== null && d.file_length > maxBytes;
   return {
     file_name: d.file_name,
     mime_type: d.mimetype,
     size_bytes: d.file_length,
     ...(d.page_count ? { page_count: d.page_count } : {}),
     available: !tooBig,
-    ...(tooBig ? { unavailable_reason: tooBigReason(d.file_length!) } : {}),
+    ...(tooBig ? { unavailable_reason: tooBigReason(d.file_length!, maxBytes) } : {}),
   };
 }
 
-export function tooBigReason(size: number): string {
+export function tooBigReason(size: number, maxBytes = MAX_ATTACHMENT_BYTES): string {
+  const mb = (n: number) =>
+    n >= 1024 * 1024 ? `${Number((n / 1024 / 1024).toFixed(1))} MB` : `${Math.round(n / 1024)} KB`;
   return (
     `The file is ${(size / 1024 / 1024).toFixed(1)} MB; this bridge downloads at ` +
-    `most ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB. Open it on the phone.`
+    `most ${mb(maxBytes)}. Open it on the phone.`
   );
 }
 
@@ -109,6 +117,12 @@ export function inlineKind(type: MessageType, mime: string | null): "pdf" | "tex
   return null;
 }
 
+/** A text file's text, decoding no more than the cap (plus a character's slack). */
+export function textOf(bytes: Buffer, max = MAX_TEXT_BYTES): { text: string; truncated: boolean } {
+  const capped = capUtf8(bytes.subarray(0, max + 4).toString("utf8"), max);
+  return { text: capped.text, truncated: capped.truncated || bytes.length > max + 4 };
+}
+
 /** Cut to at most `max` UTF-8 bytes, on a character boundary. */
 export function capUtf8(text: string, max = MAX_TEXT_BYTES): { text: string; truncated: boolean } {
   const bytes = Buffer.from(text, "utf8");
@@ -120,45 +134,94 @@ export function capUtf8(text: string, max = MAX_TEXT_BYTES): { text: string; tru
 }
 
 /**
+ * pdf.js, in a worker thread. unpdf runs pdf.js's own "worker" on the calling
+ * thread, so a crafted PDF — a page that takes a minute to lay out — would
+ * otherwise stall the event loop of the process every other bundle server
+ * shares. Here the worker reports page by page and is TERMINATED at the
+ * deadline or the cap, whatever it is doing, and its heap is bounded.
+ *
+ * Inline (`eval`) so there is no second file whose path differs between the
+ * built tree and the tests; unpdf is resolved here and imported there by URL.
+ */
+const PDF_WORKER = `
+const { parentPort, workerData } = require("node:worker_threads");
+(async () => {
+  const { getDocumentProxy } = await import(workerData.unpdf);
+  const doc = await getDocumentProxy(workerData.data, { disableFontFace: true, useSystemFonts: false });
+  parentPort.postMessage({ pages: doc.numPages });
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page = await doc.getPage(i);
+    const content = await page.getTextContent();
+    const text = content.items
+      .map((t) => (t.str ?? "") + (t.hasEOL ? "\\n" : ""))
+      .join("")
+      .trim();
+    page.cleanup();
+    parentPort.postMessage({ page: i, text });
+  }
+  parentPort.postMessage({ done: true });
+})().catch((err) => parentPort.postMessage({ error: String((err && err.message) || err) }));
+`;
+
+/**
  * The text of a PDF, page by page, stopping once the cap is reached or the
  * clock runs out — a 25 MB scan of four hundred pages does not get to hold
- * the process for minutes to produce text nobody will be shown.
+ * a core for minutes to produce text nobody will be shown.
  */
 export async function pdfText(
   data: Buffer,
   { maxBytes = MAX_TEXT_BYTES, timeoutMs = PDF_EXTRACT_TIMEOUT_MS } = {},
 ): Promise<{ text: string; truncated: boolean; pages: number }> {
-  const { getDocumentProxy } = await import("unpdf");
-  const doc = await getDocumentProxy(new Uint8Array(data), {
-    disableFontFace: true,
-    useSystemFonts: false,
+  const unpdf = pathToFileURL(createRequire(import.meta.url).resolve("unpdf")).href;
+  const copy = new Uint8Array(data);
+  const worker = new Worker(PDF_WORKER, {
+    eval: true,
+    workerData: { unpdf, data: copy },
+    transferList: [copy.buffer],
+    resourceLimits: { maxOldGenerationSizeMb: 512 },
+    stdout: true,
+    stderr: true,
   });
-  const pages = doc.numPages;
-  const deadline = Date.now() + timeoutMs;
+  // pdf.js warns on stdout about the PDFs it reads; none of it may surface.
+  worker.stdout.resume();
+  worker.stderr.resume();
   const parts: string[] = [];
   let size = 0;
+  let pages = 0;
   let truncated = false;
   try {
-    for (let i = 1; i <= pages; i++) {
-      if (Date.now() > deadline || size > maxBytes) {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
         truncated = true;
-        break;
-      }
-      const page = await doc.getPage(i);
-      const content = await page.getTextContent();
-      const text = content.items
-        .map((item) => {
-          const t = item as { str?: string; hasEOL?: boolean };
-          return (t.str ?? "") + (t.hasEOL ? "\n" : "");
-        })
-        .join("")
-        .trim();
-      const part = `--- page ${i} of ${pages} ---\n${text}`;
-      parts.push(part);
-      size += Buffer.byteLength(part) + 2;
-    }
+        resolve();
+      }, timeoutMs);
+      const finish = (err?: Error) => {
+        clearTimeout(timer);
+        if (err) reject(err);
+        else resolve();
+      };
+      worker.on("message", (m: { pages?: number; page?: number; text?: string; done?: boolean; error?: string }) => {
+        if (m.error !== undefined) return finish(new Error(m.error));
+        if (m.pages !== undefined) pages = m.pages;
+        if (m.page !== undefined) {
+          const part = `--- page ${m.page} of ${pages} ---\n${m.text ?? ""}`;
+          parts.push(part);
+          size += Buffer.byteLength(part) + 2;
+          if (size > maxBytes && m.page < pages) {
+            truncated = true;
+            return finish();
+          }
+        }
+        if (m.done) finish();
+      });
+      worker.on("error", (err) => finish(err));
+      worker.on("exit", (code) => finish(code === 0 ? undefined : new Error(`the PDF reader stopped (${code})`)));
+    });
   } finally {
-    await doc.loadingTask.destroy().catch(() => {});
+    await worker.terminate();
+  }
+  if (pages === 0 && parts.length === 0 && truncated) {
+    throw new Error(`the PDF could not be opened within ${Math.round(timeoutMs / 1000)} s`);
   }
   const capped = capUtf8(parts.join("\n\n"), maxBytes);
   return { text: capped.text, truncated: truncated || capped.truncated, pages };

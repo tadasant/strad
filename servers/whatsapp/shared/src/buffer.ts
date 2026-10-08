@@ -204,6 +204,15 @@ export class MessageBuffer {
     this.dirtyChats.add(chatId);
   }
 
+  /** A descriptor learned after the message itself (a history copy, a resend). */
+  async setMedia(chatId: string, id: string, media: MediaDescriptor): Promise<void> {
+    const chat = await this.chat(chatId);
+    const existing = chat.byId.get(id);
+    if (!existing) return;
+    chat.byId.set(id, { ...existing, media });
+    this.dirtyChats.add(chatId);
+  }
+
   /** The oldest buffered message newer than `message`, in the same chat. */
   async nextAfter(chatId: string, message: StoredMessage): Promise<StoredMessage | undefined> {
     const all = [...(await this.chat(chatId)).byId.values()].sort(byTime);
