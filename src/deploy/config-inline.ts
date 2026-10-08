@@ -1,6 +1,11 @@
 import { stringify as stringifyYaml } from "yaml";
 import { isDeepStrictEqual } from "node:util";
-import { parseYamlDocument } from "../config/load.ts";
+import { gzipSync } from "node:zlib";
+import {
+  CONFIG_GZ_ENV,
+  decodeCompressedConfig,
+  parseYamlDocument,
+} from "../config/load.ts";
 
 /**
  * The config document, as it is BAKED into `STRAD_CONFIG_YAML`.
@@ -138,4 +143,119 @@ export function inlineConfigYaml(raw: string): InlineConfigResult {
   }
 
   return { yaml: emitted, rawBytes, inlinedBytes };
+}
+
+/**
+ * What `STRAD_CONFIG_YAML` holds when the document travels compressed.
+ *
+ * A config that fails the schema, ON PURPOSE, and says why in the failure. An
+ * image from before `STRAD_CONFIG_YAML_GZ_B64` existed does not look for it;
+ * left with no `STRAD_CONFIG_YAML` either, it would read the config file its
+ * image ships, which is the stock zero-server one, and boot a healthy gateway
+ * that serves nothing. With this beside the compressed form, that image refuses
+ * to start instead, and App Platform keeps the deployment it has.
+ *
+ * It fails on `version` and `auth`, which every schema there has ever been
+ * requires — that is the refusal. The explanation rides in a role NAME, because
+ * a schema error quotes its path and never its value: the boot error reads
+ * `roles.refused: this strad image predates …`. An image that reads the
+ * compressed form never looks at this.
+ */
+export const CONFIG_TRIPWIRE =
+  `roles:\n  "refused: this strad image predates ${CONFIG_GZ_ENV}, which ` +
+  `holds the config; deploy the core image this spec was rendered for": {}\n`;
+
+/** One env var `render-spec` bakes the config into. */
+export interface ConfigEnv {
+  key: "STRAD_CONFIG_YAML" | typeof CONFIG_GZ_ENV;
+  value: string;
+}
+
+export interface BakedConfig {
+  /** The env vars to bake, in order. Boot reads them via `src/config/load.ts`. */
+  envs: ConfigEnv[];
+  /** The comment strip, which runs first either way. */
+  inlined: InlineConfigResult;
+  /** Spec bytes of `envs`, measured the way `src/deploy/spec-size.ts` does. */
+  specBytes: number;
+  /** Spec bytes the plain `STRAD_CONFIG_YAML` would have cost. */
+  plainSpecBytes: number;
+  /** Why the document travels plain, when it does. Absent means compressed. */
+  keptPlainBecause?: string;
+}
+
+/**
+ * The config as it is BAKED: comment-stripped, then gzipped if that is smaller.
+ *
+ * ## Why compress
+ *
+ * The comment strip above bought prod its headroom once. On 2026-10-08 the spec
+ * crossed the ceiling again — 132,740 bytes against 131,010, on the deploy that
+ * added a second WhatsApp bridge — and this time the config was not the growth:
+ * the stripped `STRAD_CONFIG_YAML` was 34,018 bytes of a document with nothing
+ * left to strip. YAML is repetitive text, and gzip takes that one to about 8 KB
+ * of base64. JSON-escaping makes the plain form dearer still (every newline is
+ * two bytes in the spec), so the comparison below is in SPEC bytes.
+ *
+ * ## Same rule as the strip: lossless, or it does not happen
+ *
+ * The emitted value is decoded with `decodeCompressedConfig` — the function
+ * boot decodes it with — and must come back as exactly the text that was
+ * compressed, byte for byte. That, plus the strip's own check, is what makes
+ * the baked value mean what the file means. It must also be smaller, tripwire
+ * included; a small config gzips to more than it started as, and travels plain.
+ * Either check failing keeps the plain `STRAD_CONFIG_YAML`, with a reason.
+ */
+export function bakeConfigEnv(raw: string): BakedConfig {
+  const inlined = inlineConfigYaml(raw);
+  const plain: ConfigEnv[] = [
+    { key: "STRAD_CONFIG_YAML", value: inlined.yaml },
+  ];
+  const plainSpecBytes = specBytesOf(plain);
+  const keptPlain = (because: string): BakedConfig => ({
+    envs: plain,
+    inlined,
+    specBytes: plainSpecBytes,
+    plainSpecBytes,
+    keptPlainBecause: because,
+  });
+
+  let value: string;
+  try {
+    value = gzipSync(Buffer.from(inlined.yaml, "utf8"), { level: 9 }).toString(
+      "base64",
+    );
+    if (decodeCompressedConfig(value) !== inlined.yaml) {
+      return keptPlain("the compressed form does not decode to the same text");
+    }
+  } catch (err) {
+    return keptPlain(
+      `the document could not be compressed (${
+        err instanceof Error ? err.name : "unknown error"
+      })`,
+    );
+  }
+
+  const compressed: ConfigEnv[] = [
+    { key: CONFIG_GZ_ENV, value },
+    { key: "STRAD_CONFIG_YAML", value: CONFIG_TRIPWIRE },
+  ];
+  const specBytes = specBytesOf(compressed);
+  if (specBytes >= plainSpecBytes) {
+    return keptPlain("the compressed form is no smaller");
+  }
+  return { envs: compressed, inlined, specBytes, plainSpecBytes };
+}
+
+/** Bytes these vars add to a spec, as `GENERAL` `RUN_TIME` env entries. */
+function specBytesOf(envs: ConfigEnv[]): number {
+  return envs.reduce(
+    (sum, { key, value }) =>
+      sum +
+      Buffer.byteLength(
+        JSON.stringify({ key, value, scope: "RUN_TIME", type: "GENERAL" }),
+        "utf8",
+      ),
+    0,
+  );
 }

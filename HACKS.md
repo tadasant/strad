@@ -3787,6 +3787,18 @@ limit:
   the document re-emitted without them, checked lossless against the original
   before the schema sees either, and falls back to the file's own text if the
   round trip does not hold or does not shrink. Prod's spec: 141,342 → ~96,238.
+- **And then the rest of it was YAML.** On 2026-10-08 the spec crossed again —
+  132,740 bytes, on the deploy that added a second WhatsApp bridge — with a
+  stripped `STRAD_CONFIG_YAML` of 34,018 bytes and nothing left in it to strip.
+  `render-spec` now gzips the stripped document into `STRAD_CONFIG_YAML_GZ_B64`
+  when that is smaller in spec bytes, and boot decodes it. The emitted value is
+  decoded with boot's own function before it is used and must come back byte for
+  byte; a small config gzips larger and travels plain. `STRAD_CONFIG_YAML` beside
+  it carries a config that fails the schema on purpose, so an image too old to
+  read the compressed form refuses to boot rather than falling through to its
+  stock zero-server config file. Prod's spec: 132,740 → 106,203. The cost is that
+  the config is no longer readable in the App Platform console's env view — a
+  `base64 -d | gunzip` away, and the file in the repo is the readable copy.
 - **`assert-spec` reports the size and where it is** — the total, plus bytes per
   component — and warns past ~80% of the largest spec known to have deployed.
 - **`render-spec` refuses to emit a spec past 131,010 bytes**
@@ -3806,7 +3818,10 @@ credentials reach a container — tadasant/tadasant-internal#213, which injects 
 bootstrap credential instead of baking a set. This entry buys that redesign time;
 it does not remove the need for it.
 
-**Undo.** Delete `src/deploy/config-inline.ts` and bake `raw` again, and delete the
+**Undo.** To drop only the gzip, bake `inlineConfigYaml(raw).yaml` as
+`STRAD_CONFIG_YAML` in `scripts/render-spec.ts` instead of `bakeConfigEnv`'s
+vars; boot still reads the plain form. To drop all of it, delete
+`src/deploy/config-inline.ts` and bake `raw` again, and delete the
 `specSizeReport` call at the end of `scripts/render-spec.ts`. The spec goes back
 to carrying every comment in the config file, and to being refused by
 DigitalOcean rather than by the renderer.

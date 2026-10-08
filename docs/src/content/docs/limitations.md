@@ -2682,6 +2682,16 @@ Two things changed, neither of which claims to know the limit:
   back to the file's own text if the round trip does not hold or does not shrink.
   Prod's spec: 141,342 → ~96,238 bytes. See
   [the deploy model](/operate/deploy-model/#the-config-travels-without-its-prose-and-the-spec-has-a-size).
+- **And then it travels gzipped.** On 2026-10-08 prod crossed again — 132,740
+  bytes, on the deploy that added a second WhatsApp bridge — with nothing left to
+  strip from a 34,018-byte document. `render-spec` now bakes the stripped document
+  gzipped and base64'd as `STRAD_CONFIG_YAML_GZ_B64` whenever that is smaller,
+  decoded with boot's own function and compared byte for byte before it is used.
+  Prod's spec: 132,740 → 106,203 bytes. The price: the App Platform console no
+  longer shows the config as text, and an image older than the compressed form
+  cannot boot a spec that carries it — `STRAD_CONFIG_YAML` holds a tripwire that
+  makes that image refuse to start rather than run its stock zero-server config.
+  Render with the tooling of the image you deploy, which prod already does.
 - **`assert-spec` reports the size and where it is**, per component, and warns
   past ~80% of the largest spec known to have deployed.
 - **`render-spec` refuses to emit a spec past 131,010 bytes**

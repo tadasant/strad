@@ -236,8 +236,9 @@ export function formatSpecSizeError(report: SpecSizeReport): string {
     `downstream, where it names neither the size nor the cause.\n` +
     `Where the bytes are:\n  ${componentLines(report).join("\n  ")}\n` +
     `(Env payload only, so these run a little under the whole-spec figure ` +
-    `above.) STRAD_CONFIG_YAML is the config file with its comments already ` +
-    `stripped (src/deploy/config-inline.ts) — if it dominates, the config ` +
+    `above.) The config travels with its comments stripped and, when that ` +
+    `is smaller, gzipped as STRAD_CONFIG_YAML_GZ_B64 ` +
+    `(src/deploy/config-inline.ts) — if that variable dominates, the config ` +
     `itself has grown. Everything else is baked secrets, whose count follows ` +
     `gateway.secrets.provider: under gcp-parameter-store the gateway reads ` +
     `its own at runtime and only supplementary components carry theirs.\n` +

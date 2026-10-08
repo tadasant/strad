@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { gunzipSync } from "node:zlib";
 import { parse as parseYaml } from "yaml";
 import { StradConfig } from "./schema.ts";
 import { desugarDocument, type DesugarResult } from "./mcp-json.ts";
@@ -6,7 +7,14 @@ import { desugarDocument, type DesugarResult } from "./mcp-json.ts";
 /**
  * Load and validate the config.
  *
- * Two sources, in priority order:
+ * Three sources, in priority order:
+ *
+ *   STRAD_CONFIG_YAML_GZ_B64 — the config document, inline, gzipped and
+ *                       base64'd. What `render-spec` emits when that is the
+ *                       smaller form, because an App Platform spec has a size
+ *                       the API refuses past (src/deploy/config-inline.ts).
+ *                       When it is set it WINS, and `STRAD_CONFIG_YAML` beside
+ *                       it is the tripwire for an image too old to read it.
  *
  *   STRAD_CONFIG_YAML — the config document, inline. This is how a deployment
  *                       configures the stock OSS image: the image ships with
@@ -53,6 +61,15 @@ export async function loadConfigDocument(
   env: NodeJS.ProcessEnv = process.env,
   onDialect?: (dialect: DesugarResult) => void,
 ): Promise<LoadedConfig> {
+  const compressed = env[CONFIG_GZ_ENV];
+  if (compressed && compressed.trim() !== "") {
+    return documentFrom(
+      decodeCompressedConfig(compressed),
+      CONFIG_GZ_ENV,
+      onDialect,
+    );
+  }
+
   const inline = env.STRAD_CONFIG_YAML;
   if (inline && inline.trim() !== "") {
     return documentFrom(inline, "STRAD_CONFIG_YAML", onDialect);
@@ -73,6 +90,47 @@ export async function loadConfigDocument(
   }
 
   return documentFrom(raw, path, onDialect);
+}
+
+/** The env var `render-spec` bakes the compressed config document into. */
+export const CONFIG_GZ_ENV = "STRAD_CONFIG_YAML_GZ_B64";
+
+/**
+ * `STRAD_CONFIG_YAML_GZ_B64` back to the YAML text it was made from.
+ *
+ * Exported for `src/deploy/config-inline.ts`, which decodes every value it
+ * emits with THIS function before emitting it — the render's round-trip check
+ * and boot are the same code, so a value that passed the one reads the same in
+ * the other.
+ *
+ * Strict where `Buffer.from(…, "base64")` is not: that skips characters it does
+ * not recognise, so a value truncated or mangled in transit could still gunzip
+ * if the damage fell in the right place. A value that does not re-encode to
+ * itself is refused, and so is anything gzip itself refuses. Either is a boot
+ * failure with the variable's name in it, never a fall-through to another
+ * source: falling back would start a gateway on a config nobody deployed.
+ */
+export function decodeCompressedConfig(value: string): string {
+  const text = value.trim();
+  const bytes = Buffer.from(text, "base64");
+  if (bytes.length === 0 || bytes.toString("base64") !== text) {
+    throw new Error(
+      `${CONFIG_GZ_ENV} is not valid base64 (one line, standard alphabet, ` +
+        `padded — \`gzip -c | base64 -w0\`).`,
+    );
+  }
+  try {
+    // Bounded, so a damaged-but-valid stream cannot balloon at boot. A config
+    // is tens of KB; 16 MiB is a ceiling no real one approaches.
+    return gunzipSync(bytes, { maxOutputLength: 16 * 1024 * 1024 }).toString(
+      "utf8",
+    );
+  } catch (err) {
+    throw new Error(
+      `${CONFIG_GZ_ENV} is base64 but not gzip ` +
+        `(${err instanceof Error ? err.message : "unknown error"}).`,
+    );
+  }
 }
 
 export interface LoadedConfig {

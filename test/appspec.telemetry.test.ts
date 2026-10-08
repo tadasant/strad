@@ -75,6 +75,12 @@ const TELEMETRY_ENV: EnvVar[] = [
     scope: "RUN_TIME",
     type: "GENERAL",
   },
+  {
+    key: "STRAD_CONFIG_YAML_GZ_B64",
+    value: "H4sIAAAAAAAAAytLLSrOzM9TsFQwBAA6Ij1rCwAAAA==",
+    scope: "RUN_TIME",
+    type: "GENERAL",
+  },
 ];
 
 function render() {
@@ -133,6 +139,20 @@ describe("the OTLP endpoint reaches EVERY component", () => {
     expect(
       valueOf(envOf(render(), "bundle-fetchpet"), "STRAD_CONFIG_YAML"),
     ).toBeUndefined();
+    // Nor its compressed form, which is the same document.
+    expect(
+      valueOf(envOf(render(), "bundle-fetchpet"), "STRAD_CONFIG_YAML_GZ_B64"),
+    ).toBeUndefined();
+  });
+
+  it("does hand the compressed config to every component that runs strad", () => {
+    // A strad-image bundle boots through the same loader as core. Without the
+    // compressed form it would read the tripwire beside it and refuse to start.
+    for (const name of ["core", "bundle-echo"]) {
+      expect(
+        valueOf(envOf(render(), name), "STRAD_CONFIG_YAML_GZ_B64"),
+      ).toBeDefined();
+    }
   });
 });
 

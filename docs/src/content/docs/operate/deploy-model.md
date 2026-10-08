@@ -365,7 +365,8 @@ learn:
   integration needs an interactive OAuth handshake and can't be driven headlessly
   from CI.
 - The **core** service gets `STRAD_MODE=core`, `NODE_ENV=production`, the
-  config inline as `STRAD_CONFIG_YAML`, a `/healthz` health check, and a
+  config inline as `STRAD_CONFIG_YAML_GZ_B64` (or `STRAD_CONFIG_YAML` when it is
+  too small to gzip), a `/healthz` health check, and a
   `STRAD_BUNDLE_URL_<BUNDLE>` env per bundle (bound to `${bundle.PRIVATE_URL}`).
 - **What a bundle component gets depends on whose image it runs.** A bundle of
   `builtin` servers runs the strad image and gets `STRAD_MODE=bundle` +
@@ -418,7 +419,7 @@ resolver key every store-backed container already holds, and writes use the
 console admin key `consoleEnv:` already puts on core.
 
 Everything on this page stays true afterwards, because a roster change touches
-none of it. The spec is not re-rendered, `STRAD_CONFIG_YAML` does not move, no
+none of it. The spec is not re-rendered, the inline config does not move, no
 image is pulled, and the component list is exactly what it was: core rebuilds its
 registry and routes in-process under a socket that never closes. Which also
 bounds what an overlay may contain — an entry needing a new container, a new
@@ -428,9 +429,9 @@ written, because a deploy is the only thing that could deliver it. See
 
 ## The config travels without its prose, and the spec has a size
 
-`STRAD_CONFIG_YAML` is the config document, inline on the core component. It is
-not the config _file_: `render-spec` re-emits the document without its comments
-before baking it (`src/deploy/config-inline.ts`).
+The config document travels inline on the core component. It is not the config
+_file_: `render-spec` re-emits the document without its comments, and then, when
+that is smaller, gzips it (`src/deploy/config-inline.ts`).
 
 A strad config is mostly prose, deliberately — a `bundles:` entry explains why an
 instance size is what it is, and that comment is why the next person does not
@@ -444,6 +445,34 @@ to the original document — before the schema sees either, so a key Zod would s
 still has to survive — and it is used only if it holds the same values _and_ is
 smaller. Either check failing bakes the file verbatim and says so in the deploy
 log. A spec that fits and configures a different gateway is not an improvement.
+
+**Then it is gzipped, under the same rule.** Stripping is not the end of it: on
+2026-10-08 prod's stripped document was 34,018 bytes with no prose left, and the
+spec was over the ceiling again. YAML is repetitive text, so `render-spec` gzips
+the stripped document and bakes it base64'd as `STRAD_CONFIG_YAML_GZ_B64` —
+8,240 bytes for that document, which took prod's spec from 132,740 to 106,203.
+The value is decoded with the function boot decodes it with and must come back
+byte for byte, and it is used only if it costs fewer spec bytes than the plain
+form. A small config gzips larger, and travels as plain `STRAD_CONFIG_YAML`. The
+deploy log says which.
+
+| Variable                   | Holds                                                                     |
+| -------------------------- | ------------------------------------------------------------------------- |
+| `STRAD_CONFIG_YAML_GZ_B64` | the stripped document, gzipped and base64'd. Boot reads this first.       |
+| `STRAD_CONFIG_YAML`        | the stripped document when it travels plain; otherwise a tripwire, below. |
+
+The tripwire is a config that fails the schema on purpose: it has no `version`
+and no `auth`, and its explanation is a role name, since a schema error quotes
+the path. An image from before the compressed form does not look for
+`STRAD_CONFIG_YAML_GZ_B64`, so without it that image would find no inline config
+and boot on the zero-server file it ships — a healthy gateway that serves
+nothing. With it, the image refuses to start — its boot error reads
+`roles.refused: this strad image predates STRAD_CONFIG_YAML_GZ_B64, …` — and App
+Platform keeps the deployment it has. Render with the tooling of the core image
+you deploy; tadasant-internal's prod workflow already does. Staging's `version`
+rollback pin does not: it renders with the dispatched ref's tooling, so rolling
+staging back to an image from before the compressed form means dispatching from
+a ref of that age (see [Operations](/operate/operations/)).
 
 Why it matters: **an App Platform spec has a size the API refuses past, and
 DigitalOcean does not document what it is.** What is known is two runs on
@@ -471,8 +500,8 @@ Where the bytes are:
   core: 151,081 bytes of env over 9 var(s) — largest: STRAD_CONFIG_YAML (150,411), …
 ```
 
-`--max-spec-bytes <n>` raises the ceiling. It exists because prod renders this
-script straight from `main`: if App Platform is found to accept more, an operator
+`--max-spec-bytes <n>` raises the ceiling. It exists because prod renders with a
+released strad's own tooling: if App Platform is found to accept more, an operator
 says so on the spot rather than waiting on a strad PR. Raising the constant is
 the follow-up, and it is a better measurement rather than a weakening.
 

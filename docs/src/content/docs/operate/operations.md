@@ -524,7 +524,11 @@ The core image comes from the first of these that applies:
 2. **An explicit `version` input** — `ghcr.io/tadasant/strad:<version>`. This is
    the release path, and it is how you pin a rollback. It pins the core only —
    the bundle is still resolved below, so a rollback taken while a bundle build
-   is in flight wants `bundle_version` too.
+   is in flight wants `bundle_version` too. The spec is rendered by the
+   DISPATCHED ref's tooling, not the pinned image's, so a rollback to an image
+   older than the gzipped config (`STRAD_CONFIG_YAML_GZ_B64`) must be dispatched
+   from a ref of that age: the image cannot read the compressed form, refuses
+   to boot on its tripwire, and App Platform keeps the deployment it has.
 3. **Otherwise, `sha-<commit>`**, resolved from the checked-out history by
    `scripts/resolve-image-tag.ts`.
 

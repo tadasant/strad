@@ -41,7 +41,9 @@ on:
       version:
         description: >-
           Image tag to deploy (e.g. 0.1.3). Omit to use the sha-<commit> image
-          built for this ref. A mutable tag (latest) is refused.
+          built for this ref. A mutable tag (latest) is refused. The spec is
+          rendered by THIS ref's tooling, so rolling back to an image that
+          predates STRAD_CONFIG_YAML_GZ_B64 needs a ref of that age.
         type: string
         required: false
       bundle_version:

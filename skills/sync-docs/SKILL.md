@@ -85,7 +85,7 @@ Pages are under `docs/src/content/docs/`:
 | `src/gateway/entitlements.ts` (roles, `?servers=`, the 424)                   | `intro/concepts.md`, `auth/overview.md`                                                 |
 | `src/gateway/toolPolicy.ts` (the `tools:` allow/deny policy)                  | `intro/architecture.md#capability`, `servers/adding.md`, `intro/concepts.md#capability` |
 | `src/config/schema.ts` (any field, default, or `superRefine` rule)            | `servers/interface.md` **and** `strad.config.example.yaml`                              |
-| `src/config/load.ts` (`STRAD_CONFIG` / `STRAD_CONFIG_YAML`)                   | `servers/interface.md#where-the-config-comes-from`                                      |
+| `src/config/load.ts` (`STRAD_CONFIG` / `STRAD_CONFIG_YAML[_GZ_B64]`)          | `servers/interface.md#where-the-config-comes-from`                                      |
 | `src/auth/**` (`tokens.ts`, `google.ts`, `dev.ts`)                            | `auth/overview.md`                                                                      |
 | `src/deploy/appspec.ts`, `scripts/render-spec.ts`                             | `operate/deploy-model.md`                                                               |
 | `src/deploy/config-inline.ts` (what `STRAD_CONFIG_YAML` carries)              | `operate/deploy-model.md`, `servers/interface.md`                                       |

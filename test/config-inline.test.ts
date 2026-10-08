@@ -3,8 +3,18 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
-import { inlineConfigYaml } from "../src/deploy/config-inline.ts";
-import { parseConfig } from "../src/config/load.ts";
+import { gzipSync } from "node:zlib";
+import {
+  bakeConfigEnv,
+  CONFIG_TRIPWIRE,
+  inlineConfigYaml,
+} from "../src/deploy/config-inline.ts";
+import {
+  CONFIG_GZ_ENV,
+  decodeCompressedConfig,
+  loadConfigDocument,
+  parseConfig,
+} from "../src/config/load.ts";
 
 /**
  * The config document as it is BAKED into the app spec.
@@ -225,6 +235,104 @@ describe("render-spec bakes the inlined document", () => {
     // exactly this function.
     expect(parseConfig(baked, "STRAD_CONFIG_YAML")).toEqual(
       parseConfig(raw, "strad.config.yaml"),
+    );
+  });
+});
+
+describe("bakeConfigEnv", () => {
+  for (const { path, raw } of repoConfigs()) {
+    it(`${path}: bakes a value boot reads as the same config`, async () => {
+      const baked = bakeConfigEnv(raw);
+      const env = Object.fromEntries(baked.envs.map((e) => [e.key, e.value]));
+      // Through the REAL boot loader, with a path that does not exist: a value
+      // the loader skipped would surface as the ENOENT, not as a quiet pass.
+      const loaded = await loadConfigDocument("/nonexistent/strad.yaml", env);
+      expect(loaded.config).toEqual(parseConfig(raw, path));
+      expect(baked.specBytes).toBeLessThanOrEqual(baked.plainSpecBytes);
+    });
+  }
+
+  it("gzips the staging config, and the gzip decodes to the inlined text exactly", () => {
+    const raw = readFileSync("infra/strad.staging.yaml", "utf8");
+    const baked = bakeConfigEnv(raw);
+    expect(baked.keptPlainBecause).toBeUndefined();
+    expect(baked.envs.map((e) => e.key)).toEqual([
+      CONFIG_GZ_ENV,
+      "STRAD_CONFIG_YAML",
+    ]);
+    expect(decodeCompressedConfig(baked.envs[0]!.value)).toBe(
+      inlineConfigYaml(raw).yaml,
+    );
+    expect(baked.envs[1]!.value).toBe(CONFIG_TRIPWIRE);
+    // Not a marginal win. If it ever is, the threshold this was built for is
+    // gone and somebody should look.
+    expect(baked.specBytes).toBeLessThan(baked.plainSpecBytes / 2);
+  });
+
+  it("keeps a small config plain, because gzip cannot beat it", () => {
+    const baked = bakeConfigEnv("version: 1\n");
+    expect(baked.keptPlainBecause).toBe("the compressed form is no smaller");
+    expect(baked.envs).toEqual([
+      { key: "STRAD_CONFIG_YAML", value: "version: 1\n" },
+    ]);
+    expect(baked.specBytes).toBe(baked.plainSpecBytes);
+  });
+});
+
+describe("boot reads the compressed config", () => {
+  const raw = readFileSync("infra/strad.staging.yaml", "utf8");
+  const NO_FILE = "/nonexistent/strad.yaml";
+  const gz = (text: string) => gzipSync(Buffer.from(text)).toString("base64");
+
+  it("prefers the compressed form over the STRAD_CONFIG_YAML beside it", async () => {
+    const loaded = await loadConfigDocument(NO_FILE, {
+      [CONFIG_GZ_ENV]: gz(raw),
+      STRAD_CONFIG_YAML: CONFIG_TRIPWIRE,
+    });
+    expect(loaded.config).toEqual(parseConfig(raw));
+    expect(loaded.source).toBe(CONFIG_GZ_ENV);
+  });
+
+  it("falls back to STRAD_CONFIG_YAML when the compressed form is absent", async () => {
+    // A spec rendered by tooling from before the compressed form existed.
+    for (const absent of [undefined, "", "  \n"]) {
+      const loaded = await loadConfigDocument(NO_FILE, {
+        ...(absent === undefined ? {} : { [CONFIG_GZ_ENV]: absent }),
+        STRAD_CONFIG_YAML: raw,
+      });
+      expect(loaded.config).toEqual(parseConfig(raw));
+      expect(loaded.source).toBe("STRAD_CONFIG_YAML");
+    }
+  });
+
+  it("refuses a damaged value by name, and does not fall back to another source", async () => {
+    const good = gz(raw);
+    const cases = [
+      good.slice(0, -8), // truncated mid-stream: base64 still, gzip no longer
+      `${good.slice(0, 40)}!!${good.slice(40)}`, // a character base64 skips
+      Buffer.from("version: 1\n").toString("base64"), // base64, never gzipped
+    ];
+    for (const value of cases) {
+      await expect(
+        loadConfigDocument(NO_FILE, {
+          [CONFIG_GZ_ENV]: value,
+          STRAD_CONFIG_YAML: raw,
+        }),
+      ).rejects.toThrow(CONFIG_GZ_ENV);
+    }
+  });
+
+  it("the tripwire stops an image that cannot read the compressed form", async () => {
+    // What an image from before STRAD_CONFIG_YAML_GZ_B64 sees: no idea the
+    // compressed variable exists, so it reads STRAD_CONFIG_YAML. It must fail
+    // to start there — NOT skip past it to the stock config file it ships,
+    // which would boot a healthy gateway with zero servers.
+    // And the refusal says why, in the one part of a schema error that is
+    // quoted: the path.
+    await expect(
+      loadConfigDocument(NO_FILE, { STRAD_CONFIG_YAML: CONFIG_TRIPWIRE }),
+    ).rejects.toThrow(
+      /invalid config at STRAD_CONFIG_YAML:[\s\S]*roles\.refused: this strad image predates STRAD_CONFIG_YAML_GZ_B64/,
     );
   });
 });

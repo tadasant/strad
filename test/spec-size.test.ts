@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
 import { renderAppSpec, type AppSpec } from "../src/deploy/appspec.ts";
-import { inlineConfigYaml } from "../src/deploy/config-inline.ts";
+import { bakeConfigEnv } from "../src/deploy/config-inline.ts";
 import { bakedSecretNames } from "../src/deploy/preflight.ts";
 import { waivedNames } from "../src/deploy/unseeded.ts";
 import { sizeAdvisory } from "../src/deploy/spec-file.ts";
@@ -242,14 +242,12 @@ describe("the real staging config, which is the false-positive canary", () => {
       repository: "strad",
       tag: `sha-${"a".repeat(40)}`,
     },
-    env: [
-      {
-        key: "STRAD_CONFIG_YAML",
-        value: inlineConfigYaml(raw).yaml,
-        scope: "RUN_TIME",
-        type: "GENERAL",
-      },
-    ],
+    env: bakeConfigEnv(raw).envs.map(({ key, value }) => ({
+      key,
+      value,
+      scope: "RUN_TIME" as const,
+      type: "GENERAL" as const,
+    })),
     secrets: Object.fromEntries(
       bakedSecretNames(config)
         .filter((n) => !waived.has(n))
@@ -266,13 +264,14 @@ describe("the real staging config, which is the false-positive canary", () => {
     expect(report.bytes).toBeLessThan(LARGEST_ACCEPTED_SPEC_BYTES / 2);
   });
 
-  it("puts most of its bytes on core, in STRAD_CONFIG_YAML", () => {
-    // The premise of the refusal's "where the bytes are" section: on a real
-    // config the driver is one variable on one component, and naming it is what
-    // makes the message actionable.
+  it("carries the config gzipped, so core is no longer the largest component", () => {
+    // The config was the one variable that dominated the spec — 47% of it on
+    // the render App Platform refused (src/deploy/config-inline.ts). Gzipped,
+    // it is a fraction of the baked secrets on the bundle beside it.
     const report = specSizeReport(spec);
-    expect(report.components[0]!.name).toBe("core");
-    expect(report.components[0]!.largest[0]!.key).toBe("STRAD_CONFIG_YAML");
+    const core = report.components.find((c) => c.name === "core")!;
+    expect(core.largest[0]!.key).toBe("STRAD_CONFIG_YAML_GZ_B64");
+    expect(report.components[0]!.name).not.toBe("core");
   });
 });
 
