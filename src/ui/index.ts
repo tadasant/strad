@@ -18,6 +18,7 @@ import {
   cachedProbe,
   NO_CAPABILITIES,
   normalisePathPrefix,
+  parameterId,
   ParameterStoreError,
   UnreadablePayloadError,
   normaliseNamespace,
@@ -85,6 +86,14 @@ import {
   renderSecrets,
 } from "./render.ts";
 import { mountPwa } from "./pwa.ts";
+import {
+  planBulkCreate,
+  planIsWritable,
+  refillCsv,
+  type BulkPlanLine,
+  type BulkReport,
+  type BulkReportLine,
+} from "./bulk-params.ts";
 
 /**
  * Mount the human, SSO-gated console.
@@ -111,6 +120,7 @@ import { mountPwa } from "./pwa.ts";
  *                                 its own project, namespaces, bounds and admin
  *                                 credential. See consoleStores: in schema.ts.
  *   POST /ui/:server/create     — ┐
+ *   POST /ui/:server/bulk       — │ (many creates, one CSV — bulk-params.ts)
  *   POST /ui/:server/rotate     — │ the `secrets` WRITE surface. Humans only.
  *   POST /ui/:server/note       — │ There is no MCP equivalent of any of these,
  *   POST /ui/:server/reveal     — │ and the admin credential that performs them
@@ -376,6 +386,7 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
 
   for (const action of [
     "create",
+    "bulk",
     "rotate",
     "note",
     "reveal",
@@ -685,7 +696,7 @@ async function handleServerView(
 // ---------------------------------------------------------------------------
 
 type SecretAction =
-  "create" | "rotate" | "note" | "reveal" | "delete" | "refresh";
+  "create" | "bulk" | "rotate" | "note" | "reveal" | "delete" | "refresh";
 
 /**
  * A write just changed what the store holds, so drop what it told us.
@@ -766,6 +777,203 @@ async function describeClientGrant(
       `before allow and cannot be granted around. strad-console-no-read, on the ` +
       `Secrets IAM page, is the one this deployment may have applied.`,
   };
+}
+
+/**
+ * Write ONE new parameter — the single form and every line of a bulk add go
+ * through here, so the two cannot drift on what a create does.
+ *
+ * Returns what `describeClientGrant` found when the path is a connector's OAuth
+ * client, else null. The caller drops the store reading (`forgetStoreReading`).
+ */
+async function createParameter(
+  store: ParameterStore,
+  opts: ConsoleUiOptions,
+  p: { path: string; secret: boolean; value: string; note: string },
+): Promise<{ ok: boolean; note: string } | null> {
+  // DERIVED FROM THE CHECKED-IN CONFIG, NEVER FROM THE FORM. The path was
+  // composed out of a namespace, a prefix and a variable name the human typed,
+  // and `isConnectorClientPath` asks whether an ENABLED server's own `oauth:`
+  // block names that variable in that slug's `static/` namespace. There is no
+  // field on either form that can say "let the console read this" — and
+  // `grantAuthority` is why a runtime roster write cannot say it either.
+  const consoleReadable =
+    p.secret && isConnectorClientPath(grantAuthority(opts), p.path);
+  await store.create({
+    path: p.path,
+    secret: p.secret,
+    value: p.value,
+    note: p.note || undefined,
+    consoleReadable,
+  });
+  // VERIFIED, NOT ASSUMED — the same rule the repair button follows, for the
+  // same reason. An IAM deny policy is evaluated before any allow, so the
+  // binding the create just wrote can land and grant nothing; a flash claiming
+  // the console can now read it would send a human to Connect, which would then
+  // 403 after the consent screen. Reading it back is the only thing that can
+  // tell those apart, and it costs one call on the one create in a hundred that
+  // is a connector's client.
+  return consoleReadable ? describeClientGrant(store, p.path) : null;
+}
+
+/**
+ * The bulk add: every line checked first, then written one at a time.
+ *
+ * TWO KINDS OF FAILURE, TWO RULES. A line that fails a CHECK — a bad name, an
+ * unreadable quote, a path that already exists, a namespace the store refuses —
+ * stops the whole batch before anything is written: it is a typo, and a partial
+ * write would leave the human working out which half landed. A line the STORE
+ * refuses once writing has started does not stop the rest; it is reported on its
+ * own line, next to the ones that were created. Either way every line is
+ * accounted for in the report, and nothing is dropped in silence.
+ *
+ * The value of a line goes to the store and nowhere else. The report and the
+ * refilled editor carry paths, names, kinds and notes, never a value — see
+ * `refillCsv`.
+ */
+async function handleBulkCreate(
+  res: Response,
+  ctx: {
+    view: Extract<ServerView, { kind: "secrets" }>;
+    selected: SecretsStore;
+    store: ParameterStore;
+    opts: ConsoleUiOptions;
+    signedInAs: string | undefined;
+    namespace: string;
+    nsError: string | null;
+    csv: unknown;
+  },
+): Promise<void> {
+  const { view, selected, store, opts, signedInAs, namespace } = ctx;
+  const page = (
+    flash: { tone: "ok" | "error"; message: string },
+    bulk: BulkReport,
+    status = 200,
+  ) =>
+    renderSecretsPage(res, view, selected, opts, {
+      signedInAs,
+      namespace,
+      flash,
+      bulk,
+      status,
+    });
+
+  if (typeof ctx.csv !== "string") {
+    await page(
+      { tone: "error", message: "A single block of lines is required." },
+      { lines: [], refill: "" },
+      400,
+    );
+    return;
+  }
+
+  // A batch the namespace check or emptiness already refuses costs no store read.
+  const existing =
+    ctx.nsError || ctx.csv.trim() === ""
+      ? []
+      : (await store.list(namespace)).map((p) => p.path);
+  const plan = planBulkCreate(ctx.csv, {
+    namespace,
+    namespaceError: ctx.nsError,
+    existing,
+    validateVariable: validateVariableName,
+    validatePrefix: validatePathPrefix,
+    normalisePrefix: normalisePathPrefix,
+    validateNote,
+    checkPath: (path) => {
+      try {
+        assertWellFormed(path);
+        return null;
+      } catch (err) {
+        return err instanceof ConsoleInputError
+          ? err.message
+          : "Malformed path.";
+      }
+    },
+    idOf: parameterId,
+  });
+
+  const unreadable: BulkReportLine[] = plan.unreadable.map((e) => ({
+    line: e.line,
+    path: "",
+    variable: "",
+    secret: true,
+    status: "invalid",
+    message: `This line could not be read: ${e.message}`,
+  }));
+
+  if (!planIsWritable(plan)) {
+    const invalid =
+      plan.lines.filter((l) => l.error).length + unreadable.length;
+    const lines = [
+      ...unreadable,
+      ...plan.lines.map((l): BulkReportLine => ({
+        line: l.line,
+        path: l.path,
+        variable: l.variable,
+        secret: l.secret,
+        status: l.error ? "invalid" : "skipped",
+        ...(l.error ? { message: l.error } : {}),
+      })),
+    ].sort((a, b) => a.line - b.line);
+    await page(
+      {
+        tone: "error",
+        message:
+          plan.batchError ??
+          `Nothing was created: ${invalid} of ${lines.length} line${lines.length === 1 ? "" : "s"} ` +
+            `need fixing first. The lines are back in the editor below, without their values.`,
+      },
+      { lines, refill: refillCsv(plan.lines, plan.unreadable) },
+      400,
+    );
+    return;
+  }
+
+  const report: BulkReportLine[] = [];
+  const notCreated: BulkPlanLine[] = [];
+  let created = 0;
+  let firstFailure: unknown = null;
+  for (const l of plan.lines) {
+    const base = {
+      line: l.line,
+      path: l.path,
+      variable: l.variable,
+      secret: l.secret,
+    };
+    try {
+      const grant = await createParameter(store, opts, l);
+      created += 1;
+      report.push({
+        ...base,
+        status: "created",
+        ...(grant ? { message: grant.note.trim(), warn: !grant.ok } : {}),
+      });
+    } catch (err) {
+      firstFailure ??= err;
+      notCreated.push(l);
+      // `describe` prints a sentence strad wrote, or a class name — never an
+      // upstream message, which on this path could quote the value.
+      report.push({ ...base, status: "failed", message: describe(err) });
+    }
+  }
+  // A create that timed out may still have landed, so any attempt drops the
+  // reading — not only a confirmed one.
+  if (plan.lines.length > 0) forgetStoreReading(opts);
+
+  const failed = plan.lines.length - created;
+  await page(
+    {
+      tone: failed === 0 && !report.some((r) => r.warn) ? "ok" : "error",
+      message:
+        failed === 0
+          ? `Created ${created} parameter${created === 1 ? "" : "s"} in ${namespace}.`
+          : `Created ${created} of ${plan.lines.length}. ${failed} failed at the store and ` +
+            `${failed === 1 ? "is" : "are"} back in the editor below, without ${failed === 1 ? "its value" : "their values"}.`,
+    },
+    { lines: report, refill: refillCsv(notCreated) },
+    created > 0 || firstFailure === null ? 200 : statusFor(firstFailure),
+  );
 }
 
 async function handleSecretAction(
@@ -917,33 +1125,13 @@ async function handleSecretAction(
         const prefix = normalisePathPrefix(prefixRaw);
         const fullPath = `${namespace}${prefix}${variable}`;
         assertWellFormed(fullPath);
-        // DERIVED FROM THE CHECKED-IN CONFIG, NEVER FROM THE FORM. The path
-        // was composed here out of a namespace, a prefix and a variable name the
-        // human typed, and `isConnectorClientPath` asks whether an ENABLED
-        // server's own `oauth:` block names that variable in that slug's
-        // `static/` namespace. There is no field on this form that can say "let
-        // the console read this" — and `grantAuthority` is why a runtime roster
-        // write cannot say it either.
-        const consoleReadable =
-          secret && isConnectorClientPath(grantAuthority(opts), fullPath);
-        await store.create({
+        const grant = await createParameter(store, opts, {
           path: fullPath,
           secret,
           value,
-          note: note || undefined,
-          consoleReadable,
+          note,
         });
         forgetStoreReading(opts);
-        // VERIFIED, NOT ASSUMED — the same rule the repair button follows, for
-        // the same reason. An IAM deny policy is evaluated before any allow, so
-        // the binding the create just wrote can land and grant nothing; a flash
-        // claiming the console can now read it would send a human to Connect,
-        // which would then 403 after the consent screen. Reading it back is the
-        // only thing that can tell those apart, and it costs one call on the one
-        // create in a hundred that is a connector's client.
-        const grant = consoleReadable
-          ? await describeClientGrant(store, fullPath)
-          : null;
         await renderSecretsPage(res, view, store_, opts, {
           signedInAs,
           namespace,
@@ -957,6 +1145,20 @@ async function handleSecretAction(
               `Created ${prefix}${variable} (${secret ? "secret" : "non-secret"}) at ${namespace}${prefix}${variable}.` +
               (grant?.note ?? ""),
           },
+        });
+        return;
+      }
+
+      case "bulk": {
+        await handleBulkCreate(res, {
+          view,
+          selected: store_,
+          store,
+          opts,
+          signedInAs,
+          namespace,
+          nsError,
+          csv: body.csv,
         });
         return;
       }
@@ -1094,6 +1296,8 @@ interface PageExtras {
   namespace?: string;
   flash?: { tone: "ok" | "error"; message: string };
   revealed?: { name: string; value: string };
+  /** The per-line outcome of a bulk add. See handleBulkCreate. */
+  bulk?: BulkReport;
   status?: number;
 }
 
@@ -1205,6 +1409,7 @@ async function renderSecretsPage(
         signedInAs: extras.signedInAs,
         flash,
         revealed: extras.revealed,
+        bulk: extras.bulk,
       }),
     );
 }
