@@ -21,12 +21,13 @@ import { connectorsPath, serverConsolePath } from "./paths.ts";
 import { serverLooksGcs, serverLooksSecrets } from "./resolve.ts";
 import { flashHtml, kindBlurb, type Flash } from "./servers-page.ts";
 import {
+  badgeFor,
   fixTargets,
-  isActionable,
   SOURCE_TOOLTIP,
   STATE_RANK,
   storeProject,
   unobservableTarget,
+  type EntryBadge,
   type FixTarget,
   type UnobservableScope,
   type SecretEvidence,
@@ -64,23 +65,26 @@ import {
  * Making the whole page conditional would mean a deployment without a config
  * store had nowhere to read a secret status at all.
  *
- * ## What the two badges claim, exactly
+ * ## What the four badges claim, exactly
  *
- * Every enabled entry carries `READY` or `ISSUE`, and the line between them is
- * drawn where it can be defended:
+ * Every enabled entry carries one of four, from `badgeFor` in secret-status.ts —
+ * the same mapping `/api/secrets/readiness` buckets by:
  *
- *   READY — every `${NAME}` this server references was OBSERVED to resolve, or
- *           it references none at all. It is **not** a claim the credential
- *           works: strad never calls the upstream. See secret-status.ts.
- *   ISSUE — anything else, INCLUDING "could not be checked from here". The
- *           badge opens a popout naming which flavour it is and what to do, so
- *           the nuance is one click away rather than compressed into the chip.
+ *   READY      — every requirement was OBSERVED to be present, or there are
+ *                none. It is **not** a claim the credential works: strad never
+ *                calls the upstream.
+ *   ISSUE      — something is established to be wrong: not seeded, will not
+ *                render, or a placeholder. The only badge the "issues" count
+ *                counts, so that number means "actually broken".
+ *   INACTIVE   — deployed inactive on purpose, short only of names it declared
+ *                under `mayBeUnseeded:`.
+ *   UNVERIFIED — this page could not establish the answer either way.
  *
- * "Could not be checked" landing under ISSUE is the deliberate half. A
- * bundle-scoped value is genuinely invisible to this process and may well be
- * fine — but calling that READY would be the exact false green
- * `src/ui/secret-status.ts` exists to prevent, and this page's whole claim is
- * that a green badge means something was observed.
+ * UNVERIFIED is neither colour, deliberately. Calling it READY would be the
+ * false green secret-status.ts exists to prevent, since green here means
+ * something was observed. Calling it ISSUE was the false red it replaced: 29
+ * entries on prod's roster read ISSUE and most of them were serving. Every
+ * non-READY badge opens a popout naming which flavour it is and what to do.
  *
  * ## Why it prints secret names and the splash does not
  *
@@ -153,21 +157,6 @@ export interface ConnectorsPageOptions {
   flash?: Flash;
 }
 
-/** The two badges an entry can carry, and nothing in between. */
-export type EntryBadge = "READY" | "ISSUE";
-
-/**
- * READY is only ever an OBSERVATION.
- *
- * `ready` (every reference resolved) and `no-secrets` (there are none) are the
- * two states where the console established that nothing is outstanding.
- * `unverified` and `unknown` are not weaker greens, they are the absence of an
- * answer, and they read as ISSUE for the reason in the header comment.
- */
-export function badgeFor(state: ServerState): EntryBadge {
-  return state === "ready" || state === "no-secrets" ? "READY" : "ISSUE";
-}
-
 /** One entry on the roster: a server, and what is known about its secrets. */
 export interface Entry {
   server: ServerConfig;
@@ -209,8 +198,8 @@ export function consoleView(
  * disagree about it: a partition the sort does not follow interleaves rows under
  * the wrong heading, and — worse — a partition with a hole DROPS an entry off
  * the page entirely, silently, while the counts above it keep saying it is
- * there. So this is total by construction: three values, `enabled` decides one
- * of them and the badge decides the other two.
+ * there. So this is total by construction: `enabled` decides `disabled`, and
+ * each of the four badges decides exactly one of the rest.
  *
  * `undefined` lands in `attention` rather than `ready`, and that is the case
  * worth stating. `deriveServerStatuses` returns a status for every enabled
@@ -219,19 +208,27 @@ export function consoleView(
  * ISSUE means everywhere else on this page. Green would be the false green
  * `src/ui/secret-status.ts` exists to prevent.
  */
-type GroupKey = "attention" | "ready" | "disabled";
+type GroupKey = "attention" | "inactive" | "unverified" | "ready" | "disabled";
+
+const GROUP_OF_BADGE: Record<EntryBadge, GroupKey> = {
+  ISSUE: "attention",
+  INACTIVE: "inactive",
+  UNVERIFIED: "unverified",
+  READY: "ready",
+};
 
 function groupOf(entry: Entry): GroupKey {
   // A DISABLED server carries no badge — strad does not mount it, so it needs no
   // secrets and `deriveServerStatuses` skips it. Reporting it READY would be a
   // green for a server that answers nothing.
   if (!entry.server.enabled) return "disabled";
-  return entry.badge === "READY" ? "ready" : "attention";
+  return entry.badge ? GROUP_OF_BADGE[entry.badge] : "attention";
 }
 
 /**
- * Needs attention before READY; within each group, entries with a dedicated view
- * first, and config order breaks the remaining ties.
+ * Needs attention first, then inactive, then unverified, then READY; within each
+ * group, entries with a dedicated view first, and config order breaks the
+ * remaining ties.
  *
  * Sorting the greens to the top would be pleasant and backwards: this is a
  * working surface, the entries that need something done to them are the reason
@@ -245,8 +242,10 @@ export function sortEntries(entries: Entry[]): Entry[] {
 
 const GROUP_RANK: Record<GroupKey, number> = {
   attention: 0,
-  ready: 2,
-  disabled: 4,
+  inactive: 2,
+  unverified: 4,
+  ready: 6,
+  disabled: 8,
 };
 
 function entryRank(e: Entry): number {
@@ -254,17 +253,27 @@ function entryRank(e: Entry): number {
   return GROUP_RANK[groupOf(e)] + (e.view === "overview" ? 1 : 0);
 }
 
-/** The three groups the rows are drawn under, worst first. */
+/** The groups the rows are drawn under, worst first. */
 const GROUPS: { key: GroupKey; label: string; note: string }[] = [
   {
     key: "attention",
     label: "Needs attention",
-    note: "a secret does not resolve, or could not be checked",
+    note: "a secret is not seeded, will not render, or is a placeholder",
+  },
+  {
+    key: "inactive",
+    label: "Inactive",
+    note: "deployed inactive on purpose (mayBeUnseeded), waiting for a secret",
+  },
+  {
+    key: "unverified",
+    label: "Unverified",
+    note: "this page could not check them, which does not make them broken",
   },
   {
     key: "ready",
     label: "Ready",
-    note: "every ${NAME} this entry references was observed to resolve",
+    note: "everything this entry needs was observed to be present",
   },
   {
     key: "disabled",
@@ -289,8 +298,7 @@ export function renderConnectors(opts: ConnectorsPageOptions): string {
     }),
   );
 
-  const readyCount = sorted.filter((e) => e.badge === "READY").length;
-  const issues = sorted.filter((e) => e.badge === "ISSUE");
+  const counts = badgeCounts(sorted);
   const { project, guessed } = storeProject(config, opts.env);
   // Where this gateway lives, for the copy icon. Config first, then the origin
   // the request arrived on — see ConnectorsPageOptions.requestOrigin.
@@ -331,9 +339,9 @@ ${flashHtml(opts.flash)}
     accepts a credential — open one for the detail, or Help for the rest.</p>
 </section>
 
-${summaryBar(readyCount, issues.length, statuses.length, roster)}
+${summaryBar(counts, statuses.length, roster)}
 
-${banner(issues, statuses.length)}
+${banner(counts, statuses.length)}
 ${editorNote(editable, writable)}
 
 <table class="conn-table">
@@ -457,17 +465,35 @@ function diagnosisNote(
 // The header: a count, and a claim that has to survive a store outage
 // ---------------------------------------------------------------------------
 
+/** How many enabled entries carry each badge. */
+type BadgeCounts = Record<EntryBadge, number>;
+
+function badgeCounts(entries: Entry[]): BadgeCounts {
+  const out: BadgeCounts = { READY: 0, ISSUE: 0, INACTIVE: 0, UNVERIFIED: 0 };
+  // A badgeless enabled entry is filed under "Needs attention" by `groupOf`, so
+  // it is counted the same way: nothing was established about it.
+  for (const e of entries) {
+    if (e.badge) out[e.badge] += 1;
+    else if (e.server.enabled) out.ISSUE += 1;
+  }
+  return out;
+}
+
 /**
- * Three numbers, and — where there is a runtime holder — where the roster came
+ * The counts, and — where there is a runtime holder — where the roster came
  * from and when it last moved.
+ *
+ * "issues" counts ISSUE and nothing else, so the red number is the number of
+ * entries known to be broken. Inactive and unverified get their own numbers,
+ * each shown only when it is not zero: a column of zeros is noise, and a count
+ * that disappeared entirely would be the page hiding them.
  *
  * The revision is on the same bar as the counts rather than in a line of its own
  * because it is the same kind of fact: a small, current number describing the
  * list below it.
  */
 function summaryBar(
-  ready: number,
-  issues: number,
+  counts: BadgeCounts,
   total: number,
   roster: RosterState | undefined,
 ): string {
@@ -481,8 +507,18 @@ function summaryBar(
 
   return `<div class="browse-head">
   <div class="stat"><span class="stat-n">${total}</span><span class="stat-l">enabled server${total === 1 ? "" : "s"}</span></div>
-  <div class="stat"><span class="stat-n stat-ready">${ready}</span><span class="stat-l">ready</span></div>
-  <div class="stat"><span class="stat-n stat-missing">${issues}</span><span class="stat-l">issue${issues === 1 ? "" : "s"}</span></div>
+  <div class="stat"><span class="stat-n stat-ready">${counts.READY}</span><span class="stat-l">ready</span></div>
+  <div class="stat"><span class="stat-n stat-missing">${counts.ISSUE}</span><span class="stat-l">issue${counts.ISSUE === 1 ? "" : "s"}</span></div>${
+    counts.INACTIVE
+      ? `
+  <div class="stat"><span class="stat-n stat-inactive">${counts.INACTIVE}</span><span class="stat-l">inactive</span></div>`
+      : ""
+  }${
+    counts.UNVERIFIED
+      ? `
+  <div class="stat"><span class="stat-n stat-unverified">${counts.UNVERIFIED}</span><span class="stat-l">unverified</span></div>`
+      : ""
+  }
   ${meta}
 </div>`;
 }
@@ -515,65 +551,60 @@ function editorNote(editable: boolean, writable: boolean): string {
 }
 
 /**
- * The headline claim, and it has to be THREE-way rather than two.
+ * The headline claim. It leads with the one number that means "broken".
  *
- * The two-way version said "every server is fine" whenever nothing was
- * ACTIONABLE — and `unknown` and `unverified` are not actionable. So a total
- * store outage, with every entry correctly unable to report, printed a green "a
- * value EXISTS for each ${NAME}" across the top. The entries were honest and the
- * banner above them was not, which is worse than either alone: the banner is the
- * part someone reads.
+ * It speaks in badges: ISSUE is the claim, and INACTIVE and UNVERIFIED are named
+ * after it as what they are. Lumping every non-READY entry into one count is
+ * how prod's banner read "22 need attention, another 7 could not be checked"
+ * over a roster where most of the 29 were serving.
  *
- * FOUR-way, in fact, because of the empty roster. The core ships with zero
- * servers (src/config/schema.ts), so a fresh install's very first screen is this
- * one — and "Every server is READY" over an empty table is an unearned green of
- * exactly the kind this module refuses everywhere else. Nothing was checked
- * because there was nothing to check, and that is what it says.
+ * It still cannot print a green it has not earned. "Every server is READY" needs
+ * every entry READY. Nothing broken plus some unverified says exactly that, and a
+ * total store outage, where every entry correctly cannot report, lands there and
+ * not on the green line. An empty roster says nothing was checked because there
+ * was nothing to check: the core ships with zero servers
+ * (src/config/schema.ts), so a fresh install's first screen is this one.
  */
-function banner(issues: Entry[], enabled: number): string {
+function banner(counts: BadgeCounts, enabled: number): string {
   if (enabled === 0) {
     return `<p class="posture">No servers are enabled on this gateway, so there is nothing
       to seed and nothing to report. Add one below or to <code>servers:</code> in the config,
       and its secrets appear here.</p>`;
   }
 
-  if (issues.length === 0) {
-    return `<p class="posture"><strong>Every server is READY.</strong> Every
-      <code>\${NAME}</code> the config references was checked and has a value; each popout
-      says where it was found (<code>GSM</code> or <code>ENV</code>) and which process
-      checked. strad does not call any upstream, so this does not show a credential is still
-      accepted. If a server lists tools but fails every call with a 401, suspect the
-      credential itself.</p>`;
+  if (counts.READY === enabled) {
+    return `<p class="posture"><strong>Every server is READY.</strong> Everything each
+      server needs was checked and has a value; each popout says where it was found
+      (<code>GSM</code> or <code>ENV</code>) and which process checked. strad does not call
+      any upstream, so this does not show a credential is still accepted. If a server lists
+      tools but fails every call with a 401, suspect the credential itself.</p>`;
   }
 
-  // `isActionable` rather than an inlined `missing || placeholder`: there is one
-  // definition of "a human has to do something about this", and the banner and
-  // the popout headline must not be able to disagree about it.
-  const actionable = issues.filter(
-    (e) => e.status !== undefined && isActionable(e.status.state),
-  ).length;
-  const unchecked = issues.length - actionable;
+  const plural = (n: number) => (n === 1 ? "server" : "servers");
+  const rest = [
+    counts.INACTIVE
+      ? `${counts.INACTIVE} ${plural(counts.INACTIVE)} ${
+          counts.INACTIVE === 1 ? "is" : "are"
+        } <code>INACTIVE</code> on purpose, waiting for a secret somebody plans to seed.`
+      : "",
+    counts.UNVERIFIED
+      ? `${counts.UNVERIFIED} ${plural(counts.UNVERIFIED)} could not be checked from here
+      (<code>UNVERIFIED</code>). That does not make them broken, and they are not counted as
+      issues; each popout says why, and how to check.`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
-  if (actionable > 0) {
-    return `<p class="posture posture-warn"><strong>${actionable} server${
-      actionable === 1 ? "" : "s"
-    } need attention.</strong> Open the <code>ISSUE</code> badge on each to see what is
+  if (counts.ISSUE > 0) {
+    return `<p class="posture posture-warn"><strong>${counts.ISSUE} ${plural(
+      counts.ISSUE,
+    )} ${counts.ISSUE === 1 ? "needs" : "need"} attention.</strong> Open the <code>ISSUE</code> badge on each to see what is
       missing, where to set it, and in which project where this page can know it. Redeploying
-      alone fixes none of these until the value exists.${
-        unchecked
-          ? ` Another ${unchecked} could not be checked; their popouts say how to check them.`
-          : ""
-      }</p>`;
+      alone fixes none of these until the value exists.${rest ? ` ${rest}` : ""}</p>`;
   }
 
-  return `<p class="posture posture-warn"><strong>${unchecked} server${
-    unchecked === 1 ? "" : "s"
-  } could not be checked.</strong> Nothing is known to be broken, and nothing is confirmed
-    healthy either. <code>unknown</code> means the secret store did not answer.
-    <code>unverified</code> means this page could not see the values the server runs on:
-    the component holding them did not answer, runs an image too old to report them, or
-    the server uses managed parameters no component listed. Each popout says which, and
-    how to check.</p>`;
+  return `<p class="posture"><strong>Nothing is known to be broken.</strong> ${rest}</p>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -691,11 +722,11 @@ function serverRow(entry: Entry, ctx: RowContext): string {
   const href = serverConsolePath(server.slug);
   // AT MOST TWO SECONDARY LINES, and each has to earn its line. A `description:`
   // is per-entry prose somebody wrote, so it always shows. The status summary
-  // shows on an ISSUE row, where it is the sentence that says what is wrong —
-  // and NOT on a READY one, where it restates the badge in more words on every
+  // shows on every non-READY row, where it is the sentence that says what is
+  // wrong or what could not be checked — and NOT on a READY one, where it restates the badge in more words on every
   // row at once. The popout has it either way.
   const desc = server.description ?? "";
-  const summary = status && entry.badge === "ISSUE" ? status.summary : "";
+  const summary = status && entry.badge !== "READY" ? status.summary : "";
 
   return `    <tr>
       <td class="conn-slug">
@@ -903,7 +934,7 @@ function hasFixDialog(entry: Entry): boolean {
 }
 
 /**
- * BOTH badges open, when there is something behind them.
+ * EVERY badge opens, when there is something behind it.
  *
  * A READY entry carries a POSITIVE claim — this secret is plumbed, from this
  * source, established by this process, which booted then. That is the answer
@@ -913,15 +944,15 @@ function hasFixDialog(entry: Entry): boolean {
  * A READY entry with no requirements (`no-secrets`) still has nothing behind it
  * and stays inert. A control that opens an empty panel is worse than no control.
  *
- * BOTH branches consult `hasFixDialog`, and that is the half that was missing.
- * The ISSUE branch returned a `<button>` unconditionally, so an entry with the
- * badge and nothing behind it named a `<dialog>` id nobody emitted and swallowed
- * the click. Asking on one branch only is what let the two rules drift.
+ * ONE branch consults `hasFixDialog` for every badge. A badge that returned a
+ * `<button>` unconditionally, over an entry with nothing behind it, would name
+ * a `<dialog>` id nobody emitted and swallow the click; one rule for all four is
+ * what keeps that from happening on any of them.
  *
- * The inert ISSUE chip is a floor, not the fix. An entry that asserts "this
+ * The inert non-READY chip is a floor, not the fix. An entry that asserts "this
  * needs attention" and offers no way to find out why is the worse of the two
  * failures, so the real answer is that the popout is given something true to say
- * — see unobservableBlock(). NO SHAPE REACHES THAT BRANCH: every ISSUE entry
+ * — see unobservableBlock(). NO SHAPE REACHES THAT BRANCH: every non-READY entry
  * carries either requirement rows or a scope. It is kept as the floor it is — a
  * badge whose panel would be empty must not be a control that swallows the click
  * — rather than as a shape anything ships in. The last shape that took it was a
@@ -930,28 +961,55 @@ function hasFixDialog(entry: Entry): boolean {
 function badgeMarkup(entry: Entry): string {
   if (!entry.badge) return "";
   const openable = hasFixDialog(entry);
-  if (entry.badge === "READY") {
-    if (!openable) {
-      return `<span class="chip chip-ok chip-badge" title="This server references no \${NAME}, so there is nothing to seed.">READY</span>`;
-    }
-    return `<button class="chip chip-ok chip-badge chip-button" type="button"
-        data-fix-open="${esc(fixDialogId(entry.server.slug))}" aria-haspopup="dialog"
-        title="Which secrets resolve, from which source, and which process established it">READY<span class="chip-caret">▾</span></button>`;
-  }
+  const look = BADGE_LOOK[entry.badge];
   if (!openable) {
-    return `<span class="chip chip-bad chip-badge" title="Something is outstanding for this server and this page holds no detail about it.">ISSUE</span>`;
+    return `<span class="chip ${look.chip} chip-badge" title="${esc(look.inert)}">${entry.badge}</span>`;
   }
-  return `<button class="chip chip-bad chip-badge chip-button" type="button"
+  return `<button class="chip ${look.chip} chip-badge chip-button" type="button"
         data-fix-open="${esc(fixDialogId(entry.server.slug))}" aria-haspopup="dialog"
-        title="What needs to be done to resolve this">ISSUE<span class="chip-caret">▾</span></button>`;
+        title="${esc(look.open)}">${entry.badge}<span class="chip-caret">▾</span></button>`;
 }
+
+/**
+ * How each badge looks, and what its tooltip says with and without a popout.
+ *
+ * UNVERIFIED and INACTIVE are deliberately neither green nor red: grey for "not
+ * established", blue for "parked on purpose". A badge that borrowed either of
+ * the other two colours would make the claim this page refuses to make.
+ */
+const BADGE_LOOK: Record<
+  EntryBadge,
+  { chip: string; open: string; inert: string }
+> = {
+  READY: {
+    chip: "chip-ok",
+    open: "Which secrets resolve, from which source, and which process established it",
+    inert: "This server references no ${NAME}, so there is nothing to seed.",
+  },
+  ISSUE: {
+    chip: "chip-bad",
+    open: "What needs to be done to resolve this",
+    inert:
+      "Something is outstanding for this server and this page holds no detail about it.",
+  },
+  INACTIVE: {
+    chip: "chip-inactive",
+    open: "Which secret this server is waiting for, and where to seed it",
+    inert: "Deployed inactive on purpose, waiting for a secret.",
+  },
+  UNVERIFIED: {
+    chip: "chip-unverified",
+    open: "Why this page could not check it, and how to check it yourself",
+    inert: "This page could not check this server's credentials.",
+  },
+};
 
 function fixDialogId(slug: string): string {
   return `fix-${slug}`;
 }
 
 // ---------------------------------------------------------------------------
-// The popout behind an ISSUE badge
+// The popout behind a badge
 // ---------------------------------------------------------------------------
 
 /**
@@ -967,13 +1025,13 @@ const ISSUE_HEADLINE: Record<ServerState, string> = {
   missing:
     "A secret this server needs is not seeded. Create it at the resource below; the badge turns READY on the next page load once it resolves.",
   unconfigured:
-    "Waiting for a credential nobody has seeded yet. The server was deployed inactive on purpose (mayBeUnseeded), so nothing is broken. Seed the value below and it starts serving within a TTL, with no redeploy and no PR.",
+    "Waiting for a credential nobody has seeded yet. The server was deployed inactive on purpose (mayBeUnseeded), so nothing is broken and it is not counted as an issue. Seed the value below and it starts serving within a TTL, with no redeploy and no PR.",
   unrenderable:
     "A secret this server needs exists in the parameter store, but its value cannot be read, so nothing that references it gets a value. Rotate it through the console to rewrite it. Do not create it again; that fails with 409.",
   placeholder:
     "A secret this server needs is set to a placeholder. The server lists tools normally, but the upstream rejects every call. Rotate it to a real credential.",
   unverified:
-    "This page could not check this server's credentials. That does not mean they are missing, and it does not mean they are fine.",
+    "This page could not check this server's credentials, so it is not counted as an issue. That does not mean they are missing, and it does not mean they are fine.",
   unknown:
     "The secret store did not answer, so this server's status is unknown. That does not mean anything is missing: do not seed anything until the store answers.",
 };
@@ -1257,9 +1315,9 @@ function requirementBlock(
         )}. A value in the shared namespace covers all of them; one under a server's own namespace covers only that server.</p>`
     : "";
 
-  // `unrenderable` is in `isActionable`, so a row that offered no resource, no
-  // project and no console link would be telling a reader to act and then not
-  // saying where. The fix targets are the same ones — it is the same parameter.
+  // `unrenderable` is an ISSUE, so a row that offered no resource, no project
+  // and no console link would be telling a reader to act and then not saying
+  // where. The fix targets are the same ones — it is the same parameter.
   const guidance =
     state === "missing" || state === "placeholder" || state === "unrenderable"
       ? fixTargets(config, requirement, env)
@@ -1433,39 +1491,44 @@ const FIX_DIALOG_SCRIPT = `<script>
  *
  * It exists to make the badges honest in prose as well as in markup — in
  * particular that READY is a statement about presence and nothing else, and that
- * an ISSUE reading "not checked" is a scoping fact rather than a fault.
+ * UNVERIFIED is a scoping fact rather than a fault.
  */
 const GUIDE = `
   <details class="acc" open>
-    <summary>What READY and ISSUE actually claim</summary>
+    <summary>What the four badges actually claim</summary>
     <div class="acc-body">
       <ul>
-        <li><b>READY</b> — every <code>\${NAME}</code> this server references resolves to a
-          value, or it references none at all. It is <b>not</b> a claim that the credential
-          works: strad never calls the upstream to check. A server that lists tools and fails
-          every call with an auth error is exactly the shape this badge cannot rule out.</li>
-        <li><b>ISSUE</b> — anything else. Click it: the popout says what is wrong and what to
-          do, and names the store and path to fix, with the project (except on the
+        <li><b>READY</b> — everything this server needs was checked and has a value, or it
+          needs nothing at all. It is <b>not</b> a claim that the credential works: strad
+          never calls the upstream to check. A server that lists tools and fails every call
+          with an auth error is exactly the shape this badge cannot rule out.</li>
+        <li><b>ISSUE</b> — something is known to be wrong, and it is the only badge the
+          <b>issues</b> count counts. Click it: the popout says what is wrong and what to do,
+          and names the store and path to fix, with the project (except on the
           <code>strad-&lt;env&gt;-*</code> route, whose project only your deploy environment
-          knows). The states you will see:
+          knows). It is one of:
           <ul>
-            <li><b>not seeded</b> — the store answered, and there is no such secret. Create
-              it.</li>
+            <li><b>not seeded</b> — nothing has a value for it: the store answered without
+              one, or the component holding it was asked and does not have it. Create it.</li>
+            <li><b>cannot render</b> — the parameter exists and the store will not produce its
+              value. Rotate it; do not create it again.</li>
             <li><b>placeholder</b> — a value exists but is filler (an unexpanded
               <code>\${...}</code>, a "change-me" string, an empty string). The server boots
               and lists tools, then every call fails with an auth error. Rotate it.</li>
-            <li><b>not checked</b> — the value lives on a component this page could not ask.
-              A supplementary image's <code>env:</code> is baked onto its own container at
-              deploy time and never shared with core. It had a value at the last successful
-              deploy, because a missing one fails the render. The popout says how to check it
-              yourself.</li>
-            <li><b>unknown</b> — the secret store did not answer. That does not mean the
-              secret is missing.</li>
           </ul>
         </li>
+        <li><b>INACTIVE</b> — the server is short only of secrets its config lists under
+          <code>mayBeUnseeded:</code>, so it was deployed inactive on purpose instead of failing
+          the deploy. Nothing is broken; somebody planned to seed it. It is not counted as an
+          issue, and it keeps its own group so it does not fall off the page.</li>
+        <li><b>UNVERIFIED</b> — this page could not establish the answer either way. Either the
+          value lives somewhere this process cannot read (a supplementary image's
+          <code>env:</code> baked from the deploy environment, on a component that did not
+          answer), or the secret store did not answer. It is not counted as an issue. The
+          popout says why, and how to check it yourself.</li>
       </ul>
-      <p>The last two are not faults, and they are still not READY: green on this page always
-        means a value was actually checked.</p>
+      <p>Green on this page always means a value was actually checked, and red always means
+        something was found wrong. Everything in between gets a colour of its own.</p>
     </div>
   </details>
   <details class="acc">
@@ -1497,7 +1560,8 @@ const GUIDE = `
   <details class="acc">
     <summary>How the rows are grouped and ordered</summary>
     <div class="acc-body">
-      <p><b>Needs attention</b> first, then <b>Ready</b>, then <b>Disabled</b>. This is a
+      <p><b>Needs attention</b> first, then <b>Inactive</b>, <b>Unverified</b>, <b>Ready</b> and
+        <b>Disabled</b>. This is a
         working surface: the entries something has to be done about are why anyone opens it,
         and on a 35-entry roster sorting the greens to the top put exactly the wrong rows
         below the fold.</p>
@@ -1568,7 +1632,7 @@ const GUIDE = `
         so with the secret on only one variant, setting <code>enabled: false</code> on THAT
         variant would silently strip it from its siblings — which would keep listing their
         tools and fail every call with an auth error naming no cause.</p>
-      <p>So one <code>\${NAME}</code> legitimately makes several entries ISSUE at once. Each
+      <p>So one <code>\${NAME}</code> legitimately puts several entries under the same badge at once. Each
         popout says which other entries share it: one unseeded secret behind four badges is
         one problem, not four.</p>
     </div>
@@ -1630,8 +1694,12 @@ const GUIDE = `
 const ROSTER_CSS = `<style>
 .chip-bad{color:#e8776b;border-color:color-mix(in srgb,#e8776b 45%,var(--g5))}
 .chip-ok{color:var(--text-accent);border-color:color-mix(in srgb,var(--accent) 45%,var(--g5))}
+.chip-unverified{color:var(--g3);border-color:var(--g4);border-style:dashed}
+.chip-inactive{color:#9db4e8;border-color:color-mix(in srgb,#9db4e8 42%,var(--g5))}
 .stat-ready{color:var(--text-accent)}
 .stat-missing{color:#e8776b}
+.stat-inactive{color:#9db4e8}
+.stat-unverified{color:var(--g3)}
 /* The revision sits at the far end of the same bar as the counts. */
 .conn-rev{margin-left:auto;font-family:var(--font-mono);font-size:.72rem;color:var(--g4);
   text-align:right}
@@ -1644,7 +1712,7 @@ const ROSTER_CSS = `<style>
 .chip-badge{font-weight:600;letter-spacing:.08em}
 .chip-button{cursor:pointer;background:none;font-family:var(--font-mono);
   display:inline-flex;align-items:center;gap:.3rem}
-.chip-button:hover{border-color:#e8776b;background:color-mix(in srgb,#e8776b 12%,transparent)}
+.chip-button:hover{border-color:currentColor;background:color-mix(in srgb,currentColor 12%,transparent)}
 .chip-button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .chip-caret{font-size:.6rem;opacity:.75}
 

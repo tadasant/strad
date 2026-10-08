@@ -6,7 +6,8 @@ import { parseConfig } from "../src/config/load.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
-import { badgeFor, sortEntries, type Entry } from "../src/ui/roster-page.ts";
+import { sortEntries, type Entry } from "../src/ui/roster-page.ts";
+import { badgeFor, type EntryBadge } from "../src/ui/secret-status.ts";
 import type { ServerConfig } from "../src/config/schema.ts";
 
 /**
@@ -16,11 +17,12 @@ import type { ServerConfig } from "../src/config/schema.ts";
  * the roster does WITH it. Four claims, and each one is a decision that could
  * have gone the other way:
  *
- *   1. READY means OBSERVED. "Could not be checked" is an ISSUE, not a quiet
- *      green — otherwise a store outage renders a fleet of reassuring badges.
+ *   1. READY means OBSERVED, and ISSUE means BROKEN. "Could not be checked" is
+ *      UNVERIFIED: not a quiet green (a store outage would render a fleet of
+ *      reassuring badges) and not a false red either.
  *   2. THE BADGE TOOK THE SLUG'S SLOT. The slug was printed twice on every entry
  *      that declares no `title:`, and once is enough.
- *   3. THE ISSUE BADGE IS A CONTROL. It opens a popout naming the secret, the
+ *   3. A NON-READY BADGE IS A CONTROL. It opens a popout naming the secret, the
  *      store, the project and the exact path — not a generic "something is
  *      wrong".
  *   4. THE ENTRIES THAT NEED SOMETHING COME FIRST. This is a working surface,
@@ -198,13 +200,21 @@ describe("badgeFor", () => {
     expect(badgeFor("placeholder")).toBe("ISSUE");
   });
 
-  it("is ISSUE for 'could not be checked', which is NOT a quiet green", () => {
-    // The deliberate half. A bundle-scoped value is genuinely invisible to this
-    // process and may well be fine — but READY has to mean observed, or a total
-    // store outage renders a fleet of reassuring badges over an unusable
-    // gateway. The popout carries the distinction; the badge does not pretend.
-    expect(badgeFor("unverified")).toBe("ISSUE");
-    expect(badgeFor("unknown")).toBe("ISSUE");
+  it("is ISSUE for a parameter that will not render", () => {
+    expect(badgeFor("unrenderable")).toBe("ISSUE");
+  });
+
+  it("is UNVERIFIED for 'could not be checked', which is neither a quiet green nor a false red", () => {
+    // READY has to mean observed, or a total store outage renders a fleet of
+    // reassuring badges over an unusable gateway. ISSUE has to mean broken, or
+    // the headline count is the number of servers this page could not see —
+    // 29 on prod, most of them serving.
+    expect(badgeFor("unverified")).toBe("UNVERIFIED");
+    expect(badgeFor("unknown")).toBe("UNVERIFIED");
+  });
+
+  it("is INACTIVE for a declared deferral (mayBeUnseeded)", () => {
+    expect(badgeFor("unconfigured")).toBe("INACTIVE");
   });
 });
 
@@ -215,7 +225,7 @@ describe("badgeFor", () => {
 describe("sortEntries", () => {
   const entry = (
     slug: string,
-    badge: "READY" | "ISSUE" | undefined,
+    badge: EntryBadge | undefined,
     dedicated: boolean,
     enabled = true,
   ): Entry => ({
@@ -240,6 +250,21 @@ describe("sortEntries", () => {
       "issue-no-view",
       "ready-view",
       "ready-no-view",
+    ]);
+  });
+
+  it("puts INACTIVE and UNVERIFIED between ISSUE and READY", () => {
+    const sorted = sortEntries([
+      entry("ready", "READY", true),
+      entry("unverified", "UNVERIFIED", true),
+      entry("inactive", "INACTIVE", true),
+      entry("issue", "ISSUE", true),
+    ]);
+    expect(sorted.map((e) => e.server.slug)).toEqual([
+      "issue",
+      "inactive",
+      "unverified",
+      "ready",
     ]);
   });
 
@@ -269,8 +294,9 @@ describe("sortEntries", () => {
 
 describe("GET /connectors — badges", () => {
   it("badges the two entries whose secrets resolve READY", () => {
-    // Two READY badges, two ISSUE badges, and no badge at all on the disabled
-    // entry — five servers, four badges.
+    // Two READY badges, one ISSUE badge (`beta`, not seeded), one UNVERIFIED
+    // (`object-store-bad`, whose value is on a bundle nothing answered for), and
+    // no badge at all on the disabled entry — five servers, four badges.
     //
     // BOTH kinds are now buttons that open a popout, and that is the point of
     // the change rather than a side effect: a READY entry carries a POSITIVE
@@ -284,8 +310,12 @@ describe("GET /connectors — badges", () => {
       html.split('class="chip chip-ok chip-badge chip-button"').length - 1;
     const issue =
       html.split('class="chip chip-bad chip-badge chip-button"').length - 1;
+    const unverified =
+      html.split('class="chip chip-unverified chip-badge chip-button"').length -
+      1;
     expect(ready).toBe(2);
-    expect(issue).toBe(2);
+    expect(issue).toBe(1);
+    expect(unverified).toBe(1);
     expect(html.split("data-fix-open=").length - 1).toBe(4);
   });
 
@@ -309,7 +339,7 @@ describe("GET /connectors — badges", () => {
     expect(html).toContain('<code class="conn-alt">object-store-bad</code>');
   });
 
-  it("orders the rows ISSUE-first, then by whether the entry has a view", () => {
+  it("orders the rows by badge, ISSUE first, then by whether the entry has a view", () => {
     // The config declares them in the WRONG order on purpose — beta,
     // object-store-bad, alpha, object-store, retired — so a page that simply
     // echoed config order would fail this.
@@ -318,14 +348,14 @@ describe("GET /connectors — badges", () => {
       expect(i, `${needle} is on the page`).toBeGreaterThan(-1);
       return i;
     };
-    const bad = at(">Broken bucket</a>"); // ISSUE + view
     const beta = at(">beta</a>"); // ISSUE, overview only
+    const bad = at(">Broken bucket</a>"); // UNVERIFIED + view
     const objectStore = at(">object-store</a>"); // READY + view
     const alpha = at(">alpha</a>"); // READY, overview only
     const retired = at(">retired</a>"); // disabled
 
-    expect(beta).toBeGreaterThan(bad);
-    expect(objectStore).toBeGreaterThan(beta);
+    expect(bad).toBeGreaterThan(beta);
+    expect(objectStore).toBeGreaterThan(bad);
     expect(alpha).toBeGreaterThan(objectStore);
     expect(retired).toBeGreaterThan(alpha);
   });
@@ -335,7 +365,8 @@ describe("GET /connectors — badges", () => {
     // "three of these need something" is a claim a reader can act on, where a
     // silently reordered list is one they have to infer.
     for (const [label, count] of [
-      ["Needs attention", 2],
+      ["Needs attention", 1],
+      ["Unverified", 1],
       ["Ready", 2],
       ["Disabled", 1],
     ] as const) {
@@ -658,7 +689,7 @@ describe("GET /connectors — an ISSUE badge is never a dead control", () => {
         // past it, so a chip-button rendered with no data-fix-open would pair
         // with the NEXT button's id and this assertion would pass anyway.
         ...page.matchAll(
-          /<button class="chip chip-(ok|bad) chip-badge chip-button"[^>]*?data-fix-open="([^"]+)"/g,
+          /<button class="chip chip-(ok|bad|unverified|inactive) chip-badge chip-button"[^>]*?data-fix-open="([^"]+)"/g,
         ),
       ];
       expect(buttons.length).toBeGreaterThan(0);
@@ -668,7 +699,7 @@ describe("GET /connectors — an ISSUE badge is never a dead control", () => {
     }
   });
 
-  it("keeps the ISSUE chip a BUTTON rather than degrading it to inert text", () => {
+  it("keeps a non-READY chip a BUTTON rather than degrading it to inert text", () => {
     // The other way to close the gap, and the wrong one: an inert chip asserts
     // "this needs attention" and offers no way to find out why — while the
     // banner above the grid says in so many words that the popouts explain it.
@@ -791,5 +822,42 @@ describe("GET /connectors — the playground icon", () => {
     // The page is otherwise unchanged: the cards, and the copy icons, remain.
     expect(body).toContain('href="/ui/mine">mine</a>');
     expect(body).toContain(copyIcon("mine"));
+  });
+});
+
+describe("GET /connectors — the headline counts only what is broken", () => {
+  it("badges a mayBeUnseeded deferral INACTIVE and keeps it out of the issue count", async () => {
+    const page = await boot(`
+version: 1
+gateway: { name: strad, env: test }
+auth:
+  staticTokens: { enabled: true }
+  consoleDevBypass: { enabled: true, roles: [admin] }
+roles: { admin: { servers: ["*"] } }
+servers:
+  - slug: parked
+    kind: remote-http
+    url: https://parked.example.com/mcp
+    headers: { Authorization: "Bearer \${PARKED_TOKEN}" }
+    entitlements: [admin]
+    mayBeUnseeded: [PARKED_TOKEN]
+  - slug: alpha
+    kind: remote-http
+    url: https://alpha.example.com/mcp
+    headers: { Authorization: "Bearer \${ALPHA_TOKEN}" }
+    entitlements: [admin]
+`);
+    expect(page).toContain('class="chip chip-inactive chip-badge chip-button"');
+    expect(page).toContain(
+      '<span class="stat-n stat-missing">0</span><span class="stat-l">issues</span>',
+    );
+    expect(page).toContain(
+      '<span class="stat-n stat-inactive">1</span><span class="stat-l">inactive</span>',
+    );
+    expect(page).toContain(
+      '<span class="conn-group-l">Inactive</span><span class="conn-group-n">1</span>',
+    );
+    expect(page).toContain("Nothing is known to be broken");
+    expect(page).not.toContain("need attention");
   });
 });

@@ -4,10 +4,16 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { parseConfig } from "../src/config/load.ts";
 import { resolverFromEnv } from "../src/secrets/parameters/index.ts";
-import type { BundleProbeOutcome } from "../src/gateway/bundle-presence.ts";
+import {
+  refDelivery,
+  type BundlePresence,
+  type BundleProbeOutcome,
+} from "../src/gateway/bundle-presence.ts";
+import { PRESENCE_PROTOCOL } from "../src/secrets/presence.ts";
+import type { StoreDiagnostics } from "../src/secrets/store-diagnostics.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
-import { badgeFor, renderConnectors } from "../src/ui/roster-page.ts";
+import { renderConnectors } from "../src/ui/roster-page.ts";
 import {
   EnvSecretProvider,
   type SecretProvider,
@@ -15,6 +21,7 @@ import {
 import {
   collectRequirements,
   deriveServerStatuses,
+  badgeFor,
   fixTargets,
   observe,
   resolverCredential,
@@ -437,9 +444,11 @@ describe("observe", () => {
     expect(o!.detail).toContain("fails the render");
   });
 
-  it("reports the SAME bundle secret as missing on a store-backed deployment", async () => {
-    // The store holds the deploy-time source of truth for a bundle ref too, so
-    // here the absence is real — and this is the pre-deploy discoverability win.
+  it("reports a bundle secret no server vouches for as missing on a store-backed deployment", async () => {
+    // No referencing slug, so nothing a deploy rendered can have baked it from
+    // the deploy environment: the store's silence is the answer. The shape with
+    // referencing supplementary servers is the describe block on the
+    // deploy-environment fallback below.
     const [o] = await observe(
       [requirement("SLACK_BOT_TOKEN", { deliveries: ["bundle"] })],
       { config: STORE_CONFIG, lookup: mapLookup({}), bag: EMPTY_BAG },
@@ -1467,7 +1476,7 @@ servers:
       await fetch(`${url}/connectors`, { headers: AUTH })
     ).text();
     expect(body).toContain("could not be checked");
-    expect(body).toContain("nothing is confirmed");
+    expect(body).toContain("Nothing is known to be broken");
     expect(body).not.toContain("Every server is READY");
     close();
   });
@@ -1997,7 +2006,7 @@ ${env}`);
       unreachable,
     );
     expect(s!.state).toBe("unverified");
-    expect(badgeFor(s!.state)).toBe("ISSUE");
+    expect(badgeFor(s!.state)).toBe("UNVERIFIED");
     // The resolving name is still shown — it IS plumbed, and "the other one
     // resolves" is part of the answer to "what do I do about this".
     expect(s!.requirements).toHaveLength(1);
@@ -2008,12 +2017,12 @@ ${env}`);
     expect(s!.unobservable?.reason).toBe("unreachable");
   });
 
-  it("still says ISSUE when the server declares nothing else", () => {
+  it("still says UNVERIFIED when the server declares nothing else", () => {
     // The zero-row shape, unchanged: the branch that was already honest stays
     // the branch that answers.
     const [s] = deriveServerStatuses(cfg(), [], unreachable);
     expect(s!.state).toBe("unverified");
-    expect(badgeFor(s!.state)).toBe("ISSUE");
+    expect(badgeFor(s!.state)).toBe("UNVERIFIED");
     expect(s!.requirements).toHaveLength(0);
     expect(s!.unobservable?.reason).toBe("unreachable");
   });
@@ -2127,7 +2136,7 @@ servers:
 `);
     const [s] = deriveServerStatuses(builtin, [observation("present")]);
     expect(s!.state).toBe("unverified");
-    expect(badgeFor(s!.state)).toBe("ISSUE");
+    expect(badgeFor(s!.state)).toBe("UNVERIFIED");
     expect(s!.requirements).toHaveLength(1);
     expect(s!.unobservable?.component).toBe("core");
     // No env passed, so no resolver credential: the honest reason is `inert`.
@@ -2745,5 +2754,392 @@ describe("the console doors on /", () => {
     for (const href of ['href="/console"', 'href="/healthz"']) {
       expect(body).toContain(href);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The deploy-environment fallback: store-backed, bundle-only, not in the store
+// ---------------------------------------------------------------------------
+
+describe("observe — a store-backed bundle ref the store does not hold", () => {
+  // Prod's shape. Twenty servers read `not seeded` while serving, because their
+  // `env:` names still live in Secret Manager as `strad-prod-*` and reach the
+  // bundle from the deploy environment: render-spec reads
+  // `available[name] ?? process.env[name]`. Nothing in core can see that half,
+  // and the render refuses a missing value, so "not in the store" is not
+  // "missing".
+  const config = (extra = "") =>
+    parseConfig(`
+version: 1
+gateway:
+  name: strad
+  env: prod
+  secrets: { provider: gcp-parameter-store }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+  - name: bundle
+servers:
+  - slug: gmail-ro
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /gmail
+    entitlements: [admin]
+    env:
+      GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL: "\${GMAIL_CLIENT_EMAIL}"
+${extra}`);
+
+  const read = async (
+    cfg: ReturnType<typeof config>,
+    presence?: BundlePresence,
+  ) => {
+    const observations = await observe(collectRequirements(cfg), {
+      config: cfg,
+      lookup: mapLookup({}),
+      bag: EMPTY_BAG,
+      presence,
+      delivery: refDelivery(cfg),
+    });
+    return {
+      observation: observations.find(
+        (o) => o.requirement.name === "GMAIL_CLIENT_EMAIL",
+      )!,
+      statuses: deriveServerStatuses(cfg, observations, presence),
+    };
+  };
+
+  it("is unobservable, not missing, and names the Secret Manager half", async () => {
+    const { observation, statuses } = await read(config(), {
+      probes: new Map<string, BundleProbeOutcome>([
+        ["bundle", { kind: "unreachable", detail: "the deadline passed" }],
+      ]),
+    });
+    expect(observation.state).toBe("unobservable");
+    expect(observation.detail).toContain("strad-prod-GMAIL_CLIENT_EMAIL");
+    expect(observation.detail).toContain("fails the render");
+    // Which component did not answer, and why, is the part a reader acts on.
+    expect(observation.detail).toContain("the deadline passed");
+    const gmail = statuses.find((s) => s.server.slug === "gmail-ro")!;
+    expect(gmail.state).toBe("unverified");
+    expect(badgeFor(gmail.state)).toBe("UNVERIFIED");
+  });
+
+  it("stays missing when the component was asked and does not hold it", async () => {
+    // A real absence on the container is still an ISSUE. The fallback only
+    // speaks when nothing better than the store's silence is on hand.
+    const { observation, statuses } = await read(config(), {
+      probes: new Map<string, BundleProbeOutcome>([
+        [
+          "bundle",
+          {
+            kind: "ok",
+            report: {
+              protocol: PRESENCE_PROTOCOL,
+              component: "bundle",
+              image: null,
+              bootedAt: "2026-10-08T00:00:00.000Z",
+              observedAt: "2026-10-08T00:00:01.000Z",
+              keys: {
+                GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL: {
+                  presence: "absent",
+                  reason: null,
+                },
+              },
+              paramKeys: null,
+            },
+          },
+        ],
+      ]),
+    });
+    expect(observation.state).toBe("missing");
+    expect(badgeFor(statuses[0]!.state)).toBe("ISSUE");
+  });
+
+  it("stays missing, and so INACTIVE, for a name the server waived", async () => {
+    // render-spec OMITS a waived name rather than refusing it, so "a missing
+    // one fails the render" is false about it.
+    const { observation, statuses } = await read(
+      config("    mayBeUnseeded: [GMAIL_CLIENT_EMAIL]"),
+    );
+    expect(observation.state).toBe("missing");
+    expect(statuses[0]!.state).toBe("unconfigured");
+    expect(badgeFor(statuses[0]!.state)).toBe("INACTIVE");
+  });
+
+  it("does not apply under the env provider's own branch or to a gateway-delivered name", async () => {
+    const cfg = parseConfig(`
+version: 1
+gateway:
+  name: strad
+  env: prod
+  secrets: { provider: gcp-parameter-store }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+servers:
+  - slug: granola
+    kind: remote-http
+    url: https://mcp.granola.example.com/mcp
+    headers: { Authorization: "Bearer \${GRANOLA_TOKEN}" }
+    entitlements: [admin]
+`);
+    const [o] = await observe(collectRequirements(cfg), {
+      config: cfg,
+      lookup: mapLookup({}),
+      bag: EMPTY_BAG,
+    });
+    // core resolves this one itself, per request. Absent is absent.
+    expect(o!.state).toBe("missing");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Managed parameters read from the store when no component answered
+// ---------------------------------------------------------------------------
+
+describe("deriveServerStatuses — managed parameters from the store", () => {
+  const cfg = parseConfig(`
+version: 1
+gateway:
+  name: strad
+  env: prod
+  secrets: { provider: gcp-parameter-store }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+  - name: bundle
+servers:
+  - slug: strad-fetch
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /strad-fetch
+    entitlements: [admin]
+    params: true
+`);
+  const silent = {
+    probes: new Map<string, BundleProbeOutcome>([
+      ["bundle", { kind: "unreachable", detail: "ECONNREFUSED" }],
+    ]),
+  };
+  const reading = (over: Partial<StoreDiagnostics> = {}): StoreDiagnostics => ({
+    indexed: new Set(),
+    unrenderable: new Map(),
+    transient: new Set(),
+    rendered: new Set(),
+    indexRead: true,
+    renderRead: true,
+    ageMs: 0,
+    ...over,
+  });
+  const empty = reading();
+  const derive = (readings: StoreDiagnostics[]) =>
+    deriveServerStatuses(
+      cfg,
+      [],
+      silent,
+      {},
+      new Map([["strad-fetch", readings]]),
+    )[0]!;
+
+  it("is READY when every parameter in its namespaces renders", () => {
+    // `serverNamespaces` order: oauth/ first, static/ second.
+    const s = derive([
+      empty,
+      reading({
+        indexed: new Set(["BRIGHTDATA_API_KEY"]),
+        rendered: new Set(["BRIGHTDATA_API_KEY"]),
+      }),
+    ]);
+    expect(s.state).toBe("ready");
+    expect(badgeFor(s.state)).toBe("READY");
+    expect(s.unobservable).toBeUndefined();
+    expect(s.requirements).toHaveLength(1);
+    const [row] = s.requirements;
+    expect(row!.requirement.managed).toBe(true);
+    expect(row!.evidence).toEqual({ by: "store" });
+    expect(row!.detail).toContain(
+      "/strad/prod/mcp/strad-fetch/static/BRIGHTDATA_API_KEY",
+    );
+    // Store-present is one deploy from the container, and the row says so.
+    expect(row!.detail).toContain("next one");
+  });
+
+  it("is an ISSUE when a parameter is in the store and will not render", () => {
+    const s = derive([
+      empty,
+      reading({
+        indexed: new Set(["BRIGHTDATA_API_KEY"]),
+        unrenderable: new Map([["BRIGHTDATA_API_KEY", "400 injection"]]),
+      }),
+    ]);
+    expect(s.state).toBe("unrenderable");
+    expect(badgeFor(s.state)).toBe("ISSUE");
+    expect(s.requirements[0]!.detail).toContain("400 injection");
+  });
+
+  it("stays UNVERIFIED when the namespaces are empty", () => {
+    // Nothing in the store cannot tell "nobody seeded it" from "a connector
+    // consent that has not happened", so it does not claim either.
+    const s = derive([empty, empty]);
+    expect(s.state).toBe("unverified");
+    expect(s.unobservable?.reason).toBe("unreachable");
+  });
+
+  it("stays UNVERIFIED when a render failed transiently", () => {
+    // A 429 is the store not answering. It is neither "cannot render" nor a
+    // green, so the reading counts as partial.
+    const s = derive([
+      empty,
+      reading({
+        indexed: new Set(["BRIGHTDATA_API_KEY"]),
+        unrenderable: new Map([
+          ["BRIGHTDATA_API_KEY", "429 Too Many Requests"],
+        ]),
+        transient: new Set(["BRIGHTDATA_API_KEY"]),
+      }),
+    ]);
+    expect(s.state).toBe("unverified");
+    expect(badgeFor(s.state)).toBe("UNVERIFIED");
+  });
+
+  it("keeps the component's word when it answered and named nothing for the slug", () => {
+    // The component answered `ok` and its manifest lists nothing
+    // for strad-fetch, so its container holds none of them. A value seeded in
+    // the store since the last deploy must not overrule that into READY.
+    const s = deriveServerStatuses(
+      cfg,
+      [],
+      {
+        probes: new Map<string, BundleProbeOutcome>([
+          [
+            "bundle",
+            {
+              kind: "ok",
+              report: {
+                protocol: PRESENCE_PROTOCOL,
+                component: "bundle",
+                image: null,
+                bootedAt: "2026-10-08T00:00:00.000Z",
+                observedAt: "2026-10-08T00:00:01.000Z",
+                keys: {},
+                paramKeys: { "other-slug": ["X"] },
+              },
+            },
+          ],
+        ]),
+      },
+      {},
+      new Map([
+        [
+          "strad-fetch",
+          [
+            empty,
+            reading({
+              indexed: new Set(["BRIGHTDATA_API_KEY"]),
+              rendered: new Set(["BRIGHTDATA_API_KEY"]),
+            }),
+          ],
+        ],
+      ]),
+    )[0]!;
+    expect(s.state).toBe("unverified");
+    // Either of the two "it answered" reasons; never a store-derived green.
+    expect(["silent", "unmanifested"]).toContain(s.unobservable?.reason);
+  });
+
+  it("grades a params: true BUILTIN on the store, which is what it reads per call", () => {
+    const builtin = parseConfig(`
+version: 1
+gateway:
+  name: strad
+  env: prod
+  secrets: { provider: gcp-parameter-store }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles: []
+servers:
+  - slug: echo
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: core
+    entitlements: [admin]
+    params: true
+`);
+    const [s] = deriveServerStatuses(
+      builtin,
+      [],
+      undefined,
+      {},
+      new Map([
+        [
+          "echo",
+          [
+            empty,
+            reading({
+              indexed: new Set(["GREETING"]),
+              rendered: new Set(["GREETING"]),
+            }),
+          ],
+        ],
+      ]),
+    );
+    expect(s!.state).toBe("ready");
+    expect(s!.requirements[0]!.requirement.deliveries).toEqual(["gateway"]);
+    expect(s!.requirements[0]!.detail).toContain("each tool call");
+  });
+
+  it("stays UNVERIFIED on a partial reading", () => {
+    const s = derive([
+      reading({ indexRead: false }),
+      reading({
+        indexed: new Set(["BRIGHTDATA_API_KEY"]),
+        rendered: new Set(["BRIGHTDATA_API_KEY"]),
+      }),
+    ]);
+    expect(s.state).toBe("unverified");
+  });
+
+  it("prefers the component's own answer when it gave one", () => {
+    const s = deriveServerStatuses(
+      cfg,
+      [],
+      {
+        probes: new Map<string, BundleProbeOutcome>([
+          [
+            "bundle",
+            {
+              kind: "ok",
+              report: {
+                protocol: PRESENCE_PROTOCOL,
+                component: "bundle",
+                image: null,
+                bootedAt: "2026-10-08T00:00:00.000Z",
+                observedAt: "2026-10-08T00:00:01.000Z",
+                keys: {
+                  BRIGHTDATA_API_KEY: { presence: "absent", reason: null },
+                },
+                paramKeys: { "strad-fetch": ["BRIGHTDATA_API_KEY"] },
+              },
+            },
+          ],
+        ]),
+      },
+      {},
+      new Map([
+        [
+          "strad-fetch",
+          [
+            empty,
+            reading({
+              indexed: new Set(["BRIGHTDATA_API_KEY"]),
+              rendered: new Set(["BRIGHTDATA_API_KEY"]),
+            }),
+          ],
+        ],
+      ]),
+    )[0]!;
+    // The store holds it; the running container does not. The container wins.
+    expect(s.state).toBe("missing");
   });
 });

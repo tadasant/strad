@@ -598,15 +598,15 @@ is none the page says so in place of the controls rather than withholding the
 whole view.
 
 1. **`/connectors`** lists every entry the gateway is serving, grouped **needs
-   attention**, then **ready**, then **disabled** — issues first, because the
+   attention**, **inactive**, **unverified**, **ready**, then **disabled** — issues first, because the
    entries something has to be done about are why anyone opens it. A row carries
    the name (linking to that server's own `/ui/<slug>` page), the slug where a
    `title:` differs from it, a source chip (`console` or `config file`, and only
    where there is a runtime holder to ask), the kind and roles it is scoped to,
-   its `READY` / `ISSUE` [secret badge](/operate/secrets/) with the popout behind
+   its `READY` / `ISSUE` / `INACTIVE` / `UNVERIFIED` [secret badge](/operate/secrets/#four-badges-and-where-they-sit) with the popout behind
    it, and a playground and copy-URL icon where each is offered. Edit,
    Enable/Disable and Remove join them **only** where the store exists and can be
-   written. Above the table, beside the ready/issue counts, sits the roster's
+   written. Above the table, beside the counts, sits the roster's
    provenance: `runtime roster · revision N` with who last changed it and when,
    or `roster from the checked-in config` where there is no store.
 2. **Removed** lists the slugs the checked-in config declares and the overlay

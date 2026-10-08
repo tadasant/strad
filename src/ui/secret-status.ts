@@ -10,6 +10,7 @@ import {
 import {
   gatewayNamespace,
   normaliseNamespace,
+  serverNamespaces,
   staticNamespace,
 } from "../secrets/parameters/namespace.ts";
 import { resolveServerView, serverLooksSecrets } from "./resolve.ts";
@@ -799,6 +800,39 @@ function gatewayHalf(
     };
   }
 
+  // STORE-BACKED, BUNDLE-ONLY, AND NOT IN THE STORE: STILL NOT EVIDENCE OF
+  // ABSENCE. render-spec reads a supplementary server's `env:` refs as
+  // `available[name] ?? process.env[name]` — the store first, then the deploy
+  // environment, which the deploy workflow fills from `strad-<env>-*` in Secret
+  // Manager. That second source is invisible to this process, and it is where a
+  // deployment midway through moving its `env:` names into the store keeps the
+  // rest of them. Calling every one of those "not seeded" put twenty working
+  // servers under ISSUE on prod (the bundle that holds them did not answer the
+  // presence probe, so nothing better than the store's silence was on hand).
+  //
+  // The render refuses a missing one, so it had a value at the last successful
+  // deploy — the same reasoning the `env` provider's branch above makes. Two
+  // shapes are excluded because that reasoning is false about them: a name a
+  // referencing server WAIVED (`mayBeUnseeded:`), which the render omits rather
+  // than refuses, and a store-served instance, which is served from the store
+  // at runtime and never from a deploy.
+  if (deployEnvMayHold(requirement, config)) {
+    return {
+      requirement,
+      state: "unobservable",
+      source: "GSM",
+      evidence: { by: "none" },
+      detail:
+        `Not in the parameter store, and that is not the only place a deploy reads it. ` +
+        `render-spec falls back to the deploy environment for a supplementary server's ` +
+        `env:, which the deploy workflow fills from strad-${config.gateway.env}-` +
+        `${requirement.name} in Secret Manager, and this process cannot see that. A ` +
+        `missing value fails the render, so it had one at the last successful deploy. ` +
+        `If neither holds it now, the next deploy fails in render-spec. ` +
+        `${bundleShrugReason(requirement, opts)}`,
+    };
+  }
+
   return {
     requirement,
     state: "missing",
@@ -834,6 +868,32 @@ function gatewayHalf(
           ? `The gateway cannot build the value that references it.`
           : `The gateway reads this key directly at boot.`),
   };
+}
+
+/**
+ * Could the last deploy have baked this name from the deploy environment?
+ *
+ * True only for a store-backed deployment's name that reaches nothing but a
+ * supplementary image's `env:` — the one delivery render-spec resolves with a
+ * deploy-environment fallback — and only when no referencing server waived it
+ * or is a store-served instance. See the branch in `gatewayHalf` that asks.
+ */
+function deployEnvMayHold(
+  requirement: SecretRequirement,
+  config: StradConfig,
+): boolean {
+  if (config.gateway.secrets.provider === "env") return false;
+  if (requirement.deliveries.length !== 1) return false;
+  if (requirement.deliveries[0] !== "bundle") return false;
+  if (requirement.slugs.length === 0) return false;
+  const waivers = waiversBySlug(config);
+  return requirement.slugs.every((slug) => {
+    if (waivers.get(slug)?.has(requirement.name)) return false;
+    const server = config.servers.find((s) => s.slug === slug);
+    return (
+      server?.kind === "supplementary-image" && !isInstancePath(server.path)
+    );
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1155,6 +1215,8 @@ export async function readSecretStatus(opts: {
    * which is handed the environment it was built with.
    */
   env: NodeJS.ProcessEnv;
+  /** Store readings of each `params: true` server's namespaces, by slug. */
+  managedStore?: ReadonlyMap<string, StoreDiagnostics[]>;
   timeoutMs?: number;
 }): Promise<SecretReading> {
   const { config, bag, lookup, presence, store, env, timeoutMs } = opts;
@@ -1186,7 +1248,13 @@ export async function readSecretStatus(opts: {
   );
 
   return {
-    statuses: deriveServerStatuses(config, observations, presence, env),
+    statuses: deriveServerStatuses(
+      config,
+      observations,
+      presence,
+      env,
+      opts.managedStore,
+    ),
     boot: bootObservations.map((observation, i) => ({
       observation,
       required: bootKeys[i]?.required ?? false,
@@ -1278,7 +1346,13 @@ export async function readDeploymentSecretStatus(opts: {
   store?: Pick<ParameterStore, "list" | "resolveDetailed"> | null;
   timeoutMs?: number;
 }): Promise<SecretReading> {
-  const [presence, store] = await Promise.all([
+  const diagnosticStore =
+    opts.store === undefined ? cachedResolver(opts.env) : opts.store;
+  // The same number the request path already uses to mean "how stale may a
+  // store read be" (`gateway.secrets.ttlSeconds`), capped inside the cache so a
+  // long rotation TTL cannot make a HEALTH signal a day old.
+  const ttlMs = opts.config.gateway.secrets.ttlSeconds * 1000;
+  const [presence, store, managedStore] = await Promise.all([
     opts.presence
       ? Promise.resolve(opts.presence)
       : probeBundles({
@@ -1286,19 +1360,14 @@ export async function readDeploymentSecretStatus(opts: {
           env: opts.env,
           fetchImpl: opts.fetchImpl,
         }),
-    (async () => {
-      const store =
-        opts.store === undefined ? cachedResolver(opts.env) : opts.store;
-      if (!store) return null;
-      return readStoreDiagnosticsCached({
-        store,
-        namespace: gatewayNamespace(opts.config.gateway.env),
-        // The same number the request path already uses to mean "how stale may
-        // a store read be" (`gateway.secrets.ttlSeconds`), capped inside the
-        // cache so a long rotation TTL cannot make a HEALTH signal a day old.
-        ttlMs: opts.config.gateway.secrets.ttlSeconds * 1000,
-      });
-    })(),
+    diagnosticStore
+      ? readStoreDiagnosticsCached({
+          store: diagnosticStore,
+          namespace: gatewayNamespace(opts.config.gateway.env),
+          ttlMs,
+        })
+      : Promise.resolve(null),
+    readManagedStore(opts.config, diagnosticStore, ttlMs),
   ]);
 
   return readSecretStatus({
@@ -1307,9 +1376,45 @@ export async function readDeploymentSecretStatus(opts: {
     lookup: secretLookup(opts.bag, opts.secretProvider),
     presence,
     store,
+    managedStore,
     env: opts.env,
     timeoutMs: opts.timeoutMs,
   });
+}
+
+/**
+ * Every enabled `params: true` server's own namespaces, read from the store.
+ *
+ * One cached diagnosis per namespace, through the same client and the same
+ * cache as the gateway namespace's. On a deployed core that client is the
+ * resolver holding the process snapshot, so `list` is a slice of a roster it
+ * already enumerated and the render is memoised per snapshot: the first page
+ * load after a snapshot renders each managed parameter once, and every load
+ * after that costs nothing until the snapshot ages out. Read for every such
+ * server rather than only the ones whose component stayed silent, so the reads
+ * run beside the presence probe instead of after it.
+ */
+async function readManagedStore(
+  config: StradConfig,
+  store: Pick<ParameterStore, "list" | "resolveDetailed"> | null,
+  ttlMs: number,
+): Promise<Map<string, StoreDiagnostics[]>> {
+  const out = new Map<string, StoreDiagnostics[]>();
+  if (!store) return out;
+  const servers = config.servers.filter(
+    (s) => s.enabled && !isUnhosted(s) && s.params,
+  );
+  await Promise.all(
+    servers.map(async (server) => {
+      const readings = await Promise.all(
+        serverNamespaces(config.gateway.env, server.slug).map((namespace) =>
+          readStoreDiagnosticsCached({ store, namespace, ttlMs }),
+        ),
+      );
+      out.set(server.slug, readings);
+    }),
+  );
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1335,7 +1440,9 @@ export type ServerState =
    * deliberate deferral as a fault on every page load until somebody got round
    * to it.
    *
-   * Still `isActionable`. A human finishes this; nothing else does.
+   * Badged INACTIVE rather than ISSUE (see `badgeFor`): a human still has to
+   * finish it, and it keeps a group and a count of its own so it stays visible,
+   * but it is not counted as broken.
    */
   | "unconfigured"
   /** At least one parameter exists and cannot be dereferenced. */
@@ -1495,22 +1602,49 @@ export const STATE_LABEL: Record<ServerState, string> = {
   unknown: "unknown",
 };
 
-/** Whether a state should read as a problem a human has to act on. */
-export function isActionable(state: ServerState): boolean {
-  return (
-    state === "missing" ||
-    // A deferral is a job somebody has not finished, not a job nobody has. It
-    // stays on the actionable list — dropping it there is how "we will seed it
-    // later" becomes "nobody ever seeded it", which is the failure mode this
-    // whole feature has to be careful not to buy.
-    state === "unconfigured" ||
-    state === "placeholder" ||
-    // A parameter that exists and cannot render is as actionable as either: the
-    // server is broken now, and the fix (rotate the value) is a specific thing a
-    // human does. Leaving it out of `isActionable` would file it under "could not
-    // be checked", which is the shrug this state exists to replace.
-    state === "unrenderable"
-  );
+/**
+ * The badge an enabled entry carries, on every surface that shows one.
+ *
+ * FOUR, because "not READY" was hiding three different claims under one red
+ * word, and the one that matters — something is broken — was the smallest of
+ * them. On prod 29 entries read ISSUE and most of them were serving.
+ *
+ *   READY      — every requirement was OBSERVED to be present, or there are
+ *                none. Still never a claim that an upstream accepts anything.
+ *   ISSUE      — something is established to be wrong: not seeded, a
+ *                parameter that will not render, or a placeholder. Each wants a
+ *                specific act from a human, and this is the only badge the
+ *                "issues" count counts.
+ *   INACTIVE   — `unconfigured`: short only of names the config DECLARED it
+ *                could deploy without (`mayBeUnseeded:`), and deployed inactive
+ *                on purpose. A plan halfway through, not a fault, so it stays
+ *                out of the issue count; it keeps a group and a count of its own,
+ *                so "seed it later" stays on the page until somebody does.
+ *   UNVERIFIED — `unverified` or `unknown`: this page could not establish the
+ *                answer either way. Not green, because green means observed;
+ *                not red, because nothing is known to be broken.
+ *
+ * `badgeFor` is the ONE mapping. The roster, the per-server overview and
+ * `/api/secrets/readiness` all bucket by it, so a page and a JSON field cannot
+ * disagree about what counts as an issue.
+ */
+export type EntryBadge = "READY" | "ISSUE" | "INACTIVE" | "UNVERIFIED";
+
+export function badgeFor(state: ServerState): EntryBadge {
+  switch (state) {
+    case "ready":
+    case "no-secrets":
+      return "READY";
+    case "unconfigured":
+      return "INACTIVE";
+    case "unverified":
+    case "unknown":
+      return "UNVERIFIED";
+    case "missing":
+    case "unrenderable":
+    case "placeholder":
+      return "ISSUE";
+  }
 }
 
 /**
@@ -1596,6 +1730,125 @@ function managedParamObservations(
         `console, then redeploy that component.`,
     };
   });
+}
+
+/**
+ * A `params: true` server's managed parameters, as the STORE holds them.
+ *
+ * The fallback for when no component answered for them: `managedParamObservations`
+ * came back empty because the component was unreachable, ran an older image, or
+ * named no parameters for this slug. The store is still the source of truth for
+ * every one of those values — render-spec baked them from it, a store-served
+ * instance is served from it, a builtin reads it per call — and core's resolver
+ * reads it as a slice of the snapshot it already holds, so asking costs no
+ * project-wide enumeration.
+ *
+ * Present means the parameter is in the store and renders a value. For a
+ * supplementary image that is one deploy away from the container, the same
+ * caveat a store-present bundle-only `${NAME}` carries, and the detail says so.
+ *
+ * ONLY WHEN THE COMPONENT GAVE NO ANSWER. A supplementary image whose component
+ * answered and named nothing for this slug (`silent`, `unmanifested`) has said
+ * its container holds none of them, and a value seeded since the last deploy
+ * must not overrule that into a green — `noComponentAnswer` keeps those on the
+ * component's word. A builtin and a store-served instance are read from the
+ * store at runtime, so for them the store is the answer whatever was probed.
+ *
+ * Empty unless EVERY namespace read completed (index and render both) with no
+ * transient failure. A partial reading is not evidence that the rest is absent, and an empty one — a server
+ * whose namespaces hold nothing — produces no rows, so the entry keeps its
+ * `unverified` scope: some `params: true` servers legitimately take their
+ * credential from a connector consent that has not happened yet, and "nothing in
+ * the store" cannot tell that apart from "nobody seeded it".
+ */
+function storeManagedObservations(
+  config: StradConfig,
+  server: ServerConfig,
+  managedStore?: ReadonlyMap<string, StoreDiagnostics[]>,
+): SecretObservation[] {
+  if (isUnhosted(server) || !server.params) return [];
+  const readings = managedStore?.get(server.slug);
+  if (!readings || readings.length === 0) return [];
+  if (!readings.every((r) => r.indexRead && r.renderRead)) return [];
+  // A transient render failure is the store not answering, not refusing: the
+  // reading is partial, and a partial reading is no evidence.
+  if (readings.some((r) => r.transient.size > 0)) return [];
+
+  const namespaces = serverNamespaces(config.gateway.env, server.slug);
+  const names = new Set<string>();
+  for (const reading of readings) {
+    for (const name of reading.indexed) names.add(name);
+  }
+
+  const builtin = server.kind === "builtin";
+  const instance =
+    server.kind === "supplementary-image" && isInstancePath(server.path);
+  const lands = builtin
+    ? `This builtin reads it from the store on each tool call, through the resolver's ` +
+      `snapshot.`
+    : instance
+      ? `A store-served instance is built from what core serves it, so a write there ` +
+        `reaches it on the bundle's next sync.`
+      : `"${server.kind === "supplementary-image" ? server.bundle : "its component"}" did ` +
+        `not report its managed parameters, so this was read from the store instead. The ` +
+        `deploy bakes the value onto that component, so one written after the last deploy ` +
+        `reaches the container at the next one.`;
+
+  return [...names].sort().map((name): SecretObservation => {
+    const requirement: SecretRequirement = {
+      name,
+      deliveries: [builtin ? "gateway" : "bundle"],
+      slugs: [server.slug],
+      consoleKeys: [],
+      paramsSlugs: [server.slug],
+      managed: true,
+    };
+    const renderedAt = readings.findIndex((r) => r.rendered.has(name));
+    if (renderedAt >= 0) {
+      return {
+        requirement,
+        state: "present",
+        source: "GSM",
+        evidence: { by: "store" },
+        detail:
+          `Seeded: ${namespaces[renderedAt] ?? ""}${name} is in the parameter store and ` +
+          `renders a value. ${lands} This shows a value exists, not that the upstream ` +
+          `accepts it.`,
+      };
+    }
+    const failedAt = readings.findIndex((r) => r.unrenderable.has(name));
+    const reason =
+      failedAt >= 0 ? readings[failedAt]?.unrenderable.get(name) : undefined;
+    const at =
+      failedAt >= 0 ? failedAt : readings.findIndex((r) => r.indexed.has(name));
+    return {
+      requirement,
+      state: "unrenderable",
+      source: "GSM",
+      evidence: { by: "store" },
+      detail:
+        `Exists, but its value cannot be read: ${namespaces[at] ?? ""}${name} is in the ` +
+        `store and \`:render\` will not return it, so this server gets nothing for it. ` +
+        `Rotate the value through the console, which rewrites it. Do not create it ` +
+        `again; that fails with 409.` +
+        (reason ? ` Reason: ${reason}` : ""),
+    };
+  });
+}
+
+/**
+ * Whether the store may stand in for the component on this server's managed
+ * parameters: a builtin or a store-served instance (both read the store at
+ * runtime), or a supplementary image whose component did not answer at all.
+ * A component that answered `ok` and named nothing for this slug keeps its word.
+ */
+function noComponentAnswer(
+  server: ServerConfig,
+  presence?: BundlePresence,
+): boolean {
+  if (server.kind !== "supplementary-image") return true;
+  if (isInstancePath(server.path)) return true;
+  return presence?.probes.get(server.bundle)?.kind !== "ok";
 }
 
 /**
@@ -1932,6 +2185,13 @@ export function deriveServerStatuses(
    * the environment it was handed.
    */
   env: NodeJS.ProcessEnv = {},
+  /**
+   * Store readings of each `params: true` server's own namespaces, keyed by
+   * slug, in `serverNamespaces()` order. The fallback a server's managed
+   * parameters are graded on when no component answered for them — see
+   * `storeManagedObservations`. Absent leaves those servers `unverified`.
+   */
+  managedStore?: ReadonlyMap<string, StoreDiagnostics[]>,
 ): ServerSecretStatus[] {
   const byName = new Map(observations.map((o) => [o.requirement.name, o]));
   const waivers = waiversBySlug(config);
@@ -1976,7 +2236,15 @@ export function deriveServerStatuses(
       // appspec.ts). Fold them in as requirements of their own, so the server is
       // graded on them like anything else instead of being filed under "not
       // checked".
-      const managedParams = managedParamObservations(server, presence);
+      // The component's own answer first, because it is about the process
+      // serving requests. The store only when the component gave none.
+      const probed = managedParamObservations(server, presence);
+      const managedParams =
+        probed.length > 0
+          ? probed
+          : noComponentAnswer(server, presence)
+            ? storeManagedObservations(config, server, managedStore)
+            : [];
       const seenManaged = new Set<string>();
       for (const observation of managedParams) {
         if (seenManaged.has(observation.requirement.name)) continue;
