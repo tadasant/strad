@@ -22,6 +22,13 @@ import {
 import type { RevealPosture } from "./reveal.ts";
 import { NAV_CSS, renderNav, type NavKey } from "./nav.ts";
 import { PWA_HEAD } from "./pwa.ts";
+import {
+  MAX_BULK_RECORDS,
+  formatBulkRow,
+  parseBulkCsv,
+  parseBulkKind,
+  type BulkReport,
+} from "./bulk-params.ts";
 
 /**
  * Server-rendered HTML for the human console.
@@ -392,6 +399,11 @@ export interface SecretsViewOptions {
    * log), never in telemetry. Reloading the page loses it, which is correct.
    */
   revealed?: { name: string; value: string };
+  /**
+   * What the last bulk add did, line by line, and the lines to put back in its
+   * editor. Carries no value — see refillCsv in bulk-params.ts.
+   */
+  bulk?: BulkReport;
 }
 
 export function renderSecrets(opts: SecretsViewOptions): string {
@@ -592,8 +604,13 @@ ${listing}
     <button class="btn btn-primary">Create parameter</button>
   </form>
 </section>
+${bulkBox(action, nsField, ns, store.namespacesStrict, config, opts.bulk)}
 ${pathPreviewScript(ns)}
-${comboBoxScript()}`;
+${comboBoxScript()}
+${bulkClientScript(
+  ns,
+  parameters.map((p) => p.path),
+)}`;
 
   return layout({
     title: `${slug} · parameters`,
@@ -1399,6 +1416,424 @@ function pathPreviewScript(namespace: string): string {
 </script>`;
 }
 
+/**
+ * Bulk add: many creates from one block of CSV, with a row editor on top.
+ *
+ * The TEXTAREA is what is submitted, always, so the form works with no JS at
+ * all: paste, submit, read the per-line report. With JS the same textarea
+ * becomes one of two views — "Rows", an editable row per parameter with a
+ * Duplicate control on each, and "CSV", the raw text — and a live preview
+ * checks every line before the button lights. Rows are written back into the
+ * textarea on submit, so the server only ever parses one format.
+ *
+ * VALUES. A row's value is a password field. The preview masks a secret value
+ * as the table does with reveal off; a non-secret one is shown, as agents can
+ * read it anyway. Neither leaves the page until submit, and nothing the server
+ * sends back contains one — the refilled lines have their values blanked.
+ */
+function bulkBox(
+  action: string,
+  nsField: string,
+  ns: string,
+  strict: boolean,
+  config: StradConfig,
+  report: BulkReport | undefined,
+): string {
+  const example = examplePrefix(config) || "my-server/static/";
+  const sample = [
+    `${example},API_TOKEN,secret,tok_123,Issued by the vendor console`,
+    `${example},API_BASE_URL,plain,https://api.example.com`,
+    `${example},CLIENT_LIST,secret,"a,b,c","Quoted: it has commas"`,
+  ].join("\n");
+  const options = prefixOptions(config)
+    .map(
+      (o) =>
+        `<option value="${esc(o.value)}">${esc(o.label ?? o.value)}</option>`,
+    )
+    .join("");
+  return `
+<section class="addbox bulkbox" id="bulk">
+  <h2 class="addbox-title">Add several parameters</h2>
+  <p class="field-h bulk-lede">Every line lands in <code>${esc(ns)}</code>${
+    strict ? ", and this store is strict" : ""
+  }. Each one goes through the same create as the form above, and every line is
+    checked before any line is written.</p>
+  <form method="post" action="${action}/bulk" class="bulkform" id="bulk-form" autocomplete="off">
+    ${nsField}
+    <div class="bulk-tabs" id="bulk-tabs" hidden>
+      <button type="button" class="btn bulk-tab" data-mode="rows" aria-pressed="true">Rows</button>
+      <button type="button" class="btn bulk-tab" data-mode="csv" aria-pressed="false">CSV</button>
+      <span class="field-h">Paste CSV into the CSV view; switch to Rows to edit it line by line.</span>
+    </div>
+    <div class="bulk-rows" id="bulk-rows" hidden>
+      <div class="bulk-row bulk-row-head" aria-hidden="true">
+        <span>#</span><span>path prefix</span><span>variable</span><span>secret</span><span>value</span><span>note</span><span></span>
+      </div>
+      <div id="bulk-rows-body"></div>
+      <datalist id="bulk-prefixes">${options}</datalist>
+      <button type="button" class="btn" id="bulk-add-row">+ Add row</button>
+    </div>
+    <div class="bulk-csv" id="bulk-csv-wrap">
+      <textarea class="in bulk-text" id="bulk-csv" name="csv" rows="8" spellcheck="false"
+        autocapitalize="off" autocomplete="off" placeholder="${esc(sample)}">${esc(report?.refill ?? "")}</textarea>
+      <details class="bulk-format">
+        <summary class="field-h">Format</summary>
+        <p class="field-h">One parameter per line: <code>prefix,VARIABLE,kind,value,note</code>.</p>
+        <ul class="field-h">
+          <li><code>prefix</code> is the path prefix, as above — <code>&lt;server-slug&gt;/static/</code> for a server parameter. It may be empty.</li>
+          <li><code>kind</code> is <code>secret</code> or <code>plain</code>. Empty means secret.</li>
+          <li><code>note</code> is optional, and the column can be left off.</li>
+          <li>A value or note with a comma, a quote or a line break goes in double quotes, with a quote inside written <code>""</code>: <code>"a,b"</code>, <code>"say ""hi"""</code>. Quoting also keeps a value's leading and trailing spaces.</li>
+          <li>Blank lines, lines starting with <code>#</code>, and a first line of <code>prefix,variable,…</code> are skipped.</li>
+          <li>At most ${MAX_BULK_RECORDS} lines at once.</li>
+        </ul>
+      </details>
+    </div>
+    <div class="bulk-preview" id="bulk-preview" hidden aria-live="polite"></div>
+    <div class="bulk-submit">
+      <button class="btn btn-primary" id="bulk-submit">Create all</button>
+      <span class="field-h" id="bulk-summary"></span>
+    </div>
+  </form>
+  ${report && report.lines.length ? bulkReport(report) : ""}
+</section>`;
+}
+
+/** The server's per-line answer to a bulk add. Paths and outcomes, no values. */
+function bulkReport(report: BulkReport): string {
+  const label: Record<string, string> = {
+    created: "created",
+    failed: "failed",
+    invalid: "not valid",
+    skipped: "not written",
+  };
+  const rows = report.lines
+    .map(
+      (l) => `<tr class="bulk-out-${l.status}${l.warn ? " bulk-out-warn" : ""}">
+        <td class="bulk-n">${l.line}</td>
+        <td><code>${esc(l.path || l.variable || "—")}</code></td>
+        <td>${l.path || l.variable ? (l.secret ? `<span class="chip chip-secret">secret</span>` : `<span class="chip chip-plain">non-secret</span>`) : ""}</td>
+        <td><span class="bulk-status">${esc(label[l.status] ?? l.status)}</span>${
+          l.message ? ` <span class="bulk-msg">${esc(l.message)}</span>` : ""
+        }</td>
+      </tr>`,
+    )
+    .join("");
+  return `<table class="bulk-table bulk-result" id="bulk-result">
+    <thead><tr><th>line</th><th>path</th><th>kind</th><th>outcome</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+/**
+ * The bulk editor's behaviour: rows, duplicate, the CSV view, the preview.
+ *
+ * The parser and the row formatter are the SERVER's functions, inlined by
+ * `toString()` — see bulk-params.ts for why there is one parser and not two.
+ * Every user-typed string reaches the DOM through `textContent` or `.value`,
+ * never `innerHTML`.
+ */
+function bulkClientScript(namespace: string, existing: string[]): string {
+  return `<script>
+(function () {
+  ${parseBulkCsv.toString()}
+  ${parseBulkKind.toString()}
+  ${formatBulkRow.toString()}
+  var NS = ${jsonForScript(namespace)};
+  var EXISTING = JSON.parse(${jsonForScript(JSON.stringify(existing))});
+  var MAX = ${MAX_BULK_RECORDS};
+  var ENV = new RegExp(${jsonForScript(`^${ENV_NAME_SOURCE}$`)});
+  var form = document.getElementById("bulk-form");
+  var text = document.getElementById("bulk-csv");
+  var rowsWrap = document.getElementById("bulk-rows");
+  var body = document.getElementById("bulk-rows-body");
+  var csvWrap = document.getElementById("bulk-csv-wrap");
+  var tabs = document.getElementById("bulk-tabs");
+  var preview = document.getElementById("bulk-preview");
+  var submit = document.getElementById("bulk-submit");
+  var summary = document.getElementById("bulk-summary");
+  if (!form || !text || !body || !tabs || !preview || !submit) return;
+  var mode = "rows";
+
+  // parameterId's fold (src/secrets/parameters/wire.ts), for duplicate
+  // detection only: two paths that fold together are one parameter.
+  function fold(p) {
+    return p.replace(/^\\/+/, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }
+  var existingIds = {};
+  EXISTING.forEach(function (p) { existingIds[fold(p)] = true; });
+
+  function normPrefix(v) {
+    var t = v.trim().replace(/^\\/+/, "").replace(/\\/+$/, "");
+    return t === "" ? "" : t + "/";
+  }
+  function prefixError(v) {
+    var t = v.trim();
+    if (t === "") return null;
+    if (t.length > 200) return "A path prefix may be at most 200 characters.";
+    var segs = normPrefix(t).slice(0, -1).split("/");
+    for (var i = 0; i < segs.length; i++) {
+      if (!/^[a-z0-9][a-z0-9._-]*$/.test(segs[i])) {
+        return "A path prefix is lowercase segments: letters, digits, dots, dashes, underscores.";
+      }
+    }
+    return null;
+  }
+
+  function el(tag, cls, txt) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (txt !== undefined) e.textContent = txt;
+    return e;
+  }
+
+  // --- rows -----------------------------------------------------------------
+  function makeRow(r) {
+    var row = el("div", "bulk-row");
+    var n = el("span", "bulk-n");
+    var prefix = el("input", "in in-row bulk-prefix");
+    prefix.type = "text"; prefix.setAttribute("list", "bulk-prefixes");
+    prefix.placeholder = "server/static/"; prefix.value = r.prefix;
+    prefix.setAttribute("aria-label", "Path prefix");
+    var variable = el("input", "in in-row bulk-var");
+    variable.type = "text"; variable.placeholder = "VARIABLE"; variable.value = r.variable;
+    variable.setAttribute("aria-label", "Variable name");
+    variable.autocapitalize = "off";
+    var secretWrap = el("label", "bulk-secret");
+    var secret = el("input");
+    secret.type = "checkbox"; secret.checked = parseBulkKind(r.kind) !== false;
+    secret.setAttribute("aria-label", "Secret");
+    secretWrap.appendChild(secret);
+    var value = el("input", "in in-row bulk-val");
+    value.type = "password"; value.placeholder = "value"; value.autocomplete = "off";
+    value.setAttribute("aria-label", "Value");
+    // A password field cannot hold a line break. A multi-line value (a PEM key)
+    // stays on the row object and the field says where to edit it.
+    if (/[\\r\\n]/.test(r.value)) {
+      row._multi = r.value;
+      value.disabled = true;
+      value.placeholder = "multi-line value: edit in CSV";
+    } else {
+      value.value = r.value;
+    }
+    var note = el("input", "in in-row bulk-note");
+    note.type = "text"; note.placeholder = "note (optional)"; note.value = r.note;
+    note.setAttribute("aria-label", "Note");
+    var acts = el("span", "bulk-acts");
+    var dup = el("button", "btn bulk-dup", "Duplicate");
+    dup.type = "button";
+    dup.title = "Copy this row below, without its value";
+    var del = el("button", "btn btn-danger bulk-del", "\\u00d7");
+    del.type = "button"; del.title = "Remove this row"; del.setAttribute("aria-label", "Remove this row");
+    acts.appendChild(dup); acts.appendChild(del);
+    [n, prefix, variable, secretWrap, value, note, acts].forEach(function (c) { row.appendChild(c); });
+    row._f = { prefix: prefix, variable: variable, secret: secret, value: value, note: note };
+    var msg = el("span", "bulk-row-msg");
+    row.appendChild(msg);
+    row._msg = msg;
+    dup.addEventListener("click", function () {
+      var copy = makeRow({
+        prefix: prefix.value, variable: variable.value,
+        kind: secret.checked ? "secret" : "plain", value: "", note: note.value
+      });
+      row.parentNode.insertBefore(copy, row.nextSibling);
+      renumber(); update();
+      copy._f.variable.focus();
+      copy._f.variable.select();
+    });
+    del.addEventListener("click", function () {
+      row.parentNode.removeChild(row);
+      if (!body.children.length) body.appendChild(makeRow(blank()));
+      renumber(); update();
+    });
+    return row;
+  }
+  function blank() { return { prefix: "", variable: "", kind: "secret", value: "", note: "" }; }
+  function renumber() {
+    Array.prototype.forEach.call(body.children, function (r, i) {
+      r.querySelector(".bulk-n").textContent = String(i + 1);
+    });
+  }
+  function rowData(r) {
+    var f = r._f;
+    return {
+      prefix: f.prefix.value.trim(), variable: f.variable.value.trim(),
+      kind: f.secret.checked ? "secret" : "plain",
+      value: r._multi !== undefined ? r._multi : f.value.value,
+      note: f.note.value.trim()
+    };
+  }
+  function isBlankRow(d) {
+    return !d.prefix && !d.variable && !d.value && !d.note;
+  }
+  function rowsToCsv() {
+    var out = [];
+    Array.prototype.forEach.call(body.children, function (r) {
+      var d = rowData(r);
+      if (!isBlankRow(d)) out.push(formatBulkRow(d));
+    });
+    return out.join("\\n");
+  }
+  function loadRows(records) {
+    body.textContent = "";
+    records.forEach(function (r) { body.appendChild(makeRow(r)); });
+    if (!records.length) body.appendChild(makeRow(blank()));
+    renumber();
+  }
+
+  // --- checking ---------------------------------------------------------------
+  // The server checks every line again; this is so the human sees it first.
+  function check(records) {
+    var seen = {};
+    return records.map(function (r) {
+      var kind = parseBulkKind(r.kind);
+      var path = NS + normPrefix(r.prefix) + r.variable;
+      var err =
+        prefixError(r.prefix) ||
+        (!r.variable ? "A variable name is required." : null) ||
+        (r.variable.length > 200 ? "A variable name may be at most 200 characters." : null) ||
+        (!ENV.test(r.variable) ? "Not a valid environment variable name." : null) ||
+        (kind === null ? 'Kind must be "secret" or "plain".' : null) ||
+        (r.value === "" ? "A value is required." : null) ||
+        (new Blob([r.note]).size > 4096 ? "A note may be at most 4096 bytes." : null) ||
+        (seen[fold(path)] ? "Line " + seen[fold(path)] + " already creates this path." : null) ||
+        (existingIds[fold(path)] ? "Already exists. Rotate it from the table instead." : null);
+      if (!err) seen[fold(path)] = r.line;
+      return { line: r.line, path: path, secret: kind !== false, value: r.value, error: err };
+    });
+  }
+
+  function current() {
+    if (mode === "rows") {
+      var recs = [];
+      Array.prototype.forEach.call(body.children, function (r, i) {
+        var d = rowData(r);
+        if (isBlankRow(d)) return;
+        d.line = i + 1;
+        recs.push(d);
+      });
+      return { records: recs, errors: [] };
+    }
+    return parseBulkCsv(text.value);
+  }
+
+  function update() {
+    var parsed = current();
+    var checked = check(parsed.records);
+    var bad = parsed.errors.length;
+    checked.forEach(function (c) { if (c.error) bad++; });
+    var total = checked.length + parsed.errors.length;
+
+    // Per-row marks in the row view.
+    if (mode === "rows") {
+      var byLine = {};
+      checked.forEach(function (c) { byLine[c.line] = c; });
+      Array.prototype.forEach.call(body.children, function (r, i) {
+        var c = byLine[i + 1];
+        r.classList.toggle("bulk-row-bad", !!(c && c.error));
+        r._msg.textContent = c && c.error ? c.error : "";
+      });
+    }
+
+    preview.textContent = "";
+    preview.hidden = total === 0;
+    if (total) {
+      var table = el("table", "bulk-table");
+      var head = el("tr");
+      ["line", "full path", "kind", "value", "check"].forEach(function (h) { head.appendChild(el("th", "", h)); });
+      var thead = el("thead"); thead.appendChild(head); table.appendChild(thead);
+      var tb = el("tbody");
+      var lines = checked.map(function (c) { return c; });
+      parsed.errors.forEach(function (e) {
+        lines.push({ line: e.line, path: "", secret: true, value: "", error: "Cannot be read: " + e.message, unreadable: true });
+      });
+      lines.sort(function (a, b) { return a.line - b.line; });
+      lines.forEach(function (c) {
+        var tr = el("tr", c.error ? "bulk-out-invalid" : "bulk-out-ok");
+        tr.appendChild(el("td", "bulk-n", String(c.line)));
+        var p = el("td"); p.appendChild(el("code", "", c.path || "—")); tr.appendChild(p);
+        var k = el("td");
+        if (!c.unreadable) k.appendChild(el("span", "chip " + (c.secret ? "chip-secret" : "chip-plain"), c.secret ? "secret" : "non-secret"));
+        tr.appendChild(k);
+        var v = el("td", "bulk-mask");
+        v.textContent = c.unreadable ? "" : c.value === "" ? "—" : c.secret ? "\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022 hidden" : c.value;
+        tr.appendChild(v);
+        tr.appendChild(el("td", "", c.error || "ready"));
+        tb.appendChild(tr);
+      });
+      table.appendChild(tb);
+      preview.appendChild(table);
+    }
+
+    var tooMany = total > MAX;
+    submit.disabled = total === 0 || bad > 0 || tooMany;
+    submit.textContent = total ? "Create " + total + " parameter" + (total === 1 ? "" : "s") : "Create all";
+    summary.textContent = tooMany
+      ? "At most " + MAX + " at once."
+      : bad ? bad + " line" + (bad === 1 ? " needs" : "s need") + " fixing before anything can be created." : "";
+  }
+
+  function setMode(m) {
+    if (m === mode) return;
+    if (m === "rows") {
+      var parsed = parseBulkCsv(text.value);
+      if (parsed.errors.length) {
+        update();
+        summary.textContent = "Fix the lines that cannot be read before switching to rows.";
+        return;
+      }
+      loadRows(parsed.records);
+    } else {
+      text.value = rowsToCsv();
+    }
+    mode = m;
+    rowsWrap.hidden = m !== "rows";
+    csvWrap.hidden = m !== "csv";
+    Array.prototype.forEach.call(tabs.querySelectorAll(".bulk-tab"), function (b) {
+      b.setAttribute("aria-pressed", String(b.getAttribute("data-mode") === m));
+    });
+    update();
+  }
+
+  tabs.hidden = false;
+  tabs.addEventListener("click", function (e) {
+    var b = e.target.closest(".bulk-tab");
+    if (b) setMode(b.getAttribute("data-mode"));
+  });
+  document.getElementById("bulk-add-row").addEventListener("click", function () {
+    var last = body.lastElementChild;
+    var r = makeRow(blank());
+    if (last) r._f.secret.checked = last._f.secret.checked;
+    body.appendChild(r);
+    renumber(); update();
+    r._f.prefix.focus();
+  });
+  body.addEventListener("input", update);
+  body.addEventListener("change", update);
+  text.addEventListener("input", update);
+  form.addEventListener("submit", function (e) {
+    if (mode === "rows") text.value = rowsToCsv();
+    update();
+    if (submit.disabled) e.preventDefault();
+  });
+
+  // Start in rows when the text (a refill, or nothing) reads cleanly.
+  var initial = parseBulkCsv(text.value);
+  if (initial.errors.length) {
+    mode = "csv";
+    rowsWrap.hidden = true;
+    tabs.querySelector('[data-mode="rows"]').setAttribute("aria-pressed", "false");
+    tabs.querySelector('[data-mode="csv"]').setAttribute("aria-pressed", "true");
+  } else {
+    loadRows(initial.records);
+    rowsWrap.hidden = false;
+    csvWrap.hidden = true;
+  }
+  update();
+})();
+</script>`;
+}
+
 /** JSON for an inline `<script>`: `</script>` in a value must not close it. */
 export function jsonForScript(value: string): string {
   return JSON.stringify(value)
@@ -1880,6 +2315,46 @@ form.inline{display:flex;align-items:center;gap:.25rem;margin:0}
 .field-l{font-size:.78rem;color:var(--g2);font-weight:600}
 .field-opt{color:var(--g4);font-weight:400;text-transform:uppercase;font-size:.66rem;letter-spacing:.05em}
 .field-h{font-size:.72rem;color:var(--g4)}
+.bulk-lede{margin:-.4rem 0 .9rem}
+.bulkform{display:flex;flex-direction:column;gap:.8rem}
+.bulk-tabs{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap}
+.bulk-tab[aria-pressed="true"]{border-color:var(--accent);color:var(--white);background:color-mix(in srgb,var(--accent) 18%,var(--g6))}
+.bulk-row{display:grid;grid-template-columns:1.6rem 1.3fr 1.5fr 3.2rem 1.2fr 1.2fr 7.4rem;
+  gap:.4rem;align-items:center;margin-bottom:.4rem}
+.bulk-row-head{font-size:.66rem;text-transform:uppercase;letter-spacing:.05em;color:var(--g4);margin-bottom:.25rem}
+.bulk-row-head span:nth-child(4){text-align:center}
+.bulk-n{font-family:var(--font-mono);font-size:.72rem;color:var(--g4);text-align:right}
+.in-row{font-size:.78rem;padding:.32rem .45rem;min-width:0}
+.bulk-secret{display:flex;justify-content:center}
+.bulk-secret input{width:1rem;height:1rem;accent-color:var(--accent)}
+.bulk-acts{display:flex;gap:.3rem}
+.bulk-row-msg{grid-column:2/-1;font-size:.72rem;color:#e5706e}
+.bulk-row-msg:empty{display:none}
+.bulk-row-bad .in-row{border-color:color-mix(in srgb,#e5706e 60%,var(--g5))}
+.bulk-text{min-height:9rem;resize:vertical;font-size:.78rem;line-height:1.45}
+.bulk-format{margin-top:.4rem}
+.bulk-format summary{cursor:pointer}
+.bulk-format ul{margin:.3rem 0 0;padding-left:1.1rem;display:flex;flex-direction:column;gap:.2rem}
+.bulk-submit{display:flex;align-items:center;gap:.8rem;flex-wrap:wrap}
+.bulk-table{width:100%;border-collapse:collapse;font-size:.78rem;margin-top:.2rem}
+.bulk-table th{text-align:left;font-size:.66rem;text-transform:uppercase;letter-spacing:.05em;color:var(--g4);
+  font-weight:600;padding:.35rem .5rem;border-bottom:1px solid var(--g5)}
+.bulk-table td{padding:.4rem .5rem;border-top:1px solid var(--g6);vertical-align:top;color:var(--g2)}
+.bulk-table code{font-size:.74rem;word-break:break-all;color:var(--white)}
+.bulk-table .chip{white-space:nowrap}
+.bulk-mask{font-family:var(--font-mono);font-size:.74rem;word-break:break-all}
+.bulk-result{margin-top:1rem}
+.bulk-status{font-weight:600}
+.bulk-out-created .bulk-status,.bulk-out-ok td:last-child{color:var(--text-accent)}
+.bulk-out-failed .bulk-status,.bulk-out-invalid .bulk-status,.bulk-out-invalid td:last-child{color:#e5706e}
+.bulk-out-warn .bulk-status,.bulk-out-skipped .bulk-status{color:#e0a63b}
+.bulk-msg{color:var(--g3)}
+@media (max-width:46rem){
+  .bulk-row{grid-template-columns:1.4rem 1fr 1fr}
+  .bulk-row-head{display:none}
+  .bulk-row .bulk-secret{justify-content:flex-start}
+  .bulk-acts{grid-column:2/-1}
+}
 .flash{padding:.6rem .9rem;border-radius:.4rem;margin-bottom:1rem;font-size:.85rem;border:1px solid}
 .flash-ok{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,transparent);color:var(--white)}
 .flash-error{border-color:#e5706e;background:color-mix(in srgb,#e5706e 10%,transparent);color:var(--white)}

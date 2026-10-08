@@ -2569,6 +2569,53 @@ field is the same combobox as the namespace picker: it opens this gateway's own
 server slugs on click — each labelled with whether that server sets
 `params: true` — and shows the full path it is about to write as you type.
 
+### Several at once: bulk add
+
+Under the single form, **Add several parameters** takes one parameter per line:
+
+```
+prefix,VARIABLE,kind,value,note
+telegram-rw/static/,TELEGRAM_API_ID,plain,1234567,App id
+telegram-rw/static/,TELEGRAM_API_HASH,secret,0123456789abcdef
+telegram-rw/static/,TELEGRAM_STRING_SESSION,,"1BV…,with,commas",GramJS session
+```
+
+- `prefix` is the path prefix above, and may be empty. Every line lands in the
+  namespace being browsed.
+- `kind` is `secret` or `plain`. **Empty means secret**: a value nobody marked is
+  treated as the credential it probably is, because agents can read a non-secret
+  value.
+- `note` is optional, and so is its column.
+- Quoting is RFC 4180. A value or note holding a comma, a quote or a line break
+  goes in double quotes, with a quote inside written `""`. A quoted value keeps
+  its leading and trailing spaces; an unquoted field is trimmed.
+- Blank lines, `#` lines and a first line of `prefix,variable,…` are skipped. At
+  most 100 lines at once.
+
+With JavaScript the text is one of two views. **Rows** is an editable row per
+parameter, each with a **Duplicate** control that copies the row below itself —
+prefix, name, kind and note, not the value — and focuses the copied name, so one
+row is the template for the next. **CSV** is the raw text, for pasting. A preview
+under either checks every line as you type and keeps the button off until all of
+them pass; it masks a secret value and shows a non-secret one. With JavaScript off
+the textarea is the whole form.
+
+The server parses the text again with the same parser — the browser runs
+`src/ui/bulk-params.ts` inlined, not a second copy — and handles the two kinds of
+failure differently:
+
+- **A line that fails a check** (a bad name or prefix, an unreadable quote, a path
+  that already exists, two lines folding onto one parameter, a namespace a strict
+  store refuses) stops the batch before anything is written. Half a batch landing
+  would leave you working out which half.
+- **A line the store refuses** once writing has started does not stop the rest.
+
+Either way every line is reported, by number, with its outcome. The lines that did
+not land go back into the editor **without their values** — a value, secret or
+not, is never sent back to the page — so you re-type the values and nothing else.
+Each line is written through the same create as the single form, behind the same
+gate, refusing a login-token session the same way.
+
 ### The guide lives behind a Help control
 
 The working surface stays a working surface. Everything explanatory — the routing
