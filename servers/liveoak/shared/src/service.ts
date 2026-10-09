@@ -36,7 +36,8 @@ import {
   verifyDownloadToken,
 } from "./download-link.js";
 import type { BlobStore } from "./gcs.js";
-import { errMessage, logInfo, logWarning, redact } from "./logging.js";
+import { SealError } from "./crypto.js";
+import { logInfo, logWarning, redact } from "./logging.js";
 import {
   byEndDateDesc,
   inRange,
@@ -94,6 +95,7 @@ export interface StatusResult {
   configured: true;
   device_enrolled: boolean;
   enrolled_at?: string;
+  device_state_unreadable?: string;
   enrolment_pending: boolean;
   download_links: boolean;
   download_links_unavailable?: string;
@@ -149,12 +151,23 @@ export class LiveOakService {
   // --- tools ---------------------------------------------------------------
 
   async status(): Promise<StatusResult> {
-    const device = await this.devices.load();
+    let device: DeviceState | null = null;
+    let unreadable: string | undefined;
+    try {
+      device = await this.devices.load();
+    } catch (err) {
+      // A changed key or an altered object. Reported, not thrown: status is
+      // what an operator reads to find out, and enrol_device {force:true} is
+      // the way back.
+      if (!(err instanceof SealError)) throw err;
+      unreadable = err.message;
+    }
     const { downloadLink, downloadUnavailable } = this.options.config;
     return {
       configured: true,
       device_enrolled: device !== null,
       ...(device ? { enrolled_at: device.enrolledAt } : {}),
+      ...(unreadable ? { device_state_unreadable: unreadable } : {}),
       enrolment_pending: this.livePending() !== undefined,
       download_links: downloadLink !== undefined,
       ...(downloadUnavailable ? { download_links_unavailable: downloadUnavailable } : {}),
@@ -222,12 +235,13 @@ export class LiveOakService {
       const { username, password } = this.options.config;
       this.session = undefined;
       this.pending = undefined;
-      let device = await this.devices.load();
-      if (device && force) {
-        await this.devices.clear();
-        logInfo("enrol_device: force — the stored device was discarded");
-        device = null;
-      }
+      // FORCE DOES NOT READ, AND DOES NOT DELETE. Not reading is what lets it
+      // recover from a changed LIVEOAK_STATE_ENCRYPTION_KEY, whose stored
+      // state no longer opens. Not deleting means a forced enrolment that is
+      // never confirmed leaves the working device in place:
+      // `persistEnrolment` overwrites it only once a new one exists.
+      const device = force ? null : await this.devices.load();
+      if (force) logInfo("enrol_device: force — logging in without the stored device");
       const outcome = await this.login.authenticate(username, password, device);
       if (outcome.kind === "mfa") return this.hold(outcome.challenge);
 
@@ -316,7 +330,9 @@ export class LiveOakService {
       };
     } catch (err) {
       this.ledger.release(verified.nonce);
-      logWarning(`download failed: ${errMessage(err)}`);
+      // The error's NAME only: its message can quote a statement id or an
+      // excerpt of the bank's response, and this line is not a place for either.
+      logWarning(`download failed: ${err instanceof Error ? err.name : "unknown error"}`);
       return { ok: false, status: 502, error: "statement_unavailable" };
     }
   }
@@ -383,8 +399,13 @@ export class LiveOakService {
     try {
       return await fn(first);
     } catch (err) {
-      if (err instanceof ApiError && (err.status === 401 || err.status === 403) && this.session) {
-        this.session = undefined;
+      // Only a refusal of a request that CARRIED the token says anything about
+      // the token. A 403 from a pre-signed document host was sent none, and a
+      // fresh login for it is one more chance of an SMS for nothing.
+      if (err instanceof ApiError && err.tokenRefused) {
+        await this.serial(async () => {
+          if (this.session?.value.accessToken === first) this.session = undefined;
+        });
         return fn(await this.token());
       }
       throw err;
@@ -399,6 +420,16 @@ export class LiveOakService {
         return held.value.accessToken;
       }
       this.session = undefined;
+      // A challenge is already waiting for a human's code. Logging in again
+      // would text a NEW code and void the one they are about to type.
+      if (this.livePending()) {
+        throw new LiveOakError(
+          "An enrolment is waiting for its MFA code, so this server will not log in " +
+            "again (that would send a new code and void the pending one). Call " +
+            "confirm_device with the code LiveOak sent, or wait for the challenge to " +
+            "expire and call enrol_device.",
+        );
+      }
       const device = await this.devices.load();
       if (!device) {
         throw new LiveOakError(
@@ -487,7 +518,14 @@ export class LiveOakService {
 function checkStatementBytes(bytes: Buffer, declared: string): string {
   if (bytes.subarray(0, 5).toString("latin1") === "%PDF-") return "application/pdf";
   if (bytes.length === 0) throw new LiveOakError("LiveOak returned an empty statement.");
-  if (/html/i.test(declared) || /^\s*</.test(bytes.subarray(0, 64).toString("latin1"))) {
+  const head = bytes.subarray(0, 64).toString("latin1");
+  if (/json/i.test(declared) || /^\s*[[{]/.test(head)) {
+    throw new LiveOakError(
+      "LiveOak returned a JSON document where the statement should be, not a PDF — " +
+        "most likely an error served with a 200.",
+    );
+  }
+  if (/html/i.test(declared) || /^\s*</.test(head)) {
     throw new LiveOakError(
       "LiveOak returned a web page where the statement should be, not a PDF. " +
         "The document link may need the portal itself; see docs/servers/liveoak.",

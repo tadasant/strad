@@ -1,6 +1,8 @@
 import { generateKeyPairSync, createVerify } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadConfig, missingCredentials, parseEncryptionKey } from "../src/config.js";
+import { ApitureClient } from "../src/apiture.js";
+import { loginError } from "../src/cognito.js";
 import { open, seal, SealError } from "../src/crypto.js";
 import { DeviceStore } from "../src/device-store.js";
 import { deriveDownloadKey, mintDownloadToken, verifyDownloadToken } from "../src/download-link.js";
@@ -247,5 +249,48 @@ describe("GcsBlobStore", () => {
     expect(await store.read("liveoak/device.sealed")).toBeNull();
     // One token, reused.
     expect(seen.filter((s) => s.endsWith("/token"))).toHaveLength(1);
+  });
+});
+
+describe("ApitureClient guards", () => {
+  let api: Listening | undefined;
+  afterEach(async () => {
+    await api?.close();
+  });
+
+  it("refuses a `next` page on another origin rather than send it the token", async () => {
+    const seen: (string | undefined)[] = [];
+    api = await listen((req, res) => {
+      seen.push(req.headers.authorization);
+      res.setHeader("content-type", "application/hal+json");
+      res.end(
+        JSON.stringify({
+          _embedded: { items: [{ _id: "a" }] },
+          _links: { next: { href: "https://elsewhere.example.com/documents/documents?page=2" } },
+        }),
+      );
+    });
+    const client = new ApitureClient({ apiRoot: api.url });
+    await expect(client.listStatements("tok", "2026-01-01T00:00:00.000Z", "P2M")).rejects.toThrow(
+      /another origin/,
+    );
+    expect(seen).toEqual(["Bearer tok"]);
+  });
+
+  it("follows a non-https document link only when the API itself is on loopback", async () => {
+    const client = new ApitureClient({ apiRoot: "https://api.example.com" });
+    await expect(
+      client.fetchContent("tok", { _id: "a", _links: { "apiture:document": { href: "http://127.0.0.1:1/x" } } }),
+    ).rejects.toThrow(/not https/);
+  });
+});
+
+describe("login errors", () => {
+  it("an expired challenge session is not reported as a bad password", () => {
+    const expired = loginError({ code: "NotAuthorizedException", message: "Invalid session for the user, session is expired." });
+    expect(expired.message).toContain("Call enrol_device for a new code");
+    expect(expired.message).not.toContain("LIVEOAK_PASSWORD");
+    const bad = loginError({ code: "NotAuthorizedException", message: "Incorrect username or password." });
+    expect(bad.message).toContain("LIVEOAK_PASSWORD");
   });
 });

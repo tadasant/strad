@@ -5393,7 +5393,7 @@ Workspace documents and cannot touch an uploaded binary. `files.copy` with
 file in the owner's Drive every time an agent reads a spreadsheet — a write, in a
 read tier. The npm packages that read xlsx are large, and the popular one has
 been unmaintained on npm since 0.18.5 with a live prototype-pollution advisory;
-this process holds three Google accounts' refresh tokens beside twenty-three other
+this process holds three Google accounts' refresh tokens beside twenty-four other
 MCP servers.
 
 **What it costs, and what a caller is told.** Every Office-backed result carries

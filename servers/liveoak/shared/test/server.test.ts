@@ -7,7 +7,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { createHash } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { seal } from "../src/crypto.js";
 import type { LiveOakConfig } from "../src/config.js";
 import { MemoryBlobStore } from "../src/gcs.js";
 import { createMCPServer } from "../src/server.js";
@@ -429,5 +430,96 @@ describe("unconfigured", () => {
       expect(res.content[0].text).toContain(name);
     }
     expect(await created.handleDownload("x")).toMatchObject({ ok: false, status: 404 });
+  });
+});
+
+describe("review fixes", () => {
+  it("force: true recovers from a changed encryption key, and keeps the old object until a new device exists", async () => {
+    const blobs = new MemoryBlobStore();
+    blobs.objects.set("liveoak/device.sealed", seal(Buffer.alloc(32, 1), "liveoak/device.sealed", Buffer.from("{}")));
+    const h = await harness({ blobs });
+    const status = await h.call("get_status");
+    expect(status.json.device_enrolled).toBe(false);
+    expect(status.json.device_state_unreadable).toContain("LIVEOAK_STATE_ENCRYPTION_KEY");
+
+    const plain = await h.call("enrol_device");
+    expect(plain.isError).toBe(true);
+    const forced = await h.call("enrol_device", { force: true });
+    expect(forced.json.status).toBe("code_sent");
+    // Not deleted on the way in: an unconfirmed force leaves what was there.
+    expect(blobs.objects.has("liveoak/device.sealed")).toBe(true);
+    const confirmed = await h.call("confirm_device", { code: cognito.smsCodes.at(-1)! });
+    expect(confirmed.json.status).toBe("enrolled");
+    expect((await h.call("get_status")).json.device_enrolled).toBe(true);
+  });
+
+  it("an unconfirmed force leaves a working device working", async () => {
+    const h = await harness();
+    await enrolled(h);
+    const before = Buffer.from(h.blobs.objects.get("liveoak/device.sealed")!);
+    await h.call("enrol_device", { force: true });
+    expect(h.blobs.objects.get("liveoak/device.sealed")!.equals(before)).toBe(true);
+    // A fresh process (no pending challenge) still logs in with the old device, no code.
+    const sent = cognito.smsCodes.length;
+    const fresh = await harness({ blobs: h.blobs });
+    expect((await fresh.call("list_statements")).isError).toBe(false);
+    expect(cognito.smsCodes.length).toBe(sent);
+  });
+
+  it("while a challenge waits for its code, reads refuse WITHOUT texting a new one", async () => {
+    const h = await harness();
+    await h.call("enrol_device");
+    const sent = cognito.smsCodes.length;
+    const calls = cognito.calls.length;
+    const list = await h.call("list_statements");
+    expect(list.isError).toBe(true);
+    expect(list.text).toContain("waiting for its MFA code");
+    expect(cognito.smsCodes.length).toBe(sent);
+    expect(cognito.calls.length).toBe(calls);
+    // And the pending code still works.
+    expect((await h.call("confirm_device", { code: cognito.smsCodes.at(-1)! })).json.status).toBe("enrolled");
+  });
+
+  it("a JSON body served with a 200 in place of the PDF is refused", async () => {
+    const h = await harness({
+      apiOptions: { body: { bytes: Buffer.from('{"error":"nope"}'), type: "application/json" } },
+    });
+    await enrolled(h);
+    const got = await h.call("get_statement", { statement_id: "stmt-2026-09" });
+    expect(got.isError).toBe(true);
+    expect(got.text).toContain("JSON");
+  });
+
+  it("logs carry no password, token, statement id or device secret", async () => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    });
+    try {
+      const h = await harness({ apiOptions: { noLinks: true } });
+      await enrolled(h);
+      await h.call("list_statements");
+      const got = await h.call("get_statement", { statement_id: "stmt-2026-09" });
+      const token = got.json.download_url.split("/").pop();
+      await h.created.handleDownload(token);
+      // A failing download, which logs.
+      await api.close();
+      await h.call("get_statement", { statement_id: "stmt-2026-08" });
+      const other = await harness({ blobs: h.blobs });
+      await api.close();
+      // The link was spent in `h`'s ledger, not in `other`'s, and `other` holds
+      // no bytes for it: it logs in, finds the API down, and logs the failure.
+      expect(await other.created.handleDownload(token)).toMatchObject({ ok: false, status: 502 });
+      expect(lines.some((l) => l.includes("download failed: ApiError"))).toBe(true);
+      const device = [...cognito.devices.keys()];
+      for (const line of lines) {
+        expect(line).not.toContain(PASSWORD);
+        expect(line).not.toContain("stmt-");
+        for (const t of cognito.accessTokens) expect(line).not.toContain(t);
+        for (const d of device) expect(line).not.toContain(d);
+      }
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

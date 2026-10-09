@@ -2,7 +2,7 @@
 /**
  * bundle — THE strad supplementary image. All 25 upstream MCP servers (25
  * mounts, see `buildMounts`), one container, one process, one Chromium, one
- * mcp-grafana child. The gateway's config names more SLUGS than that — 33
+ * mcp-grafana child. The gateway's config names more SLUGS than that — 34
  * supplementary-image entries in infra/strad.staging.yaml — because capability
  * variants (gmail-ro, gmail-rw, …) are several slugs pointing at ONE mount here.
  * `/aws-device-farm` is the one that runs the other way round: it is mounted
@@ -28,7 +28,7 @@
  * and on the first request for one this process does not hold yet, which is what
  * makes a slug created at runtime servable on that request.
  *
- * THIRTY-ONE of those are on one component. The other two each run this same
+ * THIRTY-TWO of those are on one component. The other two each run this same
  * image on a component of their own. `zimmer-secrets` is one, and what makes it
  * one is the SLUG rather than the store: a second entitlement and a second
  * console page. `whatsapp-zimmer` is the other, on `bundle-whatsapp`, because
@@ -61,7 +61,7 @@
  * SAME path here. This host neither knows nor cares that they exist.
  *
  * BLAST RADIUS, honestly. Twenty-five servers now share a process. A crash is
- * a 24-server outage, not a 1-server outage. Everything below that CAN be made
+ * a 25-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
  * catastrophic here); a dead Chromium is relaunched on next use; an unhandled

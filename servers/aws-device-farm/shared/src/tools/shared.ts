@@ -54,7 +54,7 @@ export interface Deps {
 /**
  * Built on the first tool call, not at import time.
  *
- * This server shares a process with twenty-three others. Reading a credential at
+ * This server shares a process with twenty-four others. Reading a credential at
  * import time would make one missing variable a boot failure for all of them.
  */
 export type DepsFactory = () => Promise<Deps>;

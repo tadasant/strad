@@ -37,6 +37,8 @@ export interface CognitoOptions {
   clientId: string;
   /** Tests only: a local stand-in for `https://cognito-idp.<region>.amazonaws.com/`. */
   endpoint?: string;
+  /** Per login leg. Default {@link LOGIN_TIMEOUT_MS}. */
+  timeoutMs?: number;
 }
 
 /** What a successful login leaves this process holding. */
@@ -136,10 +138,39 @@ export function loginError(err: unknown): LoginError {
     LimitExceededException: "Cognito is rate limiting this account; wait a minute and retry.",
     NetworkError: "Cognito could not be reached: transient; retry the call.",
   };
-  return new LoginError(
-    code,
-    `LiveOak's login (AWS Cognito) said ${code}: ${said}${advice[code] ? ` ${advice[code]}` : ""}`,
-  );
+  // Cognito answers an expired or spent challenge session with
+  // NotAuthorizedException too, and the credential advice would mislead there.
+  const hint =
+    code === "NotAuthorizedException" && /session/i.test(said)
+      ? "The MFA challenge expired or was already used. Call enrol_device for a new code."
+      : advice[code];
+  return new LoginError(code, `LiveOak's login (AWS Cognito) said ${code}: ${said}${hint ? ` ${hint}` : ""}`);
+}
+
+/**
+ * How long one Cognito exchange may take. The library's `fetch` has no
+ * timeout of its own, and every login runs inside the service's one-at-a-time
+ * chain, so a request that hangs would otherwise stall every tool until a
+ * restart.
+ */
+export const LOGIN_TIMEOUT_MS = 30_000;
+
+function bounded<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new LoginError(
+            "Timeout",
+            `LiveOak's login (AWS Cognito) did not answer within ${ms / 1000} s: transient; retry the call.`,
+          ),
+        ),
+      ms,
+    );
+    timer.unref();
+  });
+  return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
 }
 
 export class CognitoLogin {
@@ -154,6 +185,10 @@ export class CognitoLogin {
     password: string,
     device: DeviceState | null,
   ): Promise<LoginOutcome> {
+    return bounded(this.start(username, password, device), this.options.timeoutMs ?? LOGIN_TIMEOUT_MS);
+  }
+
+  private start(username: string, password: string, device: DeviceState | null): Promise<LoginOutcome> {
     const storage = new LoginStorage();
     const pool = new CognitoUserPool({
       UserPoolId: this.options.userPoolId,
@@ -231,7 +266,7 @@ export class CognitoLogin {
     type: MfaChallenge["type"],
     code: string,
   ): Promise<Session> {
-    return new Promise<Session>((resolve, reject) => {
+    const work = new Promise<Session>((resolve, reject) => {
       user.sendMFACode(
         code,
         {
@@ -244,6 +279,7 @@ export class CognitoLogin {
         type,
       );
     });
+    return bounded(work, this.options.timeoutMs ?? LOGIN_TIMEOUT_MS);
   }
 
   /**

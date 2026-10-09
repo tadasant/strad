@@ -115,15 +115,27 @@ holder removes it, the next read fails and LiveOak has already sent a code. The
 server holds that challenge, so `confirm_device` with that code re-enrols with
 no second text.
 
+**While a challenge waits for its code, reads refuse.** A read logs in, and
+another login would text a new code and void the one the account holder is
+about to type. So `list_statements` and `get_statement` refuse until
+`confirm_device` answers it or the challenge expires.
+
 The pending challenge lives in this container's memory. A deploy or restart
 between the two calls drops it; call `enrol_device` again.
+
+**`force: true` neither reads nor deletes the stored device.** Not reading is
+what lets it recover from a changed `LIVEOAK_STATE_ENCRYPTION_KEY`, which
+`get_status` reports as `device_state_unreadable`. Not deleting means a forced
+enrolment nobody confirms leaves a working device working: the object is
+overwritten only once a new device exists.
 
 ## How a login works
 
 Every read logs in fresh, as the portal does: LiveOak keeps no session between
 visits, and the portal logs a browser out after 59 idle seconds. A login is then
 reused for up to ten minutes, so a list, a fetch and a download cost one login
-rather than three.
+rather than three. Each Cognito exchange has 30 seconds to answer. Logins run
+one at a time, and a request that hung would otherwise stall every tool.
 
 The client is `amazon-cognito-identity-js`, the library the portal itself runs,
 with the portal's pool (`us-east-1_RDbe8eaw5`) and app client. A login is three

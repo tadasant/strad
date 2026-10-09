@@ -44,6 +44,8 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** The request carried the bearer token and was refused for it (401/403). */
+    readonly tokenRefused = false,
   ) {
     super(message);
     this.name = "ApiError";
@@ -95,6 +97,11 @@ export class ApitureClient {
       }
       const next = body?._links?.next?.href;
       url = typeof next === "string" && next !== "" ? this.resolve(next) : undefined;
+      // The token goes only to the API origin, and a `next` link is the
+      // server's to write.
+      if (url && new URL(url).origin !== new URL(this.apiRoot).origin) {
+        throw new ApiError(0, "LiveOak's statement list paged to another origin; refusing to follow it.");
+      }
     }
     return items;
   }
@@ -121,13 +128,14 @@ export class ApitureClient {
       url = `${this.apiRoot}/documents/documents/${encodeURIComponent(String(doc._id))}/content`;
     }
     const target = new URL(url);
-    // https only — loopback excepted, which is where the tests' fakes listen.
-    if (target.protocol !== "https:" && !["127.0.0.1", "localhost"].includes(target.hostname)) {
+    // https only — loopback excepted when the API itself is on loopback, which
+    // is where the tests' fakes listen and nowhere a real deployment points.
+    if (target.protocol !== "https:" && !(isLoopback(this.apiRoot) && isLoopback(url))) {
       throw new ApiError(0, "LiveOak returned a statement link that is not https; refusing to fetch it.");
     }
     const sameOrigin = target.origin === new URL(this.apiRoot).origin;
     const res = await this.get(url, sameOrigin ? token : undefined, "*/*");
-    if (!res.ok) throw await this.failure(res, "download the statement");
+    if (!res.ok) throw await this.failure(res, "download the statement", sameOrigin);
     const declared = Number(res.headers.get("content-length") ?? "");
     if (Number.isFinite(declared) && declared > MAX_DOCUMENT_BYTES) {
       throw new ApiError(res.status, `the statement is ${declared} bytes, over the ${MAX_DOCUMENT_BYTES}-byte cap.`);
@@ -148,7 +156,7 @@ export class ApitureClient {
 
   private async getJson(token: string, url: string, what: string): Promise<unknown> {
     const res = await this.get(url, token, "application/hal+json, application/json");
-    if (!res.ok) throw await this.failure(res, what);
+    if (!res.ok) throw await this.failure(res, what, true);
     try {
       return await res.json();
     } catch {
@@ -172,7 +180,7 @@ export class ApitureClient {
     }
   }
 
-  private async failure(res: Response, what: string): Promise<ApiError> {
+  private async failure(res: Response, what: string, carriedToken: boolean): Promise<ApiError> {
     // A short, redacted excerpt of the body: Apiture's error envelope says
     // which rule refused the call, and none of it is a credential — but the
     // redaction runs anyway, because the body is not ours.
@@ -191,6 +199,14 @@ export class ApitureClient {
           : res.status >= 500 || res.status === 429
             ? " transient; retry the call."
             : "";
-    return new ApiError(res.status, `LiveOak's API refused to ${what}: HTTP ${res.status}${detail}.${hint}`);
+    return new ApiError(
+      res.status,
+      `LiveOak's API refused to ${what}: HTTP ${res.status}${detail}.${hint}`,
+      carriedToken && (res.status === 401 || res.status === 403),
+    );
   }
+}
+
+function isLoopback(url: string): boolean {
+  return ["127.0.0.1", "localhost"].includes(new URL(url).hostname);
 }

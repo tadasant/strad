@@ -43,8 +43,8 @@ export function createMCPServer(options: CreateMCPServerOptions) {
   let service: LiveOakService | undefined;
   const getService = (): LiveOakService => {
     if (!service) {
-      // Throws a ConfigError naming the missing variables; not memoised, so a
-      // variable that arrives later (a redeploy) is picked up.
+      // Throws a ConfigError naming the missing variables. Not memoised on
+      // failure, so the error is re-derived on every call rather than cached.
       const config = options.config ?? loadConfig(env);
       registerSecret(config.password);
       service = new LiveOakService({
