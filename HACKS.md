@@ -6088,3 +6088,33 @@ query, and `window.open(_links["apiture:document"].href)`.
 anything it finds is a fix here. 2 wants a key-rotation path. 3 and 4 are the
 design while the bundle runs one instance. 5 is the design for as long as
 LiveOak issues one token for everything.
+
+## 117. gmail attachments: `content_base64` is capped by core's body limit, and a URL's host is checked only as written
+
+**What.** `vendor/gmail-shared` in `images/bundle-google` is a fork
+(`images/bundle-google/vendor/gmail-shared/FORK.md`), and its one delta gives
+`send_email` and `upsert_draft_email` an `attachments` array: an HTTPS `url`
+the server downloads, or `content_base64`. Up to 10 files, 18 MB decoded.
+
+1. **`content_base64` is bounded at about 3 MB, not 18.** Core parses `/mcp`
+   with `express.json({ limit: "4mb" })` (`src/http/app.ts`), and base64 inside
+   JSON costs 4/3. A larger inline file is a `413` at core, before the bundle
+   sees it. `url` has no such bound, and it is the route for anything sizeable:
+   upload to the artifact store, pass the signed link.
+2. **The download's host check is literal.** Loopback, private, link-local and
+   CGNAT addresses, `localhost` and `*.internal` are refused on every redirect
+   hop. A DNS name is not resolved first, so a public name that points at a
+   private address is fetched. What keeps that off strad's own components is
+   the `https:`-only rule: they speak plain `http` on App Platform's private
+   network.
+3. **Resolution counts against the confirmation window.** `send_email`
+   downloads its attachments before it asks the human (so the prompt lists what
+   will be sent), at up to 30 s per file, and that time comes out of the same
+   deadline the human has to answer in.
+4. **It is a fork.** A re-vendor from `pulsemcp/mcp-servers` reverts it with no
+   failing build, only the attachment tests failing.
+
+**Undo.** 1 goes if core's `/mcp` body limit is raised past 25 MB, a decision
+about every slug and not this one. 2 goes with a resolve-then-pin fetch (resolve
+the name, refuse a private answer, connect to that address). 3 is the design.
+4 is the design: strad's servers improve here.

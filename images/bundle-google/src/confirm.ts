@@ -20,8 +20,9 @@
  *
  * ## How, without editing the vendored tree
  *
- * `vendor/gmail-shared` and `vendor/mcp-elicitation` are both verbatim copies,
- * and neither knows about a per-call address. But the library has a seam
+ * `vendor/mcp-elicitation` is a generated copy and `vendor/gmail-shared` is a
+ * fork whose deltas are its own (`vendor/gmail-shared/FORK.md`); neither knows
+ * about a per-call address, and the confirmation logic stays out of both. But the library has a seam
  * already: its NATIVE tier asks the server object it was handed whether the
  * client supports elicitation, then calls `server.elicitInput()`. The tool
  * captures that server object when it is registered. So the server handed to

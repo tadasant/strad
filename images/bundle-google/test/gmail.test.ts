@@ -1,9 +1,8 @@
 /**
  * The per-account gmail layer, and the cross-account trap it exists to close.
  *
- * `vendor/gmail-shared` is vendored VERBATIM from pulsemcp/mcp-servers, so a
- * test written inside it is a merge conflict on the next re-vendor. This suite
- * lives at the image root because what it tests is strad's own `src/gmail.ts` —
+ * This suite lives at the image root because what it tests is strad's own
+ * `src/gmail.ts`, not the gmail tree (a fork; see `vendor/gmail-shared/FORK.md`) —
  * the injected env, the two credential modes, and the name lists the bundle
  * host's per-slug discovery keys on.
  *
@@ -280,7 +279,8 @@ test("an expired token names the slug's console page, not an OAuth Playground", 
   // `invalid_grant` is the normal end of a refresh token's life — seven days for
   // an app still in "testing", or any password change — and strad's recovery is
   // one button on this slug's own page. The vendored class has no way to say so,
-  // which is why this layer subclasses it rather than editing a verbatim tree.
+  // which is why this layer subclasses it: the mailbox choice is strad's, and
+  // it stays out of the tree.
   const client = createDefaultClient({
     ...account("expiring"),
     GMAIL_RECONNECT_URL: "https://strad.example/ui/gmail-tadas412-ro",

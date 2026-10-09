@@ -796,8 +796,8 @@ interface GoogleTree {
 }
 
 async function loadGoogleTree(): Promise<GoogleTree> {
-  // NOT `vendor/gmail-shared/build/index.js`. That tree is vendored verbatim
-  // from pulsemcp/mcp-servers and reads `process.env` directly, which is right
+  // NOT `vendor/gmail-shared/build/index.js`. That tree is forked from
+  // pulsemcp/mcp-servers and reads `process.env` directly, which is right
   // for the one-server-per-process deployment it was written for and fatal here:
   // several gmail mounts in one process would all serve the last credential
   // loaded. `dist/gmail.js` is strad's own layer over it — the injected env, the
