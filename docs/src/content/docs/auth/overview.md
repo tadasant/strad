@@ -572,7 +572,10 @@ The header is checked against `gateway.elicitation.allowedUrlPrefixes`, sent
 only to a slug that declares `confirmations: true`, and never logged. When an
 edge in front of that URL wants strad's own credential, such as a Cloudflare
 Access service token, the slug's `confirmationHeaders:` carry it. Core resolves
-them, and they go only to a URL that passed the allowlist. See [Confirming a tool before it acts](/servers/confirmations/).
+them, and they go only to a URL that passed the allowlist. A slug whose mailbox
+is the agent's own can declare `skipConfirmations: true` instead: its confirmed
+tools run without a human, it never receives the header, and every other slug
+keeps asking. See [Confirming a tool before it acts](/servers/confirmations/).
 
 ### Configuring it
 

@@ -324,6 +324,7 @@ describe("consoleScopeProblems", () => {
       timeoutMs: 120_000,
       params: false,
       confirmations: false,
+      skipConfirmations: false,
       confirmationHeaders: {},
       paramsWritable: [],
       paramsRefresh: [],

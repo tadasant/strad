@@ -5928,7 +5928,7 @@ posture.
 
 **What.** gmail's `send_email` asks a human before it sends, at the URL the
 `/mcp` request names in `X-Elicitation-Url` (`src/gateway/elicitation.ts`,
-`images/bundle-google/src/confirm.ts`). Four properties follow, stated rather
+`images/bundle-google/src/confirm.ts`). Five properties follow, stated rather
 than worked around:
 
 1. **strad trusts the caller to name its own session.** The allowlist
@@ -5940,7 +5940,7 @@ than worked around:
    another session's means having read that session's environment.
 2. **The console cannot send mail.** The playground has no prompt surface, so a
    human signed in to `/ui` gets the same refusal as a headless caller with no
-   header.
+   header. A `skipConfirmations: true` slug (5) is the exception.
 3. **A window is only as long as the CALLER's hop holds it.** strad's own hop
    holds any `timeoutMs`: the bundle sends a progress keepalive every 30s, so
    the 300s body timeout in core's `fetch` never fires. The caller's hop to core
@@ -5960,8 +5960,14 @@ than worked around:
    on the bundle makes `send_email` refuse every call, because the vendored tool
    reads them from `process.env` and would skip the prompt or send it to one
    address for everybody.
+5. **`skipConfirmations: true` trusts the config about whose mailbox it is.**
+   The slug's confirmed tools run with nobody asked, which is right for a
+   mailbox that is the agent's own (Zimmer's) and wrong for a person's. strad
+   cannot tell the two apart from the credential, so the reviewed config line is
+   the only check. It cannot be set by a runtime roster write, it is refused
+   beside `confirmations: true`, and it reaches only that slug's calls.
 
-**Undo.** 2 is a console prompt that answers the same protocol. 3 is a measured
+**Undo.** 5 is the design. 2 is a console prompt that answers the same protocol. 3 is a measured
 caller-side bound, recorded here, or a caller that always sends a progressToken.
 1 and 4 are the design.
 

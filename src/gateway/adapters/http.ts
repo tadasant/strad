@@ -34,7 +34,11 @@ import {
   type SelfClassifyingError,
 } from "../../telemetry/index.ts";
 import { remedyText, type HostState, type LocalHost } from "../troubleshoot.ts";
-import { elicitationMeta, type ElicitationChannel } from "../elicitation.ts";
+import {
+  elicitationMeta,
+  elicitationSkipMeta,
+  type ElicitationChannel,
+} from "../elicitation.ts";
 import { ServerUnconfiguredError } from "../unconfigured.ts";
 import { SecretNotFoundError } from "../../secrets/provider/index.ts";
 import type {
@@ -289,6 +293,12 @@ export class HttpServerAdapter implements ServerAdapter {
        * the URL is a credential for that session's prompts.
        */
       forwardElicitation?: boolean;
+      /**
+       * Tell the bundle to run this slug's confirmed tools without a human,
+       * on every `tools/call` (a `skipConfirmations: true` slug). Never set
+       * beside `forwardElicitation`; the schema refuses a slug declaring both.
+       */
+      skipConfirmations?: boolean;
       /**
        * The headers the bundle sends on its approval requests, resolved per
        * call (the slug's `confirmationHeaders:`). Only read when a channel is
@@ -833,8 +843,9 @@ export class HttpServerAdapter implements ServerAdapter {
     // name and arguments and nothing else, which is what lets the upstream
     // trust this key.
     const confirmed = this.opts.forwardElicitation === true;
-    const _meta =
-      confirmed && ctx?.elicitation
+    const _meta = this.opts.skipConfirmations
+      ? elicitationSkipMeta(this.slug)
+      : confirmed && ctx?.elicitation
         ? elicitationMeta(
             await this.withConfirmationHeaders(ctx.elicitation),
             this.slug,

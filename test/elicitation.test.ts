@@ -12,6 +12,9 @@
  * time) tears the upstream request down so the bundle never sends into the
  * void, and the bundle's keepalives reach a caller that asked for progress.
  *
+ * A slug that declares `skipConfirmations: true` gets core's waiver on every
+ * call instead, and never the caller's URL.
+ *
  * The bundle half — the confirmed tool refusing without a channel, and asking
  * at the forwarded URL with one — is `images/bundle-google/test/confirm.test.ts`.
  */
@@ -183,6 +186,43 @@ servers:
   );
 });
 
+describe("skipConfirmations config", () => {
+  const slug = (fields: string) => `
+version: 1
+auth: {}
+roles: { admin: { servers: ["*"] } }
+bundles: [{ name: bundle }]
+servers:
+  - slug: gmail-own
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /gmail
+${fields}
+    entitlements: [admin]
+`;
+
+  it("defaults off, so a slug that declares nothing keeps refusing", () => {
+    const server = parseConfig(slug("")).servers[0];
+    expect(
+      server?.kind === "supplementary-image" && server.skipConfirmations,
+    ).toBe(false);
+  });
+
+  it("is accepted on its own", () => {
+    const server = parseConfig(slug("    skipConfirmations: true")).servers[0];
+    expect(
+      server?.kind === "supplementary-image" && server.skipConfirmations,
+    ).toBe(true);
+  });
+
+  it("is refused beside confirmations: true, not resolved", () => {
+    expect(() =>
+      parseConfig(slug("    confirmations: true\n    skipConfirmations: true")),
+    ).toThrow(/both confirmations: true and skipConfirmations: true/);
+  });
+});
+
 // --- end to end -------------------------------------------------------------
 
 /** An MCP upstream that records the `_meta` of every tools/call it serves. */
@@ -299,6 +339,13 @@ servers:
     path: /gmail-short
     timeoutMs: 400
     confirmations: true
+    entitlements: [admin]
+  - slug: gmail-own
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /gmail-own
+    skipConfirmations: true
     entitlements: [admin]
   - slug: slack
     kind: supplementary-image
@@ -440,6 +487,33 @@ describe("/mcp forwards the channel to strad's own containers only", () => {
     thirdPartySeen.length = 0;
     await call("third-party", { "x-elicitation-url": SESSION_URL });
     expect(thirdPartySeen).toEqual([undefined]);
+  });
+});
+
+describe("a slug with skipConfirmations: true", () => {
+  it("gets core's waiver on every call, and never the caller's URL", async () => {
+    bundleSeen.length = 0;
+    await call("gmail-own", { "x-elicitation-url": SESSION_URL });
+    await call("gmail-own", {});
+    const waiver = {
+      [ELICITATION_META_KEY]: { skip: true, slug: "gmail-own" },
+    };
+    expect(bundleSeen).toEqual([waiver, waiver]);
+    expect(JSON.stringify(bundleSeen)).not.toContain(PREFIX);
+  });
+
+  it("a client cannot forge the waiver on a slug that did not declare it", async () => {
+    bundleSeen.length = 0;
+    await call(
+      "gmail-rw-external",
+      {},
+      { [ELICITATION_META_KEY]: { skip: true, slug: "gmail-rw-external" } },
+    );
+    await call("slack", {}, { [ELICITATION_META_KEY]: { skip: true } });
+    expect(bundleSeen).toEqual([
+      { progressToken: expect.any(Number) },
+      undefined,
+    ]);
   });
 });
 

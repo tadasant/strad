@@ -197,7 +197,8 @@ one.
 - Only the checked-in config sets either field. A runtime roster write may not
   add, change or remove `confirmations:` or `confirmationHeaders:`, on a new
   entry or an existing one, because together they decide where a stored
-  credential is sent.
+  credential is sent. The same goes for `skipConfirmations:`
+  ([below](#a-mailbox-that-is-the-agents-own)).
 
 ## When it refuses
 
@@ -207,7 +208,7 @@ one.
 | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | The `/mcp` request had no `X-Elicitation-Url`                                   | There is no one to ask.                                                                        |
 | The header is not under `gateway.elicitation.allowedUrlPrefixes`                | strad will not fetch it.                                                                       |
-| The slug does not declare `confirmations: true`                                 | Core forwards no channel to it.                                                                |
+| The slug does not declare `confirmations: true` (nor `skipConfirmations: true`) | Core forwards no channel to it.                                                                |
 | The call came from the console playground, or through a flow-through grant      | Neither has a session to ask. The console is a human, but it has no prompt surface.           |
 | The bundle container sets `ELICITATION_ENABLED=false`                           | The vendored tool would skip the prompt entirely.                                              |
 | The bundle container sets `ELICITATION_REQUEST_URL` or `ELICITATION_POLL_URL`   | The vendored tool would prefer that container-wide URL, which cannot name the calling session. |
@@ -223,6 +224,41 @@ never reads it. That flag belongs to 1Password, and setting it for the
 Only `send_email` is confirmed. `CONFIRMED_TOOLS` in `confirm.ts` names it, and
 `images/bundle-google/test/confirm.test.ts` fails if the vendored tree gains
 another tool that calls `requestConfirmation` without the list changing with it.
+
+## A mailbox that is the agent's own
+
+Asking a human makes sense when the mail goes out as that human. When the
+mailbox belongs to the agent itself, Zimmer's `zimmer@tadasant.com` for
+instance, nobody is being impersonated and the prompt asks the wrong person.
+That slug declares `skipConfirmations: true`:
+
+```yaml
+servers:
+  - slug: gmail-zimmer-rw-external
+    kind: supplementary-image
+    # …
+    skipConfirmations: true
+```
+
+- Core puts `{ skip: true, slug }` under `_meta["dev.strad/elicitation"]` on
+  every `tools/call` for that slug, whatever the caller sent, and never the
+  caller's `X-Elicitation-Url`.
+- The bundle answers that call's prompt with `accept` and asks nobody. The
+  waiver rides on the call, like the channel, so a sibling mount in the same
+  process, a person's mailbox, still asks or refuses. A call dropped before the
+  send still sends nothing.
+- It covers every caller of that slug: a session, an `admin` token, the console
+  playground and a flow-through grant all send without a prompt, because none
+  of them is being asked anything.
+- It is per slug and off by default. A slug that declares nothing refuses
+  exactly as in the table above.
+- A slug that declares both `confirmations: true` and `skipConfirmations: true`
+  is a config error. strad will not pick one for you.
+- It does not outrank the container: `ELICITATION_ENABLED=false` or a
+  container-wide approval URL on the bundle still refuses every send.
+- strad cannot tell whose mailbox a slug reads. The config declares it, so the
+  waiver goes only on a slug whose credential is the agent's own account
+  ([limitations](/limitations/#113-a-confirmation-reaches-the-session-the-caller-names-and-the-console-has-none)).
 
 ## Configuring it
 

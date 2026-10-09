@@ -11,6 +11,8 @@
  *   - with a channel, the approval request goes to THAT URL (and only that
  *     one), the poll follows the Zimmer protocol, and only `accept` sends;
  *   - two concurrent calls with two channels never cross;
+ *   - core's `skip` waiver sends without asking, for that call alone: a
+ *     sibling mount's call in flight at the same time still asks or refuses;
  *   - a call that is DROPPED while the human decides (cancelled, or its HTTP
  *     response closed) never sends, even when the human then says yes;
  *   - a waiting call sends keepalive progress, and the edge headers core
@@ -374,6 +376,88 @@ test("two calls in flight with two channels never cross", async () => {
   });
 });
 
+// --- a slug that waives the human -------------------------------------------
+
+const SKIP = meta({ skip: true, slug: "gmail-zimmer-rw-external" });
+
+test("skip: send_email sends without asking anyone", async () => {
+  const { sent, client } = mailbox();
+  const mcp = await connect(client);
+  const res = await mcp.callTool({
+    name: "send_email",
+    arguments: SEND,
+    _meta: SKIP,
+  });
+  assert.notEqual(res.isError, true, text(res));
+  assert.match(text(res), /sent successfully/);
+  assert.equal(sent.length, 1);
+  assert.equal(created.length, 0);
+  assert.equal(polled.length, 0);
+});
+
+test("skip: a draft send goes out unasked too", async () => {
+  const { sent, client } = mailbox();
+  const mcp = await connect(client);
+  const res = await mcp.callTool({
+    name: "send_email",
+    arguments: { from_draft_id: "d1" },
+    _meta: SKIP,
+  });
+  assert.notEqual(res.isError, true, text(res));
+  assert.deepEqual(sent, [{ draft: "d1" }]);
+  assert.equal(created.length, 0);
+});
+
+test("skip does not outrank the container: ELICITATION_ENABLED=false still refuses", async () => {
+  process.env.ELICITATION_ENABLED = "false";
+  const { sent, client } = mailbox();
+  const mcp = await connect(client);
+  const res = await mcp.callTool({
+    name: "send_email",
+    arguments: SEND,
+    _meta: SKIP,
+  });
+  assert.equal(res.isError, true);
+  assert.match(text(res), /ELICITATION_ENABLED=false/);
+  assert.equal(sent.length, 0);
+});
+
+test("a waived call and an asking call in flight at once, on two mounts, never cross", async () => {
+  // One process, two mounts, as the bundle runs them: Zimmer's own mailbox
+  // (waived) and a person's (asked, then declined), plus a third call that
+  // carries nothing. The waiver is the waived call's alone.
+  answers.set("/session/9-z", "pending");
+  const own = mailbox();
+  const person = mailbox();
+  const ownMcp = await connect(own.client);
+  const personMcp = await connectFast(person.client);
+  const asking = personMcp.callTool({
+    name: "send_email",
+    arguments: { ...SEND, subject: "as a person" },
+    _meta: meta({ url: `${base}/session/9-z`, ttlMs: 30_000 }),
+  });
+  await until(() => created.length === 1);
+  const [waived, bare] = await Promise.all([
+    ownMcp.callTool({
+      name: "send_email",
+      arguments: { ...SEND, subject: "as zimmer" },
+      _meta: SKIP,
+    }),
+    personMcp.callTool({ name: "send_email", arguments: SEND }),
+  ]);
+  assert.match(text(waived), /sent successfully/);
+  assert.equal(own.sent.length, 1);
+  assert.equal(bare.isError, true);
+  assert.match(text(bare), /carried no confirmation channel/);
+  // The asking call is still waiting on its human, who says no.
+  assert.equal(person.sent.length, 0);
+  answers.set("/session/9-z", "decline");
+  assert.match(text(await asking), /cancelled/);
+  assert.equal(person.sent.length, 0);
+  assert.equal(created.length, 1);
+  assert.match(String(created[0]!.body.message), /Subject: as a person/);
+});
+
 // --- the parse --------------------------------------------------------------
 
 test("channelFrom: only a web URL from core's own key counts", () => {
@@ -381,6 +465,16 @@ test("channelFrom: only a web URL from core's own key counts", () => {
   assert.equal(channelFrom({ other: { url: "https://x" } }), null);
   assert.equal(channelFrom(meta({ url: "file:///etc/passwd" })), null);
   assert.equal(channelFrom(meta({ url: "not a url" })), null);
+  // The waiver is exactly `skip: true`, and never beside a URL.
+  assert.deepEqual(channelFrom(meta({ skip: true, slug: "s" })), {
+    skip: true,
+    slug: "s",
+  });
+  assert.equal(channelFrom(meta({ skip: "true" })), null);
+  assert.equal(
+    channelFrom(meta({ skip: true, url: "https://z.example/s/1-a" })),
+    null,
+  );
   assert.deepEqual(
     channelFrom(meta({ url: "https://z.example/s/1-a", ttlMs: -1 })),
     {

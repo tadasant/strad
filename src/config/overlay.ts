@@ -459,10 +459,13 @@ export const DEPLOY_ONLY_FIELDS = [
  * A roster write could otherwise aim any `${NAME}` the namespace or the shared
  * layer resolves off the box. Where a stored credential is sent is a decision
  * for a reviewed change to the checked-in config, not for a roster write.
+ * `skipConfirmations:` takes the human out of a confirmed tool entirely, which
+ * is the same kind of decision.
  */
 export const CHECKED_IN_ONLY_FIELDS = [
   "confirmations",
   "confirmationHeaders",
+  "skipConfirmations",
 ] as const;
 
 /** Set to anything but its default. */
