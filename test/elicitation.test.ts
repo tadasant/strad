@@ -216,6 +216,22 @@ ${fields}
     ).toBe(true);
   });
 
+  it("is refused on a mount a sibling slug gates with confirmations: true", () => {
+    expect(() =>
+      parseConfig(
+        slug("    skipConfirmations: true") +
+          `  - slug: gmail-gated
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /gmail
+    confirmations: true
+    entitlements: [admin]
+`,
+      ),
+    ).toThrow(/where "gmail-gated" declares confirmations: true/);
+  });
+
   it("is refused beside confirmations: true, not resolved", () => {
     expect(() =>
       parseConfig(slug("    confirmations: true\n    skipConfirmations: true")),

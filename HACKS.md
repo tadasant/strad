@@ -5965,11 +5965,12 @@ than worked around:
    mailbox that is the agent's own (Zimmer's) and wrong for a person's. strad
    cannot tell the two apart from the credential, so the reviewed config line is
    the only check. It cannot be set by a runtime roster write, it is refused
-   beside `confirmations: true`, and it reaches only that slug's calls.
+   beside `confirmations: true` and on a mount a sibling slug gates, and it
+   reaches only that slug's calls.
 
-**Undo.** 5 is the design. 2 is a console prompt that answers the same protocol. 3 is a measured
+**Undo.** 2 is a console prompt that answers the same protocol. 3 is a measured
 caller-side bound, recorded here, or a caller that always sends a progressToken.
-1 and 4 are the design.
+1, 4 and 5 are the design.
 
 ## 114. A WhatsApp attachment buffered before descriptors were kept is recovered from the phone, best effort
 

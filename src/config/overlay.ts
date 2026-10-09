@@ -531,9 +531,10 @@ export function assertCreatable(
   if (checkedIn.length > 0) {
     throw new NotRuntimeCreatable(
       `A supplementary server added at runtime may not declare ` +
-        `${checkedIn.join(", ")}: they send a caller's approval URL, and a ` +
-        `credential resolved from the store, off the box. Where that goes is ` +
-        `set in the checked-in config and shipped by a deploy.`,
+        `${checkedIn.join(", ")}: they decide who confirms a confirmed tool, ` +
+        `and where a caller's approval URL and a credential resolved from the ` +
+        `store are sent off the box. That is set in the checked-in config and ` +
+        `shipped by a deploy.`,
     );
   }
 
@@ -670,8 +671,9 @@ export function assertEditable(
       : "") +
     (checkedIn.length > 0
       ? `${checkedIn.join(", ")} decide${checkedIn.length > 1 ? "" : "s"} ` +
-        `where a caller's approval URL and a stored credential are sent off ` +
-        `the box, which only the checked-in config may say. `
+        `who confirms a confirmed tool, and where a caller's approval URL and ` +
+        `a stored credential are sent off the box, which only the checked-in ` +
+        `config may say. `
       : "");
 
   throw new ImmutableFieldChanged(

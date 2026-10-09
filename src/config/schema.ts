@@ -1752,6 +1752,29 @@ export const StradConfig = z
           path: ["servers"],
         });
       }
+      // Slugs on one (bundle, path) are one mount and one mailbox, so a waiver
+      // there would be an ungated door beside a gated one.
+      const gatedSibling = s.skipConfirmations
+        ? cfg.servers.find(
+            (o) =>
+              o.kind === "supplementary-image" &&
+              o.slug !== s.slug &&
+              o.bundle === s.bundle &&
+              o.path === s.path &&
+              o.confirmations,
+          )
+        : undefined;
+      if (gatedSibling) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `server "${s.slug}" declares skipConfirmations: true on ` +
+            `${s.bundle}${s.path}, where "${gatedSibling.slug}" declares ` +
+            "confirmations: true. They are one mount and one mailbox, so the " +
+            "waiver would be an ungated door beside a gated one.",
+          path: ["servers"],
+        });
+      }
       const names = Object.keys(s.confirmationHeaders);
       if (names.length > 0 && !s.confirmations) {
         ctx.addIssue({

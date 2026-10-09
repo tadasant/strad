@@ -245,15 +245,17 @@ servers:
   caller's `X-Elicitation-Url`.
 - The bundle answers that call's prompt with `accept` and asks nobody. The
   waiver rides on the call, like the channel, so a sibling mount in the same
-  process, a person's mailbox, still asks or refuses. A call dropped before the
-  send still sends nothing.
+  process, a person's mailbox, still asks or refuses.
 - It covers every caller of that slug: a session, an `admin` token, the console
   playground and a flow-through grant all send without a prompt, because none
   of them is being asked anything.
 - It is per slug and off by default. A slug that declares nothing refuses
   exactly as in the table above.
 - A slug that declares both `confirmations: true` and `skipConfirmations: true`
-  is a config error. strad will not pick one for you.
+  is a config error. strad will not pick one for you. So is a waived slug on
+  the same `bundle` and `path` as a slug declaring `confirmations: true`: two
+  slugs on one mount are one mailbox, and the waiver would be an ungated door
+  beside a gated one.
 - It does not outrank the container: `ELICITATION_ENABLED=false` or a
   container-wide approval URL on the bundle still refuses every send.
 - strad cannot tell whose mailbox a slug reads. The config declares it, so the

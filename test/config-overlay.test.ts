@@ -361,6 +361,22 @@ describe("assertCreatable", () => {
     ).not.toThrow();
   });
 
+  it("refuses skipConfirmations: who confirms is the checked-in config's call", () => {
+    expect(() =>
+      assertCreatable(
+        {
+          slug: "own",
+          kind: "supplementary-image",
+          image: "ghcr.io/example/bundle:latest",
+          bundle: "bundle",
+          path: "/own",
+          skipConfirmations: true,
+        },
+        ctx,
+      ),
+    ).toThrow(/may not declare skipConfirmations: .*who confirms/);
+  });
+
   it("refuses confirmations and confirmationHeaders: where a stored credential goes is the checked-in config's call", () => {
     const entry = {
       slug: "gamma-rw",
@@ -516,6 +532,23 @@ describe("assertEditable", () => {
     ).toThrow(ImmutableFieldChanged);
   });
 
+  it("refuses an edit that flips skipConfirmations either way", () => {
+    const entry = {
+      slug: "own",
+      kind: "supplementary-image",
+      image: "i:1",
+      bundle: "bundle",
+      path: "/own",
+    };
+    expect(() =>
+      assertEditable(entry, { ...entry, skipConfirmations: true }),
+    ).toThrow(/skipConfirmations decides who confirms/);
+    const waived = { ...entry, skipConfirmations: true };
+    expect(() =>
+      assertEditable(waived, { ...waived, skipConfirmations: false }),
+    ).toThrow(ImmutableFieldChanged);
+  });
+
   it("refuses an edit that adds or re-aims confirmationHeaders, and says why", () => {
     const before = {
       slug: "g",
@@ -531,7 +564,7 @@ describe("assertEditable", () => {
         ...before,
         confirmationHeaders: { "CF-Access-Client-Id": "${SOMETHING_ELSE}" },
       }),
-    ).toThrow(/confirmationHeaders decides where .* stored credential/);
+    ).toThrow(/confirmationHeaders decides .* stored credential/);
     expect(() =>
       assertEditable(before, { ...before, confirmations: false }),
     ).toThrow(ImmutableFieldChanged);
