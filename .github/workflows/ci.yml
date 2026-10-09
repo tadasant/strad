@@ -144,6 +144,14 @@ jobs:
   #               nothing that issues a card or moves a budget — that surface is
   #               the only boundary the credential has.
   #
+  #   liveoak     test. It logs in to a BANK as a person, so its suites are the
+  #               ones that hold the boundary: the Cognito login is driven end
+  #               to end against a fake pool that does the server half of SRP
+  #               (the password never crosses the wire, and never appears in a
+  #               tool result even when an upstream echoes it), the remembered
+  #               device round-trips through sealed storage, and every request
+  #               to the bank's API is asserted to be a GET.
+  #
   #   x-twitter   test. Timeline, search, lookups and private bookmarks. The
   #               functional suites read no credentials — only `test:e2e`, which is
   #               not run here, resolves X API keys — so they need nothing CI cannot
@@ -248,7 +256,7 @@ jobs:
   #               repo would say so.
   #
   #   bundle/host test. THE host: the process every bundle container runs. It
-  #               mounts every tree in the image — 24 mounts, which staging's 33
+  #               mounts every tree in the image — 25 mounts, which staging's 34
   #               supplementary-image slugs resolve to, since a capability
   #               variant is another slug on the same mount. Its `tree:` carries
   #               a slash because it is a tree one level deeper than the rest —
@@ -321,6 +329,10 @@ jobs:
             test: true
             skip-browser: false
           - tree: aws-device-farm
+            build: false
+            test: true
+            skip-browser: false
+          - tree: liveoak
             build: false
             test: true
             skip-browser: false
@@ -419,7 +431,7 @@ jobs:
           node "$STRAD_HOSTD_HOME/app/build/cli.js" keys | awk '{ if (length($2) < 32) exit 1 }'
           ./install/uninstall.sh --purge
 
-  # THE bundle: twenty-four MCP servers, sixteen dependency trees, one Chromium and the
+  # THE bundle: twenty-five MCP servers, seventeen dependency trees, one Chromium and the
   # `op` CLI in one container. It is now the only supplementary component strad
   # deploys, so a PR that cannot build it — or that builds one where a server
   # silently lost half its tools — is a failing PR.

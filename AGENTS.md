@@ -219,6 +219,7 @@ not a confession.
 | `servers/telegram/**` — a tool, the credential model, the read/write split                                        | `servers/telegram.md`, `limitations.md`                                                                                                                                              |
 | `servers/bill-spend/**` — a tool, the write's body shapes, the read-back rule                                     | `servers/bill-spend.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                      |
 | `servers/aws-device-farm/**` — a tool, the driving wire, the cost model                                           | `servers/aws-device-farm.md`, `servers/aws-device-farm-setup.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                             |
+| `servers/liveoak/**` — a tool, the login or device flow, what the bank's API is sent                              | `servers/liveoak.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                         |
 | `servers/grafana/**` — the pinned version, the read-only flags, the env allowlist                                 | `servers/grafana.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                         |
 | `servers/good-eggs/**` — the basket read, a cart tool, what a result may claim                                    | `limitations.md`, and `servers/good-eggs/FORK.md`                                                                                                                                    |
 | `servers/strad-fetch/**` — a strategy, the cache bounds, an env name, the tool                                    | `servers/strad-fetch.md`, `limitations.md`, and `servers/strad-fetch/FORK.md`                                                                                                        |
@@ -264,10 +265,10 @@ numbers describe "how many servers," and they count different things:
 | The number | What it counts                                                                                     |
 | ---------- | -------------------------------------------------------------------------------------------------- |
 | **3**      | App Platform components: `core`, `bundle`, `bundle-zimmer-secrets`                                 |
-| **16**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
-| **24**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
-| **33**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included)         |
-| **36**     | total server slugs in staging (33 + `echo` builtin + `deepwiki` remote-http + `anki` local-tunnel) |
+| **17**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
+| **25**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
+| **34**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included)         |
+| **37**     | total server slugs in staging (34 + `echo` builtin + `deepwiki` remote-http + `anki` local-tunnel) |
 
 A slug is not a mount, and a mount is not a component. Before you write a number,
 grep for the others.
@@ -332,8 +333,8 @@ slop behind when you fix a stale fact.
   "did I typo a key" is answered here, by `scripts/check-config.ts`.
 - `src/deploy/appspec.ts` — turns the config into a DigitalOcean App Platform spec.
   The server list decides the container topology.
-- `servers/bundle/` — one image, 24 mounted MCP servers, one shared Chromium,
-  assembled from SIXTEEN independently-built dependency trees.
+- `servers/bundle/` — one image, 25 mounted MCP servers, one shared Chromium,
+  assembled from SEVENTEEN independently-built dependency trees.
 - `servers/remote-filesystem/` — strad's own artifact store, behind the
   `remote-filesystem-tmp-public` slug. `is_sensitive` picks the KIND of link;
   GCS's 7-day V4 ceiling is why the 14-day default is signed with V2.
@@ -373,6 +374,13 @@ slop behind when you fix a stale fact.
   denial. The status page and kill switch are a second loopback listener the
   tunnel never routes. `HACKS.md` #101 is what it costs the ops-without-box-access
   rule.
+- `servers/liveoak/` — strad's own LiveOak Bank server, behind `liveoak`. Lists
+  and fetches account statements so the password never reaches a model: the
+  login is Cognito SRP through the portal's own client library, as a REMEMBERED
+  DEVICE enrolled once by SMS code (`enrol_device`, `confirm_device`) and sealed
+  in GCS, and the bank's Apiture API is sent GET and nothing else. The wire was
+  read out of the portal's public JavaScript and has met only fakes in CI —
+  `HACKS.md` #116.
 - `servers/bill-spend/` — strad's own BILL Spend & Expense server, behind
   `bill-spend-ro` and `bill-spend-rw`. Re-codes card transactions to the right
   chart-of-accounts value, which BILL carries as CUSTOM-FIELD VALUES rather than

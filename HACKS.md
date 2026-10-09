@@ -391,7 +391,7 @@ one (hack #4).
 **✅ RESOLVED.** Core presents the internal token to every `supplementary-image`
 component, and the `strad-bundle` host refuses a mount request without it.
 
-**What.** The `strad-bundle` container — twenty-four mounts, and every upstream
+**What.** The `strad-bundle` container — twenty-five mounts, and every upstream
 credential behind them — serves every mount unauthenticated. Its only protection
 is the network boundary: an internal-only App Platform component
 (`internal_ports: [8080]`, no public route), reachable by core over the private
@@ -786,10 +786,10 @@ still what makes prod's read-only variants read-only.
 policies) → confirm → _then_ delete the per-server images, their workflows and the
 toggle plumbing.
 
-## 24. Twenty-four servers share one process, and one Chromium
+## 24. Twenty-five servers share one process, and one Chromium
 
-The collapsed bundle is one container running twenty-four MCP servers and one
-headless Chromium. An OOM there is a twenty-four-server outage; it used to be a
+The collapsed bundle is one container running twenty-five MCP servers and one
+headless Chromium. An OOM there is a twenty-five-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -2635,7 +2635,7 @@ both `infra/strad.staging.yaml` and `strad.config.example.yaml` — plus the cou
 in `servers/bundle/scripts/smoke.mjs`, `test/staging-config.test.ts` and
 `.github/workflows/ci.yml`.
 
-## 56. Per-slug box names are emitted for every server; seven of sixteen trees can read one
+## 56. Per-slug box names are emitted for every server; seven of seventeen trees can read one
 
 **What.** Every enabled `supplementary-image` server's resolved `env:` is emitted
 onto its bundle TWICE: under the bare name it always had, and under
@@ -3725,7 +3725,7 @@ behaviour, which is the pre-change one.
 a listed parameter current in a supplementary container's `process.env` without a
 redeploy. What it cannot do is make the MCP server inside that container LOOK at
 the new value. That is a property of the upstream, and this image runs
-twenty-four of them, most written by other people.
+twenty-five of them, most written by other people.
 
 The split is real and it is not subtle:
 
@@ -5393,7 +5393,7 @@ Workspace documents and cannot touch an uploaded binary. `files.copy` with
 file in the owner's Drive every time an agent reads a spreadsheet — a write, in a
 read tier. The npm packages that read xlsx are large, and the popular one has
 been unmaintained on npm since 0.18.5 with a live prototype-pollution advisory;
-this process holds three Google accounts' refresh tokens beside twenty-three other
+this process holds three Google accounts' refresh tokens beside twenty-four other
 MCP servers.
 
 **What it costs, and what a caller is told.** Every Office-backed result carries
@@ -6053,3 +6053,38 @@ refuses with `helper_unavailable` before any dialog when the grant is missing.
 with an always-on Mac (a Mac mini signed in to the same Apple ID) running the
 same install. 4 is the owner's setting: `"onTimeout": "deny"` on
 `capabilities.messages` in `~/.strad-hostd/config.json`.
+
+---
+
+## 116. The LiveOak server speaks an unpublished wire, and holds a login that skips MFA
+
+**What.** `servers/liveoak/` logs in to `secure.liveoak.bank`'s AWS Cognito pool
+(`us-east-1_RDbe8eaw5`) through `amazon-cognito-identity-js`, the portal's own
+client, and reads statements from `api.liveoak-production.apiture.com`
+(`docs/servers/liveoak.md`). Both were read out of the portal's public bundle
+(`main-es2015.*.js`): the `cognito:{poolId,appClientId}` block, the document
+center's `getDocuments({category:["accountStatements","customerStatements"]})`
+query, and `window.open(_links["apiture:document"].href)`.
+
+1. **Untested against LiveOak.** CI runs the real client library against
+   `test/fakes.ts`, which does the server half of SRP and device SRP, and a fake
+   API. That proves the exchange against Cognito's protocol, not against
+   LiveOak's pool settings (device tracking, challenge lifetime) or Apiture's
+   response shapes beyond the three fields the portal reads.
+2. **The remembered device is a credential.** `device-store.ts` seals the
+   device key, group key and device password with
+   `LIVEOAK_STATE_ENCRYPTION_KEY` into `{LIVEOAK_GCS_PREFIX}/device.sealed`.
+   With the password they log in with no phone. No rotation path: a new key
+   makes the object unreadable, and `enrol_device {"force":true}` re-enrols.
+3. **The pending MFA challenge is process memory.** A deploy between
+   `enrol_device` and `confirm_device` drops it.
+4. **Spent download links are an in-memory ledger per instance**, the same
+   bound as #114.
+5. **Read-only is enforced by `apiture.ts`, not by the token**, whose scopes
+   include `banking/write`. `test/server.test.ts` asserts every API request is a
+   GET.
+
+**Undo.** 1 lapses with the first real enrolment and statement fetch in prod;
+anything it finds is a fix here. 2 wants a key-rotation path. 3 and 4 are the
+design while the bundle runs one instance. 5 is the design for as long as
+LiveOak issues one token for everything.

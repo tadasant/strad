@@ -1,0 +1,14 @@
+{
+  "name": "liveoak",
+  "version": "0.1.0",
+  "private": true,
+  "description": "strad's LiveOak Bank MCP server — lists and fetches account statements from LiveOak's legacy portal (AWS Cognito + the Apiture API), read-only, with the login held server-side and the remembered-device state sealed in GCS. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared",
+    "test": "npm run test --workspace shared"
+  }
+}

@@ -607,11 +607,11 @@ nothing warns beforehand. Publishing the OAuth app removes the expiry.
 
 ## The deployment
 
-### 24. Twenty-four servers share one process and one CPU
+### 24. Twenty-five servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts twenty-four MCP servers,
+The `bundle` component runs one Node process that mounts twenty-five MCP servers,
 launches one shared Chromium and supervises one `mcp-grafana` child process, on
-`apps-s-1vcpu-2gb`. A crash in the host takes all twenty-four down together, and
+`apps-s-1vcpu-2gb`. A crash in the host takes all twenty-five down together, and
 Chromium contends with every other server for the single vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -1002,7 +1002,7 @@ a store-wide read.
 keeps a listed parameter current in a supplementary container's environment
 without a redeploy. It cannot make the MCP server inside that container **look**
 at the new value — that is a property of the upstream, and the bundle image runs
-twenty-four of them written by other people.
+twenty-five of them written by other people.
 
 `strad-fetch` builds its scraping clients inside a factory the host invokes per
 request, so a rotated key is used by the next tool call; that is the case the
@@ -2189,7 +2189,7 @@ ever rebuilt with a rootless or hand-installed docker, where buildx lives in
 
 **Serialising the workflows was the alternative.** A `concurrency:` group would
 have ended it too, at the cost of every push taking the sum of its builds rather
-than the longest — the bundle alone is sixteen dependency trees. Isolation costs a
+than the longest — the bundle alone is seventeen dependency trees. Isolation costs a
 `mkdir`.
 
 ### 49. The Telegram MTProto library is archived upstream
@@ -2289,7 +2289,7 @@ for the telegram pair, `BILL_SPEND_API_TOKEN` for the bill-spend pair,
 then delete that entry's `enabled:` line and add each seeded name to
 `PROVISIONED_STATICS` in `test/staging-config.test.ts`.
 
-### 56. Per-slug variable names are emitted for every server; only seven of the sixteen trees can read one
+### 56. Per-slug variable names are emitted for every server; only seven of the seventeen trees can read one
 
 Every supplementary server's `env:` lands on its bundle twice — under the bare
 name and under `<SLUG>__<NAME>` — with no condition attached, so what a server's
@@ -2575,7 +2575,7 @@ leak. Nothing in the cache is a credential; it is public pages someone fetched.
 
 **What the fork DID bound is the memory.** Upstream's store grows for the life of
 the process, which is fine for a subprocess the OS reclaims and an out-of-memory
-kill in a container that hosts twenty-four mounts. The cache is LRU-bounded on both
+kill in a container that hosts twenty-five mounts. The cache is LRU-bounded on both
 entry count and bytes, and the filesystem backend is gone (App Platform gives the
 container no persistent volume, so it was memory with extra steps).
 
@@ -3546,3 +3546,53 @@ The server is allowed on timeout. `init` and `add messages` set `onTimeout: "all
 See `HACKS.md` #115.
 
 ---
+
+### 116. The LiveOak server speaks a wire nobody here has watched, and holds a bank login that skips MFA
+
+The [LiveOak Bank](/servers/liveoak/) server logs in to LiveOak's legacy portal
+as the account holder, through AWS Cognito, and reads statements from the
+bank's Apiture API. LiveOak publishes neither. What it costs:
+
+- **The wire is inferred, not observed.** The pool id, the app client, the
+  statement query and the document link were read out of the portal's public
+  JavaScript. CI drives the real Cognito client library against a fake pool that
+  does the SRP math, and a fake API, so the exchange is proven against
+  Cognito's protocol rather than against LiveOak. The first real enrolment is
+  the first time any of it meets the bank. A portal release that renames a
+  field, moves the pool or adds a login step breaks it, with no notice.
+- **Statement fields are best effort.** The portal's code reads three fields of
+  a statement (`_id`, `endOn` and the document link). The rest (`name`,
+  `account`, `start_on`, …) come from a few plausible names and are omitted
+  when absent.
+- **The device keys are a login that skips the code.** With the password, the
+  three keys sealed in the bucket log in with no phone. They are sealed with
+  `LIVEOAK_STATE_ENCRYPTION_KEY`, and no tool returns them, but anyone holding
+  the store's values and the bucket holds the account. There is no rotation
+  path for the key: a new one makes the state unreadable, and the fix is
+  `enrol_device` with `force: true`.
+- **Enrolment needs a human, once, within minutes.** The code goes to the
+  account holder's phone, and Cognito's challenge lives about three minutes
+  unless the pool says otherwise. The pending challenge is in one container's
+  memory, so a deploy between `enrol_device` and `confirm_device` drops it.
+- **A pool that issues no device makes this server useless unattended.** If
+  LiveOak's pool does not track devices, every login asks for a code.
+  `confirm_device` says so instead of reporting success.
+- **Spent links are an in-memory ledger per instance.** A restart forgets
+  them, and two instances keep two ledgers, so a link could be used once per
+  instance inside its 15 minutes.
+- **Read-only is a property of the client, not of the token.** The Cognito
+  access token can write. Nothing in `apiture.ts` sends anything but GET, and a
+  test asserts that against every request, but a change to that file is a
+  change to the boundary.
+
+**How you would know.** `get_status` says whether a device is enrolled. A login
+the pool refuses comes back with Cognito's own exception name
+(`NotAuthorizedException`, `CodeMismatchException`, …). A device LiveOak stopped
+honouring comes back as "no longer accepts the enrolled device", with the
+challenge held for `confirm_device`.
+
+**Undo:** an API from LiveOak, or a statements export to an aggregator this
+server could read instead. Short of that, a key-rotation path for the device
+state.
+
+See `HACKS.md` #116.

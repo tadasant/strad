@@ -35,7 +35,7 @@ export interface CreateMCPServerOptions {
  * registerHandlers }`, so the bundle host mounts it exactly like the others.
  *
  * CREDENTIALS ARE LAZY. The image ships none, strad injects them onto the
- * component at deploy time, and this server shares a process with twenty-three
+ * component at deploy time, and this server shares a process with twenty-four
  * others — so a missing variable must be one server's failed tool call, not a
  * boot failure for the whole bundle. `tools/list` works with no credential at
  * all, which is what lets the console and an agent see what this deployment
