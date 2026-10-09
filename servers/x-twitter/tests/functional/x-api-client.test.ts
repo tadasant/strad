@@ -213,6 +213,19 @@ describe("bookmarkWriteForbidden", () => {
     expect(msg).toContain('"tweet.read bookmark.read"');
     expect(msg).toContain("does not include bookmark.write");
     expect(msg).toMatch(/Retrying this call will not help/);
+    // A running process overwrites a consent it did not boot with.
+    expect(msg).toMatch(/then restart this server/);
+  });
+
+  it("carries X's own reason when the body has one", () => {
+    const msg = bookmarkWriteForbidden(
+      ["bookmark.write"],
+      JSON.stringify({ title: "Forbidden", detail: "App is read-only." }),
+    );
+    expect(msg).toContain('X said: "App is read-only."');
+    expect(bookmarkWriteForbidden(undefined, "not json")).not.toContain(
+      "X said",
+    );
   });
 
   it("points away from the scope when the credential already holds it", () => {

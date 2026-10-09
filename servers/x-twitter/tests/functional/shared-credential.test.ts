@@ -217,9 +217,7 @@ describe("x-twitter and x-twitter-rw sharing one rotating refresh token", () => 
     expect(x.presented).toEqual(x.presented.map((_, i) => `refresh-${i + 1}`));
     // The store ends holding the live token, so the next boot resumes from it.
     expect(m.persisted.at(-1)).toBe(x.live);
-    expect(m.persisted).toEqual(
-      x.presented.map((_, i) => `refresh-${i + 2}`),
-    );
+    expect(m.persisted).toEqual(x.presented.map((_, i) => `refresh-${i + 2}`));
   });
 
   it("is why the slugs share a mount: two mounts seeded with one token kill each other", async () => {

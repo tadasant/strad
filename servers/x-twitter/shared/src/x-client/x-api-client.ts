@@ -40,30 +40,52 @@ export const BOOKMARK_WRITE_SCOPE = "bookmark.write";
  */
 export function bookmarkWriteForbidden(
   granted: readonly string[] | undefined,
+  body = "",
 ): string {
+  // A process holds the refresh token it started with and rotates THAT one, so
+  // a consent given while it runs is overwritten by its next rotation unless the
+  // server restarts first. The restart is part of the fix, not an extra.
   const remedy =
     `Re-run the X OAuth consent for this credential with ${BOOKMARK_WRITE_SCOPE} ` +
-    `added to the requested scopes; reads are unaffected. Retrying this call ` +
-    `will not help.`;
+    `added to the requested scopes, then restart this server so it starts from ` +
+    `the new token. Reads are unaffected. Retrying this call will not help.`;
+  const said = xErrorDetail(body);
+  const upstream = said ? ` X said: "${said}".` : "";
   if (granted && !granted.includes(BOOKMARK_WRITE_SCOPE)) {
     return (
       `X refused the bookmark write (HTTP 403): this credential was granted ` +
       `"${granted.join(" ")}", which does not include ${BOOKMARK_WRITE_SCOPE}. ` +
-      remedy
+      remedy +
+      upstream
     );
   }
   if (granted) {
     return (
       `X refused the bookmark write (HTTP 403) although the credential holds ` +
       `${BOOKMARK_WRITE_SCOPE}. Check that the X app's permissions in the X ` +
-      `Developer Console allow writes and that the app has API access.`
+      `Developer Console allow writes and that the app has API access.` +
+      upstream
     );
   }
   return (
     `X refused the bookmark write (HTTP 403). The likeliest cause is a ` +
     `credential consented without ${BOOKMARK_WRITE_SCOPE}. ` +
-    remedy
+    remedy +
+    upstream
   );
+}
+
+/** X's own one-line reason from an error body (`detail`, else `title`), bounded. */
+function xErrorDetail(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown; title?: unknown };
+    const text = [parsed.detail, parsed.title].find(
+      (v): v is string => typeof v === "string" && v.trim() !== "",
+    );
+    return text ? text.trim().slice(0, 200) : "";
+  } catch {
+    return "";
+  }
 }
 
 export interface XApiClientConfig {
@@ -177,7 +199,7 @@ export class XApiClient implements IXClient {
           throw new XApiError(
             error.status,
             text,
-            bookmarkWriteForbidden(this.tokenProvider.grantedScopes),
+            bookmarkWriteForbidden(this.tokenProvider.grantedScopes, text),
           );
         }
         throw error;

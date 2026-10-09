@@ -3224,7 +3224,7 @@ has to implement the CAS first.
   name.
 - **Twin slugs on one mount share one copy, by a config rule.** `x-twitter`
   and `x-twitter-rw` share a bundle and a path, so they are one process and one
-  token provider, and the second replica the render check refuses never exists.
+  token provider, and the render check refuses a second replica.
   What keeps the twin from holding a SECOND copy of the token is the schema's
   one-writer-per-mount rule: a name may be on only one twin's `paramsWritable:`,
   and no twin may put it on its own `oauth:` connector. Two costs follow. The

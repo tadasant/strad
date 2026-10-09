@@ -483,7 +483,7 @@ servers:
     env:
       SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
 
-  # X is deliberately read-only by default: `x-twitter` withholds
+  # X comes as a read tier and a write tier: `x-twitter` withholds
   # create_bookmark and remove_bookmark, and `x-twitter-rw` below is the twin
   # that adds them. Both write only the account's PRIVATE bookmarks. OAuth
   # credentials come from an X Developer Console app.
@@ -576,7 +576,7 @@ servers:
     env:
       X_OAUTH_ACCESS_TOKEN: "${X_OAUTH_ACCESS_TOKEN}"
 
-  # The read-only twin of the server above: same image, same bundle, same path,
+  # The read-only twin of `slack`, further up: same image, same bundle, same path,
   # same container, same credential. The ONLY difference is the policy the gateway
   # enforces. Declare the credential on BOTH variants: a component's env is the
   # union of its servers' env maps, so this is a no-op at deploy time, and it

@@ -58,7 +58,7 @@ Tool names and behaviour match the standalone `pulsemcp-x-twitter-mcp-server` pa
 The refresh token is single-use, so the two slugs cannot each hold a copy. Whichever one refreshed first would invalidate the other's. They share it instead:
 
 - **One mount, one client.** The host calls `createMCPServer` once for `/x-twitter`, and `registerHandlers` memoises the X client for the mount's lifetime, whichever slug a request came in on. Both slugs' calls go through one `RefreshTokenProvider`, which collapses concurrent refreshes into one exchange. Each rotation persists in order, because `onRefreshToken` is awaited.
-- **One owner of the credential.** `x-twitter` owns `params: true`, `paramsWritable: [X_OAUTH_REFRESH_TOKEN]` and the `oauth:` connector. `x-twitter-rw` declares none of them. strad's config check refuses a twin that lists the variable under its own `paramsWritable:` or names it on its own `oauth:` connector, because either one creates a second copy of the token in a namespace the mount never reads.
+- **One owner of the credential.** `x-twitter` (the slug the bundle host writes back under, `X_SLUG` in `servers/bundle/host/src/index.ts`) owns `params: true`, `paramsWritable: [X_OAUTH_REFRESH_TOKEN]` and the `oauth:` connector. `x-twitter-rw` declares none of them. strad's config check refuses a twin that lists the variable under its own `paramsWritable:` or names it on its own `oauth:` connector, because either one creates a second copy of the token in a namespace the mount never reads.
 - **One replica.** The render refuses `instanceCount` above 1 on a component with a `paramsWritable:` server.
 
 Two consequences:
@@ -70,7 +70,7 @@ Two consequences:
 
 ### A write on a token without `bookmark.write`
 
-X answers 403, and reads keep working, so nothing else points at the scope. The bookmark tools say so. When the provider knows what X granted (refresh-token mode, after the first refresh), the error names the granted scopes, says `bookmark.write` is missing, and says the fix is a new consent with it added. In static-access-token mode it names the scope as the likeliest cause.
+X answers 403, and reads keep working, so nothing else points at the scope. The bookmark tools say so. When the provider knows what X granted (refresh-token mode, after the first refresh), the error names the granted scopes, says `bookmark.write` is missing, and says the fix is a new consent with it added, followed by a restart. A process that is already running keeps the token it booted with, and its next rotation overwrites the new consent. In static-access-token mode it names the scope as the likeliest cause.
 
 ## Prerequisites: X API access tier
 

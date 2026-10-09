@@ -1248,6 +1248,7 @@ request arrived under, and the provider in it collapses concurrent refreshes
 into one exchange. Only the gateway's `tools:` policy tells the slugs apart:
 
 ```yaml
+# a fragment: image, entitlements and the connector's other fields elided
 - slug: x-twitter # owns the credential: params, write-back, consent
   kind: supplementary-image
   bundle: bundle

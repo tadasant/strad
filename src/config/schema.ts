@@ -1960,8 +1960,9 @@ export const StradConfig = z
                 `paramsWritable:, and they share bundle "${s.bundle}" and path ` +
                 `"${s.path}" — one mount, one process, one copy of that ` +
                 `credential. Exactly one of them may own a written-back variable: ` +
-                `keep it on "${owner}" and drop it from "${s.slug}", which ` +
-                `uses the owner's through the shared mount.`,
+                `the slug the mount writes back under (for /x-twitter, ` +
+                `"x-twitter"). Drop it from the other, which uses the owner's ` +
+                `through the shared mount.`,
               path: ["servers"],
             });
           }
@@ -1971,7 +1972,8 @@ export const StradConfig = z
       for (const s of twins) {
         if (!s.oauth) continue;
         const variable = s.oauth.refreshTokenVariable;
-        const owner = writer.get(variable.toLowerCase());
+        const fold = variable.toLowerCase();
+        const owner = writer.get(fold);
         if (owner === undefined || owner === s.slug) continue;
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
