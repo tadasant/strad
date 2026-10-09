@@ -404,8 +404,9 @@ fixture chat.db with `hostd/messages/fixture.swift`, and drives the helper over
 stdio with `hostd/messages/smoke.mjs`: an `attributedBody` NSArchiver wrote is
 decoded, writes and ATTACH are refused, a TIFF is converted by `sips`, an
 attachment outside the database's directory is refused, and the daemon's own
-queries run through it. The runner has no Full Disk Access to give, so the real
-`~/Library/Messages` is read only on the owner's Mac; [limitation
+queries run through it. A runner has no real Messages history and its grants
+are the image's, so a real `~/Library/Messages` under a grant the owner clicked
+is read only on the owner's Mac; [limitation
 #115](/limitations/) says so.
 
 ## `release-image.yml` — mint and ship

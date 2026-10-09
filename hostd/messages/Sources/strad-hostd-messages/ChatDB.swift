@@ -85,13 +85,20 @@ final class ChatDB {
         }, nil)
 
         var statement: OpaquePointer?
-        var tail: UnsafePointer<CChar>?
-        let prepared = sql.withCString { sqlite3_prepare_v2(db, $0, -1, &statement, &tail) }
+        // The tail points into the C string `withCString` lends, so it is
+        // read inside the closure: after it returns, that buffer is gone.
+        var rest = ""
+        let prepared = sql.withCString { text -> Int32 in
+            var tail: UnsafePointer<CChar>?
+            let code = sqlite3_prepare_v2(db, text, -1, &statement, &tail)
+            if let tail { rest = String(cString: tail) }
+            return code
+        }
         guard prepared == SQLITE_OK, let stmt = statement else {
             throw HelperError(code: "bad_sql", message: String(cString: sqlite3_errmsg(db)))
         }
         defer { sqlite3_finalize(stmt) }
-        if let rest = tail, !String(cString: rest).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw HelperError(code: "bad_sql", message: "one statement per query")
         }
         guard sqlite3_stmt_readonly(stmt) != 0 else {

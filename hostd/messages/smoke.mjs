@@ -5,8 +5,8 @@
 //
 //   swift fixture.swift /tmp/fx && node smoke.mjs .build/release/strad-hostd-messages /tmp/fx/chat.db
 //
-// A GitHub runner has no Full Disk Access to give, so the real
-// ~/Library/Messages is checked only for what the helper says about it.
+// A runner's own ~/Library/Messages holds no one's history, so it is checked
+// only for what the helper says about it.
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
@@ -206,9 +206,8 @@ try {
   child.stdin.end();
 }
 
-// The runner's own Messages database: no Full Disk Access on a CI box, so the
-// helper must say "denied" (or "missing", on an image with no Messages data)
-// rather than crash or claim it can read.
+// The runner's own Messages database: whatever the image grants — it has
+// answered "readable" — the helper must report a state rather than crash.
 const status = spawn(binary, ["--status"], {
   stdio: ["ignore", "pipe", "inherit"],
 });
