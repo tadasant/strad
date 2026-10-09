@@ -81,7 +81,8 @@ export interface Attachment {
 export interface Message {
   rowid: number;
   guid: string;
-  chat_id: string;
+  /** Null only for a message Messages has not joined to a chat. */
+  chat_id: string | null;
   chat_name: string | null;
   sent_at: string;
   from_me: boolean;
@@ -178,13 +179,17 @@ export class ChatDb {
   async messages(opts: {
     chatId?: string;
     after?: number;
+    before?: number;
     limit: number;
   }): Promise<{ messages: Message[]; hasMore: boolean }> {
     const select = await this.messageSelect();
     const params: (string | number | null)[] = [];
     // A message is in one chat; the join table allows more. Filtered by chat,
     // join that chat. Unfiltered, take the message's lowest-numbered chat, so
-    // a message never comes back twice.
+    // a message never comes back twice — and LEFT JOIN it, so a message whose
+    // chat row is not there (yet, or at all) is returned with chat_id null
+    // rather than skipped: a cursor that walked past a skipped row would never
+    // come back for it.
     let from: string;
     if (opts.chatId !== undefined) {
       from =
@@ -193,13 +198,17 @@ export class ChatDb {
       params.push(opts.chatId);
     } else {
       from =
-        "FROM message m JOIN chat c ON c.ROWID = " +
+        "FROM message m LEFT JOIN chat c ON c.ROWID = " +
         "(SELECT MIN(cmj.chat_id) FROM chat_message_join cmj WHERE cmj.message_id = m.ROWID)";
     }
     const where: string[] = [];
     if (opts.after !== undefined) {
       where.push("m.ROWID > ?");
       params.push(opts.after);
+    }
+    if (opts.before !== undefined) {
+      where.push("m.ROWID < ?");
+      params.push(opts.before);
     }
     const order = opts.after !== undefined ? "ASC" : "DESC";
     params.push(opts.limit + 1);
@@ -253,8 +262,23 @@ export class ChatDb {
   }
 
   /** The highest ROWID in `message`: 0 for an empty database. */
+  /**
+   * The highest ROWID `message` has ever handed out. `sqlite_sequence`
+   * remembers it after the newest row is deleted, which `MAX(ROWID)` does
+   * not — and a cursor sitting on a deleted message is not a rebuilt
+   * database. `MAX(ROWID)` is the fallback for a table without AUTOINCREMENT.
+   */
   async newestRowid(): Promise<number> {
-    const r = await this.query("SELECT MAX(ROWID) FROM message", []);
+    const hasSequence = await this.query(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'",
+      [],
+    );
+    const r = await this.query(
+      hasSequence.rows.length > 0
+        ? "SELECT MAX(n) FROM (SELECT seq AS n FROM sqlite_sequence WHERE name = 'message' UNION ALL SELECT MAX(ROWID) FROM message)"
+        : "SELECT MAX(ROWID) FROM message",
+      [],
+    );
     return Number(r.rows[0]?.[0] ?? 0);
   }
 
@@ -339,7 +363,7 @@ function toMessage(
   const m: Message = {
     rowid: Number(r.rowid),
     guid: String(r.guid),
-    chat_id: String(r.chat_id),
+    chat_id: typeof r.chat_id === "string" ? r.chat_id : null,
     chat_name: cleanText(r.chat_name),
     sent_at: isoFromUnix(r.unix),
     from_me: fromMe,
@@ -363,7 +387,8 @@ function toMessage(
   }
   if (typeof r.thread_originator_guid === "string" && r.thread_originator_guid)
     m.reply_to_guid = r.thread_originator_guid;
-  if (Number(r.date_edited ?? 0) > 0) m.edited = true;
+  // Unsending also stamps date_edited; an unsent message is not "edited".
   if (Number(r.date_retracted ?? 0) > 0) m.unsent = true;
+  else if (Number(r.date_edited ?? 0) > 0) m.edited = true;
   return m;
 }

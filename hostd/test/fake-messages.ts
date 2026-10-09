@@ -245,6 +245,7 @@ export function appleNanos(iso: string): bigint {
  * A chat.db with the tables and columns the server reads, and a small,
  * deliberately awkward history: a group whose newest message has only an
  * `attributedBody`, a reaction, a reply, an edit, an unsend, a system event,
+ * a message no chat claims yet,
  * attachments of three kinds, and one attachment that points outside the
  * Messages directory.
  */
@@ -361,6 +362,8 @@ export function buildChatDb(dir: string): string {
       chat: 2,
       text: "oops",
       me: true,
+      // Messages stamps date_edited on an unsend too.
+      edited: true,
       unsent: true,
       at: "2026-10-05T07:00:00Z",
     },
@@ -379,6 +382,14 @@ export function buildChatDb(dir: string): string {
       body: "Friday works — see you at 6",
       handle: 2,
       at: "2026-10-07T19:02:11Z",
+    },
+    // Not joined to any chat: a row read between Messages' two writes.
+    {
+      id: 11,
+      chat: 0,
+      text: "Not in a chat yet",
+      handle: 1,
+      at: "2026-10-07T20:00:00Z",
     },
   ];
   for (const r of rows) {
@@ -400,7 +411,7 @@ export function buildChatDb(dir: string): string {
       r.edited ? 1 : 0,
       r.unsent ? 1 : 0,
     );
-    join_.run(r.chat, r.id);
+    if (r.chat) join_.run(r.chat, r.id);
   }
 
   const files = join(dir, "Attachments", "ab");

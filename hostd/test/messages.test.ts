@@ -1,6 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -73,6 +74,7 @@ type Page = {
   messages: Message[];
   has_more: boolean;
   next_after_rowid: number;
+  next_before_rowid?: number;
   warning?: string;
 };
 
@@ -202,7 +204,7 @@ describe("the messages server, through a real MCP client", () => {
       pages++;
       if (!page.has_more) break;
     }
-    expect(seen).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(seen).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     expect(pages).toBe(4);
 
     // Nothing new: an empty page, the cursor unchanged, and no warning.
@@ -215,7 +217,7 @@ describe("the messages server, through a real MCP client", () => {
     expect(idle).toEqual({
       messages: [],
       has_more: false,
-      next_after_rowid: 10,
+      next_after_rowid: 11,
     });
   });
 
@@ -227,9 +229,38 @@ describe("the messages server, through a real MCP client", () => {
         arguments: { grant_id: grantId, limit: 2 },
       }),
     );
-    expect(page.messages.map((m) => m.rowid)).toEqual([9, 10]);
+    expect(page.messages.map((m) => m.rowid)).toEqual([10, 11]);
     expect(page.has_more).toBe(true);
-    expect(page.next_after_rowid).toBe(10);
+    expect(page.next_after_rowid).toBe(11);
+    expect(page.next_before_rowid).toBe(10);
+    // A message no chat claims is returned, not skipped by the cursor.
+    expect(page.messages[1]).toMatchObject({
+      chat_id: null,
+      text: "Not in a chat yet",
+    });
+
+    // Back through history: before_rowid, has_more meaning older ones exist.
+    const back: number[] = [];
+    let before = page.next_before_rowid!;
+    for (;;) {
+      const older = resultJson<Page>(
+        await client.callTool({
+          name: "imessage_get_messages",
+          arguments: { grant_id: grantId, before_rowid: before, limit: 4 },
+        }),
+      );
+      back.unshift(...older.messages.map((m) => m.rowid));
+      before = older.next_before_rowid!;
+      if (!older.has_more) break;
+    }
+    expect(back).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+    const both = await client.callTool({
+      name: "imessage_get_messages",
+      arguments: { grant_id: grantId, after_rowid: 1, before_rowid: 5 },
+    });
+    expect(both.isError).toBe(true);
+    expect(resultText(both)).toMatch(/not both/);
   });
 
   it("reads one chat, and turns each kind of row into something an agent can use", async () => {
@@ -302,6 +333,8 @@ describe("the messages server, through a real MCP client", () => {
       [8, true, null],
     ]);
     expect(other.messages[2]).toMatchObject({ unsent: true });
+    // Unsending stamps date_edited too; that is not an edit.
+    expect(other.messages[2]!.edited).toBeUndefined();
   });
 
   it("warns when the cursor is past every message: the database was rebuilt", async () => {
@@ -314,7 +347,7 @@ describe("the messages server, through a real MCP client", () => {
     );
     expect(page.messages).toEqual([]);
     expect(page.next_after_rowid).toBe(5000);
-    expect(page.warning).toMatch(/past the newest message on this Mac \(10\)/);
+    expect(page.warning).toMatch(/past the newest message on this Mac \(11\)/);
   });
 
   it("returns an attachment as an image, a converted photo, or a file — and refuses the rest", async () => {
@@ -422,6 +455,50 @@ describe("the messages server before the owner has set it up", () => {
         await client.callTool({ name: "get_control_status", arguments: {} }),
       );
       expect(status.helper).toEqual({ running: false });
+    } finally {
+      await d.stop();
+    }
+  });
+});
+
+describe("a cursor on a deleted message", () => {
+  it("is not mistaken for a rebuilt database", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hostd-messages-"));
+    const path = buildChatDb(dir);
+    // The owner deletes the newest message after a sweep stored its rowid.
+    const db = new DatabaseSync(path);
+    db.exec("DELETE FROM message WHERE ROWID = 11");
+    db.close();
+    const helper = new FakeMessagesHelper(path);
+    const d = await startDaemon(config(), {
+      stateDir: tmpState(),
+      prompter: new ScriptedPrompter("allowed"),
+      messagesTransport: helper.transport,
+      ephemeralPorts: true,
+    });
+    try {
+      const client = await connect(d.mcpPort, "/messages/mcp", MESSAGES_KEY);
+      const grantId = resultJson<{ grant_id: string }>(
+        await client.callTool({
+          name: "request_control",
+          arguments: { purpose: PURPOSE },
+        }),
+      ).grant_id;
+      const read = (after: number) =>
+        client
+          .callTool({
+            name: "imessage_get_messages",
+            arguments: { grant_id: grantId, after_rowid: after },
+          })
+          .then((r) => resultJson<Page>(r));
+      const same = await read(11);
+      expect(same).toEqual({
+        messages: [],
+        has_more: false,
+        next_after_rowid: 11,
+      });
+      // Past the highest rowid ever handed out IS a rebuilt database.
+      expect((await read(12)).warning).toMatch(/\(11\)/);
     } finally {
       await d.stop();
     }

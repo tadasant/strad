@@ -29,6 +29,13 @@ export interface HelperSpec {
   socketPath: string;
   /** Where to look for the binary when it has to be spawned, in order. */
   candidates: string[];
+  /**
+   * With its LaunchAgent installed, never spawn it, whatever `native.mode`
+   * says. `native.mode: "stdio"` is a setting about strad-hostd-ax; for a
+   * helper holding Full Disk Access, a spawned child would need the grant on
+   * `node`, which is the one place it must not go.
+   */
+  agentOnlyWhenInstalled?: boolean;
 }
 
 function candidatesFor(
@@ -93,6 +100,7 @@ export function messagesHelperSpec(
       "STRAD_HOSTD_MESSAGES",
       stateDir,
     ),
+    agentOnlyWhenInstalled: true,
   };
 }
 
@@ -146,10 +154,16 @@ export function nativeConnector(
       // agents start at login in no particular order, and a daemon that
       // spawned a private helper because the socket was not there yet would
       // keep it for good: two helpers, and grants attributed to `node`.
+      const agentInstalled = existsSync(agentPlist);
+      const pinned = spec.agentOnlyWhenInstalled === true && agentInstalled;
       const socketOnly =
+        pinned ||
         config.native.mode === "socket" ||
-        (config.native.mode === "auto" && existsSync(agentPlist));
-      if (config.native.mode !== "stdio" && existsSync(socketPath)) {
+        (config.native.mode === "auto" && agentInstalled);
+      if (
+        (config.native.mode !== "stdio" || pinned) &&
+        existsSync(socketPath)
+      ) {
         const socket = netConnect(socketPath);
         socket.once("connect", () => resolve(socket));
         socket.once("error", (err) =>

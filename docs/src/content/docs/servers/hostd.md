@@ -254,15 +254,21 @@ It cannot send, and reading marks nothing as read.
 
 `imessage_get_messages` pages by `rowid`, the database's own row number, which
 only grows. Pass the `next_after_rowid` of the last call as `after_rowid` and
-you get exactly the messages that arrived since, oldest first, across every
-chat or within one. That is the cursor a nightly sweep stores. A cursor past
-every message comes back with a `warning`, because it means the database was
-rebuilt and its numbering restarted.
+you get exactly the message rows stored since, in the order this Mac stored
+them, across every chat or within one. That is the cursor a nightly sweep
+stores. Two things it does not give you: chronological order (messages a woken
+Mac syncs from iCloud get new rowids, so `sent_at` can go backwards across a
+page), and an edit or unsend made later to a message the sweep already read.
+Without a cursor you get the newest messages, and `before_rowid` pages back
+from there. A cursor past every rowid the database has ever handed out comes
+back with a `warning`, because it means the database was rebuilt and its
+numbering restarted.
 
 Senders are phone numbers and email addresses: the Messages database holds no
 contact names. Attachments come back by `attachment_id`; HEIC, HEIF and TIFF
-photos are converted to JPEG on the Mac, and anything else comes back as a file
-with its MIME type. An attachment Messages in iCloud has not downloaded to this
+photos, and any JPEG, PNG or WebP over 3.5 MB, are converted to a JPEG at most
+2048 pixels on a side on the Mac, and anything else comes back as a file with
+its MIME type. An attachment Messages in iCloud has not downloaded to this
 Mac is an error saying so.
 
 `init` and `add` write `"onTimeout": "allow"` on this server alone, so a read

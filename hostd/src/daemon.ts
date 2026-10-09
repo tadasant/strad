@@ -171,6 +171,7 @@ export function buildCore(
             log,
           ),
         requestTimeoutMs: config.native.requestTimeoutMs,
+        name: "strad-hostd-messages",
         log: (l) => log(`messages ${l}`),
       })
     : undefined;

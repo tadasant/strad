@@ -25,7 +25,7 @@
 set -euo pipefail
 
 BINARY="${1:-}"
-[ -n "$BINARY" ] || { echo "usage: $0 <binary> [--identity NAME]" >&2; exit 2; }
+[ -n "$BINARY" ] || { echo "usage: $0 <binary> [--identity NAME] [--identifier com.strad.hostd-messages]" >&2; exit 2; }
 shift
 IDENTITY="${STRAD_HOSTD_SIGN_IDENTITY:-}"
 IDENTIFIER="com.strad.hostd-ax"

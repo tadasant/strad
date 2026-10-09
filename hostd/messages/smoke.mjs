@@ -37,7 +37,7 @@ const call = (op, args = {}) =>
     pending.set(id, resolve);
     setTimeout(() => {
       if (pending.delete(id)) reject(new Error(`${op} did not answer in 30s`));
-    }, 30_000);
+    }, 30_000).unref();
     child.stdin.write(JSON.stringify({ id, op, args }) + "\n");
   });
 

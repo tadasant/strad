@@ -61,13 +61,15 @@ final class LineChannel {
         guard let obj = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
               let op = obj["op"] as? String
         else {
-            send(["ok": false, "error": ["code": "bad_request", "message": "each line must be a JSON object with an \"op\""]])
+            var refusal: [String: Any] = ["ok": false, "error": ["code": "bad_request", "message": "each line must be a JSON object with an \"op\""]]
+            if let id = ((try? JSONSerialization.jsonObject(with: line)) as? [String: Any])?["id"] { refusal["id"] = id }
+            send(refusal)
             return
         }
         let args = Args(raw: obj["args"] as? [String: Any] ?? [:])
         var response: [String: Any] = [:]
         if let id = obj["id"] { response["id"] = id }
-        LineChannel.work.sync {
+        let run = {
             do {
                 response["result"] = try dispatcher.handle(op: op, args: args)
                 response["ok"] = true
@@ -79,6 +81,10 @@ final class LineChannel {
                 response["error"] = ["code": "internal", "message": "\(error)"]
             }
         }
+        // `hello` is a stat of one file and is answered at once, so the
+        // daemon's pre-dialog check still gets an answer while a long `sips`
+        // conversion holds the work queue.
+        if op == "hello" { run() } else { LineChannel.work.sync(execute: run) }
         send(response)
     }
 }

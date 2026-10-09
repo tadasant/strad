@@ -140,30 +140,42 @@ Reads only what is on this Mac. With Messages in iCloud, a Mac that was asleep c
 
   const getMessages = defineTool({
     name: "imessage_get_messages",
-    description: `Read messages, OLDEST FIRST, from one chat or from every chat at once. Reading marks nothing as read and sends nothing.
+    description: `Read messages from one chat or from every chat at once, in the order this Mac stored them (by rowid), earliest stored first. Reading marks nothing as read and sends nothing.
 
-**Paging by ROWID.** Every message has a "rowid" that only ever grows. With after_rowid you get the oldest \`limit\` messages whose rowid is STRICTLY greater, and has_more: true if there were more; pass the returned next_after_rowid back to continue. Store next_after_rowid between runs and a periodic sweep sees every message exactly once — no timestamps, no de-duplication. Without after_rowid you get the newest \`limit\` messages, still oldest first, and a next_after_rowid to start from.
+**Paging forward (a sweep).** Every message row has a "rowid" that only ever grows. With after_rowid you get the first \`limit\` messages whose rowid is STRICTLY greater, and has_more: true if there were more; pass the returned next_after_rowid back to continue. Store next_after_rowid between runs and a periodic sweep sees every message row exactly once — no timestamps, no de-duplication. Two things it does not see: an edit or unsend made later to a message it already read (the row changes; its rowid does not), and true chronological order — messages a woken Mac syncs from iCloud get new rowids, so sent_at can go backwards across a page.
+
+**Without a cursor, and paging back.** With no after_rowid you get the newest \`limit\` messages, earliest first, with next_after_rowid to sweep forward from — and here has_more means OLDER messages exist. Pass next_before_rowid as before_rowid to read further back: you get the \`limit\` messages just before it, has_more again meaning older ones exist. after_rowid and before_rowid cannot be combined.
 
 **Returns:**
-{"messages":[{"rowid":48211,"guid":"5D0C…","chat_id":"iMessage;+;chat123456789012345678","chat_name":"Wedding planning","sent_at":"2026-10-08T19:02:11.000Z","from_me":false,"sender":"+15551234567","service":"iMessage","kind":"message","text":"Can we move the tasting to Friday?","attachments":[{"attachment_id":9120,"file_name":"IMG_0412.HEIC","mime_type":"image/heic","size_bytes":1840211}]}],"has_more":false,"next_after_rowid":48211}
+{"messages":[{"rowid":48211,"guid":"5D0C…","chat_id":"iMessage;+;chat123456789012345678","chat_name":"Wedding planning","sent_at":"2026-10-08T19:02:11.000Z","from_me":false,"sender":"+15551234567","service":"iMessage","kind":"message","text":"Can we move the tasting to Friday?","attachments":[{"attachment_id":9120,"file_name":"IMG_0412.HEIC","mime_type":"image/heic","size_bytes":1840211}]}],"has_more":false,"next_after_rowid":48211,"next_before_rowid":48211}
+next_before_rowid is present when you read without a cursor or with before_rowid.
 
 - kind: "message" (text, attachments, or both), "reaction" (a tapback: "reaction":{"type":"love"|"like"|"dislike"|"laugh"|"emphasize"|"question"|"emoji"|"sticker"|"other","removed":false,"target_guid":"<guid of the message reacted to>"}), or "system" (a group renamed, someone added or left).
 - sender is the other party's phone number or email; null when from_me is true. There are no contact names.
-- reply_to_guid is set on a reply in a thread; edited and unsent appear when true.
+- reply_to_guid is set on a reply in a thread; edited and unsent appear when true (as of this read).
+- chat_id is null only for a message Messages has not joined to a chat.
 - text is null for a message that is only an attachment. Fetch one with imessage_get_attachment and its attachment_id.
 - A "warning" field appears when after_rowid is past every message: the database was rebuilt, and the cursor has to start again.
 
 **Use cases:**
 - A nightly sweep: imessage_get_messages with the after_rowid stored last time, until has_more is false
-- Read the recent history of one conversation (chat_id, no after_rowid)
+- Read the recent history of one conversation (chat_id, no cursor), then further back with before_rowid
 - Catch up on everything since a known point, across all chats
 
 This Mac's copy is only as fresh as the Mac: asleep, it receives nothing until it wakes and Messages in iCloud catches it up.`,
-    schema: z.object({
-      chat_id: z.string().min(1).max(512).optional(),
-      after_rowid: z.number().int().min(0).optional(),
-      limit: z.number().int().min(1).max(MAX_MESSAGES).optional(),
-    }),
+    schema: z
+      .object({
+        chat_id: z.string().min(1).max(512).optional(),
+        after_rowid: z.number().int().min(0).optional(),
+        before_rowid: z.number().int().min(1).optional(),
+        limit: z.number().int().min(1).max(MAX_MESSAGES).optional(),
+      })
+      .refine(
+        (a) => a.after_rowid === undefined || a.before_rowid === undefined,
+        {
+          message: "pass after_rowid OR before_rowid, not both",
+        },
+      ),
     inputSchema: {
       type: "object",
       properties: {
@@ -172,7 +184,13 @@ This Mac's copy is only as fresh as the Mac: asleep, it receives nothing until i
           type: "integer",
           minimum: 0,
           description:
-            "Return messages with a rowid STRICTLY greater than this, oldest first: the next_after_rowid of your previous call. Omit for the newest messages. 0 reads from the very beginning.",
+            "Return messages with a rowid STRICTLY greater than this, earliest stored first: the next_after_rowid of your previous call. Omit for the newest messages. 0 reads from the very beginning.",
+        },
+        before_rowid: {
+          type: "integer",
+          minimum: 1,
+          description:
+            "Return the `limit` messages with a rowid STRICTLY less than this, earliest first: the next_before_rowid of your previous call, to page back through history. Not with after_rowid.",
         },
         limit: {
           type: "integer",
@@ -188,13 +206,16 @@ This Mac's copy is only as fresh as the Mac: asleep, it receives nothing until i
       openWorldHint: false,
     },
     summarize: (a) =>
-      `imessage_get_messages${a.chat_id ? " chat" : " all chats"}${a.after_rowid !== undefined ? ` after_rowid=${a.after_rowid}` : ""}`,
+      `imessage_get_messages${a.chat_id ? " chat" : " all chats"}${a.after_rowid !== undefined ? ` after_rowid=${a.after_rowid}` : ""}${a.before_rowid !== undefined ? ` before_rowid=${a.before_rowid}` : ""}`,
     handler: async (a) => {
       const { messages, hasMore } = await db.messages({
         chatId: a.chat_id,
         after: a.after_rowid,
+        before: a.before_rowid,
         limit: a.limit ?? DEFAULT_MESSAGES,
       });
+      const newestRow = messages.at(-1)?.rowid;
+      const forward = a.after_rowid !== undefined;
       const newest =
         messages.length === 0 && a.after_rowid !== undefined
           ? await db.newestRowid()
@@ -202,10 +223,15 @@ This Mac's copy is only as fresh as the Mac: asleep, it receives nothing until i
       return json({
         messages,
         has_more: hasMore,
-        next_after_rowid:
-          messages.length > 0
-            ? messages[messages.length - 1]!.rowid
-            : (a.after_rowid ?? 0),
+        next_after_rowid: forward
+          ? (newestRow ?? a.after_rowid!)
+          : a.before_rowid === undefined
+            ? (newestRow ?? 0)
+            : undefined,
+        // Paging back: the cursor for the page before this one.
+        ...(!forward
+          ? { next_before_rowid: messages[0]?.rowid ?? a.before_rowid ?? 0 }
+          : {}),
         // A cursor past every message means the database was rebuilt (a
         // restore, or Messages in iCloud re-syncing from scratch) and its
         // ROWIDs started again. Waiting would never see a message.

@@ -517,14 +517,29 @@ works (BlueBubbles, imessage-exporter, the Messages MCP servers).
   fallback.
 - **Attachments by id, never by path.** `read_attachment` takes an
   `attachment.ROWID`, looks up the file in chat.db itself, and refuses one
-  that resolves outside the database's directory. HEIC, HEIF and TIFF are
-  converted to JPEG with `sips`, which the helper starts and so inherits its
-  grant. The bytes go back over the socket base64-encoded, capped at
+  that resolves outside the database's directory. HEIC, HEIF and TIFF, and
+  any JPEG, PNG or WebP over 3.5 MB (clients refuse image blocks of a few
+  megabytes), are converted to a JPEG at most 2048 pixels on a side with
+  `sips`, which the helper starts and so inherits its grant, and which is
+  killed after 30 seconds. `hello` is answered off the work queue, so a long
+  conversion does not make the pre-dialog check report the helper missing. The bytes go back over the socket base64-encoded, capped at
   `messages.maxAttachmentBytes` (10 MB).
 - **The cursor is the ROWID.** It only grows, so "after this rowid" is exact:
   no timestamps, no de-duplication, and the messages of every chat in one
-  read. A rebuilt database restarts the numbering; a cursor past every message
-  gets a `warning` rather than an empty page forever.
+  read. It is storage order, not send order: what a woken Mac syncs from
+  iCloud arrives with new rowids and old dates. It sees a row once, so an edit
+  or unsend made after a sweep read the message is not re-delivered. A
+  message row is never skipped for want of its chat: the unfiltered read
+  LEFT JOINs the chat and returns `chat_id: null` rather than relying on how
+  Messages orders its two writes. A rebuilt database restarts the numbering;
+  a cursor past the highest rowid ever handed out (`sqlite_sequence`, which
+  survives deleting the newest message) gets a `warning` rather than an empty
+  page forever. Without a cursor the read is the newest page, and
+  `before_rowid` pages back.
+- **Never spawned under `node` once installed.** `native.mode` is a setting
+  about the AX helper; with `com.strad.hostd-messages` installed, the daemon
+  reaches this helper over its socket whatever that setting says, because a
+  spawned child would need Full Disk Access on `node`.
 - **What it does not have.** Contact names: they live in the Contacts
   database, a separate TCC grant, and a sender is a phone number or an email.
   A send tool: posting as the owner is a different grant, and would be a

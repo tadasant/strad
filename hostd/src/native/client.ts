@@ -53,6 +53,8 @@ export class HelperClient {
     private readonly opts: {
       connect: () => Promise<Duplex>;
       requestTimeoutMs: number;
+      /** What error text calls it. */
+      name?: string;
       onEvent?: (event: HelperEvent) => void;
       onConnect?: () => void;
       log?: (line: string) => void;
@@ -91,7 +93,12 @@ export class HelperClient {
         this.lastError = why;
         for (const [id, p] of this.pending) {
           clearTimeout(p.timer);
-          p.reject(new HelperError("disconnected", `the native helper ${why}`));
+          p.reject(
+            new HelperError(
+              "disconnected",
+              `${this.opts.name ?? "the native helper"} ${why}`,
+            ),
+          );
           this.pending.delete(id);
         }
         this.opts.log?.(`helper ${why}`);
@@ -155,7 +162,7 @@ export class HelperClient {
         reject(
           new HelperError(
             "timeout",
-            `the native helper did not answer ${op} within ${Math.round(timeoutMs / 1000)}s`,
+            `${this.opts.name ?? "the native helper"} did not answer ${op} within ${Math.round(timeoutMs / 1000)}s`,
           ),
         );
       }, timeoutMs);
