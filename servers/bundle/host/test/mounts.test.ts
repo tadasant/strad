@@ -6,6 +6,7 @@ import {
   extraSlugs,
   instanceEnv,
   missingCredentialsDegraded,
+  onePasswordConfirmsWrites,
   remoteFilesystemDegraded,
   scrubCapabilityEnv,
 } from "../src/mounts.js";
@@ -710,5 +711,86 @@ describe("instanceEnv", () => {
     } as NodeJS.ProcessEnv);
     expect(env.PATH).toBe("/usr/bin");
     expect(env.GRAFANA_URL).toBe("https://g");
+  });
+});
+
+/**
+ * 1Password: one mount per service-account token, and a write posture that is
+ * read per slug and never inherited.
+ */
+describe("1Password per slug", () => {
+  const TOKEN = "OP_SERVICE_ACCOUNT_TOKEN";
+
+  it("discovers a mount for every slug that carries its own token", () => {
+    captureLog();
+    const env = {
+      // The conventional mount's, read by the slugs sharing /onepassword.
+      [TOKEN]: "ops_tadas_rw",
+      ONEPASSWORD_TADAS_ALL__OP_SERVICE_ACCOUNT_TOKEN: "ops_tadas_all",
+      ONEPASSWORD_PULSEMCP_PROVISIONING__OP_SERVICE_ACCOUNT_TOKEN: "ops_pulsemcp",
+      // A posture variable alone is not a 1Password account.
+      ONEPASSWORD_STRAY__OP_ELICITATION_WRITE: "false",
+    } as NodeJS.ProcessEnv;
+
+    expect(extraSlugs("onepassword", [TOKEN], env)).toEqual([
+      "onepassword-pulsemcp-provisioning",
+      "onepassword-tadas-all",
+    ]);
+  });
+
+  it("never lets a per-slug mount fall back to the bare token, which is another account", () => {
+    const log = captureLog();
+    const view: Record<string, string | undefined> = { [TOKEN]: "ops_tadas_rw" };
+
+    dropInheritedNames(view, "onepassword-pulsemcp-ro", [TOKEN], {
+      [TOKEN]: "ops_tadas_rw",
+    } as NodeJS.ProcessEnv);
+
+    expect(view[TOKEN]).toBeUndefined();
+    expect(log.lines()[0]).toContain("ONEPASSWORD_PULSEMCP_RO__OP_SERVICE_ACCOUNT_TOKEN");
+  });
+
+  it("confirms writes unless the slug's OWN name says exactly false", () => {
+    const slug = "onepassword-pulsemcp-provisioning";
+    const own = "ONEPASSWORD_PULSEMCP_PROVISIONING__OP_ELICITATION_WRITE";
+    expect(onePasswordConfirmsWrites(slug, true, {})).toBe(true);
+    expect(onePasswordConfirmsWrites(slug, true, { [own]: "false" })).toBe(false);
+    expect(onePasswordConfirmsWrites(slug, true, { [own]: " FALSE " })).toBe(false);
+    // A typo leaves the prompt on rather than off.
+    expect(onePasswordConfirmsWrites(slug, true, { [own]: "no" })).toBe(true);
+    expect(onePasswordConfirmsWrites(slug, true, { [own]: "true" })).toBe(true);
+  });
+
+  it("ignores a BARE OP_ELICITATION_WRITE, which belongs to whichever sibling set it", () => {
+    // The provisioning slug's `false` lands on the box under the bare name too.
+    // It must not switch off the prompt for onepassword-pulsemcp-rw beside it.
+    const env = {
+      OP_ELICITATION_WRITE: "false",
+      ONEPASSWORD_PULSEMCP_PROVISIONING__OP_ELICITATION_WRITE: "false",
+    };
+    expect(onePasswordConfirmsWrites("onepassword-pulsemcp-rw", true, env)).toBe(true);
+    expect(onePasswordConfirmsWrites("onepassword-pulsemcp-provisioning", true, env)).toBe(
+      false,
+    );
+  });
+
+  it("always confirms writes on the conventional /onepassword mount", () => {
+    expect(
+      onePasswordConfirmsWrites("onepassword", false, {
+        OP_ELICITATION_WRITE: "false",
+        ONEPASSWORD__OP_ELICITATION_WRITE: "false",
+      }),
+    ).toBe(true);
+  });
+
+  it("is wired into the host: discovered on the token, kept off the bare one, behind the confirmation layer", () => {
+    const host = readFileSync("src/index.ts", "utf8");
+    expect(host).toMatch(/extraSlugs\("onepassword", ONEPASSWORD_MARKER_NAMES\)/);
+    expect(host).toContain("dropInheritedNames(view, slug, ONEPASSWORD_MARKER_NAMES)");
+    expect(host).toContain("op.confirm.withConfirmation(");
+    expect(host).toContain("confirm.forceAskEverything(process.env)");
+    // The old posture check is gone: the mount no longer needs a container-wide
+    // elicitation URL or DANGEROUSLY_SKIP_ELICITATIONS to exist.
+    expect(host).not.toContain("checkElicitationSafety");
   });
 });

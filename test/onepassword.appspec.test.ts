@@ -110,3 +110,164 @@ describe("renderAppSpec: supplementary-image (onepassword)", () => {
     expect(() => render({})).toThrow(/unresolved secret reference/);
   });
 });
+
+/**
+ * SEVERAL 1PASSWORD ACCOUNTS ON ONE BUNDLE — the shape that replaces Zimmer's
+ * six npx entries. One process holds one bare OP_SERVICE_ACCOUNT_TOKEN, so the
+ * slugs sharing `/onepassword` read that, and every slug with a token of its own
+ * sits on `path: /<its own slug>`, where the bundle host mounts an instance
+ * holding exactly the token baked under `<SLUG>__OP_SERVICE_ACCOUNT_TOKEN`.
+ */
+describe("renderAppSpec: one bundle, several 1Password tokens", () => {
+  /**
+   * An own-path slug writes its keys ALREADY per-slug. The schema refuses two
+   * slugs on one bundle declaring one bare name with different values, whether
+   * or not each is its own instance, so the alias is written by hand: exactly
+   * the name the bundle host discovers the mount on, and no bare name at all.
+   */
+  const prefix = (slug: string) => slug.toUpperCase().replace(/-/g, "_") + "__";
+  const entry = (
+    slug: string,
+    path: string,
+    token: string,
+    extra: Record<string, string> = {},
+  ) => {
+    const own = path === `/${slug}` ? prefix(slug) : "";
+    const vars = { OP_SERVICE_ACCOUNT_TOKEN: `"\${${token}}"`, ...extra };
+    return `
+  - slug: ${slug}
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: ${path}
+    entitlements: [admin]
+    confirmations: true
+    timeoutMs: 240000
+    env:${Object.entries(vars)
+      .map(([k, v]) => `\n      ${own}${k}: ${v}`)
+      .join("")}`;
+  };
+
+  const MULTI = parseConfig(`
+version: 1
+gateway:
+  name: strad
+  env: staging
+  elicitation:
+    allowedUrlPrefixes: [https://zimmer.example/api/v1/elicitations/session/]
+auth:
+  staticTokens: { enabled: true }
+roles:
+  admin: { servers: ["*"] }
+bundles:
+  - name: bundle
+servers:${[
+    entry(
+      "onepassword-ro",
+      "/onepassword",
+      "OP_SERVICE_ACCOUNT_TOKEN_TADAS_RW",
+    ),
+    entry(
+      "onepassword-rw",
+      "/onepassword",
+      "OP_SERVICE_ACCOUNT_TOKEN_TADAS_RW",
+    ),
+    entry(
+      "onepassword-tadas-all",
+      "/onepassword-tadas-all",
+      "OP_SERVICE_ACCOUNT_TOKEN_TADAS_ALL",
+    ),
+    entry(
+      "onepassword-pulsemcp-ro",
+      "/onepassword-pulsemcp-ro",
+      "OP_SERVICE_ACCOUNT_TOKEN_PULSEMCP",
+    ),
+    entry(
+      "onepassword-pulsemcp-rw",
+      "/onepassword-pulsemcp-rw",
+      "OP_SERVICE_ACCOUNT_TOKEN_PULSEMCP",
+    ),
+    entry(
+      "onepassword-pulsemcp-provisioning",
+      "/onepassword-pulsemcp-provisioning",
+      "OP_SERVICE_ACCOUNT_TOKEN_PULSEMCP",
+      { OP_ELICITATION_WRITE: '"false"' },
+    ),
+  ].join("")}
+`);
+
+  const spec = renderAppSpec({
+    config: MULTI,
+    appName: "strad-staging",
+    region: "nyc",
+    image: parseImage("registry.digitalocean.com/strad/strad:0.1.0"),
+    env: [
+      { key: "STRAD_TOKENS", value: "tok", scope: "RUN_TIME", type: "SECRET" },
+    ],
+    secrets: {
+      OP_SERVICE_ACCOUNT_TOKEN_TADAS_RW: "ops_tadas_rw",
+      OP_SERVICE_ACCOUNT_TOKEN_TADAS_ALL: "ops_tadas_all",
+      OP_SERVICE_ACCOUNT_TOKEN_PULSEMCP: "ops_pulsemcp",
+    },
+  });
+  const bundles = spec.services.filter((s) => s.name.startsWith("bundle"));
+  const env = Object.fromEntries(bundles[0]!.envs.map((e) => [e.key, e.value]));
+
+  it("is still ONE component", () => {
+    expect(bundles.map((b) => b.name)).toEqual(["bundle"]);
+  });
+
+  it("gives the bare token to the slugs sharing /onepassword", () => {
+    expect(env.OP_SERVICE_ACCOUNT_TOKEN).toBe("ops_tadas_rw");
+  });
+
+  it("bakes each own-path slug's token under its own name", () => {
+    expect(env.ONEPASSWORD_TADAS_ALL__OP_SERVICE_ACCOUNT_TOKEN).toBe(
+      "ops_tadas_all",
+    );
+    expect(env.ONEPASSWORD_PULSEMCP_RO__OP_SERVICE_ACCOUNT_TOKEN).toBe(
+      "ops_pulsemcp",
+    );
+    expect(env.ONEPASSWORD_PULSEMCP_RW__OP_SERVICE_ACCOUNT_TOKEN).toBe(
+      "ops_pulsemcp",
+    );
+    expect(
+      env.ONEPASSWORD_PULSEMCP_PROVISIONING__OP_SERVICE_ACCOUNT_TOKEN,
+    ).toBe("ops_pulsemcp");
+  });
+
+  it("names the provisioning posture under that slug, where the host reads it, and nowhere else", () => {
+    expect(env.ONEPASSWORD_PULSEMCP_PROVISIONING__OP_ELICITATION_WRITE).toBe(
+      "false",
+    );
+    expect(env.ONEPASSWORD_PULSEMCP_RW__OP_ELICITATION_WRITE).toBeUndefined();
+    expect(env.OP_ELICITATION_WRITE).toBeUndefined();
+  });
+
+  it("the renderer's own alias of a hand-written one is a name the host cannot mistake for a slug", () => {
+    // ONEPASSWORD_TADAS_ALL__ONEPASSWORD_TADAS_ALL__OP_SERVICE_ACCOUNT_TOKEN: its
+    // head would unmangle to a slug containing `--`, which has no prefix, so the
+    // host's discovery skips it. Pinned so a change to that rule is noticed here.
+    const doubled = Object.keys(env).filter((k) =>
+      /__.*__OP_SERVICE_ACCOUNT_TOKEN$/.test(k),
+    );
+    expect(doubled.length).toBeGreaterThan(0);
+    for (const key of doubled) expect(key.split("__").length).toBe(3);
+  });
+
+  it("refuses a second token on the SHARED path, which one mount cannot hold", () => {
+    expect(() =>
+      parseConfig(`
+version: 1
+gateway: { name: strad, env: staging }
+auth:
+  staticTokens: { enabled: true }
+roles:
+  admin: { servers: ["*"] }
+bundles:
+  - name: bundle
+servers:${entry("onepassword-rw", "/onepassword", "A")}${entry("onepassword-tadas-all", "/onepassword", "B")}
+`),
+    ).toThrow(/OP_SERVICE_ACCOUNT_TOKEN under env: with different values/);
+  });
+});

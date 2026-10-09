@@ -16,7 +16,8 @@ It talks to 1Password by shelling out to the **1Password CLI (`op`)**, which is
 servers/onepassword/
   elicitation/  # VENDORED @pulsemcp/mcp-elicitation (shared/ imports it; unpublished on npm)
   shared/       # VENDORED VERBATIM from pulsemcp/mcp-servers (the tool logic)
-  remote/       # NEW: streamable-HTTP entrypoint over shared/ (this repo)
+  remote/       # NEW: streamable-HTTP entrypoint over shared/, and strad's
+                #      confirmation layer (remote/src/confirm.ts) the bundle uses
   test/         # NEW: the tree's Vitest suite (kept OUT of the vendored shared/)
   Dockerfile    # bakes in a pinned `op`, builds elicitation -> shared -> remote
 ```
@@ -40,10 +41,13 @@ servers/onepassword/
   a module here and run `npm run elicitation:sync` from the repo root;
   `test/vendored.sync.test.ts` fails CI if the two drift, or if a file is added
   here and not named in the manifest's `files:` list.
-- **`remote/`** is the only new logic: it swaps the upstream stdio transport for
-  an Express + `StreamableHTTPServerTransport` (stateless,
-  `sessionIdGenerator: undefined`) front door. Mirrors the upstream
-  `local/src/index.ts` step for step.
+- **`remote/`** is the only new logic. `src/index.ts` swaps the upstream stdio
+  transport for an Express + `StreamableHTTPServerTransport` (stateless,
+  `sessionIdGenerator: undefined`) front door, mirroring the upstream
+  `local/src/index.ts` step for step; that is the standalone image.
+  `src/confirm.ts` is what the strad **bundle** wraps the vendored tools in: it
+  routes every reveal and write prompt to the session that made the call (see
+  below). The standalone entrypoint does not use it.
 
 ## The `op` CLI (baked in, pinned)
 
@@ -67,6 +71,32 @@ image is credential-free; `op` reads its token from the environment at runtime.
 | `DANGEROUSLY_SKIP_ELICITATIONS` | see below | `true` disables ALL prompts (reveals every secret without approval). |
 | `PORT` | no | default `8080` (App Platform `internal_ports`). |
 
+## In the strad bundle: the calling session is asked
+
+The strad bundle (`servers/bundle/host`) mounts this tree differently from the
+standalone image, and the difference is who confirms a reveal.
+
+- Every `onepassword_get_item` that would show a sensitive field, and every
+  write (`create_login`, `create_secure_note`, `create_api_credential`,
+  `share_item`), is put to the human attached to the CALLING session, at the URL
+  strad core forwards for a `confirmations: true` slug. A call with no one to ask
+  is refused before 1Password is read or written.
+- The host pins the vendored posture to "always ask": `OP_ELICITATION_READ` and
+  `OP_ELICITATION_WRITE` are forced to `true`, and `DANGEROUSLY_SKIP_ELICITATIONS`
+  and `OP_WHITELISTED_ITEMS` are removed from the process. None of them is a
+  bundle setting.
+- A slug's own `<SLUG>__OP_ELICITATION_WRITE=false` lets that slug's writes run
+  unasked (the provisioning posture). Reveals still ask.
+- Each slug with its own `<SLUG>__OP_SERVICE_ACCOUNT_TOKEN` on `path: /<slug>`
+  is its own mount holding only that token.
+
+The docs page is `docs/src/content/docs/servers/confirmations.md`, and
+`test/confirm.test.ts` drives the real vendored tools through the layer against
+a fake approval endpoint: an approval reveals, and a decline, an unticked box, an
+unknown answer, an unreachable endpoint or no channel at all reveals nothing.
+
+## The standalone image's posture
+
 **Elicitation is required to boot.** This server redacts secret fields by default
 and only reveals them behind a confirmation prompt. A stateless streamable-HTTP
 transport cannot round-trip a *native* MCP elicitation, so the operator must pick
@@ -83,7 +113,9 @@ the confirmation-friction boundary is `OP_ELICITATION_READ` /
 `OP_ELICITATION_WRITE`. A downstream deployment can therefore ship the **one
 image** as two strad server configs pointing at it — e.g. an `onepassword-ro`
 config with `ENABLED_TOOLGROUPS=readonly` and an `onepassword-rw` config without
-it — differing only in environment. This repo does not define those variants.
+it — differing only in environment. That is the standalone image. The bundle
+scrubs `ENABLED_TOOLGROUPS` and leaves the read-only tier to strad's gateway
+`tools:` policy instead.
 
 ## Tests
 
@@ -94,7 +126,9 @@ npm test          # npm run build && vitest run --config vitest.config.ts
 ```
 
 Vitest over the TypeScript sources, matching the repo root and the other strad
-server trees. The suite covers the 1Password client's **request-building** (the
+server trees. `test/confirm.test.ts` covers strad's confirmation layer end to
+end, through a real MCP client and a loopback approval endpoint.
+`test/onepassword-client.test.ts` covers the 1Password client's **request-building** (the
 `op` argv each call assembles, and the fact that the service-account token
 travels in the environment rather than in argv) and its **response-shaping**
 (list sanitization, share-URL parsing, and the CLI-error classification into

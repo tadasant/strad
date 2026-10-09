@@ -103,7 +103,7 @@ gateway:
     pollSeconds: 60
 
   # Where a caller's confirmation channel may point. A tool that needs a human's
-  # yes (gmail's `send_email`) asks at the URL the caller sends in its
+  # yes (gmail's `send_email`, a 1Password reveal or write) asks at the URL the caller sends in its
   # `X-Elicitation-Url` header, and the bundle fetches it, so the URL must sit
   # under one of these prefixes: an `https` URL whose path ends in `/` (plain
   # `http` only for a loopback host). Empty, the default, accepts none, and
@@ -1073,19 +1073,52 @@ servers:
       # REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_ACCOUNT: "dana@example.com"
 
   # The 1Password CLI (`op`) is baked into the image; the image ships no
-  # credential. The server refuses to serve without an elicitation posture, and
-  # strad has no elicitation transport wired yet, so it skips them explicitly.
-  # See servers/onepassword/README.md.
+  # credential. See servers/onepassword/README.md.
+  #
+  # EVERY REVEAL ASKS A HUMAN. `onepassword_get_item` on an item with a password,
+  # token or other sensitive field asks the session that made the call, through
+  # the URL it sends in `X-Elicitation-Url` (held to
+  # `gateway.elicitation.allowedUrlPrefixes` above), and reveals nothing unless
+  # that human approves. A call with no one to ask, the console's included, is
+  # refused. So is every write, unless the slug opts its writes out (below).
+  # There is no switch that skips the reveal prompt; the host strips
+  # DANGEROUSLY_SKIP_ELICITATIONS from the container. docs/servers/confirmations.
   - slug: onepassword-rw
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
     bundle: bundle
     path: /onepassword
     entitlements: [admin]
-    timeoutMs: 120000
+    confirmations: true
+    timeoutMs: 240000
     env:
       OP_SERVICE_ACCOUNT_TOKEN: "${OP_SERVICE_ACCOUNT_TOKEN}"
-      DANGEROUSLY_SKIP_ELICITATIONS: "true"
+    # Only when an edge in front of the approval URL wants strad's credential.
+    # confirmationHeaders:
+    #   CF-Access-Client-Id: "${ZIMMER_CF_ACCESS_CLIENT_ID}"
+    #   CF-Access-Client-Secret: "${ZIMMER_CF_ACCESS_CLIENT_SECRET}"
+
+  # A SECOND 1PASSWORD TOKEN IS A SECOND MOUNT. One process holds one bare
+  # OP_SERVICE_ACCOUNT_TOKEN, so a slug with a token of its own goes on
+  # `path: /<its own slug>`, and the bundle host mounts an instance there holding
+  # exactly the token named <SLUG>__OP_SERVICE_ACCOUNT_TOKEN, never the bare one.
+  # The keys are written ALREADY per-slug: the schema refuses two slugs on one
+  # bundle declaring one bare name with different values.
+  #
+  # <SLUG>__OP_ELICITATION_WRITE: "false" is the provisioning posture, read under
+  # this slug's own name only: its writes (create an item, mint a share link)
+  # run unasked, and a reveal still asks. Any other value, or none, asks.
+  # - slug: onepassword-provisioning
+  #   kind: supplementary-image
+  #   image: ghcr.io/tadasant/strad-bundle:latest
+  #   bundle: bundle
+  #   path: /onepassword-provisioning
+  #   entitlements: [admin]
+  #   confirmations: true
+  #   timeoutMs: 240000
+  #   env:
+  #     ONEPASSWORD_PROVISIONING__OP_SERVICE_ACCOUNT_TOKEN: "${OP_SERVICE_ACCOUNT_TOKEN_PROVISIONING}"
+  #     ONEPASSWORD_PROVISIONING__OP_ELICITATION_WRITE: "false"
 
   # Browser-driven. It drives a real headless Chromium and logs into a real
   # account, so a tool call can take minutes — hence the raised `timeoutMs`. It

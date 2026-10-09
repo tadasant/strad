@@ -565,9 +565,10 @@ a `424` — and boot warns when it is empty.
 
 Holding a role decides which tools a caller may reach. It does not stand in for
 a person saying yes. A tool that needs a human's confirmation before it acts,
-gmail's `send_email`, asks at the URL the request names in `X-Elicitation-Url`,
-and refuses when the request names none. That applies to an `admin` token and to
-the console playground as well: neither has a prompt to show, so neither sends.
+gmail's `send_email` or a 1Password reveal or write, asks at the URL the request
+names in `X-Elicitation-Url`, and refuses when the request names none. That
+applies to an `admin` token and to the console playground as well: neither has a
+prompt to show, so neither sends a mail or sees a password.
 The header is checked against `gateway.elicitation.allowedUrlPrefixes`, sent
 only to a slug that declares `confirmations: true`, and never logged. When an
 edge in front of that URL wants strad's own credential, such as a Cloudflare

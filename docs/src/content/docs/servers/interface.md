@@ -660,7 +660,7 @@ plus two that shape how this server gets its values:
   fails rather than pick a winner.
 
 - **`confirmations`** (default `false`) — this server has a tool that asks a
-  human before it acts (gmail's `send_email`), so core forwards the caller's
+  human before it acts (gmail's `send_email`, a 1Password reveal or write), so core forwards the caller's
   `X-Elicitation-Url` to it on every `tools/call`. Off, core forwards nothing and
   the confirmed tool refuses every call. The URL is a credential for that
   session's prompts, which is why a mount that does not ask is never handed it,
@@ -1072,7 +1072,7 @@ gateway:
 ```
 
 The URL prefixes a caller's `X-Elicitation-Url` must sit under. That header is
-where a confirmed tool, gmail's `send_email`, asks a human before it acts, and
+where a confirmed tool (gmail's `send_email`, a 1Password reveal or write) asks a human before it acts, and
 the bundle fetches it. Each entry is an `https` URL in normal form whose path
 ends in `/` (plain `http` only for a loopback host), with no query, fragment or
 userinfo. A header outside every prefix is refused with that reason. The default
