@@ -5340,6 +5340,8 @@ design defect, and this entry is the marker that rule asks for:
   folder") can only be answered at the screen.
 - Chrome's remote debugging is a toggle at `chrome://inspect/#remote-debugging`,
   or the extension of #112, installed from `chrome://extensions` or a profile.
+- The Messages server's helper is granted Full Disk Access in System Settings
+  (#115).
 - The Cloudflare Access application and its service token are made in
   Cloudflare's dashboard.
 - An upgrade is `git pull` and the install script again.
@@ -5992,3 +5994,62 @@ message — and waits up to 30 s for either answer to be ingested and merged.
 default). 3 is the design while the component is single-instance. 4 reverts to
 `downloadMediaMessage` when Baileys forwards source errors and tests
 `output.statusCode`.
+
+## 115. The Messages server reads chat.db through a helper granted Full Disk Access by hand, and is only as fresh as the Mac is awake
+
+`hostd/messages/` is `strad-hostd-messages`, the native helper behind the
+read-only `imessage-*` `local-tunnel` slug (`/messages/mcp` on strad-hostd;
+`docs/servers/hostd.md`, `docs/servers/hostd-design.md`). It reads
+`~/Library/Messages/chat.db`, which macOS guards with Full Disk Access. What
+that costs:
+
+1. **Full Disk Access is granted by hand, at the Mac.** There is no API that
+   asks for it; the owner drags the helper into System Settings › Privacy &
+   Security › Full Disk Access (`strad-hostd messages --grant` opens the list
+   and shows the binary in Finder). It lands on the helper, not on `node`,
+   only because the helper runs as its own LaunchAgent
+   (`com.strad.hostd-messages`) and is signed with a stable identity under its
+   own identifier. Reasoned from the responsible-process rule, as in #108; not
+   yet observed on the owner's Mac.
+2. **It is only as fresh as the Mac.** iMessage exists only on Apple hardware.
+   A Mac that is asleep or off receives nothing, and the nightly sweep reads
+   nothing new; with Messages in iCloud on, a Mac that wakes catches up and the
+   ROWID cursor then picks up what arrived meanwhile. Without Messages in
+   iCloud, what arrived while the Mac slept may never reach this database.
+   Nothing in strad keeps the Mac awake.
+3. **The socket is a Full Disk Access oracle for chat.db.** The helper's
+   socket is mode 0600 and answers any process of the owner, and its `query`
+   op runs any single read-only statement against chat.db — so a process
+   running as the owner without Full Disk Access can read every message
+   through it. It is narrower than the alternative (Full Disk Access on
+   `node`, which would hand every file the grant reaches to every Node script
+   and to the shell slug): the connection is `SQLITE_OPEN_READONLY`, ATTACH is
+   denied so no other database is reachable, and attachments are read by id
+   from chat.db, never by a caller's path, and only under the database's own
+   directory. As in #108, two processes of one macOS user cannot keep secrets
+   from each other; it is not a privilege boundary.
+4. **The unattended read is allowed on timeout.** `strad-hostd init` and
+   `add messages` write `onTimeout: "allow"` on this one server, so a nightly
+   sweep with nobody at the screen is granted after the dialog's window
+   (`approved_by: "timeout"`). The machine-wide default stays `deny`. With
+   nobody there, the dialog refuses nothing; what bounds the slug is its key,
+   Cloudflare Access, its `admin`-only entitlement, the grant's notification
+   and audit line, and the kill switch.
+5. **The schema is Apple's and undocumented.** Every column beyond the stable
+   few is looked up and read as NULL where missing; `attributedBody` is read
+   with the deprecated `NSUnarchiver` behind an Objective-C `@try`, with a byte
+   scan as fallback. A macOS release that moves the body elsewhere shows up as
+   `text: null` on messages that have text.
+
+**Why it cannot be designed out.** 1 and 2 are #101's: the box is a personal
+Mac. 3 is what reading a TCC-guarded file from a daemon costs on macOS.
+
+**What stays off the box.** The slug, its entitlement and `recovery:` text
+ship by deploy; the key is seeded at `/ui/secrets`; `get_control_status`
+reports `helper: {running, full_disk_access, chat_db}`, and `request_control`
+refuses with `helper_unavailable` before any dialog when the grant is missing.
+
+**Undo.** 1 and 3 go if Apple ships a Messages API, which it has not. 2 goes
+with an always-on Mac (a Mac mini signed in to the same Apple ID) running the
+same install. 4 is the owner's setting: `"onTimeout": "deny"` on
+`capabilities.messages` in `~/.strad-hostd/config.json`.

@@ -379,14 +379,17 @@ reorders it, or hand-rolls a `docker login` in a `run:` block. See
 
 </aside>
 
-## `hostd-ax.yml` — the one macOS job
+## `hostd-ax.yml` — the one macOS workflow
 
-`strad-hostd-ax`, the native helper behind strad-hostd's computer-use servers,
-is Swift and builds only on a Mac. Everything else in this repository runs on
-the self-hosted Linux runner, so this is the one job on a GitHub-hosted
-`macos-15` runner, and on a private repository those minutes are billed. It is
-path-filtered to `hostd/ax/**`, the helper's LaunchAgent plist, the signing
-script and itself, and runs on a PR and on `main`.
+strad-hostd's two native helpers — `strad-hostd-ax` behind the computer-use
+servers, `strad-hostd-messages` behind the Messages server — are Swift and
+build only on a Mac. Everything else in this repository runs on the
+self-hosted Linux runner, so this is the one workflow on GitHub-hosted
+`macos-15` runners, two jobs, and on a private repository those minutes are
+billed. It is path-filtered to `hostd/ax/**`, `hostd/messages/**`, the
+daemon's `hostd/src/messages/**` (the Messages smoke test runs its queries),
+both helpers' LaunchAgent plists, the signing script and itself, and runs on a
+PR and on `main`.
 
 It proves the helper compiles, ad-hoc signs, speaks its JSON-lines protocol over
 stdio (`hostd/ax/smoke.mjs`), answers `hello`, lists apps and displays, and
@@ -395,6 +398,15 @@ Accessibility or Screen Recording grant. It also lints both LaunchAgent plists.
 A runner has nobody to click a grant, so reading a real Accessibility tree, a
 real screenshot and the banner under a real grant are exercised on the owner's
 Mac and nowhere else; [limitation #108](/limitations/) says so.
+
+The `messages` job builds and ad-hoc signs `strad-hostd-messages`, builds a
+fixture chat.db with `hostd/messages/fixture.swift`, and drives the helper over
+stdio with `hostd/messages/smoke.mjs`: an `attributedBody` NSArchiver wrote is
+decoded, writes and ATTACH are refused, a TIFF is converted by `sips`, an
+attachment outside the database's directory is refused, and the daemon's own
+queries run through it. The runner has no Full Disk Access to give, so the real
+`~/Library/Messages` is read only on the owner's Mac; [limitation
+#115](/limitations/) says so.
 
 ## `release-image.yml` — mint and ship
 

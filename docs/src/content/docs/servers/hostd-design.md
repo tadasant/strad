@@ -12,10 +12,12 @@ is the how-to.
 
 The request it answers named four servers: `shell-tadas-mbp`,
 `browser-use-tadas-mbp-headless`, `computer-use-tadas-mbp-headless` and
-`computer-use-tadas-mbp`. All four are built. The daemon side of every one is
-tested on Linux; the native helper the last two need is compiled and
-smoke-tested on a macOS runner, and the parts that need a permission grant have
-run on no machine yet. The last section says which is which.
+`computer-use-tadas-mbp`. All four are built. A fifth followed,
+`imessage-tadas-mbp`: the owner's Messages history, read-only. The daemon side
+of every one is tested on Linux; the native helpers the last three need are
+compiled and smoke-tested on a macOS runner, and the parts that need a
+permission grant have run on no machine yet. The last section says which is
+which.
 
 ## Why it lives in this repo
 
@@ -63,6 +65,12 @@ different TCC grants and very different blast radii. They are the third and
 fourth rows: `/computer-headless/mcp` and `/computer/mcp`, and each
 `CapabilityInfo` carries a `mode`, which is what colours the banner and decides
 whether the owner's own keystroke ends the grant.
+
+`messages` is a fifth row for the same reason. Reading every conversation the
+owner has had is a different grant from running a command, even though a
+shell with Full Disk Access could do it, so it is its own path
+(`/messages/mcp`), its own key and its own slug (`imessage-*`), and the one
+whose capability is reading rather than operating.
 
 ## The daemon
 
@@ -475,6 +483,68 @@ screen can click in five seconds would fix a missing grant.
   `find_elements` is the search, `read_text` the window's words in reading
   order, `max_nodes` and `scope` the bounds.
 
+### messages — built
+
+`imessage_list_chats`, `imessage_get_messages`, `imessage_get_attachment`,
+over `~/Library/Messages/chat.db`. iMessage has no API on any platform; that
+SQLite file, which Messages keeps on every Mac signed in to the account, is
+the only programmatic way in, and it is how every tool that reads iMessage
+works (BlueBubbles, imessage-exporter, the Messages MCP servers).
+
+- **Its own helper, `strad-hostd-messages`** (`hostd/messages/`). macOS guards
+  the file with Full Disk Access, and the grant has the same
+  responsible-process rule as the computer-use grants: a LaunchAgent of its
+  own (`com.strad.hostd-messages`), a socket in the state directory
+  (`messages.sock`), signed by `install/sign-helper.sh` under its own
+  identifier so the grant survives rebuilds and is not shared. It is NOT
+  folded into `strad-hostd-ax`: that helper posts mouse and keyboard input,
+  and the grant that reads every message should not sit in the same process.
+- **The SQL is the daemon's; the guarantee is the helper's.** The helper
+  serves three ops — `hello`, `query`, `read_attachment` — and `query` runs
+  one statement it is sent. The statements live in `src/messages/chatdb.ts`,
+  where `test/messages.test.ts` runs them against a fixture database on Linux.
+  What the helper guarantees is that nothing it runs writes or reaches beyond
+  this file: the connection is `SQLITE_OPEN_READONLY`, a statement SQLite does
+  not report read-only is refused, so is anything after the first statement,
+  and ATTACH — which `sqlite3_stmt_readonly` calls read-only because it changes
+  the connection, not a file — is denied by an authorizer and a limit of zero,
+  so no other database Full Disk Access reaches can be opened through it.
+- **`attributedBody`.** Since macOS 13 Messages often stores a body only as an
+  NSAttributedString archived in the old typedstream format. The helper reads
+  it with `NSUnarchiver`, wrapped in a few lines of Objective-C, because the
+  unarchiver reports a malformed archive by raising an NSException Swift
+  cannot catch. If that refuses, a byte scan for the first NSString is the
+  fallback.
+- **Attachments by id, never by path.** `read_attachment` takes an
+  `attachment.ROWID`, looks up the file in chat.db itself, and refuses one
+  that resolves outside the database's directory. HEIC, HEIF and TIFF are
+  converted to JPEG with `sips`, which the helper starts and so inherits its
+  grant. The bytes go back over the socket base64-encoded, capped at
+  `messages.maxAttachmentBytes` (10 MB).
+- **The cursor is the ROWID.** It only grows, so "after this rowid" is exact:
+  no timestamps, no de-duplication, and the messages of every chat in one
+  read. A rebuilt database restarts the numbering; a cursor past every message
+  gets a `warning` rather than an empty page forever.
+- **What it does not have.** Contact names: they live in the Contacts
+  database, a separate TCC grant, and a sender is a phone number or an email.
+  A send tool: posting as the owner is a different grant, and would be a
+  separate server and slug. Freshness on a sleeping Mac: see below.
+- **Consent.** The intended caller is a nightly sweep, which runs with nobody
+  at the screen. `init` and `add` write `onTimeout: "allow"` on this server
+  only (`capabilities.messages.onTimeout`), so its dialog is a veto window and
+  the machine-wide `deny` still governs the shell and the computer-use
+  servers. The alternative — a server exempt from the dialog because it
+  cannot operate the machine — was rejected: it would be the first path to a
+  grant that skips the gate, and the gate is also where the notification, the
+  audit line, the status page and the kill switch attach.
+
+**Freshness.** iMessage exists only on Apple hardware, and a Mac receives
+messages only while it is awake. With Messages in iCloud on, a Mac that wakes
+syncs what it missed into chat.db with new ROWIDs, so a sweep that holds its
+cursor reads the gap on its next run. A sweep that runs while the Mac sleeps
+cannot reach it at all (the tunnel is down). An always-on Mac on the same
+Apple ID makes it as dependable as the WhatsApp bridge.
+
 ### computer-use foreground — built
 
 `take_screenshot`, `list_displays`, `click`, `move_mouse`, `drag`, `scroll`,
@@ -545,6 +615,7 @@ Recommended tiering:
 | `browser-use-*-headless` | `admin` only. `evaluate_script` in a signed-in profile reaches every account the owner is logged in to, which is arguably wider than the shell. With the extension installed there is no Chrome prompt in front of that at all. |
 | `computer-use-*-headless` | `admin` only. Every app's contents, fields and buttons, in the background. |
 | `computer-use-*` | `admin` only. The screen and the keyboard; a caller here is the person at the machine. |
+| `imessage-*` | `admin` only, and handed to the session that sweeps it. Read-only, but every conversation the owner has had, and allowed on timeout by default, so with nobody at the screen the dialog refuses nothing. A message is also untrusted text: a sweep that reads it should not hold a tool that can send on its say-so. |
 
 None of them is a candidate for fleet-wide entitlement today. If one is widened,
 keep `onTimeout: "deny"` on that machine. The widening is the owner's decision:
@@ -559,7 +630,9 @@ the gate, the switch, the helper client and the capabilities, and `serve` and
 `stdio` differ only in what they put in front of it. The test suite asserts the
 tool list is identical. `stdio computer-headless` and `stdio computer` spawn the
 helper as a child over stdio, from `~/.strad-hostd/bin`, the package's own
-build, or PATH.
+build, or PATH, and `stdio messages` does the same with `strad-hostd-messages`
+— whose Full Disk Access then has to be the terminal's, the ordinary
+arrangement for a command-line tool.
 
 The consent dialog stays on by default. `--no-consent` turns it off, on the
 reasoning that the person who launched the process is at the keyboard and their
@@ -602,14 +675,26 @@ servers through a real MCP client against `test/fake-ax.ts`, a stand-in that
 speaks the helper's protocol: the tree outline, actions, values, screenshots as
 image content, chords, the pre-dialog refusal for a missing grant, the
 owner-input rule, the banner's state and its buttons, and the helper client's
-reconnect, timeout and spawn paths.
+reconnect, timeout and spawn paths. The Messages server runs through a real
+MCP client against `test/fake-messages.ts`, which executes the daemon's own
+SQL with `node:sqlite` on a read-only connection to a fixture chat.db: the
+ROWID cursor across every chat and within one, the newest-first read,
+reactions, replies, edits, unsends, system rows, an `attributedBody`-only body,
+attachments, a rebuilt database's warning, the per-server timeout rule beside
+a shell that still denies, and the pre-dialog refusals for a helper that is
+missing or has no Full Disk Access.
 
 **Run on a GitHub macOS runner:** the helper compiles, signs ad-hoc, answers
 `hello`, lists apps and displays, refuses every op that acts on the machine
 until a controller has reported a grant that covers it, and — because the
 runner image turns out to hold both grants — reads a real Accessibility tree
 from Finder, captures a real screenshot, and shows and clears the banner
-(`.github/workflows/hostd-ax.yml`).
+(`.github/workflows/hostd-ax.yml`). In the same workflow, `strad-hostd-messages`
+compiles, signs ad-hoc, reads a fixture chat.db built by
+`hostd/messages/fixture.swift`, decodes an `attributedBody` that
+`NSArchiver` wrote, refuses writes, a second statement and ATTACH, converts a
+TIFF with `sips`, refuses an attachment outside the database's directory, and
+runs the daemon's own queries through it on macOS's SQLite.
 
 **Reasoned about, not run:** everything that needs a person at a Mac. The
 `osascript` dialog and whether it comes to the front when launched from a
@@ -628,5 +713,10 @@ them, the signing script's self-signed branch and whether `codesign` accepts
 the certificate it makes, the two System Settings grants on a real Mac and
 whether TCC attributes them to the helper under its LaunchAgent, the banner's
 look on a real desktop, the global input monitor telling the
-owner's keys from posted ones, and the monthly Screen Recording re-prompt. The
+owner's keys from posted ones, and the monthly Screen Recording re-prompt.
+For the Messages server: the Full Disk Access grant and whether TCC attributes
+it to the helper under its LaunchAgent, the real chat.db of a current macOS
+(its columns, its WAL under a running Messages, an `attributedBody`
+`NSUnarchiver` refuses), attachments Messages in iCloud has offloaded, and
+whether a woken Mac's catch-up lands as new ROWIDs. The
 first install on the MacBook is the test of all of these.

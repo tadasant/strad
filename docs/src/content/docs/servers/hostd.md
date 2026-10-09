@@ -3,11 +3,12 @@ title: Running strad-hostd
 description: Install the host daemon on a Mac, put it behind a local-tunnel slug, and see or stop what is in control of the machine.
 ---
 
-`strad-hostd` serves MCP servers that operate the machine it runs on. Four are
+`strad-hostd` serves MCP servers that operate the machine it runs on. Five are
 built: a shell server, a browser server that drives the Chrome you already have
 open, a computer-use server that operates apps through macOS Accessibility
-without touching your mouse, and a computer-use server that sees the screen and
-drives the real mouse and keyboard. strad reaches them as
+without touching your mouse, a computer-use server that sees the screen and
+drives the real mouse and keyboard, and a read-only Messages server that reads
+your iMessage and SMS history. strad reaches them as
 [`kind: local-tunnel`](/servers/local-tunnel-host/) slugs.
 [The design page](/servers/hostd-design/) has the reasoning. To run it on any
 machine with no tunnel, read `hostd/README.md`.
@@ -16,7 +17,7 @@ machine with no tunnel, read `hostd/README.md`.
 flowchart LR
   S["strad core"] -->|"CF-Access headers + Bearer key"| E["Cloudflare edge<br/>Access: Service Auth"]
   E -->|"outbound-only tunnel"| C["cloudflared<br/>(child of strad-hostd)"]
-  C -->|"127.0.0.1:7311"| M["MCP listener<br/>/shell/mcp · /browser/mcp<br/>/computer-headless/mcp · /computer/mcp"]
+  C -->|"127.0.0.1:7311"| M["MCP listener<br/>/shell/mcp · /browser/mcp<br/>/computer-headless/mcp · /computer/mcp<br/>/messages/mcp"]
   M --> G["consent gate<br/>dialog · grants · kill switch"]
   G --> SH["shell"]
   G --> BR["browser"]
@@ -27,6 +28,8 @@ flowchart LR
   AX --> ACC["Accessibility tree"]
   AX --> CG["screen capture · CGEvent input"]
   AX --> BN["banner · menu bar"]
+  G --> MS["strad-hostd-messages<br/>(its own LaunchAgent, Unix socket,<br/>Full Disk Access)"]
+  MS -->|"read-only"| DB["~/Library/Messages/chat.db<br/>+ Attachments"]
   P["status page<br/>127.0.0.1:7312"] -.->|"kill · disable"| G
   BN -.->|"kill · disable · owner input"| G
 ```
@@ -34,10 +37,10 @@ flowchart LR
 The status page is a separate listener. The tunnel's ingress names port 7311 and
 nothing else, which is also why the Chrome extension connects there: its
 socket, and the CRX a policy-installed Chrome fetches, are on the port nothing
-outside the machine can reach. `strad-hostd-ax` is a second LaunchAgent the
-daemon talks to over a socket in `~/.strad-hostd`, because that is the only
-arrangement under which macOS attributes its permission grants to the helper
-and not to `node`.
+outside the machine can reach. `strad-hostd-ax` and `strad-hostd-messages` are
+LaunchAgents of their own that the daemon talks to over sockets in
+`~/.strad-hostd`, because that is the only arrangement under which macOS
+attributes their permission grants to the helper and not to `node`.
 
 ## Install
 
@@ -51,17 +54,18 @@ git clone https://github.com/tadasant/strad && cd strad
 ```
 
 `--suffix` names the servers: `shell-my-mbp`, `browser-use-my-mbp-headless`,
-`computer-use-my-mbp-headless` and `computer-use-my-mbp`. Those names appear in
+`computer-use-my-mbp-headless`, `computer-use-my-mbp` and `imessage-my-mbp`. Those names appear in
 the consent dialog, so make them the strad slugs. The script opens a browser for
 `cloudflared tunnel login` the first time, creates a named tunnel called
 `strad-hostd`, routes the hostname to it, and installs the LaunchAgent
 `com.strad.hostd`. Leave out `--hostname` for a loopback-only daemon.
 
-With `swift` on the Mac (`xcode-select --install`) it also builds the native
-helper `strad-hostd-ax`, signs it, copies it to `~/.strad-hostd/bin`, and
-installs a second LaunchAgent, `com.strad.hostd-ax`. Without `swift` the two
-computer-use servers are served and refuse every request until the helper
-exists; `--no-helper` skips the build on purpose.
+With `swift` on the Mac (`xcode-select --install`) it also builds the two
+native helpers, `strad-hostd-ax` and `strad-hostd-messages`, signs them, copies
+them to `~/.strad-hostd/bin`, and installs a LaunchAgent for each,
+`com.strad.hostd-ax` and `com.strad.hostd-messages`. Without `swift` the
+computer-use and Messages servers are served and refuse every request until
+their helper exists; `--no-helper` skips the build on purpose.
 
 Re-run it to upgrade. It keeps the config, the keys and the tunnel, and adds any
 server the config predates. `./hostd/install/uninstall.sh` removes it, and
@@ -115,6 +119,47 @@ macOS 15 asks again, roughly monthly, whether the helper may keep recording the
 screen. Every capture that does not go through the system's own picker gets
 that prompt, and only the person at the Mac can answer it. A screenshot taken
 while the approval has lapsed fails with `screen_recording_denied`.
+
+## Give the Messages helper Full Disk Access
+
+The Messages server reads `~/Library/Messages/chat.db`, which macOS lets no
+program read without **Full Disk Access**. The grant goes to
+`strad-hostd-messages` and to nothing else: not to `node`, not to the shell
+server, not to `strad-hostd-ax`. There is no API that asks for it, so it is
+one drag at the Mac:
+
+```bash
+strad-hostd messages --grant
+```
+
+That opens System Settings › Privacy & Security › Full Disk Access and shows
+`~/.strad-hostd/bin/strad-hostd-messages` in Finder. Drag it into the list (or
+press **+**, then ⌘⇧G and paste the path), switch it on, and restart the helper:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.strad.hostd-messages
+strad-hostd messages
+```
+
+The second line says whether `chat.db` is readable. Until it is,
+`request_control` on the Messages server refuses with `helper_unavailable` and
+shows no dialog. The grant is keyed on the helper's signature (identifier
+`com.strad.hostd-messages`), so an upgrade signed by the same certificate keeps
+it.
+
+Two settings on the Mac decide how complete and how fresh the history is:
+
+- **Messages in iCloud** (Messages › Settings › iMessage › Enable Messages in
+  iCloud). With it on, a Mac that was asleep or off catches up when it wakes,
+  and history from your other devices lands here. With it off, what arrived
+  while the Mac slept may never reach it.
+- **The Mac awake.** iMessage exists only on Apple hardware, and a sleeping Mac
+  receives nothing. A read run while the Mac sleeps does not reach it at all:
+  the tunnel is down and strad reports the slug `offline`. A nightly sweep
+  needs the Mac awake when it runs (plugged in with **Prevent automatic
+  sleeping when the display is off**, or `caffeinate`), or it reads the gap
+  the next time it runs. An always-on Mac signed in to the same Apple ID
+  removes the question.
 
 ## Let Chrome be driven
 
@@ -174,7 +219,11 @@ One entry per server. They share the hostname and differ by path and by key:
 
 `timeoutMs` is above the default because `run_command` can wait up to 300
 seconds. The computer-use servers are `/computer-headless/mcp` and
-`/computer/mcp`, with the default timeout. `strad-hostd keys` on the Mac prints
+`/computer/mcp`, with the default timeout. The Messages server is
+`/messages/mcp` (`imessage-my-mbp`), with the default timeout and the same
+headers: its own `Authorization: Bearer` key, the shared Access token. No
+tunnel or Access change is needed for it, because the tunnel routes every path
+on the daemon's port. `strad-hostd keys` on the Mac prints
 each server's bearer key. Seed it, and the Access token's id and secret, under
 that slug's `static/` namespace at `/ui/secrets` **before** the config that
 references them deploys: an unset `${NAME}` fails the render, and the render is
@@ -196,6 +245,32 @@ An unanswered dialog is a **denial** by default. To let requests through when
 nobody objects, set `"consent": { "onTimeout": "allow" }` in
 `~/.strad-hostd/config.json` and restart. Read the design page's consent section
 first: with that setting and nobody at the screen, the dialog protects nothing.
+
+### Reading Messages
+
+`imessage-*` serves three tools after the three control tools, all read-only:
+`imessage_list_chats`, `imessage_get_messages` and `imessage_get_attachment`.
+It cannot send, and reading marks nothing as read.
+
+`imessage_get_messages` pages by `rowid`, the database's own row number, which
+only grows. Pass the `next_after_rowid` of the last call as `after_rowid` and
+you get exactly the messages that arrived since, oldest first, across every
+chat or within one. That is the cursor a nightly sweep stores. A cursor past
+every message comes back with a `warning`, because it means the database was
+rebuilt and its numbering restarted.
+
+Senders are phone numbers and email addresses: the Messages database holds no
+contact names. Attachments come back by `attachment_id`; HEIC, HEIF and TIFF
+photos are converted to JPEG on the Mac, and anything else comes back as a file
+with its MIME type. An attachment Messages in iCloud has not downloaded to this
+Mac is an error saying so.
+
+`init` and `add` write `"onTimeout": "allow"` on this server alone, so a read
+with nobody at the screen is granted when the dialog's window closes. The
+dialog still shows, the grant still notifies and is audited, and the kill
+switch still ends it; the rest of the machine keeps `deny`. Set it to `"deny"`
+under `capabilities.messages` in `~/.strad-hostd/config.json` to require
+someone at the screen.
 
 ### Unattended
 
@@ -255,7 +330,7 @@ the server and the purpose. With the helper installed, a banner also sits at
 the top of the screen for the life of every grant, on every Space and above
 every window, naming the server and the purpose, with **Kill** and **Disable
 everything** buttons, and the menu bar shows the same state with the same
-buttons. Orange means background control (shell, browser, Accessibility); red
+buttons. Orange means background control (shell, browser, Accessibility, Messages); red
 means the mouse and keyboard are taken, and any key or click you make ends
 that grant. The daemon re-sends the banner's state every two seconds, so a
 helper that restarts redraws it on the next tick, and the helper acts for one

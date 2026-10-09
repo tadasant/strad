@@ -7,11 +7,14 @@ export interface ControlState {
   disabled: boolean;
   tunnel: string;
   consent: { mode: string; windowSeconds: number; onTimeout: string };
-  servers: { id: string; name: string }[];
+  /** `onTimeout` is the server's own, which may differ from the machine's. */
+  servers: { id: string; name: string; onTimeout: string }[];
   pending: { server: string; purpose: string; since: number }[];
   grants: (GrantView & { running: string[] })[];
   /** Absent when no enabled server needs the native helper. */
   helper?: { connected: boolean; error?: string };
+  /** Absent when the messages server is not enabled. */
+  messagesHelper?: { connected: boolean; error?: string };
   /** Absent when the browser server is not enabled. */
   extension?: BridgeState;
   audit: AuditEntry[];
@@ -53,13 +56,30 @@ form{margin:0}.actions{display:flex;gap:8px}
 table{width:100%;border-collapse:collapse;font-size:13px}td{padding:5px 8px 5px 0;border-top:1px solid var(--line);vertical-align:top}td.t{color:var(--mute);white-space:nowrap}td.k{white-space:nowrap;font-weight:600}
 `;
 
+/** The servers whose own `onTimeout` differs from the machine's, named on the banner. */
+function exceptions(state: ControlState): string {
+  const odd = state.servers.filter(
+    (s) => s.onTimeout !== state.consent.onTimeout,
+  );
+  if (odd.length === 0) return "";
+  return `, except ${odd.map((s) => `<code>${esc(s.name)}</code>`).join(", ")}, where they are <b>${odd[0]!.onTimeout === "allow" ? "allowed" : "denied"}</b>`;
+}
+
+function helperLine(
+  label: string,
+  h: { connected: boolean; error?: string } | undefined,
+): string {
+  if (!h) return "";
+  return ` · ${label}: ${h.connected ? "connected" : `not reachable${h.error ? ` (${esc(h.error)})` : ""}`}`;
+}
+
 export function renderPage(state: ControlState, token: string): string {
   const form = (action: string, label: string, cls = "", extra = "") =>
     `<form method="post" action="${action}"><input type="hidden" name="token" value="${esc(token)}">${extra}<button class="${cls}">${esc(label)}</button></form>`;
 
   const banner = state.disabled
     ? `<div class="banner off"><div><strong>Remote control is OFF</strong><p>Every request is refused${state.tunnel === "off" ? "" : " and the tunnel is down"}. Nothing can reach this machine through strad-hostd.</p></div>${form("/enable", "Turn back on")}</div>`
-    : `<div class="banner on"><div><strong>Remote control is ON</strong><p>Requests show a ${state.consent.windowSeconds}-second dialog. Unanswered requests are <b>${state.consent.onTimeout === "allow" ? "allowed" : "denied"}</b>.</p></div>${form("/disable", "Disable everything", "danger")}</div>`;
+    : `<div class="banner on"><div><strong>Remote control is ON</strong><p>Requests show a ${state.consent.windowSeconds}-second dialog. Unanswered requests are <b>${state.consent.onTimeout === "allow" ? "allowed" : "denied"}</b>${exceptions(state)}.</p></div>${form("/disable", "Disable everything", "danger")}</div>`;
 
   const pending = state.pending
     .map(
@@ -93,9 +113,8 @@ ${g.running.map((c) => `<span class="cmd">▶ ${esc(c)}</span>`).join("")}
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="refresh" content="4"><title>strad-hostd — ${esc(state.machine)}</title><style>${CSS}</style></head><body><main>
 <h1>strad-hostd</h1><p class="sub">${esc(state.machine)} · serving ${state.servers.map((s) => `<code>${esc(s.name)}</code>`).join(", ") || "nothing"} · tunnel: ${esc(state.tunnel)}${
-    state.helper
-      ? ` · native helper: ${state.helper.connected ? "connected" : `not reachable${state.helper.error ? ` (${esc(state.helper.error)})` : ""}`}`
-      : ""
+    helperLine("native helper", state.helper) +
+    helperLine("messages helper", state.messagesHelper)
   }${
     state.extension
       ? ` · Chrome extension: ${

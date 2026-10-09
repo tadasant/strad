@@ -11,7 +11,12 @@ import { WebSocketServer } from "ws";
 
 import type { AuditLog } from "../audit.js";
 import type { ExtensionBridge } from "../browser/bridge.js";
-import { displayName, enabledCapabilities, type Config } from "../config.js";
+import {
+  displayName,
+  enabledCapabilities,
+  onTimeoutFor,
+  type Config,
+} from "../config.js";
 import type { ConsentGate } from "../consent/gate.js";
 import type { PackedExtension } from "../extension/crx.js";
 import type { KillSwitch } from "../killswitch.js";
@@ -28,6 +33,8 @@ export interface ControlDeps {
   runningFor: (grantId: string) => string[];
   /** Whether the native helper is reachable, for the status page. */
   helperState?: () => { connected: boolean; error?: string };
+  /** The same for `strad-hostd-messages`, when the messages server is enabled. */
+  messagesHelperState?: () => { connected: boolean; error?: string };
   /** Where to write the control token, for the CLI. Omitted in tests. */
   stateDir?: string;
   /**
@@ -68,12 +75,14 @@ export function collectState(deps: ControlDeps): ControlState {
     servers: enabledCapabilities(config).map((id) => ({
       id,
       name: displayName(config, id),
+      onTimeout: onTimeoutFor(config, id),
     })),
     pending: [...gate.pending.values()],
     grants: gate.grants
       .active()
       .map((g) => ({ ...g, running: deps.runningFor(g.id) })),
     helper: deps.helperState?.(),
+    messagesHelper: deps.messagesHelperState?.(),
     extension: deps.extension?.bridge.state(),
     audit: deps.audit.tail(40),
     now: Date.now(),

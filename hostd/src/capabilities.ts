@@ -13,12 +13,17 @@
  * `ax/`) and differ on the axis that matters most to the person at the
  * machine: `computer-headless` works through the Accessibility tree and never
  * touches the cursor, `computer` takes the real mouse and keyboard.
+ *
+ * `messages` has a helper of its own (`strad-hostd-messages`, under
+ * `messages/`), the one process holding Full Disk Access, and it only reads:
+ * it cannot send, type, click or run anything.
  */
 export const CAPABILITY_IDS = [
   "shell",
   "browser",
   "computer-headless",
   "computer",
+  "messages",
 ] as const;
 export type CapabilityId = (typeof CAPABILITY_IDS)[number];
 
@@ -70,6 +75,32 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityInfo> = {
     consentNote:
       "This server will move your mouse and type on your keyboard. Press any key or click to take the machine back.",
   },
+  messages: {
+    id: "messages",
+    path: "/messages/mcp",
+    mode: "background",
+    summary:
+      "Reads the owner's iMessage and SMS history from the Messages database on this Mac — chats, messages and attachments. Read-only: it cannot send, and reading marks nothing as read.",
+  },
+};
+
+/**
+ * What `init` and `add` write into a server's config when they create it,
+ * beyond the key and the name. Written into the FILE, not defaulted by the
+ * schema, so the owner sees it in their config and a hand-written config never
+ * acquires it silently.
+ *
+ * `messages` gets `onTimeout: "allow"`: its consumer is a nightly sweep that
+ * runs when nobody is at the screen, and a dialog that fails closed would
+ * refuse every one of them. The dialog is still shown for its window and is
+ * still a veto; the grant still notifies, is audited, shows on the status page
+ * and dies with the kill switch. The machine-wide default stays `deny`, so the
+ * shell and the computer-use servers are not loosened with it.
+ */
+export const CAPABILITY_DEFAULTS: Partial<
+  Record<CapabilityId, { onTimeout?: "deny" | "allow" }>
+> = {
+  messages: { onTimeout: "allow" },
 };
 
 /**
@@ -84,6 +115,8 @@ export function slugFor(id: CapabilityId, suffix: string): string {
       return `computer-use-${suffix}-headless`;
     case "computer":
       return `computer-use-${suffix}`;
+    case "messages":
+      return `imessage-${suffix}`;
     default:
       return `${id}-${suffix}`;
   }
@@ -93,7 +126,16 @@ export function isCapabilityId(value: string): value is CapabilityId {
   return (CAPABILITY_IDS as readonly string[]).includes(value);
 }
 
-/** The servers that cannot run without `strad-hostd-ax`. */
+/** The native helper a server cannot run without, if any. */
+export function helperFor(
+  id: CapabilityId,
+): "strad-hostd-ax" | "strad-hostd-messages" | undefined {
+  if (id === "computer-headless" || id === "computer") return "strad-hostd-ax";
+  if (id === "messages") return "strad-hostd-messages";
+  return undefined;
+}
+
+/** The servers that need a macOS helper, and so are off by default elsewhere. */
 export function needsHelper(id: CapabilityId): boolean {
-  return id === "computer-headless" || id === "computer";
+  return helperFor(id) !== undefined;
 }

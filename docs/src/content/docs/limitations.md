@@ -3211,7 +3211,7 @@ The rule assumes a box strad deploys to. This one is a personal laptop strad hol
 
 An unanswered consent dialog is a denial by default, so with nobody at the laptop every `request_control` fails with `timeout`. `consent.onTimeout: "allow"` changes that, and [the design page](/servers/hostd-design/#fail-closed-and-the-tension-with-the-original-ask) says what it costs.
 
-The macOS halves have not run anywhere but a bare CI runner: the `osascript` dialog, the LaunchAgents, the installer's `cloudflared` branch, and Chrome 144's debugging toggle against a real default profile. The two computer-use servers add steps of their own; see #108. The Chrome extension adds one more, and the trade-off that goes with it; see #112.
+The macOS halves have not run anywhere but a bare CI runner: the `osascript` dialog, the LaunchAgents, the installer's `cloudflared` branch, and Chrome 144's debugging toggle against a real default profile. The two computer-use servers add steps of their own; see #108. The Chrome extension adds one more, and the trade-off that goes with it; see #112. The Messages server adds a Full Disk Access grant and needs the Mac awake; see #115.
 
 **How you would know.** `troubleshoot_host` reports `offline` when the daemon, the tunnel or the laptop is down, and also when the owner has switched remote control off. `http://127.0.0.1:7312` on the machine says which.
 
@@ -3524,3 +3524,25 @@ aged out of the buffer (30 days by default). The transport goes back to Baileys
 when its download forwards source errors and tests the status it sets.
 
 See `HACKS.md` #114.
+
+---
+
+### 115. The Messages server needs Full Disk Access granted by hand, and an awake Mac
+
+The `imessage-*` server of [strad-hostd](/servers/hostd/) reads the owner's Messages history from `~/Library/Messages/chat.db` through a native helper, `strad-hostd-messages`, the one process on the machine strad-hostd asks Full Disk Access for. Four things about it are not what the rest of strad is like.
+
+The grant is clicked at the Mac. There is no API that asks for Full Disk Access; the owner drags the helper into System Settings › Privacy & Security › Full Disk Access, and `strad-hostd messages --grant` opens the list and shows the binary. It lands on the helper rather than on `node` because the helper runs as its own LaunchAgent, which is reasoned from how macOS attributes grants and has not been observed on a real Mac.
+
+The data is only as fresh as the Mac. iMessage exists only on Apple hardware, and a sleeping Mac receives nothing. With Messages in iCloud on, a Mac that wakes catches up, and the ROWID cursor `imessage_get_messages` takes then reads what arrived meanwhile; without it, what arrived during sleep may never reach this Mac's database. Nothing keeps the Mac awake.
+
+The helper's socket answers any process running as the owner, and reads chat.db for it, read-only and nothing else: no other database, and attachments only by id from inside the Messages directory. That is narrower than granting Full Disk Access to `node`, and it is not a privilege boundary, for the same reason as #108.
+
+The server is allowed on timeout. `init` and `add messages` set `onTimeout: "allow"` on it alone so a nightly read works with nobody at the screen; the rest of the machine keeps `deny`. With nobody there, the dialog refuses nothing. The slug stays `admin`-only.
+
+**How you would know.** `get_control_status` reports `helper: {running, full_disk_access, chat_db}`, `request_control` refuses with `helper_unavailable` and shows no dialog while the grant is missing, and `strad-hostd messages` on the Mac says the same. A cursor past every message comes back with a `warning`: the database was rebuilt and numbering restarted.
+
+**Undo:** an always-on Mac removes the freshness gap. Setting `"onTimeout": "deny"` on `capabilities.messages` puts the dialog back in charge. The grant is the owner's and stays.
+
+See `HACKS.md` #115.
+
+---
