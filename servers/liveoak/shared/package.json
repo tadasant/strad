@@ -1,0 +1,22 @@
+{
+  "name": "liveoak-shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LiveOak Bank statements, read-only: Cognito SRP login with a remembered device, the Apiture documents API, and a single-use download link per statement.",
+  "main": "build/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "amazon-cognito-identity-js": "6.3.20"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.6",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.9"
+  },
+  "license": "MIT"
+}

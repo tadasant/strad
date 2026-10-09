@@ -109,6 +109,7 @@ export default defineConfig({
             { label: "Telegram", slug: "servers/telegram" },
             { label: "WhatsApp", slug: "servers/whatsapp" },
             { label: "BILL Spend & Expense", slug: "servers/bill-spend" },
+            { label: "LiveOak Bank", slug: "servers/liveoak" },
             { label: "AWS Device Farm", slug: "servers/aws-device-farm" },
             {
               label: "AWS Device Farm: first-time setup",

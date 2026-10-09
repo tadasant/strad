@@ -15,7 +15,7 @@
  * credential-dependent. CI has no credential, the probe fails closed, and the
  * count is the read-only 4 below.
  *
- * What it is really checking is that twenty-four servers, sixteen dependency trees and
+ * What it is really checking is that twenty-five servers, seventeen dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  *
@@ -108,6 +108,10 @@ const EXPECT = {
   // bill by the minute against a card, and the two `stop_` tools are what a
   // read-only slug is given so it can end a session it can see.
   "aws-device-farm": 19,
+  // LiveOak Bank: status, the two statement reads, and the two-step device
+  // enrolment. There is no write tool to count — the API client sends GET and
+  // nothing else — so five is also the claim that none has crept in.
+  liveoak: 5,
   // Grafana's 65 tools minus the 13 the binary's `-disable-write` removes. Not a
   // gateway allow-list: the child process does not contain them. If this number
   // moves, either the pin moved or a flag stopped being passed — and the second
@@ -265,7 +269,7 @@ if (unchecked.length || absent.length) {
 
 // Two trees registering the SAME slug is the collision a twelve-tree single process
 // invites, and it collapses to one route — the set above cannot see it, because a
-// Set of 24 mounts' slugs is 23 entries wide and matches EXPECT exactly.
+// Set of 25 mounts' slugs is 24 entries wide and matches EXPECT exactly.
 if (health.servers.length !== mounted.size) {
   failed += 1;
   console.log(

@@ -243,7 +243,7 @@ describe("extraSlugs", () => {
   it("loses the per-slug mounts, not the container, when a tree exports no list", () => {
     // `google.sheets.GOOGLE_SHEETS_OAUTH_APP_ENV_NAMES` is read off a module built
     // in another Docker stage. If it were ever absent, dereferencing it inside
-    // `buildMounts()` would exit the process and take all twenty-four mounts down.
+    // `buildMounts()` would exit the process and take all twenty-five mounts down.
     const log = captureLog();
 
     expect(

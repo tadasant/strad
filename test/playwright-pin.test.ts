@@ -144,7 +144,7 @@ interface Base {
  *
  * Only ARGs declared BEFORE the first `FROM` are in scope for a `FROM` line —
  * that is Docker's rule, and it is why `servers/bundle/Dockerfile` declares
- * `ARG PW=` at the top and then writes `FROM ${PW}` sixteen times. An ARG this
+ * `ARG PW=` at the top and then writes `FROM ${PW}` for every stage. An ARG this
  * function cannot resolve keeps its `$`, so the assertion below can see it.
  *
  * A stage built on another stage (`FROM build AS final`) resolves through to

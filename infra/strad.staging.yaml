@@ -12,13 +12,13 @@
 # ---------------------------------------------------------------------------
 # CAPABILITY LIVES AT THE GATEWAY. THREE COMPONENTS, NOT THIRTEEN.
 # ---------------------------------------------------------------------------
-# This file declares thirty-six server SLUGS: thirty-three supplementary-image
+# This file declares thirty-seven server SLUGS: thirty-four supplementary-image
 # entries, the `echo` builtin in core, the `deepwiki` remote-http canary, and
 # the `anki` local-tunnel, which ships disabled — see its entry below.
-# Thirty-one of the thirty-three land on twenty upstream mounts inside the
+# Thirty-two of the thirty-four land on twenty-one upstream mounts inside the
 # one bundle image, because capability variants share a mount; the other two
 # (`zimmer-secrets` and `whatsapp-zimmer`) each run that same image on a
-# bundle of their own. The image serves twenty-four mounts: `/x-twitter`,
+# bundle of their own. The image serves twenty-five mounts: `/x-twitter`,
 # `/google-sheets`, `/grafana` and `/aws-device-farm` are in it with no
 # staging slug pointing at any of them —
 # `grafana-registry` is served by a per-slug instance at `/grafana-registry`, not
@@ -26,9 +26,9 @@
 # environment yet because its AWS credential has not been minted. The block to
 # paste once it has is in docs/servers/aws-device-farm-setup.
 #
-# FIVE of the thirty-three carry `enabled: false` — telegram-ro, telegram-rw,
-# pulse-subregistry, grafana-registry and whatsapp-zimmer — because their
-# credentials are not in the store yet.
+# SIX of the thirty-four carry `enabled: false` — telegram-ro, telegram-rw,
+# pulse-subregistry, grafana-registry, whatsapp-zimmer and liveoak — because
+# their credentials are not in the store yet.
 # A `${NAME}` the store does not hold fails the RENDER, and the render is the
 # whole spec, so an entry that ships enabled before its secret is seeded takes
 # every other server's deploy down with it.
@@ -174,9 +174,9 @@ roles:
     servers: [zimmer-secrets, secrets, echo]
 
 bundles:
-  # THE bundle. One image, one component, and nineteen of the image's twenty-four
+  # THE bundle. One image, one component, and twenty of the image's twenty-five
   # upstream MCP servers — the bundle-api fleet, the Google servers, 1Password
-  # (with the `op` CLI baked in), telegram and the three browser servers, which
+  # (with the `op` CLI baked in), telegram, liveoak and the three browser servers, which
   # share ONE Chromium (never one per server: see
   # servers/bundle/host/src/browser.ts). Five mounts have no slug here:
   # `/x-twitter`, `/google-sheets` — registered in prod, where its six slugs each
@@ -185,8 +185,9 @@ bundles:
   # conventional `/grafana`, since staging's Grafana is the per-slug
   # `/grafana-registry` below, `/aws-device-farm`, whose AWS credential does
   # not exist yet, and `/whatsapp`, whose one slug is served from
-  # `bundle-whatsapp`. The PROCESS registers all twenty-four either way — including
-  # `/telegram`, whose two slugs are disabled until their secret is seeded —
+  # `bundle-whatsapp`. The PROCESS registers all twenty-five either way — including
+  # `/telegram` and `/liveoak`, whose slugs are disabled until their secrets are
+  # seeded —
   # which is what the sizing below is about.
   #
   # SIZE. 2GB, and the reasoning is measured, not guessed. With two browser
@@ -1332,3 +1333,44 @@ servers:
       BILL_SPEND_API_TOKEN: "${BILL_SPEND_API_TOKEN}"
       BILL_ENVIRONMENT: sandbox
     # No `tools:` — all five, set_transaction_coding included.
+
+  # ---------------------------------------------------------------------------
+  # liveoak — strad's own LiveOak Bank server: list and fetch account statements
+  # from the legacy portal (secure.liveoak.bank), read-only. servers/liveoak.
+  #
+  # THE CREDENTIAL IS A PERSON'S BANK LOGIN, and there is no staging bank: these
+  # references would resolve to the one real account. The password stays in the
+  # store and in this container; the login is SRP, so even Cognito is sent a
+  # proof rather than the value, and no tool result or log line carries it.
+  #
+  # THE SECOND HALF IS A REMEMBERED DEVICE. A login with no remembered device is
+  # answered with an SMS code, so the server makes one only when a human calls
+  # enrol_device and then confirm_device with the code. The device keys that
+  # result are sealed with LIVEOAK_STATE_ENCRYPTION_KEY into GCS under
+  # LIVEOAK_GCS_PREFIX, the same arrangement as whatsapp-zimmer above.
+  #
+  # DISABLED UNTIL SEEDED. Seed the six `${…}` values in the store
+  # (/ui/secrets), delete `enabled: false`, deploy, then call enrol_device and
+  # confirm_device from the console playground. docs/servers/liveoak.
+  - slug: liveoak
+    kind: supplementary-image
+    title: LiveOak Bank (statements)
+    description: List and download LiveOak Bank account statements. Read-only.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /liveoak
+    entitlements: [admin]
+    enabled: false
+    env:
+      LIVEOAK_USERNAME: "${LIVEOAK_USERNAME}"
+      LIVEOAK_PASSWORD: "${LIVEOAK_PASSWORD}"
+      LIVEOAK_STATE_ENCRYPTION_KEY: "${LIVEOAK_STATE_ENCRYPTION_KEY}"
+      LIVEOAK_GCS_BUCKET: "${LIVEOAK_GCS_BUCKET}"
+      LIVEOAK_GCS_CLIENT_EMAIL: "${LIVEOAK_GCS_CLIENT_EMAIL}"
+      LIVEOAK_GCS_PRIVATE_KEY: "${LIVEOAK_GCS_PRIVATE_KEY}"
+      # Plain config. Staging's own folder, so a staging enrolment can never
+      # overwrite production's device even if both point at one bucket.
+      LIVEOAK_GCS_PREFIX: liveoak/staging
+      # The slug get_statement's download links are addressed to.
+      LIVEOAK_PUBLIC_SLUG: liveoak
+    # No `tools:` — all five. Nothing on this surface writes to the bank.
