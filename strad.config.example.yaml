@@ -1076,13 +1076,13 @@ servers:
   # credential. See servers/onepassword/README.md.
   #
   # EVERY REVEAL ASKS A HUMAN. `onepassword_get_item` on an item with a password,
-  # token or other sensitive field asks the session that made the call, through
-  # the URL it sends in `X-Elicitation-Url` (held to
-  # `gateway.elicitation.allowedUrlPrefixes` above), and reveals nothing unless
+  # token or other sensitive field, and `onepassword_share_item`, ask the session
+  # that made the call, through the URL it sends in `X-Elicitation-Url` (held to
+  # `gateway.elicitation.allowedUrlPrefixes` above), and reveal nothing unless
   # that human approves. A call with no one to ask, the console's included, is
-  # refused. So is every write, unless the slug opts its writes out (below).
-  # There is no switch that skips the reveal prompt; the host strips
-  # DANGEROUSLY_SKIP_ELICITATIONS from the container. docs/servers/confirmations.
+  # refused. So is every create, unless the slug opts its creates out (below).
+  # In the bundle no switch skips the reveal prompt; the host strips
+  # DANGEROUSLY_SKIP_ELICITATIONS from the process. docs/servers/confirmations.
   - slug: onepassword-rw
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
@@ -1106,8 +1106,9 @@ servers:
   # bundle declaring one bare name with different values.
   #
   # <SLUG>__OP_ELICITATION_WRITE: "false" is the provisioning posture, read under
-  # this slug's own name only: its writes (create an item, mint a share link)
-  # run unasked, and a reveal still asks. Any other value, or none, asks.
+  # this slug's own name only: its creates (login, secure note, API credential)
+  # run unasked, and a reveal or a share link still asks. Any other value, or
+  # none, asks.
   # - slug: onepassword-provisioning
   #   kind: supplementary-image
   #   image: ghcr.io/tadasant/strad-bundle:latest

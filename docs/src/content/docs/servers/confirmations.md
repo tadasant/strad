@@ -183,16 +183,25 @@ The 1Password mounts ask through the same channel, for five tools:
 | `onepassword_create_login`          | creating the logins                                                        |
 | `onepassword_create_secure_note`    | creating the notes                                                         |
 | `onepassword_create_api_credential` | creating the API-credential items                                          |
-| `onepassword_share_item`            | minting the share links                                                    |
+| `onepassword_share_item`            | minting share links to existing items, which reveal them to whoever opens the link |
 
 One prompt covers a whole batch: the vendored tool lists every item in it. The
 prompt is prefixed with the strad slug, so a human holding several 1Password
 slugs can tell which account is asking. Only `accept`, with the confirm box
-still ticked, reveals or writes. Declined, expired, cancelled, unrecognised, an
-unreachable approval endpoint: the item comes back with every sensitive field
-`[REDACTED]` and `_credentialsRevealed: false`, or the write reports `declined`
-and nothing is created. The listing tools and `onepassword_get_item_metadata`
-never reveal a value and never ask.
+still ticked, reveals or writes. On a decline, an expiry, a cancel, an unticked
+box or an answer it does not recognise, `onepassword_get_item` returns the items
+with every sensitive field `[REDACTED]` and `_credentialsRevealed: false`, and a
+write or share reports `declined` or `expired` and creates nothing. An approval
+endpoint that cannot be reached or answers an error fails the call, naming the
+HTTP status and nothing from the body; nothing is revealed or written then
+either.
+
+What counts as sensitive is the vendored tool's call: a field of a concealed
+type (password, secret, card number and CVV), or one whose label mentions a
+password, secret, token, key, credential, CVV or PIN. A field outside that test,
+such as a secure note's body, is returned by `onepassword_get_item` and by
+`onepassword_get_item_metadata` without a prompt. The listing tools return
+titles, categories and tags only.
 
 `servers/onepassword/remote/src/confirm.ts` is strad's layer over the vendored
 tree. It is gmail's layer applied to these five tools: the same `_meta` key,
@@ -206,18 +215,26 @@ posture from the process environment, and every 1Password mount in the bundle
 shares one. So the bundle host pins it to "ask about everything" at boot:
 `OP_ELICITATION_READ` and `OP_ELICITATION_WRITE` are forced to `true`, and
 `DANGEROUSLY_SKIP_ELICITATIONS` and `OP_WHITELISTED_ITEMS` are removed, with a
-warning naming each. No config reveals a secret unasked.
+warning naming each, and pins it again at the start of every call, since a
+parameter refresh can write the environment after boot. No bundle config
+reveals a secret unasked. (The standalone `strad-server-onepassword` image is a
+different entrypoint and still honours the upstream variables.)
 
 What a mount does with the question is per slug, and there is one knob:
 
-- **A reveal always goes to a human.** There is no per-slug way out.
-- **A write goes to a human** unless the slug sets
-  `<SLUG>__OP_ELICITATION_WRITE: "false"` under its own name. Then its writes
+- **A reveal always goes to a human**: `onepassword_get_item`, and
+  `onepassword_share_item`, because a share link to an existing item reveals it
+  to whoever opens the link. There is no per-slug way out.
+- **A create goes to a human** (`create_login`, `create_secure_note`,
+  `create_api_credential`) unless the slug sets
+  `<SLUG>__OP_ELICITATION_WRITE: "false"` under its own name. Then its creates
   are answered `accept` inside the bundle, unasked, with or without a channel.
-  This is the provisioning posture: mint a key, store it and share it in one
-  unattended pass. Only the exact word `false` turns it off, and only the
-  slug's own variable is read. A bare `OP_ELICITATION_WRITE` on the container
-  belongs to whichever sibling declared it, and is ignored.
+  This is the provisioning posture: mint a key and store it in one unattended
+  pass. Sharing it still asks, which is stricter than the npx
+  `1password-pulsemcp-provisioning` entry, where `OP_ELICITATION_WRITE=false`
+  also skipped the share prompt. Only the exact word `false` turns it off, and
+  only the slug's own variable is read. A bare `OP_ELICITATION_WRITE` on the
+  container belongs to whichever sibling declared it, and is ignored.
 
 The calls refuse before 1Password is read or written, exactly as `send_email`
 does, when the call carries no channel, when core refused the caller's, or when

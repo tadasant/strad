@@ -60,6 +60,9 @@ image is credential-free; `op` reads its token from the environment at runtime.
 
 ## Environment
 
+These are the STANDALONE image's variables. In the strad bundle the posture
+variables are overridden, as described above.
+
 | Var | Required | Notes |
 |-----|----------|-------|
 | `OP_SERVICE_ACCOUNT_TOKEN` | yes | 1Password service-account token. strad injects it as a per-bundle SECRET; the image ships none. |
@@ -76,17 +79,18 @@ image is credential-free; `op` reads its token from the environment at runtime.
 The strad bundle (`servers/bundle/host`) mounts this tree differently from the
 standalone image, and the difference is who confirms a reveal.
 
-- Every `onepassword_get_item` that would show a sensitive field, and every
-  write (`create_login`, `create_secure_note`, `create_api_credential`,
-  `share_item`), is put to the human attached to the CALLING session, at the URL
+- Every `onepassword_get_item` that would show a sensitive field, every
+  `share_item` (a share link reveals the item), and every create
+  (`create_login`, `create_secure_note`, `create_api_credential`), is put to the
+  human attached to the CALLING session, at the URL
   strad core forwards for a `confirmations: true` slug. A call with no one to ask
   is refused before 1Password is read or written.
 - The host pins the vendored posture to "always ask": `OP_ELICITATION_READ` and
   `OP_ELICITATION_WRITE` are forced to `true`, and `DANGEROUSLY_SKIP_ELICITATIONS`
   and `OP_WHITELISTED_ITEMS` are removed from the process. None of them is a
   bundle setting.
-- A slug's own `<SLUG>__OP_ELICITATION_WRITE=false` lets that slug's writes run
-  unasked (the provisioning posture). Reveals still ask.
+- A slug's own `<SLUG>__OP_ELICITATION_WRITE=false` lets that slug's creates run
+  unasked (the provisioning posture). Reveals and share links still ask.
 - Each slug with its own `<SLUG>__OP_SERVICE_ACCOUNT_TOKEN` on `path: /<slug>`
   is its own mount holding only that token.
 

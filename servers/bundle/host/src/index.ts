@@ -1566,7 +1566,8 @@ const ONEPASSWORD_MARKER_NAMES = [ONEPASSWORD_TOKEN_VAR];
 const ONEPASSWORD_WRITE_POSTURE_VAR = "OP_ELICITATION_WRITE";
 
 interface OnePasswordTree {
-  createMCPServer: (opts: { version: string }) => {
+  /** Built once: only its `registerHandlers` is used, onto each request's server. */
+  server: {
     registerHandlers: (server: unknown, factory: () => unknown) => Promise<void>;
   };
   OnePasswordClient: new (token: string) => object;
@@ -1592,10 +1593,10 @@ interface OnePasswordTree {
  * that does not confirm writes, is answered here.
  */
 async function loadOnePasswordTree(): Promise<OnePasswordTree> {
-  const mod = (await loadFromTree("onepassword", "shared/build/index.js")) as Omit<
-    OnePasswordTree,
-    "confirm"
-  >;
+  const mod = (await loadFromTree("onepassword", "shared/build/index.js")) as {
+    createMCPServer: (opts: { version: string }) => OnePasswordTree["server"];
+    OnePasswordClient: OnePasswordTree["OnePasswordClient"];
+  };
   const confirm = (await loadFromTree(
     "onepassword",
     "remote/build/confirm.js",
@@ -1609,7 +1610,11 @@ async function loadOnePasswordTree(): Promise<OnePasswordTree> {
         `value would apply to every 1Password mount in this process at once.`,
     );
   }
-  return { ...mod, confirm };
+  return {
+    server: mod.createMCPServer({ version: VERSION }),
+    OnePasswordClient: mod.OnePasswordClient,
+    confirm,
+  };
 }
 
 /**
@@ -1635,9 +1640,14 @@ async function loadOnePasswordTree(): Promise<OnePasswordTree> {
  * refused before it runs. See `servers/confirmations.md` in the docs.
  */
 function loadOnePassword(op: OnePasswordTree, slug: string, perSlug: boolean): Mount {
-  const view = slugEnvView(process.env, slug);
-  if (perSlug) dropInheritedNames(view, slug, ONEPASSWORD_MARKER_NAMES);
-  const token = view[ONEPASSWORD_TOKEN_VAR];
+  // Read per CALL, not once: a `paramsRefresh:` rotation lands in this
+  // process's environment, and the next `op` run should use it.
+  const tokenNow = (quiet = true): string | undefined => {
+    const view = slugEnvView(process.env, slug);
+    if (perSlug) dropInheritedNames(view, slug, ONEPASSWORD_MARKER_NAMES, process.env, quiet);
+    return view[ONEPASSWORD_TOKEN_VAR] || undefined;
+  };
+  const token = tokenNow(false);
 
   const confirmWrites = onePasswordConfirmsWrites(slug, perSlug);
   if (!confirmWrites) {
@@ -1654,13 +1664,12 @@ function loadOnePassword(op: OnePasswordTree, slug: string, perSlug: boolean): M
     serverName: "onepassword-mcp-server",
     capabilities: { resources: {}, tools: {} },
     degraded: missingCredentialsDegraded(token ? [] : [ONEPASSWORD_TOKEN_VAR]),
+    liveEnv: true,
     register: (s) =>
-      op
-        .createMCPServer({ version: VERSION })
-        .registerHandlers(
-          op.confirm.withConfirmation(s as object, { confirmWrites, label: "1Password" }),
-          () => op.confirm.guardWrites(new op.OnePasswordClient(token ?? "")),
-        ),
+      op.server.registerHandlers(
+        op.confirm.withConfirmation(s as object, { confirmWrites, label: "1Password" }),
+        () => op.confirm.guardWrites(new op.OnePasswordClient(tokenNow() ?? "")),
+      ),
   };
 }
 

@@ -750,6 +750,16 @@ describe("1Password per slug", () => {
     expect(log.lines()[0]).toContain("ONEPASSWORD_PULSEMCP_RO__OP_SERVICE_ACCOUNT_TOKEN");
   });
 
+  it("treats an empty per-slug token as none, and still refuses the bare one", () => {
+    // The state discovery CAN produce: the prefixed key is on the box, empty.
+    const view: Record<string, string | undefined> = { [TOKEN]: "ops_tadas_rw" };
+    dropInheritedNames(view, "onepassword-tadas-all", [TOKEN], {
+      [TOKEN]: "ops_tadas_rw",
+      ONEPASSWORD_TADAS_ALL__OP_SERVICE_ACCOUNT_TOKEN: "",
+    } as NodeJS.ProcessEnv, true);
+    expect(view[TOKEN]).toBeUndefined();
+  });
+
   it("confirms writes unless the slug's OWN name says exactly false", () => {
     const slug = "onepassword-pulsemcp-provisioning";
     const own = "ONEPASSWORD_PULSEMCP_PROVISIONING__OP_ELICITATION_WRITE";
@@ -786,7 +796,7 @@ describe("1Password per slug", () => {
   it("is wired into the host: discovered on the token, kept off the bare one, behind the confirmation layer", () => {
     const host = readFileSync("src/index.ts", "utf8");
     expect(host).toMatch(/extraSlugs\("onepassword", ONEPASSWORD_MARKER_NAMES\)/);
-    expect(host).toContain("dropInheritedNames(view, slug, ONEPASSWORD_MARKER_NAMES)");
+    expect(host).toContain("dropInheritedNames(view, slug, ONEPASSWORD_MARKER_NAMES, process.env, quiet)");
     expect(host).toContain("op.confirm.withConfirmation(");
     expect(host).toContain("confirm.forceAskEverything(process.env)");
     // The old posture check is gone: the mount no longer needs a container-wide

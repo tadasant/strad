@@ -131,6 +131,8 @@ export function dropInheritedNames(
   slug: string,
   names: readonly string[],
   env: NodeJS.ProcessEnv = process.env,
+  /** Drop without saying so: for a mount that re-reads per call, having said it once at boot. */
+  quiet = false,
 ): void {
   const inherited: { name: string; own: string | null }[] = [];
   for (const name of names) {
@@ -139,7 +141,7 @@ export function dropInheritedNames(
     if (view[name]) inherited.push({ name, own });
     delete view[name];
   }
-  if (inherited.length === 0) return;
+  if (inherited.length === 0 || quiet) return;
 
   const one = inherited.length === 1;
   logWarn(

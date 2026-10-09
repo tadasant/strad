@@ -90,6 +90,8 @@ interface Prompt {
 const approval = {
   /** What a poll answers. `pending` holds the call open. */
   answer: { action: 'accept', content: { confirm: true } } as Record<string, unknown>,
+  /** Per-session answers, keyed by a substring of the poll path. Wins over `answer`. */
+  bySession: {} as Record<string, Record<string, unknown>>,
   prompts: [] as Prompt[],
   polls: 0,
 };
@@ -109,7 +111,8 @@ beforeAll(async () => {
         return;
       }
       approval.polls++;
-      res.end(JSON.stringify(approval.answer));
+      const session = Object.keys(approval.bySession).find((s) => req.url?.includes(s));
+      res.end(JSON.stringify(session ? approval.bySession[session] : approval.answer));
     });
   });
   await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
@@ -121,6 +124,7 @@ afterAll(() => new Promise<void>((resolve) => http.close(() => resolve())));
 const saved = { ...process.env };
 beforeEach(() => {
   approval.answer = { action: 'accept', content: { confirm: true } };
+  approval.bySession = {};
   approval.prompts = [];
   approval.polls = 0;
   // A Zimmer session running this suite has its own container-wide approval
@@ -318,10 +322,14 @@ describe('a reveal goes to the calling session, and only an approval reveals', (
     expect(approval.prompts).toHaveLength(0);
   });
 
-  it('keeps two sessions calling at once apart', async () => {
+  it('keeps two sessions calling at once apart: one declines, one approves', async () => {
+    approval.bySession = {
+      'session-a': { action: 'decline' },
+      'session-b': { action: 'accept', content: { confirm: true } },
+    };
     const client = await mount(fakeOp().client);
 
-    await Promise.all([
+    const [a, b] = await Promise.all([
       client.callTool(getItem(channel('session-a'))),
       client.callTool(getItem(channel('session-b'))),
     ]);
@@ -330,6 +338,21 @@ describe('a reveal goes to the calling session, and only an approval reveals', (
       '/api/v1/elicitations/session/session-a',
       '/api/v1/elicitations/session/session-b',
     ]);
+    expect(JSON.stringify(a)).not.toContain(SECRET);
+    expect(text(b)).toContain(SECRET);
+  });
+
+  it('still asks when DANGEROUSLY_SKIP_ELICITATIONS lands in the environment after the mount was built', async () => {
+    // A parameter refresh writes the process environment after boot.
+    approval.answer = { action: 'decline' };
+    const client = await mount(fakeOp().client);
+    process.env.DANGEROUSLY_SKIP_ELICITATIONS = 'true';
+    process.env.OP_ELICITATION_READ = 'false';
+
+    const result = await client.callTool(getItem(channel()));
+
+    expect(approval.prompts).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain(SECRET);
   });
 });
 
@@ -392,6 +415,25 @@ describe('a write asks too, unless the mount is the provisioning posture', () =>
     expect(refused.isError).toBe(true);
     expect(approval.prompts).toHaveLength(1);
     expect(JSON.stringify(declined)).not.toContain(SECRET);
+  });
+
+  it('confirmWrites: false never lets a share link through unasked: a share reveals the item', async () => {
+    approval.answer = { action: 'decline' };
+    const op = fakeOp();
+    const client = await mount(op.client, { confirmWrites: false });
+    const share = (meta?: Record<string, unknown>) => ({
+      name: 'onepassword_share_item',
+      arguments: { items: [{ item: 'Stripe Live Key' }] },
+      ...(meta ? { _meta: meta } : {}),
+    });
+
+    const refused = await client.callTool(share());
+    expect(refused.isError).toBe(true);
+    expect(text(refused)).toContain('No share link was created');
+
+    await client.callTool(share(channel()));
+    expect(approval.prompts).toHaveLength(1);
+    expect(op.calls.filter((c) => c === 'shareItem')).toEqual([]);
   });
 
   it('a call dropped while the human decides writes nothing, even if they approve afterwards', async () => {

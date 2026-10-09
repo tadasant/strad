@@ -10,9 +10,8 @@
  * `ELICITATION_POLL_URL`. That is upstream's deployment, one server process per
  * agent session, where the environment IS the session. strad's bundle is one
  * process serving every caller, so a container-wide URL cannot name the calling
- * session. Without this module the only posture left was
- * `DANGEROUSLY_SKIP_ELICITATIONS=true`: every secret revealed to whoever could
- * reach the slug, unasked.
+ * session; the alternative, `DANGEROUSLY_SKIP_ELICITATIONS=true`, reveals every
+ * secret to whoever can reach the slug, unasked.
  *
  * So the address travels with the CALL. strad core reads it off the caller's
  * `/mcp` request (`X-Elicitation-Url`, held to
@@ -43,18 +42,20 @@
  * ## Who decides whether to ask
  *
  * strad does, per mount, and the vendored tool is made to always ask so that it
- * never decides on its own. The tool reads its posture from `process.env`, which
- * is shared by every mount in the process, so {@link forceAskEverything} pins it
- * at mount time: reads and writes both elicit, nothing is whitelisted, and
- * `DANGEROUSLY_SKIP_ELICITATIONS` is removed. What a mount then does with the
- * question is this module's {@link ConfirmationOptions.confirmWrites}:
+ * never decides on its own. The tool reads its posture from `process.env` on
+ * every call, and every mount in the process shares it, so
+ * {@link forceAskEverything} pins it at the start of EVERY call (a parameter
+ * refresh can write the environment after boot): reads and writes both elicit,
+ * nothing is whitelisted, and `DANGEROUSLY_SKIP_ELICITATIONS` is removed. What a
+ * mount then does with the question is {@link ConfirmationOptions.confirmWrites}:
  *
- *   - a REVEAL is always put to a human. There is no per-slug way out.
- *   - a WRITE is put to a human unless the mount was built with
+ *   - a REVEAL (`get_item`, and `share_item`, whose link reveals the item) is
+ *     always put to a human. There is no per-slug way out.
+ *   - a CREATE is put to a human unless the mount was built with
  *     `confirmWrites: false` (`OP_ELICITATION_WRITE=false` under the slug's own
  *     variable name), in which case it is answered `accept` here, unasked. That
- *     is the provisioning posture: mint a credential, store it and share it in
- *     one unattended pass, while reading an existing one still asks.
+ *     is the provisioning posture: mint a credential and store it in one
+ *     unattended pass, while reading or sharing an existing one still asks.
  *
  * ## Fail closed
  *
@@ -71,26 +72,31 @@ import { randomUUID } from 'node:crypto';
 /** The `_meta` key core writes the caller's channel under. */
 export const ELICITATION_META_KEY = 'dev.strad/elicitation';
 
-/** The tool that reveals an existing secret. Always confirmed. */
-export const REVEAL_TOOLS: readonly string[] = ['onepassword_get_item'];
+/**
+ * The tools that expose an EXISTING secret. Always confirmed, on every mount.
+ *
+ * `onepassword_share_item` is here and not with the writes: it mints a link to
+ * any item the token can see, and whoever opens the link reads the item. A
+ * share is a reveal to a third party, so no write posture may skip it.
+ */
+export const REVEAL_TOOLS: readonly string[] = ['onepassword_get_item', 'onepassword_share_item'];
 
 /**
- * The tools that create an item or mint a share link. Confirmed unless the
- * mount says otherwise.
+ * The tools that create a NEW item. Confirmed unless the mount says otherwise.
  *
- * NOT DERIVED, on purpose: this is the list a call is refused on when there is
- * no one to ask. `test/confirm.test.ts` greps the vendored tree for every tool
- * that calls `requestConfirmation` and fails if the two lists together disagree
- * with it, so a re-vendor that adds a tenth elicitation is caught in CI.
+ * NOT DERIVED, on purpose: these two lists are what a call is refused on when
+ * there is no one to ask. `test/confirm.test.ts` greps the vendored tree for
+ * every tool that calls `requestConfirmation` and fails if the two lists
+ * together disagree with it, so a re-vendor that adds a tenth elicitation is
+ * caught in CI.
  */
 export const WRITE_TOOLS: readonly string[] = [
   'onepassword_create_login',
   'onepassword_create_secure_note',
-  'onepassword_share_item',
   'onepassword_create_api_credential',
 ];
 
-/** The client methods behind {@link WRITE_TOOLS}. Refused once a call is dropped. */
+/** The client methods behind the confirmed tools that act. Refused once a call is dropped. */
 const WRITE_METHODS = new Set(['createLogin', 'createSecureNote', 'shareItem', 'createApiCredential']);
 
 /** Poll every 5s, the library's default. */
@@ -212,9 +218,12 @@ export function containerBypass(
 }
 
 function refusal(tool: string, why: string) {
-  const what = REVEAL_TOOLS.includes(tool)
-    ? 'Nothing was read from 1Password and nothing was revealed.'
-    : 'Nothing was written to 1Password.';
+  const what =
+    tool === 'onepassword_share_item'
+      ? 'No share link was created.'
+      : REVEAL_TOOLS.includes(tool)
+        ? 'Nothing was read from 1Password and nothing was revealed.'
+        : 'Nothing was written to 1Password.';
   return {
     content: [
       {
@@ -468,6 +477,9 @@ export function withConfirmation<S extends object>(target: S, options: Confirmat
       const params = (
         request as { params?: { name?: unknown; _meta?: unknown } }
       )?.params;
+      // Before anything reads it: the posture may have been rewritten since the
+      // last call, and the vendored tool reads it fresh.
+      forceAskEverything();
       const tool = typeof params?.name === 'string' ? params.name : '';
       const reveal = REVEAL_TOOLS.includes(tool);
       const write = WRITE_TOOLS.includes(tool);
