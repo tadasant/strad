@@ -515,6 +515,8 @@ describe("Attachment input validation", () => {
       "[fe90::1]", // inside fe80::/10
       "[fec0::1]",
       "[::]",
+      "[2002:7f00:1::]", // 6to4
+      "[2001:0:4136:e378::1]", // Teredo
     ]) {
       expect(isDisallowedHost(host), host).toBe(true);
     }
@@ -582,6 +584,10 @@ describe("resolveAttachments", () => {
     ]);
     expect(a.filename).toBe("x.pdf_  To: boss@corp.example");
     expect(a.filename).not.toMatch(/[\r\n]/);
+    expect(sanitizeFilename("a\u2028b\x85c\u202Efdp.exe")).toBe(
+      "a_b_c_fdp.exe",
+    );
+    expect(sanitizeFilename('say "hi"\\.txt')).toBe("say _hi__.txt");
   });
 
   it("caps a URL-derived filename at 255 characters, keeping the extension", async () => {

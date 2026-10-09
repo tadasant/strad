@@ -52,15 +52,16 @@ With attachments, the message is `multipart/mixed`: the body entity first (the
 same single part or `multipart/alternative` as before), then one base64 part per
 file, wrapped at 76 characters. A non-ASCII filename is sent as RFC 2047
 encoded-words inside the quoted parameter, the form Gmail itself emits, folded
-into short lines. Every filename has its control characters replaced with `_`
-and is held to 255 characters, keeping the extension; the prompt, the MIME and
-the tool's answer all show that one name. Without attachments the message is
+into short lines. Every filename has its control characters, Unicode line
+separators, bidi overrides, `"` and `\` replaced with `_`, and is held to 255
+characters, keeping the extension; the prompt, the MIME and the tool's answer
+all show that one name. Without attachments the message is
 byte-for-byte what upstream builds.
 
 - **Limits.** 17 MB decoded across all attachments. Gmail refuses a message
   over 25 MB, and base64 with a CRLF every 76 characters inflates by ~1.37,
   so 17 MB leaves room for the body. Every download in one call shares a
-  single 60-second budget, redirects included.
+  single 60-second budget, DNS lookups and redirects included.
 - **What a URL may reach.** `https:` only, on every hop. Redirects are followed
   by hand, at most 5, and each hop is checked before it is requested: a
   private literal (loopback, RFC 1918, CGNAT, link-local, multicast, and the

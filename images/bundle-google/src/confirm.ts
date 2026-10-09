@@ -249,7 +249,8 @@ function methodOf(schema: unknown): string | undefined {
 }
 
 type Outcome =
-  { stopped: "expired" | "dropped" } | { stopped?: undefined; body: unknown };
+  | { stopped: "expired" | "dropped" }
+  | { stopped?: undefined; body: unknown };
 
 /**
  * One request to the approval endpoint, bounded by the deadline and by the
@@ -461,9 +462,14 @@ async function draftSummary(
 /**
  * The filenames attached to a Gmail message, from every level of its MIME
  * tree. A draft can carry files an agent fetched; the human approving its
- * send should see that they are there. Control characters are replaced so a
- * filename cannot forge a line in the prompt.
+ * send should see that they are there. Control characters, line and paragraph
+ * separators and bidi overrides are replaced, so a filename cannot forge a
+ * line in the prompt or disguise its extension.
  */
+// eslint-disable-next-line no-control-regex
+const UNSAFE_NAME_CHARS =
+  /[\x00-\x1F\x7F-\x9F\u2028\u2029\u202A-\u202E\u2066-\u2069]/g;
+
 export function attachmentNames(message: unknown): string[] {
   interface Part {
     filename?: string;
@@ -473,8 +479,7 @@ export function attachmentNames(message: unknown): string[] {
   const walk = (part: Part | undefined, depth: number): void => {
     if (!part || depth > 10) return;
     if (part.filename) {
-      // eslint-disable-next-line no-control-regex
-      names.push(part.filename.replace(/[\x00-\x1F\x7F]/g, "_"));
+      names.push(part.filename.replace(UNSAFE_NAME_CHARS, "_"));
     }
     for (const child of part.parts ?? []) walk(child, depth + 1);
   };

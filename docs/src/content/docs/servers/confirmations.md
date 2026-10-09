@@ -167,8 +167,9 @@ actually go out. A message over 5 MB goes to Gmail's upload URI rather than as
 inline JSON; the send-request gate matches that URL too, and two tests in
 `images/bundle-google/test/confirm.test.ts` hold it to that. A draft send
 takes no `attachments` of its own; the draft's files are the ones listed.
-Every filename has its control characters replaced, so a name cannot forge a
-line in the prompt.
+Every filename has its control characters, line separators and bidi overrides
+replaced, so a name cannot forge a line in the prompt or disguise its
+extension.
 
 ## The edge in front of the approval URL
 

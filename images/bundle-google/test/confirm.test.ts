@@ -787,7 +787,10 @@ test("a draft's attachment names reach the prompt, at any depth, on one line eac
         { mimeType: "application/pdf", filename: "statement.pdf" },
         {
           mimeType: "message/rfc822",
-          parts: [{ mimeType: "text/csv", filename: "a.csv\nTo: x@y" }],
+          parts: [
+            { mimeType: "text/csv", filename: "a.csv\nTo: x@y" },
+            { mimeType: "text/plain", filename: "b\u2028\u202Etxt.exe" },
+          ],
         },
       ],
     },
@@ -795,6 +798,7 @@ test("a draft's attachment names reach the prompt, at any depth, on one line eac
   assert.deepEqual(attachmentNames(message), [
     "statement.pdf",
     "a.csv_To: x@y",
+    "b__txt.exe",
   ]);
   assert.deepEqual(
     attachmentNames({ payload: { mimeType: "text/plain" } }),

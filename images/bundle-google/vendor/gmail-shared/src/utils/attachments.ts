@@ -171,6 +171,8 @@ for (const [net, prefix] of [
   ['::ffff:0:0', 96], // IPv4-mapped
   ['64:ff9b::', 96], // NAT64
   ['64:ff9b:1::', 48], // local-use NAT64
+  ['2001::', 32], // Teredo, which embeds an IPv4 address
+  ['2002::', 16], // 6to4, which embeds an IPv4 address
   ['fc00::', 7], // unique local
   ['fe80::', 10], // link-local
   ['fec0::', 10], // site-local
@@ -210,13 +212,22 @@ export function isDisallowedHost(hostname: string): boolean {
  * The fetch resolves again, so a name whose answer changes between the two
  * lookups (DNS rebinding) is not caught.
  */
-async function assertPublicResolution(hostname: string): Promise<void> {
+async function assertPublicResolution(hostname: string, signal: AbortSignal): Promise<void> {
   const host = hostname.replace(/^\[|\]$/g, '');
   if (isIP(host) !== 0) return;
   let addresses: { address: string }[];
   try {
-    addresses = await lookup(host, { all: true, verbatim: true });
-  } catch {
+    // `lookup` takes no signal, so the download budget is raced against it.
+    addresses = await new Promise((resolve, reject) => {
+      signal.throwIfAborted();
+      const onAbort = () => reject(signal.reason);
+      signal.addEventListener('abort', onAbort, { once: true });
+      lookup(host, { all: true, verbatim: true })
+        .then(resolve, reject)
+        .finally(() => signal.removeEventListener('abort', onAbort));
+    });
+  } catch (error) {
+    if (signal.aborted) throw error;
     throw new Error(`Attachment url host "${hostname}" could not be resolved.`);
   }
   if (addresses.some((a) => isPrivateAddress(a.address))) {
@@ -225,13 +236,21 @@ async function assertPublicResolution(hostname: string): Promise<void> {
 }
 
 /**
- * Makes a filename safe to show and to send: control characters (a newline
- * would forge a line in the confirmation prompt) become `_`, and the name is
- * held to 255 characters, keeping its extension.
+ * Characters a filename may not carry: C0 and C1 controls and the Unicode line
+ * and paragraph separators (each could forge a line in the confirmation
+ * prompt), bidi overrides (which disguise an extension), and the `"` and `\`
+ * a quoted MIME parameter cannot hold.
+ */
+// eslint-disable-next-line no-control-regex
+const UNSAFE_FILENAME_CHARS = /[\x00-\x1F\x7F-\x9F\u2028\u2029\u202A-\u202E\u2066-\u2069"\\]/g;
+
+/**
+ * Makes a filename safe to show and to send: every unsafe character becomes
+ * `_`, so the prompt, the MIME header and the tool's answer show one name, and
+ * the name is held to 255 characters, keeping its extension.
  */
 export function sanitizeFilename(filename: string): string {
-  // eslint-disable-next-line no-control-regex
-  const clean = filename.replace(/[\x00-\x1F\x7F]/g, '_');
+  const clean = filename.replace(UNSAFE_FILENAME_CHARS, '_');
   const chars = [...clean];
   if (chars.length <= MAX_FILENAME_LENGTH) return clean;
   const dot = clean.lastIndexOf('.');
@@ -277,14 +296,14 @@ async function readBodyWithLimit(response: Response, limit: number, label: strin
   return Buffer.concat(chunks);
 }
 
-async function assertAllowedUrl(url: URL): Promise<void> {
+async function assertAllowedUrl(url: URL, signal: AbortSignal): Promise<void> {
   if (url.protocol !== 'https:') {
     throw new Error(`Attachment url must use https:// (got ${url.protocol}).`);
   }
   if (isDisallowedHost(url.hostname)) {
     throw new Error(`Attachment url host "${url.hostname}" is not allowed.`);
   }
-  await assertPublicResolution(url.hostname);
+  await assertPublicResolution(url.hostname, signal);
 }
 
 async function fetchAttachment(
@@ -297,7 +316,7 @@ async function fetchAttachment(
   // Follow redirects by hand so every hop is checked before it is requested.
   let response: Response;
   for (let hop = 0; ; hop++) {
-    await assertAllowedUrl(url);
+    await assertAllowedUrl(url, signal);
     response = await fetch(url, { redirect: 'manual', signal });
     const location = response.headers.get('location');
     if (response.status < 300 || response.status >= 400 || !location) {
