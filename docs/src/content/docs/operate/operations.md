@@ -1257,10 +1257,13 @@ It covers the code in that image strad WROTE, which is the code whose bugs would
 be silent. `vendor/google-sheets-shared` is the one server here strad authored
 rather than vendored: its A1 arithmetic decides which cell a write lands in, and
 a credential-free smoke test never addresses a cell. `src/gmail.ts` is the
-per-account layer over the verbatim gmail tree; it decides which MAILBOX a mount
-reads, and a smoke test that counts tools would never see it read the wrong one.
-The four `vendor/` packages that are copies get no tests here — one written
-inside a copy is a merge conflict on the next re-vendor and belongs upstream.
+per-account layer over the gmail tree; it decides which MAILBOX a mount reads,
+and a smoke test that counts tools would never see it read the wrong one.
+`vendor/gmail-shared` is a fork, and `test/gmail-attachments.test.ts` covers its
+one delta: the MIME an attachment is sent as, the input it refuses, and what a
+download URL may reach. The three `vendor/` packages that are still copies get
+no tests here — one written inside a copy is a merge conflict on the next
+re-vendor and belongs upstream.
 
 <aside class="starlight-aside starlight-aside--note">
 

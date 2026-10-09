@@ -20,8 +20,9 @@
  *
  * ## How, without editing the vendored tree
  *
- * `vendor/gmail-shared` and `vendor/mcp-elicitation` are both verbatim copies,
- * and neither knows about a per-call address. But the library has a seam
+ * `vendor/mcp-elicitation` is a generated copy and `vendor/gmail-shared` is a
+ * fork whose deltas are its own (`vendor/gmail-shared/FORK.md`); neither knows
+ * about a per-call address, and the confirmation logic stays out of both. But the library has a seam
  * already: its NATIVE tier asks the server object it was handed whether the
  * client supports elicitation, then calls `server.elicitInput()`. The tool
  * captures that server object when it is registered. So the server handed to
@@ -433,8 +434,9 @@ function headerOf(message: unknown, name: string): string | undefined {
  *
  * The vendored prompt for `from_draft_id` names only the draft's id, which a
  * human cannot judge: an agent can stage a draft to anyone and ask approval for
- * an opaque number. So the draft is read and its recipients and subject are
- * put in front of the human. If it cannot be read, the prompt says so.
+ * an opaque number. So the draft is read and its recipients, subject and
+ * attachment names are put in front of the human. If it cannot be read, the
+ * prompt says so.
  */
 async function draftSummary(
   client: IGmailClient,
@@ -452,7 +454,37 @@ async function draftSummary(
     const value = headerOf(draft.message, name);
     if (value) lines.push(`  ${name}: ${value}`);
   }
+  const files = attachmentNames(draft.message);
+  if (files.length > 0) lines.push(`  Attachments: ${files.join(", ")}`);
   return lines.join("\n");
+}
+
+/**
+ * The filenames attached to a Gmail message, from every level of its MIME
+ * tree. A draft can carry files an agent fetched; the human approving its
+ * send should see that they are there. Control characters, line and paragraph
+ * separators and bidi overrides are replaced, so a filename cannot forge a
+ * line in the prompt or disguise its extension.
+ */
+// eslint-disable-next-line no-control-regex
+const UNSAFE_NAME_CHARS =
+  /[\x00-\x1F\x7F-\x9F\u2028\u2029\u202A-\u202E\u2066-\u2069]/g;
+
+export function attachmentNames(message: unknown): string[] {
+  interface Part {
+    filename?: string;
+    parts?: Part[];
+  }
+  const names: string[] = [];
+  const walk = (part: Part | undefined, depth: number): void => {
+    if (!part || depth > 10) return;
+    if (part.filename) {
+      names.push(part.filename.replace(UNSAFE_NAME_CHARS, "_"));
+    }
+    for (const child of part.parts ?? []) walk(child, depth + 1);
+  };
+  walk((message as { payload?: Part } | undefined)?.payload, 0);
+  return names;
 }
 
 type Handler = (request: unknown, extra: unknown) => unknown;

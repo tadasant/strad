@@ -108,8 +108,9 @@ is what tells the bundle the call is gone.
 
 ## What the bundle does with it
 
-`images/bundle-google/src/confirm.ts` is strad's own layer over the verbatim
-gmail tree. The tree and the library both stay byte-identical. The layer uses a
+`images/bundle-google/src/confirm.ts` is strad's own layer over the gmail
+tree. The confirmation logic stays out of both the tree and the library. The
+layer uses a
 seam the library already has: its native tier asks the server object whether
 the client supports elicitation, then calls `server.elicitInput()`. The gmail
 tools are registered on a proxy of the real server.
@@ -157,8 +158,18 @@ arrived. Anything that drops before that point is a cancel.
 The prompt names the strad slug and the mailbox, then the vendored message's
 To, Cc, Bcc and Subject. A send of a saved draft (`from_draft_id`) would
 otherwise show only the draft's id, which a human cannot judge, so the layer
-reads the draft and adds its recipients and subject. If the draft cannot be
-read, the prompt says so and advises declining.
+reads the draft and adds its recipients, subject and attachment names. If the
+draft cannot be read, the prompt says so and advises declining.
+
+A send with `attachments` downloads or decodes them before the prompt, so bad
+input fails without asking anyone and the prompt lists the filenames that will
+actually go out. A message over 5 MB goes to Gmail's upload URI rather than as
+inline JSON; the send-request gate matches that URL too, and two tests in
+`images/bundle-google/test/confirm.test.ts` hold it to that. A draft send
+takes no `attachments` of its own; the draft's files are the ones listed.
+Every filename has its control characters, line separators and bidi overrides
+replaced, so a name cannot forge a line in the prompt or disguise its
+extension.
 
 ## The edge in front of the approval URL
 

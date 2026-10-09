@@ -3,15 +3,15 @@
  *
  * ## Why this file exists rather than an edit to `vendor/gmail-shared/`
  *
- * That tree is vendored VERBATIM from
- * `pulsemcp/mcp-servers/experimental/gmail/shared` (measured identical against
- * upstream `0ed34de`), and a local edit to a verbatim copy is reverted by the
- * next re-vendor without anyone noticing. The thing being fixed is also not
- * upstream's bug: upstream runs ONE gmail server per process, for which
+ * That tree is forked from `pulsemcp/mcp-servers/experimental/gmail/shared`
+ * at `0ed34de` (`vendor/gmail-shared/FORK.md`), and its deltas change what the
+ * server sends. This layer is a different kind of thing: it changes nothing in
+ * the tree, it decides which mailbox the tree is handed. And the problem it
+ * solves is not upstream's bug: upstream runs ONE gmail server per process, for which
  * `process.env` is the right place to read a credential from. It is strad's
  * collapsed bundle that runs SEVERAL in one process — one per slug, one per
- * Google account — and that is a strad-shaped requirement. So the tree stays
- * byte-identical and the multi-account behaviour lives here, in strad's own
+ * Google account — and that is a strad-shaped requirement. So the tree reads
+ * whatever env it is given and the multi-account behaviour lives here, in strad's own
  * source, where `npm run build` compiles it to `dist/gmail.js` and the bundle
  * host imports it beside the tree.
  *
@@ -152,7 +152,7 @@ export function missingCredentials(env: EnvLike): string[] {
  * an app still in "testing", or any password change — and the recovery is one
  * button on this slug's own console page. An error that does not name the page
  * sends whoever reads it back to an OAuth Playground procedure strad deleted.
- * Overriding rather than editing the tree keeps `vendor/gmail-shared` verbatim.
+ * Overriding rather than editing the tree keeps the mailbox choice out of it.
  */
 class ReconnectableOAuth2GmailClient extends OAuth2GmailClient {
   private readonly reconnectUrl: string | undefined;

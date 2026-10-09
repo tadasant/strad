@@ -2,7 +2,7 @@
  * `send_email` asks a human first, at the address the CALL carries.
  *
  * What this suite proves, end to end through a real MCP client and the
- * verbatim gmail tree:
+ * gmail tree:
  *
  *   - no channel, no send: a call without core's `_meta` entry is refused
  *     before the tool runs, and the mailbox is never touched;
@@ -42,10 +42,13 @@ import {
   channelFrom,
   gateGmailSends,
   guardSends,
+  attachmentNames,
   isGmailSend,
   withConfirmation,
 } from "../src/confirm.js";
 import { createMCPServer } from "../src/gmail.js";
+import { sendMessage } from "../vendor/gmail-shared/src/gmail-client/lib/send-message.js";
+import { INLINE_RAW_LIMIT_BYTES } from "../vendor/gmail-shared/src/gmail-client/lib/raw-message-request.js";
 
 // --- a stand-in approval endpoint -------------------------------------------
 
@@ -508,7 +511,10 @@ async function serverFor(client: IGmailClient): Promise<Server> {
     { name: "gmail", version: "test" },
     { capabilities: { tools: {} } },
   );
-  createRegisterTools(() => guardSends(client), undefined)(
+  createRegisterTools(
+    () => guardSends(client),
+    undefined,
+  )(
     withConfirmation(server, {
       account: "tadas@tadasant.com",
       client: () => client,
@@ -759,6 +765,83 @@ test("isGmailSend: only Gmail's two send requests", () => {
   assert.equal(isGmailSend(`${base}/messages`), false);
   assert.equal(isGmailSend("https://example.com/messages/send"), false);
   assert.equal(isGmailSend("not a url"), false);
+  // A message over the fork's inline limit goes through the upload URI, and
+  // that is still a send. Creating a draft through it is not.
+  const upload = "https://gmail.googleapis.com/upload/gmail/v1/users/me";
+  assert.equal(
+    isGmailSend(`${upload}/messages/send?uploadType=multipart`),
+    true,
+  );
+  assert.equal(isGmailSend(`${upload}/drafts?uploadType=multipart`), false);
+});
+
+test("a draft's attachment names reach the prompt, at any depth, on one line each", () => {
+  const message = {
+    payload: {
+      mimeType: "multipart/mixed",
+      parts: [
+        {
+          mimeType: "multipart/alternative",
+          parts: [{ mimeType: "text/plain" }, { mimeType: "text/html" }],
+        },
+        { mimeType: "application/pdf", filename: "statement.pdf" },
+        {
+          mimeType: "message/rfc822",
+          parts: [
+            { mimeType: "text/csv", filename: "a.csv\nTo: x@y" },
+            { mimeType: "text/plain", filename: "b\u2028\u202Etxt.exe" },
+          ],
+        },
+      ],
+    },
+  };
+  assert.deepEqual(attachmentNames(message), [
+    "statement.pdf",
+    "a.csv_To: x@y",
+    "b__txt.exe",
+  ]);
+  assert.deepEqual(
+    attachmentNames({ payload: { mimeType: "text/plain" } }),
+    [],
+  );
+  assert.deepEqual(attachmentNames(undefined), []);
+});
+
+test("a send with a large attachment leaves by a request the gate recognises", async () => {
+  // The fork routes a message over INLINE_RAW_LIMIT_BYTES through Gmail's
+  // upload URI. If that URL ever stopped matching isGmailSend, a dropped call
+  // carrying an attachment would send after the human's yes was moot: the
+  // request gate would wave it through as "not a send".
+  const real = globalThis.fetch;
+  const urls: string[] = [];
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+    urls.push(String(input instanceof Request ? input.url : input));
+    return new Response(JSON.stringify({ id: "m1", threadId: "t1" }));
+  }) as typeof fetch;
+  try {
+    await sendMessage(
+      "https://gmail.googleapis.com/gmail/v1/users/me",
+      {},
+      "me@example.com",
+      {
+        to: "you@example.com",
+        subject: "statement",
+        plaintextBody: "attached",
+        attachments: [
+          {
+            filename: "statement.pdf",
+            mimeType: "application/pdf",
+            content: Buffer.alloc(INLINE_RAW_LIMIT_BYTES, 1),
+          },
+        ],
+      },
+    );
+  } finally {
+    globalThis.fetch = real;
+  }
+  assert.equal(urls.length, 1);
+  assert.match(urls[0]!, /\/upload\//);
+  assert.equal(isGmailSend(urls[0]), true);
 });
 
 test("the reserved confirmation-header names match core's schema rule", () => {

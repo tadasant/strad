@@ -26,8 +26,8 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
 - `src/index.ts` — the Streamable-HTTP entrypoint. Mirrors strad's own `/mcp`
   handler: a **fresh** `Server` + `StreamableHTTPServerTransport`
   (`sessionIdGenerator: undefined`) is built per request and torn down on close.
-- `src/gmail.ts` — **strad's own layer over the verbatim gmail tree**, and the
-  only reason that tree is still verbatim. `vendor/gmail-shared` reads
+- `src/gmail.ts` — **strad's own layer over the gmail tree**, kept outside it
+  because it wraps rather than changes it. `vendor/gmail-shared` reads
   `process.env` directly, which is right for the one-server-per-process
   deployment upstream wrote it for and impossible in strad's collapsed bundle,
   where several gmail mounts share one process — one per slug, one per Google
@@ -35,8 +35,8 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   host's per-slug discovery keys on (`GMAIL_ENV_NAMES`,
   `GMAIL_OAUTH_APP_ENV_NAMES`, `missingCredentials()`), and is what the host
   imports as `dist/gmail.js`. `test/gmail.test.ts` is its suite. The requirement
-  is strad's, not upstream's, so the fix lives here rather than as a vendor
-  delta — see the `fix-a-defect-in-vendored-upstream-code` skill.
+  is strad's, not upstream's, and it needs nothing inside the tree, so it
+  lives here.
 - `src/confirm.ts` — **`send_email` asks a human first**, at the URL the CALL
   carries (`_meta["dev.strad/elicitation"]`, put there by strad core from the
   caller's `X-Elicitation-Url` for a slug with `confirmations: true`), never at
@@ -45,13 +45,23 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   approval protocol itself: no redirects, no response body in an error, every
   request aborted at the deadline. It refuses the send when the call carries no
   channel or the container's `ELICITATION_*` env would route around it.
+  It gates the Gmail send request by URL, so the fork's upload route for large
+  messages has to keep matching; two tests there hold it to that.
   `test/confirm.test.ts` is its suite. See
   `docs/src/content/docs/servers/confirmations.md`.
-- `vendor/` — the upstream `shared/` factories, vendored verbatim from
-  `github.com/pulsemcp/mcp-servers/experimental/{gmail,google-calendar,google-docs}`,
-  plus `@pulsemcp/mcp-elicitation`. Wired as npm workspaces. The only edit to
-  vendored code is one dependency line (gmail's elicitation dep → the vendored
-  workspace) and a `types` field so the entrypoint typechecks.
+- `vendor/` — the upstream `shared/` factories, plus `@pulsemcp/mcp-elicitation`.
+  Wired as npm workspaces.
+  - `vendor/google-calendar-shared/`, `vendor/google-docs-shared/` — vendored
+    verbatim from
+    `github.com/pulsemcp/mcp-servers/experimental/{google-calendar,google-docs}`.
+  - `vendor/gmail-shared/` — **a fork**, not a copy. strad owns it and changes
+    land here; do not re-vendor over it. It adds attachments to `send_email`
+    and `upsert_draft_email`. `vendor/gmail-shared/FORK.md` lists every delta
+    from upstream `0ed34de` and the tests that defend each one;
+    `test/gmail-attachments.test.ts` is the main one.
+  - The only other edits to vendored code are one dependency line (gmail's
+    elicitation dep → the vendored workspace) and a `types` field so the
+    entrypoint typechecks.
 - `vendor/mcp-elicitation/src/` — **generated. Do not edit it here.** The same
   library is also in `servers/onepassword/elicitation`, both copies are built
   into one bundle image, and that copy is the source: `npm run elicitation:sync`
@@ -69,7 +79,7 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
 ```bash
 npm install
 npm run build          # builds vendored shared packages, then the entrypoint
-npm test               # the google-sheets and src/gmail.ts suites (builds first)
+npm test               # the google-sheets, gmail fork and src/ suites (builds first)
 node dist/index.js &   # serves on :8080
 npm run smoke          # asserts all four servers list their tools
 ```
@@ -88,6 +98,12 @@ call.
 | **OAuth2 (refresh token)** — takes precedence if all three set | `GMAIL_OAUTH_CLIENT_ID`, `GMAIL_OAUTH_CLIENT_SECRET`, `GMAIL_OAUTH_REFRESH_TOKEN` |
 | **Capability toggle** | `GMAIL_ENABLED_TOOLGROUPS` = `readonly` \| `readwrite` \| `readwrite_external` (comma-sep; default: all) |
 | **Console reconnect hint** (not a credential) | `GMAIL_RECONNECT_URL` — the page named in an `invalid_grant` error |
+
+**Attachments.** `send_email` and `upsert_draft_email` take `attachments`: up
+to 10 files, 17 MB decoded in total, each an HTTPS `url` the server downloads
+or `content_base64` with a `filename`. Through strad, `content_base64` is
+bounded by core's 4 MB `/mcp` request body, so a file over about 3 MB has to
+be a `url`. See `vendor/gmail-shared/FORK.md` and `HACKS.md` #117.
 
 Scopes (service-account mode must have these authorized for DWD):
 `gmail.readonly`, `gmail.modify`, `gmail.compose`, `gmail.send`.
