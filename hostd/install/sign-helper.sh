@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-# Sign strad-hostd-ax with a STABLE identity.
+# Sign a strad-hostd helper with a STABLE identity.
 #
-#   ./install/sign-helper.sh <path-to-binary> [--identity "Developer ID Application: …"]
+#   ./install/sign-helper.sh <path-to-binary> [--identity "Developer ID Application: …"] \
+#                            [--identifier com.strad.hostd-messages]
 #
-# macOS keys the Accessibility and Screen Recording grants on the code
+# Both helpers go through it: strad-hostd-ax (the default identifier) and
+# strad-hostd-messages. The identifier is part of the designated requirement,
+# so each keeps its own grants — Full Disk Access granted to one is not
+# granted to the other.
+#
+# macOS keys the Accessibility, Screen Recording and Full Disk Access grants on the code
 # signature's designated requirement. An ad-hoc signature (`codesign -s -`)
 # has no certificate, so its requirement is the binary's own hash and every
 # rebuild is a different program that has to be granted again. A signature
@@ -19,12 +25,14 @@
 set -euo pipefail
 
 BINARY="${1:-}"
-[ -n "$BINARY" ] || { echo "usage: $0 <binary> [--identity NAME]" >&2; exit 2; }
+[ -n "$BINARY" ] || { echo "usage: $0 <binary> [--identity NAME] [--identifier com.strad.hostd-messages]" >&2; exit 2; }
 shift
 IDENTITY="${STRAD_HOSTD_SIGN_IDENTITY:-}"
+IDENTIFIER="com.strad.hostd-ax"
 while [ $# -gt 0 ]; do
   case "$1" in
     --identity) IDENTITY="$2"; shift 2 ;;
+    --identifier) IDENTIFIER="$2"; shift 2 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -90,6 +98,6 @@ CNF
 fi
 
 say "Signing $BINARY as $IDENTITY"
-codesign --force --sign "$IDENTITY" --identifier com.strad.hostd-ax --timestamp=none "$BINARY"
+codesign --force --sign "$IDENTITY" --identifier "$IDENTIFIER" --timestamp=none "$BINARY"
 codesign --verify --verbose=2 "$BINARY"
 codesign --display --requirements - "$BINARY" 2>&1 | grep -E "designated|identifier" || true

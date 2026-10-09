@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
 import { createPublicKey, randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -7,7 +8,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 
 import {
   CAPABILITIES,
+  CAPABILITY_DEFAULTS,
   CAPABILITY_IDS,
+  helperFor,
   isCapabilityId,
   needsHelper,
   slugFor,
@@ -37,6 +40,7 @@ import { renderMobileconfig } from "./extension/policy.js";
 import { pairingToken } from "./extension/secret.js";
 import { KillSwitch } from "./killswitch.js";
 import { buildServer } from "./mcp/server.js";
+import { messagesBlocked, type MessagesHello } from "./messages/tools.js";
 
 const USAGE = `strad-hostd — MCP servers that operate the machine they run on.
 
@@ -61,6 +65,10 @@ const USAGE = `strad-hostd — MCP servers that operate the machine they run on.
   strad-hostd helper [--request-access]
       Report whether strad-hostd-ax is reachable and which permissions it holds;
       --request-access makes macOS prompt for both, attributed to the helper.
+  strad-hostd messages [--grant]
+      Report whether strad-hostd-messages is reachable and can read the Messages
+      database; --grant opens Full Disk Access in System Settings and shows the
+      helper in Finder, to drag into the list.
   strad-hostd status | disable | enable | kill <grant_id|--all>
       See and stop what is in control. \`disable\` works with the daemon down.
 `;
@@ -106,8 +114,9 @@ async function main(argv: string[]): Promise<number> {
           CAPABILITY_IDS.map((id) => [
             id,
             {
-              // The computer-use servers need the macOS helper; elsewhere they
-              // would only ever answer "helper not running".
+              ...CAPABILITY_DEFAULTS[id],
+              // The computer-use and messages servers need a macOS helper;
+              // elsewhere they would only ever answer "helper not running".
               enabled: !needsHelper(id) || process.platform === "darwin",
               key: randomBytes(32).toString("base64url"),
               displayName: slugFor(id, suffix),
@@ -155,7 +164,7 @@ async function main(argv: string[]): Promise<number> {
       }
       writeFileSync(path, JSON.stringify(raw, null, 2) + "\n", { mode: 0o600 });
       console.log(
-        `enabled ${id}${result.displayName ? ` as ${result.displayName}` : ""} in ${path}${needsHelper(id) ? " (it needs strad-hostd-ax: see `strad-hostd helper`)" : ""}. Restart the daemon to serve it.`,
+        `enabled ${id}${result.displayName ? ` as ${result.displayName}` : ""} in ${path}${helperNote(id)}. Restart the daemon to serve it.`,
       );
       return 0;
     }
@@ -182,6 +191,51 @@ async function main(argv: string[]): Promise<number> {
       } catch (err) {
         console.log(
           `strad-hostd-ax is not reachable: ${(err as Error).message}`,
+        );
+        await core.close();
+        return 1;
+      }
+    }
+
+    case "messages": {
+      const dir = ensureStateDir();
+      const config = loadConfig();
+      const core = buildCore(config, { stateDir: dir, only: ["messages"] });
+      try {
+        const hello = await core.messagesHelper!.call<MessagesHello>(
+          "hello",
+          {},
+          5000,
+        );
+        if (args.includes("--grant") && process.platform === "darwin") {
+          // There is no API that asks for Full Disk Access: the owner adds the
+          // binary to the list. Open the list, and put the binary in front of
+          // them in Finder to drag into it.
+          spawnSync("open", [
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+          ]);
+          spawnSync("open", ["-R", hello.executable]);
+          console.log(
+            `Opened System Settings › Privacy & Security › Full Disk Access, and Finder at ${hello.executable}.
+` +
+              `Drag strad-hostd-messages from Finder into the list (or press +, then ⌘⇧G and paste that path), switch it on, then run:
+` +
+              `  launchctl kickstart -k gui/$(id -u)/com.strad.hostd-messages
+` +
+              `  strad-hostd messages
+`,
+          );
+        }
+        const blocked = messagesBlocked(hello);
+        console.log(
+          `strad-hostd-messages ${hello.version} at ${hello.executable}
+  ${hello.chat_db.path}: ${blocked ? `NOT readable — ${blocked}` : "readable"}`,
+        );
+        await core.close();
+        return blocked ? 1 : 0;
+      } catch (err) {
+        console.log(
+          `strad-hostd-messages is not reachable: ${(err as Error).message}`,
         );
         await core.close();
         return 1;
@@ -409,6 +463,18 @@ async function main(argv: string[]): Promise<number> {
     default:
       console.log(USAGE);
       return command && command !== "help" && command !== "--help" ? 1 : 0;
+  }
+}
+
+function helperNote(id: string): string {
+  if (!isCapabilityId(id)) return "";
+  switch (helperFor(id)) {
+    case "strad-hostd-ax":
+      return " (it needs strad-hostd-ax: see `strad-hostd helper`)";
+    case "strad-hostd-messages":
+      return " (it needs strad-hostd-messages with Full Disk Access: see `strad-hostd messages`)";
+    default:
+      return "";
   }
 }
 

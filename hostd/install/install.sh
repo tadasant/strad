@@ -11,9 +11,11 @@
 # touches nothing at Cloudflare.
 #
 # On macOS it also builds strad-hostd-ax (the native helper behind the two
-# computer-use servers and the on-screen banner) when `swift` is available,
-# signs it with a stable identity (install/sign-helper.sh), installs it to
-# $STATE/bin and runs it as its own LaunchAgent. --no-helper skips all of that.
+# computer-use servers and the on-screen banner) and strad-hostd-messages (the
+# read-only helper behind the messages server, and the one process that holds
+# Full Disk Access) when `swift` is available, signs each with a stable
+# identity (install/sign-helper.sh), installs them to $STATE/bin and runs each
+# as its own LaunchAgent. --no-helper skips all of that.
 set -euo pipefail
 
 MACHINE="this machine"
@@ -33,7 +35,7 @@ while [ $# -gt 0 ]; do
     --no-agent) AGENT=0; shift ;;
     --no-helper) HELPER=0; shift ;;
     --sign-identity) SIGN_IDENTITY="$2"; shift 2 ;;
-    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -43,6 +45,7 @@ STATE="${STRAD_HOSTD_HOME:-$HOME/.strad-hostd}"
 APP="$STATE/app"
 LABEL="com.strad.hostd"
 AX_LABEL="com.strad.hostd-ax"
+MESSAGES_LABEL="com.strad.hostd-messages"
 
 say() { printf '\n==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -73,7 +76,7 @@ else
   # fresh key. A server the config already knows — enabled, or switched off by
   # its owner — is left exactly as it is. Without --suffix the new server is
   # named after the existing shell server's suffix.
-  for cap in shell browser computer-headless computer; do
+  for cap in shell browser computer-headless computer messages; do
     if [ -n "$SUFFIX" ]; then
       STRAD_HOSTD_HOME="$STATE" "${HOSTD[@]}" add "$cap" --suffix "$SUFFIX"
     else
@@ -120,8 +123,32 @@ if [ "$HELPER" = 1 ] && [ "$(uname)" = "Darwin" ]; then
     fi
     say "Helper permissions (both must be granted in System Settings › Privacy & Security):"
     "$AX" --status || true
+
+    # strad-hostd-messages: the same build, sign and LaunchAgent, under its
+    # own identifier, so the Full Disk Access it is granted is its alone.
+    say "Building strad-hostd-messages"
+    (cd "$HERE/messages" && swift build -c release 2>&1 | tail -3)
+    MESSAGES_BUILT="$HERE/messages/.build/release/strad-hostd-messages"
+    [ -x "$MESSAGES_BUILT" ] || die "strad-hostd-messages did not build; see the output above"
+    if [ -n "$SIGN_IDENTITY" ]; then
+      "$HERE/install/sign-helper.sh" "$MESSAGES_BUILT" --identity "$SIGN_IDENTITY" --identifier "$MESSAGES_LABEL"
+    else
+      "$HERE/install/sign-helper.sh" "$MESSAGES_BUILT" --identifier "$MESSAGES_LABEL"
+    fi
+    cp "$MESSAGES_BUILT" "$STATE/bin/strad-hostd-messages.new" && mv -f "$STATE/bin/strad-hostd-messages.new" "$STATE/bin/strad-hostd-messages"
+    MESSAGES_HELPER="$STATE/bin/strad-hostd-messages"
+    if [ "$AGENT" = 1 ]; then
+      say "Installing the LaunchAgent $MESSAGES_LABEL"
+      MESSAGES_PLIST="$HOME/Library/LaunchAgents/$MESSAGES_LABEL.plist"
+      sed -e "s|__HELPER__|$MESSAGES_HELPER|g" -e "s|__HOME__|$HOME|g" -e "s|__STATE__|$STATE|g" \
+        "$HERE/install/$MESSAGES_LABEL.plist" > "$MESSAGES_PLIST"
+      launchctl bootout "gui/$(id -u)/$MESSAGES_LABEL" 2>/dev/null || true
+      launchctl bootstrap "gui/$(id -u)" "$MESSAGES_PLIST"
+    fi
+    say "Messages helper (Full Disk Access is granted by hand: \`strad-hostd messages --grant\`):"
+    "$MESSAGES_HELPER" --status || true
   else
-    say "swift is not available: skipping strad-hostd-ax (xcode-select --install, then re-run; the computer-use servers need it)"
+    say "swift is not available: skipping strad-hostd-ax and strad-hostd-messages (xcode-select --install, then re-run; the computer-use and messages servers need them)"
   fi
 fi
 
@@ -191,5 +218,6 @@ cat <<TXT
   Turn everything off:      $NODE $APP/build/cli.js disable     (or: touch $STATE/DISABLED)
   Print the bearer keys:    $NODE $APP/build/cli.js keys
   Check the native helper:  $NODE $APP/build/cli.js helper
+  Check the Messages helper: $NODE $APP/build/cli.js messages   (--grant opens Full Disk Access)
   Install the Chrome extension (unattended browser use): $NODE $APP/build/cli.js extension
 TXT

@@ -8,7 +8,7 @@ import {
 
 import type { AuditLog } from "../audit.js";
 import { CAPABILITIES, type CapabilityId } from "../capabilities.js";
-import { displayName, type Config } from "../config.js";
+import { displayName, onTimeoutFor, type Config } from "../config.js";
 import type { ConsentGate } from "../consent/gate.js";
 import type { KillSwitch } from "../killswitch.js";
 import { json, text, type Capability } from "./tool.js";
@@ -59,6 +59,7 @@ export function buildServer(
 ): Server {
   const { config, gate, killSwitch, audit } = deps;
   const name = displayName(config, id);
+  const onTimeout = onTimeoutFor(config, id);
   /** What the dialog, the grant and the status page call the caller. */
   const caller = client ? `${name} (${client})` : name;
 
@@ -68,7 +69,7 @@ export function buildServer(
       description: `Ask the owner of ${config.machine} for permission to use this server. START HERE: every other tool needs the grant_id this returns.
 
 Calling it puts a dialog on the machine's screen — "Remote control requested by ${name} MCP server for purpose: <your purpose>" — and BLOCKS for up to ${config.consent.windowSeconds} seconds while the person there may allow or reject it. ${
-        config.consent.onTimeout === "allow"
+        onTimeout === "allow"
           ? "If nobody answers, the request is allowed."
           : "If nobody answers, the request is DENIED: this machine fails closed, so its owner has to be at the screen."
       }
@@ -245,7 +246,7 @@ Idempotent: ending a grant that is already gone returns {"ended":false}.`,
           consent: {
             mode: config.consent.mode,
             window_seconds: config.consent.windowSeconds,
-            on_timeout: config.consent.onTimeout,
+            on_timeout: onTimeout,
           },
           ...((await capability.status?.()) ?? {}),
           ...(typeof args.grant_id === "string"

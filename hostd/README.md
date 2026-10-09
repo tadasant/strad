@@ -8,11 +8,16 @@ MCP servers that operate the machine they run on.
 | `browser`           | `list_tabs`, `open_tab`, `navigate_tab`, `read_page`, `click_element`, `type_text`, `evaluate_script`, `take_screenshot`, `activate_tab`, `close_tab` |
 | `computer-headless` | `list_apps`, `read_ui_tree`, `find_elements`, `get_element`, `perform_action`, `set_value`, `read_text`                                               |
 | `computer`          | `take_screenshot`, `list_displays`, `click`, `move_mouse`, `drag`, `scroll`, `type_text`, `press_keys`                                                |
+| `messages`          | `imessage_list_chats`, `imessage_get_messages`, `imessage_get_attachment`                                                                             |
 
 The two `computer-*` servers are macOS only and need the native helper below.
 `computer-headless` works through the Accessibility tree and never touches the
 mouse. `computer` takes the real mouse and keyboard, and the first key or click
 from the person at the machine ends its grant.
+
+`messages` is macOS only too, read-only, and needs its own helper below: it
+reads the Messages database (`~/Library/Messages/chat.db`), which macOS guards
+with Full Disk Access. It cannot send.
 
 Every server also has `request_control`, `end_control` and `get_control_status`.
 `request_control` takes a purpose of at most two sentences and returns a
@@ -225,6 +230,24 @@ While a grant is live the helper shows a banner at the top of the screen and a
 menu-bar item, each with Kill and Disable buttons. A foreground (`computer`)
 grant is red and ends on your first key or click.
 
+### The Messages helper (macOS): `strad-hostd-messages`
+
+The `messages` server reads iMessage and SMS history through a second small
+Swift program in `messages/`, the one process here that holds Full Disk
+Access. Build and sign it the same way, under its own identifier:
+
+```bash
+cd messages && swift build -c release && cd ..
+./install/sign-helper.sh messages/.build/release/strad-hostd-messages --identifier com.strad.hostd-messages
+```
+
+Then give it Full Disk Access in System Settings › Privacy & Security (in this
+local mode, the grant has to be on whatever launched your MCP client, as for
+the other helper). `node build/cli.js messages` says whether it can read the
+database, and `--grant` opens the list. It opens the database read-only and
+refuses any statement that is not; it never sends, and reading marks nothing
+as read. `imessage_get_messages` pages by `after_rowid`, an exact cursor.
+
 ### The shell server
 
 Commands run as `$SHELL -lc "<command>"` as your user, with no stdin and no TTY.
@@ -240,17 +263,20 @@ except a command that moved itself into a new session (`setsid`).
 error. `src/config.ts` is the schema and documents each field. The ones that
 matter:
 
-| Field                                                      | Default             |                                                                   |
-| ---------------------------------------------------------- | ------------------- | ----------------------------------------------------------------- |
-| `consent.onTimeout`                                        | `"deny"`            | what an unanswered dialog means. `"allow"` makes it a veto window |
-| `consent.windowSeconds`                                    | `5`                 | how long the dialog stays up (3 is the minimum)                   |
-| `capabilities.<server>.clientKeys`                         | `{}`                | named extra keys for that server; `strad-hostd key add` writes it |
-| `consent.grantMinutes` / `maxGrantMinutes` / `idleMinutes` | `30` / `120` / `10` | grant lifetime                                                    |
-| `shell.defaultCwd`                                         | `$HOME`             |                                                                   |
-| `native.mode`                                              | `"auto"`            | `socket` (the LaunchAgent, never a child), `stdio`, or `auto`     |
-| `native.binary` / `native.socketPath`                      | see `src/config.ts` | where `strad-hostd-ax` is, or where its LaunchAgent listens       |
-| `computer.maxScreenshotWidth`                              | `1280`              | widest image `take_screenshot` returns                            |
-| `port` / `controlPort`                                     | `7311` / `7312`     | daemon mode only, both on `127.0.0.1`                             |
+| Field                                                      | Default             |                                                                    |
+| ---------------------------------------------------------- | ------------------- | ------------------------------------------------------------------ |
+| `consent.onTimeout`                                        | `"deny"`            | what an unanswered dialog means. `"allow"` makes it a veto window  |
+| `consent.windowSeconds`                                    | `5`                 | how long the dialog stays up (3 is the minimum)                    |
+| `capabilities.<server>.clientKeys`                         | `{}`                | named extra keys for that server; `strad-hostd key add` writes it  |
+| `consent.grantMinutes` / `maxGrantMinutes` / `idleMinutes` | `30` / `120` / `10` | grant lifetime                                                     |
+| `shell.defaultCwd`                                         | `$HOME`             |                                                                    |
+| `native.mode`                                              | `"auto"`            | `socket` (the LaunchAgent, never a child), `stdio`, or `auto`      |
+| `native.binary` / `native.socketPath`                      | see `src/config.ts` | where `strad-hostd-ax` is, or where its LaunchAgent listens        |
+| `capabilities.<server>.onTimeout`                          | unset               | that server's own `consent.onTimeout`; `add messages` sets `allow` |
+| `messages.binary` / `messages.socketPath`                  | see `src/config.ts` | where `strad-hostd-messages` is, or where its LaunchAgent listens  |
+| `messages.maxAttachmentBytes`                              | `10485760`          | largest attachment returned, after conversion                      |
+| `computer.maxScreenshotWidth`                              | `1280`              | widest image `take_screenshot` returns                             |
+| `port` / `controlPort`                                     | `7311` / `7312`     | daemon mode only, both on `127.0.0.1`                              |
 
 `STRAD_HOSTD_HOME` moves the state directory.
 
@@ -277,3 +303,10 @@ permission grants: reading a real tree, a real screenshot and the banner under
 a real grant run only on a Mac whose owner has granted them. The other macOS
 halves (the `osascript` dialog, the LaunchAgents, the installer's `cloudflared`
 branch, the signing script) are not exercised by any suite.
+
+The Messages server is tested against `test/fake-messages.ts`, which runs the
+daemon's own SQL with `node:sqlite` against a fixture chat.db. The same
+workflow builds `strad-hostd-messages`, reads a fixture database made by
+`messages/fixture.swift` (with an `attributedBody` NSArchiver wrote), and runs
+the daemon's queries through it (`messages/smoke.mjs`). Reading the real
+database under a real Full Disk Access grant runs only on the owner's Mac.

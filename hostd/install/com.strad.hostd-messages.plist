@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  strad-hostd-messages as its OWN LaunchAgent, for the same reason as
+  com.strad.hostd-ax: macOS attributes Full Disk Access to a process's
+  "responsible process", which a child inherits from its parent and which
+  launchd resets for a process it starts itself. Spawned by the daemon, the
+  grant would have to go to `node` and would cover every Node script on the
+  machine, the shell server's commands included; started by launchd, it lands
+  on this one read-only binary. The daemon reaches it over the Unix socket in
+  the state directory. It needs no GUI session, but it reads the logged-in
+  user's Messages, so it runs where that user is logged in.
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key><string>com.strad.hostd-messages</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>__HELPER__</string>
+      <string>--listen</string>
+      <string>__STATE__/messages.sock</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>ThrottleInterval</key><integer>5</integer>
+    <key>ProcessType</key><string>Standard</string>
+    <key>LimitLoadToSessionType</key><string>Aqua</string>
+    <key>StandardOutPath</key><string>__HOME__/Library/Logs/com.strad.hostd-messages.out.log</string>
+    <key>StandardErrorPath</key><string>__HOME__/Library/Logs/com.strad.hostd-messages.err.log</string>
+  </dict>
+</plist>

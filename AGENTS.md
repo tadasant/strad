@@ -157,8 +157,8 @@ does not use it.
 - `servers/**` is **outside** the core TypeScript program (see `eslint.config.js`).
   Each server tree has its own lockfile and is built by its own image.
 - `hostd/` is **strad-hostd**, the daemon that runs on a machine a person owns and
-  serves the shell, browser and two computer-use MCP servers behind
-  `local-tunnel` slugs. It is its own npm tree (`cd hostd && npm ci && npm test`)
+  serves the shell, browser, two computer-use and a read-only Messages MCP
+  server behind `local-tunnel` slugs. It is its own npm tree (`cd hostd && npm ci && npm test`)
   and is NOT under `servers/`: everything there is baked into the bundle image,
   and this code never runs in a strad container. `hostd/extension/` is the
   Chrome extension the browser server prefers when it is connected — the one
@@ -167,13 +167,16 @@ does not use it.
   `manifest.json` version when it changes, or a force-installed Chrome keeps
   the old copy. Root ESLint and Prettier cover
   its source; the root `tsc` does not. `hostd/ax/` is `strad-hostd-ax`, the Swift
-  helper the computer-use servers and the on-screen banner go through; it builds
-  only on macOS, and `.github/workflows/hostd-ax.yml` is the ONE job in this
-  repository on a GitHub-hosted (billed) macOS runner, path-filtered to it. The
-  Node suite runs on Linux against a fake helper, so the macOS halves — the
-  `osascript` consent dialog, both LaunchAgents, the installer's `cloudflared`
-  branch, the signing script, a real Accessibility tree, a real screenshot —
-  are exercised by nothing but the owner's Mac. Do not describe them as tested.
+  helper the computer-use servers and the on-screen banner go through, and
+  `hostd/messages/` is `strad-hostd-messages`, the read-only helper that holds
+  Full Disk Access for the Messages server. Both build only on macOS, and
+  `.github/workflows/hostd-ax.yml` is the ONE workflow in this repository on
+  GitHub-hosted (billed) macOS runners, path-filtered to them. The Node suite
+  runs on Linux against fake helpers, so the macOS halves — the `osascript`
+  consent dialog, the LaunchAgents, the installer's `cloudflared` branch, the
+  signing script, a real Accessibility tree, a real screenshot, the real
+  chat.db under a real Full Disk Access grant — are exercised by nothing but
+  the owner's Mac. Do not describe them as tested.
 
 ## Documentation lives in `docs/` — update it in the same PR
 

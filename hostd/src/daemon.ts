@@ -6,11 +6,7 @@ import type { Duplex } from "node:stream";
 import { AuditLog } from "./audit.js";
 import { ExtensionBridge } from "./browser/bridge.js";
 import { browserCapability } from "./browser/tools.js";
-import {
-  CAPABILITIES,
-  needsHelper,
-  type CapabilityId,
-} from "./capabilities.js";
+import { CAPABILITIES, helperFor, type CapabilityId } from "./capabilities.js";
 import { computerCapability } from "./computer/foreground.js";
 import { computerHeadlessCapability } from "./computer/headless.js";
 import { enabledCapabilities, reloadKeys, type Config } from "./config.js";
@@ -34,11 +30,16 @@ import {
 } from "./extension/paths.js";
 import { pairingToken } from "./extension/secret.js";
 import { createMcpListener } from "./mcp/http.js";
+import { messagesCapability, type MessagesHello } from "./messages/tools.js";
 import type { ServerDeps } from "./mcp/server.js";
 import type { Capability } from "./mcp/tool.js";
 import { HelperClient } from "./native/client.js";
 import { Presence } from "./native/presence.js";
-import { helperConnector } from "./native/transport.js";
+import {
+  helperConnector,
+  messagesHelperSpec,
+  nativeConnector,
+} from "./native/transport.js";
 import { shellCapability } from "./shell/tools.js";
 import { TunnelSupervisor } from "./tunnel.js";
 
@@ -49,6 +50,8 @@ export interface Core {
   deps: ServerDeps;
   capabilities: Partial<Record<CapabilityId, Capability>>;
   helper: HelperClient;
+  /** `strad-hostd-messages`, when the messages server is served. */
+  messagesHelper?: HelperClient;
   presence: Presence;
   /** The Chrome extension's bridge, when the browser server is served with a listener. */
   bridge?: ExtensionBridge;
@@ -72,6 +75,8 @@ export function buildCore(
     only?: CapabilityId[];
     /** A transport to the native helper, in place of the socket-or-spawn default. Tests. */
     helperTransport?: () => Promise<Duplex>;
+    /** The same for `strad-hostd-messages`. Tests. */
+    messagesTransport?: () => Promise<Duplex>;
     /**
      * The Chrome extension's pairing token. Given, the browser server is
      * served through the extension whenever one is connected; `serve` passes
@@ -153,6 +158,25 @@ export function buildCore(
     );
   if (ids.includes("computer"))
     capabilities.computer = computerCapability(config, helper);
+  // Its own helper and its own connection: the process holding Full Disk
+  // Access is not the one that can post input, and neither one's failure
+  // takes the other's servers down.
+  const messagesHelper = ids.includes("messages")
+    ? new HelperClient({
+        connect:
+          opts.messagesTransport ??
+          nativeConnector(
+            config,
+            messagesHelperSpec(config, opts.stateDir),
+            log,
+          ),
+        requestTimeoutMs: config.native.requestTimeoutMs,
+        name: "strad-hostd-messages",
+        log: (l) => log(`messages ${l}`),
+      })
+    : undefined;
+  if (messagesHelper)
+    capabilities.messages = messagesCapability(config, messagesHelper);
 
   const sweep = setInterval(() => {
     // A `touch`ed DISABLED file calls nothing: the sweep is what notices it,
@@ -166,6 +190,7 @@ export function buildCore(
     deps: { config, gate, killSwitch, audit },
     capabilities,
     helper,
+    messagesHelper,
     presence,
     bridge,
     runningFor: (grantId) =>
@@ -207,7 +232,7 @@ function memoisedPack(dir: string, keyPath: string): () => PackedExtension {
 
 /** Whether any enabled server needs `strad-hostd-ax`. */
 export function helperWanted(ids: CapabilityId[]): boolean {
-  return ids.some(needsHelper);
+  return ids.some((id) => helperFor(id) === "strad-hostd-ax");
 }
 
 function listen(server: HttpServer, port: number): Promise<number> {
@@ -276,10 +301,18 @@ export async function startDaemon(
     ...core.deps,
     tunnelState: () => tunnel.state,
     runningFor: core.runningFor,
-    helperState: () => ({
-      connected: core.helper.connected,
-      error: core.helper.error,
-    }),
+    helperState: helperWanted(enabledCapabilities(config))
+      ? () => ({
+          connected: core.helper.connected,
+          error: core.helper.error,
+        })
+      : undefined,
+    messagesHelperState: core.messagesHelper
+      ? () => ({
+          connected: core.messagesHelper!.connected,
+          error: core.messagesHelper!.error,
+        })
+      : undefined,
     stateDir: opts.stateDir,
     extension: core.bridge
       ? {
@@ -320,6 +353,18 @@ export async function startDaemon(
         ),
       )
       .catch((err: Error) => log(`helper not reachable: ${err.message}`));
+  }
+  if (core.messagesHelper) {
+    core.messagesHelper
+      .call<MessagesHello>("hello", {}, 5000)
+      .then((h) =>
+        log(
+          `messages helper ${h.version} · ${h.chat_db.path}: ${h.chat_db.state === "readable" ? "readable" : `NOT readable (${h.chat_db.state}${h.chat_db.state === "denied" ? ": grant Full Disk Access" : ""})`}`,
+        ),
+      )
+      .catch((err: Error) =>
+        log(`messages helper not reachable: ${err.message}`),
+      );
   }
 
   return {

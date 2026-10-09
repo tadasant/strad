@@ -3,7 +3,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 
-import { CAPABILITY_IDS, slugFor, type CapabilityId } from "./capabilities.js";
+import {
+  CAPABILITY_DEFAULTS,
+  CAPABILITY_IDS,
+  slugFor,
+  type CapabilityId,
+} from "./capabilities.js";
 import { keysMatch } from "./mcp/auth.js";
 
 /**
@@ -38,6 +43,14 @@ const CapabilityConfig = z
      * Defaults to `<capability>-<machine>`; set it to the strad slug.
      */
     displayName: z.string().min(1).max(64).optional(),
+    /**
+     * What an unanswered dialog means for THIS server, in place of
+     * `consent.onTimeout`. Unset, the machine-wide setting applies. It lets a
+     * server whose consumer runs unattended — the read-only `messages` server
+     * and its nightly sweep — be allowed on timeout without loosening the
+     * shell or the computer-use servers with it.
+     */
+    onTimeout: z.enum(["deny", "allow"]).optional(),
     /**
      * Further keys for this server, by client name — one per local MCP
      * client, so several Claude Code sessions on this machine each hold their
@@ -142,6 +155,30 @@ const ComputerConfig = z
   })
   .default({});
 
+const MessagesConfig = z
+  .object({
+    /**
+     * Where `strad-hostd-messages` listens when it runs as its own
+     * LaunchAgent — which is how Full Disk Access lands on it and not on
+     * `node`. Defaults to `messages.sock` in the state directory.
+     */
+    socketPath: z.string().min(1).optional(),
+    /**
+     * The helper binary, for the stdio (local-run) case. Defaults to
+     * `bin/strad-hostd-messages` in the state directory, then the package's
+     * own build, then `strad-hostd-messages` on PATH.
+     */
+    binary: z.string().min(1).optional(),
+    /** The largest attachment `imessage_get_attachment` returns, after conversion. */
+    maxAttachmentBytes: z
+      .number()
+      .int()
+      .min(64 * 1024)
+      .max(50 * 1024 * 1024)
+      .default(10 * 1024 * 1024),
+  })
+  .default({});
+
 const TunnelConfig = z
   .object({
     /** Supervise `cloudflared` as a child, so one LaunchAgent runs everything. */
@@ -166,6 +203,7 @@ export const ConfigSchema = z
         browser: CapabilityConfig,
         "computer-headless": CapabilityConfig,
         computer: CapabilityConfig,
+        messages: CapabilityConfig,
       })
       .default({}),
     consent: ConsentConfig,
@@ -173,6 +211,7 @@ export const ConfigSchema = z
     browser: BrowserConfig,
     native: NativeConfig,
     computer: ComputerConfig,
+    messages: MessagesConfig,
     tunnel: TunnelConfig,
   })
   .strict()
@@ -225,6 +264,11 @@ export function displayName(cfg: Config, id: CapabilityId): string {
   return cfg.capabilities[id].displayName ?? `${id}-hostd`;
 }
 
+/** What an unanswered dialog means for one server: its own setting, else the machine's. */
+export function onTimeoutFor(cfg: Config, id: CapabilityId): "deny" | "allow" {
+  return cfg.capabilities[id].onTimeout ?? cfg.consent.onTimeout;
+}
+
 export function enabledCapabilities(cfg: Config): CapabilityId[] {
   return CAPABILITY_IDS.filter((id) => cfg.capabilities[id].enabled);
 }
@@ -245,7 +289,13 @@ export function enableCapability(
 ): { changed: boolean; displayName?: string } {
   const capabilities = (raw.capabilities ??= {}) as Record<
     string,
-    { enabled?: boolean; key?: string; displayName?: string } | undefined
+    | {
+        enabled?: boolean;
+        key?: string;
+        displayName?: string;
+        onTimeout?: "deny" | "allow";
+      }
+    | undefined
   >;
   const existing = capabilities[id];
   if (existing?.key) return { changed: false };
@@ -255,6 +305,7 @@ export function enableCapability(
     undefined;
   const displayName = derived ? slugFor(id, derived) : existing?.displayName;
   capabilities[id] = {
+    ...CAPABILITY_DEFAULTS[id],
     ...existing,
     enabled: true,
     key,

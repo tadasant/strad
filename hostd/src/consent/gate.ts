@@ -1,6 +1,6 @@
 import type { AuditLog } from "../audit.js";
 import { CAPABILITIES, type CapabilityId } from "../capabilities.js";
-import type { Config } from "../config.js";
+import { onTimeoutFor, type Config } from "../config.js";
 import type { KillSwitch } from "../killswitch.js";
 import { GrantStore, type Grant } from "./grants.js";
 import type { Notifier } from "./notifier.js";
@@ -101,6 +101,7 @@ export class ConsentGate {
   }): Promise<GateDecision> {
     const { config, killSwitch, audit, prompter } = this.deps;
     const { consent } = config;
+    const onTimeout = onTimeoutFor(config, input.capability);
     const deny = (code: DenyCode, reason: string): GateDecision => {
       audit.record({
         kind: "denied",
@@ -170,7 +171,7 @@ export class ConsentGate {
           server: input.server,
           purpose: purpose.purpose,
           seconds: consent.windowSeconds,
-          onTimeout: consent.onTimeout,
+          onTimeout,
           note: CAPABILITIES[input.capability].consentNote,
           signal: input.signal,
         });
@@ -193,7 +194,7 @@ export class ConsentGate {
           `${config.machine} could not show the consent dialog (nobody is logged in to its desktop), so nobody could agree to this`,
         );
       }
-      if (answer === "timeout" && consent.onTimeout === "deny") {
+      if (answer === "timeout" && onTimeout === "deny") {
         return deny(
           "timeout",
           `nobody at ${config.machine} answered the consent dialog within ${consent.windowSeconds}s, and this machine denies unanswered requests. Its owner has to be at the screen`,
