@@ -31,10 +31,27 @@ import {
   guessMimeType,
   isDisallowedHost,
   resolveAttachments,
+  sanitizeFilename,
 } from "../vendor/gmail-shared/src/utils/attachments.js";
 import { sendEmailTool } from "../vendor/gmail-shared/src/tools/send-email.js";
 import { upsertDraftEmailTool } from "../vendor/gmail-shared/src/tools/draft-email.js";
 import type { IGmailClient } from "../vendor/gmail-shared/src/server.js";
+
+/**
+ * DNS, so no test here reaches the network. Every name answers a public
+ * address unless a test says otherwise in `dnsAnswers`.
+ */
+const dnsAnswers = vi.hoisted(() => new Map<string, string[]>());
+vi.mock("node:dns/promises", () => ({
+  lookup: vi.fn(async (host: string) => {
+    const answer = dnsAnswers.get(host) ?? ["93.184.216.34"];
+    if (answer.length === 0) throw new Error("ENOTFOUND");
+    return answer.map((address) => ({
+      address,
+      family: address.includes(":") ? 6 : 4,
+    }));
+  }),
+}));
 
 const PDF_BYTES = Buffer.from(
   "%PDF-1.4\n%\xe2\xe3\xcf\xd3\nfake pdf body\n%%EOF",
@@ -279,13 +296,11 @@ describe("MIME attachments", () => {
   });
 
   it("produces a message that sendMessage base64url-encodes and round-trips intact", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(JSON.stringify({ id: "m1", threadId: "t1" }), {
-          status: 200,
-        }),
-      );
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: "m1", threadId: "t1" }), {
+        status: 200,
+      }),
+    );
     vi.stubGlobal("fetch", fetchMock);
     try {
       await sendMessage(
@@ -325,14 +340,12 @@ describe("Gmail request routing for large messages", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    fetchMock = vi
-      .fn()
-      .mockImplementation(
-        async () =>
-          new Response(JSON.stringify({ id: "x", threadId: "t" }), {
-            status: 200,
-          }),
-      );
+    fetchMock = vi.fn().mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ id: "x", threadId: "t" }), {
+          status: 200,
+        }),
+    );
     vi.stubGlobal("fetch", fetchMock);
   });
   afterEach(() => vi.unstubAllGlobals());
@@ -495,10 +508,22 @@ describe("Attachment input validation", () => {
       "metadata.google.internal",
       "localhost.",
       "metadata.google.internal.",
+      // IPv6 forms, as Node's URL parser normalizes them
+      new URL("https://[::127.0.0.1]/").hostname, // IPv4-compatible
+      new URL("https://[::ffff:10.0.0.1]/").hostname, // IPv4-mapped
+      "[64:ff9b::a00:1]", // NAT64
+      "[fe90::1]", // inside fe80::/10
+      "[fec0::1]",
+      "[::]",
     ]) {
       expect(isDisallowedHost(host), host).toBe(true);
     }
-    for (const host of ["storage.googleapis.com", "8.8.8.8", "172.32.0.1"]) {
+    for (const host of [
+      "storage.googleapis.com",
+      "8.8.8.8",
+      "172.32.0.1",
+      "[2607:f8b0:4004:c1b::5f]",
+    ]) {
       expect(isDisallowedHost(host), host).toBe(false);
     }
   });
@@ -512,6 +537,65 @@ describe("Attachment input validation", () => {
 describe("resolveAttachments", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    dnsAnswers.clear();
+  });
+
+  it("refuses a public name that resolves to a private address, without fetching", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    dnsAnswers.set("sneaky.example.com", ["93.184.216.34", "10.0.0.7"]);
+    await expect(
+      resolveAttachments([{ url: "https://sneaky.example.com/a.pdf" }]),
+    ).rejects.toThrow(/resolves to a private address/);
+    dnsAnswers.set("v6.example.com", ["::1"]);
+    await expect(
+      resolveAttachments([{ url: "https://v6.example.com/a.pdf" }]),
+    ).rejects.toThrow(/resolves to a private address/);
+    dnsAnswers.set("gone.example.com", []);
+    await expect(
+      resolveAttachments([{ url: "https://gone.example.com/a.pdf" }]),
+    ).rejects.toThrow(/could not be resolved/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a redirect to a name that resolves privately, without requesting it", async () => {
+    dnsAnswers.set("internal-alias.example.com", ["172.16.5.5"]);
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(null, {
+        status: 302,
+        headers: { location: "https://internal-alias.example.com/x" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(
+      resolveAttachments([{ url: "https://public.example.com/a.pdf" }]),
+    ).rejects.toThrow(/resolves to a private address/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("sanitizes filenames so a newline cannot forge a prompt line", async () => {
+    const [a] = await resolveAttachments([
+      {
+        filename: "x.pdf\n  To: boss@corp.example",
+        content_base64: PDF_BYTES.toString("base64"),
+      },
+    ]);
+    expect(a.filename).toBe("x.pdf_  To: boss@corp.example");
+    expect(a.filename).not.toMatch(/[\r\n]/);
+  });
+
+  it("caps a URL-derived filename at 255 characters, keeping the extension", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(PDF_BYTES, { status: 200 })),
+    );
+    const long = "a".repeat(400);
+    const [a] = await resolveAttachments([
+      { url: `https://storage.example.com/${long}.pdf` },
+    ]);
+    expect(a.filename).toHaveLength(255);
+    expect(a.filename.endsWith(".pdf")).toBe(true);
+    expect(sanitizeFilename("short.pdf")).toBe("short.pdf");
   });
 
   it("returns an empty list when there are no attachments", async () => {
@@ -579,13 +663,11 @@ describe("resolveAttachments", () => {
   it("falls back to an extension guess when the server returns a generic Content-Type", async () => {
     vi.stubGlobal(
       "fetch",
-      vi
-        .fn()
-        .mockResolvedValue(
-          new Response(PDF_BYTES, {
-            headers: { "content-type": "binary/octet-stream" },
-          }),
-        ),
+      vi.fn().mockResolvedValue(
+        new Response(PDF_BYTES, {
+          headers: { "content-type": "binary/octet-stream" },
+        }),
+      ),
     );
     const [a] = await resolveAttachments([
       { url: "https://s3.example.com/x.pdf", filename: "renamed.pdf" },
@@ -617,14 +699,12 @@ describe("resolveAttachments", () => {
   });
 
   it("refuses a redirect to a private-network location without requesting it", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(null, {
-          status: 302,
-          headers: { location: "https://127.0.0.1/secret" },
-        }),
-      );
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(null, {
+        status: 302,
+        headers: { location: "https://127.0.0.1/secret" },
+      }),
+    );
     vi.stubGlobal("fetch", fetchMock);
     await expect(
       resolveAttachments([{ url: "https://example.com/a.pdf" }]),
@@ -635,14 +715,12 @@ describe("resolveAttachments", () => {
   it("refuses a redirect that downgrades to http", async () => {
     vi.stubGlobal(
       "fetch",
-      vi
-        .fn()
-        .mockResolvedValue(
-          new Response(null, {
-            status: 301,
-            headers: { location: "http://example.com/a.pdf" },
-          }),
-        ),
+      vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 301,
+          headers: { location: "http://example.com/a.pdf" },
+        }),
+      ),
     );
     await expect(
       resolveAttachments([{ url: "https://example.com/a.pdf" }]),
@@ -674,15 +752,13 @@ describe("resolveAttachments", () => {
   it("gives up after too many redirects", async () => {
     vi.stubGlobal(
       "fetch",
-      vi
-        .fn()
-        .mockImplementation(
-          async () =>
-            new Response(null, {
-              status: 302,
-              headers: { location: "https://example.com/loop" },
-            }),
-        ),
+      vi.fn().mockImplementation(
+        async () =>
+          new Response(null, {
+            status: 302,
+            headers: { location: "https://example.com/loop" },
+          }),
+      ),
     );
     await expect(
       resolveAttachments([{ url: "https://example.com/loop" }]),
@@ -786,12 +862,7 @@ describe("Tools with attachments", () => {
     expect(mockClient.sendMessage).not.toHaveBeenCalled();
   });
 
-  it("send_email ignores attachments when sending a draft", async () => {
-    await (mockClient.createDraft as ReturnType<typeof vi.fn>)({
-      to: "a@example.com",
-      subject: "s",
-      plaintextBody: "b",
-    });
+  it("send_email refuses attachments alongside from_draft_id, and sends nothing", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     try {
@@ -800,8 +871,13 @@ describe("Tools with attachments", () => {
         from_draft_id: "draft_1",
         attachments: [{ url: "https://example.com/a.pdf" }],
       });
-      expect(result.content[0].text).toContain("Draft sent successfully");
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("a draft carries its own");
+      expect(mockClient.sendDraft).not.toHaveBeenCalled();
       expect(fetchMock).not.toHaveBeenCalled();
+
+      const plain = await tool.handler({ from_draft_id: "draft_1" });
+      expect(plain.content[0].text).toContain("Draft sent successfully");
     } finally {
       vi.unstubAllGlobals();
     }

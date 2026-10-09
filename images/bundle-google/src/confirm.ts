@@ -249,8 +249,7 @@ function methodOf(schema: unknown): string | undefined {
 }
 
 type Outcome =
-  | { stopped: "expired" | "dropped" }
-  | { stopped?: undefined; body: unknown };
+  { stopped: "expired" | "dropped" } | { stopped?: undefined; body: unknown };
 
 /**
  * One request to the approval endpoint, bounded by the deadline and by the
@@ -434,8 +433,9 @@ function headerOf(message: unknown, name: string): string | undefined {
  *
  * The vendored prompt for `from_draft_id` names only the draft's id, which a
  * human cannot judge: an agent can stage a draft to anyone and ask approval for
- * an opaque number. So the draft is read and its recipients and subject are
- * put in front of the human. If it cannot be read, the prompt says so.
+ * an opaque number. So the draft is read and its recipients, subject and
+ * attachment names are put in front of the human. If it cannot be read, the
+ * prompt says so.
  */
 async function draftSummary(
   client: IGmailClient,
@@ -453,7 +453,33 @@ async function draftSummary(
     const value = headerOf(draft.message, name);
     if (value) lines.push(`  ${name}: ${value}`);
   }
+  const files = attachmentNames(draft.message);
+  if (files.length > 0) lines.push(`  Attachments: ${files.join(", ")}`);
   return lines.join("\n");
+}
+
+/**
+ * The filenames attached to a Gmail message, from every level of its MIME
+ * tree. A draft can carry files an agent fetched; the human approving its
+ * send should see that they are there. Control characters are replaced so a
+ * filename cannot forge a line in the prompt.
+ */
+export function attachmentNames(message: unknown): string[] {
+  interface Part {
+    filename?: string;
+    parts?: Part[];
+  }
+  const names: string[] = [];
+  const walk = (part: Part | undefined, depth: number): void => {
+    if (!part || depth > 10) return;
+    if (part.filename) {
+      // eslint-disable-next-line no-control-regex
+      names.push(part.filename.replace(/[\x00-\x1F\x7F]/g, "_"));
+    }
+    for (const child of part.parts ?? []) walk(child, depth + 1);
+  };
+  walk((message as { payload?: Part } | undefined)?.payload, 0);
+  return names;
 }
 
 type Handler = (request: unknown, extra: unknown) => unknown;

@@ -51,22 +51,28 @@ the guess.
 With attachments, the message is `multipart/mixed`: the body entity first (the
 same single part or `multipart/alternative` as before), then one base64 part per
 file, wrapped at 76 characters. A non-ASCII filename is sent as RFC 2047
-encoded-words, folded so no header line passes 78 characters. Without
-attachments the message is byte-for-byte what upstream builds.
+encoded-words inside the quoted parameter, the form Gmail itself emits, folded
+into short lines. Every filename has its control characters replaced with `_`
+and is held to 255 characters, keeping the extension; the prompt, the MIME and
+the tool's answer all show that one name. Without attachments the message is
+byte-for-byte what upstream builds.
 
-- **Limits.** 18 MB decoded across all attachments. Gmail refuses a message
-  over 25 MB, and base64 inflates by 4/3. Each download has a 30-second timeout.
+- **Limits.** 17 MB decoded across all attachments. Gmail refuses a message
+  over 25 MB, and base64 with a CRLF every 76 characters inflates by ~1.37,
+  so 17 MB leaves room for the body. Every download in one call shares a
+  single 60-second budget, redirects included.
 - **What a URL may reach.** `https:` only, on every hop. Redirects are followed
-  by hand, at most 5, and each hop is checked before it is requested. A literal
-  loopback, private, link-local or CGNAT address is refused, as are `localhost`
-  and `*.internal`. DNS names are not resolved first, so a public name pointing
-  at a private address is not caught here. Inside strad's bundle the components
-  talk plain `http` on the private network, which the `https:`-only rule
-  refuses.
+  by hand, at most 5, and each hop is checked before it is requested: a
+  private literal (loopback, RFC 1918, CGNAT, link-local, multicast, and the
+  IPv6 forms that carry them, checked with `node:net`'s `BlockList`),
+  `localhost`, `*.internal`, and a name ANY of whose resolved addresses is
+  private are all refused. The fetch resolves the name again, so DNS rebinding
+  between the two lookups is not caught (`HACKS.md` #116).
 - **When it is resolved.** Before the confirmation prompt, on `send_email`. Bad
-  input fails without asking anyone, and the prompt lists the filenames that
-  will actually go out. A `from_draft_id` send ignores `attachments`; the draft
-  carries its own.
+  input fails without asking anyone, and the prompt lists the filenames, types
+  and sizes that will actually go out. `from_draft_id` with `attachments` is
+  refused: the draft carries its own, and `images/bundle-google/src/confirm.ts`
+  lists those in the prompt.
 - **Large messages.** A raw message over 5 MB is sent through Gmail's upload URI
   (`/upload/gmail/v1/…?uploadType=multipart`) rather than as inline JSON.
   `images/bundle-google/src/confirm.ts` gates sends by URL, and the upload URI
@@ -81,10 +87,14 @@ attachments the message is byte-for-byte what upstream builds.
 `src/tools/send-email.ts`, `src/tools/draft-email.ts`.
 
 **Tests.** `images/bundle-google/test/gmail-attachments.test.ts` for the MIME,
-the validation, the download rules and both tools. The two tests in
-`images/bundle-google/test/confirm.test.ts` that name the upload URI hold the
-send gate to it.
+the validation, the download rules (with DNS stubbed) and both tools. In
+`images/bundle-google/test/confirm.test.ts`, the two tests that name the
+upload URI hold the send gate to it, and one holds a draft send's prompt to
+the draft's attachment names.
 
 **Source.** Ported from `pulsemcp/mcp-servers` commit `8eeb47f` (branch
 `tadasant/gmail-send-attachments`, the closed PR above), which was written
-against the same `0ed34de` base. The `shared/src` diff applied without change.
+against the same `0ed34de` base. The `shared/src` diff applied without change;
+strad's review then added the resolved-address check, the `BlockList`, the one
+download budget, filename sanitizing, the 17 MB cap, and the `from_draft_id`
+refusal.

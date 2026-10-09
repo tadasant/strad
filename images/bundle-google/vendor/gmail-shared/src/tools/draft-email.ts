@@ -86,7 +86,7 @@ const TOOL_DESCRIPTION = `Create, update, or delete a draft email.
 At least one of plaintext_body or html_body must be provided for create/update. If both are provided, a multipart email is sent with both plain text and HTML versions. Use html_body for rich formatting like hyperlinks, bold text, or lists.
 
 **Attachments:**
-Each attachment provides exactly one of \`url\` (an HTTPS link the server downloads, such as a signed artifact-store URL) or \`content_base64\` (the file bytes, with a required \`filename\`). \`mime_type\` is optional and inferred when omitted. Limits: up to 10 files, 18 MB total. Updating a draft replaces its attachments too — include every attachment the draft should keep.
+Each attachment provides exactly one of \`url\` (an HTTPS link the server downloads, such as a signed artifact-store URL) or \`content_base64\` (the file bytes, with a required \`filename\`). \`mime_type\` is optional and inferred when omitted. Limits: up to 10 files, 17 MB total, one 60-second budget for every download. Updating a draft replaces its attachments too — include every attachment the draft should keep.
 
 **Creating a reply:**
 To create a draft reply to an existing email:

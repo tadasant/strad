@@ -42,6 +42,7 @@ import {
   channelFrom,
   gateGmailSends,
   guardSends,
+  attachmentNames,
   isGmailSend,
   withConfirmation,
 } from "../src/confirm.js";
@@ -772,6 +773,34 @@ test("isGmailSend: only Gmail's two send requests", () => {
     true,
   );
   assert.equal(isGmailSend(`${upload}/drafts?uploadType=multipart`), false);
+});
+
+test("a draft's attachment names reach the prompt, at any depth, on one line each", () => {
+  const message = {
+    payload: {
+      mimeType: "multipart/mixed",
+      parts: [
+        {
+          mimeType: "multipart/alternative",
+          parts: [{ mimeType: "text/plain" }, { mimeType: "text/html" }],
+        },
+        { mimeType: "application/pdf", filename: "statement.pdf" },
+        {
+          mimeType: "message/rfc822",
+          parts: [{ mimeType: "text/csv", filename: "a.csv\nTo: x@y" }],
+        },
+      ],
+    },
+  };
+  assert.deepEqual(attachmentNames(message), [
+    "statement.pdf",
+    "a.csv_To: x@y",
+  ]);
+  assert.deepEqual(
+    attachmentNames({ payload: { mimeType: "text/plain" } }),
+    [],
+  );
+  assert.deepEqual(attachmentNames(undefined), []);
 });
 
 test("a send with a large attachment leaves by a request the gate recognises", async () => {

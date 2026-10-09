@@ -158,15 +158,17 @@ arrived. Anything that drops before that point is a cancel.
 The prompt names the strad slug and the mailbox, then the vendored message's
 To, Cc, Bcc and Subject. A send of a saved draft (`from_draft_id`) would
 otherwise show only the draft's id, which a human cannot judge, so the layer
-reads the draft and adds its recipients and subject. If the draft cannot be
-read, the prompt says so and advises declining.
+reads the draft and adds its recipients, subject and attachment names. If the
+draft cannot be read, the prompt says so and advises declining.
 
 A send with `attachments` downloads or decodes them before the prompt, so bad
 input fails without asking anyone and the prompt lists the filenames that will
 actually go out. A message over 5 MB goes to Gmail's upload URI rather than as
 inline JSON; the send-request gate matches that URL too, and two tests in
-`images/bundle-google/test/confirm.test.ts` hold it to that. A saved draft's
-attachments are not listed, only its recipients and subject.
+`images/bundle-google/test/confirm.test.ts` hold it to that. A draft send
+takes no `attachments` of its own; the draft's files are the ones listed.
+Every filename has its control characters replaced, so a name cannot forge a
+line in the prompt.
 
 ## The edge in front of the approval URL
 

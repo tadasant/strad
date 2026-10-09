@@ -3599,25 +3599,32 @@ See `HACKS.md` #116.
 
 ---
 
-### 117. gmail attachments: inline files are capped near 3 MB, and a URL's host is checked as written
+### 117. gmail attachments: inline files are capped near 3 MB, and a URL's host is checked before the fetch
 
 `send_email` and `upsert_draft_email` take `attachments`, up to 10 files and
-18 MB decoded, each an HTTPS `url` the server downloads or `content_base64`
+17 MB decoded, each an HTTPS `url` the server downloads or `content_base64`
 with a `filename`.
 
 - **Inline files stop at about 3 MB.** Core reads a `/mcp` request with a 4 MB
   body limit, and base64 inside JSON costs a third more. A bigger inline file is
   a `413` at core. Upload it to the [artifact store](/servers/artifact-store/)
-  and pass the signed link as `url` instead; that route goes to the full 18 MB.
-- **The download refuses private addresses only as written.** A literal
-  loopback, private, link-local or CGNAT address is refused on every redirect,
-  as are `localhost` and `*.internal`. A public DNS name that resolves to a
-  private address is not caught. strad's own components serve plain `http`
-  inside App Platform, and the download is `https:` only, which is what keeps
-  it off them.
+  and pass the signed link as `url` instead; that route goes to the full 17 MB.
+- **Private destinations are refused before the fetch, not by it.** Every
+  redirect hop is checked: a private literal address (loopback, RFC 1918,
+  carrier-grade NAT, link-local, and the IPv6 forms that carry them),
+  `localhost`, `*.internal`, and any name that resolves to a private address
+  are refused. The fetch then resolves the name a second time, so a name whose
+  answer changes in between is not caught. That gap is worth more here than in
+  a plain fetch: `upsert_draft_email` asks no one, and
+  `download_email_attachments` can read a draft's files back.
+  [strad-fetch](#79-strad-fetchs-url-guard-is-a-denylist-so-it-refuses-what-is-known-to-be-private)
+  checks at the connector instead.
 - **Downloads come out of the confirmation window.** `send_email` fetches its
-  attachments before asking, so the prompt lists what will be sent. Each file
-  has up to 30 seconds, taken from the same deadline the human answers in.
+  attachments before asking, so the prompt lists what will be sent. Every
+  download in a call shares one 60-second budget, taken from the same deadline
+  the human answers in.
+- **A draft send takes no attachments.** `from_draft_id` with `attachments` is
+  an error. The draft carries its own files, and the prompt lists them.
 - **The gmail tree is a fork.** Re-vendoring it from upstream would remove
   attachments. `images/bundle-google/vendor/gmail-shared/FORK.md` lists the
   delta.
@@ -3627,8 +3634,8 @@ not a tool error. A refused or failed download is a tool error naming the host
 and HTTP status, never the signed query string.
 
 **Undo:** raising core's body limit lifts the inline cap, for every slug. A
-fetch that resolves the name and connects to the checked address closes the
-DNS gap.
+fetch whose connector checks the address it actually connects to closes the
+rebinding gap.
 
 See `HACKS.md` #117.
 
