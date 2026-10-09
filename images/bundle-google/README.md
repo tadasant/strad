@@ -103,7 +103,7 @@ call.
 to 10 files, 17 MB decoded in total, each an HTTPS `url` the server downloads
 or `content_base64` with a `filename`. Through strad, `content_base64` is
 bounded by core's 4 MB `/mcp` request body, so a file over about 3 MB has to
-be a `url`. See `vendor/gmail-shared/FORK.md` and `HACKS.md` #116.
+be a `url`. See `vendor/gmail-shared/FORK.md` and `HACKS.md` #117.
 
 Scopes (service-account mode must have these authorized for DWD):
 `gmail.readonly`, `gmail.modify`, `gmail.compose`, `gmail.send`.

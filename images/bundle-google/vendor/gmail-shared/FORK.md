@@ -68,7 +68,7 @@ byte-for-byte what upstream builds.
   IPv6 forms that carry them, checked with `node:net`'s `BlockList`),
   `localhost`, `*.internal`, and a name ANY of whose resolved addresses is
   private are all refused. The fetch resolves the name again, so DNS rebinding
-  between the two lookups is not caught (`HACKS.md` #116).
+  between the two lookups is not caught (`HACKS.md` #117).
 - **When it is resolved.** Before the confirmation prompt, on `send_email`. Bad
   input fails without asking anyone, and the prompt lists the filenames, types
   and sizes that will actually go out. `from_draft_id` with `attachments` is
