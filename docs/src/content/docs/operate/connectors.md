@@ -248,6 +248,7 @@ to consume them. That is history, not a recommendation:
 | --------------- | ----------------------------------------------------------------------------------------------- |
 | `google-sheets` | `GOOGLE_SHEETS_OAUTH_CLIENT_ID` / `..._CLIENT_SECRET` / `..._REFRESH_TOKEN` — i.e. the defaults |
 | `gmail`         | `GMAIL_OAUTH_CLIENT_ID` / `GMAIL_OAUTH_CLIENT_SECRET` / `GMAIL_OAUTH_REFRESH_TOKEN`             |
+| `google-docs`   | `GOOGLE_DOCS_OAUTH_CLIENT_ID` / `..._CLIENT_SECRET` / `..._REFRESH_TOKEN`                       |
 | anything else   | Whatever that tree reads. Check its README before writing the block                             |
 
 ```yaml
@@ -284,6 +285,24 @@ be unconfigured — it would be **a different person's mailbox**, served under a
 slug named for the connected account, with every call succeeding. So the host
 drops every per-account name in **both** modes, and an unconnected gmail slug
 degrades naming `GMAIL_OAUTH_REFRESH_TOKEN` alone.
+
+**google-docs is the same case.** The conventional `/google-docs` mount
+impersonates a Workspace user through `GOOGLE_DOCS_SERVICE_ACCOUNT_*` and
+`GOOGLE_DOCS_IMPERSONATE_EMAIL`, so a per-slug docs mount drops those too and an
+unconnected one degrades naming `GOOGLE_DOCS_OAUTH_REFRESH_TOKEN`. A docs slug
+left on the google-sheets default names is worse than unmounted: the sheets tree
+discovers it and serves spreadsheets at its path. The scopes per tier:
+
+| Tier           | Scopes                                 | What enforces the tier                                 |
+| -------------- | -------------------------------------- | ------------------------------------------------------ |
+| `-ro`          | `documents.readonly`, `drive.readonly` | Google and the gateway's `tools:` list                 |
+| `-rw`          | `documents`, `drive`                   | The gateway alone: `tools:` withholds `share_document` |
+| `-rw-external` | `documents`, `drive`                   | Nothing narrower; this tier is the full eleven         |
+
+`-rw` cannot be narrowed on Google's side: deleting and sharing both go through
+the Drive API on documents the app never created, which `drive.file` cannot
+reach, so the write tiers hold the same grant and differ only by policy — the
+same trade as the service-account tiers.
 
 ### The credential arrives under the slug's own variable name, and only that one
 

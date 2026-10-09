@@ -1259,6 +1259,7 @@ rather than vendored: its A1 arithmetic decides which cell a write lands in, and
 a credential-free smoke test never addresses a cell. `src/gmail.ts` is the
 per-account layer over the gmail tree; it decides which MAILBOX a mount reads,
 and a smoke test that counts tools would never see it read the wrong one.
+`src/docs.ts` is the same layer over the google-docs tree, deciding whose Drive.
 `vendor/gmail-shared` is a fork, and `test/gmail-attachments.test.ts` covers its
 one delta: the MIME an attachment is sent as, the input it refuses, and what a
 download URL may reach. The three `vendor/` packages that are still copies get

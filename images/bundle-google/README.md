@@ -37,6 +37,10 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   imports as `dist/gmail.js`. `test/gmail.test.ts` is its suite. The requirement
   is strad's, not upstream's, and it needs nothing inside the tree, so it
   lives here.
+- `src/docs.ts` — the same layer over `vendor/google-docs-shared`, for the
+  same reason: google-docs has gmail's two auth modes, and the collapsed bundle
+  mounts it once per Google account. Built to `dist/docs.js`; the tree stays
+  verbatim. `test/docs.test.ts` is its suite.
 - `src/confirm.ts` — **`send_email` asks a human first**, at the URL the CALL
   carries (`_meta["dev.strad/elicitation"]`, put there by strad core from the
   caller's `X-Elicitation-Url` for a slug with `confirmations: true`), never at
@@ -142,9 +146,18 @@ Scope: `https://www.googleapis.com/auth/calendar`.
 | **OAuth2 (refresh token)** — takes precedence if all three set | `GOOGLE_DOCS_OAUTH_CLIENT_ID`, `GOOGLE_DOCS_OAUTH_CLIENT_SECRET`, `GOOGLE_DOCS_OAUTH_REFRESH_TOKEN` |
 | **Capability toggle** | `GOOGLE_DOCS_ENABLED_TOOLGROUPS` = `readonly` \| `readwrite` \| `readwrite_external` (default: all) |
 
+| **Console reconnect hint** (not a credential) | `GOOGLE_DOCS_RECONNECT_URL` — the page named in an `invalid_grant` error |
+
 Scopes: `https://www.googleapis.com/auth/documents` **and the full
 `https://www.googleapis.com/auth/drive`** (needed for comments/export/sharing of
-docs the app did not create — `drive.file` is not enough).
+docs the app did not create — `drive.file` is not enough). An OAuth mount that
+only reads can be consented for `documents.readonly` + `drive.readonly`.
+
+gmail's two-mode trap, again: `src/docs.ts` is the same per-account layer as
+`src/gmail.ts`, over a tree that stays verbatim. `GOOGLE_DOCS_ENV_NAMES` names
+all six variables so the collapsed bundle's host can drop everything that is not
+the OAuth app pair from a per-slug mount, which would otherwise inherit the
+conventional mount's service account and serve a Workspace user's documents.
 
 ### Common
 

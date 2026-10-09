@@ -35,7 +35,7 @@ import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 
 import { createMCPServer as createGmailServer } from "./gmail.js";
 import { createMCPServer as createCalendarServer } from "google-calendar-workspace-mcp-server-shared";
-import { createMCPServer as createDocsServer } from "google-docs-workspace-mcp-server-shared";
+import { createMCPServer as createDocsServer } from "./docs.js";
 import { createMCPServer as createSheetsServer } from "google-sheets-workspace-mcp-server-shared";
 
 const VERSION = process.env.BUNDLE_GOOGLE_VERSION ?? "0.1.0";
@@ -83,6 +83,9 @@ const MOUNTS: Mount[] = [
   {
     path: "/google-docs",
     slug: "google-docs",
+    // Through `./docs.js` for gmail's reason: the collapsed bundle mounts this
+    // server once per slug, one Google account each, and only an injected env
+    // makes that possible. This image keeps the one conventional mount.
     build: () => createDocsServer({ version: VERSION }),
   },
   {
