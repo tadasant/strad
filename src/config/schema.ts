@@ -1917,6 +1917,77 @@ export const StradConfig = z
       }
     }
 
+    // ONE WRITER PER MOUNT.
+    //
+    // Servers that share a bundle AND a path are one mount in one process: the
+    // capability-variant case, two slugs and one upstream, told apart only by the
+    // gateway's `tools:` policy. Whatever that mount writes back, it writes once,
+    // under ONE slug's namespace — so exactly one of the twins may claim it.
+    //
+    // The credential this exists for rotates on use (X's refresh token is spent
+    // by every refresh). Two claims on it are two namespaces holding two copies
+    // of a single-use value: the mount rotates one, and the other goes stale
+    // while it still looks seeded. A consent given on the twin that does NOT own
+    // it — an `oauth:` connector naming the same variable — writes a fresh grant
+    // into a namespace the mount never reads, and the console calls it
+    // connected. Either way two chains of the one credential exist, and the
+    // first time both are spent the slower one is dead. The twin that only
+    // widens the tool surface declares none of it and rides the owner's.
+    //
+    // Instance paths are excluded: an instance is its own slug's namespace by
+    // construction, and writes nothing back (checked below).
+    const mounts = new Map<
+      string,
+      Extract<ServerConfig, { kind: "supplementary-image" }>[]
+    >();
+    for (const s of cfg.servers) {
+      if (s.kind !== "supplementary-image" || isInstancePath(s.path)) continue;
+      const key = `${s.bundle}\u0000${s.path}`;
+      mounts.set(key, [...(mounts.get(key) ?? []), s]);
+    }
+    for (const twins of mounts.values()) {
+      if (twins.length < 2) continue;
+      const writer = new Map<string, string>();
+      for (const s of twins) {
+        for (const variable of s.paramsWritable) {
+          const fold = variable.toLowerCase();
+          const owner = writer.get(fold);
+          if (owner !== undefined && owner !== s.slug) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message:
+                `servers "${owner}" and "${s.slug}" both list "${variable}" under ` +
+                `paramsWritable:, and they share bundle "${s.bundle}" and path ` +
+                `"${s.path}" — one mount, one process, one copy of that ` +
+                `credential. Exactly one of them may own a written-back variable: ` +
+                `keep it on "${owner}" and drop it from "${s.slug}", which ` +
+                `uses the owner's through the shared mount.`,
+              path: ["servers"],
+            });
+          }
+          writer.set(fold, s.slug);
+        }
+      }
+      for (const s of twins) {
+        if (!s.oauth) continue;
+        const variable = s.oauth.refreshTokenVariable;
+        const owner = writer.get(variable.toLowerCase());
+        if (owner === undefined || owner === s.slug) continue;
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `server "${s.slug}" declares an oauth: connector whose ` +
+            `refreshTokenVariable is "${variable}", which "${owner}" — on the ` +
+            `same bundle and path — writes back under paramsWritable:. A consent ` +
+            `on "${s.slug}" would mint a second copy of that credential into ` +
+            `/strad/{env}/mcp/${s.slug}/oauth/, which the shared mount never ` +
+            `reads. Consent on "${owner}" (widen its oauth.scopes if this twin ` +
+            `needs more) and remove the connector from "${s.slug}".`,
+          path: ["servers"],
+        });
+      }
+    }
+
     // STORE-SERVED INSTANCES.
     //
     // A supplementary server on `/_instance/{tree}/{slug}` is credentialed from

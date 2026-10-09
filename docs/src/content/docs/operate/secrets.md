@@ -1235,6 +1235,61 @@ console consent creates it. Until it exists the boot read gets a
 404 and the container falls back to its baked value — which works, and quietly
 keeps working, right up until the first rotation has nowhere to land.
 
+### Two slugs, one rotating credential
+
+A read tier and a read-write tier of the same account are two slugs, and they
+must not be two copies of a single-use token. Each refresh spends the token it
+presents, so two holders of one value invalidate each other: the first to
+refresh succeeds and the second is dead until someone consents again.
+
+So the twins are one **mount**: same `bundle`, same `path`, no credential on
+the twin. The bundle host builds the X client once per mount, whichever slug a
+request arrived under, and the provider in it collapses concurrent refreshes
+into one exchange. Only the gateway's `tools:` policy tells the slugs apart:
+
+```yaml
+- slug: x-twitter # owns the credential: params, write-back, consent
+  kind: supplementary-image
+  bundle: bundle
+  path: /x-twitter
+  params: true
+  paramsWritable: [X_OAUTH_REFRESH_TOKEN]
+  oauth:
+    # ...
+    scopes:
+      [tweet.read, users.read, bookmark.read, bookmark.write, offline.access]
+    refreshTokenVariable: X_OAUTH_REFRESH_TOKEN
+  tools:
+    allow: # the seven reads; the twin has no policy, so all nine
+      - get_my_account
+      - get_user
+      - get_home_timeline
+      - get_user_tweets
+      - get_bookmarks
+      - search_recent_tweets
+      - get_tweets
+
+- slug: x-twitter-rw # declares nothing, so it rides the owner's credential
+  kind: supplementary-image
+  bundle: bundle
+  path: /x-twitter
+```
+
+The config check refuses the two ways to give the twin its own copy: listing
+the variable under its own `paramsWritable:`, or an `oauth:` connector naming
+it. The connector belongs on the owner, and it asks for the **union** of the
+scopes either tier needs, which is what lets the write tier work at all. The
+read tier is then bounded by its `tools:` policy alone, not also by its token.
+That trade is the price of one token. The other answer is two consents, two
+tokens and two mounts.
+
+Two more things break this, and neither is something the twin can cause. One
+is a second replica (`instanceCount` above 1), which the render refuses. The
+other is disabling the owner. A disabled server is not rendered, so its
+namespace never reaches the container, and the write-back route refuses its
+slug. To withdraw the read tier, take it out of a role's `servers:`. Do not set
+`enabled: false` on it.
+
 ### The write goes through core, not through a new credential
 
 The container answering `/mcp` holds no cloud credential, and that is the point

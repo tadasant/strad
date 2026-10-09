@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
-import { XApiClient } from "../../shared/src/x-client/x-api-client.js";
+import {
+  XApiClient,
+  bookmarkWriteForbidden,
+} from "../../shared/src/x-client/x-api-client.js";
 import { XApiError } from "../../shared/src/x-client/api-errors.js";
 import type { ITokenProvider } from "../../shared/src/x-client/auth.js";
 
@@ -201,5 +204,26 @@ describe("XApiClient", () => {
       expect(err).toBeInstanceOf(XApiError);
       expect((err as XApiError).isClientNotEnrolled).toBe(true);
     }
+  });
+});
+
+describe("bookmarkWriteForbidden", () => {
+  it("is definitive when the granted scopes omit bookmark.write", () => {
+    const msg = bookmarkWriteForbidden(["tweet.read", "bookmark.read"]);
+    expect(msg).toContain('"tweet.read bookmark.read"');
+    expect(msg).toContain("does not include bookmark.write");
+    expect(msg).toMatch(/Retrying this call will not help/);
+  });
+
+  it("points away from the scope when the credential already holds it", () => {
+    const msg = bookmarkWriteForbidden(["bookmark.read", "bookmark.write"]);
+    expect(msg).toContain("although the credential holds bookmark.write");
+    expect(msg).not.toMatch(/Re-run the X OAuth consent/);
+  });
+
+  it("names the scope as the likeliest cause when the grant is unknown", () => {
+    const msg = bookmarkWriteForbidden(undefined);
+    expect(msg).toContain("likeliest cause");
+    expect(msg).toMatch(/Re-run the X OAuth consent/);
   });
 });

@@ -483,9 +483,10 @@ servers:
     env:
       SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
 
-  # X is deliberately read-only by default. Add create_bookmark and
-  # remove_bookmark to this allow-list only when private bookmark changes are
-  # intended. OAuth credentials come from an X Developer Console app.
+  # X is deliberately read-only by default: `x-twitter` withholds
+  # create_bookmark and remove_bookmark, and `x-twitter-rw` below is the twin
+  # that adds them. Both write only the account's PRIVATE bookmarks. OAuth
+  # credentials come from an X Developer Console app.
   #
   # TWO WAYS TO CREDENTIAL THIS SERVER, and the second is the durable one.
   #
@@ -550,6 +551,30 @@ servers:
         - get_bookmarks
         - search_recent_tweets
         - get_tweets
+
+  # The read-write twin: same bundle, same path, so ONE mount and ONE X client.
+  # No `tools:` policy, so all nine tools, the two private bookmark writes
+  # included.
+  #
+  # In refresh-token mode the twin declares NO credential of its own: no
+  # `params:`, no `paramsWritable:`, no `oauth:`. X's refresh token is spent by
+  # every refresh, so two copies of it are two holders that kill each other.
+  # The config check refuses a twin that lists the variable under its own
+  # `paramsWritable:` or names it on its own connector. Put `bookmark.write` in
+  # the OWNER's `oauth.scopes` and consent there. See docs:
+  # /operate/secrets/#two-slugs-one-rotating-credential.
+  #
+  # In the static-access-token mode written here there is nothing to rotate, so
+  # it repeats the env map like any twin. The component's env is the union, so
+  # `enabled: false` on one variant cannot strip the token from the other.
+  - slug: x-twitter-rw
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /x-twitter
+    entitlements: [admin]
+    env:
+      X_OAUTH_ACCESS_TOKEN: "${X_OAUTH_ACCESS_TOKEN}"
 
   # The read-only twin of the server above: same image, same bundle, same path,
   # same container, same credential. The ONLY difference is the policy the gateway

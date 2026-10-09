@@ -1074,6 +1074,11 @@ async function loadRemoteFilesystem(slug: string): Promise<Mount> {
  * remote-filesystem have), each instance's store handle has to be built from its
  * own slug — the write-back is per SERVER, and two X accounts are two
  * credentials.
+ *
+ * `x-twitter-rw` is NOT such an instance. It is a capability twin: same bundle,
+ * same path, so this one mount, this one client and this slug's namespace. One
+ * account is one token, and the schema's one-writer-per-mount rule keeps the
+ * twin from declaring a second copy of it.
  */
 const X_SLUG = "x-twitter";
 

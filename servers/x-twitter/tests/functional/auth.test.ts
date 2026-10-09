@@ -285,3 +285,29 @@ describe("createTokenProviderFromEnv with durable persistence", () => {
     expect(provider).toBeInstanceOf(StaticAccessTokenProvider);
   });
 });
+
+describe("grantedScopes", () => {
+  it("reports what X granted with the latest access token, and nothing before one", async () => {
+    const { impl } = tokenFetchSequence([
+      { access_token: "access-1", refresh_token: "refresh-2" },
+    ]);
+    const provider = new RefreshTokenProvider({
+      clientId: "c",
+      clientSecret: "s",
+      refreshToken: "refresh-1",
+      fetchImpl: impl,
+    });
+    expect(provider.grantedScopes).toBeUndefined();
+    await provider.getAccessToken();
+    expect(provider.grantedScopes).toEqual([
+      "tweet.read",
+      "users.read",
+      "bookmark.read",
+      "offline.access",
+    ]);
+  });
+
+  it("is unknown for a static access token", () => {
+    expect(new StaticAccessTokenProvider("t").grantedScopes).toBeUndefined();
+  });
+});

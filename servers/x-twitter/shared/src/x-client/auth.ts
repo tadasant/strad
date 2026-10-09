@@ -48,6 +48,13 @@ export interface ITokenProvider {
    * getAccessToken() forces a refresh. Called after a 401 from the API.
    */
   invalidate(): void;
+  /**
+   * The scopes X reported granting with the most recent access token, or
+   * undefined when this provider has none to report (no refresh yet, a static
+   * token, or a token response with no `scope`). Read to explain a 403, never
+   * to decide whether to make a call — X is the authority on what a token may do.
+   */
+  readonly grantedScopes?: readonly string[];
 }
 
 /**
@@ -58,6 +65,11 @@ abstract class BaseTokenProvider implements ITokenProvider {
   private cachedToken: string | null = null;
   private tokenExpiry: number = 0;
   private refreshPromise: Promise<string> | null = null;
+  private scopes: readonly string[] | undefined;
+
+  get grantedScopes(): readonly string[] | undefined {
+    return this.scopes;
+  }
 
   async getAccessToken(): Promise<string> {
     if (this.cachedToken && Date.now() < this.tokenExpiry - EXPIRY_BUFFER_MS) {
@@ -83,8 +95,13 @@ abstract class BaseTokenProvider implements ITokenProvider {
   }
 
   private async doRefresh(): Promise<string> {
-    const { access_token, expires_in } = await this.fetchToken();
+    const { access_token, expires_in, scope } = await this.fetchToken();
     this.cachedToken = access_token;
+    // X sends the granted scopes space-separated. A response without them keeps
+    // the last known set rather than claiming the token has none.
+    if (typeof scope === "string" && scope.trim() !== "") {
+      this.scopes = scope.trim().split(/\s+/);
+    }
     const ttlSeconds =
       typeof expires_in === "number" &&
       Number.isFinite(expires_in) &&

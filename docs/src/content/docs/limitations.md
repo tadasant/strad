@@ -2446,7 +2446,7 @@ deploy rather than a silent outage.
 For the current fleet that is free — every bundle runs one instance — but it is a
 real constraint, and the render error is the only place it is enforced.
 
-Three smaller edges of the same path:
+Four smaller edges of the same path:
 
 - **The boot read makes the store authoritative at boot** for the names on the
   list. That is the point: it is what closes the race where a deploy bakes a value
@@ -2465,6 +2465,15 @@ Three smaller edges of the same path:
   still holds the token it booted with, and its next rotation writes over the
   reconnect. Restart the component after a reconnect. A hand re-seed of any
   `paramsWritable:` name has the same window.
+- **Twin slugs on one mount share one copy, by a config rule.** `x-twitter`
+  and `x-twitter-rw` share a bundle and a path, so they are one process and one
+  token provider, and the second replica the render check refuses never exists.
+  What keeps the twin from holding a SECOND copy of the token is the schema's
+  one-writer-per-mount rule: a name may be on only one twin's `paramsWritable:`,
+  and no twin may put it on its own `oauth:` connector. Two costs follow. The
+  owner's consent carries the union of the scopes (`bookmark.write` included), so
+  the read tier is bounded by its `tools:` policy alone. And disabling the owner
+  strands the twin, because a disabled server's namespace is not rendered.
 
 **Exit.** A compare-and-set `put()` — read the latest version id, write
 conditional on it, re-read on conflict — plus dropping the render check, for any

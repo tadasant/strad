@@ -3201,7 +3201,7 @@ error is the only place it is enforced. A deployment that grows a genuinely
 concurrent write-back need (a credential that is NOT single-use, several replicas)
 has to implement the CAS first.
 
-**Three smaller edges of the same path:**
+**Four smaller edges of the same path:**
 
 - **The boot read makes the store authoritative at boot, which is a behaviour
   change for the names on the list.** A container that previously always started
@@ -3222,6 +3222,15 @@ has to implement the CAS first.
   — last-write-wins, with no compare-and-set. Restart the component after a
   reconnect. The same window exists for a hand re-seed of any `paramsWritable:`
   name.
+- **Twin slugs on one mount share one copy, by a config rule.** `x-twitter`
+  and `x-twitter-rw` share a bundle and a path, so they are one process and one
+  token provider, and the second replica the render check refuses never exists.
+  What keeps the twin from holding a SECOND copy of the token is the schema's
+  one-writer-per-mount rule: a name may be on only one twin's `paramsWritable:`,
+  and no twin may put it on its own `oauth:` connector. Two costs follow. The
+  owner's consent carries the union of the scopes (`bookmark.write` included), so
+  the read tier is bounded by its `tools:` policy alone. And disabling the owner
+  strands the twin, because a disabled server's namespace is not rendered.
 
 **Exit.** A compare-and-set `put()` — read the parameter's latest version id,
 write conditional on it, re-read on conflict — plus dropping the render check, for
