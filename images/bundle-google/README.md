@@ -83,7 +83,7 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
 ```bash
 npm install
 npm run build          # builds vendored shared packages, then the entrypoint
-npm test               # the google-sheets, gmail fork and src/ suites (builds first)
+npm test               # the google-sheets, gmail fork and src/ (gmail, docs) suites (builds first)
 node dist/index.js &   # serves on :8080
 npm run smoke          # asserts all four servers list their tools
 ```
@@ -145,7 +145,6 @@ Scope: `https://www.googleapis.com/auth/calendar`.
 | **Service account (domain-wide delegation)** | `GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL`, `GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY`, `GOOGLE_DOCS_IMPERSONATE_EMAIL` |
 | **OAuth2 (refresh token)** — takes precedence if all three set | `GOOGLE_DOCS_OAUTH_CLIENT_ID`, `GOOGLE_DOCS_OAUTH_CLIENT_SECRET`, `GOOGLE_DOCS_OAUTH_REFRESH_TOKEN` |
 | **Capability toggle** | `GOOGLE_DOCS_ENABLED_TOOLGROUPS` = `readonly` \| `readwrite` \| `readwrite_external` (default: all) |
-
 | **Console reconnect hint** (not a credential) | `GOOGLE_DOCS_RECONNECT_URL` — the page named in an `invalid_grant` error |
 
 Scopes: `https://www.googleapis.com/auth/documents` **and the full

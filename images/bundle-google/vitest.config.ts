@@ -16,8 +16,9 @@ import { defineConfig } from "vitest/config";
 //
 //   - `vendor/google-sheets-shared/test/` — that package is not vendored from
 //     anywhere; it is strad's own server, written here.
-//   - `test/` — the image's own source, `src/` (`src/gmail.ts`, strad's
-//     per-account layer over the gmail tree, and `src/confirm.ts`), plus the
+//   - `test/` — the image's own source, `src/` (`src/gmail.ts` and
+//     `src/docs.ts`, strad's per-account layers over the gmail and google-docs
+//     trees, and `src/confirm.ts`), plus the
 //     gmail fork's deltas (`test/gmail-attachments.test.ts`).
 //
 // The sheets suite lives outside that package's `include: ["src/**/*"]`, so

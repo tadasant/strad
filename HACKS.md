@@ -3738,7 +3738,7 @@ The split is real and it is not subtle:
 - `telegram` snapshots `slugEnvView(process.env, slug)` at mount time and the tree
   memoises ONE MTProto session for the life of the process. `grafana` and
   `google-sheets` build a client per mount. `gmail` and `google-docs` joined them
-  when they gained per-slug mounts: the injected env it reads is a snapshot taken at mount time,
+  when they gained per-slug mounts: the injected env each reads is a snapshot taken at mount time,
   which is exactly what makes two accounts in one process independent of each
   other, and its OAuth/service-account client is cached per credential so a tool
   call does not re-authenticate to Google. `x-twitter` caches its OAuth provider

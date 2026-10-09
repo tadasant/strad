@@ -336,6 +336,12 @@ describe("extraSlugs", () => {
       GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "secret",
     } as NodeJS.ProcessEnv;
     expect(extraSlugs("google-docs", DOCS_MARKERS, env)).toEqual([]);
+    expect(
+      extraSlugs("google-sheets", SHEETS_MARKERS, {
+        GOOGLE_DOCS_TADAS412_RO__GOOGLE_DOCS_OAUTH_CLIENT_ID: "id",
+        GOOGLE_DOCS_TADAS412_RO__GOOGLE_DOCS_OAUTH_CLIENT_SECRET: "secret",
+      } as NodeJS.ProcessEnv),
+    ).toEqual([]);
   });
 
   it("does not invent a slug from a head that is not a mangled slug", () => {
