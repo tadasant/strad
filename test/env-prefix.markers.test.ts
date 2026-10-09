@@ -103,6 +103,41 @@ describe("the marker names the bundle host looks for", () => {
     expect(tree).toContain("export const GMAIL_ENV_NAMES");
   });
 
+  it("are google-docs' OAuth app pair, and its drop set spans BOTH auth modes", () => {
+    // gmail's shape and gmail's reason: `images/bundle-google/src/docs.ts` is
+    // the layer that injects an env into a tree that reads `process.env`, and
+    // the conventional /google-docs mount's service-account trio sits on the
+    // same container under bare names.
+    const tree = readFileSync("images/bundle-google/src/docs.ts", "utf8");
+
+    const markers = tree.match(
+      /GOOGLE_DOCS_OAUTH_APP_ENV_NAMES = \[([^\]]*)\]/,
+    );
+    expect(markers).not.toBeNull();
+    expect(markers![1]).toContain("GOOGLE_DOCS_OAUTH_CLIENT_ID");
+    expect(markers![1]).toContain("GOOGLE_DOCS_OAUTH_CLIENT_SECRET");
+    expect(markers![1]).not.toContain("GOOGLE_DOCS_OAUTH_REFRESH_TOKEN");
+
+    const service = tree.match(
+      /GOOGLE_DOCS_SERVICE_ACCOUNT_ENV_NAMES = \[([^\]]*)\]/,
+    );
+    expect(service).not.toBeNull();
+    for (const name of [
+      "GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL",
+      "GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY",
+      "GOOGLE_DOCS_IMPERSONATE_EMAIL",
+    ]) {
+      expect(service![1]).toContain(name);
+    }
+    expect(tree).toContain("...GOOGLE_DOCS_SERVICE_ACCOUNT_ENV_NAMES");
+
+    expect(host).toContain("google.docs.GOOGLE_DOCS_OAUTH_APP_ENV_NAMES");
+    expect(host).toContain("docs.GOOGLE_DOCS_ENV_NAMES");
+    expect(host).toContain('"dist/docs.js"');
+    expect(tree).toContain("export const GOOGLE_DOCS_OAUTH_APP_ENV_NAMES");
+    expect(tree).toContain("export const GOOGLE_DOCS_ENV_NAMES");
+  });
+
   it("are remote-filesystem's real prefix and bucket suffix", () => {
     const config = readFileSync(
       "servers/remote-filesystem/shared/src/config.ts",

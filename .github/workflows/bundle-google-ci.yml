@@ -35,10 +35,10 @@ jobs:
   #     in, and a credential-free smoke test never addresses a cell. Plus the tier
   #     lists a read-only slug's `tools: allow:` is copied from in another
   #     repository.
-  #   - `test/` — `src/gmail.ts`, strad's per-account layer over the VERBATIM
-  #     gmail tree. It decides which mailbox a mount reads, and getting that wrong
-  #     is a mount that serves the wrong account while looking healthy. A smoke
-  #     test counts tools and would never see it.
+  #   - `test/` — `src/gmail.ts` and `src/docs.ts`, strad's per-account layers
+  #     over the gmail and google-docs trees. They decide which account a mount
+  #     reads, and getting that wrong is a mount that serves the wrong account
+  #     while looking healthy. A smoke test counts tools and would never see it.
   unit_tests:
     runs-on: self-hosted
     steps:
@@ -49,7 +49,7 @@ jobs:
       - name: Install
         working-directory: images/bundle-google
         run: npm ci
-      - name: Test (build + the google-sheets and gmail suites)
+      - name: Test (build + the google-sheets, gmail and google-docs suites)
         working-directory: images/bundle-google
         run: npm test
 

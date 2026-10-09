@@ -752,6 +752,43 @@ servers:
         - download_email_attachments
         - list_draft_emails
 
+  # google-docs IS gmail's shape again: two auth modes on one container (the
+  # conventional /google-docs mount impersonates a Workspace user under bare
+  # GOOGLE_DOCS_SERVICE_ACCOUNT_* names), so a per-slug mount reads every
+  # per-account name from its own prefix or not at all, and the three variables
+  # MUST be named. Left at the google-sheets defaults, the slug is discovered by
+  # the google-sheets tree instead and serves spreadsheets, not documents.
+  #
+  # Three tiers over one account are three entries, three paths, three consents.
+  # The read tier's scopes are both `.readonly`, so Google refuses a write even
+  # if the gateway did not. The -rw and -rw-external tiers both need the full
+  # `documents` + `drive` grant — delete and share go through the Drive API on
+  # documents the app never created — so what keeps share_document off -rw is
+  # its `tools:` list alone, exactly as on the service-account tiers.
+  - slug: google-docs-someone-ro
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /google-docs-someone-ro
+    entitlements: [admin, readonly]
+    oauth:
+      provider: google
+      account: someone@example.com
+      # `documents.readonly` for get_document and its outline; `drive.readonly`
+      # for export_document and list_comments, which are Drive API calls.
+      scopes:
+        - https://www.googleapis.com/auth/documents.readonly
+        - https://www.googleapis.com/auth/drive.readonly
+      clientIdVariable: GOOGLE_DOCS_OAUTH_CLIENT_ID
+      clientSecretVariable: GOOGLE_DOCS_OAUTH_CLIENT_SECRET
+      refreshTokenVariable: GOOGLE_DOCS_OAUTH_REFRESH_TOKEN
+    tools:
+      allow:
+        - get_document
+        - get_document_outline
+        - export_document
+        - list_comments
+
   # --- oauth: provider generic ------------------------------------------------
   # `google` is an IMPLEMENTATION — strad knows the endpoints, asks for an ID
   # token, and refuses a consent from the wrong account. `generic` is a

@@ -674,7 +674,7 @@ jobs:
       # matters: these values are CI placeholders, listing tools calls no Google
       # API, and the per-slug slug is deliberately left UNCONNECTED — no refresh
       # token — because that is the state the trap lives in.
-      - name: A per-slug gmail mount appears, serves 8 tools, and inherits no mailbox
+      - name: Per-slug gmail and google-docs mounts appear, serve every tool, and inherit no account
         run: |
           set -euo pipefail
           GMAILSLUG="$BUNDLE_CONTAINER-gmail"
@@ -690,6 +690,11 @@ jobs:
             -e GMAIL_IMPERSONATE_EMAIL=someone@ci.example \
             -e GMAIL_CI_PERSONAL_RO__GMAIL_OAUTH_CLIENT_ID=ci-oauth-app \
             -e GMAIL_CI_PERSONAL_RO__GMAIL_OAUTH_CLIENT_SECRET=ci-oauth-secret \
+            -e GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL=ci-dwd@ci.iam.gserviceaccount.com \
+            -e GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY=ci-placeholder-key \
+            -e GOOGLE_DOCS_IMPERSONATE_EMAIL=someone@ci.example \
+            -e GOOGLE_DOCS_CI_PERSONAL_RO__GOOGLE_DOCS_OAUTH_CLIENT_ID=ci-oauth-app \
+            -e GOOGLE_DOCS_CI_PERSONAL_RO__GOOGLE_DOCS_OAUTH_CLIENT_SECRET=ci-oauth-secret \
             "$BUNDLE_IMAGE"
           for i in $(seq 1 60); do
             if docker exec "$GMAILSLUG" node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" 2>/dev/null; then break; fi
@@ -727,6 +732,21 @@ jobs:
             if (conventional.length !== 8) throw new Error(`/gmail listed ${conventional.length} tools, expected 8`);
 
             console.log(`/${slug}: ${tools.length} tools, degraded on "${degraded}"; /gmail: ${conventional.length} tools, not degraded`);
+
+            // 5. google-docs has the same two modes and the same trap.
+            const docsSlug = "google-docs-ci-personal-ro";
+            if (!bySlug[docsSlug]) throw new Error(`no per-slug google-docs mount: ${health.servers.map((s) => s.slug).join(", ")}`);
+            const docsTools = dump.mounts[`/${docsSlug}`]?.tools ?? [];
+            if (docsTools.length !== 11) throw new Error(`per-slug google-docs listed ${docsTools.length} tools, expected 11: ${docsTools.join(", ")}`);
+            const docsDegraded = bySlug[docsSlug].degraded ?? "";
+            if (!/GOOGLE_DOCS_OAUTH_REFRESH_TOKEN/.test(docsDegraded))
+              throw new Error(`an unconnected per-slug google-docs mount is not degraded on its token: ${JSON.stringify(docsDegraded)}`);
+            for (const leaked of ["GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL", "GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY", "GOOGLE_DOCS_IMPERSONATE_EMAIL"])
+              if (docsDegraded.includes(leaked)) throw new Error(`per-slug google-docs is reporting ${leaked}, which belongs to the conventional mount`);
+            if (bySlug["google-docs"]?.degraded) throw new Error(`the conventional /google-docs mount went degraded: ${bySlug["google-docs"].degraded}`);
+            const docsConventional = dump.mounts["/google-docs"]?.tools ?? [];
+            if (docsConventional.length !== 11) throw new Error(`/google-docs listed ${docsConventional.length} tools, expected 11`);
+            console.log(`/${docsSlug}: ${docsTools.length} tools, degraded on "${docsDegraded}"; /google-docs: ${docsConventional.length} tools, not degraded`);
           '
           docker rm -f "$GMAILSLUG" >/dev/null
 

@@ -1008,14 +1008,15 @@ twenty-five of them written by other people.
 request, so a rotated key is used by the next tool call; that is the case the
 feature was built for. A server that snapshots its credential at mount time and
 memoises a connection does not: `telegram` holds one MTProto session for the life
-of the process, `grafana`, `google-sheets` and `gmail` build a client per mount,
-and `x-twitter` caches its OAuth provider deliberately, because its token rotates
+of the process, `grafana`, `google-sheets`, `gmail` and `google-docs` build a
+client per mount, and `x-twitter` caches its OAuth provider deliberately, because its token rotates
 in memory and re-reading would fight that. For those the refreshed value sits in
 the environment, correct and unused, until the container restarts.
 
-`gmail` is on that list because a snapshot is what makes per-slug mounts work at
-all: several gmail servers share one process, one per Google account, and a live
-view of `process.env` would give every one of them the last account's credential.
+`gmail` and `google-docs` are on that list because a snapshot is what makes
+per-slug mounts work at all: several of each share one process, one per Google
+account, and a live view of `process.env` would give every one of them the last
+account's credential.
 
 Making every mount re-readable would mean re-running its loader when a value
 moves, and the loaders are the expensive part of that image — a Chromium page, an

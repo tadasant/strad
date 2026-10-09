@@ -296,6 +296,54 @@ describe("extraSlugs", () => {
     ).toEqual([]);
   });
 
+  /**
+   * google-docs has gmail's two auth modes and so gmail's marker shape. The
+   * names come from `images/bundle-google/src/docs.ts`;
+   * `test/env-prefix.markers.test.ts` in the core suite holds this copy to it.
+   */
+  const DOCS_MARKERS = [
+    "GOOGLE_DOCS_OAUTH_CLIENT_ID",
+    "GOOGLE_DOCS_OAUTH_CLIENT_SECRET",
+  ];
+
+  it("finds an UNCONNECTED google-docs slug beside the conventional service-account mount", () => {
+    // The state a prod `google-docs-tadas412-ro` deploys in, with the
+    // conventional /google-docs slugs' variables baked under their own
+    // prefixes too — those carry no OAuth pair, so they ask for no mount.
+    const found = extraSlugs("google-docs", DOCS_MARKERS, {
+      GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL: "dwd@tadasant.iam.gserviceaccount.com",
+      GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----",
+      GOOGLE_DOCS_IMPERSONATE_EMAIL: "tadas@tadasant.com",
+      GOOGLE_DOCS_RO__GOOGLE_DOCS_IMPERSONATE_EMAIL: "tadas@tadasant.com",
+      GOOGLE_DOCS_TADAS412_RO__GOOGLE_DOCS_OAUTH_CLIENT_ID: "id",
+      GOOGLE_DOCS_TADAS412_RO__GOOGLE_DOCS_OAUTH_CLIENT_SECRET: "secret",
+      GOOGLE_DOCS_TADAS412_RW_EXTERNAL__GOOGLE_DOCS_OAUTH_CLIENT_ID: "id",
+      GOOGLE_DOCS_TADAS412_RW_EXTERNAL__GOOGLE_DOCS_OAUTH_CLIENT_SECRET: "secret",
+    } as NodeJS.ProcessEnv);
+
+    expect(found.sort()).toEqual([
+      "google-docs-tadas412-ro",
+      "google-docs-tadas412-rw-external",
+    ]);
+  });
+
+  it("does not hand a google-sheets OAuth pair to google-docs, or the reverse", () => {
+    // Both trees are Google OAuth on one container. A docs slug left on the
+    // google-sheets default variable names is discovered by SHEETS, which is
+    // why a docs connector has to name GOOGLE_DOCS_OAUTH_* explicitly.
+    const env = {
+      GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_CLIENT_ID: "id",
+      GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "secret",
+    } as NodeJS.ProcessEnv;
+    expect(extraSlugs("google-docs", DOCS_MARKERS, env)).toEqual([]);
+    expect(
+      extraSlugs("google-sheets", SHEETS_MARKERS, {
+        GOOGLE_DOCS_TADAS412_RO__GOOGLE_DOCS_OAUTH_CLIENT_ID: "id",
+        GOOGLE_DOCS_TADAS412_RO__GOOGLE_DOCS_OAUTH_CLIENT_SECRET: "secret",
+      } as NodeJS.ProcessEnv),
+    ).toEqual([]);
+  });
+
   it("does not invent a slug from a head that is not a mangled slug", () => {
     // `FOO__BAR__TELEGRAM_API_ID` would fold to a slug of `foo--bar`, which the
     // config schema forbids precisely because it destroys the name's injectivity.
@@ -452,6 +500,36 @@ describe("dropInheritedNames", () => {
     } as NodeJS.ProcessEnv);
 
     expect(view).toEqual({ GMAIL_IMPERSONATE_EMAIL: "mine@tadasant.com" });
+  });
+});
+
+describe("dropInheritedNames for google-docs", () => {
+  it("drops the SERVICE-ACCOUNT names too, so an unconnected slug serves nobody's Drive", () => {
+    captureLog();
+    const PER_ACCOUNT = [
+      "GOOGLE_DOCS_OAUTH_REFRESH_TOKEN",
+      "GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL",
+      "GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY",
+      "GOOGLE_DOCS_IMPERSONATE_EMAIL",
+    ];
+    const box = {
+      GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL: "dwd@tadasant.iam.gserviceaccount.com",
+      GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----",
+      GOOGLE_DOCS_IMPERSONATE_EMAIL: "tadas@tadasant.com",
+      GOOGLE_DOCS_TADAS412_RO__GOOGLE_DOCS_OAUTH_CLIENT_ID: "id",
+      GOOGLE_DOCS_TADAS412_RO__GOOGLE_DOCS_OAUTH_CLIENT_SECRET: "secret",
+    } as NodeJS.ProcessEnv;
+    const view: Record<string, string | undefined> = {
+      ...box,
+      GOOGLE_DOCS_OAUTH_CLIENT_ID: "id",
+      GOOGLE_DOCS_OAUTH_CLIENT_SECRET: "secret",
+    };
+
+    dropInheritedNames(view, "google-docs-tadas412-ro", PER_ACCOUNT, box);
+
+    expect(view.GOOGLE_DOCS_OAUTH_CLIENT_ID).toBe("id");
+    expect(view.GOOGLE_DOCS_OAUTH_CLIENT_SECRET).toBe("secret");
+    for (const name of PER_ACCOUNT) expect(name in view).toBe(false);
   });
 });
 

@@ -8,11 +8,12 @@
  * `/aws-device-farm` is the one that runs the other way round: it is mounted
  * here and named by no slug yet, because its credential is not seeded.
  *
- * TWENTY-FIVE IS THE FLOOR, not a constant. Five trees (telegram,
- * remote-filesystem, google-sheets, gmail, grafana) mount ONE INSTANCE PER SLUG
- * the environment carries per-slug values for — see `extraSlugs` — so a
- * container told about `telegram-ro` and `telegram-rw` separately serves
- * /telegram, /telegram-ro and /telegram-rw. google-sheets, gmail and grafana are
+ * TWENTY-FIVE IS THE FLOOR, not a constant. Six trees (telegram,
+ * remote-filesystem, google-sheets, gmail, google-docs, grafana) mount ONE
+ * INSTANCE PER SLUG the environment carries per-slug values for — see
+ * `extraSlugs` — so a container told about `telegram-ro` and `telegram-rw`
+ * separately serves /telegram, /telegram-ro and /telegram-rw. google-sheets,
+ * gmail, google-docs and grafana are
  * the cases a real deployment uses: an OAuth refresh token IS one Google account
  * and a service-account token IS one Grafana, so each extra account is another
  * mount here. The conventional path is always mounted, so a config that asks for
@@ -315,11 +316,11 @@ async function buildMounts(): Promise<Mount[]> {
 
   mounts.push(await loadLiveOak());
 
-  // --- bundle-google: gmail / calendar / docs --------------------------------
-  // calendar and docs build per request — their factories are cheap and hold no
-  // client, which is exactly what the bundle-google image does today. gmail and
-  // google-sheets are the two whose CLIENT is cached per credential, because a
-  // client built per request would re-authenticate to Google on every tool call.
+  // --- bundle-google: gmail / calendar / docs / sheets ------------------------
+  // calendar builds per request — its factory is cheap and holds no client.
+  // gmail, google-docs and google-sheets cache their CLIENT per credential,
+  // because a client built per request would re-authenticate to Google on every
+  // tool call.
   const google = await loadGoogleTree();
 
   // gmail is the SECOND server in this tree whose credential can be per slug,
@@ -349,15 +350,19 @@ async function buildMounts(): Promise<Mount[]> {
     },
   });
 
-  mounts.push({
-    slug: "google-docs",
-    tree: "bundle-google",
-    serverName: "google-docs-workspace-mcp-server",
-    capabilities: { tools: {} },
-    register: async (s) => {
-      await google.docs({ version: VERSION }).registerHandlers(s);
-    },
-  });
+  // google-docs has gmail's shape exactly: two auth modes, a conventional
+  // service-account mount the `google-docs-ro` / `-rw` / `-rw-external` slugs
+  // share, and one per-slug mount per Google account an `oauth:` connector
+  // seeds an OAuth client for. Discovered on the app pair for the same reason.
+  mounts.push(loadGoogleDocs(google.docs, "google-docs", false));
+  for (const slug of extraSlugs(
+    "google-docs",
+    google.docs.GOOGLE_DOCS_OAUTH_APP_ENV_NAMES,
+  ))
+    deferred.push({
+      slug,
+      load: async () => loadGoogleDocs(google.docs, slug, true),
+    });
 
   // google-sheets is the one server in this tree whose CREDENTIAL is per slug: an
   // OAuth refresh token belongs to ONE Google account, and a deployment that wants
@@ -639,6 +644,20 @@ interface GmailModule {
   GMAIL_OAUTH_APP_ENV_NAMES: readonly string[];
 }
 
+/**
+ * strad's own layer over the vendored google-docs tree
+ * (`images/bundle-google/src/docs.ts`). {@link GmailModule}'s shape, for
+ * gmail's reason: two auth modes on one container, so the drop list spans both.
+ */
+interface GoogleDocsModule {
+  createMCPServer: Factory;
+  missingCredentials: (env: Record<string, string | undefined>) => string[];
+  /** Both modes' variables — what the marker pair is subtracted from. */
+  GOOGLE_DOCS_ENV_NAMES: readonly string[];
+  /** The OAuth app pair, and the marker set per-slug discovery keys on. */
+  GOOGLE_DOCS_OAUTH_APP_ENV_NAMES: readonly string[];
+}
+
 interface GoogleSheetsModule {
   createMCPServer: Factory;
   missingCredentials: (env: Record<string, string | undefined>) => string[];
@@ -791,7 +810,7 @@ function loadGrafana(
 interface GoogleTree {
   gmail: GmailModule;
   calendar: Factory;
-  docs: Factory;
+  docs: GoogleDocsModule;
   sheets: GoogleSheetsModule;
 }
 
@@ -811,9 +830,11 @@ async function loadGoogleTree(): Promise<GoogleTree> {
     "bundle-google",
     "vendor/google-calendar-shared/build/index.js",
   );
-  const docs = await loadFromTree<{ createMCPServer: Factory }>(
+  // `dist/docs.js`, not the vendored tree, for gmail's reason: the tree reads
+  // `process.env`, and several docs mounts in one process need an injected env.
+  const docs = await loadFromTree<GoogleDocsModule>(
     "bundle-google",
-    "vendor/google-docs-shared/build/index.js",
+    "dist/docs.js",
   );
   const sheets = await loadFromTree<GoogleSheetsModule>(
     "bundle-google",
@@ -822,7 +843,7 @@ async function loadGoogleTree(): Promise<GoogleTree> {
   return {
     gmail,
     calendar: calendar.createMCPServer,
-    docs: docs.createMCPServer,
+    docs,
     sheets,
   };
 }
@@ -907,6 +928,58 @@ function loadGmail(gmail: GmailModule, slug: string, perSlug: boolean): Mount {
     degraded: missingCredentialsDegraded(missing),
     register: async (s) => {
       await gmail.createMCPServer({ version: VERSION, env }).registerHandlers(s);
+    },
+  };
+}
+
+/**
+ * google-docs: the conventional service-account mount, plus one mount per Google
+ * ACCOUNT the environment carries an OAuth app for.
+ *
+ * {@link loadGmail} line for line, and for the same reason: the conventional
+ * `/google-docs` mount impersonates a Workspace user through
+ * `GOOGLE_DOCS_SERVICE_ACCOUNT_*` + `GOOGLE_DOCS_IMPERSONATE_EMAIL` under bare
+ * names, so an unconnected `google-docs-tadas412-ro` that inherited them would
+ * serve the Workspace user's documents under a slug named for a personal
+ * account, with every call succeeding. A discovered slug reads every
+ * per-account name from its own prefix or not at all.
+ *
+ * The `-ro` / `-rw` / `-rw-external` half of a slug's name is the gateway's
+ * `tools:` policy, not this mount: it serves all eleven tools.
+ */
+function loadGoogleDocs(
+  docs: GoogleDocsModule,
+  slug: string,
+  perSlug: boolean,
+): Mount {
+  const view = slugEnvView(process.env, slug);
+  if (perSlug) {
+    const app = new Set<string>(docs.GOOGLE_DOCS_OAUTH_APP_ENV_NAMES);
+    dropInheritedNames(
+      view,
+      slug,
+      docs.GOOGLE_DOCS_ENV_NAMES.filter((name) => !app.has(name)),
+    );
+  }
+  const env = {
+    ...view,
+    // WHERE TO GO WHEN THE TOKEN DIES — same as gmail and google-sheets.
+    ...(process.env.STRAD_PUBLIC_URL
+      ? {
+          GOOGLE_DOCS_RECONNECT_URL: `${process.env.STRAD_PUBLIC_URL.replace(/\/$/, "")}/ui/${slug}`,
+        }
+      : {}),
+  };
+  const missing = docs.missingCredentials(env);
+
+  return {
+    slug,
+    tree: "bundle-google",
+    serverName: "google-docs-workspace-mcp-server",
+    capabilities: { tools: {} },
+    degraded: missingCredentialsDegraded(missing),
+    register: async (s) => {
+      await docs.createMCPServer({ version: VERSION, env }).registerHandlers(s);
     },
   };
 }
