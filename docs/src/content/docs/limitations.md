@@ -607,11 +607,11 @@ nothing warns beforehand. Publishing the OAuth app removes the expiry.
 
 ## The deployment
 
-### 24. Twenty-five servers share one process and one CPU
+### 24. Twenty-eight servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts twenty-five MCP servers,
+The `bundle` component runs one Node process that mounts twenty-eight MCP servers,
 launches one shared Chromium and supervises one `mcp-grafana` child process, on
-`apps-s-1vcpu-2gb`. A crash in the host takes all twenty-five down together, and
+`apps-s-1vcpu-2gb`. A crash in the host takes all twenty-eight down together, and
 Chromium contends with every other server for the single vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -1002,7 +1002,7 @@ a store-wide read.
 keeps a listed parameter current in a supplementary container's environment
 without a redeploy. It cannot make the MCP server inside that container **look**
 at the new value — that is a property of the upstream, and the bundle image runs
-twenty-five of them written by other people.
+twenty-eight of them written by other people.
 
 `strad-fetch` builds its scraping clients inside a factory the host invokes per
 request, so a rotated key is used by the next tool call; that is the case the
@@ -2190,7 +2190,7 @@ ever rebuilt with a rootless or hand-installed docker, where buildx lives in
 
 **Serialising the workflows was the alternative.** A `concurrency:` group would
 have ended it too, at the cost of every push taking the sum of its builds rather
-than the longest — the bundle alone is seventeen dependency trees. Isolation costs a
+than the longest — the bundle alone is twenty dependency trees. Isolation costs a
 `mkdir`.
 
 ### 49. The Telegram MTProto library is archived upstream
@@ -2290,7 +2290,7 @@ for the telegram pair, `BILL_SPEND_API_TOKEN` for the bill-spend pair,
 then delete that entry's `enabled:` line and add each seeded name to
 `PROVISIONED_STATICS` in `test/staging-config.test.ts`.
 
-### 56. Per-slug variable names are emitted for every server; only seven of the seventeen trees can read one
+### 56. Per-slug variable names are emitted for every server; only eleven of the twenty trees can read one
 
 Every supplementary server's `env:` lands on its bundle twice — under the bare
 name and under `<SLUG>__<NAME>` — with no condition attached, so what a server's
@@ -2306,13 +2306,15 @@ differently is still a hard error — one process cannot hold two credentials,
 whatever the variables are called.
 
 **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
-`grafana`, `bill-spend`, `aws-device-farm` and `whatsapp` read an injected environment.** The other nine trees
-in the bundle image are vendored upstream code that reads `process.env` directly,
+`grafana`, `bill-spend`, `aws-device-farm`, `whatsapp`, `liveoak`, `airtable`,
+`flightaware` and `digitalocean` read an injected environment.** The other nine
+trees in the bundle image are vendored upstream code that reads `process.env` directly,
 often lazily at call time, so they see the bare names only. `bill-spend` reads
 the injected view for one mount rather than one per slug: one BILL token is one
 company, so `bill-spend-ro` and `bill-spend-rw` share it and differ only in what
 the gateway's `tools:` policy lets them call. `whatsapp` does the same, because
-one linked device is one account. The renderer cannot tell which tree an image contains — an image is a tag in
+one linked device is one account, and so do `airtable`, `flightaware` and
+`digitalocean`, whose read-only and read-write slugs share one key. The renderer cannot tell which tree an image contains — an image is a tag in
 someone else's config — so a slug of another tree given its own path renders,
 warns, and serves nothing, because the image has no mount at that path.
 Reachability reports the deployment `degraded`, which is where you would see it.
@@ -2585,7 +2587,7 @@ leak. Nothing in the cache is a credential; it is public pages someone fetched.
 
 **What the fork DID bound is the memory.** Upstream's store grows for the life of
 the process, which is fine for a subprocess the OS reclaims and an out-of-memory
-kill in a container that hosts twenty-five mounts. The cache is LRU-bounded on both
+kill in a container that hosts twenty-eight mounts. The cache is LRU-bounded on both
 entry count and bytes, and the filesystem backend is gone (App Platform gives the
 container no persistent volume, so it was memory with extra steps).
 
@@ -3649,8 +3651,6 @@ rebinding gap.
 
 See `HACKS.md` #117.
 
----
-
 ### 118. 1Password asks the calling session, and what that leaves out
 
 Every 1Password reveal, share and create in the bundle asks the human attached
@@ -3683,5 +3683,32 @@ that takes its posture per mount and counts a note's body as sensitive; a
 schema check that knows about own-path slugs.
 
 See `HACKS.md` #118.
+
+---
+
+### 119. airtable, flightaware and digitalocean have only met fakes
+
+[Airtable](/servers/airtable/), [FlightAware](/servers/flightaware/) and
+[DigitalOcean](/servers/digitalocean/) are strad's own servers, each run on one
+static key. What they cost:
+
+- **Untested against the real APIs.** CI drives each through a real MCP client
+  against a fake upstream built from the published references. The first real
+  call on each slug is the first time it meets the service.
+- **FlightAware has no upstream to match.** The npx package the Zimmer catalog
+  pointed at does not exist on npm, so the tools were designed from the
+  catalog's description and AeroAPI's OpenAPI document. Every call is billed;
+  each tool makes one request and returns a cursor rather than walking pages.
+- **DigitalOcean is a subset.** Droplets, App Platform, managed databases and
+  account basics — twenty-nine tools against the npx binary's two hundred.
+  DigitalOcean's own hosted remote MCP servers cover the rest.
+- **Credentials are redacted by name pattern.** A credential DigitalOcean
+  starts returning under a name the pattern does not match passes through until
+  the pattern learns it. Leave `database:view_credentials` off the token.
+- **DigitalOcean's log host is assumed.** `apps-get-logs` fetches only from
+  hosts ending `.digitaloceanspaces.com` or `.digitalocean.com`; if real log
+  links live elsewhere it fails naming the host, and the allowlist widens.
+
+See `HACKS.md` #119.
 
 ---

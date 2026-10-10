@@ -1,0 +1,14 @@
+{
+  "name": "flightaware",
+  "version": "0.1.0",
+  "private": true,
+  "description": "strad's FlightAware AeroAPI v4 server — read-only flight status, tracks, airports and operators, with every call bounded because every call is billed. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared",
+    "test": "npm run test --workspace shared"
+  }
+}

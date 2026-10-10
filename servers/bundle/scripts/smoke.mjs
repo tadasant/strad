@@ -15,7 +15,7 @@
  * credential-dependent. CI has no credential, the probe fails closed, and the
  * count is the read-only 4 below.
  *
- * What it is really checking is that twenty-five servers, seventeen dependency trees and
+ * What it is really checking is that twenty-eight servers, twenty dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  *
@@ -112,6 +112,14 @@ const EXPECT = {
   // enrolment. There is no write tool to count — the API client sends GET and
   // nothing else — so five is also the claim that none has crept in.
   liveoak: 5,
+  // Airtable: the npx package's sixteen tools by name, seven of them reads.
+  airtable: 16,
+  // AeroAPI v4, eight reads. Every call is billed, and there is no write to
+  // count; a ninth tool is a new charge an agent can run up.
+  flightaware: 8,
+  // Droplets, App Platform, managed databases and account: nineteen reads, which
+  // `digitalocean-tadasant-ro` allows, and ten creates, actions and deletes.
+  digitalocean: 29,
   // Grafana's 65 tools minus the 13 the binary's `-disable-write` removes. Not a
   // gateway allow-list: the child process does not contain them. If this number
   // moves, either the pin moved or a flag stopped being passed — and the second
@@ -269,7 +277,7 @@ if (unchecked.length || absent.length) {
 
 // Two trees registering the SAME slug is the collision a twelve-tree single process
 // invites, and it collapses to one route — the set above cannot see it, because a
-// Set of 25 mounts' slugs is 24 entries wide and matches EXPECT exactly.
+// Set of 28 mounts' slugs is 27 entries wide and matches EXPECT exactly.
 if (health.servers.length !== mounted.size) {
   failed += 1;
   console.log(

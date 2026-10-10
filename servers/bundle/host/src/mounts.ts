@@ -62,7 +62,7 @@ export function extraSlugs(
 ): string[] {
   // A tree loaded from `/app/trees` that does not export the list this was called
   // with hands us `undefined`, and dereferencing it inside `buildMounts()` would
-  // exit the process — twenty-five mounts lost over one. Both halves ship in one
+  // exit the process — twenty-eight mounts lost over one. Both halves ship in one
   // image from one commit, so this is a floor rather than a live risk.
   if (!Array.isArray(markerNames)) {
     logWarn(

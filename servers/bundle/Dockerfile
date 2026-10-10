@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# bundle — THE strad supplementary image. Twenty-five MCP servers, one container.
+# bundle — THE strad supplementary image. Twenty-eight MCP servers, one container.
 #
 # BUILD CONTEXT IS THE REPO ROOT (not servers/bundle/), because this image is
-# assembled from seventeen existing projects that live in different places:
+# assembled from twenty existing projects that live in different places:
 #
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
 #                           gcs, google-flights
@@ -22,6 +22,9 @@
 #                                                  the session's Appium endpoint)
 #   servers/liveoak         liveoak                (LiveOak Bank statements,
 #                                                  read-only; Cognito + Apiture)
+#   servers/airtable        airtable               (bases, tables, records)
+#   servers/flightaware     flightaware            (AeroAPI v4, read-only)
+#   servers/digitalocean    digitalocean           (droplets, apps, databases)
 #   servers/pulse-subregistry  pulse-subregistry
 #   servers/strad-fetch     strad-fetch            (web fetching; strad's own fork)
 #   servers/grafana         grafana                (proxies the pinned mcp-grafana
@@ -29,7 +32,7 @@
 #
 # Each is built in its OWN stage with its OWN lockfile and its OWN node_modules,
 # exactly as its standalone image builds it, and copied into /app/trees/<name>.
-# Nothing is merged. That is on purpose: merging seventeen dependency trees is how you
+# Nothing is merged. That is on purpose: merging twenty dependency trees is how you
 # discover in production that two of them wanted different Playwright versions.
 # The host (servers/bundle/host) imports across them by path — Node resolves each
 # package's own imports from its own tree — and owns the one thing that MUST be
@@ -174,6 +177,33 @@ COPY servers/liveoak/package.json servers/liveoak/package-lock.json ./
 COPY servers/liveoak/shared/package.json ./shared/
 RUN npm ci --no-audit --no-fund
 COPY servers/liveoak/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
+# ---- airtable / flightaware / digitalocean -----------------------------------
+# strad's own servers over three plain HTTPS APIs, each authenticated by one
+# static key. Their only dependency is the MCP SDK; no browser.
+FROM ${PW} AS build-airtable
+WORKDIR /src
+COPY servers/airtable/package.json servers/airtable/package-lock.json ./
+COPY servers/airtable/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/airtable/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
+FROM ${PW} AS build-flightaware
+WORKDIR /src
+COPY servers/flightaware/package.json servers/flightaware/package-lock.json ./
+COPY servers/flightaware/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/flightaware/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
+FROM ${PW} AS build-digitalocean
+WORKDIR /src
+COPY servers/digitalocean/package.json servers/digitalocean/package-lock.json ./
+COPY servers/digitalocean/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/digitalocean/shared ./shared
 RUN npm run build && npm prune --omit=dev
 
 # ---- good-eggs / fetchpet / pointsyeah (browser servers) ---------------------
@@ -332,7 +362,7 @@ RUN set -eux; \
 ENV NODE_ENV=production
 WORKDIR /app
 
-# The seventeen trees, each with the node_modules it was built against.
+# The twenty trees, each with the node_modules it was built against.
 COPY --from=build-api /src /app/trees/bundle-api
 COPY --from=build-google /src /app/trees/bundle-google
 COPY --from=build-op /src /app/trees/onepassword
@@ -347,6 +377,9 @@ COPY --from=build-whatsapp /src /app/trees/whatsapp
 COPY --from=build-bill-spend /src /app/trees/bill-spend
 COPY --from=build-aws-device-farm /src /app/trees/aws-device-farm
 COPY --from=build-liveoak /src /app/trees/liveoak
+COPY --from=build-airtable /src /app/trees/airtable
+COPY --from=build-flightaware /src /app/trees/flightaware
+COPY --from=build-digitalocean /src /app/trees/digitalocean
 COPY --from=build-pulse-subregistry /src /app/trees/pulse-subregistry
 COPY --from=build-strad-fetch /src /app/trees/strad-fetch
 COPY --from=build-grafana /src /app/trees/grafana

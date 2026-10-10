@@ -1,0 +1,21 @@
+{
+  "name": "airtable-shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Airtable over its Web API: list, search, read and write records, edit table and field schema, comment, and upload attachments — every list bounded and resumable.",
+  "main": "build/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.6",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.9"
+  },
+  "license": "MIT"
+}

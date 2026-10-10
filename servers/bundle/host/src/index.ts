@@ -8,7 +8,7 @@
  * `/aws-device-farm` is the one that runs the other way round: it is mounted
  * here and named by no slug yet, because its credential is not seeded.
  *
- * TWENTY-FIVE IS THE FLOOR, not a constant. Seven trees (telegram,
+ * TWENTY-EIGHT IS THE FLOOR, not a constant. Seven trees (telegram,
  * remote-filesystem, google-sheets, gmail, google-docs, grafana, onepassword)
  * mount ONE INSTANCE PER SLUG the environment carries per-slug values for — see
  * `extraSlugs` — so a container told about `telegram-ro` and `telegram-rw`
@@ -18,7 +18,7 @@
  * a service-account token IS one Grafana, and a 1Password service-account token
  * IS one 1Password account at one vault scope, so each extra account is another
  * mount here. The conventional path is always mounted, so a config that asks for
- * none of this sees exactly the twenty-five it saw before.
+ * none of this sees exactly the twenty-eight it saw before.
  *
  * STORE-SERVED INSTANCES are the other way in, and the one that needs no deploy.
  * A strad server on `path: /_instance/{tree}/{slug}` puts nothing on this
@@ -62,7 +62,7 @@
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
  *
- * BLAST RADIUS, honestly. Twenty-five servers now share a process. A crash is
+ * BLAST RADIUS, honestly. Twenty-eight servers share a process. A crash is
  * a 25-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
@@ -317,6 +317,13 @@ async function buildMounts(): Promise<Mount[]> {
   mounts.push(await loadAwsDeviceFarm());
 
   mounts.push(await loadLiveOak());
+
+  // Three API-key servers, one credential each and one mount each. Read-only
+  // and read-write variants are separate slugs on the same path, told apart by
+  // the gateway's `tools:` policy.
+  mounts.push(await loadKeyedApiServer("airtable", "strad-airtable"));
+  mounts.push(await loadKeyedApiServer("flightaware", "strad-flightaware"));
+  mounts.push(await loadKeyedApiServer("digitalocean", "strad-digitalocean"));
 
   // --- bundle-google: gmail / calendar / docs / sheets ------------------------
   // calendar builds per request — its factory is cheap and holds no client.
@@ -1204,7 +1211,7 @@ async function loadXTwitter(): Promise<Mount> {
     // The client caches its OAuth provider for the host process, so the factory
     // is built once here and memoised inside registerHandlers. Building it
     // LAZILY matters: `createXClientFromEnv` throws when no X credential is
-    // configured at all, and a throw at boot would take all twenty-five mounts down
+    // configured at all, and a throw at boot would take all twenty-eight mounts down
     // over one unconfigured server.
     register: (s) =>
       created.registerHandlers(s, () =>
@@ -1391,6 +1398,39 @@ async function loadBillSpend(): Promise<Mount> {
     slug: "bill-spend",
     tree: "bill-spend",
     serverName: "strad-bill-spend",
+    capabilities: { tools: {} },
+    degraded: missingCredentialsDegraded(mod.missingCredentials(env)),
+    register: (s) => created.registerHandlers(s),
+  };
+}
+
+/**
+ * airtable, flightaware, digitalocean — strad's own servers over three plain
+ * HTTPS APIs, each run on one static key (`AIRTABLE_API_KEY`,
+ * `AEROAPI_API_KEY`, `DIGITALOCEAN_API_TOKEN`).
+ *
+ * One loader because the three are the same shape as bill-spend and differ only
+ * in the tree: the env view is the mount's, so `<SLUG>__<NAME>` is read ahead of
+ * the bare name; the key is read on each call rather than at boot; and with no
+ * key the mount is degraded rather than dropped, so its tools still list and
+ * every call fails naming the variable.
+ */
+async function loadKeyedApiServer(
+  tree: "airtable" | "flightaware" | "digitalocean",
+  serverName: string,
+): Promise<Mount> {
+  const mod = (await loadFromTree(tree, "shared/build/index.js")) as {
+    createMCPServer: Factory;
+    missingCredentials: (env?: NodeJS.ProcessEnv) => string[];
+  };
+
+  const env = slugEnvView(process.env, tree);
+  const created = mod.createMCPServer({ version: VERSION, env });
+
+  return {
+    slug: tree,
+    tree,
+    serverName,
     capabilities: { tools: {} },
     degraded: missingCredentialsDegraded(mod.missingCredentials(env)),
     register: (s) => created.registerHandlers(s),
@@ -2029,7 +2069,7 @@ async function main(): Promise<void> {
   //
   // NOT AWAITED, and that is deliberate. A pass is one sequential read per
   // listed variable, each with its own timeout, so awaiting it would put a slow
-  // or unreachable core directly in front of `listen()` below — twenty-five
+  // or unreachable core directly in front of `listen()` below — twenty-eight
   // mounts held off serving because one credential could not be re-read. The
   // container starting with the value the deploy baked is exactly the behaviour
   // every deployment has today, so falling back to it costs nothing; blocking
@@ -2042,7 +2082,7 @@ async function main(): Promise<void> {
   // STORE-SERVED INSTANCES — the mounts no deploy named. See the header.
   //
   // The first sync is NOT awaited, for the reason the refresh pass above is
-  // not: a slow core must not stand in front of `listen()` for twenty-five
+  // not: a slow core must not stand in front of `listen()` for twenty-eight
   // mounts that need nothing from it. A request that arrives before the sync
   // lands takes the miss path in the route below, which syncs then.
   const instances = createInstanceReconciler<Mount>({
@@ -2078,7 +2118,7 @@ async function main(): Promise<void> {
   const internalOnly = requireInternalToken(process.env, timingSafeEqual);
 
   // Liveness for App Platform. Reports every mount and whether it is degraded —
-  // with 25 servers behind one health check, "ok: true" alone is not information.
+  // with 28 servers behind one health check, "ok: true" alone is not information.
   //
   // Deliberately OUTSIDE `internalOnly`. The platform's health prober holds no
   // token, and a 401 here is a component App Platform takes out of service — an
@@ -2288,8 +2328,8 @@ async function main(): Promise<void> {
     });
   });
 
-  // One stray rejection from one of twenty-five servers must not kill the other
-  // twenty-four. The standalone images exit here (correct, when the process IS the
+  // One stray rejection from one of twenty-eight servers must not kill the other
+  // twenty-seven. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {
     logError("unhandledRejection", reason);

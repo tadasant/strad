@@ -58,7 +58,7 @@ export function errMessage(err: unknown): string {
  * So `console` is wrapped, once, before Baileys is loaded — and the wrapper
  * acts ONLY on calls whose stack runs through `node_modules/libsignal/` or
  * `node_modules/baileys/`. Everything else in this process (the bundle hosts
- * twenty-four other servers) is passed through untouched. From those two
+ * twenty-seven other servers) is passed through untouched. From those two
  * libraries, `log` / `info` / `debug` are dropped, and `warn` / `error` keep
  * only their leading string, redacted: never an object, never a stack.
  */

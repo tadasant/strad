@@ -32,7 +32,7 @@ description: >-
 #   - The BUILD failed. buildkit does not cache a failed layer, so that layer
 #     and everything after it run again on every attempt. A `Dockerfile` that is
 #     genuinely broken is therefore built three times, and for the bundle —
-#     seventeen dependency trees — that is minutes, not seconds, before it is red.
+#     twenty dependency trees — that is minutes, not seconds, before it is red.
 #
 # See HACKS.md #51: this also hides a persistent ghcr permission change behind
 # three identical 403s, so read the attempt warnings before believing "flake".
@@ -237,7 +237,7 @@ runs:
     # refuse: nothing left this runner, so a failure here is the `Dockerfile`, the
     # build context or the wiring, every time. Rebuilding it twice more would only
     # spend a pull request's wall clock reaching the same red — and a bundle build
-    # is seventeen dependency trees.
+    # is twenty dependency trees.
     #
     # Failing here is what stops that: a composite action's steps stop at the
     # first one that exits non-zero, so the two attempts below are unreachable on

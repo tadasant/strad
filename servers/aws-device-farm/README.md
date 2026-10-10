@@ -160,7 +160,7 @@ Five environment variables; three are required.
 
 **The credential is read under names of its own, and the AWS default credential
 chain is never consulted.** The SDK would happily read `AWS_ACCESS_KEY_ID` out of
-the process environment, and this server shares a process with twenty-four others;
+the process environment, and this server shares a process with twenty-seven others;
 a stray AWS variable that arrived for some other reason must not become the
 identity that spends device minutes.
 
@@ -195,7 +195,7 @@ The bundle host mounts this server at `/aws-device-farm` from
 credentials**, marked `degraded` on `/healthz`: the tool surface still lists, so
 the console and an agent can see what the deployment would offer, and every call
 fails with an error naming the variables. One server's missing config must not
-cost the other twenty-four their boot.
+cost the other twenty-seven their boot.
 
 **The mount holds state, and that is why it is built once.** It keeps one
 WebDriver session per live phone, because establishing one RELAUNCHES the app —

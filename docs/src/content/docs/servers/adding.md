@@ -317,13 +317,13 @@ does not surface them.
 ## The full worked example
 
 `infra/strad.staging.yaml` in the repo deliberately exercises all four kinds at
-once. It declares thirty-seven server slugs: a core builtin (`echo`), a
+once. It declares forty-one server slugs: a core builtin (`echo`), a
 credential-free `remote-http` canary (`deepwiki` → `https://mcp.deepwiki.com/mcp`),
 a `local-tunnel` (`anki`, which ships disabled),
-and thirty-four `supplementary-image` entries — thirty-two sharing ONE bundle
-over the private network, which resolve onto twenty-one paths because every
-read-only / read-write pair is two entries on one path. Twenty of those are
-among the bundle image's twenty-five baked mounts; the twenty-first,
+and thirty-eight `supplementary-image` entries — thirty-six sharing ONE bundle
+over the private network, which resolve onto twenty-four paths because every
+read-only / read-write pair is two entries on one path. Twenty-three of those are
+among the bundle image's twenty-eight baked mounts; the twenty-fourth,
 `/grafana-registry`, is a per-slug instance the host stands up because the
 container carries that slug's own Grafana credential. One of
 those, `secrets`, is also the worked example for the split `env:` / `consoleEnv:`

@@ -12,13 +12,13 @@
 # ---------------------------------------------------------------------------
 # CAPABILITY LIVES AT THE GATEWAY. THREE COMPONENTS, NOT THIRTEEN.
 # ---------------------------------------------------------------------------
-# This file declares thirty-seven server SLUGS: thirty-four supplementary-image
+# This file declares forty-one server SLUGS: thirty-eight supplementary-image
 # entries, the `echo` builtin in core, the `deepwiki` remote-http canary, and
 # the `anki` local-tunnel, which ships disabled — see its entry below.
-# Thirty-two of the thirty-four land on twenty-one upstream mounts inside the
+# Thirty-six of the thirty-eight land on twenty-four upstream mounts inside the
 # one bundle image, because capability variants share a mount; the other two
 # (`zimmer-secrets` and `whatsapp-zimmer`) each run that same image on a
-# bundle of their own. The image serves twenty-five mounts: `/x-twitter`,
+# bundle of their own. The image serves twenty-eight mounts: `/x-twitter`,
 # `/google-sheets`, `/grafana` and `/aws-device-farm` are in it with no
 # staging slug pointing at any of them —
 # `grafana-registry` is served by a per-slug instance at `/grafana-registry`, not
@@ -26,8 +26,9 @@
 # environment yet because its AWS credential has not been minted. The block to
 # paste once it has is in docs/servers/aws-device-farm-setup.
 #
-# SIX of the thirty-four carry `enabled: false` — telegram-ro, telegram-rw,
-# pulse-subregistry, grafana-registry, whatsapp-zimmer and liveoak — because
+# TEN of the thirty-eight carry `enabled: false` — telegram-ro, telegram-rw,
+# pulse-subregistry, grafana-registry, whatsapp-zimmer, liveoak, airtable,
+# flightaware, digitalocean-tadasant-ro and digitalocean-tadasant-rw — because
 # their credentials are not in the store yet.
 # A `${NAME}` the store does not hold fails the RENDER, and the render is the
 # whole spec, so an entry that ships enabled before its secret is seeded takes
@@ -75,7 +76,8 @@
 # The allow-lists below are derived from each upstream's own tool-group
 # definitions, so the counts stay honest: slack 7/13 · tailscale 7/15 ·
 # monarch 10/24 · gmail 5/7/8 · google-docs 4/10/11 · google-calendar 4/7 ·
-# 1Password 5/9 · telegram 5/6 · bill-spend 4/5. test/staging-config.test.ts
+# 1Password 5/9 · telegram 5/6 · bill-spend 4/5 · digitalocean 19/29.
+# test/staging-config.test.ts
 # asserts every one of those numbers.
 
 version: 1
@@ -174,9 +176,10 @@ roles:
     servers: [zimmer-secrets, secrets, echo]
 
 bundles:
-  # THE bundle. One image, one component, and twenty of the image's twenty-five
+  # THE bundle. One image, one component, and twenty-three of the image's twenty-eight
   # upstream MCP servers — the bundle-api fleet, the Google servers, 1Password
-  # (with the `op` CLI baked in), telegram, liveoak and the three browser servers, which
+  # (with the `op` CLI baked in), telegram, liveoak, airtable, flightaware,
+  # digitalocean and the three browser servers, which
   # share ONE Chromium (never one per server: see
   # servers/bundle/host/src/browser.ts). Five mounts have no slug here:
   # `/x-twitter`, `/google-sheets` — registered in prod, where its six slugs each
@@ -185,9 +188,9 @@ bundles:
   # conventional `/grafana`, since staging's Grafana is the per-slug
   # `/grafana-registry` below, `/aws-device-farm`, whose AWS credential does
   # not exist yet, and `/whatsapp`, whose one slug is served from
-  # `bundle-whatsapp`. The PROCESS registers all twenty-five either way — including
-  # `/telegram` and `/liveoak`, whose slugs are disabled until their secrets are
-  # seeded —
+  # `bundle-whatsapp`. The PROCESS registers all twenty-eight either way — including
+  # `/telegram`, `/liveoak`, `/airtable`, `/flightaware` and `/digitalocean`,
+  # whose slugs are disabled until their secrets are seeded —
   # which is what the sizing below is about.
   #
   # SIZE. 2GB, and the reasoning is measured, not guessed. With two browser
@@ -1378,3 +1381,89 @@ servers:
       # The slug get_statement's download links are addressed to.
       LIVEOAK_PUBLIC_SLUG: liveoak
     # No `tools:` — all five. Nothing on this surface writes to the bank.
+
+  # ---------------------------------------------------------------------------
+  # airtable, flightaware, digitalocean — strad's own servers over three plain
+  # HTTPS APIs, one static key each. servers/airtable, servers/flightaware,
+  # servers/digitalocean.
+  #
+  # DISABLED UNTIL SEEDED. Each key lives in its slug's own namespace,
+  # /strad/staging/mcp/{slug}/static/{NAME}, seeded through /ui/secrets; then
+  # delete `enabled: false` and deploy. The two DigitalOcean slugs share one
+  # mount and so must resolve the same value: seed it under both.
+  - slug: airtable
+    kind: supplementary-image
+    title: Airtable
+    description: List bases and tables; search, create, update and delete records.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /airtable
+    entitlements: [admin]
+    enabled: false
+    env:
+      AIRTABLE_API_KEY: "${AIRTABLE_API_KEY}"
+    # No `tools:` — all sixteen, as the npx package served them.
+
+  # Every AeroAPI call is BILLED per result page. The tools fetch one page per
+  # call unless asked for more, and never follow a cursor on their own.
+  - slug: flightaware
+    kind: supplementary-image
+    title: FlightAware AeroAPI
+    description: Live flight status, flight search, tracks, and airport boards. Read-only, billed per query.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /flightaware
+    entitlements: [admin]
+    enabled: false
+    env:
+      AEROAPI_API_KEY: "${AEROAPI_API_KEY}"
+    # No `tools:` — all eight read. AeroAPI's flight data has no write.
+
+  # A DigitalOcean token can delete droplets, apps and databases. The read-only
+  # slug is the one to hand out; it also never sees a database password, which
+  # the server redacts from every result on both slugs.
+  - slug: digitalocean-tadasant-ro
+    kind: supplementary-image
+    title: DigitalOcean — Tadas personal (read-only)
+    description: Read droplets, App Platform apps and logs, managed databases and billing.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /digitalocean
+    entitlements: [admin]
+    enabled: false
+    env:
+      DIGITALOCEAN_API_TOKEN: "${DIGITALOCEAN_API_TOKEN}"
+    tools:
+      allow:
+        - account-get-information
+        - balance-get
+        - billing-history-list
+        - region-list
+        - size-list
+        - image-list
+        - key-list
+        - droplet-list
+        - droplet-get
+        - droplet-action-get
+        - apps-list
+        - apps-get-info
+        - apps-get-deployment-status
+        - apps-get-logs
+        - db-cluster-list
+        - db-cluster-get
+        - db-cluster-list-backups
+        - db-cluster-get-firewall-rules
+        - db-cluster-list-users
+
+  - slug: digitalocean-tadasant-rw
+    kind: supplementary-image
+    title: DigitalOcean — Tadas personal (read-write)
+    description: Create, change, redeploy and delete droplets, apps and managed databases.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /digitalocean
+    entitlements: [admin]
+    enabled: false
+    env:
+      DIGITALOCEAN_API_TOKEN: "${DIGITALOCEAN_API_TOKEN}"
+    # No `tools:` — all twenty-nine.

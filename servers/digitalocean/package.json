@@ -1,0 +1,14 @@
+{
+  "name": "digitalocean",
+  "version": "0.1.0",
+  "private": true,
+  "description": "strad's DigitalOcean MCP server — droplets, App Platform apps, managed databases and the account, over one API token, with database credentials redacted out of every result. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared",
+    "test": "npm run test --workspace shared"
+  }
+}

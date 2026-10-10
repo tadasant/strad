@@ -411,6 +411,7 @@ describe("infra/strad.staging.yaml", () => {
       "onepassword-ro -> /onepassword",
       "telegram-ro -> /telegram",
       "bill-spend-ro -> /bill-spend",
+      "digitalocean-tadasant-ro -> /digitalocean",
     ]);
   });
 
