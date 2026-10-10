@@ -6110,7 +6110,7 @@ LiveOak issues one token for everything.
 ## 117. gmail attachments: `content_base64` is capped by core's body limit, and a URL's host is checked before the fetch, not by it
 
 **What.** `vendor/gmail-shared` in `images/bundle-google` is a fork
-(`images/bundle-google/vendor/gmail-shared/FORK.md`), and its one delta gives
+(`images/bundle-google/vendor/gmail-shared/FORK.md`), and its first delta gives
 `send_email` and `upsert_draft_email` an `attachments` array: an HTTPS `url`
 the server downloads, or `content_base64`. Up to 10 files, 17 MB decoded.
 
@@ -6269,3 +6269,34 @@ artifact store could let the tools accept an upload id as well as a URL. 2
 could return a signed link through the same grant. 3 and 4 move with the
 bundle's size: a larger instance, or these mounts on their own component,
 raises both.
+
+## 121. gmail reflows a plain-text body it judges hard-wrapped, by a heuristic
+
+**What.** `vendor/gmail-shared` in `images/bundle-google` is a fork, and its
+third delta (`FORK.md` §3) rewrites the `plaintext_body` of `send_email` and
+`upsert_draft_email` before it is sent. Agents hard-wrap prose at 72-80
+columns, and a `text/plain` part shows each of those newlines as a hard break,
+so on a phone every paragraph came out as alternating long and two-word lines.
+The fork joins those lines back into paragraphs and sends every text part
+`quoted-printable`. Which newlines were "soft" is a guess:
+
+1. **A line is joined onto the one before only when that one looks cut by a
+   wrap.** It is at least 40 characters, its block's widest line is between 50
+   and 100 (a wrap width), and the next line's first word would not have fit
+   after it. Blank lines, list items, `>` quotes, headings, `|` table rows,
+   rules, bare URLs, indented lines outside a list and fenced code are never
+   joined. A block with no line past 50, or any line past 100, is left alone.
+2. **So a short line written directly under a wrapped paragraph can be pulled
+   into it.** `Thanks,` with no blank line above it, after a paragraph whose
+   last line is long, is joined onto that line. A blank line before a sign-off
+   keeps it, and so does any line short enough that its first word would have
+   fit.
+3. **There is no opt-out.** A caller that needs every newline kept as written
+   (a poem, an ASCII diagram not indented) sends `html_body`, or indents it.
+4. **It is a fork.** A re-vendor from `pulsemcp/mcp-servers` drops
+   `body-text.ts` and puts the raw body back on the wire, with only
+   `images/bundle-google/test/gmail-body-text.test.ts` failing.
+
+**Undo.** 1 and 2 go if every caller writes each paragraph as one line, which
+the tool descriptions now ask for, and a reflow is no longer needed. 3 is a
+`preserve_line_breaks` argument, if a caller ever needs it.

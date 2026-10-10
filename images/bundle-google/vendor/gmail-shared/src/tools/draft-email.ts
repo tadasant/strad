@@ -21,7 +21,7 @@ const PARAM_DESCRIPTIONS = {
   to: 'Recipient email address(es). For multiple recipients, separate with commas.',
   subject: 'Subject line of the email.',
   plaintext_body:
-    'Plain text body content of the email. At least one of plaintext_body or html_body must be provided. If both are provided, a multipart email is sent with both versions.',
+    'Plain text body content of the email. Write each paragraph as one line and separate paragraphs with a blank line; do not hard-wrap. Lines that look hard-wrapped are joined back into paragraphs before sending; lists, quotes, indented and fenced blocks keep their line breaks. At least one of plaintext_body or html_body must be provided. If both are provided, a multipart email is sent with both versions.',
   html_body:
     'HTML body content of the email for rich text formatting (links, bold, lists, etc.). At least one of plaintext_body or html_body must be provided. If both are provided, a multipart email is sent with both versions.',
   cc: 'CC recipient email address(es). For multiple, separate with commas.',
@@ -84,6 +84,8 @@ const TOOL_DESCRIPTION = `Create, update, or delete a draft email.
 
 **Body content:**
 At least one of plaintext_body or html_body must be provided for create/update. If both are provided, a multipart email is sent with both plain text and HTML versions. Use html_body for rich formatting like hyperlinks, bold text, or lists.
+
+In plaintext_body, write each paragraph as one line and put a blank line between paragraphs — do not hard-wrap at 72-80 columns. Lines that look hard-wrapped are joined back into paragraphs before sending, so the email reads normally on a phone; list items, \`>\` quotes, indented lines and fenced code keep their line breaks.
 
 **Attachments:**
 Each attachment provides exactly one of \`url\` (an HTTPS link the server downloads, such as a signed artifact-store URL) or \`content_base64\` (the file bytes, with a required \`filename\`). \`mime_type\` is optional and inferred when omitted. Limits: up to 10 files, 17 MB total, one 60-second budget for every download. Updating a draft replaces its attachments too — include every attachment the draft should keep.

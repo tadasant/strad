@@ -3753,3 +3753,33 @@ their own, raises the bounds.
 See `HACKS.md` #120.
 
 ---
+
+### 121. gmail reflows a plain-text body that looks hard-wrapped
+
+Agents hard-wrap prose at 72-80 columns. Sent as plain text, every one of those
+newlines is a hard break, and on a phone a paragraph comes out as alternating
+long and two-word lines. So `send_email` and `upsert_draft_email` join the
+lines of a `plaintext_body` paragraph back together before sending, and send
+every text part quoted-printable so a long paragraph stays one line.
+
+- **Which newlines were soft is a guess.** A line is joined onto the one before
+  only when that one is at least 40 characters, the paragraph's widest line is
+  between 50 and 100, and the next word would not have fit. Blank lines, list
+  items, `>` quotes, headings, table rows, bare URLs, indented lines and fenced
+  code are kept as written.
+- **A sign-off right under a wrapped paragraph can be joined into it.** Leave a
+  blank line before `Thanks,` and it is kept.
+- **There is no way to turn it off.** Send `html_body`, or indent the lines,
+  when every newline has to survive as written.
+- **The gmail tree is a fork.** Re-vendoring it from upstream would remove the
+  reflow. `images/bundle-google/vendor/gmail-shared/FORK.md` lists the delta.
+
+**How you would know.** The draft or the Sent copy shows the paragraph as one
+line where the caller sent several.
+
+**Undo:** callers that write each paragraph as one line, as the tool
+descriptions ask, make the reflow a no-op.
+
+See `HACKS.md` #121.
+
+---
