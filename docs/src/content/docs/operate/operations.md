@@ -1266,11 +1266,13 @@ a credential-free smoke test never addresses a cell. `src/gmail.ts` is the
 per-account layer over the gmail tree; it decides which MAILBOX a mount reads,
 and a smoke test that counts tools would never see it read the wrong one.
 `src/docs.ts` is the same layer over the google-docs tree, deciding whose Drive.
-`vendor/gmail-shared` is a fork, and `test/gmail-attachments.test.ts` covers its
-one delta: the MIME an attachment is sent as, the input it refuses, and what a
-download URL may reach. The three `vendor/` packages that are still copies get
-no tests here — one written inside a copy is a merge conflict on the next
-re-vendor and belongs upstream.
+`vendor/gmail-shared` is a fork, and two suites cover its deltas:
+`test/gmail-attachments.test.ts` covers the MIME an attachment is sent as, the
+input it refuses, and what a download URL may reach, and
+`test/gmail-from-name.test.ts` covers the display name a `From` header carries.
+The three `vendor/` packages that are still copies get no tests here — one
+written inside a copy is a merge conflict on the next re-vendor and belongs
+upstream.
 
 <aside class="starlight-aside starlight-aside--note">
 
