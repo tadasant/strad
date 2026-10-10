@@ -166,13 +166,17 @@ long enough, which a relay is free to fold.
 - `reflowPlainText` joins the lines of a `plaintext_body` paragraph that were
   cut by a wrap: a line is joined onto the one before only when that one is at
   least 40 characters, the block's widest line is between 50 and 100, and the
-  next line's first word would not have fit after it. Blank lines, list items
-  (a wrapped item's continuation is joined into the item), `>` quotes,
-  headings, `|` table rows, rules, bare URLs, indented lines outside a list and
-  fenced code are kept as written. `html_body` is never reflowed.
+  next line's first word would not have fit after it, and the line before does
+  not end in a colon. Blank lines, list items (a wrapped item's continuation is
+  joined into the item), `>` quotes, headings, `|` table rows, rules, bare
+  URLs, label rows (`Status: merged`), sign-offs (`Best regards,`), `P.S.`
+  lines, indented lines outside a list, fenced code and everything below a
+  `-- ` signature separator are kept as written. `html_body` is never
+  reflowed.
 - `encodeQuotedPrintable` sends every text part, plain and HTML,
   `Content-Transfer-Encoding: quoted-printable`. Lines on the wire stay within
-  76 characters; the soft breaks disappear when the recipient decodes, so a
+  76 characters, and a soft break never splits one character's bytes; the
+  soft breaks disappear when the recipient decodes, so a
   paragraph stays one logical line.
 - The `plaintext_body` descriptions on `send_email` and `upsert_draft_email`
   ask callers to write each paragraph as one line.

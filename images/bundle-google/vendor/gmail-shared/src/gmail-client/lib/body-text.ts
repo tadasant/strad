@@ -26,6 +26,16 @@ const HEADING = /^\s{0,3}#{1,6}\s/;
 const TABLE_ROW = /^\s*\|/;
 const BARE_URL = /^\s*(\S+:\/\/|www\.)\S*\s*$/;
 const RULE = /^\s*([-*_=])(\s*\1){2,}\s*$/;
+// `Status: merged`, `Attn: Legal` — a label row, not a wrapped continuation.
+const LABEL = /^\s*[A-Z][\w /-]{0,30}:\s/;
+const POSTSCRIPT = /^\s*P\.\s?S\.?\s/i;
+// The RFC 3676 signature separator; everything below it is kept as written.
+const SIGNATURE = /^-- ?$/;
+
+/** A short line ending in a comma: `Best regards,`, `Thanks,`. */
+function isSignOff(line: string): boolean {
+  return line.trim().length < MIN_WRAPPED_LINE && /,$/.test(line.trim());
+}
 
 /** A line that starts its own element and is never joined onto the line before it. */
 function startsElement(line: string): boolean {
@@ -35,7 +45,10 @@ function startsElement(line: string): boolean {
     HEADING.test(line) ||
     TABLE_ROW.test(line) ||
     RULE.test(line) ||
-    BARE_URL.test(line)
+    BARE_URL.test(line) ||
+    LABEL.test(line) ||
+    POSTSCRIPT.test(line) ||
+    isSignOff(line)
   );
 }
 
@@ -88,8 +101,11 @@ function reflowBlock(lines: string[]): string[] {
 
     let join = false;
     if (joinable && !startsElement(line)) {
+      // A line ending in a colon introduces what follows; it was not cut.
       const wrapped =
-        lastLength >= MIN_WRAPPED_LINE && lastLength + 1 + firstWordLength(line) > width;
+        lastLength >= MIN_WRAPPED_LINE &&
+        lastLength + 1 + firstWordLength(line) > width &&
+        !out[out.length - 1].endsWith(':');
       // Inside a list item a continuation is indented to the item's text, or
       // not at all; outside one, an indented line is code or layout.
       const continues = indent === 0 || (itemIndent !== null && indent === itemIndent);
@@ -112,8 +128,9 @@ function reflowBlock(lines: string[]): string[] {
 /**
  * Joins lines that were soft-wrapped by the author's editor (or model) back
  * into the paragraphs they belong to. Blank lines, list items, quoted lines,
- * headings, table rows, indented blocks and fenced code are kept as written,
- * as is any block whose widest line is too short or too long to be a wrap
+ * headings, table rows, label rows (`Status: merged`), sign-offs, `P.S.`
+ * lines, indented blocks, fenced code and everything below a `-- ` signature
+ * separator are kept as written, as is any block whose widest line is too short or too long to be a wrap
  * width. Line endings come back as `\n`.
  */
 export function reflowPlainText(text: string): string {
@@ -127,7 +144,12 @@ export function reflowPlainText(text: string): string {
     block = [];
   };
 
-  for (const line of lines) {
+  for (const [i, line] of lines.entries()) {
+    if (!inFence && SIGNATURE.test(line)) {
+      flush();
+      out.push(...lines.slice(i));
+      return out.join('\n');
+    }
     if (FENCE.test(line)) {
       flush();
       out.push(line);
@@ -163,14 +185,16 @@ export function encodeQuotedPrintable(text: string): string {
   const lines = text.replace(/\r\n?/g, '\n').split('\n');
   return lines
     .map((line) => {
-      const bytes = Buffer.from(line, 'utf-8');
-      const tokens: string[] = [];
-      for (let i = 0; i < bytes.length; i++) {
-        const b = bytes[i];
-        const last = i === bytes.length - 1;
-        const printable = (b >= 33 && b <= 126 && b !== 61) || ((b === 32 || b === 9) && !last);
-        tokens.push(printable ? String.fromCharCode(b) : qpByte(b));
-      }
+      // One token per character, so a soft break never splits the bytes of
+      // one character across two wire lines.
+      const chars = [...line];
+      const tokens = chars.map((char, i) => {
+        const code = char.charCodeAt(0);
+        const last = i === chars.length - 1;
+        const printable =
+          (code >= 33 && code <= 126 && code !== 61) || ((code === 32 || code === 9) && !last);
+        return printable ? char : [...Buffer.from(char, 'utf-8')].map(qpByte).join('');
+      });
 
       const wire: string[] = [];
       let current = '';

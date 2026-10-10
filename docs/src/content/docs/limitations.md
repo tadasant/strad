@@ -3764,11 +3764,14 @@ every text part quoted-printable so a long paragraph stays one line.
 
 - **Which newlines were soft is a guess.** A line is joined onto the one before
   only when that one is at least 40 characters, the paragraph's widest line is
-  between 50 and 100, and the next word would not have fit. Blank lines, list
-  items, `>` quotes, headings, table rows, bare URLs, indented lines and fenced
-  code are kept as written.
-- **A sign-off right under a wrapped paragraph can be joined into it.** Leave a
-  blank line before `Thanks,` and it is kept.
+  between 50 and 100, the next word would not have fit, and the line does not
+  end in a colon. Blank lines, list items, `>` quotes, headings, table rows,
+  bare URLs, label rows like `Status: merged`, sign-offs like `Best regards,`,
+  `P.S.` lines, indented lines, fenced code and everything below a `-- `
+  signature separator are kept as written.
+- **A short line right under a long one can still be joined into it** when it
+  matches none of those, such as a name alone on a line. A blank line above it
+  keeps it.
 - **There is no way to turn it off.** Send `html_body`, or indent the lines,
   when every newline has to survive as written.
 - **The gmail tree is a fork.** Re-vendoring it from upstream would remove the

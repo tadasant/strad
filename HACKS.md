@@ -6283,14 +6283,17 @@ The fork joins those lines back into paragraphs and sends every text part
 1. **A line is joined onto the one before only when that one looks cut by a
    wrap.** It is at least 40 characters, its block's widest line is between 50
    and 100 (a wrap width), and the next line's first word would not have fit
-   after it. Blank lines, list items, `>` quotes, headings, `|` table rows,
-   rules, bare URLs, indented lines outside a list and fenced code are never
-   joined. A block with no line past 50, or any line past 100, is left alone.
-2. **So a short line written directly under a wrapped paragraph can be pulled
-   into it.** `Thanks,` with no blank line above it, after a paragraph whose
-   last line is long, is joined onto that line. A blank line before a sign-off
-   keeps it, and so does any line short enough that its first word would have
-   fit.
+   after it, and it does not end in a colon. Blank lines, list items, `>`
+   quotes, headings, `|` table rows, rules, bare URLs, label rows
+   (`Status: merged`), short lines ending in a comma (`Best regards,`),
+   `P.S.` lines, indented lines outside a list and fenced code are never
+   joined, and nothing below a `-- ` signature separator is touched. A block
+   with no line past 50, or any line past 100, is left alone.
+2. **So a short line that matches none of those, written directly under a
+   long line, can be pulled into it.** A name alone on a line under a
+   paragraph whose last line is long is joined onto that line. A blank line
+   above it keeps it, and so does any line short enough that its first word
+   would have fit.
 3. **There is no opt-out.** A caller that needs every newline kept as written
    (a poem, an ASCII diagram not indented) sends `html_body`, or indents it.
 4. **It is a fork.** A re-vendor from `pulsemcp/mcp-servers` drops
@@ -6298,5 +6301,5 @@ The fork joins those lines back into paragraphs and sends every text part
    `images/bundle-google/test/gmail-body-text.test.ts` failing.
 
 **Undo.** 1 and 2 go if every caller writes each paragraph as one line, which
-the tool descriptions now ask for, and a reflow is no longer needed. 3 is a
+the tool descriptions ask for, and a reflow is no longer needed. 3 is a
 `preserve_line_breaks` argument, if a caller ever needs it.

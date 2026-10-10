@@ -160,6 +160,57 @@ describe("reflowPlainText", () => {
   });
 });
 
+describe("reflowPlainText: lines a long line above must not swallow", () => {
+  const LONG =
+    "The deploy went out this morning and every check on it came back green";
+
+  it.each([
+    [
+      "a label row after a line ending in a colon",
+      [`${LONG}:`, "Status: merged"],
+    ],
+    [
+      "label rows after a long line",
+      [
+        LONG,
+        "Status: merged",
+        "Image: ghcr.io/tadasant/strad-server-bundle-google:0.1.42",
+      ],
+    ],
+    [
+      "an address under an intro line",
+      [`${LONG}. Send the forms to:`, "Attn: Legal"],
+    ],
+    [
+      "a sign-off with no blank line above it",
+      [LONG, "Best regards,", "Zimmer"],
+    ],
+    [
+      "a P.S. line",
+      [LONG, "P.S. The dashboards are linked from the status page as well."],
+    ],
+  ])("keeps %s", (_name, lines) => {
+    const text = lines.join("\n");
+    expect(reflowPlainText(text)).toBe(text);
+  });
+
+  it("keeps everything below a `-- ` signature separator as written", () => {
+    const text = [
+      "The deploy went out this morning and every check on it came back",
+      "green, so there is nothing left for you to do on this one.",
+      "-- ",
+      "Zimmer, the agent orchestrator that runs on the box under the desk and",
+      "sends mail from zimmer@tadasant.com",
+    ].join("\n");
+    expect(reflowPlainText(text)).toBe(
+      [
+        "The deploy went out this morning and every check on it came back green, so there is nothing left for you to do on this one.",
+        ...text.split("\n").slice(2),
+      ].join("\n"),
+    );
+  });
+});
+
 describe("encodeQuotedPrintable", () => {
   it("keeps every wire line within 76 characters and round-trips exactly", () => {
     const text = `${"word ".repeat(200).trim()}\n\nnext — paragraph ✓ with = signs\nand a trailing space \n`;
@@ -174,6 +225,21 @@ describe("encodeQuotedPrintable", () => {
     expect(encodeQuotedPrintable("a=b — c \nd\t")).toBe(
       "a=3Db =E2=80=94 c=20\r\nd=09",
     );
+  });
+
+  it("never splits one character's bytes across a soft break", () => {
+    // 74 ASCII characters, then characters of two, three and four bytes.
+    const text = `${"x".repeat(74)}é—😀${"y".repeat(80)}`;
+    const wire = encodeQuotedPrintable(text);
+    // Each wire line decodes to valid UTF-8 on its own.
+    for (const line of wire.split("\r\n")) {
+      expect(decodeQuotedPrintable(line.replace(/=$/, ""))).not.toContain(
+        "\uFFFD",
+      );
+      expect(line.length).toBeLessThanOrEqual(76);
+    }
+    expect(wire.split("\r\n")[0]).toBe(`${"x".repeat(74)}=`);
+    expect(decodeQuotedPrintable(wire)).toBe(text);
   });
 
   it("splits a long line with soft breaks only", () => {
