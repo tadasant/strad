@@ -28,7 +28,7 @@ flowchart TB
             BI["core builtins<br/>(in-process)"]
         end
         subgraph priv["Private network (VPC)"]
-            BU["bundle (internal-only)<br/>ghcr.io/tadasant/strad-bundle<br/>28 MCP servers · 1 shared Chromium<br/>apps-s-1vcpu-2gb"]
+            BU["bundle (internal-only)<br/>ghcr.io/tadasant/strad-bundle<br/>30 MCP servers · 1 shared Chromium<br/>apps-s-1vcpu-2gb"]
         end
     end
 
@@ -70,13 +70,13 @@ for servers on it. Every non-core component gets `STRAD_CORE_URL` for it.
 
 A bundle runs **one image**, and any number of servers may share it, each on its
 own `path`. strad's own deployment has one main bundle: a
-`ghcr.io/tadasant/strad-bundle` container that mounts twenty-eight MCP servers in
-one Node process, assembled from twenty independently-built dependency trees.
-The staging config maps thirty-six of its thirty-eight `supplementary-image`
-entries onto twenty-four paths, because capability variants of one upstream are two
-entries pointing at the same path. Twenty-three of those are baked mounts;
+`ghcr.io/tadasant/strad-bundle` container that mounts thirty MCP servers in
+one Node process, assembled from twenty-one independently-built dependency trees.
+The staging config maps thirty-eight of its forty `supplementary-image`
+entries onto twenty-six paths, because capability variants of one upstream are two
+entries pointing at the same path. Twenty-five of those are baked mounts;
 `/x-twitter`, `/google-sheets`, `/grafana` and `/aws-device-farm` are baked with no staging slug
-pointing at them. The twenty-fourth, `/grafana-registry`, is a **per-slug
+pointing at them. The twenty-sixth, `/grafana-registry`, is a **per-slug
 instance** — a mount the host stands up only when the container carries that
 slug's own credential (see below). The other two entries run on bundles of
 their own, below.
@@ -143,8 +143,8 @@ Three numbers, three different things:
 | Number | What it counts                                                                               |
 | ------ | -------------------------------------------------------------------------------------------- |
 | **3**  | App Platform components (`core`, `bundle`, `bundle-zimmer-secrets`)                          |
-| **28** | MCP servers mounted inside the bundle image                                                  |
-| **41** | server slugs in `infra/strad.staging.yaml` (38 supplementary + `echo` + `deepwiki` + `anki`) |
+| **30** | MCP servers mounted inside the bundle image                                                  |
+| **43** | server slugs in `infra/strad.staging.yaml` (40 supplementary + `echo` + `deepwiki` + `anki`) |
 
 ### The two modes
 
@@ -622,16 +622,20 @@ The server list drives how containers are grouped:
   per slug from [its own variables](/operate/secrets/#what-a-servers-variables-are-called-on-the-box).
 - **A browser bundle needs real headroom.** Chromium costs ~1.06s per launch and
   peaks ~545MB RSS, and CPU rather than RAM is what binds it, because 1 vCPU
-  serialises rendering. strad's own deployment puts everything (28 mounted servers,
+  serialises rendering. strad's own deployment puts everything (30 mounted servers,
   one shared Chromium, the `op` CLI) in one `apps-s-1vcpu-2gb` component: the
   measured working set is ~760MB with two browser servers logging in at once.
   Several Chromiums in one component is the thing to avoid — share one browser and
   open a context per call, which is what `servers/bundle/host/src/browser.ts` does.
+- **CPU-bound mounts work off the event loop.** [image-diff and
+  svg-tracer](/servers/image-tools/) run each call in a worker thread, one at a
+  time per process, so a large diff (up to ~400MB at its 10-megapixel limit)
+  neither stalls the other mounts nor stacks a second peak beside Chromium.
 
 <aside class="starlight-aside starlight-aside--caution">
 
-**One process, one core, twenty-eight servers is an accepted risk, not a proven
-design.** A crash in the bundle host takes all twenty-eight down together, and the
+**One process, one core, thirty servers is an accepted risk, not a proven
+design.** A crash in the bundle host takes all thirty down together, and the
 single vCPU is shared with Chromium. If it turns out to be starved, the next move
 is a dedicated CPU (`apps-d-1vcpu-2gb`), not more RAM — the binding constraint is
 compute. This is what the [telemetry](/operate/telemetry/) exists to answer. See

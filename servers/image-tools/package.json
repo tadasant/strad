@@ -1,0 +1,14 @@
+{
+  "name": "image-tools",
+  "version": "0.1.0",
+  "private": true,
+  "description": "strad's image servers — image-diff (compare two images, cluster what differs) and svg-tracer (trace a bitmap to SVG). Inputs are http(s) URLs, fetched behind an SSRF guard. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared",
+    "test": "npm run test --workspace shared"
+  }
+}

@@ -12,7 +12,7 @@ produce a bootable image is a failing PR.
 ## `ci.yml` — the gate on every PR
 
 Runs on PRs and pushes to `main`. Ten jobs, all `runs-on: self-hosted` — one
-of which, `servers`, is a twenty-leg matrix over the server trees:
+of which, `servers`, is a twenty-one-leg matrix over the server trees:
 
 - **`lint`** — typecheck, ESLint, `prettier --check`. The typecheck is one
   program over `src/`, `test/` and `scripts/`. `scripts/` matters because those
@@ -97,6 +97,12 @@ of which, `servers`, is a twenty-leg matrix over the server trees:
     read-only tier does not build `send_message`), the mapping and paging below
     it, and the no-credentials path — the state this server ships in, where it
     must still mount and list rather than take the bundle down.
+  - **`image-tools`** — tests. Two servers that fetch a URL a caller chose, from
+    inside the bundle, so the suites that matter are the SSRF guard (private,
+    loopback, link-local and metadata addresses refused, redirects included, a
+    signed link's query never echoed back) and the bounds: bytes, pixels, and a
+    job's deadline enforced by terminating its worker thread. Both tools run end
+    to end through a real MCP client against a loopback fixture.
   - **`x-twitter`** — tests: timeline, search, lookups and private bookmarks. The
     functional suites read no credentials, so they run here like the rest; only
     `test:e2e`, which CI does not run, resolves X API keys.
@@ -185,7 +191,7 @@ of which, `servers`, is a twenty-leg matrix over the server trees:
   - **`bundle/host`** — tests, and no separate build leg, because `npm test` is
     `npm run build && vitest run` — `tsc` over `src/`, so a type error there
     still fails the PR. The host is the process every bundle container runs: it
-    mounts every tree in the image, 28 mounts, which staging's 38
+    mounts every tree in the image, 30 mounts, which staging's 40
     supplementary-image slugs resolve to. Its suite runs over its TypeScript
     sources with no `/app/trees` to mount: the per-slug environment
     discovery, the two `degraded` verdicts, the presence route's wiring and the
@@ -672,7 +678,7 @@ below for the move that publishes one.
 The walk-back rule is the one thing that differs from the core, and it is
 inverted. `release-image.yml` builds every commit except docs-only ones;
 `release-bundle-image.yml` has a `paths:` filter — one entry per thing that
-changes the image: the twenty trees the Dockerfile bakes, the bundle host, the
+changes the image: the twenty-one trees the Dockerfile bakes, the bundle host, the
 workflow itself, and the shared release body it delegates to — so **most**
 commits cut no bundle image
 and stepping past them is the normal case, not an exception. `--kind bundle` reads
@@ -1161,16 +1167,16 @@ gh workflow run secrets-sync.yml \
 Each container image strad publishes has its own release workflow, path-filtered
 so a change to one server doesn't rebuild the rest:
 
-| Workflow                        | Publishes                                        | Triggered by a change under                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| ------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `release-image.yml`             | `ghcr.io/tadasant/strad`                         | the repo root / `src/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `release-bundle-image.yml`      | `ghcr.io/tadasant/strad-bundle` — **the** bundle | `servers/bundle/`, `servers/bundle-api/`, `servers/onepassword/`, `servers/secrets/`, `servers/remote-filesystem/`, `servers/good-eggs/`, `servers/fetchpet/`, `servers/pointsyeah/`, `servers/x-twitter/`, `servers/pulse-subregistry/`, `servers/strad-fetch/`, `servers/grafana/`, `servers/telegram/`, `servers/whatsapp/`, `servers/bill-spend/`, `servers/aws-device-farm/`, `servers/liveoak/`, `servers/airtable/`, `servers/flightaware/`, `servers/digitalocean/`, `images/bundle-google/` |
-| `release-bundle-api-image.yml`  | `ghcr.io/tadasant/strad-bundle-api`              | `servers/bundle-api/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `release-goodeggs-image.yml`    | `ghcr.io/tadasant/strad-server-good-eggs`        | `servers/good-eggs/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `release-fetchpet-image.yml`    | `ghcr.io/tadasant/strad-server-fetchpet`         | `servers/fetchpet/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `release-pointsyeah-image.yml`  | `ghcr.io/tadasant/strad-server-pointsyeah`       | `servers/pointsyeah/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `release-onepassword-image.yml` | `ghcr.io/tadasant/strad-server-onepassword`      | `servers/onepassword/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `bundle-google-release.yml`     | `ghcr.io/tadasant/strad-server-bundle-google`    | `images/bundle-google/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Workflow                        | Publishes                                        | Triggered by a change under                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `release-image.yml`             | `ghcr.io/tadasant/strad`                         | the repo root / `src/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `release-bundle-image.yml`      | `ghcr.io/tadasant/strad-bundle` — **the** bundle | `servers/bundle/`, `servers/bundle-api/`, `servers/onepassword/`, `servers/secrets/`, `servers/remote-filesystem/`, `servers/good-eggs/`, `servers/fetchpet/`, `servers/pointsyeah/`, `servers/x-twitter/`, `servers/pulse-subregistry/`, `servers/strad-fetch/`, `servers/grafana/`, `servers/telegram/`, `servers/whatsapp/`, `servers/bill-spend/`, `servers/aws-device-farm/`, `servers/liveoak/`, `servers/airtable/`, `servers/flightaware/`, `servers/digitalocean/`, `servers/image-tools/`, `images/bundle-google/` |
+| `release-bundle-api-image.yml`  | `ghcr.io/tadasant/strad-bundle-api`              | `servers/bundle-api/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `release-goodeggs-image.yml`    | `ghcr.io/tadasant/strad-server-good-eggs`        | `servers/good-eggs/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `release-fetchpet-image.yml`    | `ghcr.io/tadasant/strad-server-fetchpet`         | `servers/fetchpet/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `release-pointsyeah-image.yml`  | `ghcr.io/tadasant/strad-server-pointsyeah`       | `servers/pointsyeah/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `release-onepassword-image.yml` | `ghcr.io/tadasant/strad-server-onepassword`      | `servers/onepassword/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `bundle-google-release.yml`     | `ghcr.io/tadasant/strad-server-bundle-google`    | `images/bundle-google/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 Five of those workflows hold no build of their own. `release-bundle-image.yml`,
 `release-bundle-api-image.yml`, `release-goodeggs-image.yml`,
@@ -1186,7 +1192,7 @@ to the value that is wrong for it: `refuse-off-main: true` because
 `strad-bundle:latest` is what live staging tracks, `cache-scope: bundle` because
 this build is large enough to evict every one-tree image out of the shared gha
 scope, and `file: servers/bundle/Dockerfile` because its `context:` is the repo
-root — twenty trees, so the root is the only context that can `COPY` them all.
+root — twenty-one trees, so the root is the only context that can `COPY` them all.
 Dropped, each of the three fails silently rather than loudly, which is why
 `test/workflow-release-callers.test.ts` asserts all three on that caller by
 name.
@@ -1372,7 +1378,7 @@ credential. See [Known limitations](/limitations/).
 
 `infra/strad.staging.yaml` is the live staging config, and it deliberately
 exercises all four server kinds so the deploy path is proven end-to-end. It
-declares forty-one server slugs:
+declares forty-three server slugs:
 
 - `echo` — a `builtin` in `core`, in-process.
 - `deepwiki` — a `remote-http` server (`https://mcp.deepwiki.com/mcp`), a
@@ -1386,10 +1392,10 @@ declares forty-one server slugs:
   unreachable machine, so it would fail a `?servers=` listing outright instead of
   keeping its place with the troubleshooting tool. Like `deepwiki` it costs no
   component.
-- thirty-six `supplementary-image` entries on the one `bundle` component running
-  `ghcr.io/tadasant/strad-bundle`. They land on twenty-four paths, because a
+- thirty-eight `supplementary-image` entries on the one `bundle` component running
+  `ghcr.io/tadasant/strad-bundle`. They land on twenty-six paths, because a
   read-only and a read-write variant of one upstream are two entries sharing one
-  `path`: twenty-three of the bundle image's twenty-eight baked mounts, plus
+  `path`: twenty-five of the bundle image's thirty baked mounts, plus
   `/grafana-registry`, a per-slug instance the host stands up for that slug's own
   Grafana credential. Nine of them — `telegram-ro`, `telegram-rw`,
   `pulse-subregistry`, `grafana-registry`, `liveoak`, `airtable`, `flightaware`,
@@ -1397,11 +1403,11 @@ declares forty-one server slugs:
   until their secrets are seeded, so they are skipped at render; see
   [Telegram](/servers/telegram/#not-configured-is-a-supported-state) and
   [A server whose secret is not seeded yet](#a-server-whose-secret-is-not-seeded-yet).
-- `zimmer-secrets` — the thirty-seventh `supplementary-image` entry, running that same
+- `zimmer-secrets` — the thirty-ninth `supplementary-image` entry, running that same
   image on its **own** component, `bundle-zimmer-secrets`, because a parameter
   store is `process.env`. See [Two stores, one
   gateway](/operate/secrets/#two-stores-one-gateway).
-- `whatsapp-zimmer` — the thirty-eighth, on its own bundle, `bundle-whatsapp`, at
+- `whatsapp-zimmer` — the fortieth, on its own bundle, `bundle-whatsapp`, at
   one instance: it holds the one [WhatsApp](/servers/whatsapp/) linked-device
   socket, and a second replica would open a second socket on the same device. It
   ships `enabled: false` until its secrets are seeded, so the bundle renders no

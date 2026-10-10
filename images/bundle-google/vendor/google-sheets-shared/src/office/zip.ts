@@ -29,7 +29,7 @@ const END_OF_CENTRAL_DIRECTORY = 0x06054b50;
  * What one entry may inflate to, and what all of them together may.
  *
  * Sized against the container, not against the format: the bundle runs on 2GB
- * shared by twenty-eight MCP servers, so the failure to avoid is an OOM that takes
+ * shared by thirty MCP servers, so the failure to avoid is an OOM that takes
  * all of them down. A refusal with a message is strictly better, and these
  * bounds are far above any workbook that fits under the 20MB download cap.
  */

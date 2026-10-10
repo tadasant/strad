@@ -84,7 +84,9 @@ Each process carries these resource attributes:
 
 Two of the bundle's tenants are **not** in the Node numbers and **are** in the
 cgroup one: the shared Chromium, and the `mcp-grafana` child the Grafana mount
-supervises. `strad.process.memory.rss` will look calm while
+supervises. A third is half in: the worker thread an image-diff or svg-tracer
+call runs in counts toward `rss` but not toward `heap.*`, which measure the main
+isolate only. `strad.process.memory.rss` will look calm while
 `strad.container.memory.utilization` climbs, which is the whole reason the
 container metric is the one to alert on.
 

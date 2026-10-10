@@ -12,7 +12,7 @@
  *
  * CREDENTIALS ARE PASSED, NEVER DISCOVERED. `new DeviceFarmClient` is given an
  * explicit `credentials` object, which takes the default provider chain out of
- * the picture entirely: this process holds twenty-seven other servers' variables
+ * the picture entirely: this process holds twenty-nine other servers' variables
  * and a Google service-account key, and an `AWS_ACCESS_KEY_ID` that arrived for
  * some other reason must not become the identity that spends device minutes.
  */

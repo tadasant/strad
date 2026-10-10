@@ -12,13 +12,13 @@
 # ---------------------------------------------------------------------------
 # CAPABILITY LIVES AT THE GATEWAY. THREE COMPONENTS, NOT THIRTEEN.
 # ---------------------------------------------------------------------------
-# This file declares forty-one server SLUGS: thirty-eight supplementary-image
+# This file declares forty-three server SLUGS: forty supplementary-image
 # entries, the `echo` builtin in core, the `deepwiki` remote-http canary, and
 # the `anki` local-tunnel, which ships disabled — see its entry below.
-# Thirty-six of the thirty-eight land on twenty-four upstream mounts inside the
+# Thirty-eight of the forty land on twenty-six upstream mounts inside the
 # one bundle image, because capability variants share a mount; the other two
 # (`zimmer-secrets` and `whatsapp-zimmer`) each run that same image on a
-# bundle of their own. The image serves twenty-eight mounts: `/x-twitter`,
+# bundle of their own. The image serves thirty mounts: `/x-twitter`,
 # `/google-sheets`, `/grafana` and `/aws-device-farm` are in it with no
 # staging slug pointing at any of them —
 # `grafana-registry` is served by a per-slug instance at `/grafana-registry`, not
@@ -26,7 +26,7 @@
 # environment yet because its AWS credential has not been minted. The block to
 # paste once it has is in docs/servers/aws-device-farm-setup.
 #
-# TEN of the thirty-eight carry `enabled: false` — telegram-ro, telegram-rw,
+# TEN of the forty carry `enabled: false` — telegram-ro, telegram-rw,
 # pulse-subregistry, grafana-registry, whatsapp-zimmer, liveoak, airtable,
 # flightaware, digitalocean-tadasant-ro and digitalocean-tadasant-rw — because
 # their credentials are not in the store yet.
@@ -176,10 +176,10 @@ roles:
     servers: [zimmer-secrets, secrets, echo]
 
 bundles:
-  # THE bundle. One image, one component, and twenty-three of the image's twenty-eight
+  # THE bundle. One image, one component, and twenty-five of the image's thirty
   # upstream MCP servers — the bundle-api fleet, the Google servers, 1Password
   # (with the `op` CLI baked in), telegram, liveoak, airtable, flightaware,
-  # digitalocean and the three browser servers, which
+  # digitalocean, image-diff, svg-tracer and the three browser servers, which
   # share ONE Chromium (never one per server: see
   # servers/bundle/host/src/browser.ts). Five mounts have no slug here:
   # `/x-twitter`, `/google-sheets` — registered in prod, where its six slugs each
@@ -188,7 +188,7 @@ bundles:
   # conventional `/grafana`, since staging's Grafana is the per-slug
   # `/grafana-registry` below, `/aws-device-farm`, whose AWS credential does
   # not exist yet, and `/whatsapp`, whose one slug is served from
-  # `bundle-whatsapp`. The PROCESS registers all twenty-eight either way — including
+  # `bundle-whatsapp`. The PROCESS registers all thirty either way — including
   # `/telegram`, `/liveoak`, `/airtable`, `/flightaware` and `/digitalocean`,
   # whose slugs are disabled until their secrets are seeded —
   # which is what the sizing below is about.
@@ -196,10 +196,13 @@ bundles:
   # SIZE. 2GB, and the reasoning is measured, not guessed. With two browser
   # servers logging in concurrently the container's working set is ~760MB (the
   # single Chromium's process tree accounts for ~940MB RSS, most of it shared),
-  # and Node with twenty-three servers registered adds ~200MB. 0.5GB is absurd here;
-  # 1GB would be one bad page render from an OOM that takes all 27 slugs down
-  # with it. The real constraint is CPU — 1 shared vCPU serialises Chromium's
-  # rendering, and that box now also answers every Slack and Gmail call — so if
+  # and Node with twenty-three servers registered added ~200MB when measured.
+  # 0.5GB is absurd here; 1GB would be one bad page render from an OOM that
+  # takes all 38 of this bundle's slugs down with it. image-diff and svg-tracer
+  # add a bounded peak on top: one job at a time across both, in a worker
+  # thread, at most ~400MB for a diff at their 10-megapixel limit
+  # (servers/image-tools/shared/src/limits.ts). The real constraint is CPU — 1
+  # shared vCPU serialises Chromium's rendering, and that box now also answers every Slack and Gmail call — so if
   # the OpenTelemetry data shows event-loop lag or CPU saturation, the next move
   # is apps-d-1vcpu-2gb ($39, dedicated CPU), not more RAM.
   - name: bundle
@@ -1467,3 +1470,36 @@ servers:
     env:
       DIGITALOCEAN_API_TOKEN: "${DIGITALOCEAN_API_TOKEN}"
     # No `tools:` — all twenty-nine.
+
+  # ---------------------------------------------------------------------------
+  # image-diff and svg-tracer — strad's own image servers, two mounts over one
+  # tree (servers/image-tools). They replace the `@pulsemcp/image-diff-mcp-server`
+  # and `@pulsemcp/svg-tracer-mcp-server` npx packages Zimmer sessions ran
+  # locally.
+  #
+  # INPUTS ARE URLS. The npx packages read a path off the agent's own disk; a
+  # mount in this container cannot, so a caller uploads the image first (the
+  # remote-filesystem server's upload_file returns a signed link) and passes
+  # that. The fetch refuses private, loopback and link-local addresses and every
+  # scheme but http(s) — this container sits on the app's private network.
+  #
+  # NO `env:` AT ALL, like strad-fetch above: neither server holds a credential,
+  # so both deploy enabled with nothing seeded. No `tools:` either — each serves
+  # one read-only tool.
+  - slug: image-diff
+    kind: supplementary-image
+    title: Image diff
+    description: Compare two images by URL and locate what differs, with a heatmap.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /image-diff
+    entitlements: [admin]
+
+  - slug: svg-tracer
+    kind: supplementary-image
+    title: SVG tracer
+    description: Trace a bitmap image, by URL, into an SVG vector graphic.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /svg-tracer
+    entitlements: [admin]
