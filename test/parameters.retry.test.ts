@@ -218,6 +218,90 @@ describe("the parameter store retries a refusal", () => {
 });
 
 /**
+ * A read that runs out its own deadline is a blip, not an answer.
+ *
+ * `render-spec` fans out over the whole store, and one `GET` that Google left
+ * hanging for the full ten seconds rejected with undici's `TimeoutError` and
+ * failed a production deploy (tadasant/tadasant-internal run 38093686525). It is
+ * tried again — once, because each retry of a timeout spends the whole deadline
+ * again.
+ */
+describe("the parameter store retries its own timeout once", () => {
+  const timedOut = () =>
+    new DOMException(
+      "The operation was aborted due to timeout",
+      "TimeoutError",
+    );
+  const quick = { baseDelayMs: 5, maxDelayMs: 5, totalDelayMs: 50 };
+
+  /** Like `transport`, but `answer` may reject the way a fetch does. */
+  function rejecting(answer: (n: number) => Response | Error) {
+    const calls: string[] = [];
+    const impl = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.endsWith("/token")) {
+        return new Response(
+          JSON.stringify({ access_token: "t", expires_in: 3600 }),
+          { status: 200 },
+        );
+      }
+      calls.push(url);
+      const out = answer(calls.length - 1);
+      if (out instanceof Error) throw out;
+      return out;
+    }) as typeof fetch;
+    return { impl, calls };
+  }
+
+  it("succeeds when the attempt after a TimeoutError answers", async () => {
+    const { impl, calls } = rejecting((n) =>
+      n === 0 ? timedOut() : listing(),
+    );
+
+    await expect(
+      storeOn(impl, quick).list(`/strad/${ENV}/mcp/`),
+    ).resolves.toEqual([]);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("gives up after the second timeout, with its identity intact", async () => {
+    const { impl, calls } = rejecting(() => timedOut());
+
+    const err = await storeOn(impl, quick)
+      .list(`/strad/${ENV}/mcp/`)
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+    // Two tries, not `attempts` (four): each one spent the whole deadline.
+    expect(calls).toHaveLength(2);
+    expect((err as Error).name).toBe("TimeoutError");
+  });
+
+  it("still retries a 429 after a timeout, within the attempt budget", async () => {
+    const { impl, calls } = rejecting((n) =>
+      n === 0 ? timedOut() : n === 1 ? throttled() : listing(),
+    );
+
+    await expect(
+      storeOn(impl, quick).list(`/strad/${ENV}/mcp/`),
+    ).resolves.toEqual([]);
+    expect(calls).toHaveLength(3);
+  });
+
+  it("does NOT retry an AbortError — a cancelled request was withdrawn", async () => {
+    const { impl, calls } = rejecting(
+      () => new DOMException("This operation was aborted", "AbortError"),
+    );
+
+    await expect(
+      storeOn(impl, quick).list(`/strad/${ENV}/mcp/`),
+    ).rejects.toThrow(/aborted/);
+    expect(calls).toHaveLength(1);
+  });
+});
+
+/**
  * The other half of surviving a quota: not spending it.
  *
  * A namespace is not addressable in Parameter Manager — it lives inside a

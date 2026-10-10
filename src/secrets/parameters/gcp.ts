@@ -150,13 +150,31 @@ async function pooled<T, R>(
  *
  * `undefined` means the failure was not an HTTP answer at all — an aborted
  * request, a socket reset, a `JSON.parse` on a truncated body. Those are NOT
- * retried: a timeout retried is the per-attempt deadline multiplied by the
- * attempt count, which is the unbounded read `timeoutMs` exists to prevent.
+ * retried on their status. The one exception is `isOwnTimeout()` below.
  */
 function statusOf(err: unknown): number | undefined {
   if (err instanceof ParameterStoreError) return err.status;
   if (err instanceof ServiceAccountAuthError) return err.status;
   return undefined;
+}
+
+/**
+ * Did this attempt run out its OWN `timeoutMs`?
+ *
+ * Matched by NAME: `AbortSignal.timeout` rejects with a `DOMException` named
+ * `TimeoutError`, not an `Error` subclass. An `AbortError` is a caller
+ * cancelling and is not matched — repeating a request somebody withdrew is not
+ * a retry.
+ *
+ * One slow answer from Google is a blip, and it failed a production deploy:
+ * `render-spec` fans out over the whole store and a single read that hung for
+ * the full deadline threw out of the render. So an expired attempt is tried
+ * again — but ONCE per call, not up to `budget.attempts`. A timeout retried is
+ * the per-attempt deadline spent again, and four of them is a forty-second read
+ * the runtime provider cannot degrade around. Twice bounds it at double.
+ */
+function isOwnTimeout(err: unknown): boolean {
+  return err instanceof Error && err.name === "TimeoutError";
 }
 
 export function createGcpParameterStore(
@@ -264,18 +282,28 @@ export function createGcpParameterStore(
    * one has ever been seen. `mintAccessToken` raises a `ServiceAccountAuthError`,
    * which carries no such field, so a throttled token endpoint is backed off
    * with the blind exponential instead.
+   *
+   * An attempt that hit its own deadline is retried at most once per call, and
+   * only when the call is idempotent — see `isOwnTimeout()`.
    */
   async function retrying<T>(
     idempotent: boolean,
     attempt: () => Promise<T>,
   ): Promise<T> {
     let spentMs = 0;
+    let timedOut = false;
     for (let n = 0; ; n++) {
       try {
         return await attempt();
       } catch (err) {
         const status = statusOf(err);
-        if (status === undefined || !isRetryableStatus(status, idempotent))
+        if (isOwnTimeout(err)) {
+          if (!idempotent || timedOut) throw err;
+          timedOut = true;
+        } else if (
+          status === undefined ||
+          !isRetryableStatus(status, idempotent)
+        )
           throw err;
         const delay = retryDelayMs({
           attempt: n,
