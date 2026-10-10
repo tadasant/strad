@@ -289,6 +289,54 @@ describe("the parameter store retries its own timeout once", () => {
     expect(calls).toHaveLength(3);
   });
 
+  it("retries a token exchange that timed out, once", async () => {
+    let mints = 0;
+    const calls: string[] = [];
+    const impl = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.endsWith("/token")) {
+        if (mints++ === 0) throw timedOut();
+        return new Response(
+          JSON.stringify({ access_token: "t", expires_in: 3600 }),
+          { status: 200 },
+        );
+      }
+      calls.push(url);
+      return listing();
+    }) as typeof fetch;
+
+    await expect(
+      storeOn(impl, quick).list(`/strad/${ENV}/mcp/`),
+    ).resolves.toEqual([]);
+    expect(mints).toBe(2);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("does NOT retry a write that timed out — it may have landed", async () => {
+    const posts: string[] = [];
+    const impl = (async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/token")) {
+        return new Response(
+          JSON.stringify({ access_token: "t", expires_in: 3600 }),
+          { status: 200 },
+        );
+      }
+      if (init?.method === "POST") {
+        posts.push(url);
+        throw timedOut();
+      }
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    await expect(
+      storeOn(impl, quick).create({ path: PATH, secret: false, value: "v" }),
+    ).rejects.toThrow(/timeout/);
+    // The parameter-create POST, made once and never repeated.
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toContain("parameters?parameter_id=");
+  });
+
   it("does NOT retry an AbortError — a cancelled request was withdrawn", async () => {
     const { impl, calls } = rejecting(
       () => new DOMException("This operation was aborted", "AbortError"),

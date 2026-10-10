@@ -150,7 +150,8 @@ async function pooled<T, R>(
  *
  * `undefined` means the failure was not an HTTP answer at all — an aborted
  * request, a socket reset, a `JSON.parse` on a truncated body. Those are NOT
- * retried on their status. The one exception is `isOwnTimeout()` below.
+ * retried, except an attempt that ran out its own deadline — see
+ * `isOwnTimeout()`.
  */
 function statusOf(err: unknown): number | undefined {
   if (err instanceof ParameterStoreError) return err.status;
@@ -169,9 +170,10 @@ function statusOf(err: unknown): number | undefined {
  * One slow answer from Google is a blip, and it failed a production deploy:
  * `render-spec` fans out over the whole store and a single read that hung for
  * the full deadline threw out of the render. So an expired attempt is tried
- * again — but ONCE per call, not up to `budget.attempts`. A timeout retried is
- * the per-attempt deadline spent again, and four of them is a forty-second read
- * the runtime provider cannot degrade around. Twice bounds it at double.
+ * again — but at most ONCE per call. A slow `429` or `503` already costs up to
+ * a deadline per attempt, and `budget.attempts` is what bounds that; capping
+ * expiries at two keeps a store that has gone silent from spending the whole
+ * attempt budget waiting on it, rather than reporting the silence.
  */
 function isOwnTimeout(err: unknown): boolean {
   return err instanceof Error && err.name === "TimeoutError";

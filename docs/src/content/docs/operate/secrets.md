@@ -867,13 +867,15 @@ So the store client separates the two:
   retries, and at most **2.8s** of backoff. A `Retry-After` header is honoured
   verbatim when it fits the call's 6s ceiling, and declined outright when it does
   not — a `Retry-After: 600` costs one attempt, not ten minutes of a deploy step.
-- **A read that hits its own deadline is retried once.** One `GET` Google left
-  hanging for the full 10s used to throw out of `render-spec` and fail a
-  production deploy. An attempt that rejects with undici's `TimeoutError` gets
-  one more try inside the same budget, and a second expiry fails the call. Once,
-  not three times, because each retry of a timeout spends the whole deadline
-  again: the worst case is two deadlines plus backoff, not four. An `AbortError`
-  — a caller cancelling — is not retried.
+- **A call that hits its own deadline is retried once.** A `GET`, `HEAD` or
+  `DELETE`, and the token exchange in front of them, that rejects with undici's
+  `TimeoutError` gets one more try inside the same budget; a second expiry fails
+  the call. A single `GET` Google leaves hanging for the full 10s is otherwise
+  enough to fail `render-spec`, and with it a production deploy. Once, not three
+  times: a store that has gone silent is reported rather than waited on for the
+  whole attempt budget. The overall ceiling on one call is unchanged — four
+  attempts, each bounded by the deadline, plus the backoff. An `AbortError` (a
+  caller cancelling) is not retried, and neither is a write that timed out.
 - **Answers are not retried.** `401`, `403`, `404`, `409` and everything else fail
   on the first response, unchanged, with the status a caller switches on intact. A
   permission error retried is the same error reported one backoff later.
