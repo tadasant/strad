@@ -3650,3 +3650,38 @@ rebinding gap.
 See `HACKS.md` #117.
 
 ---
+
+### 118. 1Password asks the calling session, and what that leaves out
+
+Every 1Password reveal, share and create in the bundle asks the human attached
+to the calling session ([how](/servers/confirmations/#1password-every-reveal-and-every-write)),
+and `DANGEROUSLY_SKIP_ELICITATIONS` is not a bundle setting.
+
+- **The console and `admin` tokens cannot see a password.** Neither has a
+  prompt surface, so a reveal is refused. Metadata and the listings still work.
+  Staging allows no approval URL, so nothing reveals there.
+- **The approval protocol client exists twice**, in the gmail layer and the
+  1Password one. A fix to one has to be copied to the other by hand until they
+  share a vendored module.
+- **No whitelist, no read posture.** `OP_WHITELISTED_ITEMS` and
+  `OP_ELICITATION_READ` are removed, because every 1Password mount shares the
+  process environment those are read from.
+- **"Sensitive" is the vendored tool's heuristic.** A field is gated by its
+  type or its label. A secure note's body is neither, so it is returned
+  unasked, by `onepassword_get_item` and by `onepassword_get_item_metadata`.
+- **The provisioning posture still asks before a share**, unlike the npx entry
+  it replaces: a share link reveals an existing item.
+- **The `onepassword://config` resource says writes ask** on every mount,
+  including a provisioning one whose writes run unasked, and reports the bare
+  token rather than the mount's own. It describes what the vendored tool is
+  told, not what the mount does.
+- **A per-slug token's keys are written already per-slug**, because the config
+  schema refuses one bare name with two values on a bundle.
+
+**Undo:** a console prompt surface; one shared protocol module; a vendored tool
+that takes its posture per mount and counts a note's body as sensitive; a
+schema check that knows about own-path slugs.
+
+See `HACKS.md` #118.
+
+---

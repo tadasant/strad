@@ -1102,8 +1102,12 @@ servers:
   # for no other reason. That is the trade this whole re-architecture makes,
   # concentrated into one server. HACKS.md #22 records it.
   #
-  # The server refuses to serve without an elicitation posture; strad has no
-  # elicitation transport wired yet, so it skips them explicitly.
+  # EVERY REVEAL AND EVERY WRITE ASKS THE CALLING SESSION'S HUMAN, through the
+  # `confirmations: true` channel (docs/servers/confirmations). Staging lists no
+  # `gateway.elicitation.allowedUrlPrefixes`, so here every reveal and every
+  # write is REFUSED and nothing is revealed; listing, metadata and the tool
+  # surface still work, which is what staging asserts. The bundle host strips
+  # DANGEROUSLY_SKIP_ELICITATIONS, so there is no config that reveals unasked.
   # ---------------------------------------------------------------------------
   - slug: onepassword-ro
     kind: supplementary-image
@@ -1111,10 +1115,10 @@ servers:
     bundle: bundle
     path: /onepassword
     entitlements: [admin]
+    confirmations: true
     timeoutMs: 120000
     env:
       OP_SERVICE_ACCOUNT_TOKEN: "${OP_SERVICE_ACCOUNT_TOKEN_TADAS_RW}"
-      DANGEROUSLY_SKIP_ELICITATIONS: "true"
     tools:
       allow:
         - onepassword_list_vaults
@@ -1129,10 +1133,10 @@ servers:
     bundle: bundle
     path: /onepassword
     entitlements: [admin]
+    confirmations: true
     timeoutMs: 120000
     env:
       OP_SERVICE_ACCOUNT_TOKEN: "${OP_SERVICE_ACCOUNT_TOKEN_TADAS_RW}"
-      DANGEROUSLY_SKIP_ELICITATIONS: "true"
     # No `tools:` — all nine.
 
   # ---------------------------------------------------------------------------

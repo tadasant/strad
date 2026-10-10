@@ -131,6 +131,8 @@ export function dropInheritedNames(
   slug: string,
   names: readonly string[],
   env: NodeJS.ProcessEnv = process.env,
+  /** Drop without saying so: for a mount that re-reads per call, having said it once at boot. */
+  quiet = false,
 ): void {
   const inherited: { name: string; own: string | null }[] = [];
   for (const name of names) {
@@ -139,7 +141,7 @@ export function dropInheritedNames(
     if (view[name]) inherited.push({ name, own });
     delete view[name];
   }
-  if (inherited.length === 0) return;
+  if (inherited.length === 0 || quiet) return;
 
   const one = inherited.length === 1;
   logWarn(
@@ -239,4 +241,25 @@ export function instanceEnv(
     out[name] = value;
   }
   return out;
+}
+
+/**
+ * Whether a 1Password mount puts each WRITE to a human. Reveals always are.
+ *
+ * Read under the slug's OWN name (`<SLUG>__OP_ELICITATION_WRITE`) and never the
+ * bare one: on a shared bundle the bare name is whichever slug declared it, and
+ * a provisioning slug's `false` must not switch the prompt off for its siblings.
+ * The conventional `/onepassword` mount has no slug of its own to read it under,
+ * so it always confirms. Only the exact word `false` turns it off; anything
+ * else, a typo included, leaves the prompt on.
+ */
+export function onePasswordConfirmsWrites(
+  slug: string,
+  perSlug: boolean,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  if (!perSlug) return true;
+  const own = prefixedEnvName(slug, "OP_ELICITATION_WRITE");
+  if (own === null) return true;
+  return env[own]?.trim().toLowerCase() !== "false";
 }

@@ -1,12 +1,14 @@
 ---
 title: Confirming a tool before it acts
-description: How a tool that needs a human's yes, like gmail's send_email, asks the session that called it, and why it refuses when there is no one to ask.
+description: How a tool that needs a human's yes, like gmail's send_email or a 1Password reveal, asks the session that called it, and why it refuses when there is no one to ask.
 ---
 
 Some tools should not act until a human says yes. A sent email cannot be
-recalled, so gmail's `send_email` asks first. In strad the question goes to the
-session that made the call, and nowhere else. If the call names no session to
-ask, the tool refuses and nothing is sent.
+recalled, so gmail's `send_email` asks first. A revealed password cannot be
+un-revealed, so 1Password's `onepassword_get_item` asks before it shows one
+([below](#1password-every-reveal-and-every-write)). In strad the question goes
+to the session that made the call, and nowhere else. If the call names no
+session to ask, the tool refuses and nothing is sent or revealed.
 
 ## The protocol
 
@@ -170,6 +172,108 @@ takes no `attachments` of its own; the draft's files are the ones listed.
 Every filename has its control characters, line separators and bidi overrides
 replaced, so a name cannot forge a line in the prompt or disguise its
 extension.
+
+## 1Password: every reveal, and every write
+
+The 1Password mounts ask through the same channel, for five tools:
+
+| Tool                                | Asks before                                                                |
+| ----------------------------------- | -------------------------------------------------------------------------- |
+| `onepassword_get_item`              | showing a password, token, key or other sensitive field on any item asked for |
+| `onepassword_create_login`          | creating the logins                                                        |
+| `onepassword_create_secure_note`    | creating the notes                                                         |
+| `onepassword_create_api_credential` | creating the API-credential items                                          |
+| `onepassword_share_item`            | minting share links to existing items, which reveal them to whoever opens the link |
+
+One prompt covers a whole batch: the vendored tool lists every item in it. The
+prompt is prefixed with the strad slug, so a human holding several 1Password
+slugs can tell which account is asking. Only `accept`, with the confirm box
+still ticked, reveals or writes. On a decline, an expiry, a cancel, an unticked
+box or an answer it does not recognise, `onepassword_get_item` returns the items
+with every sensitive field `[REDACTED]` and `_credentialsRevealed: false`, and a
+write or share reports `declined` or `expired` and creates nothing. An approval
+endpoint that cannot be reached or answers an error fails the call, naming the
+HTTP status and nothing from the body; nothing is revealed or written then
+either.
+
+What counts as sensitive is the vendored tool's call: a field of a concealed
+type (password, secret, card number and CVV), or one whose label mentions a
+password, secret, token, key, credential, CVV or PIN. A field outside that test,
+such as a secure note's body, is returned by `onepassword_get_item` and by
+`onepassword_get_item_metadata` without a prompt. The listing tools return
+titles, categories and tags only.
+
+`servers/onepassword/remote/src/confirm.ts` is strad's layer over the vendored
+tree. It is gmail's layer applied to these five tools: the same `_meta` key,
+the same native-elicitation seam, the same four protocol rules (no redirect, a
+status and never a body, the deadline, a dropped call is a `cancel`). A write
+for a dropped call is refused at the 1Password client too, so an approval that
+lands after the caller gave up does not create the item.
+
+**strad decides whether to ask, not the vendored tool.** That tool reads its
+posture from the process environment, and every 1Password mount in the bundle
+shares one. So the bundle host pins it to "ask about everything" at boot:
+`OP_ELICITATION_READ` and `OP_ELICITATION_WRITE` are forced to `true`, and
+`DANGEROUSLY_SKIP_ELICITATIONS` and `OP_WHITELISTED_ITEMS` are removed, with a
+warning naming each, and pins it again at the start of every call, since a
+parameter refresh can write the environment after boot. No bundle config
+reveals a secret unasked. (The standalone `strad-server-onepassword` image is a
+different entrypoint and still honours the upstream variables.)
+
+What a mount does with the question is per slug, and there is one knob:
+
+- **A reveal always goes to a human**: `onepassword_get_item`, and
+  `onepassword_share_item`, because a share link to an existing item reveals it
+  to whoever opens the link. There is no per-slug way out.
+- **A create goes to a human** (`create_login`, `create_secure_note`,
+  `create_api_credential`) unless the slug sets
+  `<SLUG>__OP_ELICITATION_WRITE: "false"` under its own name. Then its creates
+  are answered `accept` inside the bundle, unasked, with or without a channel.
+  This is the provisioning posture: mint a key and store it in one unattended
+  pass. Sharing it still asks, which is stricter than the npx
+  `1password-pulsemcp-provisioning` entry, where `OP_ELICITATION_WRITE=false`
+  also skipped the share prompt. Only the exact word `false` turns it off, and
+  only the slug's own variable is read. A bare `OP_ELICITATION_WRITE` on the
+  container belongs to whichever sibling declared it, and is ignored.
+
+The calls refuse before 1Password is read or written, exactly as `send_email`
+does, when the call carries no channel, when core refused the caller's, or when
+the container sets a container-wide `ELICITATION_REQUEST_URL` or
+`ELICITATION_POLL_URL`. The refusal points at `onepassword_get_item_metadata` for
+a caller that only wanted to know an item exists.
+
+### One token, one mount
+
+A 1Password service-account token is one account at one vault scope, and one
+process holds one bare `OP_SERVICE_ACCOUNT_TOKEN`. So a slug with a token of its
+own sits on `path: /<its own slug>`, and the bundle host mounts an instance there
+holding exactly `<SLUG>__OP_SERVICE_ACCOUNT_TOKEN`. That instance never falls
+back to the bare token: that is another account, and answering for its vaults
+under this slug's name would fail nowhere. Slugs sharing `/onepassword` read the
+bare token, as they always have.
+
+```yaml
+  - slug: onepassword-pulsemcp-provisioning
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /onepassword-pulsemcp-provisioning
+    entitlements: [admin, zimmer]
+    confirmations: true
+    timeoutMs: 240000
+    env:
+      ONEPASSWORD_PULSEMCP_PROVISIONING__OP_SERVICE_ACCOUNT_TOKEN: "${OP_SERVICE_ACCOUNT_TOKEN_PULSEMCP}"
+      ONEPASSWORD_PULSEMCP_PROVISIONING__OP_ELICITATION_WRITE: "false"
+    confirmationHeaders:
+      CF-Access-Client-Id: "${ZIMMER_APPROVAL_CF_ACCESS_CLIENT_ID}"
+      CF-Access-Client-Secret: "${ZIMMER_APPROVAL_CF_ACCESS_CLIENT_SECRET}"
+```
+
+The keys are written already per-slug because the config schema refuses two
+slugs on one bundle declaring one bare name with different values, own path or
+not. The renderer also emits a doubled
+`ONEPASSWORD_PULSEMCP_PROVISIONING__ONEPASSWORD_PULSEMCP_PROVISIONING__…` copy,
+which the host cannot mistake for a slug and ignores.
 
 ## The edge in front of the approval URL
 

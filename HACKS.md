@@ -757,10 +757,12 @@ What we lost, precisely:
 
 - **1Password's second lock.** One container holds one `OP_SERVICE_ACCOUNT_TOKEN`,
   and `onepassword-rw` needs the read-write one. So `onepassword-ro` is now
-  read-only _only_ because strad says so. If we ever want the token back as a
-  physical guarantee, it costs exactly one more component (a second bundle with
-  the RO token and only the `onepassword-ro` slug pointed at it) — that is the
-  price, and it is worth knowing it is available.
+  read-only _only_ because strad says so. The token can come back as a
+  physical guarantee at no cost in components: the bundle host mounts a
+  1Password instance per slug (#118), so `onepassword-ro` on
+  `path: /onepassword-ro` with `ONEPASSWORD_RO__OP_SERVICE_ACCOUNT_TOKEN` set to
+  the read-only token is its own mount on the same container. That is a config
+  change in the deployment, not here.
 - **Blast radius of a gateway bug.** A bug in `toolPolicy.ts` is now a write
   capability, not a 500. That is why the policy is 40 lines and fail-closed.
 
@@ -6131,3 +6133,53 @@ the server downloads, or `content_base64`. Up to 10 files, 17 MB decoded.
 about every slug and not this one. 2 goes with a fetch whose connector checks
 the address it actually connects to, as `strad-fetch`'s does. 3 and 4 are the
 design: strad's servers improve here.
+
+## 118. 1Password asks the calling session, and what that leaves out
+
+**What.** The 1Password mounts in the bundle put every reveal
+(`onepassword_get_item` on an item with a sensitive field, and
+`onepassword_share_item`) and every create to the human attached to the session
+that made the call, through the `confirmations: true` channel gmail's
+`send_email` uses (`servers/onepassword/remote/src/confirm.ts`, docs
+`servers/confirmations.md`). `DANGEROUSLY_SKIP_ELICITATIONS` is stripped from the
+process on every call, and one slug's own `<SLUG>__OP_ELICITATION_WRITE=false`
+lets its creates, never its reveals or shares, run unasked. Each slug with its
+own token on `path: /<slug>` is its own mount. What that costs, stated:
+
+1. **The console and `admin` tokens cannot see a password.** Neither has a
+   prompt surface, so a reveal is refused; metadata and the listings still work.
+   Staging lists no `gateway.elicitation.allowedUrlPrefixes`, so nothing reveals
+   there at all.
+2. **The approval protocol client exists twice**: gmail's
+   `images/bundle-google/src/confirm.ts` and this one. They are separate npm
+   trees and Docker contexts, and gmail's was being changed by tadasant/strad#407
+   at the same time, so this one is a port rather than an extraction. A fix to
+   one (a redirect rule, the deadline margin) has to reach the other by hand.
+3. **No whitelist and no read posture.** `OP_WHITELISTED_ITEMS` and
+   `OP_ELICITATION_READ` are removed rather than honoured: the vendored tool
+   reads them from a process every 1Password mount shares, so either would
+   apply to every account at once.
+4. **The `onepassword://config` resource reports what the vendored tool is
+   told**, which is "ask about writes" on every mount, including a provisioning
+   one whose writes are answered inside the bundle, and whether the BARE token
+   is set rather than the mount's own.
+5. **"Sensitive" is the vendored tool's heuristic.** A field is gated if its
+   type is concealed or its label mentions a password, secret, token, key,
+   credential, CVV or PIN. A secure note's body is none of those, so
+   `onepassword_get_item` and `onepassword_get_item_metadata` return it unasked.
+6. **The provisioning posture asks before a share**, which the npx
+   `1password-pulsemcp-provisioning` entry did not: a share link reveals an
+   existing item to whoever opens it, so no posture skips it. An unattended
+   mint-store-share pass now stops once, at the share.
+7. **A per-slug token's keys are written already per-slug**
+   (`ONEPASSWORD_TADAS_ALL__OP_SERVICE_ACCOUNT_TOKEN`), because the schema's
+   env-collision check refuses one bare name with two values on a bundle even
+   when each slug is its own instance. The renderer then emits a doubled alias
+   the host ignores. `grafana-obs` in prod does the same.
+
+**Undo.** 1 is a console prompt that answers the protocol (#113 has the same
+item). 2 is one module vendored to both trees through `scripts/sync-vendored.mjs`
+once #407 has landed. 3 would need the vendored tool to take its posture per
+mount rather than from `process.env`, which is an upstream change, and so is 5
+(count a note's body as sensitive). 6 is the design. 7 is relaxing the schema
+check for own-path slugs, which the renderer already polices.

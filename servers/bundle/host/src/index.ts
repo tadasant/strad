@@ -8,14 +8,15 @@
  * `/aws-device-farm` is the one that runs the other way round: it is mounted
  * here and named by no slug yet, because its credential is not seeded.
  *
- * TWENTY-FIVE IS THE FLOOR, not a constant. Six trees (telegram,
- * remote-filesystem, google-sheets, gmail, google-docs, grafana) mount ONE
- * INSTANCE PER SLUG the environment carries per-slug values for — see
+ * TWENTY-FIVE IS THE FLOOR, not a constant. Seven trees (telegram,
+ * remote-filesystem, google-sheets, gmail, google-docs, grafana, onepassword)
+ * mount ONE INSTANCE PER SLUG the environment carries per-slug values for — see
  * `extraSlugs` — so a container told about `telegram-ro` and `telegram-rw`
  * separately serves /telegram, /telegram-ro and /telegram-rw. google-sheets,
- * gmail, google-docs and grafana are
- * the cases a real deployment uses: an OAuth refresh token IS one Google account
- * and a service-account token IS one Grafana, so each extra account is another
+ * gmail, google-docs, grafana and onepassword are
+ * the cases a real deployment uses: an OAuth refresh token IS one Google account,
+ * a service-account token IS one Grafana, and a 1Password service-account token
+ * IS one 1Password account at one vault scope, so each extra account is another
  * mount here. The conventional path is always mounted, so a config that asks for
  * none of this sees exactly the twenty-five it saw before.
  *
@@ -78,7 +79,7 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
 import { getSharedBrowser, closeSharedBrowser, browserIsUp, browserLaunchCount } from "./browser.js";
-import { slugEnvView } from "./env-prefix.js";
+import { prefixedEnvName, slugEnvView } from "./env-prefix.js";
 import { requireInternalToken } from "./internal-auth.js";
 import { errMessage, log, logError, logWarn } from "./log.js";
 import {
@@ -86,6 +87,7 @@ import {
   extraSlugs,
   instanceEnv,
   missingCredentialsDegraded,
+  onePasswordConfirmsWrites,
   remoteFilesystemDegraded,
   scrubCapabilityEnv,
 } from "./mounts.js";
@@ -403,11 +405,13 @@ async function buildMounts(): Promise<Mount[]> {
 
   // --- onepassword ----------------------------------------------------------
   // The `op` CLI is baked into this image (see the Dockerfile) and shelled out to
-  // per call. The upstream refuses to start without an elicitation posture; here
-  // that refusal is scoped to the MOUNT, not the container — 1Password declining
-  // to serve must not take Slack down with it.
-  const op = await loadOnePassword();
-  if (op) mounts.push(op);
+  // per call. A service-account token IS one 1Password account at one scope, so
+  // each slug the environment carries its own token for gets its own mount at
+  // `/<slug>`, beside the conventional `/onepassword`. See `loadOnePassword`.
+  const op = await loadOnePasswordTree();
+  mounts.push(loadOnePassword(op, "onepassword", false));
+  for (const slug of extraSlugs("onepassword", ONEPASSWORD_MARKER_NAMES))
+    deferred.push({ slug, load: async () => loadOnePassword(op, slug, true) });
 
   // --- browser servers, sharing ONE Chromium --------------------------------
   for (const mount of await loadBrowserMounts()) mounts.push(mount);
@@ -1559,51 +1563,117 @@ async function loadSecrets(): Promise<Mount | null> {
   };
 }
 
-async function loadOnePassword(): Promise<Mount | null> {
-  const mod = (await loadFromTree(
-    "onepassword",
-    "shared/build/index.js",
-  )) as {
-    createMCPServer: Factory;
-    OnePasswordClient: new (token: string) => unknown;
-    checkElicitationSafety: () => { safe: boolean; reason?: string };
+/** The variable that IS a 1Password mount's account, and what discovers a per-slug one. */
+const ONEPASSWORD_TOKEN_VAR = "OP_SERVICE_ACCOUNT_TOKEN";
+const ONEPASSWORD_MARKER_NAMES = [ONEPASSWORD_TOKEN_VAR];
+
+/** The one per-slug posture a 1Password mount takes; see `onePasswordConfirmsWrites`. */
+const ONEPASSWORD_WRITE_POSTURE_VAR = "OP_ELICITATION_WRITE";
+
+interface OnePasswordTree {
+  /** Built once: only its `registerHandlers` is used, onto each request's server. */
+  server: {
+    registerHandlers: (server: unknown, factory: () => unknown) => Promise<void>;
   };
+  OnePasswordClient: new (token: string) => object;
+  confirm: {
+    withConfirmation: <S extends object>(
+      server: S,
+      options: { confirmWrites?: boolean; label?: string },
+    ) => S;
+    guardWrites: <T extends object>(client: T) => T;
+    forceAskEverything: (env?: NodeJS.ProcessEnv) => string[];
+  };
+}
 
-  const safety = mod.checkElicitationSafety();
-  if (!safety.safe) {
-    // Fail closed — but only for 1Password. The upstream exits the process here;
-    // in a 21-server container that would be an outage caused by one server's
-    // config. Refuse to MOUNT it instead: strad's gateway then reports it as
-    // unavailable, and every other server keeps serving.
+/**
+ * Load the tree once, and pin the vendored tools' posture to "always ask".
+ *
+ * The vendored tools read whether to ask from `process.env`, which every
+ * 1Password mount in this process shares, so a bare
+ * `DANGEROUSLY_SKIP_ELICITATIONS=true` from any one slug would switch the prompt
+ * off for all of them. Instead the tools always ask, and strad's own layer
+ * (`remote/src/confirm.ts` in the onepassword tree) decides per mount whether
+ * that question goes to the calling session's human or, for a write on a mount
+ * that does not confirm writes, is answered here.
+ */
+async function loadOnePasswordTree(): Promise<OnePasswordTree> {
+  const mod = (await loadFromTree("onepassword", "shared/build/index.js")) as {
+    createMCPServer: (opts: { version: string }) => OnePasswordTree["server"];
+    OnePasswordClient: OnePasswordTree["OnePasswordClient"];
+  };
+  const confirm = (await loadFromTree(
+    "onepassword",
+    "remote/build/confirm.js",
+  )) as OnePasswordTree["confirm"];
+  const overridden = confirm.forceAskEverything(process.env);
+  if (overridden.length > 0) {
     logWarn(
-      "onepassword NOT mounted: no elicitation mechanism configured. This server " +
-        "redacts secret fields unless a reveal is confirmed, and a stateless HTTP " +
-        "transport cannot serve a native prompt. Set ELICITATION_REQUEST_URL + " +
-        "ELICITATION_POLL_URL, or DANGEROUSLY_SKIP_ELICITATIONS=true.",
-    );
-    return null;
-  }
-  if (safety.reason === "dangerously_skip") {
-    logWarn(
-      "onepassword: DANGEROUSLY_SKIP_ELICITATIONS=true — secrets are revealed without approval.",
+      `onepassword: ignoring ${overridden.join(", ")} — strad confirms every ` +
+        `1Password reveal through the calling session, and a write unless the ` +
+        `slug sets <SLUG>__${ONEPASSWORD_WRITE_POSTURE_VAR}=false. A container-wide ` +
+        `value would apply to every 1Password mount in this process at once.`,
     );
   }
+  return {
+    server: mod.createMCPServer({ version: VERSION }),
+    OnePasswordClient: mod.OnePasswordClient,
+    confirm,
+  };
+}
 
-  const created = mod.createMCPServer({ version: VERSION });
-  const token = process.env.OP_SERVICE_ACCOUNT_TOKEN;
+/**
+ * 1Password: one mount per SERVICE-ACCOUNT TOKEN.
+ *
+ * A token is one 1Password account at one vault scope, so `onepassword-tadas-all`
+ * and `onepassword-pulsemcp-rw` cannot share a variable any more than two Google
+ * accounts can. The renderer bakes each supplementary server's variables under
+ * its own slug as well (`ONEPASSWORD_TADAS_ALL__OP_SERVICE_ACCOUNT_TOKEN`), and a
+ * slug on `path: /<its own slug>` is mounted here holding exactly that token.
+ * The conventional `/onepassword` keeps the bare token, which is what slugs
+ * sharing that path read.
+ *
+ * A DISCOVERED slug's token is its own or it has none. It never inherits the
+ * bare one: that is a different account's credential, and a mount serving it
+ * under this slug's name would answer for the wrong vaults with nothing failing.
+ *
+ * WHO IS ASKED. Every reveal (`onepassword_get_item` on an item with a sensitive
+ * field) is put to the human attached to the calling session, through the
+ * channel core forwards to a `confirmations: true` slug. Every write is too,
+ * unless this slug sets `OP_ELICITATION_WRITE=false` under its own name, which is
+ * the provisioning posture. A call that needs a human and has none to ask is
+ * refused before it runs. See `servers/confirmations.md` in the docs.
+ */
+function loadOnePassword(op: OnePasswordTree, slug: string, perSlug: boolean): Mount {
+  // Read per CALL, not once: a `paramsRefresh:` rotation lands in this
+  // process's environment, and the next `op` run should use it.
+  const tokenNow = (quiet = true): string | undefined => {
+    const view = slugEnvView(process.env, slug);
+    if (perSlug) dropInheritedNames(view, slug, ONEPASSWORD_MARKER_NAMES, process.env, quiet);
+    return view[ONEPASSWORD_TOKEN_VAR] || undefined;
+  };
+  const token = tokenNow(false);
+
+  const confirmWrites = onePasswordConfirmsWrites(slug, perSlug);
+  if (!confirmWrites) {
+    logWarn(
+      `${slug}: 1Password WRITES run without asking anyone ` +
+        `(${prefixedEnvName(slug, ONEPASSWORD_WRITE_POSTURE_VAR)}=false). ` +
+        `Reveals still ask the calling session.`,
+    );
+  }
 
   return {
-    slug: "onepassword",
+    slug,
     tree: "onepassword",
     serverName: "onepassword-mcp-server",
     capabilities: { resources: {}, tools: {} },
-    degraded: token
-      ? null
-      : "OP_SERVICE_ACCOUNT_TOKEN is not set; tools will list but calls will fail",
+    degraded: missingCredentialsDegraded(token ? [] : [ONEPASSWORD_TOKEN_VAR]),
+    liveEnv: true,
     register: (s) =>
-      created.registerHandlers(
-        s,
-        () => new mod.OnePasswordClient(process.env.OP_SERVICE_ACCOUNT_TOKEN ?? ""),
+      op.server.registerHandlers(
+        op.confirm.withConfirmation(s as object, { confirmWrites, label: "1Password" }),
+        () => op.confirm.guardWrites(new op.OnePasswordClient(tokenNow() ?? "")),
       ),
   };
 }

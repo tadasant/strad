@@ -535,14 +535,14 @@ jobs:
         run: |
           set -euo pipefail
           # Credential-free on purpose: listing tools never calls an upstream API.
-          # DANGEROUSLY_SKIP_ELICITATIONS is what lets 1Password mount at all, and
-          # the two GCS-ish servers need their (distinct!) buckets named.
+          # No elicitation posture is set: 1Password mounts without one, and
+          # asks the calling session per call. The two GCS-ish servers need
+          # their (distinct!) buckets named.
           # secrets refuses to mount without a project and a namespace — an
           # unscoped secrets server would see every parameter in the project — so CI
           # names both. Still credential-free: listing tools calls no API.
           echo "image=$BUNDLE_IMAGE container=$BUNDLE_CONTAINER"
           docker run -d --name "$BUNDLE_CONTAINER" --label strad-ci=1 \
-            -e DANGEROUSLY_SKIP_ELICITATIONS=true \
             -e STRAD_INTERNAL_TOKEN="$STRAD_INTERNAL_TOKEN" \
             -e GCS_PROJECT_ID=ci -e GCS_BUCKET=ci-bucket \
             -e REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET=ci-rfs-bucket \
@@ -615,7 +615,6 @@ jobs:
         run: |
           set -euo pipefail
           docker run -d --name "$BUNDLE_CLOSED_CONTAINER" --label strad-ci=1 \
-            -e DANGEROUSLY_SKIP_ELICITATIONS=true \
             -e GCS_PROJECT_ID=ci -e GCS_BUCKET=ci-bucket \
             -e REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET=ci-rfs-bucket \
             -e REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN=ci.example \
@@ -674,12 +673,11 @@ jobs:
       # matters: these values are CI placeholders, listing tools calls no Google
       # API, and the per-slug slug is deliberately left UNCONNECTED — no refresh
       # token — because that is the state the trap lives in.
-      - name: Per-slug gmail and google-docs mounts appear, serve every tool, and inherit no account
+      - name: Per-slug gmail, google-docs and 1Password mounts appear, serve every tool, and inherit no account
         run: |
           set -euo pipefail
           GMAILSLUG="$BUNDLE_CONTAINER-gmail"
           docker run -d --name "$GMAILSLUG" --label strad-ci=1 \
-            -e DANGEROUSLY_SKIP_ELICITATIONS=true \
             -e STRAD_INTERNAL_TOKEN="$STRAD_INTERNAL_TOKEN" \
             -e GCS_PROJECT_ID=ci -e GCS_BUCKET=ci-bucket \
             -e REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET=ci-rfs-bucket \
@@ -695,6 +693,8 @@ jobs:
             -e GOOGLE_DOCS_IMPERSONATE_EMAIL=someone@ci.example \
             -e GOOGLE_DOCS_CI_PERSONAL_RO__GOOGLE_DOCS_OAUTH_CLIENT_ID=ci-oauth-app \
             -e GOOGLE_DOCS_CI_PERSONAL_RO__GOOGLE_DOCS_OAUTH_CLIENT_SECRET=ci-oauth-secret \
+            -e ONEPASSWORD_CI_ALL__OP_SERVICE_ACCOUNT_TOKEN=ops_ci_placeholder \
+            -e ONEPASSWORD_CI_ALL__OP_ELICITATION_WRITE=false \
             "$BUNDLE_IMAGE"
           for i in $(seq 1 60); do
             if docker exec "$GMAILSLUG" node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" 2>/dev/null; then break; fi
@@ -747,6 +747,18 @@ jobs:
             const docsConventional = dump.mounts["/google-docs"]?.tools ?? [];
             if (docsConventional.length !== 11) throw new Error(`/google-docs listed ${docsConventional.length} tools, expected 11`);
             console.log(`/${docsSlug}: ${docsTools.length} tools, degraded on "${docsDegraded}"; /google-docs: ${docsConventional.length} tools, not degraded`);
+
+            // 6. A per-slug 1Password mount: its own token, its own path, all
+            //    nine tools, and NOT degraded — while the conventional
+            //    /onepassword, which no bare token was given, is.
+            const op = "onepassword-ci-all";
+            if (!bySlug[op]) throw new Error(`no per-slug 1Password mount: ${health.servers.map((s) => s.slug).join(", ")}`);
+            if (bySlug[op].degraded) throw new Error(`/${op} is degraded although its own token is set: ${bySlug[op].degraded}`);
+            const opTools = dump.mounts[`/${op}`]?.tools ?? [];
+            if (opTools.length !== 9) throw new Error(`/${op} listed ${opTools.length} tools, expected 9`);
+            if (!/OP_SERVICE_ACCOUNT_TOKEN/.test(bySlug.onepassword?.degraded ?? ""))
+              throw new Error(`the conventional /onepassword is not degraded on its token, so it inherited one: ${JSON.stringify(bySlug.onepassword)}`);
+            console.log(`/${op}: ${opTools.length} tools, not degraded; /onepassword degraded on its own missing token`);
           '
           docker rm -f "$GMAILSLUG" >/dev/null
 
@@ -767,7 +779,7 @@ jobs:
         run: |
           set -euo pipefail
           MULTI="$BUNDLE_CONTAINER-multi"
-          docker run -d --name "$MULTI" --label strad-ci=1             -e DANGEROUSLY_SKIP_ELICITATIONS=true             -e STRAD_INTERNAL_TOKEN="$STRAD_INTERNAL_TOKEN"             -e GCS_PROJECT_ID=ci -e GCS_BUCKET=ci-bucket             -e REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET=ci-rfs-bucket             -e REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN=ci.example             -e SECRETS_STORES='[{"project":"ci-staging","namespaces":["/strad/staging/mcp/"],"viewerKeyVar":"SECRETS_SERVICE_ACCOUNT_KEY_JSON"},{"project":"ci-prod","namespaces":["/strad/prod/mcp/"],"viewerKeyVar":"CI_PROD_VIEWER_KEY_JSON"}]'             "$BUNDLE_IMAGE"
+          docker run -d --name "$MULTI" --label strad-ci=1             -e STRAD_INTERNAL_TOKEN="$STRAD_INTERNAL_TOKEN"             -e GCS_PROJECT_ID=ci -e GCS_BUCKET=ci-bucket             -e REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET=ci-rfs-bucket             -e REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN=ci.example             -e SECRETS_STORES='[{"project":"ci-staging","namespaces":["/strad/staging/mcp/"],"viewerKeyVar":"SECRETS_SERVICE_ACCOUNT_KEY_JSON"},{"project":"ci-prod","namespaces":["/strad/prod/mcp/"],"viewerKeyVar":"CI_PROD_VIEWER_KEY_JSON"}]'             "$BUNDLE_IMAGE"
           for i in $(seq 1 60); do
             if docker exec "$MULTI" node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" 2>/dev/null; then break; fi
             sleep 2
