@@ -220,6 +220,7 @@ not a confession.
 | `servers/bill-spend/**` — a tool, the write's body shapes, the read-back rule                                     | `servers/bill-spend.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                      |
 | `servers/aws-device-farm/**` — a tool, the driving wire, the cost model                                           | `servers/aws-device-farm.md`, `servers/aws-device-farm-setup.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                             |
 | `servers/liveoak/**` — a tool, the login or device flow, what the bank's API is sent                              | `servers/liveoak.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                         |
+| `servers/image-tools/**` — a tool, the URL guard, a bound in `limits.ts`, the alignment                           | `servers/image-tools.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                     |
 | `servers/{airtable,flightaware,digitalocean}/**` — a tool, a tier, what a result may carry                        | `servers/airtable.md`, `servers/flightaware.md`, `servers/digitalocean.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                   |
 | `servers/grafana/**` — the pinned version, the read-only flags, the env allowlist                                 | `servers/grafana.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                         |
 | `servers/good-eggs/**` — the basket read, a cart tool, what a result may claim                                    | `limitations.md`, and `servers/good-eggs/FORK.md`                                                                                                                                    |
@@ -266,10 +267,10 @@ numbers describe "how many servers," and they count different things:
 | The number | What it counts                                                                                     |
 | ---------- | -------------------------------------------------------------------------------------------------- |
 | **3**      | App Platform components: `core`, `bundle`, `bundle-zimmer-secrets`                                 |
-| **20**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
-| **28**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
-| **38**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included)         |
-| **41**     | total server slugs in staging (38 + `echo` builtin + `deepwiki` remote-http + `anki` local-tunnel) |
+| **21**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
+| **30**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
+| **40**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included)         |
+| **43**     | total server slugs in staging (40 + `echo` builtin + `deepwiki` remote-http + `anki` local-tunnel) |
 
 A slug is not a mount, and a mount is not a component. Before you write a number,
 grep for the others.
@@ -334,8 +335,8 @@ slop behind when you fix a stale fact.
   "did I typo a key" is answered here, by `scripts/check-config.ts`.
 - `src/deploy/appspec.ts` — turns the config into a DigitalOcean App Platform spec.
   The server list decides the container topology.
-- `servers/bundle/` — one image, 28 mounted MCP servers, one shared Chromium,
-  assembled from TWENTY independently-built dependency trees.
+- `servers/bundle/` — one image, 30 mounted MCP servers, one shared Chromium,
+  assembled from TWENTY-ONE independently-built dependency trees.
 - `servers/remote-filesystem/` — strad's own artifact store, behind the
   `remote-filesystem-tmp-public` slug. `is_sensitive` picks the KIND of link;
   GCS's 7-day V4 ceiling is why the 14-day default is signed with V2.
@@ -389,6 +390,12 @@ slop behind when you fix a stale fact.
   and returns a cursor; digitalocean is two slugs on one mount (`-ro` allows the
   nineteen reads) and redacts database passwords from every result. All three
   have met only fakes — `HACKS.md` #119.
+- `servers/image-tools/` — strad's own `image-diff` and `svg-tracer`, two
+  mounts over one tree, replacing two npx packages that read the agent's disk.
+  Inputs are URLs, fetched behind an SSRF guard at the connector (derived from
+  `strad-fetch`'s); results come back inline. The pixel work runs in a worker
+  thread per call, one call at a time per process, so a large diff neither
+  stalls the bundle's event loop nor stacks memory beside Chromium.
 - `servers/bill-spend/` — strad's own BILL Spend & Expense server, behind
   `bill-spend-ro` and `bill-spend-rw`. Re-codes card transactions to the right
   chart-of-accounts value, which BILL carries as CUSTOM-FIELD VALUES rather than

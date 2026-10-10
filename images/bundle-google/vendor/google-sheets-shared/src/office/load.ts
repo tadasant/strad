@@ -167,7 +167,7 @@ export function describeDriveFailure(
  * calls into this loader for one tool call; without a cache that is two
  * downloads and two parses of the same megabytes. The TTL is short because the
  * file is someone's live document and a stale read is worse than a slow one, and
- * the entry count is small because this process hosts twenty-eight servers and
+ * the entry count is small because this process hosts thirty servers and
  * several Google accounts.
  *
  * The cache holds the PROMISE, not the workbook, so concurrent ranges of one

@@ -391,7 +391,7 @@ one (hack #4).
 **✅ RESOLVED.** Core presents the internal token to every `supplementary-image`
 component, and the `strad-bundle` host refuses a mount request without it.
 
-**What.** The `strad-bundle` container — twenty-eight mounts, and every upstream
+**What.** The `strad-bundle` container — thirty mounts, and every upstream
 credential behind them — serves every mount unauthenticated. Its only protection
 is the network boundary: an internal-only App Platform component
 (`internal_ports: [8080]`, no public route), reachable by core over the private
@@ -790,8 +790,8 @@ toggle plumbing.
 
 ## 24. Twenty-eight servers share one process, and one Chromium
 
-The collapsed bundle is one container running twenty-eight MCP servers and one
-headless Chromium. An OOM there is a twenty-eight-server outage; it used to be a
+The collapsed bundle is one container running thirty MCP servers and one
+headless Chromium. An OOM there is a thirty-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -3736,7 +3736,7 @@ behaviour, which is the pre-change one.
 a listed parameter current in a supplementary container's `process.env` without a
 redeploy. What it cannot do is make the MCP server inside that container LOOK at
 the new value. That is a property of the upstream, and this image runs
-twenty-eight of them, most written by other people.
+thirty of them, most written by other people.
 
 The split is real and it is not subtle:
 
@@ -5404,7 +5404,7 @@ Workspace documents and cannot touch an uploaded binary. `files.copy` with
 file in the owner's Drive every time an agent reads a spreadsheet — a write, in a
 read tier. The npm packages that read xlsx are large, and the popular one has
 been unmaintained on npm since 0.18.5 with a live prototype-pollution advisory;
-this process holds three Google accounts' refresh tokens beside twenty-seven other
+this process holds three Google accounts' refresh tokens beside twenty-nine other
 MCP servers.
 
 **What it costs, and what a caller is told.** Every Office-backed result carries
@@ -6222,3 +6222,43 @@ three npx entries in the Zimmer catalog (`airtable-mcp-server@1.13.0`,
 **Undo.** 1 and 5 lapse with the first real call on each slug; anything they
 find is a fix here. 2 and 3 are the design. 4 goes if DigitalOcean ever returns
 credentials only to a scope the token can be denied, which it does not today.
+
+## 120. image-diff and svg-tracer read URLs, not files, and run one job at a time per bundle
+
+**What.** `servers/image-tools` is strad's own image-diff and svg-tracer, which
+replace the `@pulsemcp/image-diff-mcp-server` and
+`@pulsemcp/svg-tracer-mcp-server` npx packages. Those read a path off the
+agent's disk and wrote their outputs back to it. A mount in the bundle can do
+neither, so:
+
+1. **Inputs are http(s) URLs on the public internet.** A local file has to be
+   uploaded first (the artifact store's `upload_file`) and its signed link
+   passed. The fetch refuses private, loopback, link-local and metadata
+   addresses at the connector, every redirect hop included (the same guard as
+   `strad-fetch`, #79), so an image on a private network or behind a VPN
+   cannot be compared at all. `IMAGE_TOOLS_ALLOW_PRIVATE_HOSTS` names hosts to
+   let through, for a development gateway; it is empty everywhere.
+2. **Outputs come back inline, not as files.** The heatmap and composite are
+   PNG image content, downscaled to 1568px on the long edge (`scale` says by
+   how much; cluster boxes stay in full-resolution pixels). The SVG is a string
+   in the JSON, refused past 1M characters. Nothing is uploaded, so there is no
+   URL to hand on: an agent that wants a link uploads the result itself.
+3. **Bounded hard.** 25MB and 10 megapixels per image (a 2x-DPR full-page
+   screenshot is over that and must be cropped or downscaled first), 30s per
+   fetch, 60s per job. The job runs in a worker thread that is terminated at
+   its deadline, so a slow trace stops costing CPU when it stops being waited
+   for.
+4. **One job at a time across both mounts, per bundle process.** A diff at the
+   pixel limit holds ~400MB and the container is shared with Chromium. Up to
+   two more callers wait, up to 20s each, and are then refused as busy; a third
+   is refused at once, because a waiting caller already holds its fetched
+   bytes. Fetch, wait and job sum to 110s, under core's 120s default
+   `timeoutMs`. A cancelled call leaves the queue or has its worker stopped.
+   Under concurrent use from several sessions that is a real queue, and it is
+   per instance.
+
+**Undo.** 1 is the design for a remote server; a flow-through grant onto the
+artifact store could let the tools accept an upload id as well as a URL. 2
+could return a signed link through the same grant. 3 and 4 move with the
+bundle's size: a larger instance, or these mounts on their own component,
+raises both.

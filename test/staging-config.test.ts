@@ -10,7 +10,7 @@ import { waivedNames } from "../src/deploy/unseeded.ts";
  *
  * Three things are checked here, and they are the three that would rot:
  *
- *   1. COMPONENT COUNT. 38 servers must render as exactly THREE components —
+ *   1. COMPONENT COUNT. 40 servers must render as exactly THREE components —
  *      core, the bundle, and `bundle-zimmer-secrets`. A stray `bundle:` name in
  *      the config is a $5-$25/month regression that nobody would otherwise
  *      notice, so the number is pinned rather than merely bounded. The third one
@@ -48,7 +48,7 @@ const IMAGE = "ghcr.io/tadasant/strad-bundle:latest";
  *
  * This is not decoration. `render-spec` resolves an `env:`/`consoleEnv:` ref at
  * RENDER time and exits 1 on one it cannot find, so a single unseeded name does
- * not degrade one slug — it fails the spec and takes all forty-one down. That is
+ * not degrade one slug — it fails the spec and takes all forty-three down. That is
  * the fail-loud property the store-backed deploy is built around, and it is
  * worth keeping; what it costs is that "declare the server" and "seed the
  * secret" are one atomic step, and a PR can only do the first half.
@@ -163,7 +163,7 @@ describe("staging config", () => {
     expect(credentials.every((e) => e.type === "SECRET")).toBe(true);
 
     // And it is INSTRUMENTED. The collapsed container is the one this telemetry
-    // exists for — it is where Chromium, `op` and twenty-eight servers share a
+    // exists for — it is where Chromium, `op` and thirty servers share a
     // vCPU — so a bundle that renders without its identity vars is a bundle we
     // could not tell apart from the core in a dashboard.
     expect(bundle.envs.find((e) => e.key === "STRAD_COMPONENT")?.value).toBe(
@@ -235,7 +235,7 @@ describe("staging config", () => {
     const supplementary = CONFIG.servers.filter(
       (s) => s.kind === "supplementary-image",
     );
-    expect(supplementary.length).toBe(38);
+    expect(supplementary.length).toBe(40);
     for (const server of supplementary) {
       expect(server.image).toBe(IMAGE);
       // ONE image, and one bundle for everything whose difference is

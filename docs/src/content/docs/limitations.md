@@ -609,9 +609,9 @@ nothing warns beforehand. Publishing the OAuth app removes the expiry.
 
 ### 24. Twenty-eight servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts twenty-eight MCP servers,
+The `bundle` component runs one Node process that mounts thirty MCP servers,
 launches one shared Chromium and supervises one `mcp-grafana` child process, on
-`apps-s-1vcpu-2gb`. A crash in the host takes all twenty-eight down together, and
+`apps-s-1vcpu-2gb`. A crash in the host takes all thirty down together, and
 Chromium contends with every other server for the single vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -1002,7 +1002,7 @@ a store-wide read.
 keeps a listed parameter current in a supplementary container's environment
 without a redeploy. It cannot make the MCP server inside that container **look**
 at the new value — that is a property of the upstream, and the bundle image runs
-twenty-eight of them written by other people.
+thirty of them, most written by other people.
 
 `strad-fetch` builds its scraping clients inside a factory the host invokes per
 request, so a rotated key is used by the next tool call; that is the case the
@@ -2190,7 +2190,7 @@ ever rebuilt with a rootless or hand-installed docker, where buildx lives in
 
 **Serialising the workflows was the alternative.** A `concurrency:` group would
 have ended it too, at the cost of every push taking the sum of its builds rather
-than the longest — the bundle alone is twenty dependency trees. Isolation costs a
+than the longest — the bundle alone is twenty-one dependency trees. Isolation costs a
 `mkdir`.
 
 ### 49. The Telegram MTProto library is archived upstream
@@ -2587,7 +2587,7 @@ leak. Nothing in the cache is a credential; it is public pages someone fetched.
 
 **What the fork DID bound is the memory.** Upstream's store grows for the life of
 the process, which is fine for a subprocess the OS reclaims and an out-of-memory
-kill in a container that hosts twenty-eight mounts. The cache is LRU-bounded on both
+kill in a container that hosts thirty mounts. The cache is LRU-bounded on both
 entry count and bytes, and the filesystem backend is gone (App Platform gives the
 container no persistent volume, so it was memory with extra steps).
 
@@ -3710,5 +3710,39 @@ static key. What they cost:
   links live elsewhere it fails naming the host, and the allowlist widens.
 
 See `HACKS.md` #119.
+
+---
+
+### 120. image-diff and svg-tracer read URLs, not files, and run one job at a time
+
+[image-diff and svg-tracer](/servers/image-tools/) replace two npx packages that
+read a path off the agent's disk. Running in the bundle, they cannot.
+
+- **Inputs are public http(s) URLs.** Upload a local file to the
+  [artifact store](/servers/artifact-store/) first and pass the whole signed
+  link. Private, loopback, link-local and metadata addresses are refused at the
+  connector, redirects included, so an image only reachable on a private
+  network cannot be used.
+- **Results come back inline.** The heatmap and composite are PNG image
+  content, at most 1568px on the long edge; cluster coordinates stay in
+  full-resolution pixels and `images[].scale` relates the two. The SVG is a
+  string in the JSON, refused past 1M characters. Nothing is written to a file
+  or a link.
+- **Bounds.** 25 MB and 10 megapixels per image, 30 seconds per fetch, 60 per
+  job. A 2x full-page screenshot is over the pixel limit; crop or downscale it.
+- **One job at a time per bundle process,** across both servers, because a
+  diff at the limit holds about 400 MB beside a shared Chromium. Two more
+  callers may wait, up to 20 seconds each, before they are told the server is
+  busy; past that a caller is told at once, because a waiting call already holds
+  its fetched images.
+
+**How you would know.** Every refusal is a tool error that names the argument
+and the rule: the address class, the size, the pixel count, or "Busy".
+
+**Undo:** a flow-through grant onto the artifact store would let these tools
+take an upload and return a link. A larger bundle instance, or a component of
+their own, raises the bounds.
+
+See `HACKS.md` #120.
 
 ---
