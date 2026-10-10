@@ -26,6 +26,68 @@ import type {
 
 export const X_API_BASE = "https://api.x.com/2";
 
+/** The one OAuth scope the two bookmark writes need beyond the read scopes. */
+export const BOOKMARK_WRITE_SCOPE = "bookmark.write";
+
+/**
+ * The message for a 403 on a bookmark write.
+ *
+ * The usual cause is a credential consented WITHOUT `bookmark.write`: reads keep
+ * working, so nothing else points at it. When the provider knows what X granted,
+ * this says so definitively; when it does not (a static access token, or no
+ * refresh yet), it names the scope as the likely cause rather than guessing.
+ * Either way the fix is a new consent — no retry of this call can succeed.
+ */
+export function bookmarkWriteForbidden(
+  granted: readonly string[] | undefined,
+  body = "",
+): string {
+  // A process holds the refresh token it started with and rotates THAT one, so
+  // a consent given while it runs is overwritten by its next rotation unless the
+  // server restarts first. The restart is part of the fix, not an extra.
+  const remedy =
+    `Re-run the X OAuth consent for this credential with ${BOOKMARK_WRITE_SCOPE} ` +
+    `added to the requested scopes, then restart this server so it starts from ` +
+    `the new token. Reads are unaffected. Retrying this call will not help.`;
+  const said = xErrorDetail(body);
+  const upstream = said ? ` X said: "${said}".` : "";
+  if (granted && !granted.includes(BOOKMARK_WRITE_SCOPE)) {
+    return (
+      `X refused the bookmark write (HTTP 403): this credential was granted ` +
+      `"${granted.join(" ")}", which does not include ${BOOKMARK_WRITE_SCOPE}. ` +
+      remedy +
+      upstream
+    );
+  }
+  if (granted) {
+    return (
+      `X refused the bookmark write (HTTP 403) although the credential holds ` +
+      `${BOOKMARK_WRITE_SCOPE}. Check that the X app's permissions in the X ` +
+      `Developer Console allow writes and that the app has API access.` +
+      upstream
+    );
+  }
+  return (
+    `X refused the bookmark write (HTTP 403). The likeliest cause is a ` +
+    `credential consented without ${BOOKMARK_WRITE_SCOPE}. ` +
+    remedy +
+    upstream
+  );
+}
+
+/** X's own one-line reason from an error body (`detail`, else `title`), bounded. */
+function xErrorDetail(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown; title?: unknown };
+    const text = [parsed.detail, parsed.title].find(
+      (v): v is string => typeof v === "string" && v.trim() !== "",
+    );
+    return text ? text.trim().slice(0, 200) : "";
+  } catch {
+    return "";
+  }
+}
+
 export interface XApiClientConfig {
   tokenProvider: ITokenProvider;
   /** Injectable for tests; defaults to global fetch. */
@@ -132,7 +194,15 @@ export class XApiClient implements IXClient {
       const text = await response.text();
 
       if (!response.ok) {
-        throw new XApiError(response.status, text);
+        const error = new XApiError(response.status, text);
+        if (error.status === 403 && !error.isClientNotEnrolled) {
+          throw new XApiError(
+            error.status,
+            text,
+            bookmarkWriteForbidden(this.tokenProvider.grantedScopes, text),
+          );
+        }
+        throw error;
       }
 
       try {

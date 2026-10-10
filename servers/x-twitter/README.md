@@ -44,12 +44,33 @@ All tweet-returning tools request rich expansions and fields: author profile, `c
 
 ## strad bundle mount
 
-The bundle host mounts this server at `/x-twitter` from `servers/x-twitter/shared/build/index.js`. The example config shows an `x-twitter` slug with the seven read tools.
+The bundle host mounts this server at `/x-twitter` from `servers/x-twitter/shared/build/index.js`. Two slugs serve that one mount, and the gateway's per-slug `tools:` policy is the only difference between them:
 
 | Slug           | Tools                                                                                                                       |
 | -------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `x-twitter` | `get_my_account`, `get_user`, `get_home_timeline`, `get_user_tweets`, `get_bookmarks`, `search_recent_tweets`, `get_tweets` |
-| opt-in write policy | `create_bookmark`, `remove_bookmark`                                                  |
+| `x-twitter`    | `get_my_account`, `get_user`, `get_home_timeline`, `get_user_tweets`, `get_bookmarks`, `search_recent_tweets`, `get_tweets` |
+| `x-twitter-rw` | all of the above, plus `create_bookmark` and `remove_bookmark`                                                              |
+
+Tool names and behaviour match the standalone `pulsemcp-x-twitter-mcp-server` package with `X_TWITTER_ENABLED_TOOLGROUPS=readonly,readwrite`. Inside strad the gateway picks the tier, not that variable.
+
+### Two slugs, one rotating refresh token
+
+The refresh token is single-use, so the two slugs cannot each hold a copy. Whichever one refreshed first would invalidate the other's. They share it instead:
+
+- **One mount, one client.** The host calls `createMCPServer` once for `/x-twitter`, and `registerHandlers` memoises the X client for the mount's lifetime, whichever slug a request came in on. Both slugs' calls go through one `RefreshTokenProvider`, which collapses concurrent refreshes into one exchange. Each rotation persists in order, because `onRefreshToken` is awaited.
+- **One owner of the credential.** `x-twitter` (the slug the bundle host writes back under, `X_SLUG` in `servers/bundle/host/src/index.ts`) owns `params: true`, `paramsWritable: [X_OAUTH_REFRESH_TOKEN]` and the `oauth:` connector. `x-twitter-rw` declares none of them. strad's config check refuses a twin that lists the variable under its own `paramsWritable:` or names it on its own `oauth:` connector, because either one creates a second copy of the token in a namespace the mount never reads.
+- **One replica.** The render refuses `instanceCount` above 1 on a component with a `paramsWritable:` server.
+
+Two consequences:
+
+- **The consent asks for the union of the scopes,** `bookmark.write` included, and it happens on `x-twitter`. The read tier is then bounded by its `tools:` policy alone, not also by its token.
+- **Do not disable `x-twitter` to withdraw the read tier.** A disabled server is not rendered, so its namespace (and with it the token) never reaches the container, and `x-twitter-rw` stops working. Take the read tier out of a role's `servers:` instead.
+
+`tests/functional/shared-credential.test.ts` proves the runtime half, and strad's `test/params-writable.shared-mount.test.ts` proves the config half.
+
+### A write on a token without `bookmark.write`
+
+X answers 403, and reads keep working, so nothing else points at the scope. The bookmark tools say so. When the provider knows what X granted (refresh-token mode, after the first refresh), the error names the granted scopes, says `bookmark.write` is missing, and says the fix is a new consent with it added, followed by a restart. A process that is already running keeps the token it booted with, and its next rotation overwrites the new consent. In static-access-token mode it names the scope as the likeliest cause.
 
 ## Prerequisites: X API access tier
 
@@ -136,10 +157,20 @@ Implications:
   bundle: bundle
   path: /x-twitter
   entitlements: [admin]
-  env:
-    X_OAUTH_CLIENT_ID: "${X_OAUTH_CLIENT_ID}"
-    X_OAUTH_CLIENT_SECRET: "${X_OAUTH_CLIENT_SECRET}"
-    X_OAUTH_REFRESH_TOKEN: "${X_OAUTH_REFRESH_TOKEN}"
+  params: true
+  paramsWritable: [X_OAUTH_REFRESH_TOKEN]
+  oauth:
+    provider: generic
+    label: X
+    authorizeUrl: https://x.com/i/oauth2/authorize
+    tokenUrl: https://api.x.com/2/oauth2/token
+    clientAuth: basic
+    # The union of both tiers' needs: bookmark.write is for x-twitter-rw.
+    scopes:
+      [tweet.read, users.read, bookmark.read, bookmark.write, offline.access]
+    clientIdVariable: X_OAUTH_CLIENT_ID
+    clientSecretVariable: X_OAUTH_CLIENT_SECRET
+    refreshTokenVariable: X_OAUTH_REFRESH_TOKEN
   tools:
     allow:
       - get_my_account
@@ -149,6 +180,14 @@ Implications:
       - get_bookmarks
       - search_recent_tweets
       - get_tweets
+
+# Same bundle, same path: one mount. No credential of its own.
+- slug: x-twitter-rw
+  kind: supplementary-image
+  image: ghcr.io/tadasant/strad-bundle:latest
+  bundle: bundle
+  path: /x-twitter
+  entitlements: [admin]
 ```
 
 ## Development

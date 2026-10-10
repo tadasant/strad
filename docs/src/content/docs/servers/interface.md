@@ -710,6 +710,15 @@ plus two that shape how this server gets its values:
     paramsWritable: [X_OAUTH_REFRESH_TOKEN]
   ```
 
+  **One writer per mount.** Servers that share a `bundle` and a `path` are one
+  mount — capability variants like `x-twitter` and `x-twitter-rw` — and a name
+  may appear in at most one of their lists. A twin also may not declare an
+  `oauth:` connector whose `refreshTokenVariable` another twin writes back: a
+  consent there would mint a second copy into a namespace the mount never reads.
+  The twin that only widens the tool surface declares neither, and uses the
+  owner's credential through the shared mount. See [two slugs, one rotating
+  credential](/operate/secrets/#two-slugs-one-rotating-credential).
+
   See [a credential that rotates on
   use](/operate/secrets/#paramswritable--a-credential-that-rotates-on-use) for the
   transport, the failure modes and what the grant actually is.
