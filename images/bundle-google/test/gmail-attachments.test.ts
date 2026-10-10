@@ -123,7 +123,7 @@ describe("MIME attachments", () => {
     });
     expect(result).not.toContain("multipart/mixed");
     expect(result).toContain(
-      "Content-Type: text/plain; charset=utf-8\r\n\r\nHello",
+      "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\nHello",
     );
   });
 

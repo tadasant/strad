@@ -2,6 +2,8 @@
  * MIME message utilities for building and encoding email messages
  */
 
+import { encodeQuotedPrintable, reflowPlainText } from './body-text.js';
+
 export interface MimeMessageOptions {
   to: string;
   subject: string;
@@ -54,6 +56,23 @@ function generateBoundary(tag: string): string {
 }
 
 /**
+ * A text body part. Plain text is reflowed first, so prose an agent
+ * hard-wrapped reads as paragraphs (see body-text.ts). Both kinds go out
+ * quoted-printable: a paragraph stays one logical line, and no line on the
+ * wire is long enough for a relay to fold it.
+ */
+function textPart(subtype: 'plain' | 'html', body: string): { headers: string[]; body: string } {
+  const text = stripLeadingNewlines(body);
+  return {
+    headers: [
+      `Content-Type: text/${subtype}; charset=utf-8`,
+      'Content-Transfer-Encoding: quoted-printable',
+    ],
+    body: encodeQuotedPrintable(subtype === 'plain' ? reflowPlainText(text) : text),
+  };
+}
+
+/**
  * Builds the body entity (headers + content) for the message text.
  * If both plaintextBody and htmlBody are provided, creates a multipart/alternative entity.
  * If only one is provided, creates a single-part entity with the appropriate content type.
@@ -61,14 +80,11 @@ function generateBoundary(tag: string): string {
 function buildBodyEntity(options: MimeMessageOptions): { headers: string[]; body: string } {
   if (options.plaintextBody && options.htmlBody) {
     const boundary = generateBoundary('boundary');
-    const plainBody = stripLeadingNewlines(options.plaintextBody);
-    const htmlBody = stripLeadingNewlines(options.htmlBody);
-
     const parts = [
-      `--${boundary}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${plainBody}`,
-      `--${boundary}\r\nContent-Type: text/html; charset=utf-8\r\n\r\n${htmlBody}`,
-      `--${boundary}--`,
-    ];
+      textPart('plain', options.plaintextBody),
+      textPart('html', options.htmlBody),
+    ].map((part) => `--${boundary}\r\n${part.headers.join('\r\n')}\r\n\r\n${part.body}`);
+    parts.push(`--${boundary}--`);
 
     return {
       headers: [`Content-Type: multipart/alternative; boundary="${boundary}"`],
@@ -77,16 +93,10 @@ function buildBodyEntity(options: MimeMessageOptions): { headers: string[]; body
   }
 
   if (options.htmlBody) {
-    return {
-      headers: ['Content-Type: text/html; charset=utf-8'],
-      body: stripLeadingNewlines(options.htmlBody),
-    };
+    return textPart('html', options.htmlBody);
   }
 
-  return {
-    headers: ['Content-Type: text/plain; charset=utf-8'],
-    body: stripLeadingNewlines(options.plaintextBody ?? ''),
-  };
+  return textPart('plain', options.plaintextBody ?? '');
 }
 
 /**

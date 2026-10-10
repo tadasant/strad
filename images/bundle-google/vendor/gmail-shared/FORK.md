@@ -55,8 +55,9 @@ encoded-words inside the quoted parameter, the form Gmail itself emits, folded
 into short lines. Every filename has its control characters, Unicode line
 separators, bidi overrides, `"` and `\` replaced with `_`, and is held to 255
 characters, keeping the extension; the prompt, the MIME and the tool's answer
-all show that one name. Without attachments the message is
-byte-for-byte what upstream builds.
+all show that one name. Without attachments the message has the
+same structure upstream builds (deltas 2 and 3 change its `From:` header
+and its body encoding).
 
 - **Limits.** 17 MB decoded across all attachments. Gmail refuses a message
   over 25 MB, and base64 with a CRLF every 76 characters inflates by ~1.37,
@@ -146,3 +147,43 @@ quoting (the apostrophe case included), the encoded-words, the injection guard,
 the length cap, the send-as match, the timeout, the retry window, and the real OAuth client's send, reply, draft create and
 draft update against a stubbed Gmail. It has run against stubs only. No message
 was sent to test it.
+
+---
+
+## 3. Plain-text bodies are reflowed, and every text part is quoted-printable
+
+**Upstream.** The body is sent exactly as given, in a part with no
+`Content-Transfer-Encoding`. Agents hard-wrap prose at 72-80 columns, and a
+`text/plain` part without `format=flowed` shows each of those newlines as a
+hard break: on a phone every wrapped line wraps once more, and a paragraph
+reads as alternating long and two-word lines. A paragraph that is NOT wrapped
+goes out as one line of any length, past RFC 5322's 998-octet limit if it is
+long enough, which a relay is free to fold.
+
+**Here.** `src/gmail-client/lib/body-text.ts` (new), called from
+`buildBodyEntity` in `src/gmail-client/lib/mime-utils.ts`:
+
+- `reflowPlainText` joins the lines of a `plaintext_body` paragraph that were
+  cut by a wrap: a line is joined onto the one before only when that one is at
+  least 40 characters, the block's widest line is between 50 and 100, and the
+  next line's first word would not have fit after it, and the line before does
+  not end in a colon. Blank lines, list items (a wrapped item's continuation is
+  joined into the item), `>` quotes, headings, `|` table rows, rules, bare
+  URLs, label rows (`Status: merged`), sign-offs (`Best regards,`), `P.S.`
+  lines, indented lines outside a list, fenced code and everything below a
+  `-- ` signature separator are kept as written. `html_body` is never
+  reflowed.
+- `encodeQuotedPrintable` sends every text part, plain and HTML,
+  `Content-Transfer-Encoding: quoted-printable`. Lines on the wire stay within
+  76 characters, and a soft break never splits one character's bytes; the
+  soft breaks disappear when the recipient decodes, so a
+  paragraph stays one logical line.
+- The `plaintext_body` descriptions on `send_email` and `upsert_draft_email`
+  ask callers to write each paragraph as one line.
+
+What the heuristic gets wrong is `HACKS.md` #121.
+
+**Tests.** `images/bundle-google/test/gmail-body-text.test.ts`: the reflow
+rules, the encoding (wire line lengths and a decode round trip), the MIME
+headers for each body shape, and the raw message `sendMessage` and
+`createDraft` hand Gmail.
