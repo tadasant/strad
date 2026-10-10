@@ -214,7 +214,7 @@ Five variables; three are required.
 
 **The AWS default credential chain is never consulted.** The SDK would read
 `AWS_ACCESS_KEY_ID` straight out of the process environment, and this server
-shares a process with twenty-four others — a stray AWS variable that arrived for
+shares a process with twenty-seven others — a stray AWS variable that arrived for
 some other reason must not become the identity that spends device minutes.
 
 **The region is a closed set of one.** Device Farm's device cloud is served from
@@ -229,7 +229,7 @@ Values go into the store through the console at `/ui/secrets`, by a human. See
 The mount comes up with no credentials at all, marked `degraded` on `/healthz`.
 `tools/list` works, so the console and an agent can see what the deployment would
 offer, and every call fails with an error naming the variables. One server's
-missing config must not cost the other twenty-four their boot.
+missing config must not cost the other twenty-seven their boot.
 
 ## Tests
 

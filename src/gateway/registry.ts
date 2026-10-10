@@ -330,7 +330,7 @@ export class Registry {
           // "Never reachable from the internet" is a reachability property, not
           // an authorization one, so the internal token rides along here too —
           // from the code, unconditionally, rather than from a `headers:` entry
-          // each of thirty-four config entries would have to remember. The other
+          // each of thirty-eight config entries would have to remember. The other
           // half is the bundle host refusing a request without it
           // (`servers/bundle/host/src/internal-auth.ts`).
           const base = privateUrlFor(server.bundle, env);

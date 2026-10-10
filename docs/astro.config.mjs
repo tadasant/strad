@@ -110,6 +110,9 @@ export default defineConfig({
             { label: "WhatsApp", slug: "servers/whatsapp" },
             { label: "BILL Spend & Expense", slug: "servers/bill-spend" },
             { label: "LiveOak Bank", slug: "servers/liveoak" },
+            { label: "Airtable", slug: "servers/airtable" },
+            { label: "FlightAware AeroAPI", slug: "servers/flightaware" },
+            { label: "DigitalOcean", slug: "servers/digitalocean" },
             { label: "AWS Device Farm", slug: "servers/aws-device-farm" },
             {
               label: "AWS Device Farm: first-time setup",

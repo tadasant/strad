@@ -391,7 +391,7 @@ one (hack #4).
 **✅ RESOLVED.** Core presents the internal token to every `supplementary-image`
 component, and the `strad-bundle` host refuses a mount request without it.
 
-**What.** The `strad-bundle` container — twenty-five mounts, and every upstream
+**What.** The `strad-bundle` container — twenty-eight mounts, and every upstream
 credential behind them — serves every mount unauthenticated. Its only protection
 is the network boundary: an internal-only App Platform component
 (`internal_ports: [8080]`, no public route), reachable by core over the private
@@ -788,10 +788,10 @@ still what makes prod's read-only variants read-only.
 policies) → confirm → _then_ delete the per-server images, their workflows and the
 toggle plumbing.
 
-## 24. Twenty-five servers share one process, and one Chromium
+## 24. Twenty-eight servers share one process, and one Chromium
 
-The collapsed bundle is one container running twenty-five MCP servers and one
-headless Chromium. An OOM there is a twenty-five-server outage; it used to be a
+The collapsed bundle is one container running twenty-eight MCP servers and one
+headless Chromium. An OOM there is a twenty-eight-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -2637,7 +2637,7 @@ both `infra/strad.staging.yaml` and `strad.config.example.yaml` — plus the cou
 in `servers/bundle/scripts/smoke.mjs`, `test/staging-config.test.ts` and
 `.github/workflows/ci.yml`.
 
-## 56. Per-slug box names are emitted for every server; seven of seventeen trees can read one
+## 56. Per-slug box names are emitted for every server; eleven of twenty trees can read one
 
 **What.** Every enabled `supplementary-image` server's resolved `env:` is emitted
 onto its bundle TWICE: under the bare name it always had, and under
@@ -2692,10 +2692,10 @@ DigitalOcean both times.
 **The edges.**
 
 - **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
-  `grafana`, `bill-spend`, `aws-device-farm` and `whatsapp` read an injected env.** The other
-  nine trees are vendored upstream code reading `process.env`, often lazily at
-  call time (`onepassword` builds its client per call off
-  `OP_SERVICE_ACCOUNT_TOKEN`). A single process cannot overlay `process.env`
+  `grafana`, `bill-spend`, `aws-device-farm`, `whatsapp`, `liveoak`, `airtable`,
+  `flightaware` and `digitalocean` read an injected env.** The other nine trees
+  are vendored upstream code reading `process.env`, often lazily at call time
+  (`onepassword` builds its client per call off `OP_SERVICE_ACCOUNT_TOKEN`). A single process cannot overlay `process.env`
   per-request without a race, so each tree needs its own seam and gets it when it
   needs one. The renderer cannot tell which tree an image contains, so a slug of
   another tree given its own path renders, warns, and serves nothing;
@@ -3736,7 +3736,7 @@ behaviour, which is the pre-change one.
 a listed parameter current in a supplementary container's `process.env` without a
 redeploy. What it cannot do is make the MCP server inside that container LOOK at
 the new value. That is a property of the upstream, and this image runs
-twenty-five of them, most written by other people.
+twenty-eight of them, most written by other people.
 
 The split is real and it is not subtle:
 
@@ -5404,7 +5404,7 @@ Workspace documents and cannot touch an uploaded binary. `files.copy` with
 file in the owner's Drive every time an agent reads a spreadsheet — a write, in a
 read tier. The npm packages that read xlsx are large, and the popular one has
 been unmaintained on npm since 0.18.5 with a live prototype-pollution advisory;
-this process holds three Google accounts' refresh tokens beside twenty-four other
+this process holds three Google accounts' refresh tokens beside twenty-seven other
 MCP servers.
 
 **What it costs, and what a caller is told.** Every Office-backed result carries
@@ -6183,3 +6183,42 @@ once #407 has landed. 3 would need the vendored tool to take its posture per
 mount rather than from `process.env`, which is an upstream change, and so is 5
 (count a note's body as sensitive). 6 is the design. 7 is relaxing the schema
 check for own-path slugs, which the renderer already polices.
+
+## 119. airtable, flightaware and digitalocean have met only fakes, and one of them replaces a package that never existed
+
+**What.** `servers/airtable/`, `servers/flightaware/` and `servers/digitalocean/`
+are strad's own servers over three HTTPS APIs, one static key each. They replace
+three npx entries in the Zimmer catalog (`airtable-mcp-server@1.13.0`,
+`flightaware-mcp-server@latest`, `@digitalocean/mcp@1.0.51`).
+
+1. **Untested against the real APIs.** Each tree's suite drives a real MCP
+   client against an injected fake `fetch` in the upstream's documented shapes.
+   Request and error shapes, pagination metadata, AeroAPI's billing of
+   `max_pages` and DigitalOcean's log-link flow come from published references,
+   not observed traffic.
+2. **`flightaware-mcp-server` is not on npm** (the registry answers 404), so the
+   catalog entry it replaces never started and there was no surface to match.
+   The eight tools were designed from the catalog's description and the AeroAPI
+   v4 OpenAPI document.
+3. **DigitalOcean covers droplets, apps and databases, not the rest.** The npx
+   binary serves about two hundred tools across eighteen services; this serves
+   twenty-nine. DigitalOcean's own hosted remote servers
+   (`https://<service>.mcp.digitalocean.com/mcp`) are the route to the rest, as a
+   `remote-http` slug.
+4. **DigitalOcean's redaction is by name pattern.** Database passwords, keys,
+   tokens, secret-named app env values, URI userinfo and credential query
+   parameters are stripped from every result by key-name pattern and by URI shape
+   (`servers/digitalocean/shared/src/secrets.ts`), and a spec carrying the
+   `[redacted]` marker is refused rather than written back. A credential
+   DigitalOcean returns under a name the pattern does not match passes through
+   until it is added there. A token without `database:view_credentials` is the
+   second fence.
+
+5. **DigitalOcean's log host is assumed.** `apps-get-logs` fetches log links only
+   from hosts ending `.digitaloceanspaces.com` or `.digitalocean.com`, with no
+   redirects. DigitalOcean does not document the host, so a link elsewhere fails
+   naming it.
+
+**Undo.** 1 and 5 lapse with the first real call on each slug; anything they
+find is a fix here. 2 and 3 are the design. 4 goes if DigitalOcean ever returns
+credentials only to a scope the token can be denied, which it does not today.

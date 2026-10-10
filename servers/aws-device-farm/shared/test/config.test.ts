@@ -39,7 +39,7 @@ describe("the credential is read under names of its own", () => {
   });
 
   it("never falls back to the AWS default credential chain", () => {
-    // The bundle is one process for twenty-five servers. An AWS variable that
+    // The bundle is one process for twenty-eight servers. An AWS variable that
     // arrived for some other reason must not become the identity that spends
     // device minutes, so the generic names are simply not read.
     expect(() =>

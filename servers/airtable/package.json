@@ -1,0 +1,14 @@
+{
+  "name": "airtable",
+  "version": "0.1.0",
+  "private": true,
+  "description": "strad's Airtable server — bases, tables, records, comments and attachments over a personal access token, with bounded reads. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared",
+    "test": "npm run test --workspace shared"
+  }
+}
