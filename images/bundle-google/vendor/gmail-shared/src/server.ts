@@ -2,7 +2,11 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { JWT, OAuth2Client } from 'google-auth-library';
 import { createRegisterTools } from './tools.js';
 import type { Email, EmailListItem } from './types.js';
-import type { MimeAttachment } from './gmail-client/lib/mime-utils.js';
+import { formatFromHeader, type MimeAttachment } from './gmail-client/lib/mime-utils.js';
+import { getSendAsDisplayName } from './gmail-client/lib/send-as.js';
+
+/** How long a send-as display name is trusted before it is read again. */
+export const SENDER_NAME_TTL_MS = 10 * 60 * 1000;
 
 /**
  * Gmail API scopes required by this server.
@@ -180,6 +184,7 @@ abstract class BaseGmailClient implements IGmailClient {
   private cachedToken: string | null = null;
   private tokenExpiry: number = 0;
   private refreshPromise: Promise<void> | null = null;
+  private senderName: { email: string; name: string | undefined; expiry: number } | null = null;
 
   /**
    * Perform the authentication-specific token refresh.
@@ -195,6 +200,32 @@ abstract class BaseGmailClient implements IGmailClient {
    * Service account uses the impersonation email; OAuth2 fetches from profile API.
    */
   protected abstract getSenderEmail(): Promise<string>;
+
+  /**
+   * The From header for a message this client composes: the sender's address
+   * with the display name Gmail holds for it (see `gmail-client/lib/send-as.ts`).
+   * Without the name, the recipient sees the bare address, because Gmail sends
+   * the header the raw MIME spells.
+   *
+   * The name is remembered for {@link SENDER_NAME_TTL_MS}, so a rename in
+   * Gmail's settings takes effect without a restart. A failed lookup is not
+   * remembered and costs only the name: the message still goes out, from the
+   * bare address.
+   */
+  protected async getFromHeader(headers: Record<string, string>): Promise<string> {
+    const email = await this.getSenderEmail();
+    const cached = this.senderName;
+    if (cached && cached.email === email && Date.now() < cached.expiry) {
+      return formatFromHeader(email, cached.name);
+    }
+    try {
+      const name = await getSendAsDisplayName(this.baseUrl, headers, email);
+      this.senderName = { email, name, expiry: Date.now() + SENDER_NAME_TTL_MS };
+      return formatFromHeader(email, name);
+    } catch {
+      return email;
+    }
+  }
 
   protected updateToken(token: string, expiryDate: number): void {
     this.cachedToken = token;
@@ -281,9 +312,9 @@ abstract class BaseGmailClient implements IGmailClient {
     attachments?: MimeAttachment[];
   }): Promise<Draft> {
     const headers = await this.getHeaders();
-    const senderEmail = await this.getSenderEmail();
+    const from = await this.getFromHeader(headers);
     const { createDraft } = await import('./gmail-client/lib/drafts.js');
-    return createDraft(this.baseUrl, headers, senderEmail, options);
+    return createDraft(this.baseUrl, headers, from, options);
   }
 
   async updateDraft(
@@ -302,9 +333,9 @@ abstract class BaseGmailClient implements IGmailClient {
     }
   ): Promise<Draft> {
     const headers = await this.getHeaders();
-    const senderEmail = await this.getSenderEmail();
+    const from = await this.getFromHeader(headers);
     const { updateDraft } = await import('./gmail-client/lib/drafts.js');
-    return updateDraft(this.baseUrl, headers, senderEmail, draftId, options);
+    return updateDraft(this.baseUrl, headers, from, draftId, options);
   }
 
   async getDraft(draftId: string): Promise<Draft> {
@@ -342,9 +373,9 @@ abstract class BaseGmailClient implements IGmailClient {
     attachments?: MimeAttachment[];
   }): Promise<Email> {
     const headers = await this.getHeaders();
-    const senderEmail = await this.getSenderEmail();
+    const from = await this.getFromHeader(headers);
     const { sendMessage } = await import('./gmail-client/lib/send-message.js');
-    return sendMessage(this.baseUrl, headers, senderEmail, options);
+    return sendMessage(this.baseUrl, headers, from, options);
   }
 
   async sendDraft(draftId: string): Promise<Email> {

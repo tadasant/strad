@@ -158,6 +158,32 @@ export function toWrappedBase64(content: Buffer): string {
 }
 
 /**
+ * Builds the From header's value: `"Display Name" <address>`, or the bare
+ * address when there is no name.
+ *
+ * An ASCII name is sent as an RFC 5322 quoted-string, with `"` and `\` escaped,
+ * so a name like `Tadas's Assistant` (the apostrophe is legal inside quotes and
+ * needs no escaping) or `Doe, Jane` (a bare comma would split the address list)
+ * reaches the recipient intact. A non-ASCII name is sent as RFC 2047
+ * encoded-words, which must NOT sit inside quotes. Control characters and
+ * Unicode line separators become spaces first, so a name can never end the
+ * header early and inject another one.
+ */
+export function formatFromHeader(email: string, displayName?: string): string {
+  const name = (displayName ?? '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1F\x7F\u2028\u2029]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!name) return email;
+  // eslint-disable-next-line no-control-regex
+  if (/[^\x00-\x7F]/.test(name)) {
+    return `${encodeWordsFolded(name)} <${email}>`;
+  }
+  return `"${name.replace(/["\\]/g, '\\$&')}" <${email}>`;
+}
+
+/**
  * Builds a MIME message from email options.
  * Without attachments, the message is the body entity (plain text, HTML, or
  * multipart/alternative when both are given). With attachments, the message is

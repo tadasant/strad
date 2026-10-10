@@ -99,3 +99,45 @@ against the same `0ed34de` base. The `shared/src` diff applied without change;
 strad's review then added the resolved-address check, the `BlockList`, the one
 download budget, filename sanitizing, the 17 MB cap, and the `from_draft_id`
 refusal.
+
+---
+
+## 2. Sent mail and drafts carry the sender's display name
+
+**Upstream.** Every message the tree composes starts `From: <address>`, where
+the address is the impersonated user or the OAuth account's profile email.
+Gmail sends that header as written. It does not add the account's name to a
+bare address, so the recipient sees `zimmer@tadasant.com` and no name, however
+the account is named.
+
+**Here.** Before it composes a message, the client reads the account's send-as
+settings (`GET users/me/settings/sendAs`, allowed under `gmail.readonly` and
+`gmail.modify`). It takes the `displayName` of the entry whose address matches
+the sender, and writes `From: "Display Name" <address>`. The name is the one in
+Gmail's settings (Settings → Accounts → Send mail as → edit info), so it is
+changed there and not in strad.
+
+- **Quoting.** An ASCII name is an RFC 5322 quoted-string, with `"` and `\`
+  escaped. An apostrophe (`Tadas's Assistant`) and a comma need no escaping
+  inside the quotes. A non-ASCII name is sent as RFC 2047 encoded-words,
+  unquoted and folded. Control characters and Unicode line separators become
+  spaces, so a name cannot inject a header.
+- **Only the sender's own entry.** Another address's name, even the primary
+  one's, is never borrowed. No matching entry, or one with an empty name, means
+  the bare address, which is what upstream sends.
+- **Cached for 10 minutes per client**, so a rename lands without a restart.
+- **A failed lookup costs the name, not the message.** The message goes out from
+  the bare address, and the next message tries the lookup again.
+- **Covers** `send_email` (replies included), `upsert_draft_email` (create and
+  update), and so a draft later sent with `from_draft_id`, since a draft keeps the
+  `From` it was written with.
+
+**Files.** `src/gmail-client/lib/send-as.ts` (new),
+`src/gmail-client/lib/mime-utils.ts` (`formatFromHeader`), `src/server.ts`
+(`getFromHeader`).
+
+**Tests.** `images/bundle-google/test/gmail-from-name.test.ts`, covering the
+quoting (the apostrophe case included), the encoded-words, the injection guard,
+the send-as match, and the real OAuth client's send, reply, draft create and
+draft update against a stubbed Gmail. It has run against stubs only. No message
+was sent to test it.

@@ -19,7 +19,8 @@ import { defineConfig } from "vitest/config";
 //   - `test/` — the image's own source, `src/` (`src/gmail.ts` and
 //     `src/docs.ts`, strad's per-account layers over the gmail and google-docs
 //     trees, and `src/confirm.ts`), plus the
-//     gmail fork's deltas (`test/gmail-attachments.test.ts`).
+//     gmail fork's deltas (`test/gmail-attachments.test.ts`,
+//     `test/gmail-from-name.test.ts`).
 //
 // The sheets suite lives outside that package's `include: ["src/**/*"]`, so
 // `npm run build` emits exactly the `build/` it emitted before; this image's own
