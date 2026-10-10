@@ -7,9 +7,14 @@
  * spells, and Gmail does not add the name to a bare address. So the server has
  * to read the name and put it in the header itself.
  *
- * `sendAs.list` is readable with `gmail.readonly` or `gmail.modify`, so every
- * credential that can send can also read this.
+ * `sendAs.list` needs `gmail.readonly`, `gmail.modify`, `gmail.settings.basic`
+ * or full `mail.google.com`. A credential granted only `gmail.send` or
+ * `gmail.compose` can send but not read this, and its mail goes out from the
+ * bare address.
  */
+
+/** A lookup slower than this gives up, so a hung settings read never holds up a send. */
+export const SEND_AS_TIMEOUT_MS = 5000;
 
 interface SendAs {
   sendAsEmail?: string;
@@ -29,7 +34,11 @@ export async function getSendAsDisplayName(
   headers: Record<string, string>,
   email: string
 ): Promise<string | undefined> {
-  const response = await fetch(`${baseUrl}/settings/sendAs`, { method: 'GET', headers });
+  const response = await fetch(`${baseUrl}/settings/sendAs`, {
+    method: 'GET',
+    headers,
+    signal: AbortSignal.timeout(SEND_AS_TIMEOUT_MS),
+  });
   if (!response.ok) {
     throw new Error(`Failed to list send-as settings: ${response.status} ${response.statusText}`);
   }

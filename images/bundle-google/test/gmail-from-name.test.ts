@@ -10,10 +10,15 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   buildMimeMessage,
   formatFromHeader,
+  MAX_DISPLAY_NAME_LENGTH,
 } from "../vendor/gmail-shared/src/gmail-client/lib/mime-utils.js";
-import { getSendAsDisplayName } from "../vendor/gmail-shared/src/gmail-client/lib/send-as.js";
+import {
+  getSendAsDisplayName,
+  SEND_AS_TIMEOUT_MS,
+} from "../vendor/gmail-shared/src/gmail-client/lib/send-as.js";
 import {
   OAuth2GmailClient,
+  SENDER_NAME_RETRY_MS,
   SENDER_NAME_TTL_MS,
 } from "../vendor/gmail-shared/src/server.js";
 
@@ -52,11 +57,30 @@ describe("formatFromHeader", () => {
     const header = formatFromHeader("t@example.com", name);
     expect(header).toMatch(/^=\?UTF-8\?B\?/);
     expect(header).not.toContain('"');
-    expect(header.endsWith(" <t@example.com>")).toBe(true);
+    expect(header.endsWith("\r\n <t@example.com>")).toBe(true);
     for (const line of `From: ${header}`.split("\r\n")) {
       expect(line.length).toBeLessThanOrEqual(78);
     }
-    expect(decodeWords(header.replace(" <t@example.com>", ""))).toBe(name);
+    expect(decodeWords(header.replace("\r\n <t@example.com>", ""))).toBe(name);
+  });
+
+  it("puts the address on its own line after an encoded name, so a long one stays short", () => {
+    const email = `${"a".repeat(40)}@${"b".repeat(20)}.example.com`;
+    const header = formatFromHeader(email, "Žemaitė");
+    for (const line of `From: ${header}`.split("\r\n")) {
+      expect(line.length).toBeLessThanOrEqual(78);
+    }
+  });
+
+  it("strips bidi overrides, which would reorder how the name renders", () => {
+    expect(formatFromHeader("a@example.com", "Bob\u202Egnp.exe\u2066x")).toBe(
+      '"Bob gnp.exe x" <a@example.com>',
+    );
+  });
+
+  it(`holds a name to ${MAX_DISPLAY_NAME_LENGTH} characters`, () => {
+    const header = formatFromHeader("a@example.com", "x".repeat(5000));
+    expect(header).toBe(`"${"x".repeat(MAX_DISPLAY_NAME_LENGTH)}" <a@example.com>`);
   });
 
   it("turns line breaks and control characters into spaces, so no header is injected", () => {
@@ -110,6 +134,22 @@ describe("getSendAsDisplayName", () => {
     expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}/settings/sendAs`);
   });
 
+  it(`gives up after ${SEND_AS_TIMEOUT_MS} ms rather than holding up the send`, async () => {
+    // A fetch that never answers on its own: only the request's signal ends it.
+    const fetchMock = vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    // Real time: `AbortSignal.timeout` runs on Node's own timer, which Vitest's
+    // fake timers do not reach.
+    const started = Date.now();
+    await expect(getSendAsDisplayName(BASE, {}, ZIMMER)).rejects.toThrow();
+    expect(Date.now() - started).toBeGreaterThanOrEqual(SEND_AS_TIMEOUT_MS - 100);
+  });
+
   it("never borrows another address's name, not even the primary's", async () => {
     serve({ sendAs: [{ sendAsEmail: "tadas@tadasant.com", displayName: "Tadas", isPrimary: true }] });
     await expect(getSendAsDisplayName(BASE, {}, ZIMMER)).resolves.toBeUndefined();
@@ -140,6 +180,7 @@ describe("the client's sends and drafts carry the name", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   /** A fake Gmail: answers the profile and send-as reads, records every raw message. */
@@ -215,7 +256,10 @@ describe("the client's sends and drafts carry the name", () => {
     ]);
   });
 
-  it("still sends, from the bare address, when the name cannot be read, and tries again next time", async () => {
+  it("still sends, from the bare address, when the name cannot be read, and tries again after the retry window", async () => {
+    // Only Date is faked: the fetch stub resolves on the real microtask queue.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.spyOn(console, "error").mockImplementation(() => {});
     let fail = true;
     const gmail = fakeGmail(() => (fail ? new Response("{}", { status: 403 }) : named()));
     const client = new TestClient();
@@ -223,11 +267,19 @@ describe("the client's sends and drafts carry the name", () => {
 
     await client.sendMessage(message);
     fail = false;
+    // Inside the window the failure is remembered: no second lookup.
+    await client.sendMessage(message);
+    expect(gmail.sendAsCalls()).toBe(1);
+    vi.setSystemTime(Date.now() + SENDER_NAME_RETRY_MS + 1);
     await client.sendMessage(message);
 
     expect(gmail.raws.map((r) => r.from)).toEqual([
       `From: ${ZIMMER}`,
+      `From: ${ZIMMER}`,
       `From: "Tadas's Assistant" <${ZIMMER}>`,
     ]);
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("could not read the send-as display name"),
+    );
   });
 });

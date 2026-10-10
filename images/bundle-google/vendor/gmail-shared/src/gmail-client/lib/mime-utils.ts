@@ -157,6 +157,9 @@ export function toWrappedBase64(content: Buffer): string {
   return encoded.replace(/.{1,76}/g, (line) => line + '\r\n').replace(/\r\n$/, '');
 }
 
+/** The longest display name a From header carries, in characters. */
+export const MAX_DISPLAY_NAME_LENGTH = 200;
+
 /**
  * Builds the From header's value: `"Display Name" <address>`, or the bare
  * address when there is no name.
@@ -165,20 +168,23 @@ export function toWrappedBase64(content: Buffer): string {
  * so a name like `Tadas's Assistant` (the apostrophe is legal inside quotes and
  * needs no escaping) or `Doe, Jane` (a bare comma would split the address list)
  * reaches the recipient intact. A non-ASCII name is sent as RFC 2047
- * encoded-words, which must NOT sit inside quotes. Control characters and
- * Unicode line separators become spaces first, so a name can never end the
- * header early and inject another one.
+ * encoded-words, which must NOT sit inside quotes, and the address goes on
+ * its own folded line so no line runs long. Control characters, Unicode line
+ * separators and bidi overrides become spaces first, so a name can never end
+ * the header early and inject another one, nor reorder how it renders. A name
+ * is held to {@link MAX_DISPLAY_NAME_LENGTH} characters.
  */
 export function formatFromHeader(email: string, displayName?: string): string {
-  const name = (displayName ?? '')
+  const cleaned = (displayName ?? '')
     // eslint-disable-next-line no-control-regex
-    .replace(/[\x00-\x1F\x7F\u2028\u2029]/g, ' ')
+    .replace(/[\x00-\x1F\x7F-\x9F\u2028\u2029\u202A-\u202E\u2066-\u2069]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+  const name = [...cleaned].slice(0, MAX_DISPLAY_NAME_LENGTH).join('').trim();
   if (!name) return email;
   // eslint-disable-next-line no-control-regex
   if (/[^\x00-\x7F]/.test(name)) {
-    return `${encodeWordsFolded(name)} <${email}>`;
+    return `${encodeWordsFolded(name)}\r\n <${email}>`;
   }
   return `"${name.replace(/["\\]/g, '\\$&')}" <${email}>`;
 }
