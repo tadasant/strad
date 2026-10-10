@@ -903,6 +903,21 @@ const SupplementaryImageServer = ServerBase.extend({
    */
   confirmations: z.boolean().default(false),
   /**
+   * This slug's confirmed tools run WITHOUT a human: core tells the bundle so,
+   * on every `tools/call`, and the bundle answers the tool's own prompt with
+   * `accept` instead of asking anyone. The case is a mailbox that is the
+   * agent's own (Zimmer's), where a confirmation would ask a human to approve
+   * mail they are not sending as themselves. Off by default, and per SLUG: the
+   * bundle is one process serving every mount, and only a call core made for
+   * this slug carries the waiver.
+   *
+   * Exclusive with `confirmations: true`: a slug either forwards the caller's
+   * channel or waives the human, and one declaring both is refused rather than
+   * resolved. Core never forwards the caller's URL to a waived slug. Checked-in
+   * config only (src/config/overlay.ts). See src/gateway/elicitation.ts.
+   */
+  skipConfirmations: z.boolean().default(false),
+  /**
    * Headers the bundle sends on its approval requests (the POST and every
    * poll), for the edge in front of the approval URL rather than for the
    * approval service itself: a Cloudflare Access service token is the case.
@@ -1717,6 +1732,8 @@ export const StradConfig = z
       seen.add(s.slug);
     }
 
+    // A SLUG ASKS ITS CALLER'S HUMAN OR NOBODY, NEVER BOTH.
+    //
     // CONFIRMATION HEADERS GO WITH A CONFIRMATION CHANNEL, AND ONLY ADD.
     //
     // On a slug that forwards no channel they would be resolved by nothing and
@@ -1725,6 +1742,39 @@ export const StradConfig = z
     // so a name it would have to drop or obey is refused here instead.
     for (const s of cfg.servers) {
       if (s.kind !== "supplementary-image") continue;
+      if (s.confirmations && s.skipConfirmations) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `server "${s.slug}" declares both confirmations: true and ` +
+            "skipConfirmations: true. A slug either asks the caller's human " +
+            "or asks nobody; pick one.",
+          path: ["servers"],
+        });
+      }
+      // Slugs on one (bundle, path) are one mount and one mailbox, so a waiver
+      // there would be an ungated door beside a gated one.
+      const gatedSibling = s.skipConfirmations
+        ? cfg.servers.find(
+            (o) =>
+              o.kind === "supplementary-image" &&
+              o.slug !== s.slug &&
+              o.bundle === s.bundle &&
+              o.path === s.path &&
+              o.confirmations,
+          )
+        : undefined;
+      if (gatedSibling) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `server "${s.slug}" declares skipConfirmations: true on ` +
+            `${s.bundle}${s.path}, where "${gatedSibling.slug}" declares ` +
+            "confirmations: true. They are one mount and one mailbox, so the " +
+            "waiver would be an ungated door beside a gated one.",
+          path: ["servers"],
+        });
+      }
       const names = Object.keys(s.confirmationHeaders);
       if (names.length > 0 && !s.confirmations) {
         ctx.addIssue({

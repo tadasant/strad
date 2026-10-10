@@ -115,6 +115,10 @@ gateway:
   #   confirmationHeaders:
   #     CF-Access-Client-Id: "${ZIMMER_CF_ACCESS_CLIENT_ID}"
   #     CF-Access-Client-Secret: "${ZIMMER_CF_ACCESS_CLIENT_SECRET}"
+  # A slug whose mailbox is the agent's own (no person is being sent as)
+  # declares `skipConfirmations: true` instead: its confirmed tools run with
+  # nobody asked, and it never receives the header. Not beside
+  # `confirmations: true`.
   # See docs/servers/confirmations.
   elicitation:
     allowedUrlPrefixes: [] # e.g. [https://zimmer.tadasant.com/api/v1/elicitations/session/]

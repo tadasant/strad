@@ -78,6 +78,18 @@
  * `confirmationHeaders:` with the channel, and they go on the POST and every
  * poll, to the URL core held to its allowlist and nowhere else.
  *
+ * ## A slug that waives the human
+ *
+ * A mailbox that is the agent's own (Zimmer's) sends as itself, and asking a
+ * human to approve every one of its sends is asking the wrong person. Its
+ * slug declares `skipConfirmations: true`, and core then puts
+ * `{ skip: true, slug }` under the same `_meta` key on every `tools/call` for
+ * it, and never the caller's URL. That call's scope answers the tool's prompt
+ * with `accept` and asks nobody. The waiver is per CALL, like the channel: a
+ * sibling mount in this process, a mailbox somebody else owns, still refuses
+ * or asks, because its calls do not carry it. A dropped call still sends
+ * nothing ({@link guardSends}, {@link gateGmailSends}).
+ *
  * ## Fail closed
  *
  * A confirmed tool refuses, before it runs, when:
@@ -86,6 +98,7 @@
  *     that sent no header, or an `admin` token: holding every role does not
  *     skip the human);
  *   - core refused the caller's channel (a URL off the allowlist);
+ *   - the entry is malformed, including one carrying both a URL and `skip`;
  *   - the CONTAINER's environment would route around the per-call channel:
  *     `ELICITATION_ENABLED=false`, which makes the vendored tool skip the
  *     prompt, or a container-wide `ELICITATION_REQUEST_URL` /
@@ -134,7 +147,10 @@ const LOOKUP_MS = 5_000;
 
 const ANSWERS = new Set(["accept", "decline", "cancel", "expired"]);
 
-/** A channel core forwarded, or the reason it refused the caller's. */
+/**
+ * A channel core forwarded, the reason it refused the caller's, or core's
+ * word that this slug's confirmed tools run without a human.
+ */
 export type Channel =
   | {
       url: string;
@@ -142,7 +158,8 @@ export type Channel =
       ttlMs?: number;
       headers?: Record<string, string>;
     }
-  | { refused: string };
+  | { refused: string }
+  | { skip: true; slug?: string };
 
 /** What core's schema refuses too (`confirmationHeaderProblem`). */
 const RESERVED_HEADERS = new Set([
@@ -176,6 +193,15 @@ export function channelFrom(meta: unknown): Channel | null {
   if (!raw || typeof raw !== "object") return null;
   const entry = raw as Record<string, unknown>;
   if (typeof entry.refused === "string") return { refused: entry.refused };
+  if (entry.skip !== undefined) {
+    // Exactly `true`, and nothing else beside it that core would never send:
+    // anything ambiguous is no channel, and the guard refuses.
+    if (entry.skip !== true || entry.url !== undefined) return null;
+    return {
+      skip: true,
+      slug: typeof entry.slug === "string" ? entry.slug : undefined,
+    };
+  }
   if (typeof entry.url !== "string") return null;
   let url: URL;
   try {
@@ -696,6 +722,13 @@ export function withConfirmation(
       // Unreachable through the guard; a throw is the closed answer anyway.
       throw new Error("no confirmation channel for this call");
     }
+    if ("skip" in channel) {
+      // Core's waiver for this slug: the answer a human would give, asked of
+      // nobody. A dropped call is still a cancel.
+      return scope.signal?.aborted
+        ? { action: "cancel" }
+        : { action: "accept", content: { confirm: true } };
+    }
     const client = options.client;
     const account =
       options.account ??
@@ -747,7 +780,7 @@ export function withConfirmation(
         return () => {
           const caps = t.getClientCapabilities();
           const channel = current.getStore()?.channel;
-          return channel && "url" in channel
+          return channel && ("url" in channel || "skip" in channel)
             ? { ...caps, elicitation: { form: {} } }
             : caps;
         };

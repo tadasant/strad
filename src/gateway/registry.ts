@@ -355,6 +355,8 @@ export class Registry {
               // Only a slug that declared a confirmed tool holds the caller's
               // channel. See src/gateway/elicitation.ts.
               forwardElicitation: server.confirmations,
+              // ...and a slug that waived the human holds no channel at all.
+              skipConfirmations: server.skipConfirmations,
               confirmationHeaders:
                 Object.keys(server.confirmationHeaders).length > 0
                   ? () =>

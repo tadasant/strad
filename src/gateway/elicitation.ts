@@ -27,6 +27,13 @@
  *      forwards a client's own `_meta`, so an upstream can trust that key as
  *      core's word.
  *
+ * A slug that declares `skipConfirmations: true` instead gets no channel at
+ * all, whatever the caller sent: core puts `{ skip: true, slug }` under the
+ * same key on every `tools/call` ({@link elicitationSkipMeta}), and the bundle
+ * runs that call's confirmed tool without asking anyone. The waiver is core's
+ * word for the same reason the channel is, and it rides on the call, so it
+ * reaches that slug's calls and no sibling mount's.
+ *
  * A request with no header carries no channel, and a confirmed tool refuses.
  * That includes the console playground and the flow-through route, which never
  * build one, and an `admin` token, which holds every role and still has no
@@ -210,4 +217,12 @@ export function elicitationMeta(
             ...(channel.headers ? { headers: channel.headers } : {}),
           },
   };
+}
+
+/**
+ * The `_meta` for a `skipConfirmations: true` slug: run this call's confirmed
+ * tool unasked. No URL, no headers; the caller's channel stays with core.
+ */
+export function elicitationSkipMeta(slug: string): Record<string, unknown> {
+  return { [ELICITATION_META_KEY]: { skip: true, slug } };
 }

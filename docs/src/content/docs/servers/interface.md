@@ -668,6 +668,16 @@ plus two that shape how this server gets its values:
   and a `timeoutMs` long enough for a human. `supplementary-image` only. See
   [Confirming a tool before it acts](/servers/confirmations/).
 
+- **`skipConfirmations`** (default `false`) — this server's confirmed tools run
+  without a human. Core tells the bundle so on every `tools/call` and never
+  forwards the caller's `X-Elicitation-Url`. For a mailbox that is the agent's
+  own, where a prompt would ask a person to approve mail not sent as them. Per
+  slug: a sibling on the same bundle still asks or refuses. A config error
+  beside `confirmations: true`, or on a `path` another slug on the bundle
+  gates with `confirmations: true`. Checked-in config only. `supplementary-image`
+  only. See
+  [a mailbox that is the agent's own](/servers/confirmations/#a-mailbox-that-is-the-agents-own).
+
 - **`confirmationHeaders`** (default `{}`) — headers the bundle sends on its
   approval requests, the POST and every poll, for an edge in front of the
   approval URL: a Cloudflare Access service token

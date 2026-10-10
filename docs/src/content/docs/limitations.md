@@ -3480,7 +3480,8 @@ gmail's `send_email` asks a human first, at the URL the `/mcp` request names in
   another session's URL can raise a prompt there but cannot answer it: Zimmer's
   token route creates and polls, and only a human in Zimmer's UI responds.
 - **The console cannot send mail.** The playground has no prompt surface, so it
-  gets the same refusal as a caller with no header.
+  gets the same refusal as a caller with no header. A `skipConfirmations: true`
+  slug is the exception, since nobody is asked there.
 - **A window is only as long as the caller's hop holds it.** strad's own hop
   holds any `timeoutMs`, because the bundle sends keepalives. The caller's hop
   to core belongs to the caller's client and any ingress in front of strad, and
@@ -3494,6 +3495,12 @@ gmail's `send_email` asks a human first, at the URL the `/mcp` request names in
 - **A container-wide `ELICITATION_ENABLED=false`, `ELICITATION_REQUEST_URL` or
   `ELICITATION_POLL_URL` on the bundle refuses every send**, rather than skipping
   the prompt or sending it to one address for everybody.
+- **`skipConfirmations: true` trusts the config about whose mailbox it is.** A
+  slug that declares it sends with nobody asked
+  ([how](/servers/confirmations/#a-mailbox-that-is-the-agents-own)). strad does
+  not check that the slug's credential is the agent's own account rather than a
+  person's, so the waiver is only as right as the reviewed config line that
+  sets it.
 
 See `HACKS.md` #113.
 
