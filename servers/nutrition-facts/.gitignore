@@ -1,0 +1,4 @@
+node_modules/
+build/
+# The data files `npm run data` writes; built into the image, never committed.
+/data/

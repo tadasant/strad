@@ -609,9 +609,9 @@ nothing warns beforehand. Publishing the OAuth app removes the expiry.
 
 ### 24. Twenty-eight servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts thirty MCP servers,
+The `bundle` component runs one Node process that mounts thirty-one MCP servers,
 launches one shared Chromium and supervises one `mcp-grafana` child process, on
-`apps-s-1vcpu-2gb`. A crash in the host takes all thirty down together, and
+`apps-s-1vcpu-2gb`. A crash in the host takes all thirty-one down together, and
 Chromium contends with every other server for the single vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -1002,7 +1002,7 @@ a store-wide read.
 keeps a listed parameter current in a supplementary container's environment
 without a redeploy. It cannot make the MCP server inside that container **look**
 at the new value — that is a property of the upstream, and the bundle image runs
-thirty of them, most written by other people.
+thirty-one of them, most written by other people.
 
 `strad-fetch` builds its scraping clients inside a factory the host invokes per
 request, so a rotated key is used by the next tool call; that is the case the
@@ -2190,7 +2190,7 @@ ever rebuilt with a rootless or hand-installed docker, where buildx lives in
 
 **Serialising the workflows was the alternative.** A `concurrency:` group would
 have ended it too, at the cost of every push taking the sum of its builds rather
-than the longest — the bundle alone is twenty-one dependency trees. Isolation costs a
+than the longest — the bundle alone is twenty-two dependency trees. Isolation costs a
 `mkdir`.
 
 ### 49. The Telegram MTProto library is archived upstream
@@ -2587,7 +2587,7 @@ leak. Nothing in the cache is a credential; it is public pages someone fetched.
 
 **What the fork DID bound is the memory.** Upstream's store grows for the life of
 the process, which is fine for a subprocess the OS reclaims and an out-of-memory
-kill in a container that hosts thirty mounts. The cache is LRU-bounded on both
+kill in a container that hosts thirty-one mounts. The cache is LRU-bounded on both
 entry count and bytes, and the filesystem backend is gone (App Platform gives the
 container no persistent volume, so it was memory with extra steps).
 
@@ -3784,5 +3784,48 @@ line where the caller sent several.
 descriptions ask, make the reflow a no-op.
 
 See `HACKS.md` #121.
+
+### 122. nutrition-facts ships its data in the image, and calls FatSecret only through a proxy
+
+[nutrition-facts](/servers/nutrition-facts/) answers from local USDA and
+MenuStat data and from FatSecret, live.
+
+- **The local data is fixed when the image is built.** USDA's Foundation, SR
+  Legacy and FNDDS releases and MenuStat's NYC Open Data CSV are downloaded at
+  build time, each checked against a SHA-256 pinned in the repo. A newer USDA
+  release reaches the server through a PR that moves the pin. A file that
+  changes under its URL fails the bundle build until someone reviews it and
+  updates the digest.
+- **USDA Branded is live, and only with a key.** Its 449 MB release is too large
+  to bake. With `USDA_FDC_API_KEY` unset, a brand lookup gets FatSecret's brand
+  foods and USDA's local entries, and says Branded was not searched.
+- **MenuStat's newest year is 2018.** Newer menu items are missing. FatSecret's
+  current menus are shown beside it, and a near-tie goes to FatSecret.
+- **The FatSecret cache and daily-quota counter are per process.** A restart or
+  a second bundle instance starts both from zero. The counter stops at 4,500 of
+  the 5,000 daily calls to leave room for that; it cannot promise it.
+- **FatSecret is called only through a proxy.** A FatSecret key answers only
+  allowlisted IP addresses, set by hand in its console, single addresses on the
+  Basic tier, and strad's App Platform components have no fixed egress IP. So
+  every FatSecret request — the token POST included — goes through
+  `FATSECRET_PROXY_URL`, a forward proxy with dedicated exit IPs (a BrightData
+  dedicated-IP zone in strad's deployment), and those IPs are what is on the
+  allowlist. Without the variable FatSecret is not called at all and is
+  reported `unavailable`. Putting the proxy's IPs on the allowlist is a human
+  step in FatSecret's console, once per IP.
+- **The proxy is a dependency.** If it is down or rejects its credentials,
+  FatSecret is `unavailable` — reported as the proxy's failure, not
+  FatSecret's — until it recovers. The local sources still answer.
+
+**How you would know.** `sources.fatsecret.detail` in a result names the
+missing variable, the proxy failure, error 21 (an exit IP not on the
+allowlist) or the daily budget. A degraded `nutrition-facts` mount on
+`/healthz` means the image was built without its data files.
+
+**Undo:** a shared store for the cache and counter; a disk or a bigger
+instance for a baked Branded index. The proxy goes only if FatSecret stops
+checking caller IPs.
+
+See `HACKS.md` #122.
 
 ---

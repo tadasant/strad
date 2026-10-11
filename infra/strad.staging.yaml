@@ -12,13 +12,13 @@
 # ---------------------------------------------------------------------------
 # CAPABILITY LIVES AT THE GATEWAY. THREE COMPONENTS, NOT THIRTEEN.
 # ---------------------------------------------------------------------------
-# This file declares forty-three server SLUGS: forty supplementary-image
+# This file declares forty-four server SLUGS: forty-one supplementary-image
 # entries, the `echo` builtin in core, the `deepwiki` remote-http canary, and
 # the `anki` local-tunnel, which ships disabled — see its entry below.
-# Thirty-eight of the forty land on twenty-six upstream mounts inside the
+# Thirty-nine of the forty-one land on twenty-seven upstream mounts inside the
 # one bundle image, because capability variants share a mount; the other two
 # (`zimmer-secrets` and `whatsapp-zimmer`) each run that same image on a
-# bundle of their own. The image serves thirty mounts: `/x-twitter`,
+# bundle of their own. The image serves thirty-one mounts: `/x-twitter`,
 # `/google-sheets`, `/grafana` and `/aws-device-farm` are in it with no
 # staging slug pointing at any of them —
 # `grafana-registry` is served by a per-slug instance at `/grafana-registry`, not
@@ -26,7 +26,7 @@
 # environment yet because its AWS credential has not been minted. The block to
 # paste once it has is in docs/servers/aws-device-farm-setup.
 #
-# TEN of the forty carry `enabled: false` — telegram-ro, telegram-rw,
+# TEN of the forty-one carry `enabled: false` — telegram-ro, telegram-rw,
 # pulse-subregistry, grafana-registry, whatsapp-zimmer, liveoak, airtable,
 # flightaware, digitalocean-tadasant-ro and digitalocean-tadasant-rw — because
 # their credentials are not in the store yet.
@@ -1503,3 +1503,39 @@ servers:
     bundle: bundle
     path: /svg-tracer
     entitlements: [admin]
+
+  # nutrition-facts — strad's own nutrition evidence server (servers/nutrition-facts):
+  # USDA FoodData Central and MenuStat from data files baked into the bundle image
+  # at build time, FatSecret live.
+  #
+  # ENABLED, AND DEPLOYABLE BEFORE ANY OF ITS SECRETS EXIST. Every credential is
+  # optional: without FatSecret's it answers from the local data and reports
+  # FatSecret `unavailable` in every result. `mayBeUnseeded:` lets the render
+  # proceed while a name is absent from the store — the bundle ships without the
+  # variable, and the server says so itself. A name seeded later reaches the
+  # container on the next deploy. Seed under /strad/staging/mcp/nutrition-facts/static/.
+  #
+  # EVERY FATSECRET CALL GOES THROUGH FATSECRET_PROXY_URL — a forward proxy with
+  # dedicated exit IPs (a BrightData dedicated-IP zone), because a FatSecret key
+  # answers only the IPs allowlisted in its console and this app has no fixed
+  # egress IP. Without the proxy, FatSecret is not called at all (see
+  # docs/servers/nutrition-facts).
+  - slug: nutrition-facts
+    kind: supplementary-image
+    title: Nutrition facts
+    description: Sourced calories and macros for foods and restaurant items — USDA, MenuStat and FatSecret side by side.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /nutrition-facts
+    entitlements: [admin]
+    env:
+      FATSECRET_CLIENT_ID: "${FATSECRET_CLIENT_ID}"
+      FATSECRET_CLIENT_SECRET: "${FATSECRET_CLIENT_SECRET}"
+      FATSECRET_PROXY_URL: "${FATSECRET_PROXY_URL}"
+      USDA_FDC_API_KEY: "${USDA_FDC_API_KEY}"
+    mayBeUnseeded:
+      - FATSECRET_CLIENT_ID
+      - FATSECRET_CLIENT_SECRET
+      - FATSECRET_PROXY_URL
+      - USDA_FDC_API_KEY
+    # No `tools:` — all four read.

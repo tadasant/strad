@@ -48,7 +48,7 @@ const IMAGE = "ghcr.io/tadasant/strad-bundle:latest";
  *
  * This is not decoration. `render-spec` resolves an `env:`/`consoleEnv:` ref at
  * RENDER time and exits 1 on one it cannot find, so a single unseeded name does
- * not degrade one slug — it fails the spec and takes all forty-three down. That is
+ * not degrade one slug — it fails the spec and takes all forty-four down. That is
  * the fail-loud property the store-backed deploy is built around, and it is
  * worth keeping; what it costs is that "declare the server" and "seed the
  * secret" are one atomic step, and a PR can only do the first half.
@@ -139,6 +139,14 @@ describe("staging config", () => {
       secrets: Object.fromEntries(
         PROVISIONED_STATICS.map((name) => [name, "x"]),
       ),
+      // And the waived names, unseeded — what render-spec hands it for a
+      // `mayBeUnseeded:` name the store does not hold yet (nutrition-facts'
+      // optional FatSecret and FDC keys): omitted, not a render failure.
+      unseededRefs: new Set(
+        [...waivedNames(CONFIG).keys()].filter(
+          (name) => !PROVISIONED_STATICS.includes(name),
+        ),
+      ),
     });
 
     expect(spec.services.map((s) => s.name)).toEqual([
@@ -163,7 +171,7 @@ describe("staging config", () => {
     expect(credentials.every((e) => e.type === "SECRET")).toBe(true);
 
     // And it is INSTRUMENTED. The collapsed container is the one this telemetry
-    // exists for — it is where Chromium, `op` and thirty servers share a
+    // exists for — it is where Chromium, `op` and thirty-one servers share a
     // vCPU — so a bundle that renders without its identity vars is a bundle we
     // could not tell apart from the core in a dashboard.
     expect(bundle.envs.find((e) => e.key === "STRAD_COMPONENT")?.value).toBe(
@@ -235,7 +243,7 @@ describe("staging config", () => {
     const supplementary = CONFIG.servers.filter(
       (s) => s.kind === "supplementary-image",
     );
-    expect(supplementary.length).toBe(40);
+    expect(supplementary.length).toBe(41);
     for (const server of supplementary) {
       expect(server.image).toBe(IMAGE);
       // ONE image, and one bundle for everything whose difference is

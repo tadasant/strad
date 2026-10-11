@@ -1,11 +1,12 @@
 # bundle — THE strad supplementary image
 
-Thirty MCP servers. One container. One Chromium. One `op` binary. One
+Thirty-one MCP servers. One container. One Chromium. One `op` binary. One
 `mcp-grafana` binary.
 
 ```
 /slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-filesystem-tmp-public
 /x-twitter /telegram /whatsapp /bill-spend /aws-device-farm /liveoak /image-diff /svg-tracer
+/nutrition-facts
 /pulse-subregistry
 /strad-fetch /grafana
 /google-flights /gmail /google-calendar /google-docs /google-sheets
@@ -13,7 +14,7 @@ Thirty MCP servers. One container. One Chromium. One `op` binary. One
 /good-eggs /fetchpet /pointsyeah
 ```
 
-Thirty is the floor, not a constant: four of those mounts (`/telegram`,
+Thirty-one is the floor, not a constant: four of those mounts (`/telegram`,
 `/remote-filesystem-tmp-public`, `/google-sheets`, `/grafana`) are re-mounted once
 more per slug the container holds a separate credential for. `/google-sheets` is
 the one a real deployment uses that way — an OAuth refresh token is one Google
@@ -51,10 +52,10 @@ its environment at boot. A stale one would not just be ignored — it would stri
 write tools from the read-**write** slugs too, and the failure would look like an
 upstream bug.
 
-## How twenty-one projects become one image
+## How twenty-two projects become one image
 
 `Dockerfile`'s build context is the **repo root**, because the servers live in
-twenty-one different places:
+twenty-two different places:
 
 | tree | source | servers |
 | --- | --- | --- |
@@ -76,13 +77,14 @@ twenty-one different places:
 | `flightaware` | `servers/flightaware` | flightaware (FlightAware AeroAPI v4 flight and airport data, read-only) |
 | `digitalocean` | `servers/digitalocean` | digitalocean (droplets, App Platform apps, managed databases) |
 | `image-tools` | `servers/image-tools` | image-diff, svg-tracer (compare two images; trace a bitmap to SVG — inputs are URLs) |
+| `nutrition-facts` | `servers/nutrition-facts` | nutrition-facts (USDA FDC + MenuStat data built into the image; FatSecret live) |
 | `good-eggs` | `servers/good-eggs` | good-eggs |
 | `fetchpet` | `servers/fetchpet` | fetchpet |
 | `pointsyeah` | `servers/pointsyeah` | pointsyeah |
 
 Each is built **in its own stage, with its own lockfile and its own
 `node_modules`**, exactly as its standalone image builds it, and lands at
-`/app/trees/<name>`. Nothing is merged. Merging twenty-one dependency trees is how
+`/app/trees/<name>`. Nothing is merged. Merging twenty-two dependency trees is how
 you find out in production that two of them wanted different Playwright versions.
 
 `host/` imports across the trees **by path** (`src/trees.ts`). Node resolves each
@@ -168,12 +170,12 @@ could perform one. See [`servers/secrets/README.md`](../secrets/README.md).
 
 ## Blast radius, honestly
 
-Thirty servers share a process. A crash is a thirty-server outage. Everything
+Thirty-one servers share a process. A crash is a thirty-one-server outage. Everything
 that *can* be made survivable is:
 
 - a browser server whose **login fails** is marked `degraded` in `/healthz`; the
   container keeps serving. (The standalone images `process.exit(1)` here — correct
-  when the process *is* the server, catastrophic when it is twenty-nine others too.)
+  when the process *is* the server, catastrophic when it is thirty others too.)
   For fetchpet the mark is a report on the last attempt: the next tool call retries
   the login and a success clears it, so a form that changed and was fixed does not
   cost a redeploy. good-eggs still holds its first failure until the container

@@ -121,6 +121,7 @@ export default defineConfig({
             { label: "Google Sheets", slug: "servers/google-sheets" },
             { label: "strad fetch", slug: "servers/strad-fetch" },
             { label: "Image diff and SVG tracer", slug: "servers/image-tools" },
+            { label: "Nutrition facts", slug: "servers/nutrition-facts" },
             { label: "Grafana", slug: "servers/grafana" },
           ],
         },

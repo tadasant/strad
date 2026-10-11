@@ -1,0 +1,15 @@
+{
+  "name": "nutrition-facts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "strad's nutrition-facts server — sourced calorie and macro evidence for foods and restaurant items from USDA FoodData Central, MenuStat and FatSecret, side by side, with a suggested range. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared",
+    "data": "npm run data --workspace shared",
+    "test": "npm run test --workspace shared"
+  }
+}

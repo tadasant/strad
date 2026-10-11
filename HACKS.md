@@ -391,7 +391,7 @@ one (hack #4).
 **✅ RESOLVED.** Core presents the internal token to every `supplementary-image`
 component, and the `strad-bundle` host refuses a mount request without it.
 
-**What.** The `strad-bundle` container — thirty mounts, and every upstream
+**What.** The `strad-bundle` container — thirty-one mounts, and every upstream
 credential behind them — serves every mount unauthenticated. Its only protection
 is the network boundary: an internal-only App Platform component
 (`internal_ports: [8080]`, no public route), reachable by core over the private
@@ -790,8 +790,8 @@ toggle plumbing.
 
 ## 24. Twenty-eight servers share one process, and one Chromium
 
-The collapsed bundle is one container running thirty MCP servers and one
-headless Chromium. An OOM there is a thirty-server outage; it used to be a
+The collapsed bundle is one container running thirty-one MCP servers and one
+headless Chromium. An OOM there is a thirty-one-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -3736,7 +3736,7 @@ behaviour, which is the pre-change one.
 a listed parameter current in a supplementary container's `process.env` without a
 redeploy. What it cannot do is make the MCP server inside that container LOOK at
 the new value. That is a property of the upstream, and this image runs
-thirty of them, most written by other people.
+thirty-one of them, most written by other people.
 
 The split is real and it is not subtle:
 
@@ -5404,7 +5404,7 @@ Workspace documents and cannot touch an uploaded binary. `files.copy` with
 file in the owner's Drive every time an agent reads a spreadsheet — a write, in a
 read tier. The npm packages that read xlsx are large, and the popular one has
 been unmaintained on npm since 0.18.5 with a live prototype-pollution advisory;
-this process holds three Google accounts' refresh tokens beside twenty-nine other
+this process holds three Google accounts' refresh tokens beside thirty other
 MCP servers.
 
 **What it costs, and what a caller is told.** Every Office-backed result carries
@@ -6303,3 +6303,44 @@ The fork joins those lines back into paragraphs and sends every text part
 **Undo.** 1 and 2 go if every caller writes each paragraph as one line, which
 the tool descriptions ask for, and a reflow is no longer needed. 3 is a
 `preserve_line_breaks` argument, if a caller ever needs it.
+
+## 122. nutrition-facts ships its data in the image, and calls FatSecret only through a proxy
+
+**What.** `servers/nutrition-facts` answers from two local datasets and one live
+API, and each has an edge:
+
+1. **The local data is fixed at image build time.** The bundle Dockerfile's
+   `nutrition-facts` stage downloads USDA FDC's Foundation, SR Legacy and FNDDS
+   releases and NYC Open Data's MenuStat CSV, each pinned by SHA-256 in
+   `shared/src/data/sources.ts`, and bakes ~2 MB of gzipped JSON into the image.
+   A newer USDA release reaches production only through a PR that changes the
+   pin. A download that changes under its URL fails the bundle build by name —
+   a public host this repo does not control can therefore red a bundle build;
+   the fix is reviewing the new file and updating the digest.
+2. **USDA Branded is not local.** Its 449 MB release would add hundreds of MB to
+   every bundle pull and an index the bundle could not hold beside Chromium. It
+   is read live from the FDC API, with an optional `USDA_FDC_API_KEY`, and only
+   for a named brand. Without the key, brand lookups rely on FatSecret.
+3. **MenuStat stops at 2018.** It is the last data year MenuStat collected; newer
+   menu items are missing and older ones may have changed. FatSecret's current
+   menus are the counterweight, and a near-tie goes to FatSecret.
+4. **FatSecret's caches and quota counter are per process.** The bundle has no
+   shared store, so a restart or a second instance starts both from zero. The
+   counter stops at 4,500 of the 5,000 daily calls to leave that margin; it
+   cannot guarantee it.
+5. **FatSecret is called only through `FATSECRET_PROXY_URL`.** A FatSecret key
+   answers only IPs allowlisted by hand in the FatSecret Platform console
+   (single addresses on Basic), and strad's App Platform components have no
+   fixed egress IP. Every FatSecret request — the OAuth token POST and every
+   API call — goes through a forward proxy with dedicated exit IPs (a
+   BrightData dedicated-IP zone, via undici's `ProxyAgent`), and those IPs are
+   the allowlist. Not Web Unlocker: it rotates exits and only carries GETs.
+   There is no direct fallback; without the variable FatSecret is not called.
+   The allowlist entry is a human step in a vendor console, once per IP, and
+   the proxy is a dependency whose outage is FatSecret's.
+
+**Undo.** 1 is the design: data that changes yearly is a reviewed PR, not a
+runtime download. 2 goes if the bundle gets a larger instance or a disk, and
+Branded is baked as a SQLite index. 4 needs a shared store (none exists). 5
+goes only if FatSecret stops checking caller IPs; the console step is the
+vendor's, and is recorded in `docs/servers/nutrition-facts`.

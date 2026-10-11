@@ -15,7 +15,7 @@
  * credential-dependent. CI has no credential, the probe fails closed, and the
  * count is the read-only 4 below.
  *
- * What it is really checking is that thirty servers, twenty-one dependency trees and
+ * What it is really checking is that thirty-one servers, twenty-two dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  *
@@ -125,6 +125,9 @@ const EXPECT = {
   // and here they write nothing anywhere.
   "image-diff": 1,
   "svg-tracer": 1,
+  // Two estimates and two lookups, all reads. There is no diary or account to
+  // write to (spec non-goals), so a fifth tool is a new kind of capability.
+  "nutrition-facts": 4,
   // Grafana's 65 tools minus the 13 the binary's `-disable-write` removes. Not a
   // gateway allow-list: the child process does not contain them. If this number
   // moves, either the pin moved or a flag stopped being passed — and the second
@@ -282,7 +285,7 @@ if (unchecked.length || absent.length) {
 
 // Two trees registering the SAME slug is the collision a twelve-tree single process
 // invites, and it collapses to one route — the set above cannot see it, because a
-// Set of 30 mounts' slugs is 29 entries wide and matches EXPECT exactly.
+// Set of 31 mounts' slugs is 30 entries wide and matches EXPECT exactly.
 if (health.servers.length !== mounted.size) {
   failed += 1;
   console.log(

@@ -277,7 +277,7 @@ Seed it in the console at `/ui/secrets`. See [Secrets](/operate/secrets/).
 The mount comes up **even with no credential**, marked `degraded` on `/healthz`:
 the tool surface still lists, so the console and an agent can see what the
 deployment would offer, and every call fails with an error naming the variable.
-One server's missing config must not cost the other twenty-one their boot.
+One server's missing config must not cost the other thirty their boot.
 
 Both staging slugs are enabled and point at BILL's **sandbox** — a separate empty
 test company with its own token, so a sweep run there cannot reach a real ledger
