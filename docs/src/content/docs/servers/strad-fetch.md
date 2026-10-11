@@ -129,7 +129,7 @@ to zero, which is the easy one. See
 ## The native strategy fetches the public internet only
 
 `url` is a free-form string and `native` is a bare `fetch` from the bundle
-container — the container that hosts twenty-one mounts, not the agent's own
+container — the container that hosts thirty-one mounts, not the agent's own
 sandbox. Without a guard, an entitled caller could point `scrape` at
 `http://127.0.0.1:<port>`, at `http://169.254.169.254/…`, or at whatever the
 private component network answers, and read the response back as tool output.
@@ -211,7 +211,7 @@ generic name there is a claim on twenty other mounts.
 A scraped page is cached in the process, so a repeated fetch of a URL is free. The
 cache is **LRU-bounded** on entry count and total bytes — upstream's is unbounded,
 which is correct for a subprocess the OS reclaims and an out-of-memory risk in a
-container hosting twenty-one mounts.
+container hosting thirty-one mounts.
 
 It is also **one cache for every caller of the slug**, which is a limitation rather
 than a feature: see [limitation #65](/limitations/#65-strad-fetchs-scraped-page-cache-is-shared-by-every-caller-of-the-slug).

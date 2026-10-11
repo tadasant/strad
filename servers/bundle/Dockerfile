@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# bundle — THE strad supplementary image. Thirty MCP servers, one container.
+# bundle — THE strad supplementary image. Thirty-one MCP servers, one container.
 #
 # BUILD CONTEXT IS THE REPO ROOT (not servers/bundle/), because this image is
-# assembled from twenty-one existing projects that live in different places:
+# assembled from twenty-two existing projects that live in different places:
 #
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
 #                           gcs, google-flights
@@ -27,6 +27,8 @@
 #   servers/digitalocean    digitalocean           (droplets, apps, databases)
 #   servers/image-tools     image-diff, svg-tracer (compare two images; trace a
 #                                                  bitmap to SVG. Inputs are URLs)
+#   servers/nutrition-facts nutrition-facts        (USDA + MenuStat data baked in
+#                                                  at build; FatSecret live)
 #   servers/pulse-subregistry  pulse-subregistry
 #   servers/strad-fetch     strad-fetch            (web fetching; strad's own fork)
 #   servers/grafana         grafana                (proxies the pinned mcp-grafana
@@ -34,7 +36,7 @@
 #
 # Each is built in its OWN stage with its OWN lockfile and its OWN node_modules,
 # exactly as its standalone image builds it, and copied into /app/trees/<name>.
-# Nothing is merged. That is on purpose: merging twenty-one dependency trees is how you
+# Nothing is merged. That is on purpose: merging twenty-two dependency trees is how you
 # discover in production that two of them wanted different Playwright versions.
 # The host (servers/bundle/host) imports across them by path — Node resolves each
 # package's own imports from its own tree — and owns the one thing that MUST be
@@ -230,6 +232,37 @@ RUN npm ci --no-audit --no-fund
 COPY servers/image-tools/shared ./shared
 RUN npm run build && npm prune --omit=dev
 
+# ---- nutrition-facts -----------------------------------------------------------
+# strad's own nutrition evidence server. Its LOCAL DATA is built here, at image
+# build time: `npm run data` downloads USDA FoodData Central's Foundation, SR
+# Legacy and FNDDS releases and NYC Open Data's MenuStat CSV — each pinned by
+# SHA-256 in servers/nutrition-facts/shared/src/data/sources.ts, so a download
+# that changed under its URL fails this stage by name — and writes two gzipped
+# JSON files (~2 MB together) into /src/data. Nothing large is in git. USDA
+# Branded (a 449 MB release) is NOT baked; the server reads it live, with a key.
+#
+# Two stages, so the downloads are cached on the DATA BUILDER alone: the first
+# copies only `src/data` and the two modules it imports, so an edit anywhere
+# else in the server reuses this layer instead of fetching ~32 MB again.
+FROM ${PW} AS data-nutrition-facts
+WORKDIR /src
+COPY servers/nutrition-facts/package.json servers/nutrition-facts/package-lock.json ./
+COPY servers/nutrition-facts/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/nutrition-facts/shared/tsconfig.json ./shared/
+COPY servers/nutrition-facts/shared/src/data ./shared/src/data
+COPY servers/nutrition-facts/shared/src/nutrients.ts servers/nutrition-facts/shared/src/text.ts ./shared/src/
+RUN npm run build && npm run data
+
+FROM ${PW} AS build-nutrition-facts
+WORKDIR /src
+COPY servers/nutrition-facts/package.json servers/nutrition-facts/package-lock.json ./
+COPY servers/nutrition-facts/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/nutrition-facts/shared ./shared
+RUN npm run build && npm prune --omit=dev
+COPY --from=data-nutrition-facts /src/data ./data
+
 # ---- pulse-subregistry -------------------------------------------------------
 FROM ${PW} AS build-pulse-subregistry
 WORKDIR /src
@@ -345,7 +378,7 @@ RUN npm run build && npm prune --omit=dev
 FROM ${PW}
 
 LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
-LABEL org.opencontainers.image.description="strad's single supplementary image — 30 MCP servers (API, Google, X.com, Telegram, WhatsApp, web fetching, Grafana, banking, Airtable, FlightAware, DigitalOcean, image diff/tracing, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
+LABEL org.opencontainers.image.description="strad's single supplementary image — 31 MCP servers (API, Google, X.com, Telegram, WhatsApp, web fetching, Grafana, banking, Airtable, FlightAware, DigitalOcean, image diff/tracing, nutrition facts, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
 LABEL org.opencontainers.image.licenses="MIT"
 
 # --- 1Password CLI (op), pinned ----------------------------------------------
@@ -377,7 +410,7 @@ RUN set -eux; \
 ENV NODE_ENV=production
 WORKDIR /app
 
-# The twenty-one trees, each with the node_modules it was built against.
+# The twenty-two trees, each with the node_modules it was built against.
 COPY --from=build-api /src /app/trees/bundle-api
 COPY --from=build-google /src /app/trees/bundle-google
 COPY --from=build-op /src /app/trees/onepassword
@@ -396,6 +429,7 @@ COPY --from=build-airtable /src /app/trees/airtable
 COPY --from=build-flightaware /src /app/trees/flightaware
 COPY --from=build-digitalocean /src /app/trees/digitalocean
 COPY --from=build-image-tools /src /app/trees/image-tools
+COPY --from=build-nutrition-facts /src /app/trees/nutrition-facts
 COPY --from=build-pulse-subregistry /src /app/trees/pulse-subregistry
 COPY --from=build-strad-fetch /src /app/trees/strad-fetch
 COPY --from=build-grafana /src /app/trees/grafana

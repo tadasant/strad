@@ -1,0 +1,25 @@
+{
+  "name": "nutrition-facts-shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "estimate_components, estimate_restaurant_item, search_foods and get_food over local USDA and MenuStat data and the live FatSecret Platform API.",
+  "main": "build/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "data": "node build/data/cli.js --out ../data",
+    "test": "npm run build && vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "fflate": "^0.8.2",
+    "undici": "^7.30.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.6",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.9"
+  },
+  "license": "MIT"
+}
