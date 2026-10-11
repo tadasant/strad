@@ -3829,3 +3829,31 @@ checking caller IPs.
 See `HACKS.md` #122.
 
 ---
+
+### 123. gmail returns who-sent-it headers, and the reader has to read them right
+
+`get_email_conversation` returns a `Sender Verification Headers` section: every
+`Authentication-Results`, `ARC-Authentication-Results`, `Received-SPF`,
+`DKIM-Signature`, `From`, `Sender`, `Reply-To`, `Return-Path`, `Message-ID`,
+`In-Reply-To`, `References`, `Auto-Submitted` and `List-Id`, verbatim, as JSON,
+each with its position in the message, and the ones the message lacks under
+`absent`. A `From:` line proves nothing; these are what can.
+
+- **Only the topmost `Authentication-Results` is the receiving server's.** A
+  sender can write its own lower down. Take the one with the lowest `index`,
+  check its first token is `mx.google.com`, and read `dkim=` and `dmarc=`
+  there. strad does not pick the verdict for you.
+- **Mail inside one Google Workspace may carry none.** Not yet checked on a
+  live message. If so it shows up as `absent`, and a reader that requires the
+  header treats real internal mail as unverified.
+- **Forwarded and mailing-list mail is judged at the last hop.** The original
+  sender's result is only in the ARC chain, and nothing here validates ARC.
+- **The gmail tree is a fork.** Re-vendoring it from upstream would remove the
+  section. `images/bundle-google/vendor/gmail-shared/FORK.md` lists the delta.
+
+**How you would know.** A message's section lists two
+`Authentication-Results` that disagree, or none at all.
+
+See `HACKS.md` #123.
+
+---

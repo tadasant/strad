@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
 import type { Email, EmailPart } from '../types.js';
 import { buildGmailUrl, getHeader } from '../utils/email-helpers.js';
+import { formatSenderVerificationSection } from '../utils/sender-verification.js';
 
 const PARAM_DESCRIPTIONS = {
   email_id:
@@ -28,6 +29,7 @@ Returns the complete email including headers, body content, and attachment infor
 
 **Returns:**
 Full email details including:
+- Sender verification headers: every Authentication-Results, ARC-Authentication-Results, Received-SPF, DKIM-Signature, From, Sender, Reply-To, Return-Path, Message-ID, In-Reply-To, References, Auto-Submitted and List-Id, verbatim, in message order, as JSON, with the names the message lacks listed as absent
 - Subject, From, To, Cc, Date headers
 - Full message body (plain text preferred, HTML as fallback)
 - Raw HTML body (when include_html is true and HTML content is available)
@@ -39,6 +41,7 @@ Full email details including:
 - Read the full content of an email after listing conversations
 - Extract specific information from an email body
 - Check attachment details
+- Verify who actually sent an email: read dkim= and dmarc= from the TOPMOST Authentication-Results (index order), and check its authserv-id (its first token, e.g. mx.google.com) is the receiving server. A lower Authentication-Results may have been written by the sender. The From line alone proves nothing
 - Render emails with original HTML formatting (use include_html: true)
 - Create email screenshots or archives with original styling
 
@@ -178,6 +181,10 @@ function formatFullEmail(
   if (options?.accountEmail) {
     output += `\n**Gmail URL:** ${buildGmailUrl(options.accountEmail, email.id)}`;
   }
+
+  // Before every header the sender controls: a decoded Subject can carry a
+  // newline, and this section must not be forgeable from above it.
+  output += `\n\n${formatSenderVerificationSection(email)}`;
 
   output += `
 

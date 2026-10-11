@@ -6348,3 +6348,39 @@ runtime download. 2 goes if the bundle gets a larger instance or a disk, and
 Branded is baked as a SQLite index. 4 needs a shared store (none exists). 5
 goes only if FatSecret stops checking caller IPs; the console step is the
 vendor's, and is recorded in `docs/servers/nutrition-facts`.
+
+## 123. gmail returns the headers that say who sent a message, and leaves the verdict to the reader
+
+**What.** `vendor/gmail-shared` in `images/bundle-google` is a fork, and its
+fourth delta (`FORK.md` §4) makes `get_email_conversation` return every
+`Authentication-Results`, `ARC-Authentication-Results`, `Received-SPF`,
+`DKIM-Signature`, `From`, `Sender`, `Reply-To`, `Return-Path`, `Message-ID`,
+`In-Reply-To`, `References`, `Auto-Submitted` and `List-Id`, verbatim, each
+with its position in the message, and the names a message lacks as `absent`.
+`From:` is text the sender wrote, and neither tadasant.com (no DMARC record)
+nor gmail.com (`p=none`) makes Gmail refuse a forged one, so these headers are
+the only evidence of who sent a message. What they cannot do on their own:
+
+1. **The server reports, it does not judge.** It does not parse an
+   authserv-id or pick a verdict. The reader takes the TOPMOST
+   `Authentication-Results` (the lowest `index`), checks that its first token
+   is the receiving server (`mx.google.com`), and reads `dkim=` / `dmarc=`
+   there. Any lower one may have been written by the sender, and a reader that
+   searches for the first `dmarc=pass` anywhere in the list is fooled by it.
+2. **"Topmost is the receiving server's" holds for mail Gmail received over
+   SMTP.** Mail between two accounts of one Google Workspace may be delivered
+   inside Google without passing mx.google.com's inbound checks, and may carry
+   no `Authentication-Results` at all. That has not been checked on a live
+   message. If so, such mail lists it under `absent`, and a reader that
+   requires it treats real same-domain mail as unverified, which fails safe.
+3. **A forwarded or list-relayed message is judged at its last hop.** The top
+   `Authentication-Results` is about the forwarder or the list, and the
+   original sender's result is only in the ARC chain, which nothing here
+   validates.
+4. **It is a fork.** A re-vendor from `pulsemcp/mcp-servers` drops
+   `sender-verification.ts` and the section, with only
+   `images/bundle-google/test/gmail-sender-verification.test.ts` failing.
+
+**Undo.** 2 is closed by reading one same-domain message's headers in a real
+mailbox; if they lack the header, the reader needs another signal for internal
+mail, which belongs in the reader, not here.

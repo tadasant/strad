@@ -187,3 +187,46 @@ What the heuristic gets wrong is `HACKS.md` #121.
 rules, the encoding (wire line lengths and a decode round trip), the MIME
 headers for each body shape, and the raw message `sendMessage` and
 `createDraft` hand Gmail.
+
+---
+
+## 4. `get_email_conversation` returns the headers that say who sent a message
+
+**Upstream.** The tool returns Subject, From, To, Cc, Date, Labels and the
+body. `From:` is text the sender wrote, and nothing in the output says whether
+the receiving server believed it.
+
+**Here.** A `## Sender Verification Headers` section, placed after the ID,
+thread and Gmail URL lines and BEFORE `## Headers`, carries a JSON block:
+`headers` is every instance of `Authentication-Results`,
+`ARC-Authentication-Results`, `Received-SPF`, `DKIM-Signature`, `From`,
+`Sender`, `Reply-To`, `Return-Path`, `Message-ID`, `In-Reply-To`,
+`References`, `Auto-Submitted` and `List-Id`, in message order, each as
+`{ index, name, value }`, where `index` is the header's position in the whole
+header list (0 is the topmost) and `name` and `value` are exactly what Gmail
+returned. `absent` names the ones the message does not carry. Nothing is
+merged, deduped, reordered or reduced to an empty string.
+
+- **Why the order matters.** The receiving server (mx.google.com) prepends its
+  `Authentication-Results` above every header the sender wrote, so the topmost
+  is its verdict and a lower one may be forged.
+- **Why before `## Headers`.** Gmail decodes RFC 2047 in header values, so a
+  Subject can carry a newline and a whole fake section. Nothing the sender
+  controls comes before this one, so the first section in the output is
+  always the real one.
+- **Why JSON.** `JSON.stringify` keeps a value on one line, so a newline or a
+  code fence in a value cannot end the block. C1 controls, U+2028/U+2029 and
+  bidi controls, which it passes through, are written as `\u` escapes.
+- **Backward compatible.** Every line upstream emits is unchanged; the section
+  is added.
+
+What a reader still has to get right is `HACKS.md` #123.
+
+**Files.** `src/utils/sender-verification.ts` (new),
+`src/tools/get-email-conversation.ts`.
+
+**Tests.** `images/bundle-google/test/gmail-sender-verification.test.ts`: a
+message whose real top `Authentication-Results` fails DMARC above a forged
+lower one that passes, a Subject carrying a forged section, a value carrying
+newlines, a fence and bidi controls, the `absent` list, and upstream's lines
+unchanged.
