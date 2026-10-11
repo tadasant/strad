@@ -128,7 +128,13 @@ had none), `sources`, and FatSecret's attribution when its data was used.
 
 **Restaurant buffer.** Every restaurant estimate — chain or independent —
 widens `high` by `buffer_pct`, 15 by default, for the oil and butter a kitchen
-adds. The result says so in `buffer`; `expected` is never buffered.
+adds — on calories, fat and saturated fat, the nutrients oil and butter carry.
+The result says so in `buffer`; `expected` is never buffered.
+
+**Sizes are words.** `size` is matched against menu item names ("large fries",
+"grande latte"). A size with a number in it ("16 oz") names no item, so it is
+left out of the match and a note says so; a measured amount belongs in
+`estimate_components`.
 
 **Independent restaurants.** When no chain menu item matches well (on MenuStat
 or FatSecret), the expected value is the closest USDA FNDDS generic dish and the

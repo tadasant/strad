@@ -4,7 +4,7 @@
  * Both are gzipped JSON written at image build time by `data/cli.ts` from the
  * pinned public downloads in `data/sources.ts`, and read once, lazily, on the
  * first call that needs them. Short keys because USDA's file holds ~13,700
- * foods and MenuStat's ~30,000 items; every nutrient array is in
+ * foods and MenuStat's ~43,000 items; every nutrient array is in
  * `NUTRIENT_KEYS` order (nutrients.ts).
  */
 

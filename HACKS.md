@@ -6316,7 +6316,11 @@ API, and each has an edge:
    A newer USDA release reaches production only through a PR that changes the
    pin. A download that changes under its URL fails the bundle build by name —
    a public host this repo does not control can therefore red a bundle build;
-   the fix is reviewing the new file and updating the digest.
+   the fix is reviewing the new file and updating the digest. MenuStat's pin is
+   the likeliest to trip: it is a SHA over a Socrata `rows.csv` export, which
+   is generated on request rather than stored, so a change in how NYC Open Data
+   renders the same rows would change the bytes. Mirroring the file to a bucket
+   strad controls would remove that exposure.
 2. **USDA Branded is not local.** Its 449 MB release would add hundreds of MB to
    every bundle pull and an index the bundle could not hold beside Chromium. It
    is read live from the FDC API, with an optional `USDA_FDC_API_KEY`, and only

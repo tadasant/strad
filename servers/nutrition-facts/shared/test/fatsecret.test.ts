@@ -199,9 +199,12 @@ describe("FatSecretClient", () => {
     await expect(fs.search("rice")).rejects.toThrow(/IP address.*proxy.s exit IP.*allowlist/);
   });
 
-  it("explains the daily quota error (11)", async () => {
-    const { fs } = client({ fsError: 11 });
+  it("explains the daily quota error (11), and stops asking for the day", async () => {
+    const { fake, fs } = client({ fsError: 11 });
     await expect(fs.search("rice")).rejects.toThrow(/daily request limit/);
+    const calls = fake.apiCalls;
+    await expect(fs.search("white")).rejects.toThrow(/daily call budget/);
+    expect(fake.apiCalls).toBe(calls);
   });
 
   it("reports rejected credentials", async () => {

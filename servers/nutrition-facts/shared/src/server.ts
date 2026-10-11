@@ -53,7 +53,7 @@ export function createMCPServer(options: CreateMCPServerOptions) {
   const fetchImpl = options.fetch;
   const lookups = new Lookups({
     store: new LocalStore(
-      options.dataDir ?? env()[ENV.dataDir]?.trim() ?? defaultDataDir(),
+      options.dataDir ?? (env()[ENV.dataDir]?.trim() || defaultDataDir()),
     ),
     fatsecret: new FatSecretClient({
       config: () => fatsecretConfig(env()),

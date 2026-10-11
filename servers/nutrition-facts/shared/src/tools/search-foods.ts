@@ -138,14 +138,15 @@ export function searchFoodsTool(ctx: ToolContext): ToolDefinition {
             : undefined,
         ]);
         const results: Record<string, unknown> = {};
-        if (usda) results.usda = report(usda);
-        if (menustat) {
-          results.menustat = {
-            ...report(menustat),
-            ...(menustat.chain ? { matched_restaurant: menustat.chain.restaurant } : {}),
-          };
-        }
-        if (fatsecret) results.fatsecret = report(fatsecret);
+        const skipped = { status: "not_queried", detail: "not in `sources`", results: [] };
+        results.usda = usda ? report(usda) : skipped;
+        results.menustat = menustat
+          ? {
+              ...report(menustat),
+              ...(menustat.chain ? { matched_restaurant: menustat.chain.restaurant } : {}),
+            }
+          : skipped;
+        results.fatsecret = fatsecret ? report(fatsecret) : skipped;
         return ok({
           results,
           ...(fatsecret?.candidates.length ? { attribution: { ...ATTRIBUTION } } : {}),

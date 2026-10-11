@@ -63,7 +63,7 @@
  * SAME path here. This host neither knows nor cares that they exist.
  *
  * BLAST RADIUS, honestly. Thirty-one servers share a process. A crash is
- * a 25-server outage, not a 1-server outage. Everything below that CAN be made
+ * a 31-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
  * catastrophic here); a dead Chromium is relaunched on next use; an unhandled
@@ -1567,12 +1567,13 @@ async function loadImageTools(): Promise<Mount[]> {
 async function loadNutritionFacts(): Promise<Mount> {
   const mod = (await loadFromTree("nutrition-facts", "shared/build/index.js")) as {
     createMCPServer: Factory;
-    missingDataFiles: () => string[];
+    missingDataFiles: (dir?: string) => string[];
   };
 
   const env = slugEnvView(process.env, "nutrition-facts");
   const created = mod.createMCPServer({ version: VERSION, env });
-  const missing = mod.missingDataFiles();
+  // The same directory the server reads: NUTRITION_FACTS_DATA_DIR, else the tree's own.
+  const missing = mod.missingDataFiles(env.NUTRITION_FACTS_DATA_DIR?.trim() || undefined);
 
   return {
     slug: "nutrition-facts",

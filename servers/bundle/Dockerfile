@@ -240,13 +240,28 @@ RUN npm run build && npm prune --omit=dev
 # that changed under its URL fails this stage by name — and writes two gzipped
 # JSON files (~2 MB together) into /src/data. Nothing large is in git. USDA
 # Branded (a 449 MB release) is NOT baked; the server reads it live, with a key.
+#
+# Two stages, so the downloads are cached on the DATA BUILDER alone: the first
+# copies only `src/data` and the two modules it imports, so an edit anywhere
+# else in the server reuses this layer instead of fetching ~32 MB again.
+FROM ${PW} AS data-nutrition-facts
+WORKDIR /src
+COPY servers/nutrition-facts/package.json servers/nutrition-facts/package-lock.json ./
+COPY servers/nutrition-facts/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/nutrition-facts/shared/tsconfig.json ./shared/
+COPY servers/nutrition-facts/shared/src/data ./shared/src/data
+COPY servers/nutrition-facts/shared/src/nutrients.ts servers/nutrition-facts/shared/src/text.ts ./shared/src/
+RUN npm run build && npm run data
+
 FROM ${PW} AS build-nutrition-facts
 WORKDIR /src
 COPY servers/nutrition-facts/package.json servers/nutrition-facts/package-lock.json ./
 COPY servers/nutrition-facts/shared/package.json ./shared/
 RUN npm ci --no-audit --no-fund
 COPY servers/nutrition-facts/shared ./shared
-RUN npm run build && npm run data && npm prune --omit=dev
+RUN npm run build && npm prune --omit=dev
+COPY --from=data-nutrition-facts /src/data ./data
 
 # ---- pulse-subregistry -------------------------------------------------------
 FROM ${PW} AS build-pulse-subregistry

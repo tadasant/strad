@@ -110,11 +110,3 @@ export const FDC_NOT_CONFIGURED =
 export function missingCredentials(): string[] {
   return [];
 }
-
-/** The optional sources this deployment cannot reach, for the boot log. */
-export function unconfiguredSources(env: NodeJS.ProcessEnv): string[] {
-  const out: string[] = [];
-  if (!fatsecretConfig(env).ok) out.push("fatsecret");
-  if (!fdcApiKey(env)) out.push("usda_branded");
-  return out;
-}

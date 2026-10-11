@@ -39,7 +39,8 @@ export function buildMenuStat(csv: string): MenuStatRecord[] {
     if (k[0] === null) continue;
     const name = (r.Item_Name ?? "").trim();
     const restaurant = (r.restaurant ?? "").trim();
-    if (name === "" || restaurant === "") continue;
+    const id = Number(r.Menu_Item_ID);
+    if (name === "" || restaurant === "" || !Number.isInteger(id)) continue;
 
     const size = num(r.Serving_Size);
     const unit = (r.Serving_Size_Unit ?? "").trim().toLowerCase();
@@ -54,7 +55,7 @@ export function buildMenuStat(csv: string): MenuStatRecord[] {
           : null;
 
     const rec: MenuStatRecord = {
-      i: Number(r.Menu_Item_ID),
+      i: id,
       r: restaurant,
       n: name,
       ds: (r.Item_Description ?? "").trim(),
@@ -66,11 +67,11 @@ export function buildMenuStat(csv: string): MenuStatRecord[] {
     };
     // Grouped by restaurant and item name; the group keeps every row of its
     // latest year. Two rows in one year are two items (a lunch and a dinner
-    // portion of the same entrée), not a duplicate.
+    // portion of the same entrée, or two sizes), not a duplicate.
     const key = `${squash(restaurant)}|${squash(name)}`;
     const group = groups.get(key);
     if (!group || rec.y > group[0]!.y) groups.set(key, [rec]);
-    else if (rec.y === group[0]!.y && !group.some((g) => g.ds === rec.ds)) {
+    else if (rec.y === group[0]!.y && !group.some((g) => g.ds === rec.ds && g.s === rec.s)) {
       group.push(rec);
     }
   }

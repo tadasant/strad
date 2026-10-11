@@ -131,12 +131,14 @@ function fnddsZip(): Uint8Array {
       [3002, "survey_fndds_food", "Cheeseburger, NFS", 3702, "2022-10-28"],
       [3003, "survey_fndds_food", "Big Mac (McDonalds)", 3702, "2022-10-28"],
       [3004, "survey_fndds_food", "Rice, white, cooked, no added fat", 4802, "2022-10-28"],
+      [3005, "survey_fndds_food", "Burrito, chicken, cheese", 3502, "2022-10-28"],
     ]),
     "survey/food_nutrient.csv": csv(FN_HEADER, [
       ...fn(3001, [[208, 154], [203, 7.2], [205, 21.4], [204, 4.6], [291, 1.4], [269, 4.3], [606, 0.8], [307, 400]]),
       ...fn(3002, [[208, 263], [203, 13.6], [205, 24.3], [204, 12.2], [291, 1.1], [269, 5.3], [606, 5.4], [307, 552]]),
       ...fn(3003, [[208, 257], [203, 11.8], [205, 20.1], [204, 14.6], [291, 1.6], [269, 3.9], [606, 4.2], [307, 455]]),
       ...fn(3004, [[208, 130], [203, 2.7], [205, 28.6], [204, 0.3], [291, 0.4], [269, 0.1], [606, 0.1], [307, 1]]),
+      ...fn(3005, [[208, 244], [203, 13.1], [205, 24.1], [204, 10.3], [291, 2.1], [269, 1.4], [606, 4.4], [307, 545]]),
     ]),
     "survey/food_portion.csv": csv(PORTION_HEADER, [
       [20, 3001, 1, "", 9999, "1 cup", "10205", 200, "", "", ""],
@@ -145,6 +147,7 @@ function fnddsZip(): Uint8Array {
       [23, 3002, 2, "", 9999, "Quantity not specified", "90000", 185, "", "", ""],
       [24, 3003, 1, "", 9999, "Quantity not specified", "90000", 205, "", "", ""],
       [25, 3004, 1, "", 9999, "1 cup", "10205", 158, "", "", ""],
+      [26, 3005, 1, "", 9999, "Quantity not specified", "90000", 220, "", "", ""],
     ]),
     "survey/measure_unit.csv": UNITS_CSV,
     "survey/nutrient.csv": NUTRIENT_CSV,
@@ -154,6 +157,7 @@ function fnddsZip(): Uint8Array {
         [3202, "Asian mixed dishes"],
         [3702, "Burgers"],
         [4802, "Rice"],
+        [3502, "Burritos and tacos"],
       ],
     ),
   });
@@ -179,6 +183,7 @@ export const MENUSTAT_CSV = [
   `183,2017,McDonald's,McRib,"McRib, Burgers",Burgers,,,,480,22,8,840,44,22,11,3`,
   `300,2018,Chick-Fil-A,Chick Fil a Chicken Sandwich,"Chicken Sandwich, Entrees",Sandwiches,183,g,,440,19,4,1350,41,28,6,1`,
   `400,2018,Starbucks,"Caffe Latte w/ 2% Milk, Grande","Caffe Latte, Espresso",Beverages,16,fl oz,,190,7,4.5,170,19,13,17,0`,
+  `500,2018,Chipotle,Chicken,"Chicken, Proteins",Entrees,4,oz,,180,7,3,310,0,32,0,0`,
   `401,2018,Starbucks,Iced Coffee,"Iced Coffee, Drinks",Beverages,,,,,,,,,,,`,
 ].join("\n") + "\n";
 

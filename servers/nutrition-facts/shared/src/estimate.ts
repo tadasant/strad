@@ -7,15 +7,20 @@
  *     and keeps its runners-up as `alternatives`.
  *   - EXPECTED is the best match overall. LOW and HIGH are the smallest and
  *     largest values among the candidates in the range.
- *   - A candidate enters the range only if it is a real match (score ≥ 0.5,
- *     or pinned by the caller with `food_id`) and could be scaled. A weak or
- *     unscalable candidate is still shown — it is what the source had — with
- *     `in_range: false`.
+ *   - A candidate enters the range only if it is a real match (score ≥ 0.65,
+ *     `RANGE_MIN_SCORE`, or pinned by the caller with `food_id`) and could be
+ *     scaled. When none does, a partial match (≥ 0.5) may set the estimate,
+ *     flagged `low_confidence_match`. A weak or unscalable candidate is still
+ *     shown — it is what the source had — with `in_range: false`.
+ *   - A NUTRIENT ROW IS WHOLE OR EMPTY: when the expected candidate does not
+ *     carry a nutrient, that nutrient's low / expected / high are all null, so
+ *     a row never claims a range around a value it does not have.
  *   - DISAGREEMENT: two or more sources in the range whose calories differ by
  *     more than 20% (the larger over the smaller).
  *   - RESTAURANT BUFFER: for restaurant estimates, chain or independent, HIGH
  *     is widened by 15% (configurable per call) for the extra oil and butter
- *     a kitchen adds. Always labelled, never folded into EXPECTED.
+ *     a kitchen adds — on calories, fat and saturated fat, the nutrients oil
+ *     and butter carry. Always labelled, never folded into EXPECTED.
  *   - NO CONVERSION, NO GUESS: a quantity no source portion converts leaves the
  *     component without an estimate, flagged `needs_grams`, with each
  *     candidate's per-100 g values.
@@ -33,10 +38,13 @@ import {
 } from "./nutrients.js";
 import { ATTRIBUTION } from "./remote/fatsecret.js";
 import { matchLabel, MIN_SCORE, RANGE_MIN_SCORE } from "./text.js";
+import { parseUnit, resolve, type Resolution, type Unit } from "./units.js";
 
 /** A partial match (text.ts) may set the estimate when nothing better can. */
 const PARTIAL_MIN_SCORE = 0.5;
-import { parseUnit, resolve, type Resolution, type Unit } from "./units.js";
+
+/** The nutrients a kitchen's extra oil and butter raise; the buffer widens these. */
+const BUFFERED: readonly NutrientKey[] = ["calories", "fat_g", "saturated_fat_g"];
 
 export const DISAGREEMENT_THRESHOLD_PCT = 20;
 export const DEFAULT_RESTAURANT_BUFFER_PCT = 15;
@@ -88,7 +96,12 @@ export interface ComponentResult {
   expected_from: string | null;
   range: NutrientRanges | null;
   flags: string[];
-  buffer?: { applied_to: "high"; pct: number; reason: string };
+  buffer?: {
+    applied_to: "high";
+    nutrients: readonly NutrientKey[];
+    pct: number;
+    reason: string;
+  };
   disagreement: null | {
     threshold_pct: number;
     spread_pct: number;
@@ -109,6 +122,7 @@ export interface EstimateResult {
   components: ComponentResult[];
   totals: NutrientRanges & {
     components_without_estimate?: number[];
+    incomplete_nutrients?: NutrientKey[];
     buffer_included?: boolean;
   };
   sources: Record<SourceName, SourceReport>;
@@ -267,13 +281,17 @@ function assemble(slots: SourceSlot[], o: AssembleOptions): ComponentResult {
     range = {} as NutrientRanges;
     for (const k of NUTRIENT_KEYS) {
       const e = expected.res.nutrients[k];
+      if (e === null) {
+        range[k] = { low: null, expected: null, high: null };
+        continue;
+      }
       const values = inRange
         .map((s) => s.res.nutrients![k])
         .filter((v): v is number => v !== null);
-      let high = values.length ? Math.max(...values) : null;
-      if (high !== null && o.bufferPct) high *= 1 + o.bufferPct / 100;
+      let high = Math.max(...values);
+      if (o.bufferPct && BUFFERED.includes(k)) high *= 1 + o.bufferPct / 100;
       range[k] = {
-        low: round(k, values.length ? Math.min(...values) : null),
+        low: round(k, Math.min(...values)),
         expected: round(k, e),
         high: round(k, high),
       };
@@ -328,6 +346,7 @@ function assemble(slots: SourceSlot[], o: AssembleOptions): ComponentResult {
       ? {
           buffer: {
             applied_to: "high" as const,
+            nutrients: BUFFERED,
             pct: o.bufferPct,
             reason: "restaurant estimate: kitchens add oil and butter a menu or recipe does not show",
           },
@@ -407,7 +426,11 @@ export async function estimateRestaurant(
 ): Promise<{ result: ComponentResult; slots: SourceSlot[] }> {
   const { pinned, note } = await pinnedCandidate(lookups, input.food_id);
   const limit = alternatives + 1;
-  const itemQuery = input.size ? `${input.size} ${input.item}` : input.item;
+  // Only a size WORD ("large", "grande") is matched: menus spell sizes into
+  // item names. A size with a number in it ("16 oz") names no item and would
+  // only drag the text score down, so it is left out and the note says so.
+  const sizeWord = input.size && !/\d/.test(input.size) ? input.size : undefined;
+  const itemQuery = sizeWord ? `${sizeWord} ${input.item}` : input.item;
   const menustat = await lookups.menustat(input.restaurant, itemQuery, Math.max(limit, POOL));
   const owner = menustat.chain?.restaurant ?? input.restaurant;
   const [fatsecret, usda] = await Promise.all([
@@ -423,18 +446,27 @@ export async function estimateRestaurant(
     strong(fatsecret);
 
   const serving = parseUnit("serving");
-  const sizeUnit = input.size ? parseUnit(input.size) : undefined;
+  const sizeParsed = sizeWord ? parseUnit(sizeWord) : undefined;
+  const sizeUnit = sizeParsed?.kind === "count" ? sizeParsed : undefined;
   const servingScalable = scalableFor(input.quantity, serving);
   const slots = [
     slotFrom("usda", usda, pinned, alternatives, !chainMatched, servingScalable),
-    slotFrom("menustat", menustat, pinned, alternatives, true, servingScalable),
-    slotFrom("fatsecret", fatsecret, pinned, alternatives),
+    // With no chain match, only the USDA dish may set the estimate: a weak
+    // chain item ("Chicken" for "chicken burrito") is shown, never used.
+    slotFrom("menustat", menustat, pinned, alternatives, chainMatched, servingScalable),
+    slotFrom("fatsecret", fatsecret, pinned, alternatives, chainMatched),
   ];
   const fs = slots[2]!;
   if (fs.best) fs.best = await lookups.fatsecretDetail(fs.best);
 
   const flags = chainMatched ? [] : ["independent_restaurant_estimate"];
   const notes = note ? [note] : [];
+  if (input.size && !sizeWord) {
+    notes.push(
+      `size "${input.size}" was not used: only a size word ("small", "large", "grande") is matched against menu items. ` +
+        "Pass a measured amount to estimate_components instead.",
+    );
+  }
   if (menustat.chain && menustat.chain.restaurant !== input.restaurant) {
     notes.push(`"${input.restaurant}" was matched to MenuStat's "${menustat.chain.restaurant}".`);
   }
@@ -460,6 +492,10 @@ export async function estimateRestaurant(
     flags,
     notes,
   });
+  // The fallback note claims the USDA dish; drop it if no USDA dish was usable.
+  if (!chainMatched && !result.expected_from?.startsWith("usda:") && result.notes) {
+    result.notes = result.notes.filter((n) => !n.includes("closest USDA FNDDS generic dish"));
+  }
   return { result, slots };
 }
 
@@ -482,6 +518,11 @@ function sumRanges(results: ComponentResult[]): EstimateResult["totals"] {
   }
   const missing = results.flatMap((r, i) => (r.range ? [] : [i]));
   if (missing.length) totals.components_without_estimate = missing;
+  // A nutrient some estimated component could not report is a partial sum.
+  const partial = NUTRIENT_KEYS.filter((k) =>
+    results.some((r) => r.range && r.range[k].expected === null),
+  );
+  if (partial.length) totals.incomplete_nutrients = partial;
   if (results.some((r) => r.buffer)) totals.buffer_included = true;
   return totals;
 }

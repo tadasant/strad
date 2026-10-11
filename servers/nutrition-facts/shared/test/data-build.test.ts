@@ -28,7 +28,7 @@ describe("buildUsda", () => {
   const byId = (id: number) => usda.foods.find((f) => f.i === id)!;
 
   it("keeps only foundation, SR Legacy and FNDDS foods", () => {
-    expect(usda.foods.map((f) => f.i)).toEqual([1001, 1002, 2001, 2002, 2003, 3001, 3002, 3003, 3004]);
+    expect(usda.foods.map((f) => f.i)).toEqual([1001, 1002, 2001, 2002, 2003, 3001, 3002, 3003, 3004, 3005]);
     expect(usda.foods.find((f) => f.i === 1003)).toBeUndefined();
   });
 

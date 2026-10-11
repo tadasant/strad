@@ -220,16 +220,15 @@ export class FatSecretClient {
     if (!config.ok) throw new SourceUnavailable(config.reason);
     const credentials = config.value;
 
-    this.rollDay();
     const budget = this.options.dailyBudget ?? DAILY_CALL_BUDGET;
-    if (this.calls >= budget) {
-      throw new SourceUnavailable(
-        `FatSecret's daily call budget in this server (${budget} of the Basic ` +
-          `tier's 5,000) is spent; it resets at 00:00 UTC. Cached results are still served.`,
-      );
-    }
-
     for (let attempt = 0; attempt < 2; attempt++) {
+      this.rollDay();
+      if (this.calls >= budget) {
+        throw new SourceUnavailable(
+          `FatSecret's daily call budget in this server (${budget} of the Basic ` +
+            `tier's 5,000) is spent; it resets at 00:00 UTC. Cached results are still served.`,
+        );
+      }
       const token = await this.accessToken(credentials, attempt > 0);
       this.calls += 1;
       const res = await this.request(
@@ -244,6 +243,8 @@ export class FatSecretClient {
         const code = Number(body.error.code);
         // An expired or revoked token: mint one more and retry once.
         if (code === 13 && attempt === 0) continue;
+        // FatSecret's own quota is spent: stop asking for the rest of the day.
+        if (code === 11) this.calls = Math.max(this.calls, budget);
         throw new SourceUnavailable(describeFsError(code, String(body.error.message ?? "")));
       }
       if (!res.ok) {
@@ -368,7 +369,7 @@ export function scrubProxy(text: string, proxyUrl: string): string {
   try {
     const u = new URL(proxyUrl);
     for (const secret of [u.password, decodeURIComponent(u.password), u.username]) {
-      if (secret && secret.length >= 4) out = out.split(secret).join("[redacted]");
+      if (secret) out = out.split(secret).join("[redacted]");
     }
   } catch {
     // An unparseable URL never reaches a request; nothing more to remove.

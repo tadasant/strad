@@ -121,6 +121,19 @@ describe("estimate_components without FatSecret", () => {
     expect(json.totals.components_without_estimate).toEqual([0]);
   });
 
+  it("nulls a whole nutrient row the expected source lacks, and says the total is partial", async () => {
+    const { call } = await connect();
+    const { json } = await call("estimate_components", {
+      components: [
+        { name: "chicken breast", quantity: 100, unit: "g", food_id: "usda:2002" },
+        { name: "white rice, cooked", quantity: 1, unit: "cup" },
+      ],
+    });
+    expect(json.components[0].range.fiber_g).toEqual({ low: null, expected: null, high: null });
+    expect(json.totals.incomplete_nutrients).toContain("fiber_g");
+    expect(json.totals.fiber_g.low).toBe(json.totals.fiber_g.expected);
+  });
+
   it("pins a candidate with food_id", async () => {
     const { call } = await connect();
     const { json } = await call("estimate_components", {
@@ -265,6 +278,37 @@ describe("estimate_restaurant_item", () => {
     expect(json.sources.menustat.status).toBe("no_match");
   });
 
+  it("never lets a weak chain item set the estimate when no chain item matches", async () => {
+    const { call } = await connect();
+    const { json } = await call("estimate_restaurant_item", { restaurant: "chipotle", item: "chicken burrito" });
+    const c = json.components[0];
+    expect(c.flags).toContain("independent_restaurant_estimate");
+    expect(c.expected_from).toBe("usda:3005");
+    const ms = c.candidates.find((x: Json) => x.source === "menustat");
+    expect(ms).toMatchObject({ id: "menustat:500", in_range: false });
+    // 244 kcal/100 g × 220 g; the 180 kcal "Chicken" is not the low end.
+    expect(c.range.calories).toEqual({ low: 537, expected: 537, high: 617 });
+    expect(c.notes.join(" ")).toContain("Chipotle is in MenuStat");
+  });
+
+  it("buffers only calories, fat and saturated fat", async () => {
+    const { call } = await connect();
+    const { json } = await call("estimate_restaurant_item", { restaurant: "mcd", item: "big mac" });
+    const c = json.components[0];
+    expect(c.buffer.nutrients).toEqual(["calories", "fat_g", "saturated_fat_g"]);
+    expect(c.range.fat_g.high).toBe(32.2);
+    expect(c.range.protein_g).toEqual({ low: 25, expected: 25, high: 25 });
+  });
+
+  it("keeps a numeric size in the query instead of treating it as a unit", async () => {
+    const { call } = await connect();
+    const { json } = await call("estimate_restaurant_item", { restaurant: "Joe's Diner", item: "cheeseburger", size: "16 oz" });
+    const c = json.components[0];
+    expect(c.expected_from).toBe("usda:3002");
+    expect(c.range.calories.expected).toBe(421);
+    expect(c.notes.join(" ")).toContain('size "16 oz" was not used');
+  });
+
   it("adds FatSecret's current menu item and its attribution", async () => {
     const { call } = await connect(WITH_FS);
     const { json } = await call("estimate_restaurant_item", { restaurant: "mcd", item: "big mac" });
@@ -292,7 +336,7 @@ describe("search_foods and get_food", () => {
     const { json } = await call("search_foods", { query: "fries", restaurant: "mcd", sources: ["menustat"] });
     expect(json.results.menustat.matched_restaurant).toBe("McDonald's");
     expect(json.results.menustat.results.map((r: Json) => r.id).sort()).toEqual(["menustat:181", "menustat:182"]);
-    expect(json.results.usda).toBeUndefined();
+    expect(json.results.usda).toMatchObject({ status: "not_queried", results: [] });
   });
 
   it("gets a USDA food with portions and per-100 g values", async () => {

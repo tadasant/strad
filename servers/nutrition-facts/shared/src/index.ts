@@ -6,7 +6,6 @@ export {
   fatsecretCredentials,
   fdcApiKey,
   missingCredentials,
-  unconfiguredSources,
 } from "./config.js";
 
 export { parseToolGroups, registerTools, toolDefinitions, toolNames, type ToolGroup } from "./tools.js";

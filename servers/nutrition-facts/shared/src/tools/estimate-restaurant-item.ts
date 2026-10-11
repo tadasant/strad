@@ -39,7 +39,7 @@ export function estimateRestaurantItemTool(ctx: ToolContext): ToolDefinition {
       "neither source has — the expected value is the USDA generic dish and " +
       "the component is flagged independent_restaurant_estimate.\n\n" +
       "Every restaurant estimate widens range.high by buffer_pct (default " +
-      `${DEFAULT_RESTAURANT_BUFFER_PCT}%) for extra cooking oil and butter; the ` +
+      `${DEFAULT_RESTAURANT_BUFFER_PCT}%) on calories, fat and saturated fat, for extra cooking oil and butter; the ` +
       "`buffer` field says so. expected is never buffered.\n\n" +
       "Returns the same shape as estimate_components, with one component: " +
       "candidates (best per source: id, source, name, restaurant or brand, " +
@@ -62,7 +62,7 @@ export function estimateRestaurantItemTool(ctx: ToolContext): ToolDefinition {
       properties: {
         restaurant: { type: "string", description: 'The restaurant: "McDonald\'s", "mcd", "Joe\'s Diner".' },
         item: { type: "string", description: 'The menu item: "Big Mac", "chicken burrito bowl".' },
-        size: { type: "string", description: 'Optional size: "small", "medium", "large", "16 oz".' },
+        size: { type: "string", description: 'Optional size word: "small", "medium", "large", "grande". It is matched against the menu item names.' },
         quantity: { type: "number", description: "How many of the item (default 1)." },
         food_id: {
           type: "string",
