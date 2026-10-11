@@ -198,7 +198,7 @@ the receiving server believed it.
 
 **Here.** A `## Sender Verification Headers` section, placed after the ID,
 thread and Gmail URL lines and BEFORE `## Headers`, carries a JSON block:
-`headers` is every instance of `Authentication-Results`,
+`headers` is every instance of `Received`, `Authentication-Results`,
 `ARC-Authentication-Results`, `Received-SPF`, `DKIM-Signature`, `From`,
 `Sender`, `Reply-To`, `Return-Path`, `Message-ID`, `In-Reply-To`,
 `References`, `Auto-Submitted` and `List-Id`, in message order, each as
@@ -210,13 +210,18 @@ merged, deduped, reordered or reduced to an empty string.
 - **Why the order matters.** The receiving server (mx.google.com) prepends its
   `Authentication-Results` above every header the sender wrote, so the topmost
   is its verdict and a lower one may be forged.
+- **Why `Received`.** When the receiving server wrote no
+  `Authentication-Results`, a sender-written one is the topmost. Only the hop
+  trail shows that: Google's sits directly under the `Received` in which
+  mx.google.com accepted the message. `HACKS.md` #123.
 - **Why before `## Headers`.** Gmail decodes RFC 2047 in header values, so a
   Subject can carry a newline and a whole fake section. Nothing the sender
   controls comes before this one, so the first section in the output is
   always the real one.
 - **Why JSON.** `JSON.stringify` keeps a value on one line, so a newline or a
-  code fence in a value cannot end the block. C1 controls, U+2028/U+2029 and
-  bidi controls, which it passes through, are written as `\u` escapes.
+  code fence in a value cannot end the block. C1 controls, format characters
+  (zero-width, bidi, tags) and U+2028/U+2029, which it passes through, are
+  written as `\u` escapes.
 - **Backward compatible.** Every line upstream emits is unchanged; the section
   is added.
 
@@ -228,5 +233,6 @@ What a reader still has to get right is `HACKS.md` #123.
 **Tests.** `images/bundle-google/test/gmail-sender-verification.test.ts`: a
 message whose real top `Authentication-Results` fails DMARC above a forged
 lower one that passes, a Subject carrying a forged section, a value carrying
-newlines, a fence and bidi controls, the `absent` list, and upstream's lines
-unchanged.
+newlines, a fence, bidi, C1, zero-width and astral format characters, a
+forged `Authentication-Results` with none of Google's above it, the `absent`
+list, and upstream's lines unchanged.

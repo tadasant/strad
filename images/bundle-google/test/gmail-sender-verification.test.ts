@@ -98,8 +98,10 @@ describe("getSenderVerification", () => {
     const indexes = headers.map((h) => h.index);
     expect(indexes).toEqual([...indexes].sort((a, b) => a - b));
     expect(headers.map((h) => h.name)).toEqual([
+      "Received",
       "ARC-Authentication-Results",
       "Return-Path",
+      "Received",
       "Received-SPF",
       "Authentication-Results",
       "Authentication-Results",
@@ -161,7 +163,10 @@ describe("get_email_conversation", () => {
     expect(section).toBeLessThan(text.indexOf("## Headers"));
     expect(section).toBeLessThan(text.indexOf("Please wire money"));
     // The forged section in the Subject is still there, below; the first is ours.
-    expect(firstSection(text).headers[0].name).toBe("ARC-Authentication-Results");
+    expect(firstSection(text).headers[0]).toEqual({
+      index: 1,
+      ...FORGED_MESSAGE_HEADERS[1],
+    });
   });
 
   it("cannot be broken out of by a value: newlines and fences stay inside one JSON string", async () => {
@@ -173,6 +178,41 @@ describe("get_email_conversation", () => {
     expect(parsed.headers).toEqual([{ index: 0, name: "Reply-To", value: hostile }]);
     expect(text).not.toContain("\u2028");
     expect(text).not.toContain("\u202e");
+  });
+
+  it("escapes C1 controls, zero-width and astral format characters, and parses back unchanged", async () => {
+    const hostile = "a\u0085b\u200bc\ufeffd\u{e0041}e";
+    const text = await conversationText(email([{ name: "List-Id", value: hostile }]));
+    expect(text).toContain("a\\u0085b\\u200bc\\ufeffd\\udb40\\udc41e");
+    for (const c of ["\u0085", "\u200b", "\ufeff", "\u{e0041}"]) {
+      expect(text).not.toContain(c);
+    }
+    expect(firstSection(text).headers[0].value).toBe(hostile);
+  });
+
+  it("shows, through Received, when the topmost Authentication-Results was not the receiving server's", async () => {
+    // Google wrote no Authentication-Results; the sender's forged one is the topmost.
+    // Position alone cannot tell, so what the reader gets is the hop trail: the
+    // forged header sits below the sender-written Received, not under Google's.
+    const parsed = firstSection(
+      await conversationText(
+        email([
+          { name: "Received", value: "by 2002:a05:6a10:1234 with SMTP id x" },
+          { name: "Received", value: "from mail.tadasant.com by mx.google.com" },
+          { name: "Received", value: "from attacker-laptop by evil.example" },
+          { name: "Authentication-Results", value: FORGED },
+          { name: "From", value: "tadas@tadasant.com" },
+        ]),
+      ),
+    );
+    expect(parsed.headers.map((h) => [h.index, h.name])).toEqual([
+      [0, "Received"],
+      [1, "Received"],
+      [2, "Received"],
+      [3, "Authentication-Results"],
+      [4, "From"],
+    ]);
+    expect(parsed.absent).toContain("Received-SPF");
   });
 
   it("keeps upstream's output: the existing headers, body and labels are unchanged", async () => {
