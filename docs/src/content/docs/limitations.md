@@ -2307,7 +2307,7 @@ whatever the variables are called.
 
 **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
 `grafana`, `bill-spend`, `aws-device-farm`, `whatsapp`, `liveoak`, `airtable`,
-`flightaware`, `digitalocean` and `ssh` read an injected environment.** The other nine
+`flightaware`, `digitalocean` and `ssh` read an injected environment.** The other eleven
 trees in the bundle image are vendored upstream code that reads `process.env` directly,
 often lazily at call time, so they see the bare names only. `bill-spend` reads
 the injected view for one mount rather than one per slug: one BILL token is one

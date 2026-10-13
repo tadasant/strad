@@ -59,6 +59,8 @@ export const DEFAULT_PORT = 22;
  * timeout; an agent should learn "it is down" in seconds, not half a minute.
  */
 export const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
+/** The most `SSH_TIMEOUT` may be set to, in ms. */
+export const MAX_CONNECT_TIMEOUT_MS = 120_000;
 /** The longest `SSH_UNREACHABLE_HINT` that is kept, in characters. */
 export const MAX_UNREACHABLE_HINT = 500;
 export const DEFAULT_COMMAND_TIMEOUT_MS = 60_000;
@@ -135,22 +137,26 @@ function parseMs(
   env: NodeJS.ProcessEnv,
   name: string,
   fallback: number,
+  max = 3_600_000,
 ): number {
   const raw = env[name]?.trim();
   if (!raw) return fallback;
   const n = Number(raw);
-  if (!Number.isInteger(n) || n < 1000 || n > 3_600_000) {
+  if (!Number.isInteger(n) || n < 1000 || n > max) {
     throw new ConfigError(
-      `${name} must be a whole number of milliseconds between 1000 and 3600000; got "${raw}".`,
+      `${name} must be a whole number of milliseconds between 1000 and ${max}; got "${raw}".`,
     );
   }
   return n;
 }
 
-/** One line of plain text, or nothing: control characters out, length capped. */
+/**
+ * One line of plain text, or nothing: control and format characters out (C0,
+ * C1, line and paragraph separators, bidi overrides), length capped.
+ */
 export function parseHint(raw: string | undefined): string | undefined {
   if (raw === undefined) return undefined;
-  const text = raw.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  const text = raw.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]+/g, " ").replace(/\s+/g, " ").trim();
   if (text === "") return undefined;
   return text.length > MAX_UNREACHABLE_HINT ? `${text.slice(0, MAX_UNREACHABLE_HINT - 1)}…` : text;
 }
@@ -223,7 +229,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SshConfig {
     passphrase,
     keyType: key.type,
     hostKeyPins,
-    connectTimeoutMs: parseMs(env, ENV.connectTimeout, DEFAULT_CONNECT_TIMEOUT_MS),
+    // Capped at two minutes: a down host costs every call this long, and
+    // core's default `timeoutMs` for a slug is 120 s.
+    connectTimeoutMs: parseMs(env, ENV.connectTimeout, DEFAULT_CONNECT_TIMEOUT_MS, MAX_CONNECT_TIMEOUT_MS),
     commandTimeoutMs: parseMs(env, ENV.commandTimeout, DEFAULT_COMMAND_TIMEOUT_MS),
     unreachableHint: parseHint(env[ENV.unreachableHint]),
   };

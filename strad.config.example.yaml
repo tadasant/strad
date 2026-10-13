@@ -1189,6 +1189,10 @@ servers:
   #   path: /_instance/ssh/ssh-tadasant-zimmer-prod
   #   params: true
   #   entitlements: [admin]
+  #   # Core gives up on a call after `timeoutMs` (default 120 s) and the SSH
+  #   # session is closed with it; this lets a command run to its own
+  #   # 15-minute ceiling.
+  #   timeoutMs: 960000
   #
   # A read-only tier of a host is the same instance tree under another slug,
   # seeded separately, with the write and execute tools withheld:

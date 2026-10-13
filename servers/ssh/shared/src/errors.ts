@@ -36,9 +36,8 @@ export class SshUnreachableError extends Error {
     hint: string | undefined,
   ) {
     super(
-      `UNREACHABLE: ${target} did not answer (${reason}). Nothing was sent to it ` +
-        `and the private key was not used. The host is most likely powered off or ` +
-        `spun down, or a firewall is dropping this source address. ` +
+      `UNREACHABLE: ${target} did not answer: ${reason}. Nothing was sent to it ` +
+        `and the private key was not used. ` +
         (hint
           ? `About this host: ${hint} `
           : `If this host is meant to be always on, treat it as an outage. `) +

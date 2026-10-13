@@ -190,10 +190,11 @@ bundles:
   # conventional `/grafana`, since staging's Grafana is the per-slug
   # `/grafana-registry` below, `/aws-device-farm`, whose AWS credential does
   # not exist yet, `/whatsapp`, whose one slug is served from
-  # `bundle-whatsapp`, and `/ssh`, whose hosts are store-served instances. The PROCESS registers all thirty either way — including
-  # `/telegram`, `/liveoak`, `/airtable`, `/flightaware` and `/digitalocean`,
-  # whose slugs are disabled until their secrets are seeded —
-  # which is what the sizing below is about.
+  # `bundle-whatsapp`, and `/ssh`, whose hosts are store-served instances.
+  # The PROCESS registers all thirty-two either way — including `/telegram`,
+  # `/liveoak`, `/airtable`, `/flightaware` and `/digitalocean`, whose slugs are
+  # disabled until their secrets are seeded — which is what the sizing below is
+  # about.
   #
   # SIZE. 2GB, and the reasoning is measured, not guessed. With two browser
   # servers logging in concurrently the container's working set is ~760MB (the

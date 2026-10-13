@@ -75,7 +75,7 @@ higher bar than any other server's:
   server](/operate/secrets/)'s credential can write.
 - **On a root account, `ssh_upload` is a shell.** A writable cron file,
   `authorized_keys`, or a `mode` of `4755` is code execution. A read-only tier
-  is `tools: { allow: [ssh_connection_info, ssh_list_directory, ssh_download] }`;
+  is `tools: { allow: [ssh_connection_info, ssh_check_connection, ssh_list_directory, ssh_download] }`;
   there is no meaningful "write but not execute" tier on root.
 
 :::caution[`ssh-tadasant-zimmer-prod` stays unreachable from Zimmer sessions]
@@ -171,6 +171,12 @@ minutes, which is what ends a `tail -f`. A timed-out command returns its partial
 output, `timedOut: true` and `timeout: "inactivity"` or `"ceiling"`, and is sent
 `SIGKILL` where sshd supports that.
 
+**A call is also bounded by core.** strad gives up on a slug's call after its
+`timeoutMs` — 120 s unless the entry sets one. When it does, the call's SSH
+connection is closed with it, so a command nobody is waiting for does not keep a
+session on the host. Set `timeoutMs` on an SSH slug (the example uses 960 000,
+just over the 15-minute ceiling) if long commands are expected.
+
 **Nothing waits forever on a stuck host.** A connection that closes during the
 handshake is an error, not a hang. Every SFTP step, and opening a command's
 channel, has the `SSH_COMMAND_TIMEOUT` deadline: a live connection to a host
@@ -189,28 +195,39 @@ failure of the server, and it never fails the MCP connection.
   and is usable the moment the host is back. The tool list does not change with
   the host's state, so there is no `tools/list_changed` to wait for.
 - **Every call that cannot reach the host says so, and says what to do.** A DNS
-  failure, a refused port, a network error or no SSH handshake within
-  `SSH_TIMEOUT` comes back as one error:
+  failure, a network error, or no reply at all within `SSH_TIMEOUT` comes back
+  as:
 
   ```
   ssh-tadasant-zimmer-staging: UNREACHABLE: root@staging.zimmer.tadasant.com:2222
-  did not answer (no SSH handshake within 15000 ms). Nothing was sent to it and
-  the private key was not used. The host is most likely powered off or spun down,
-  or a firewall is dropping this source address. About this host: <SSH_UNREACHABLE_HINT>
+  did not answer: no reply within 15000 ms. The host is most likely powered off
+  or spun down, or a firewall is dropping this source address. Nothing was sent
+  to it and the private key was not used. About this host: <SSH_UNREACHABLE_HINT>
   Once it is up, call ssh_check_connection to confirm, then retry this call — no
   reconnect of the MCP session is needed.
   ```
 
-  With no hint set, the middle sentence reads "If this host is meant to be always
-  on, treat it as an outage."
+  With no hint set, "About this host: …" reads "If this host is meant to be
+  always on, treat it as an outage." A refused port is `UNREACHABLE` too, worded
+  for what it means: the machine is up and nothing listens on the port — sshd is
+  down or still starting, or `SSH_PORT` is wrong.
 - **`ssh_check_connection` is the retry.** Call it after bringing the host up. It
   makes one fresh connection, and once it reports `"status": "ok"` with the host
   key it saw, every other tool works on its next call, in the same session.
+- **A host that drops under a call says so.** If the connection dies during a
+  command or a transfer — the host went down, or restarted — the call fails with
+  "the connection … was lost", says the command may or may not have run, and
+  points at `ssh_check_connection`. It is never reported as a finished command.
 - **The other failures stay distinct**, because none of them is fixed by turning
-  a machine on. A host-key mismatch still says `REFUSED` and "do not retry"; a
-  missing parameter still says `Not configured` and names it; a host that is up
-  but rejects the key, or resets the handshake, says which. `ssh_check_connection`
-  reports them as `host_key_mismatch`, `not_configured` and `connect_failed`.
+  a machine on:
+
+  | What happened                                                       | The error says                                                              | `ssh_check_connection` status |
+  | ------------------------------------------------------------------- | --------------------------------------------------------------------------- | ----------------------------- |
+  | The host presented another key                                       | `REFUSED` … "do not retry"                                                  | `host_key_mismatch`           |
+  | A parameter is missing or malformed                                 | `Not configured` and its name                                               | `not_configured`              |
+  | TCP connected but no SSH greeting, or it closed before one          | the machine is up and its sshd is stuck, refusing, or behind a firewall     | `connect_failed`              |
+  | The host showed the pinned key and the login stalled                | the host is up and slow (overload, reverse DNS, PAM); a retry may work      | `connect_failed`              |
+  | The host rejected the key                                           | the key's public half is not in `authorized_keys`                           | `connect_failed`              |
 
 `SSH_UNREACHABLE_HINT` is the per-slug sentence that makes the message specific
 — for staging, "Spun down when idle; bring it up with the Deploy staging
@@ -256,7 +273,11 @@ and every SFTP path. For a down host they prove that `initialize` and
 listener and a non-routable address, that every tool returns the `UNREACHABLE`
 message, and that `ssh_check_connection` turns from `unreachable` to `ok` when
 the host comes up on the same port, after which `ssh_execute` works in the same
-MCP session. Nothing has connected to one of the real hosts yet: the first
+MCP session. They also prove the classification: a silent listener and a
+login that stalls after the host key are reported as up-but-stuck rather than
+`UNREACHABLE`, a host that drops mid-command is a lost connection rather than a
+result, and a cancelled call closes its SSH session at once. Nothing has
+connected to one of the real hosts yet: the first
 `ssh_check_connection` after seeding is that check.
 
 Not tested by anything here: OpenSSH's handling of the `SIGKILL` request on

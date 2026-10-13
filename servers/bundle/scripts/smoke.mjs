@@ -291,7 +291,7 @@ if (unchecked.length || absent.length) {
 
 // Two trees registering the SAME slug is the collision a twelve-tree single process
 // invites, and it collapses to one route — the set above cannot see it, because a
-// Set of 32 mounts' slugs is 30 entries wide and matches EXPECT exactly.
+// Set of 32 mounts' slugs is 31 entries wide and matches EXPECT exactly.
 if (health.servers.length !== mounted.size) {
   failed += 1;
   console.log(

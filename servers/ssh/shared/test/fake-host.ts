@@ -75,6 +75,8 @@ export async function startFakeHost(options: {
   username?: string;
   /** Listen on this port rather than a free one — a host "coming back up" where it was. */
   port?: number;
+  /** Present the host key, then never answer authentication: a host up but stalled in login. */
+  stallAuth?: boolean;
   /** Accept the SFTP subsystem and then answer nothing, like a hung mount. */
   stallSftp?: boolean;
 }): Promise<FakeHost> {
@@ -93,6 +95,7 @@ export async function startFakeHost(options: {
       client.on("error", () => undefined);
       client.on("authentication", (ctx) => {
         authAttempts.push(ctx.method);
+        if (options.stallAuth) return;
         if (ctx.method !== "publickey" || ctx.username !== username) {
           return ctx.reject(["publickey"]);
         }

@@ -23,7 +23,7 @@ slug, and what changed from upstream — is the docs page,
 | `shared/src/config.ts`   | The `SSH_*` variables, the key parse, the error that says where to seed them      |
 | `shared/src/host-key.ts` | Pin parsing (keyscan line, bare key, `SHA256:` fingerprint), matching, negotiation |
 | `shared/src/client.ts`   | One connection per call: the pin check, exec with bounded output, SFTP            |
-| `shared/src/tools.ts`    | The five tools and the one error path                                             |
+| `shared/src/tools.ts`    | The six tools and the one error path                                             |
 | `shared/src/server.ts`   | `createMCPServer({ version, label, env })`, the factory the bundle host mounts    |
 
 ## Tests

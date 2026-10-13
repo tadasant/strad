@@ -1361,7 +1361,7 @@ async function loadWhatsApp(): Promise<Mount> {
 /**
  * How each store-served instance tree is built from what core served it.
  *
- * The three loaders above already take an injected environment, which is the
+ * The loaders named here already take an injected environment, which is the
  * whole qualification: an instance is a second copy of a tree inside this one
  * process, and only a tree that reads its credential out of what it is handed
  * can be one. `instanceEnv` is what it is handed — the served namespace plus a

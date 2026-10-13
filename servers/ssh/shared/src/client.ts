@@ -6,7 +6,7 @@
  * standing authenticated session on a production root account inside a shared
  * container, and the handshake it saves is a few hundred milliseconds.
  *
- * BOUNDED, because this process is twenty-five other servers too. A command's
+ * BOUNDED, because this process is thirty-one other servers too. A command's
  * output and a file read are capped in memory as they arrive, not after, so
  * `cat` of a 4 GB log costs a fixed amount of this container's memory and comes
  * back marked as truncated.
@@ -129,6 +129,7 @@ function target(config: SshConfig): string {
 function connectError(
   err: Error & { level?: string; code?: string },
   config: SshConfig,
+  stage: { tcpConnected: boolean; presented: boolean } = { tcpConnected: false, presented: false },
 ): Error {
   const where = target(config);
   const unreachable = (reason: string) =>
@@ -145,15 +146,23 @@ function connectError(
     case "ENOTFOUND":
     case "EAI_AGAIN":
       return unreachable(
-        `${config.host} did not resolve (${err.code}); if the name is right, its DNS record may be gone while the host is down`,
+        `${config.host} did not resolve (${err.code}). If the name is right, its ` +
+          `DNS record may be gone while the host is down; if not, SSH_HOST is wrong`,
       );
     case "ECONNREFUSED":
-      return unreachable(`connection refused: nothing is listening on port ${config.port}`);
+      return unreachable(
+        `the machine refused port ${config.port}. Something is up at that address ` +
+          `but nothing is listening there: sshd is down or the host is still ` +
+          `starting — or SSH_PORT is wrong, if this never worked`,
+      );
     case "ETIMEDOUT":
     case "EHOSTUNREACH":
     case "ENETUNREACH":
     case "EHOSTDOWN":
-      return unreachable(`network error ${err.code}`);
+      return unreachable(
+        `network error ${err.code}. The host is most likely powered off or spun ` +
+          `down, or a firewall is dropping this source address`,
+      );
     case "ECONNRESET":
       return new SshConnectError(
         `${where} reset the connection during the handshake. Something is up at ` +
@@ -161,7 +170,32 @@ function connectError(
       );
   }
   if (/timed out while waiting for handshake/i.test(err.message)) {
-    return unreachable(`no SSH handshake within ${config.connectTimeoutMs} ms`);
+    if (stage.presented) {
+      return new SshConnectError(
+        `${where} answered with the pinned host key, but the login did not finish ` +
+          `within ${config.connectTimeoutMs} ms. The host is up and slow — ` +
+          `overloaded, or sshd is stuck on a reverse-DNS or PAM lookup. Retrying ` +
+          `may work; raising SSH_TIMEOUT may too.`,
+      );
+    }
+    if (stage.tcpConnected) {
+      return new SshConnectError(
+        `${where} accepted the TCP connection but sent no SSH greeting within ` +
+          `${config.connectTimeoutMs} ms. The machine is up; its sshd is stuck or ` +
+          `overloaded, or the port is not an SSH server.`,
+      );
+    }
+    return unreachable(
+      `no reply within ${config.connectTimeoutMs} ms. The host is most likely ` +
+        `powered off or spun down, or a firewall is dropping this source address`,
+    );
+  }
+  if (/connection lost before handshake/i.test(err.message)) {
+    return new SshConnectError(
+      `${where} accepted the TCP connection and closed it before any SSH greeting. ` +
+        `The machine is up; sshd may be refusing new connections (MaxStartups), or ` +
+        `a firewall or fail2ban on the host may be dropping this source address.`,
+    );
   }
   return new SshConnectError(`SSH connection to ${where} failed: ${err.message}`);
 }
@@ -177,6 +211,11 @@ export const connect: Connector = (config) =>
   new Promise<SshSession>((resolve, reject) => {
     const client = new Client();
     let presented: Buffer | undefined;
+    // Where the attempt got to, because a timeout means different things at
+    // each stage: no TCP at all is a machine that is off; TCP but no SSH is a
+    // live machine whose sshd is stuck; a host key is a live sshd whose login
+    // stalled. Only the first is "bring it up".
+    let tcpConnected = false;
     let settled = false;
 
     const algorithms = hostKeyAlgorithms(config.hostKeyPins);
@@ -200,6 +239,9 @@ export const connect: Connector = (config) =>
         : {}),
     };
 
+    client.once("connect", () => {
+      tcpConnected = true;
+    });
     client.once("ready", () => {
       settled = true;
       const key = presented!;
@@ -252,7 +294,7 @@ export const connect: Connector = (config) =>
         );
         return;
       }
-      reject(connectError(err, config));
+      reject(connectError(err, config, { tcpConnected, presented: presented !== undefined }));
     });
 
     try {
@@ -350,15 +392,37 @@ function sessionOver(
    * connection is closed: the step it was waiting on cannot be cancelled alone.
    */
   const ms = config.commandTimeoutMs;
+
+  /**
+   * Set when the connection dies under a call — the host went down, a reset, a
+   * keepalive that went unanswered — rather than because this end closed it.
+   * ssh2 then closes every channel with no exit status, which on its own reads
+   * like a command that finished, so the calls below check this first.
+   */
+  let closing = false;
+  let lost = false;
+  client.on("close", () => {
+    if (!closing) lost = true;
+  });
+  const lostError = (what: string) =>
+    new SshConnectError(
+      `The connection to ${target(config)} was lost during ${what}. The host may ` +
+        `have gone down or been restarted; anything already sent may or may not ` +
+        `have taken effect. Call ssh_check_connection, and check the result before ` +
+        `retrying.`,
+    );
+
   const deadline = <T>(what: string, run: () => Promise<T>): Promise<T> =>
     new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
+        closing = true;
         client.end();
         reject(
           new SshConnectError(
             `${what} on ${target(config)} got no answer within ${ms} ms, so the ` +
-              `connection was closed. The host may be overloaded, or the path may ` +
-              `be on a hung filesystem.`,
+              `connection was closed. The host may be overloaded, the path may be ` +
+              `on a hung filesystem, or the host may have gone away — ` +
+              `ssh_check_connection tells which.`,
           ),
         );
       }, ms);
@@ -369,7 +433,7 @@ function sessionOver(
         },
         (e: unknown) => {
           clearTimeout(timer);
-          reject(e);
+          reject(lost ? lostError(what.toLowerCase()) : e);
         },
       );
     });
@@ -377,7 +441,15 @@ function sessionOver(
   let sftpPromise: Promise<SFTPWrapper> | undefined;
   const sftp = (): Promise<SFTPWrapper> =>
     (sftpPromise ??= new Promise((resolve, reject) =>
-      client.sftp((err, s) => (err ? reject(err) : resolve(s))),
+      client.sftp((err, s) => {
+        if (err) return reject(err);
+        // ssh2 drops its own `error` listener once SFTP is up, and a later
+        // protocol error from the host would then be an uncaught exception in
+        // the shared bundle. The call in flight still fails, through its
+        // callback or the deadline.
+        s.on("error", () => undefined);
+        resolve(s);
+      }),
     ));
 
   return {
@@ -390,6 +462,7 @@ function sessionOver(
         const openTimer = setTimeout(() => {
           if (opened) return;
           opened = true;
+          closing = true;
           client.end();
           reject(
             new SshConnectError(
@@ -419,6 +492,16 @@ function sessionOver(
             done = true;
             if (timer) clearTimeout(timer);
             clearTimeout(ceiling);
+            if (!timedOut && exitCode === null && signal === null) {
+              // No exit status and not ended by this end: the connection died
+              // under the command. Not a result — the command may still be
+              // running, or may never have finished.
+              reject(lost ? lostError("the command") : new SshConnectError(
+                `${target(config)} closed the command's channel without an exit ` +
+                  `status. It may or may not have run to completion.`,
+              ));
+              return;
+            }
             resolve({
               exitCode,
               signal,
@@ -535,6 +618,7 @@ function sessionOver(
     }),
 
     close() {
+      closing = true;
       client.end();
     },
   };

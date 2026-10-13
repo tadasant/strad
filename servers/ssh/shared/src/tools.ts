@@ -1,9 +1,11 @@
 /**
- * FIVE TOOLS, NAMED AS THE UPSTREAM NAMED THEM.
+ * SIX TOOLS: THE UPSTREAM'S FIVE, NAMED AS IT NAMED THEM, AND THE RETRY.
  *
  * This server replaces `ssh-agent-mcp-server` in five catalog entries, so the
  * names, the argument names and the result shapes are that package's wherever
- * they still mean something. Two could not keep their meaning:
+ * they still mean something. The sixth, `ssh_check_connection`, is the one an
+ * agent calls after bringing a down host back up. Two could not keep their
+ * meaning:
  *
  *   ssh_download / ssh_upload took a `localPath` — a file on the machine the
  *   server ran on, which was the user's laptop. Here that machine is a shared
@@ -76,7 +78,8 @@ export interface ToolDefinition {
     required?: string[];
   };
   annotations: Record<string, boolean | string>;
-  handler: (args: unknown) => Promise<ToolResult>;
+  /** `signal` aborts when the caller goes away (core's timeout, a cancel). */
+  handler: (args: unknown, signal?: AbortSignal) => Promise<ToolResult>;
 }
 
 export interface ToolContext {
@@ -132,15 +135,27 @@ function fail(err: unknown, ctx: ToolContext): ToolResult {
   return failText(typeof e?.code === "number" ? `SFTP: ${message}` : message, ctx);
 }
 
+/**
+ * One connection for one call. If the caller goes away — core gives up at the
+ * slug's `timeoutMs`, or the client cancels — the connection is closed then
+ * and there, so a command nobody is waiting for does not keep an authenticated
+ * session on the host open until its own timeout.
+ */
 async function withSession<T>(
   ctx: ToolContext,
+  signal: AbortSignal | undefined,
   run: (session: SshSession, config: SshConfig) => Promise<T>,
 ): Promise<T> {
   const config = ctx.config();
+  if (signal?.aborted) throw new InputError("The call was cancelled before it connected.");
   const session = await ctx.connector(config);
+  const onAbort = () => session.close();
+  signal?.addEventListener("abort", onAbort, { once: true });
   try {
+    if (signal?.aborted) throw new InputError("The call was cancelled.");
     return await run(session, config);
   } finally {
+    signal?.removeEventListener("abort", onAbort);
     session.close();
   }
 }
@@ -212,7 +227,7 @@ function connectionInfoTool(ctx: ToolContext): ToolDefinition {
       },
     },
     annotations: { title: "SSH connection info", readOnlyHint: true, openWorldHint: true },
-    handler: async (raw) => {
+    handler: async (raw, signal) => {
       try {
         const args = asObject(raw);
         const test = args.test_connection === true || args.test_connection === "true";
@@ -242,7 +257,7 @@ function connectionInfoTool(ctx: ToolContext): ToolDefinition {
           connect_timeout_ms: config.connectTimeoutMs,
           command_timeout_ms: config.commandTimeoutMs,
         };
-        if (test) info.connection = await checkConnection(ctx);
+        if (test) info.connection = await checkConnection(ctx, signal);
         return ok(info);
       } catch (err) {
         return fail(err, ctx);
@@ -269,10 +284,10 @@ type ConnectionCheck =
       next_step: string;
     };
 
-async function checkConnection(ctx: ToolContext): Promise<ConnectionCheck> {
+async function checkConnection(ctx: ToolContext, signal?: AbortSignal): Promise<ConnectionCheck> {
   const started = Date.now();
   try {
-    const presented = await withSession(ctx, async (s) => s.hostKey);
+    const presented = await withSession(ctx, signal, async (s) => s.hostKey);
     return { ok: true, status: "ok", host_key_presented: presented, elapsed_ms: Date.now() - started };
   } catch (err) {
     const elapsed_ms = Date.now() - started;
@@ -330,7 +345,7 @@ function checkConnectionTool(ctx: ToolContext): ToolDefinition {
       `by waiting for or starting the host; "host_key_mismatch" must never be retried.`,
     inputSchema: { type: "object", properties: {} },
     annotations: { title: "Check SSH connection", readOnlyHint: true, openWorldHint: true },
-    handler: async () => ok({ slug: ctx.label, ...(await checkConnection(ctx)) }),
+    handler: async (_raw, signal) => ok({ slug: ctx.label, ...(await checkConnection(ctx, signal)) }),
   };
 }
 
@@ -354,11 +369,11 @@ function listDirectoryTool(ctx: ToolContext): ToolDefinition {
       required: ["path"],
     },
     annotations: { title: "List remote directory", readOnlyHint: true, openWorldHint: true },
-    handler: async (raw) => {
+    handler: async (raw, signal) => {
       try {
         const args = asObject(raw);
         const path = str(args, "path", true);
-        return await withSession(ctx, async (s) => {
+        return await withSession(ctx, signal, async (s) => {
           const { entries, total } = await s.listDirectory(path);
           return ok({ path, total, truncated: total > entries.length, entries });
         });
@@ -447,7 +462,7 @@ function downloadTool(ctx: ToolContext): ToolDefinition {
       required: ["remotePath"],
     },
     annotations: { title: "Download remote file", readOnlyHint: true, openWorldHint: true },
-    handler: async (raw) => {
+    handler: async (raw, signal) => {
       try {
         const args = asObject(raw);
         refuseLocalPath(args, "ssh_download", "The file's content is returned in the result instead.");
@@ -459,7 +474,7 @@ function downloadTool(ctx: ToolContext): ToolDefinition {
         if (!["auto", "utf8", "base64"].includes(want)) {
           throw new InputError('encoding must be "auto", "utf8" or "base64".');
         }
-        return await withSession(ctx, async (s) => {
+        return await withSession(ctx, signal, async (s) => {
           const read = await s.readFile(remotePath, { offset, maxBytes });
           const { encoding, content, bytes } = encodeContent(
             read.data,
@@ -526,7 +541,7 @@ function uploadTool(ctx: ToolContext): ToolDefinition {
       idempotentHint: true,
       openWorldHint: true,
     },
-    handler: async (raw) => {
+    handler: async (raw, signal) => {
       try {
         const args = asObject(raw);
         refuseLocalPath(
@@ -559,7 +574,7 @@ function uploadTool(ctx: ToolContext): ToolDefinition {
           }
           mode = parseInt(rawMode, 8);
         }
-        return await withSession(ctx, async (s) => {
+        return await withSession(ctx, signal, async (s) => {
           await s.writeFile(remotePath, data, { mode });
           return ok({ remotePath, bytes: data.length });
         });
@@ -615,13 +630,13 @@ function executeTool(ctx: ToolContext): ToolDefinition {
       idempotentHint: false,
       openWorldHint: true,
     },
-    handler: async (raw) => {
+    handler: async (raw, signal) => {
       try {
         const args = asObject(raw);
         const command = str(args, "command", true);
         const cwd = str(args, "cwd", false);
         const timeout = int(args, "timeout", { min: 1000, max: MAX_COMMAND_TIMEOUT_MS });
-        return await withSession(ctx, async (s, config) => {
+        return await withSession(ctx, signal, async (s, config) => {
           const result = await s.exec(command, {
             cwd,
             timeoutMs: timeout ?? config.commandTimeoutMs,
@@ -688,7 +703,7 @@ export function registerTools(
     })),
   }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const tool = tools.find((t) => t.name === request.params.name);
     if (!tool) {
       throw new Error(
@@ -697,6 +712,6 @@ export function registerTools(
           .join(", ")}.`,
       );
     }
-    return tool.handler(request.params.arguments);
+    return tool.handler(request.params.arguments, extra.signal);
   });
 }

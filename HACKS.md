@@ -2693,7 +2693,7 @@ DigitalOcean both times.
 
 - **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
   `grafana`, `bill-spend`, `aws-device-farm`, `whatsapp`, `liveoak`, `airtable`,
-  `flightaware`, `digitalocean` and `ssh` read an injected env.** The other nine trees
+  `flightaware`, `digitalocean` and `ssh` read an injected env.** The other eleven trees
   are vendored upstream code reading `process.env`, often lazily at call time
   (`onepassword` builds its client per call off `OP_SERVICE_ACCOUNT_TOKEN`). A single process cannot overlay `process.env`
   per-request without a race, so each tree needs its own seam and gets it when it
@@ -6394,8 +6394,9 @@ that belongs in the reader, not here.
 
 ## 124. The SSH server is a shell on production hosts, and nothing here has reached one
 
-**What.** `servers/ssh/` serves `ssh_connection_info`, `ssh_list_directory`,
-`ssh_download`, `ssh_upload` and `ssh_execute` against one host per slug, as a
+**What.** `servers/ssh/` serves `ssh_connection_info`, `ssh_check_connection`,
+`ssh_list_directory`, `ssh_download`, `ssh_upload` and `ssh_execute` against one
+host per slug, as a
 store-served instance at `/_instance/ssh/{slug}` (`docs/servers/ssh.md`). The
 private key and the pinned host key are parameters in the slug's own namespace.
 It replaces five catalog entries that ran `npx ssh-agent-mcp-server`.

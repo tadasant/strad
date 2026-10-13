@@ -11,7 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { connect, createMCPServer, fingerprintOf, loadConfig, type Connector } from "../src/index.js";
+import { connect, createMCPServer, fingerprintOf, loadConfig, toolDefinitions, type Connector } from "../src/index.js";
 import { keyPair, startFakeHost, type FakeHost, type KeyPair } from "./fake-host.js";
 
 const hostEd = keyPair("ed25519");
@@ -86,7 +86,7 @@ afterEach(() => {
 });
 
 describe("tools/list", () => {
-  it("serves the upstream's five tool names with annotations, even unconfigured", async () => {
+  it("serves the upstream's five tool names plus ssh_check_connection with annotations, even unconfigured", async () => {
     const s = await mcp({});
     const { tools } = await s.client.listTools();
     expect(tools.map((t) => t.name)).toEqual([
@@ -227,7 +227,7 @@ describe("connection failures", () => {
     const s = await mcp(envFor(host, { SSH_PORT: String(port) }));
     const r = await s.call("ssh_execute", { command: "id" });
     expect(r.isError).toBe(true);
-    expect(r.text).toMatch(/UNREACHABLE: .*connection refused/);
+    expect(r.text).toMatch(/UNREACHABLE: .*refused port \d+.*nothing is listening there/);
     await s.close();
   });
 
@@ -254,9 +254,21 @@ describe("connection failures", () => {
     const s = await mcp(envFor(host, { SSH_PORT: String(port), SSH_TIMEOUT: "1000" }));
     const r = await s.call("ssh_execute", { command: "id" });
     expect(r.isError).toBe(true);
-    expect(r.text).toMatch(/UNREACHABLE: .*no SSH handshake within 1000 ms/);
+    // TCP was accepted, so the machine is up: not "spun down".
+    expect(r.text).toMatch(/accepted the TCP connection but sent no SSH greeting within 1000 ms/);
+    expect(r.text).not.toMatch(/UNREACHABLE/);
     await s.close();
     silent.close();
+  });
+
+  it("says a host that showed its pinned key and then stalled the login is up and slow, not down", async () => {
+    const slow = await startFakeHost({ hostKeys: [hostEd], authorized: [clientKey], stallAuth: true });
+    const s = await mcp(envFor(slow, { SSH_TIMEOUT: "1000" }));
+    const r = await s.call("ssh_execute", { command: "id" });
+    expect(r.text).toMatch(/answered with the pinned host key, but the login did not finish within 1000 ms/);
+    expect(r.text).not.toMatch(/UNREACHABLE|was not used/);
+    await s.close();
+    await slow.close();
   });
 });
 
@@ -528,8 +540,8 @@ describe("an unreachable host never fails the MCP connection", () => {
     ] as const) {
       const r = await s.call(tool, args);
       expect(r.isError).toBe(true);
-      expect(r.text).toMatch(/^ssh-test: UNREACHABLE: runner@127\.0\.0\.1:\d+ did not answer \(connection refused/);
-      expect(r.text).toMatch(/powered off or spun down/);
+      expect(r.text).toMatch(/^ssh-test: UNREACHABLE: runner@127\.0\.0\.1:\d+ did not answer: the machine refused port/);
+      expect(r.text).toMatch(/still starting/);
       expect(r.text).toMatch(/call ssh_check_connection/);
       expect(r.text).toMatch(/no reconnect of the MCP session is needed/);
       expect(r.text).not.toMatch(/do not retry/i);
@@ -538,17 +550,48 @@ describe("an unreachable host never fails the MCP connection", () => {
     await s.close();
   });
 
-  it("times out a host that swallows the handshake into the same message, within SSH_TIMEOUT", async () => {
-    const l = await silentListener();
-    const s = await mcp(
-      envFor(host, { SSH_PORT: String(l.port), SSH_HOST_KEY: pinFor(l.port), SSH_TIMEOUT: "1000" }),
-    );
+  it("says a powered-off-looking address (no TCP at all) is UNREACHABLE, within SSH_TIMEOUT", async () => {
+    // TEST-NET-1 is never routed: the connect fails at once (network error) or
+    // is swallowed until the timeout. Both are a machine that is not there.
+    const s = await mcp(envFor(host, { SSH_HOST: "192.0.2.1", SSH_PORT: "22", SSH_TIMEOUT: "1000" }));
     const started = Date.now();
     const r = await s.call("ssh_execute", { command: "id" });
     expect(Date.now() - started).toBeLessThan(5000);
-    expect(r.text).toMatch(/UNREACHABLE: .*no SSH handshake within 1000 ms/);
+    expect(r.text).toMatch(/UNREACHABLE: runner@192\.0\.2\.1:22 did not answer: (no reply within 1000 ms|network error E[A-Z]+)\. The host is most likely powered off or spun down/);
+    expect(r.text).toMatch(/call ssh_check_connection/);
     await s.close();
-    l.close();
+  });
+
+  it("reports a host that drops mid-command as a lost connection, never as a finished command", async () => {
+    const dying = await startFakeHost({ hostKeys: [hostEd], authorized: [clientKey] });
+    const s = await mcp(envFor(dying));
+    const call = s.call("ssh_execute", { command: "echo started; sleep 20" });
+    await new Promise((r) => setTimeout(r, 500));
+    await dying.close();
+    const r = await call;
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/connection to runner@127\.0\.0\.1:\d+ was lost during the command/);
+    expect(r.text).toMatch(/ssh_check_connection/);
+    await s.close();
+  });
+
+  it("closes the SSH session when the caller goes away, instead of running on", async () => {
+    const [execute] = toolDefinitions(
+      {
+        label: "ssh-test",
+        env: () => envFor(host),
+        config: () => loadConfig(envFor(host)),
+        connector: connect,
+      },
+      ["admin"],
+    ).filter((t) => t.name === "ssh_execute");
+    const aborter = new AbortController();
+    const started = Date.now();
+    const pending = execute!.handler({ command: "sleep 30" }, aborter.signal);
+    setTimeout(() => aborter.abort(), 500);
+    const r = await pending;
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(r.isError).toBe(true);
   });
 
   it("quotes the slug's SSH_UNREACHABLE_HINT, cleaned to one line", async () => {

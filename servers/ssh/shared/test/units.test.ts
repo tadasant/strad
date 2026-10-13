@@ -210,6 +210,8 @@ describe("parseHint", () => {
     expect(parseHint(undefined)).toBeUndefined();
     expect(parseHint("  \n\t ")).toBeUndefined();
     expect(parseHint("Spun down.\r\nUse the workflow.")).toBe("Spun down. Use the workflow.");
+    expect(parseHint("a\u202ebc\u2028d\u0085e")).toBe("a bc d e");
+    expect(() => loadConfig(env({ SSH_TIMEOUT: "600000" }))).toThrow(/between 1000 and 120000/);
     const long = parseHint("x".repeat(900))!;
     expect(long.length).toBe(500);
     expect(long.endsWith("…")).toBe(true);
