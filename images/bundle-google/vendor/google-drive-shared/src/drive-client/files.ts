@@ -4,11 +4,11 @@
  * SCOPE DISCIPLINE, by tier. Four reads (list, describe, export, download) need
  * `drive.readonly`. Two CREATES need only `drive.file`: a create always mints a
  * new file id, so neither can overwrite, lose or share a file that already
- * exists. The `full` tier's calls change a file that already exists: a media
- * upload over its content, a metadata PATCH (rename, describe, move, trash,
- * restore), and a copy. On a file someone else made they need the full
- * `drive` scope; under `drive.file` they reach only files this OAuth app
- * created. There is no delete and no permission call: a trashed file stays
+ * exists. The `full` tier's calls change a file that already exists but never
+ * its content: a metadata PATCH (rename, describe, move, trash, restore), and
+ * a copy. Nothing here uploads over an existing file. On a file someone else
+ * made they need the full `drive` scope; under `drive.file` they reach only
+ * files this OAuth app created. There is no delete and no permission call: a trashed file stays
  * recoverable for 30 days, and nothing here can share a file.
  *
  * `supportsAllDrives` on every call that takes it: without it a file in a shared
@@ -246,31 +246,6 @@ export async function createFile(
       body,
     },
     `Create Drive file "${request.name}"`
-  );
-  return (await response.json()) as DriveFile;
-}
-
-/**
- * Replace a file's content with one media upload. Uploading an importable type
- * (text, Markdown, HTML) over a Google Doc converts it into the Doc, replacing
- * the whole body. The file keeps its id, name, parents and sharing, and the
- * previous content stays in its version history.
- */
-export async function updateFileContent(
-  headers: Record<string, string>,
-  fileId: string,
-  mimeType: string,
-  content: Uint8Array
-): Promise<DriveFile> {
-  const query = new URLSearchParams({
-    uploadType: 'media',
-    fields: UPDATED_FIELDS,
-    supportsAllDrives: 'true',
-  });
-  const response = await send(
-    `${DRIVE_UPLOAD_URL}/${encodeURIComponent(fileId)}?${query.toString()}`,
-    { method: 'PATCH', headers: { ...headers, 'Content-Type': mimeType }, body: Buffer.from(content) },
-    `Replace the content of Drive file ${fileId}`
   );
   return (await response.json()) as DriveFile;
 }

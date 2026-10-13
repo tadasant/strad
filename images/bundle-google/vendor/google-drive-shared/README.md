@@ -2,9 +2,10 @@
 
 This is strad's Google Drive MCP server. It finds, describes and reads the files
 in one Google account's Drive. It can create new folders and files there, and in
-its `full` tier it edits, renames, moves, copies, trashes and restores files that
-already exist. You can run it on its own, with no strad gateway: over **stdio**
-for a local MCP client, or over **Streamable HTTP** on a localhost port.
+its `full` tier it renames, moves, copies, trashes and restores files that
+already exist. It never rewrites an existing file's content. You can run it on
+its own, with no strad gateway: over **stdio** for a local MCP client, or over
+**Streamable HTTP** on a localhost port.
 
 The server is strad's own. It was written here, not vendored, and has the same
 shape as `../google-sheets-shared`. The standalone entrypoint is
@@ -13,13 +14,13 @@ so running it on its own, as below, is the only way to use it.
 
 ## Tools
 
-Eleven, in three tiers. Each tier holds the one before it:
+Ten, in three tiers. Each tier holds the one before it:
 
 | Group       | Tools                                                                                                              | Scope it needs                    |
 | ----------- | ------------------------------------------------------------------------------------------------------------------ | --------------------------------- |
 | `readonly`  | `search_files`, `get_file`, `read_file`                                                                            | `drive.readonly`                  |
 | `readwrite` | the three above, plus `create_folder` and `create_file`                                                            | `drive.readonly` and `drive.file` |
-| `full`      | the five above, plus `replace_file_content`, `update_file_metadata`, `move_file`, `copy_file`, `trash_file`, `restore_file` | `drive`                           |
+| `full`      | the five above, plus `update_file_metadata`, `move_file`, `copy_file`, `trash_file`, `restore_file`                | `drive`                           |
 
 - `search_files` searches My Drive, "Shared with me" and shared drives, by text,
   name, kind, folder or date. With a folder id and no other filter, it lists the
@@ -34,19 +35,6 @@ Eleven, in three tiers. Each tier holds the one before it:
   file with a new id. `create_file` can convert Markdown or HTML into a Google
   Doc, and CSV or TSV into a Google Sheet, as it uploads. Any other pairing is
   refused before the upload.
-- `replace_file_content` overwrites a file's whole content and keeps its id,
-  name, folder and sharing. A **Google Doc** is rebuilt from Markdown (the
-  default), text or HTML, so the usual edit is `read_file` as Markdown, change
-  the text, and send all of it back. A stored file (`.md`, `.csv`, `.json`, an
-  image, …) gets the new bytes and keeps its type. It refuses Google Sheets,
-  because a CSV upload would collapse every tab into one and drop formulas and
-  formatting. Use the google-sheets server to edit cells. It also refuses
-  empty content, Slides, folders and shortcuts. The previous content stays in
-  the file's version history. A Doc rebuilt from Markdown loses what Markdown
-  cannot carry: images unless the export kept them inline, every tab but the
-  first, headers and footers, suggestions, smart chips, bookmarks and most
-  styling. To change part of a Doc and keep the rest, use the google-docs
-  server.
 - `update_file_metadata` renames a file or folder, or sets its description.
 - `move_file` moves a file or folder into another folder and says where it was,
   so the move can be undone.
@@ -65,11 +53,13 @@ Eleven, in three tiers. Each tier holds the one before it:
   someone else, and Google emails them about it. strad's google-docs server
   keeps `share_document` in a tier of its own for that reason. If Drive needs
   it, it gets the same treatment, not a place in `full`.
-- **In-place edits to part of a Google Doc**, such as inserting a paragraph or
-  replacing one phrase. Those need the Docs API, which the google-docs server
-  has. `replace_file_content` replaces the whole body.
+- **Editing a file's content.** No tool overwrites an existing file. Drive can
+  only replace a file's whole content, and a Google Doc rebuilt that way from
+  Markdown, text or HTML loses its formatting, images and tabs, and can
+  orphan comments. Editing a document in place needs the Docs API, which is a Google
+  Docs server's job. To produce new content, `create_file` makes a new file.
 
-All eleven are served unless you set `GOOGLE_DRIVE_ENABLED_TOOLGROUPS`. The
+All ten are served unless you set `GOOGLE_DRIVE_ENABLED_TOOLGROUPS`. The
 server refuses to start on a group it does not recognise (`read-only`, say) and
 exits 2, instead of reading the typo as "every group".
 
@@ -108,7 +98,7 @@ what Google enforces. The tool group only decides which tools a client sees.
 | ----------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `readonly`  | `https://www.googleapis.com/auth/drive.readonly`                                                         | read every file the account can see, and change none of them                                                     |
 | `readwrite` | `https://www.googleapis.com/auth/drive.readonly` and `https://www.googleapis.com/auth/drive.file`        | that, and create files and folders. It can write only to files and folders this OAuth client created            |
-| `full`      | `https://www.googleapis.com/auth/drive`                                                                  | read, create, edit, move and trash any file the account itself may. This scope also covers the other two        |
+| `full`      | `https://www.googleapis.com/auth/drive`                                                                  | read, create, rename, move, copy and trash any file the account itself may. This scope also covers the other two |
 
 - `drive.file` reaches only files this OAuth client created. So under
   `readwrite`, `create_file` and `create_folder` work at the top of My Drive and
@@ -116,7 +106,7 @@ what Google enforces. The tool group only decides which tools a client sees.
   Drive is expected to refuse them. That has not been checked against a live
   account (`HACKS.md` #124).
 - The `full` tools also run on a `drive.file` token. There they **work** on
-  every file and folder this client created, overwriting, moving and trashing
+  every file and folder this client created, renaming, moving and trashing
   them, and on anything else Google answers 403 or 404, with an error that says
   to re-consent with `drive`.
 - **Moving up a tier means re-consenting.** A refresh token keeps the scopes it
@@ -125,7 +115,7 @@ what Google enforces. The tool group only decides which tools a client sees.
   `GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN`, and set `GOOGLE_DRIVE_ENABLED_TOOLGROUPS=full`
   (or leave it unset).
 - **Unset means every tool**, `full` included. A setup from before the `full`
-  tier with no group set now lists the six edit tools, and on a `drive.file`
+  tier with no group set now lists its five tools, and on a `drive.file`
   token they succeed on the files the client created. Set the group to match
   the token, as every example below does.
 
@@ -251,7 +241,7 @@ claude mcp add --transport http google-drive http://127.0.0.1:3200/mcp
 ```
 
 **The HTTP endpoint has no authentication.** Anyone who can reach the port can
-read the account's Drive, and in the `full` tier overwrite, move and trash its
+read the account's Drive, and in the `full` tier rename, move and trash its
 files. On the default loopback host it refuses any request
 whose `Host` header is not loopback, so a web page in your browser cannot reach
 it through DNS rebinding. Any other `--host`, such as `0.0.0.0` or a LAN address,
@@ -263,11 +253,7 @@ of this server.
 
 - `read_file` reads at most 10 MB of text (Google's own export ceiling) and 5 MB
   of image, and returns at most 100,000 characters per call (25,000 by default).
-- `create_file` and `replace_file_content` upload at most 5 MB.
-- `replace_file_content` has no "only if unchanged since" check. Drive's v3 API
-  offers no precondition on a write, so an edit someone made in the browser
-  between your `read_file` and the replace is overwritten. It is still in the
-  version history.
+- `create_file` uploads at most 5 MB.
 - A Google Sheet exports its first tab only. For the other tabs, ranges or
   formulas, use the google-sheets server.
 - A search across many shared drives can be partial. Drive says so, and so does
@@ -286,11 +272,11 @@ of this server.
 From `images/bundle-google`, `npm test` runs:
 
 - `vendor/google-drive-shared/test/` — the wire: every Drive request's URL,
-  query and body, the multipart upload, the media PATCH and metadata PATCHes and
-  copy the edit tools send, the download cap, the 429 retry, and the 403
-  reasons. The OAuth client: one token exchange per burst, the `invalid_grant`
-  hint, and a 401 that refreshes. Also the search query and id parsing, each
-  tool against a fake client (including every refusal the edit tools make
+  query and body, the multipart upload, the metadata PATCHes and copy the
+  `full` tools send, the download cap, the 429 retry, and the 403 reasons. The
+  OAuth client: one token exchange per burst, the `invalid_grant` hint, and a
+  401 that refreshes. Also the search query and id parsing, each
+  tool against a fake client (including every refusal the `full` tools make
   before they write), and the tiers and tool groups.
 - `test/standalone.test.ts` — both transports against the built entrypoint, with
   no credentials set, and the `readonly` and `readwrite` groups.

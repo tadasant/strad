@@ -6397,21 +6397,24 @@ that belongs in the reader, not here.
 **What.** `images/bundle-google/vendor/google-drive-shared` is strad's own Google
 Drive MCP server, in three tiers. `readonly` is `search_files`, `get_file` and
 `read_file` on `drive.readonly`. `readwrite` adds `create_folder` and
-`create_file` on `drive.file`. `full` adds `replace_file_content`,
-`update_file_metadata`, `move_file`, `copy_file`, `trash_file` and
-`restore_file` on the full `drive` scope. It is built into both the
-bundle-google image and the bundle image, and **neither one mounts it**. No
-environment declares a slug for it, so the only way to run it is the standalone
-entrypoint, `dist/standalone/google-drive.js`, described in that tree's README.
+`create_file` on `drive.file`. `full` adds `update_file_metadata`,
+`move_file`, `copy_file`, `trash_file` and `restore_file` on the full `drive`
+scope. It is built into both the bundle-google image and the bundle image, and
+**neither one mounts it**. No environment declares a slug for it, so the only
+way to run it is the standalone entrypoint, `dist/standalone/google-drive.js`,
+described in that tree's README.
 Its suite runs against a faked `fetch` and a fake client. No request has reached
 Google.
 
 `readwrite` stays create-only so that it can stay on `drive.file`, which cannot
-touch a file a human made. Editing those files needs `drive`, so the edit tools
-are a tier of their own rather than an addition to `readwrite`. Permanent delete
-and sharing are in no tier.
+touch a file a human made. Renaming, moving or trashing those files needs
+`drive`, so those tools are a tier of their own rather than an addition to
+`readwrite`. Permanent delete and sharing are in no tier, and neither is
+overwriting a file's content: Drive can only replace a whole file, and a Google
+Doc rebuilt that way from Markdown loses its formatting. Editing a document in
+place is a job for a Google Docs server, not this one.
 
-Five claims the first live call settles:
+Three claims the first live call settles:
 
 1. Drive's `text/markdown` export of a Google Doc is what `read_file` returns by
    default. The format is documented, and the output has not been looked at.
@@ -6424,23 +6427,11 @@ Five claims the first live call settles:
    text, Markdown or HTML converts into a Doc, and CSV or TSV into a Sheet.
    Other pairings are refused before the call. Slides are not offered, since
    Drive builds a deck only from a .pptx or .odp.
-4. A media PATCH of `text/markdown`, `text/plain` or `text/html` onto an
-   existing Google Doc replaces its body by conversion and keeps its id. That is
-   how Drive's import is documented to behave, and `replace_file_content` relies
-   on it. A Sheet is refused rather than tried, because a CSV import would
-   collapse its tabs.
-5. A stored file's media PATCH keeps the file's type when the upload's type
-   matches it. `replace_file_content` refuses a different type rather than find
-   out what Drive does with one.
-
-`replace_file_content` has no precondition. Drive v3 takes no `If-Match` on a
-write, so an edit made in the browser between a `read_file` and the replace is
-overwritten. It stays in the version history.
 
 **Undo.** Mount it in the bundle host, which means a per-slug OAuth mount like
 google-sheets, a `google-drive-*` slug, the console's Connect flow for its
 scopes, and the counts in `servers/bundle/scripts/smoke.mjs`. The first real
-calls through that slug settle 1 to 5.
+calls through that slug settle 1 to 3.
 
 ## 125. google-calendar has a personal OAuth mode that strad added to a vendored tree
 

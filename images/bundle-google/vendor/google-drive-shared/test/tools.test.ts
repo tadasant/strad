@@ -1,5 +1,5 @@
 /**
- * The eleven tools against a fake Drive client: what each asks for, and what a
+ * The ten tools against a fake Drive client: what each asks for, and what a
  * model reads back.
  */
 import { test } from "vitest";
@@ -14,7 +14,6 @@ import { readFileTool, MAX_IMAGE_BYTES, MAX_TEXT_BYTES } from "../src/tools/read
 import { createFolderTool } from "../src/tools/create-folder.js";
 import { createFileTool } from "../src/tools/create-file.js";
 import { MAX_UPLOAD_BYTES } from "../src/utils/content.js";
-import { replaceFileContentTool } from "../src/tools/replace-file-content.js";
 import { updateFileMetadataTool } from "../src/tools/update-file-metadata.js";
 import { moveFileTool } from "../src/tools/move-file.js";
 import { copyFileTool } from "../src/tools/copy-file.js";
@@ -29,7 +28,6 @@ class FakeDrive implements IGoogleDriveClient {
   downloads: Array<[string, number]> = [];
   folders: Array<[string, string | undefined]> = [];
   creates: CreateFileRequest[] = [];
-  contentUpdates: Array<[string, string, string]> = [];
   updates: Array<[string, FileMetadataPatch, ParentChange | undefined]> = [];
   copies: CopyFileRequest[] = [];
   files = new Map<string, DriveFile>();
@@ -67,10 +65,6 @@ class FakeDrive implements IGoogleDriveClient {
   async createFile(req: CreateFileRequest) {
     this.creates.push(req);
     return { id: "newfile", name: req.name, mimeType: req.convertTo ?? req.mimeType, webViewLink: "https://x/newfile" };
-  }
-  async updateFileContent(id: string, mime: string, content: Uint8Array) {
-    this.contentUpdates.push([id, mime, new TextDecoder().decode(content)]);
-    return { ...(await this.getFile(id)), modifiedTime: "2026-10-13T09:12:44.000Z" };
   }
   async updateFile(id: string, patch: FileMetadataPatch, parents?: ParentChange) {
     this.updates.push([id, patch, parents]);
@@ -295,70 +289,6 @@ test("a missing credential is a failed call that names the variables, not a cras
   const r = await getFileTool(() => createDefaultClient({})).handler({ file_id: ID });
   assert.equal(r.isError, true);
   assert.match(text(r), /GOOGLE_DRIVE_OAUTH_CLIENT_ID, GOOGLE_DRIVE_OAUTH_CLIENT_SECRET, GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN are not set/);
-});
-
-test("replace_file_content rebuilds a Google Doc from Markdown by default, after checking what the file is", async () => {
-  const drive = new FakeDrive().add({ id: ID, name: "Q3 plan", mimeType: DOC, webViewLink: "https://docs/q3" });
-  const out = text(await replaceFileContentTool(() => drive).handler({ file_id: `https://docs.google.com/document/d/${ID}/edit`, content: "# New plan" }));
-  assert.deepEqual(drive.contentUpdates, [[ID, "text/markdown; charset=UTF-8", "# New plan"]]);
-  assert.match(out, /Replaced the content of "Q3 plan" \(Google Doc, converted from text\/markdown\)/);
-  assert.match(out, /\*\*Modified:\*\* 2026-10-13T09:12:44.000Z/);
-  assert.match(out, /version history/);
-
-  await replaceFileContentTool(() => drive).handler({ file_id: ID, content: "<h1>x</h1>", mime_type: "text/html" });
-  assert.equal(drive.contentUpdates[1][1], "text/html; charset=UTF-8");
-  const bad = await replaceFileContentTool(() => drive).handler({ file_id: ID, content: "a,b", mime_type: "text/csv" });
-  assert.equal(bad.isError, true);
-  assert.match(text(bad), /rebuilt from text\/plain, text\/markdown, text\/html, not text\/csv/);
-  assert.equal(drive.contentUpdates.length, 2);
-});
-
-test("replace_file_content keeps a stored file's type, and refuses to change it", async () => {
-  const drive = new FakeDrive().add({ id: "md1", name: "notes.md", mimeType: "text/markdown" });
-  await replaceFileContentTool(() => drive).handler({ file_id: "md1", content: "v2" });
-  assert.deepEqual(drive.contentUpdates[0], ["md1", "text/markdown", "v2"]);
-  const changed = await replaceFileContentTool(() => drive).handler({ file_id: "md1", content: "{}", mime_type: "application/json" });
-  assert.equal(changed.isError, true);
-  assert.match(text(changed), /keeps a stored file's type/);
-  assert.equal(drive.contentUpdates.length, 1);
-
-  // A parameter or a capital letter is not a different type, and the stored type is what is sent back.
-  await replaceFileContentTool(() => drive).handler({ file_id: "md1", content: "v3", mime_type: "Text/Markdown; charset=utf-8" });
-  assert.deepEqual(drive.contentUpdates[1], ["md1", "text/markdown", "v3"]);
-});
-
-test("replace_file_content refuses a Sheet, Slides, a folder and a shortcut, before writing anything", async () => {
-  const drive = new FakeDrive()
-    .add({ id: "s1", name: "Budget", mimeType: SHEET })
-    .add({ id: "p1", name: "Deck", mimeType: "application/vnd.google-apps.presentation" })
-    .add({ id: "d1", name: "Projects", mimeType: "application/vnd.google-apps.folder" })
-    .add({ id: "k1", name: "-> plan", mimeType: "application/vnd.google-apps.shortcut", shortcutDetails: { targetId: "t9" } });
-  const reasons: Record<string, RegExp> = {
-    s1: /every tab with one.*google-sheets server/s,
-    p1: /cannot rebuild a Google Slides/,
-    d1: /is a folder/,
-    k1: /file_id="t9"/,
-  };
-  for (const [id, reason] of Object.entries(reasons)) {
-    const r = await replaceFileContentTool(() => drive).handler({ file_id: id, content: "x" });
-    assert.equal(r.isError, true, id);
-    assert.match(text(r), reason);
-  }
-  assert.equal(drive.contentUpdates.length, 0);
-});
-
-test("replace_file_content checks the content before it reads the file", async () => {
-  const drive = new FakeDrive().add({ id: ID, name: "Q3 plan", mimeType: DOC });
-  const both = await replaceFileContentTool(() => drive).handler({ file_id: ID, content: "a", content_base64: "YQ==" });
-  assert.match(text(both), /exactly one of content or content_base64/);
-  const big = await replaceFileContentTool(() => drive).handler({ file_id: ID, content: "a".repeat(MAX_UPLOAD_BYTES + 1) });
-  assert.match(text(big), /past the 5MB replace_file_content uploads/);
-  for (const args of [{ content: "" }, { content_base64: "" }]) {
-    const empty = await replaceFileContentTool(() => drive).handler({ file_id: ID, ...args });
-    assert.equal(empty.isError, true);
-    assert.match(text(empty), /content is empty, which would blank the file\. To get rid of it, use trash_file/);
-  }
-  assert.equal(drive.contentUpdates.length, 0);
 });
 
 test("update_file_metadata renames and says what the name was, and needs something to change", async () => {

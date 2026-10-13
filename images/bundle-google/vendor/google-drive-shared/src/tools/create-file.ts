@@ -42,8 +42,8 @@ const TOOL_DESCRIPTION = `Create a new file in Google Drive from text or bytes.
 
 Always creates a NEW file with a new id. It never overwrites, edits or replaces
 an existing file, even one with the same name in the same folder — Drive allows
-duplicate names, so a retried call leaves two files. To change a file that
-already exists, use replace_file_content, where this server offers it.
+duplicate names, so a retried call leaves two files. This server has no tool
+that rewrites an existing file's content.
 
 **Returns** the new file's id and link:
 
