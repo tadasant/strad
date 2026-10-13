@@ -95,6 +95,10 @@ export default defineConfig({
             { label: "Flow-through", slug: "servers/flow-through" },
             { label: "Apps in the console", slug: "servers/apps" },
             {
+              label: "Running a server without strad",
+              slug: "servers/standalone",
+            },
+            {
               label: "Confirming a tool before it acts",
               slug: "servers/confirmations",
             },

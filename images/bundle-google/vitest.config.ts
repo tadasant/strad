@@ -18,7 +18,7 @@ import { defineConfig } from "vitest/config";
 //     anywhere; it is strad's own server, written here.
 //   - `test/` — the image's own source, `src/` (`src/gmail.ts` and
 //     `src/docs.ts`, strad's per-account layers over the gmail and google-docs
-//     trees, and `src/confirm.ts`), plus the
+//     trees, `src/confirm.ts`, and the `src/standalone/` entrypoints), plus the
 //     gmail fork's deltas (`test/gmail-attachments.test.ts`,
 //     `test/gmail-from-name.test.ts`, `test/gmail-body-text.test.ts`,
 //     `test/gmail-sender-verification.test.ts`).
