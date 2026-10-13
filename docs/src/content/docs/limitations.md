@@ -3863,3 +3863,28 @@ authserv-id is not `mx.google.com`, or it is not directly under Google's
 See `HACKS.md` #123.
 
 ---
+
+### 124. google-drive runs only on its own, and has met only fakes
+
+`images/bundle-google/vendor/google-drive-shared` is a Google Drive MCP server.
+It has three read tools on `drive.readonly`, and `create_folder` and
+`create_file` on `drive.file`. No strad slug mounts it. You run it
+[on its own](/servers/standalone/), over stdio or on a localhost port, with
+one Google account's OAuth refresh token.
+
+- **No request has reached Google.** Its tests fake the network. Three things are
+  still unverified: the Markdown a Doc exports as, how Drive refuses a
+  `drive.file` write into a folder made by hand, and whether an upload converts
+  into a Doc or a Sheet.
+- **Writes only create.** No tool edits, moves, shares or deletes a file. Under
+  `drive.file`, a create should work only at the top of My Drive or in a folder
+  `create_folder` made (the second unverified claim above).
+- **`read_file` reads text and images.** A PDF or Office file is refused with
+  its link. A Google Sheet exports its first tab only.
+
+**How you would know.** A `read_file` on a Doc that comes back empty or as raw
+HTML, or a `create_file` into a `create_folder` folder that is refused.
+
+See `HACKS.md` #124.
+
+---

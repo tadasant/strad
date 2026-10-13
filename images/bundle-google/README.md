@@ -58,9 +58,10 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   port (`--transport`, `--port`/`PORT`, `--host`), and each file beside it is
   one server's entrypoint, built to `dist/standalone/<server>.js`. It reuses
   the factory this image mounts, so a standalone server is the bundled one.
-  `google-calendar.ts` is the only one. Its how-to is
-  `vendor/google-calendar-shared/README.md`, and `test/standalone.test.ts`
-  runs both transports. Adding a server is one more entrypoint, a README in
+  `google-calendar.ts` and `google-drive.ts` are the two. Their how-tos are
+  `vendor/google-calendar-shared/README.md` and
+  `vendor/google-drive-shared/README.md`, and `test/standalone.test.ts`
+  runs both transports for each. Adding a server is one more entrypoint, a README in
   its tree, and a test case.
 - `vendor/` — the upstream `shared/` factories, plus `@pulsemcp/mcp-elicitation`.
   Wired as npm workspaces.
@@ -88,6 +89,13 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   own server, written here, following the same shape as its neighbours so this
   entrypoint and the collapsed bundle host can load all four identically. It has
   unit tests (`npm test`), which the others do not.
+- `vendor/google-drive-shared/` — strad's own Google Drive server, written here
+  in google-sheets' shape: one Google account per OAuth refresh token, read
+  out of an injected env. Three read tools on `drive.readonly`, and two
+  create-only tools on `drive.file`. **Neither this image's `src/index.ts`
+  nor the collapsed bundle mounts it.** It runs only through
+  `src/standalone/google-drive.ts`, and its README is the how-to.
+  `vendor/google-drive-shared/test/` is its suite. See `HACKS.md` #124.
 - `scripts/smoke.mjs` — connects a real MCP client to all four paths and lists
   tools; the credential-free boot test used by CI and `npm run smoke`.
 

@@ -1266,9 +1266,11 @@ suite itself runs under Vitest against the TypeScript sources, like every other
 tree's.
 
 It covers the code in that image strad WROTE, which is the code whose bugs would
-be silent. `vendor/google-sheets-shared` is the one server here strad authored
-rather than vendored: its A1 arithmetic decides which cell a write lands in, and
-a credential-free smoke test never addresses a cell. `src/gmail.ts` is the
+be silent. `vendor/google-sheets-shared` and `vendor/google-drive-shared` are the
+two servers here strad authored rather than vendored. Sheets' A1 arithmetic
+decides which cell a write lands in, and a credential-free smoke test never
+addresses a cell. Drive's suite covers what each request sends, including the
+multipart upload a create is. `src/gmail.ts` is the
 per-account layer over the gmail tree; it decides which MAILBOX a mount reads,
 and a smoke test that counts tools would never see it read the wrong one.
 `src/docs.ts` is the same layer over the google-docs tree, deciding whose Drive.

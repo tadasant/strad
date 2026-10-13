@@ -18,8 +18,10 @@ client config and a curl check.
 | Server            | README                                                                                                                                          |
 | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | `google-calendar` | [`images/bundle-google/vendor/google-calendar-shared/README.md`](https://github.com/tadasant/strad/blob/main/images/bundle-google/vendor/google-calendar-shared/README.md) |
+| `google-drive`    | [`images/bundle-google/vendor/google-drive-shared/README.md`](https://github.com/tadasant/strad/blob/main/images/bundle-google/vendor/google-drive-shared/README.md)       |
 
-Google Calendar is the only server with one.
+strad does not mount google-drive, so running it on its own is the only way to
+use it ([limitation #124](/limitations/#124-google-drive-runs-only-on-its-own-and-has-met-only-fakes)).
 
 ## What strad adds, and what you give up
 
@@ -32,8 +34,8 @@ you lose is everything strad does in front of it:
   browser tab. It does not stop another process on the same machine.
 - **No per-tool policy, no confirmations, no telemetry.** A `tools: allow` list,
   a `confirmations: true` gate and strad's metrics all live in the gateway. The
-  server's own tool-group variable (for google-calendar,
-  `GOOGLE_CALENDAR_ENABLED_TOOLGROUPS=readonly`) is the one narrowing left. The
+  server's own tool-group variable (`GOOGLE_CALENDAR_ENABLED_TOOLGROUPS=readonly`,
+  `GOOGLE_DRIVE_ENABLED_TOOLGROUPS=readonly`) is the one narrowing left. The
   standalone entrypoint refuses a group it does not recognise, so a typo cannot
   quietly mean "every tool".
 - **One credential per process.** strad can mount one server once per account.

@@ -6391,3 +6391,32 @@ the only evidence of who sent a message. What they cannot do on their own:
 **Undo.** 2 is answered by reading one same-domain message's headers in a real
 mailbox. If they lack Google's header, internal mail needs another signal, and
 that belongs in the reader, not here.
+
+## 124. google-drive runs only on its own, and has met only fakes
+
+**What.** `images/bundle-google/vendor/google-drive-shared` is strad's own Google
+Drive MCP server: `search_files`, `get_file` and `read_file` on
+`drive.readonly`, and `create_folder` and `create_file` on `drive.file`. It is
+built into both the bundle-google image and the bundle image, and **neither one
+mounts it**. No environment declares a slug for it, so the only way to run it is
+the standalone entrypoint, `dist/standalone/google-drive.js`, described in that
+tree's README. Its suite runs against a faked `fetch` and a fake client. No
+request has reached Google.
+
+Three claims the first live call settles:
+
+1. Drive's `text/markdown` export of a Google Doc is what `read_file` returns by
+   default. The format is documented, and the output has not been looked at.
+2. A `drive.file` token can create inside a folder that `create_folder` made,
+   and is refused in a folder made by hand. The error hints assume Drive refuses
+   with a 403 `insufficientFilePermissions` or `appNotAuthorizedToFile`, or with
+   a 404.
+3. A multipart upload whose metadata names a Google type and whose media is
+   text, Markdown or HTML converts into a Doc, and CSV or TSV into a Sheet.
+   Other pairings are refused before the call. Slides are not offered, since
+   Drive builds a deck only from a .pptx or .odp.
+
+**Undo.** Mount it in the bundle host, which means a per-slug OAuth mount like
+google-sheets, a `google-drive-*` slug, the console's Connect flow for its
+scopes, and the counts in `servers/bundle/scripts/smoke.mjs`. The first real
+calls through that slug settle 1 to 3.
