@@ -1,5 +1,5 @@
 /**
- * The five tools against a fake Drive client: what each asks for, and what a
+ * The eleven tools against a fake Drive client: what each asks for, and what a
  * model reads back.
  */
 import { test } from "vitest";
@@ -12,7 +12,8 @@ import { searchFilesTool } from "../src/tools/search-files.js";
 import { getFileTool } from "../src/tools/get-file.js";
 import { readFileTool, MAX_IMAGE_BYTES, MAX_TEXT_BYTES } from "../src/tools/read-file.js";
 import { createFolderTool } from "../src/tools/create-folder.js";
-import { createFileTool, MAX_UPLOAD_BYTES } from "../src/tools/create-file.js";
+import { createFileTool } from "../src/tools/create-file.js";
+import { MAX_UPLOAD_BYTES } from "../src/utils/content.js";
 import { replaceFileContentTool } from "../src/tools/replace-file-content.js";
 import { updateFileMetadataTool } from "../src/tools/update-file-metadata.js";
 import { moveFileTool } from "../src/tools/move-file.js";
@@ -299,13 +300,13 @@ test("a missing credential is a failed call that names the variables, not a cras
 test("replace_file_content rebuilds a Google Doc from Markdown by default, after checking what the file is", async () => {
   const drive = new FakeDrive().add({ id: ID, name: "Q3 plan", mimeType: DOC, webViewLink: "https://docs/q3" });
   const out = text(await replaceFileContentTool(() => drive).handler({ file_id: `https://docs.google.com/document/d/${ID}/edit`, content: "# New plan" }));
-  assert.deepEqual(drive.contentUpdates, [[ID, "text/markdown", "# New plan"]]);
+  assert.deepEqual(drive.contentUpdates, [[ID, "text/markdown; charset=UTF-8", "# New plan"]]);
   assert.match(out, /Replaced the content of "Q3 plan" \(Google Doc, converted from text\/markdown\)/);
   assert.match(out, /\*\*Modified:\*\* 2026-10-13T09:12:44.000Z/);
   assert.match(out, /version history/);
 
   await replaceFileContentTool(() => drive).handler({ file_id: ID, content: "<h1>x</h1>", mime_type: "text/html" });
-  assert.equal(drive.contentUpdates[1][1], "text/html");
+  assert.equal(drive.contentUpdates[1][1], "text/html; charset=UTF-8");
   const bad = await replaceFileContentTool(() => drive).handler({ file_id: ID, content: "a,b", mime_type: "text/csv" });
   assert.equal(bad.isError, true);
   assert.match(text(bad), /rebuilt from text\/plain, text\/markdown, text\/html, not text\/csv/);
@@ -320,6 +321,10 @@ test("replace_file_content keeps a stored file's type, and refuses to change it"
   assert.equal(changed.isError, true);
   assert.match(text(changed), /keeps a stored file's type/);
   assert.equal(drive.contentUpdates.length, 1);
+
+  // A parameter or a capital letter is not a different type, and the stored type is what is sent back.
+  await replaceFileContentTool(() => drive).handler({ file_id: "md1", content: "v3", mime_type: "Text/Markdown; charset=utf-8" });
+  assert.deepEqual(drive.contentUpdates[1], ["md1", "text/markdown", "v3"]);
 });
 
 test("replace_file_content refuses a Sheet, Slides, a folder and a shortcut, before writing anything", async () => {
@@ -348,6 +353,11 @@ test("replace_file_content checks the content before it reads the file", async (
   assert.match(text(both), /exactly one of content or content_base64/);
   const big = await replaceFileContentTool(() => drive).handler({ file_id: ID, content: "a".repeat(MAX_UPLOAD_BYTES + 1) });
   assert.match(text(big), /past the 5MB replace_file_content uploads/);
+  for (const args of [{ content: "" }, { content_base64: "" }]) {
+    const empty = await replaceFileContentTool(() => drive).handler({ file_id: ID, ...args });
+    assert.equal(empty.isError, true);
+    assert.match(text(empty), /content is empty, which would blank the file\. To get rid of it, use trash_file/);
+  }
   assert.equal(drive.contentUpdates.length, 0);
 });
 
@@ -358,14 +368,20 @@ test("update_file_metadata renames and says what the name was, and needs somethi
   assert.match(out, /Updated "Q3 plan \(final\)"/);
   assert.match(out, /\*\*Was named:\*\* Q3 plan/);
 
+  const described = text(await updateFileMetadataTool(() => drive).handler({ file_id: ID, description: "For the board" }));
+  assert.deepEqual(drive.updates[1][1], { description: "For the board" });
+  assert.doesNotMatch(described, /Was described as/);
+  assert.doesNotMatch(described, /Was named/);
+
   const cleared = text(await updateFileMetadataTool(() => drive).handler({ file_id: ID, description: "" }));
-  assert.deepEqual(drive.updates[1][1], { description: "" });
+  assert.deepEqual(drive.updates[2][1], { description: "" });
   assert.match(cleared, /Description:\*\* cleared/);
+  assert.match(cleared, /\*\*Was described as:\*\* For the board/);
 
   const nothing = await updateFileMetadataTool(() => drive).handler({ file_id: ID });
   assert.equal(nothing.isError, true);
   assert.match(text(nothing), /pass name, description, or both/);
-  assert.equal(drive.updates.length, 2);
+  assert.equal(drive.updates.length, 3);
 });
 
 test("move_file leaves every old folder for the new one, and says where it was", async () => {
@@ -373,7 +389,7 @@ test("move_file leaves every old folder for the new one, and says where it was",
   const out = text(await moveFileTool(() => drive).handler({ file_id: ID, folder_id: "https://drive.google.com/drive/folders/dest123456" }));
   assert.deepEqual(drive.updates[0], [ID, {}, { addParents: "dest123456", removeParents: ["old1", "old2"] }]);
   assert.match(out, /Moved "Q3 plan" to folder dest123456/);
-  assert.match(out, /\*\*Was in:\*\* old1, old2/);
+  assert.match(out, /\*\*Was in:\*\* old1\n\*\*Also was in:\*\* old2\n/);
 
   const again = text(await moveFileTool(() => drive).handler({ file_id: ID, folder_id: "dest123456" }));
   assert.match(again, /already in folder dest123456\. Nothing moved/);
@@ -381,6 +397,29 @@ test("move_file leaves every old folder for the new one, and says where it was",
 
   const self = await moveFileTool(() => drive).handler({ file_id: ID, folder_id: ID });
   assert.match(text(self), /into itself/);
+});
+
+test("move_file resolves the root alias to My Drive's real id before comparing or sending it", async () => {
+  const drive = new FakeDrive()
+    .add({ id: "0AmyDriveRoot", name: "My Drive", mimeType: "application/vnd.google-apps.folder" })
+    .add({ id: "top", name: "loose.txt", mimeType: "text/plain", parents: ["0AmyDriveRoot"] })
+    .add({ id: "deep", name: "nested.txt", mimeType: "text/plain", parents: ["proj1"] });
+  drive.files.set("root", drive.files.get("0AmyDriveRoot")!);
+
+  const already = text(await moveFileTool(() => drive).handler({ file_id: "top", folder_id: "root" }));
+  assert.match(already, /already in folder 0AmyDriveRoot\. Nothing moved/);
+  assert.equal(drive.updates.length, 0);
+
+  await moveFileTool(() => drive).handler({ file_id: "deep", folder_id: "root" });
+  assert.deepEqual(drive.updates[0], ["deep", {}, { addParents: "0AmyDriveRoot", removeParents: ["proj1"] }]);
+});
+
+test("move_file refuses a file whose folder this account cannot see, before writing", async () => {
+  const drive = new FakeDrive().add({ id: "sh1", name: "Their plan", mimeType: DOC });
+  const r = await moveFileTool(() => drive).handler({ file_id: "sh1", folder_id: "dest123456" });
+  assert.equal(r.isError, true);
+  assert.match(text(r), /did not say which folder "Their plan" is in.*copy_file/s);
+  assert.equal(drive.updates.length, 0);
 });
 
 test("copy_file copies a file, and refuses a folder before calling Drive", async () => {
@@ -397,6 +436,11 @@ test("copy_file copies a file, and refuses a folder before calling Drive", async
   const folder = await copyFileTool(() => drive).handler({ file_id: "dir1" });
   assert.equal(folder.isError, true);
   assert.match(text(folder), /cannot copy a folder/);
+
+  drive.add({ id: "k1", name: "-> template", mimeType: "application/vnd.google-apps.shortcut", shortcutDetails: { targetId: "tpl" } });
+  const shortcut = await copyFileTool(() => drive).handler({ file_id: "k1" });
+  assert.equal(shortcut.isError, true);
+  assert.match(text(shortcut), /is a shortcut\. Copy the file it points to: file_id="tpl"/);
   assert.equal(drive.copies.length, 2);
 });
 
@@ -409,7 +453,7 @@ test("trash_file trashes and says how to undo it; restore_file undoes it", async
   assert.match(trashed, new RegExp(`restore_file file_id="${ID}" within 30 days`));
 
   const folder = text(await trashFileTool(() => drive).handler({ file_id: "dir1" }));
-  assert.match(folder, /Everything in the folder went with it/);
+  assert.match(folder, /Everything in the folder that this account owns went with it/);
 
   const restored = text(await restoreFileTool(() => drive).handler({ file_id: ID }));
   assert.deepEqual(drive.updates[2], [ID, { trashed: false }, undefined]);

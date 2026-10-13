@@ -11,7 +11,7 @@ const PARAM_DESCRIPTIONS = {
 
 export const TrashFileSchema = z.object({ file_id: z.string().min(1) });
 
-const TRASH_DESCRIPTION = `Move a Drive file or folder to the trash. A trashed folder takes everything in it along.
+const TRASH_DESCRIPTION = `Move a Drive file or folder to the trash. A trashed folder takes what this account owns inside it along.
 
 This is Drive's own trash, not a deletion. The file stays recoverable with
 restore_file for 30 days, after which Drive deletes it for good. This server has
@@ -31,10 +31,11 @@ manager or content manager; anyone else gets a permission error.
 - Remove a superseded draft after replacing it
 - Clear out an old folder of exports`;
 
-const RESTORE_DESCRIPTION = `Take a Drive file or folder out of the trash, back into the folder it was trashed from.
+const RESTORE_DESCRIPTION = `Take a Drive file or folder out of the trash, usually back into the folder it was trashed from.
 
 Works for 30 days after trash_file (or a human) trashed it. To find a trashed
-file's id, use search_files with include_trashed=true.
+file's id, use search_files with include_trashed=true. A file that went to the
+trash only because its folder did comes back by restoring the folder.
 
 **Returns:**
 
@@ -69,7 +70,7 @@ function trashTool(clientFactory: ClientFactory, trashed: boolean): Tool {
         let output: string;
         if (trashed) {
           output = `Moved "${file.name}" to the trash\n**ID:** ${file.id}\n`;
-          if (file.mimeType === FOLDER_MIME_TYPE) output += 'Everything in the folder went with it.\n';
+          if (file.mimeType === FOLDER_MIME_TYPE) output += 'Everything in the folder that this account owns went with it.\n';
           output += `Restore it with restore_file file_id="${file.id}" within 30 days.\n`;
         } else {
           output = `Restored "${file.name}" from the trash\n**ID:** ${file.id}\n`;

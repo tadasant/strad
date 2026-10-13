@@ -65,18 +65,22 @@ export function updateFileMetadataTool(clientFactory: ClientFactory): Tool {
         const parsed = UpdateFileMetadataSchema.parse(args ?? {});
         const client = clientFactory();
         const fileId = parseFileId(parsed.file_id);
-        // Read first, so the result can say what the name WAS: a rename is
-        // undone by renaming back, and only this call knows the old name.
-        const before = parsed.name !== undefined ? await client.getFile(fileId) : undefined;
+        // Read first, so the result can say what it overwrote: a rename or a
+        // new description is undone by setting the old one back, and only this
+        // call knows what that was.
+        const before = await client.getFile(fileId);
         const patch: FileMetadataPatch = {};
         if (parsed.name !== undefined) patch.name = parsed.name;
         if (parsed.description !== undefined) patch.description = parsed.description;
         const file = await client.updateFile(fileId, patch);
 
         let output = `Updated "${file.name ?? parsed.name ?? fileId}"\n**ID:** ${file.id}\n`;
-        if (before?.name !== undefined && before.name !== file.name) output += `**Was named:** ${before.name}\n`;
+        if (parsed.name !== undefined && before.name !== file.name) output += `**Was named:** ${before.name}\n`;
         if (parsed.description !== undefined) {
           output += parsed.description === '' ? '**Description:** cleared\n' : `**Description:** ${parsed.description}\n`;
+          if (before.description && before.description !== parsed.description) {
+            output += `**Was described as:** ${before.description}\n`;
+          }
         }
         if (file.webViewLink) output += `**Link:** ${file.webViewLink}\n`;
         return { content: [{ type: 'text', text: output }] };

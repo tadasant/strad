@@ -63,7 +63,7 @@ export function missingCredentials(env: EnvLike): string[] {
   return GOOGLE_DRIVE_ENV_NAMES.filter((name) => !env[name]);
 }
 
-/** Everything the tools can ask Drive for. Four reads, two creates, then the three edits. */
+/** Everything the tools can ask Drive for: four reads, two creates, then three edit calls (a content upload, a metadata PATCH, a copy). */
 export interface IGoogleDriveClient {
   listFiles(params: ListFilesParams): Promise<DriveFileList>;
   getFile(fileId: string): Promise<DriveFile>;

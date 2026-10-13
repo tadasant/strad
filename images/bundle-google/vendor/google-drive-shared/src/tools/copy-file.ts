@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
 import { errorResult, type Tool } from '../tools.js';
 import { parseFileId } from '../utils/file-id.js';
-import { describeMimeType } from '../utils/mime.js';
+import { describeMimeType, GOOGLE_SHORTCUT } from '../utils/mime.js';
 import { FOLDER_MIME_TYPE } from '../drive-client/files.js';
 import { logError } from '../logging.js';
 
@@ -20,9 +20,12 @@ export const CopyFileSchema = z.object({
 
 const TOOL_DESCRIPTION = `Copy a Drive file into a new file with its own id. The original is not changed.
 
-A copy of a Google Doc, Sheet or Slides deck is a full, editable copy. It is not
-shared with anyone the original was shared with, and comments are not copied.
-Folders cannot be copied; Drive has no such call.
+A copy of a Google Doc, Sheet or Slides deck is a full, editable copy, without
+the original's comments. It does not carry over the original's own sharing, but
+it does inherit the sharing of the folder it lands in: by default the original's
+folder, and in a shared drive every member of that drive. Folders cannot be
+copied, since Drive has no such call, and a shortcut is refused in favour of the
+file it points to.
 
 **Returns** the new file:
 
@@ -64,6 +67,12 @@ export function copyFileTool(clientFactory: ClientFactory): Tool {
           throw new Error(
             `"${source.name}" is a folder, and Drive cannot copy a folder. Create one with create_folder ` +
               'and copy the files into it one at a time.'
+          );
+        }
+        if (source.mimeType === GOOGLE_SHORTCUT) {
+          throw new Error(
+            `"${source.name}" is a shortcut. Copy the file it points to: ` +
+              `file_id="${source.shortcutDetails?.targetId ?? '?'}".`
           );
         }
         const copy = await client.copyFile({

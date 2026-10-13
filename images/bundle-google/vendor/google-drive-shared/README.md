@@ -41,15 +41,21 @@ Eleven, in three tiers. Each tier holds the one before it:
   image, …) gets the new bytes and keeps its type. It refuses Google Sheets,
   because a CSV upload would collapse every tab into one and drop formulas and
   formatting. Use the google-sheets server to edit cells. It also refuses
-  Slides, folders and shortcuts. The previous content stays in the file's
-  version history.
+  empty content, Slides, folders and shortcuts. The previous content stays in
+  the file's version history. A Doc rebuilt from Markdown loses what Markdown
+  cannot carry: images unless the export kept them inline, every tab but the
+  first, headers and footers, suggestions, smart chips, bookmarks and most
+  styling. To change part of a Doc and keep the rest, use the google-docs
+  server.
 - `update_file_metadata` renames a file or folder, or sets its description.
 - `move_file` moves a file or folder into another folder and says where it was,
   so the move can be undone.
 - `copy_file` copies a file to a new id, optionally with a new name and folder.
-  Folders cannot be copied.
+  The copy does not take the original's own sharing, but it inherits the
+  sharing of the folder it lands in. Folders cannot be copied.
 - `trash_file` moves a file or folder to Drive's trash, and `restore_file` takes
-  it back out. Drive deletes a trashed file for good after 30 days.
+  it back out. A trashed folder takes what the account owns inside it along.
+  Drive deletes a trashed file for good after 30 days.
 
 **Not here, on purpose:**
 
@@ -109,17 +115,19 @@ what Google enforces. The tool group only decides which tools a client sees.
   inside folders made with `create_folder`. A folder someone made by hand in
   Drive is expected to refuse them. That has not been checked against a live
   account (`HACKS.md` #124).
-- The `full` tools also run on a `drive.file` token, but there they reach only
-  files this client created. On anything else Google answers 403 or 404, and
-  the error says to re-consent with `drive`.
+- The `full` tools also run on a `drive.file` token. There they **work** on
+  every file and folder this client created, overwriting, moving and trashing
+  them, and on anything else Google answers 403 or 404, with an error that says
+  to re-consent with `drive`.
 - **Moving up a tier means re-consenting.** A refresh token keeps the scopes it
   was minted with. To go from `readwrite` to `full`, run the consent flow below
   again with `https://www.googleapis.com/auth/drive`, replace
   `GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN`, and set `GOOGLE_DRIVE_ENABLED_TOOLGROUPS=full`
   (or leave it unset).
-- **Unset means every tool**, `full` included. With a `readwrite` token and no
-  group set, the edit tools are listed and fail on any file the client did not
-  create. Set the group to match the token.
+- **Unset means every tool**, `full` included. A setup from before the `full`
+  tier with no group set now lists the six edit tools, and on a `drive.file`
+  token they succeed on the files the client created. Set the group to match
+  the token, as every example below does.
 
 For a read-only server, consent `drive.readonly` alone and set
 `GOOGLE_DRIVE_ENABLED_TOOLGROUPS=readonly`. Google then refuses a write even if
@@ -158,8 +166,12 @@ stdio is the default transport:
 GOOGLE_DRIVE_OAUTH_CLIENT_ID=1234-abc.apps.googleusercontent.com \
 GOOGLE_DRIVE_OAUTH_CLIENT_SECRET=GOCSPX-... \
 GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN=1//0g... \
+GOOGLE_DRIVE_ENABLED_TOOLGROUPS=readonly \
 node dist/standalone/google-drive.js
 ```
+
+Set `GOOGLE_DRIVE_ENABLED_TOOLGROUPS` to the tier your token was consented for:
+`readonly`, `readwrite` or `full`.
 
 Start it with `node` directly, not through `npm run`. npm prints a banner to
 stdout, and in stdio mode stdout carries only protocol messages. The server logs
@@ -192,6 +204,7 @@ claude mcp add google-drive \
   -e GOOGLE_DRIVE_OAUTH_CLIENT_ID=1234-abc.apps.googleusercontent.com \
   -e GOOGLE_DRIVE_OAUTH_CLIENT_SECRET=GOCSPX-... \
   -e GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN=1//0g... \
+  -e GOOGLE_DRIVE_ENABLED_TOOLGROUPS=readonly \
   -- node /absolute/path/to/strad/images/bundle-google/dist/standalone/google-drive.js
 ```
 

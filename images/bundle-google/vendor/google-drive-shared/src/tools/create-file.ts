@@ -6,8 +6,6 @@ import { CONVERT_TO, describeMimeType, inferMimeType } from '../utils/mime.js';
 import { decodeContent, MAX_UPLOAD_BYTES } from '../utils/content.js';
 import { logError } from '../logging.js';
 
-export { MAX_UPLOAD_BYTES };
-
 const PARAM_DESCRIPTIONS = {
   name: 'The new file\'s name, with its extension, e.g. "meeting-notes.md" or "q3.csv".',
   content: 'The file\'s text, UTF-8. Pass this OR content_base64.',

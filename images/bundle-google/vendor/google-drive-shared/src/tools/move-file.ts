@@ -61,11 +61,21 @@ export function moveFileTool(clientFactory: ClientFactory): Tool {
         const parsed = MoveFileSchema.parse(args ?? {});
         const client = clientFactory();
         const fileId = parseFileId(parsed.file_id);
-        const folderId = parseFileId(parsed.folder_id);
+        let folderId = parseFileId(parsed.folder_id);
         if (folderId === fileId) throw new Error('A folder cannot be moved into itself.');
+        // Drive reports a file's parents by real id, never as the `root` alias,
+        // so the alias is resolved before it is compared or sent.
+        if (folderId === 'root') folderId = (await client.getFile('root')).id;
 
         const file = await client.getFile(fileId);
         const from = file.parents ?? [];
+        if (from.length === 0) {
+          throw new Error(
+            `Drive did not say which folder "${file.name}" is in, which happens when the account can see ` +
+              'a file but not its folder (often one shared with you). A file cannot be moved out of a ' +
+              'folder this account cannot see. copy_file can put a copy where you want it.'
+          );
+        }
         if (from.length === 1 && from[0] === folderId) {
           return { content: [{ type: 'text', text: `"${file.name}" is already in folder ${folderId}. Nothing moved.\n` }] };
         }
@@ -75,7 +85,10 @@ export function moveFileTool(clientFactory: ClientFactory): Tool {
         });
 
         let output = `Moved "${moved.name ?? file.name}" to folder ${folderId}\n**ID:** ${moved.id}\n`;
-        if (from.length > 0) output += `**Was in:** ${from.join(', ')}\n`;
+        output += `**Was in:** ${from[0]}\n`;
+        // Drive has allowed one parent per file since 2020; an older file can
+        // still have several, and every one of them was left.
+        if (from.length > 1) output += `**Also was in:** ${from.slice(1).join(', ')}\n`;
         if (moved.webViewLink) output += `**Link:** ${moved.webViewLink}\n`;
         return { content: [{ type: 'text', text: output }] };
       } catch (error) {

@@ -41,7 +41,13 @@ back. Comments anchored to replaced text lose their anchor. A **stored file**
 (.md, .txt, .csv, .json, an image, …) gets the new bytes as they are, and keeps
 its type.
 
-Refused: folders, shortcuts (pass the target's id), Google Sheets (a CSV upload
+**What a Doc loses** on the round trip through Markdown: images (unless the
+export kept them inline), every tab but the first, headers and footers,
+suggestions, smart chips, bookmarks, and any styling Markdown cannot say. To
+change part of a Doc and keep the rest exactly, use the google-docs server.
+
+Refused: empty content (to get rid of a file, trash_file it), folders, shortcuts
+(pass the target's id), Google Sheets (a CSV upload
 would replace every tab with one, and drop formulas and formatting; edit cells
 with the google-sheets server instead), and Slides, Forms and Drawings, which
 Drive cannot build from text.
@@ -64,6 +70,11 @@ drive scope. Under drive.file, only files this server created can be overwritten
 - Rewrite a Google Doc from an edited Markdown draft
 - Update a notes.md or data.json file in place, keeping its link
 - Replace a chart image that other documents link to`;
+
+/** `Text/Plain; charset=utf-8` → `text/plain`. */
+function baseType(mimeType: string): string {
+  return mimeType.split(';')[0].trim().toLowerCase();
+}
 
 export function replaceFileContentTool(clientFactory: ClientFactory): Tool {
   return {
@@ -90,13 +101,21 @@ export function replaceFileContentTool(clientFactory: ClientFactory): Tool {
       try {
         const parsed = ReplaceFileContentSchema.parse(args ?? {});
         const content = decodeContent(parsed.content, parsed.content_base64, 'replace_file_content');
+        // An empty string is the easiest wrong argument a model can send, and on
+        // this tool it blanks the file.
+        if (content.byteLength === 0) {
+          throw new Error('The content is empty, which would blank the file. To get rid of it, use trash_file.');
+        }
         const client = clientFactory();
         const file = await client.getFile(parseFileId(parsed.file_id));
         const current = file.mimeType ?? '';
 
         let mimeType: string;
+        let uploadType: string;
         if (current === GOOGLE_DOC) {
-          mimeType = parsed.mime_type ?? 'text/markdown';
+          mimeType = baseType(parsed.mime_type ?? 'text/markdown');
+          // Text converted into a Doc is decoded by this header, not guessed.
+          uploadType = `${mimeType}; charset=UTF-8`;
           if (!(CONVERT_TO.document.from as readonly string[]).includes(mimeType)) {
             throw new Error(
               `A Google Doc is rebuilt from ${CONVERT_TO.document.from.join(', ')}, not ${mimeType}.`
@@ -118,7 +137,9 @@ export function replaceFileContentTool(clientFactory: ClientFactory): Tool {
           throw new Error(`Drive cannot rebuild a ${describeMimeType(current)} from uploaded content.`);
         } else {
           mimeType = parsed.mime_type ?? current;
-          if (mimeType !== current) {
+          // The stored type is sent back unchanged, so Drive has nothing new to record.
+          uploadType = current;
+          if (baseType(mimeType) !== baseType(current)) {
             throw new Error(
               `"${file.name}" is ${current}, and replace_file_content keeps a stored file's type. ` +
                 `To store ${mimeType}, create_file a new file instead.`
@@ -126,7 +147,7 @@ export function replaceFileContentTool(clientFactory: ClientFactory): Tool {
           }
         }
 
-        const updated = await client.updateFileContent(file.id, mimeType, content);
+        const updated = await client.updateFileContent(file.id, uploadType, content);
         const kind = describeMimeType(updated.mimeType ?? current);
         let output = `Replaced the content of "${updated.name ?? file.name}" (${kind}`;
         output += current === GOOGLE_DOC ? `, converted from ${mimeType})\n` : ')\n';

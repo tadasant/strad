@@ -3881,6 +3881,12 @@ port, with one Google account's OAuth refresh token.
 - **Only the `full` tier changes existing files.** `readwrite` only creates, so
   it can stay on `drive.file`. Under `drive.file`, a create should work only at
   the top of My Drive or in a folder `create_folder` made.
+- **No tool group set means every tool, the edit tools included.** A setup that
+  set no group before the `full` tier existed now lists them. Set
+  `GOOGLE_DRIVE_ENABLED_TOOLGROUPS` to match the token.
+- **A Doc rewritten from Markdown keeps only what Markdown can say.** Images,
+  extra tabs, headers and footers, suggestions and most styling do not survive
+  `replace_file_content`. The google-docs server edits part of a Doc.
 - **No permanent delete and no sharing.** `trash_file` is recoverable for 30
   days.
 - **A replace has no "unchanged since" check.** An edit someone makes in the
