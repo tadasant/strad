@@ -1,11 +1,15 @@
 /**
  * Every Drive API call this server makes.
  *
- * SCOPE DISCIPLINE. Four reads — list, describe, export, download — that need
- * `drive.readonly`, and two CREATES that need only `drive.file`. There is no
- * update, no delete, no trash, no copy, no move and no permission call. A create
- * always mints a new file id, so nothing here can overwrite, lose or share a
- * file that already exists.
+ * SCOPE DISCIPLINE, by tier. Four reads (list, describe, export, download) need
+ * `drive.readonly`. Two CREATES need only `drive.file`: a create always mints a
+ * new file id, so neither can overwrite, lose or share a file that already
+ * exists. The `full` tier's calls change a file that already exists: a media
+ * upload over its content, a metadata PATCH (rename, describe, move, trash,
+ * restore), and a copy. On a file someone else made they need the full
+ * `drive` scope; under `drive.file` they reach only files this OAuth app
+ * created. There is no delete and no permission call: a trashed file stays
+ * recoverable for 30 days, and nothing here can share a file.
  *
  * `supportsAllDrives` on every call that takes it: without it a file in a shared
  * drive 404s for an account that can plainly see it.
@@ -32,6 +36,9 @@ export const FILE_FIELDS =
 
 /** What a create returns: the new file's id and where to open it. */
 const CREATED_FIELDS = 'id,name,mimeType,parents,webViewLink,driveId';
+
+/** What a change to an existing file returns: enough to say what it is now. */
+export const UPDATED_FIELDS = 'id,name,mimeType,description,parents,webViewLink,driveId,modifiedTime,trashed';
 
 /** The longest a 429 is waited out before the one retry. */
 const MAX_RETRY_WAIT_MS = 10_000;
@@ -239,6 +246,85 @@ export async function createFile(
       body,
     },
     `Create Drive file "${request.name}"`
+  );
+  return (await response.json()) as DriveFile;
+}
+
+/**
+ * Replace a file's content with one media upload. Uploading an importable type
+ * (text, Markdown, HTML) over a Google Doc converts it into the Doc, replacing
+ * the whole body. The file keeps its id, name, parents and sharing, and the
+ * previous content stays in its version history.
+ */
+export async function updateFileContent(
+  headers: Record<string, string>,
+  fileId: string,
+  mimeType: string,
+  content: Uint8Array
+): Promise<DriveFile> {
+  const query = new URLSearchParams({
+    uploadType: 'media',
+    fields: UPDATED_FIELDS,
+    supportsAllDrives: 'true',
+  });
+  const response = await send(
+    `${DRIVE_UPLOAD_URL}/${encodeURIComponent(fileId)}?${query.toString()}`,
+    { method: 'PATCH', headers: { ...headers, 'Content-Type': mimeType }, body: Buffer.from(content) },
+    `Replace the content of Drive file ${fileId}`
+  );
+  return (await response.json()) as DriveFile;
+}
+
+/** The metadata a PATCH may change. Anything else stays as it is. */
+export interface FileMetadataPatch {
+  name?: string;
+  description?: string;
+  trashed?: boolean;
+}
+
+/** A move: the folder to add, and the folders to leave. */
+export interface ParentChange {
+  addParents: string;
+  removeParents: string[];
+}
+
+/** One metadata PATCH: rename, describe, trash, restore, or move between folders. */
+export async function updateFile(
+  headers: Record<string, string>,
+  fileId: string,
+  patch: FileMetadataPatch,
+  parents?: ParentChange
+): Promise<DriveFile> {
+  const query: Record<string, string> = { fields: UPDATED_FIELDS, supportsAllDrives: 'true' };
+  if (parents) {
+    query.addParents = parents.addParents;
+    if (parents.removeParents.length > 0) query.removeParents = parents.removeParents.join(',');
+  }
+  const response = await send(
+    filesUrl(`/${encodeURIComponent(fileId)}`, query),
+    { method: 'PATCH', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(patch) },
+    `Update Drive file ${fileId}`
+  );
+  return (await response.json()) as DriveFile;
+}
+
+export interface CopyFileRequest {
+  fileId: string;
+  /** Default: Drive's own "Copy of <name>". */
+  name?: string;
+  /** Default: the source's folder. */
+  parentId?: string;
+}
+
+/** A new file with the source's content, under a new id. The source is not touched. */
+export async function copyFile(headers: Record<string, string>, request: CopyFileRequest): Promise<DriveFile> {
+  const body: Record<string, unknown> = {};
+  if (request.name) body.name = request.name;
+  if (request.parentId) body.parents = [request.parentId];
+  const response = await send(
+    filesUrl(`/${encodeURIComponent(request.fileId)}/copy`, { fields: CREATED_FIELDS, supportsAllDrives: 'true' }),
+    { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+    `Copy Drive file ${request.fileId}`
   );
   return (await response.json()) as DriveFile;
 }

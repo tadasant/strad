@@ -7,12 +7,17 @@ import assert from "node:assert/strict";
 
 import { createDefaultClient, type IGoogleDriveClient } from "../src/server.js";
 import type { DriveFile } from "../src/types.js";
-import type { ListFilesParams, CreateFileRequest } from "../src/drive-client/files.js";
+import type { ListFilesParams, CreateFileRequest, CopyFileRequest, FileMetadataPatch, ParentChange } from "../src/drive-client/files.js";
 import { searchFilesTool } from "../src/tools/search-files.js";
 import { getFileTool } from "../src/tools/get-file.js";
 import { readFileTool, MAX_IMAGE_BYTES, MAX_TEXT_BYTES } from "../src/tools/read-file.js";
 import { createFolderTool } from "../src/tools/create-folder.js";
 import { createFileTool, MAX_UPLOAD_BYTES } from "../src/tools/create-file.js";
+import { replaceFileContentTool } from "../src/tools/replace-file-content.js";
+import { updateFileMetadataTool } from "../src/tools/update-file-metadata.js";
+import { moveFileTool } from "../src/tools/move-file.js";
+import { copyFileTool } from "../src/tools/copy-file.js";
+import { trashFileTool, restoreFileTool } from "../src/tools/trash-file.js";
 
 const DOC = "application/vnd.google-apps.document";
 const SHEET = "application/vnd.google-apps.spreadsheet";
@@ -23,6 +28,9 @@ class FakeDrive implements IGoogleDriveClient {
   downloads: Array<[string, number]> = [];
   folders: Array<[string, string | undefined]> = [];
   creates: CreateFileRequest[] = [];
+  contentUpdates: Array<[string, string, string]> = [];
+  updates: Array<[string, FileMetadataPatch, ParentChange | undefined]> = [];
+  copies: CopyFileRequest[] = [];
   files = new Map<string, DriveFile>();
   content = new Map<string, Uint8Array>();
   listResult = { files: [] as DriveFile[] } as { files: DriveFile[]; nextPageToken?: string; incompleteSearch?: boolean };
@@ -58,6 +66,22 @@ class FakeDrive implements IGoogleDriveClient {
   async createFile(req: CreateFileRequest) {
     this.creates.push(req);
     return { id: "newfile", name: req.name, mimeType: req.convertTo ?? req.mimeType, webViewLink: "https://x/newfile" };
+  }
+  async updateFileContent(id: string, mime: string, content: Uint8Array) {
+    this.contentUpdates.push([id, mime, new TextDecoder().decode(content)]);
+    return { ...(await this.getFile(id)), modifiedTime: "2026-10-13T09:12:44.000Z" };
+  }
+  async updateFile(id: string, patch: FileMetadataPatch, parents?: ParentChange) {
+    this.updates.push([id, patch, parents]);
+    const before = await this.getFile(id);
+    const after = { ...before, ...patch, ...(parents ? { parents: [parents.addParents] } : {}) };
+    this.files.set(id, after);
+    return after;
+  }
+  async copyFile(req: CopyFileRequest) {
+    this.copies.push(req);
+    const source = await this.getFile(req.fileId);
+    return { id: "copy1", name: req.name ?? `Copy of ${source.name}`, mimeType: source.mimeType, webViewLink: "https://x/copy1" };
   }
 }
 
@@ -270,4 +294,124 @@ test("a missing credential is a failed call that names the variables, not a cras
   const r = await getFileTool(() => createDefaultClient({})).handler({ file_id: ID });
   assert.equal(r.isError, true);
   assert.match(text(r), /GOOGLE_DRIVE_OAUTH_CLIENT_ID, GOOGLE_DRIVE_OAUTH_CLIENT_SECRET, GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN are not set/);
+});
+
+test("replace_file_content rebuilds a Google Doc from Markdown by default, after checking what the file is", async () => {
+  const drive = new FakeDrive().add({ id: ID, name: "Q3 plan", mimeType: DOC, webViewLink: "https://docs/q3" });
+  const out = text(await replaceFileContentTool(() => drive).handler({ file_id: `https://docs.google.com/document/d/${ID}/edit`, content: "# New plan" }));
+  assert.deepEqual(drive.contentUpdates, [[ID, "text/markdown", "# New plan"]]);
+  assert.match(out, /Replaced the content of "Q3 plan" \(Google Doc, converted from text\/markdown\)/);
+  assert.match(out, /\*\*Modified:\*\* 2026-10-13T09:12:44.000Z/);
+  assert.match(out, /version history/);
+
+  await replaceFileContentTool(() => drive).handler({ file_id: ID, content: "<h1>x</h1>", mime_type: "text/html" });
+  assert.equal(drive.contentUpdates[1][1], "text/html");
+  const bad = await replaceFileContentTool(() => drive).handler({ file_id: ID, content: "a,b", mime_type: "text/csv" });
+  assert.equal(bad.isError, true);
+  assert.match(text(bad), /rebuilt from text\/plain, text\/markdown, text\/html, not text\/csv/);
+  assert.equal(drive.contentUpdates.length, 2);
+});
+
+test("replace_file_content keeps a stored file's type, and refuses to change it", async () => {
+  const drive = new FakeDrive().add({ id: "md1", name: "notes.md", mimeType: "text/markdown" });
+  await replaceFileContentTool(() => drive).handler({ file_id: "md1", content: "v2" });
+  assert.deepEqual(drive.contentUpdates[0], ["md1", "text/markdown", "v2"]);
+  const changed = await replaceFileContentTool(() => drive).handler({ file_id: "md1", content: "{}", mime_type: "application/json" });
+  assert.equal(changed.isError, true);
+  assert.match(text(changed), /keeps a stored file's type/);
+  assert.equal(drive.contentUpdates.length, 1);
+});
+
+test("replace_file_content refuses a Sheet, Slides, a folder and a shortcut, before writing anything", async () => {
+  const drive = new FakeDrive()
+    .add({ id: "s1", name: "Budget", mimeType: SHEET })
+    .add({ id: "p1", name: "Deck", mimeType: "application/vnd.google-apps.presentation" })
+    .add({ id: "d1", name: "Projects", mimeType: "application/vnd.google-apps.folder" })
+    .add({ id: "k1", name: "-> plan", mimeType: "application/vnd.google-apps.shortcut", shortcutDetails: { targetId: "t9" } });
+  const reasons: Record<string, RegExp> = {
+    s1: /every tab with one.*google-sheets server/s,
+    p1: /cannot rebuild a Google Slides/,
+    d1: /is a folder/,
+    k1: /file_id="t9"/,
+  };
+  for (const [id, reason] of Object.entries(reasons)) {
+    const r = await replaceFileContentTool(() => drive).handler({ file_id: id, content: "x" });
+    assert.equal(r.isError, true, id);
+    assert.match(text(r), reason);
+  }
+  assert.equal(drive.contentUpdates.length, 0);
+});
+
+test("replace_file_content checks the content before it reads the file", async () => {
+  const drive = new FakeDrive().add({ id: ID, name: "Q3 plan", mimeType: DOC });
+  const both = await replaceFileContentTool(() => drive).handler({ file_id: ID, content: "a", content_base64: "YQ==" });
+  assert.match(text(both), /exactly one of content or content_base64/);
+  const big = await replaceFileContentTool(() => drive).handler({ file_id: ID, content: "a".repeat(MAX_UPLOAD_BYTES + 1) });
+  assert.match(text(big), /past the 5MB replace_file_content uploads/);
+  assert.equal(drive.contentUpdates.length, 0);
+});
+
+test("update_file_metadata renames and says what the name was, and needs something to change", async () => {
+  const drive = new FakeDrive().add({ id: ID, name: "Q3 plan", mimeType: DOC, webViewLink: "https://docs/q3" });
+  const out = text(await updateFileMetadataTool(() => drive).handler({ file_id: ID, name: " Q3 plan (final) " }));
+  assert.deepEqual(drive.updates[0], [ID, { name: "Q3 plan (final)" }, undefined]);
+  assert.match(out, /Updated "Q3 plan \(final\)"/);
+  assert.match(out, /\*\*Was named:\*\* Q3 plan/);
+
+  const cleared = text(await updateFileMetadataTool(() => drive).handler({ file_id: ID, description: "" }));
+  assert.deepEqual(drive.updates[1][1], { description: "" });
+  assert.match(cleared, /Description:\*\* cleared/);
+
+  const nothing = await updateFileMetadataTool(() => drive).handler({ file_id: ID });
+  assert.equal(nothing.isError, true);
+  assert.match(text(nothing), /pass name, description, or both/);
+  assert.equal(drive.updates.length, 2);
+});
+
+test("move_file leaves every old folder for the new one, and says where it was", async () => {
+  const drive = new FakeDrive().add({ id: ID, name: "Q3 plan", mimeType: DOC, parents: ["old1", "old2"] });
+  const out = text(await moveFileTool(() => drive).handler({ file_id: ID, folder_id: "https://drive.google.com/drive/folders/dest123456" }));
+  assert.deepEqual(drive.updates[0], [ID, {}, { addParents: "dest123456", removeParents: ["old1", "old2"] }]);
+  assert.match(out, /Moved "Q3 plan" to folder dest123456/);
+  assert.match(out, /\*\*Was in:\*\* old1, old2/);
+
+  const again = text(await moveFileTool(() => drive).handler({ file_id: ID, folder_id: "dest123456" }));
+  assert.match(again, /already in folder dest123456\. Nothing moved/);
+  assert.equal(drive.updates.length, 1);
+
+  const self = await moveFileTool(() => drive).handler({ file_id: ID, folder_id: ID });
+  assert.match(text(self), /into itself/);
+});
+
+test("copy_file copies a file, and refuses a folder before calling Drive", async () => {
+  const drive = new FakeDrive()
+    .add({ id: "tpl", name: "Proposal template", mimeType: DOC })
+    .add({ id: "dir1", name: "Projects", mimeType: "application/vnd.google-apps.folder" });
+  const out = text(await copyFileTool(() => drive).handler({ file_id: "tpl", name: "Acme proposal", parent_folder_id: "p1" }));
+  assert.deepEqual(drive.copies[0], { fileId: "tpl", name: "Acme proposal", parentId: "p1" });
+  assert.match(out, /Copied "Proposal template" to "Acme proposal" \(Google Doc\)\n\*\*ID:\*\* copy1/);
+
+  const plain = text(await copyFileTool(() => drive).handler({ file_id: "tpl" }));
+  assert.match(plain, /to "Copy of Proposal template"/);
+
+  const folder = await copyFileTool(() => drive).handler({ file_id: "dir1" });
+  assert.equal(folder.isError, true);
+  assert.match(text(folder), /cannot copy a folder/);
+  assert.equal(drive.copies.length, 2);
+});
+
+test("trash_file trashes and says how to undo it; restore_file undoes it", async () => {
+  const drive = new FakeDrive()
+    .add({ id: ID, name: "old draft", mimeType: DOC })
+    .add({ id: "dir1", name: "Exports", mimeType: "application/vnd.google-apps.folder" });
+  const trashed = text(await trashFileTool(() => drive).handler({ file_id: ID }));
+  assert.deepEqual(drive.updates[0], [ID, { trashed: true }, undefined]);
+  assert.match(trashed, new RegExp(`restore_file file_id="${ID}" within 30 days`));
+
+  const folder = text(await trashFileTool(() => drive).handler({ file_id: "dir1" }));
+  assert.match(folder, /Everything in the folder went with it/);
+
+  const restored = text(await restoreFileTool(() => drive).handler({ file_id: ID }));
+  assert.deepEqual(drive.updates[2], [ID, { trashed: false }, undefined]);
+  assert.match(restored, /Restored "old draft" from the trash/);
 });

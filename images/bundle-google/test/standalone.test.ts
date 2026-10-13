@@ -17,7 +17,19 @@ import { parseOptions } from "../src/standalone/serve.js";
 
 const CALENDAR = fileURLToPath(new URL("../dist/standalone/google-calendar.js", import.meta.url));
 const DRIVE = fileURLToPath(new URL("../dist/standalone/google-drive.js", import.meta.url));
-const DRIVE_TOOLS = ["create_file", "create_folder", "get_file", "read_file", "search_files"];
+const DRIVE_TOOLS = [
+  "copy_file",
+  "create_file",
+  "create_folder",
+  "get_file",
+  "move_file",
+  "read_file",
+  "replace_file_content",
+  "restore_file",
+  "search_files",
+  "trash_file",
+  "update_file_metadata",
+];
 const CALENDAR_TOOLS = [
   "create_calendar_event",
   "delete_calendar_event",
@@ -225,7 +237,7 @@ describe("google-calendar standalone", () => {
 });
 
 describe("google-drive standalone", () => {
-  it("serves all five tools over stdio with no credentials set", async () => {
+  it("serves all eleven tools over stdio with no credentials set", async () => {
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: [DRIVE],
@@ -245,7 +257,7 @@ describe("google-drive standalone", () => {
     }
   });
 
-  it("serves all five tools over Streamable HTTP on the port it is given", async () => {
+  it("serves all eleven tools over Streamable HTTP on the port it is given", async () => {
     const { url } = await startHttp([], cleanEnv(), DRIVE);
     expect(url.hostname).toBe("127.0.0.1");
     const client = new Client({ name: "standalone-test", version: "0.0.0" });
@@ -266,6 +278,17 @@ describe("google-drive standalone", () => {
     await client.connect(new StreamableHTTPClientTransport(url));
     try {
       expect(await toolNames(client)).toEqual(["get_file", "read_file", "search_files"]);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("honours GOOGLE_DRIVE_ENABLED_TOOLGROUPS=readwrite: the reads and the two creates, no edits", async () => {
+    const { url } = await startHttp([], cleanEnv({ GOOGLE_DRIVE_ENABLED_TOOLGROUPS: "readwrite" }), DRIVE);
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(url));
+    try {
+      expect(await toolNames(client)).toEqual(["create_file", "create_folder", "get_file", "read_file", "search_files"]);
     } finally {
       await client.close();
     }

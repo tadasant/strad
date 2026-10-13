@@ -6,6 +6,11 @@ import { getFileTool } from './tools/get-file.js';
 import { readFileTool } from './tools/read-file.js';
 import { createFolderTool } from './tools/create-folder.js';
 import { createFileTool } from './tools/create-file.js';
+import { replaceFileContentTool } from './tools/replace-file-content.js';
+import { updateFileMetadataTool } from './tools/update-file-metadata.js';
+import { moveFileTool } from './tools/move-file.js';
+import { copyFileTool } from './tools/copy-file.js';
+import { restoreFileTool, trashFileTool } from './tools/trash-file.js';
 
 export type ToolContent =
   | { type: 'text'; text: string }
@@ -38,28 +43,49 @@ export interface Tool {
 type ToolFactory = (clientFactory: ClientFactory) => Tool;
 
 /**
- * The tools that only read, and the tools that also create.
+ * The tools that only read, the tools that create, and the tools that change a
+ * file that already exists.
  *
  * Exported because a strad `-ro` slug's `tools: allow:` is READ_TOOLS, and a
  * list transcribed by hand into a config in another repository goes stale.
- * `test/tool-tiers.test.ts` holds these two lists to the registered tools.
+ * `test/tool-tiers.test.ts` holds these lists to the registered tools.
  */
 export const READ_TOOLS = ['search_files', 'get_file', 'read_file'] as const;
 export const WRITE_TOOLS = ['create_folder', 'create_file'] as const;
+export const EDIT_TOOLS = [
+  'replace_file_content',
+  'update_file_metadata',
+  'move_file',
+  'copy_file',
+  'trash_file',
+  'restore_file',
+] as const;
 
 /**
- * readonly:  the three read tools
- * readwrite: the three read tools and the two creates
+ * Each tier holds the one before it, and each asks for one more scope:
+ *
+ * readonly:  the three reads                          drive.readonly
+ * readwrite: the reads, and the two creates           + drive.file
+ * full:      all of that, and the six edits           drive
+ *
+ * `readwrite` is deliberately create-only, so it can stay on `drive.file` and
+ * never touch a file a human made. Editing those is `full`, and needs `drive`.
  */
-export type ToolGroup = 'readonly' | 'readwrite';
-export const TOOL_GROUPS: readonly ToolGroup[] = ['readonly', 'readwrite'];
+export type ToolGroup = 'readonly' | 'readwrite' | 'full';
+export const TOOL_GROUPS: readonly ToolGroup[] = ['readonly', 'readwrite', 'full'];
 
 const ALL_TOOLS: Array<{ factory: ToolFactory; groups: ToolGroup[] }> = [
-  { factory: searchFilesTool, groups: ['readonly', 'readwrite'] },
-  { factory: getFileTool, groups: ['readonly', 'readwrite'] },
-  { factory: readFileTool, groups: ['readonly', 'readwrite'] },
-  { factory: createFolderTool, groups: ['readwrite'] },
-  { factory: createFileTool, groups: ['readwrite'] },
+  { factory: searchFilesTool, groups: ['readonly', 'readwrite', 'full'] },
+  { factory: getFileTool, groups: ['readonly', 'readwrite', 'full'] },
+  { factory: readFileTool, groups: ['readonly', 'readwrite', 'full'] },
+  { factory: createFolderTool, groups: ['readwrite', 'full'] },
+  { factory: createFileTool, groups: ['readwrite', 'full'] },
+  { factory: replaceFileContentTool, groups: ['full'] },
+  { factory: updateFileMetadataTool, groups: ['full'] },
+  { factory: moveFileTool, groups: ['full'] },
+  { factory: copyFileTool, groups: ['full'] },
+  { factory: trashFileTool, groups: ['full'] },
+  { factory: restoreFileTool, groups: ['full'] },
 ];
 
 /**
@@ -76,7 +102,7 @@ export function parseToolGroups(raw: string | undefined): ToolGroup[] {
   const unknown = names.filter((g) => !TOOL_GROUPS.includes(g as ToolGroup));
   if (unknown.length > 0) {
     throw new Error(
-      `unknown tool group(s) ${unknown.map((g) => `"${g}"`).join(', ')} in "${raw}"; expected ${TOOL_GROUPS.join(' or ')}`
+      `unknown tool group(s) ${unknown.map((g) => `"${g}"`).join(', ')} in "${raw}"; expected ${TOOL_GROUPS.join(', ')}`
     );
   }
   return names as ToolGroup[];

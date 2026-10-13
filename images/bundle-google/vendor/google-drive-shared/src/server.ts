@@ -2,23 +2,37 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { OAuth2Client } from 'google-auth-library';
 import { createRegisterTools, parseToolGroups } from './tools.js';
 import type { DriveFile, DriveFileList } from './types.js';
-import type { CreateFileRequest, ListFilesParams } from './drive-client/files.js';
+import type {
+  CopyFileRequest,
+  CreateFileRequest,
+  FileMetadataPatch,
+  ListFilesParams,
+  ParentChange,
+} from './drive-client/files.js';
 
 /**
- * The scopes a refresh token for this server has to have been consented for.
+ * The scopes a refresh token for this server has to have been consented for,
+ * per tool group.
  *
- * Neither is the full `drive` scope, and that is the point of the split.
- * `drive.readonly` reaches every file the account can see and cannot change any
- * of them. `drive.file` can write, but only to files this OAuth app created —
- * which is exactly what `create_folder` and `create_file` need, because they
- * only ever create. Together a token can read the whole Drive and add to it,
- * and cannot edit, delete, move or share a single file a human made.
+ * The first two tiers stay off the full `drive` scope, and that is the point of
+ * the split. `drive.readonly` reaches every file the account can see and cannot
+ * change any of them. `drive.file` can write, but only to files this OAuth app
+ * created, which is exactly what `create_folder` and `create_file` need,
+ * because they only ever create. Together a `readwrite` token can read the
+ * whole Drive and add to it, and cannot edit, trash, move or share a single file
+ * a human made.
+ *
+ * The `full` tier changes files that already exist, and a file a human made is
+ * reachable only with `drive`. Under `drive.file` its tools still work, on the
+ * files this app created and on nothing else.
  */
 export const GOOGLE_DRIVE_SCOPES = {
   /** Every read tool: search_files, get_file, read_file. */
   readonly: 'https://www.googleapis.com/auth/drive.readonly',
   /** The two create tools, in addition to `readonly`. */
   file: 'https://www.googleapis.com/auth/drive.file',
+  /** The `full` tier's edit tools, on any file the account may edit. Covers the other two. */
+  full: 'https://www.googleapis.com/auth/drive',
 } as const;
 
 /**
@@ -39,7 +53,7 @@ export const GOOGLE_DRIVE_OAUTH_APP_ENV_NAMES = [
   'GOOGLE_DRIVE_OAUTH_CLIENT_SECRET',
 ] as const;
 
-/** Narrows the tools to `readonly` or `readwrite`; unset means every tool. Not a credential. */
+/** Narrows the tools to `readonly`, `readwrite` or `full`; unset means every tool. Not a credential. */
 export const GOOGLE_DRIVE_TOOLGROUPS_ENV = 'GOOGLE_DRIVE_ENABLED_TOOLGROUPS';
 
 export type EnvLike = Readonly<Record<string, string | undefined>>;
@@ -49,7 +63,7 @@ export function missingCredentials(env: EnvLike): string[] {
   return GOOGLE_DRIVE_ENV_NAMES.filter((name) => !env[name]);
 }
 
-/** Everything the tools can ask Drive for. Four reads, then the two creates. */
+/** Everything the tools can ask Drive for. Four reads, two creates, then the three edits. */
 export interface IGoogleDriveClient {
   listFiles(params: ListFilesParams): Promise<DriveFileList>;
   getFile(fileId: string): Promise<DriveFile>;
@@ -57,6 +71,9 @@ export interface IGoogleDriveClient {
   downloadFile(fileId: string, maxBytes: number): Promise<Uint8Array>;
   createFolder(name: string, parentId?: string): Promise<DriveFile>;
   createFile(request: CreateFileRequest): Promise<DriveFile>;
+  updateFileContent(fileId: string, mimeType: string, content: Uint8Array): Promise<DriveFile>;
+  updateFile(fileId: string, patch: FileMetadataPatch, parents?: ParentChange): Promise<DriveFile>;
+  copyFile(request: CopyFileRequest): Promise<DriveFile>;
 }
 
 /**
@@ -172,6 +189,21 @@ class OAuthGoogleDriveClient implements IGoogleDriveClient {
     const { createFile } = await this.lib();
     return this.withAuth((h) => createFile(h, request));
   }
+
+  async updateFileContent(fileId: string, mimeType: string, content: Uint8Array): Promise<DriveFile> {
+    const { updateFileContent } = await this.lib();
+    return this.withAuth((h) => updateFileContent(h, fileId, mimeType, content));
+  }
+
+  async updateFile(fileId: string, patch: FileMetadataPatch, parents?: ParentChange): Promise<DriveFile> {
+    const { updateFile } = await this.lib();
+    return this.withAuth((h) => updateFile(h, fileId, patch, parents));
+  }
+
+  async copyFile(request: CopyFileRequest): Promise<DriveFile> {
+    const { copyFile } = await this.lib();
+    return this.withAuth((h) => copyFile(h, request));
+  }
 }
 
 export type ClientFactory = () => IGoogleDriveClient;
@@ -194,7 +226,8 @@ export function createDefaultClient(env: EnvLike = process.env): IGoogleDriveCli
     throw new Error(
       `This google-drive server has no credential: ${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not set. ` +
         'It needs an OAuth client id, client secret and refresh token for exactly one Google account, ' +
-        `consented for ${GOOGLE_DRIVE_SCOPES.readonly} (and ${GOOGLE_DRIVE_SCOPES.file} for the create tools).`
+        `consented for ${GOOGLE_DRIVE_SCOPES.readonly} (and ${GOOGLE_DRIVE_SCOPES.file} for the create tools, ` +
+        `or ${GOOGLE_DRIVE_SCOPES.full} for the full tier's edit tools).`
     );
   }
   const clientId = env.GOOGLE_DRIVE_OAUTH_CLIENT_ID!;
@@ -216,10 +249,10 @@ export interface CreateMCPServerOptions {
   /** The environment THIS instance reads. Defaults to `process.env`. */
   env?: EnvLike;
   /**
-   * `readonly`, `readwrite`, or a comma list of them; unset means every tool.
-   * Defaults to the env's `GOOGLE_DRIVE_ENABLED_TOOLGROUPS`. An unknown group
-   * THROWS rather than widening to every tool, so a typo such as `read-only`
-   * cannot serve the create tools.
+   * `readonly`, `readwrite`, `full`, or a comma list of them; unset means every
+   * tool. Defaults to the env's `GOOGLE_DRIVE_ENABLED_TOOLGROUPS`. An unknown
+   * group THROWS rather than widening to every tool, so a typo such as
+   * `read-only` cannot serve the write tools.
    */
   enabledToolGroups?: string;
 }

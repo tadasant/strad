@@ -89,18 +89,20 @@ function recoveryHint(status: number, reason: string | undefined, detail: string
     return (
       'The refresh token was consented for narrower scopes than this call needs. Every read ' +
       'tool needs https://www.googleapis.com/auth/drive.readonly; create_folder and ' +
-      'create_file need https://www.googleapis.com/auth/drive.file as well. Re-consent the ' +
-      'account to mint a token with both.'
+      'create_file need https://www.googleapis.com/auth/drive.file as well; the full tier\'s ' +
+      'edit tools need https://www.googleapis.com/auth/drive. Re-consent the account to mint a ' +
+      'token with the scopes its tool group needs.'
     );
   }
 
   if (status === 403 && (reason === 'insufficientFilePermissions' || reason === 'appNotAuthorizedToFile')) {
     return (
-      'The account can see this file or folder but this credential may not write to it. ' +
-      'Either the account itself only has view access, or, under the drive.file scope, the ' +
-      'folder was not created by this OAuth app: a write reaches only files and folders the app ' +
-      'created. Create the folder with create_folder first, or leave parent_folder_id out to ' +
-      'write to My Drive.'
+      'The account can see this file or folder but this credential may not change it. ' +
+      'Either the account itself only has view access (and in My Drive only the owner may ' +
+      'trash a file), or the token holds only the drive.file scope, which reaches only files ' +
+      'and folders this OAuth app created. For a create, make the folder with create_folder ' +
+      'first, or leave parent_folder_id out to write to My Drive. To edit a file someone else ' +
+      'made, re-consent with https://www.googleapis.com/auth/drive.'
     );
   }
 
@@ -115,8 +117,8 @@ function recoveryHint(status: number, reason: string | undefined, detail: string
     return (
       'No file or folder with that id is visible to the account this refresh token belongs ' +
       'to. Check the id (search_files finds it by name), and check that it is shared with ' +
-      'that account. As a parent_folder_id, a folder this OAuth app did not create can also ' +
-      'come back 404 under the drive.file scope.'
+      'that account. Under the drive.file scope, a file or folder this OAuth app did not ' +
+      'create can also come back 404 to a write.'
     );
   }
 
