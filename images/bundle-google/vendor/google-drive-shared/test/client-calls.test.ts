@@ -10,6 +10,7 @@ import { test, beforeEach, afterEach } from "vitest";
 import assert from "node:assert/strict";
 
 import {
+  copyFile,
   createFile,
   createFolder,
   downloadFile,
@@ -17,6 +18,8 @@ import {
   exportFile,
   getFile,
   listFiles,
+  updateFile,
+  updateFileContent,
 } from "../src/drive-client/files.js";
 import { DriveApiError } from "../src/drive-client/api-errors.js";
 
@@ -187,10 +190,11 @@ test("a 429 is retried once after Retry-After, and a second 429 is an error", as
 
 test("Drive's 403 reasons are told apart, each with its own recovery", async () => {
   const cases: Array<[string, RegExp, DriveApiError["category"]]> = [
-    ["insufficientPermissions", /drive\.readonly.*drive\.file/s, "forbidden"],
+    ["insufficientPermissions", /drive\.readonly.*drive\.file.*auth\/drive\./s, "forbidden"],
     ["exportSizeLimitExceeded", /10MB/, "forbidden"],
     ["userRateLimitExceeded", /throttling/, "rate_limit"],
-    ["appNotAuthorizedToFile", /create_folder first/, "forbidden"],
+    ["appNotAuthorizedToFile", /create_folder\s+first.*auth\/drive\./s, "forbidden"],
+    ["insufficientFilePermissions", /only the owner may\s+trash/, "forbidden"],
   ];
   for (const [reason, hint, category] of cases) {
     responses.push(json({ error: { code: 403, message: "nope", errors: [{ reason }] } }, 403));
@@ -207,4 +211,63 @@ test("Drive's 403 reasons are told apart, each with its own recovery", async () 
 test("a 404 says the file is not visible to this account", async () => {
   responses.push(json({ error: { code: 404, message: "File not found: x." } }, 404));
   await assert.rejects(getFile(HEADERS, "x"), /No file or folder with that id is visible/);
+});
+
+test("a content replace is ONE media PATCH to the upload URL, typed as the content", async () => {
+  responses.push(json({ id: "doc1", name: "Q3 plan" }));
+  const bytes = new TextEncoder().encode("# New\n");
+  await updateFileContent(HEADERS, "doc/1", "text/markdown", bytes);
+  assert.equal(calls.length, 1);
+  const call = calls[0];
+  const url = new URL(call.url);
+  assert.equal(call.method, "PATCH");
+  assert.equal(url.origin + url.pathname, "https://www.googleapis.com/upload/drive/v3/files/doc%2F1");
+  assert.equal(url.searchParams.get("uploadType"), "media");
+  assert.equal(url.searchParams.get("supportsAllDrives"), "true");
+  assert.match(url.searchParams.get("fields")!, /modifiedTime/);
+  assert.equal(call.headers["Content-Type"], "text/markdown");
+  assert.equal(call.headers.Authorization, "Bearer test");
+  assert.deepEqual([...Buffer.from(call.body as Uint8Array)], [...bytes]);
+});
+
+test("a metadata update PATCHes only the fields it was given, with no parent change", async () => {
+  await updateFile(HEADERS, "f1", { name: "Final" });
+  const url = new URL(calls[0].url);
+  assert.equal(calls[0].method, "PATCH");
+  assert.equal(url.origin + url.pathname, "https://www.googleapis.com/drive/v3/files/f1");
+  assert.deepEqual(JSON.parse(calls[0].body as string), { name: "Final" });
+  assert.equal(url.searchParams.has("addParents"), false);
+  assert.equal(url.searchParams.has("removeParents"), false);
+  assert.equal(url.searchParams.get("supportsAllDrives"), "true");
+});
+
+test("trash and restore are the trashed flag, never a DELETE", async () => {
+  await updateFile(HEADERS, "f1", { trashed: true });
+  await updateFile(HEADERS, "f1", { trashed: false });
+  assert.deepEqual(calls.map((c) => [c.method, JSON.parse(c.body as string)]), [
+    ["PATCH", { trashed: true }],
+    ["PATCH", { trashed: false }],
+  ]);
+});
+
+test("a move adds the new parent and removes every old one in the same PATCH", async () => {
+  await updateFile(HEADERS, "f1", {}, { addParents: "dest", removeParents: ["a", "b"] });
+  const url = new URL(calls[0].url);
+  assert.equal(url.searchParams.get("addParents"), "dest");
+  assert.equal(url.searchParams.get("removeParents"), "a,b");
+  assert.deepEqual(JSON.parse(calls[0].body as string), {});
+
+  await updateFile(HEADERS, "f2", {}, { addParents: "dest", removeParents: [] });
+  assert.equal(new URL(calls[1].url).searchParams.has("removeParents"), false);
+});
+
+test("a copy POSTs to the source's copy endpoint, with only the overrides it was given", async () => {
+  await copyFile(HEADERS, { fileId: "src1", name: "Acme proposal", parentId: "p1" });
+  await copyFile(HEADERS, { fileId: "src1" });
+  const url = new URL(calls[0].url);
+  assert.equal(calls[0].method, "POST");
+  assert.equal(url.pathname, "/drive/v3/files/src1/copy");
+  assert.equal(url.searchParams.get("supportsAllDrives"), "true");
+  assert.deepEqual(JSON.parse(calls[0].body as string), { name: "Acme proposal", parents: ["p1"] });
+  assert.deepEqual(JSON.parse(calls[1].body as string), {});
 });

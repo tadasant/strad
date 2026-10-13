@@ -91,8 +91,9 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   unit tests (`npm test`), which the others do not.
 - `vendor/google-drive-shared/` — strad's own Google Drive server, written here
   in google-sheets' shape: one Google account per OAuth refresh token, read
-  out of an injected env. Three read tools on `drive.readonly`, and two
-  create-only tools on `drive.file`. **Neither this image's `src/index.ts`
+  out of an injected env. Three tiers: three read tools on `drive.readonly`,
+  two create-only tools on `drive.file` (`readwrite`), and six that change an
+  existing file on the full `drive` scope (`full`). **Neither this image's `src/index.ts`
   nor the collapsed bundle mounts it.** It runs only through
   `src/standalone/google-drive.ts`, and its README is the how-to.
   `vendor/google-drive-shared/test/` is its suite. See `HACKS.md` #124.

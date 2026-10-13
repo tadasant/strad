@@ -1,7 +1,7 @@
 {
   "name": "google-drive-workspace-mcp-server-shared",
   "version": "0.1.0",
-  "description": "Shared code for strad's Google Drive MCP server: three read tools and two create-only write tools, one Google account per credential",
+  "description": "Shared code for strad's Google Drive MCP server: three read tools, two create tools and six edit tools in three tiers, one Google account per credential",
   "main": "build/index.js",
   "types": "build/index.d.ts",
   "type": "module",

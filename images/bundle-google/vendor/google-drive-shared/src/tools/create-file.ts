@@ -3,13 +3,8 @@ import type { ClientFactory } from '../server.js';
 import { errorResult, type Tool } from '../tools.js';
 import { parseFileId } from '../utils/file-id.js';
 import { CONVERT_TO, describeMimeType, inferMimeType } from '../utils/mime.js';
+import { decodeContent, MAX_UPLOAD_BYTES } from '../utils/content.js';
 import { logError } from '../logging.js';
-
-/**
- * The largest file `create_file` uploads, decoded. Through strad, core's 4MB
- * `/mcp` body is the tighter bound on `content_base64` anyway.
- */
-export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 
 const PARAM_DESCRIPTIONS = {
   name: 'The new file\'s name, with its extension, e.g. "meeting-notes.md" or "q3.csv".',
@@ -47,8 +42,8 @@ const TOOL_DESCRIPTION = `Create a new file in Google Drive from text or bytes.
 
 Always creates a NEW file with a new id. It never overwrites, edits or replaces
 an existing file, even one with the same name in the same folder — Drive allows
-duplicate names, so a retried call leaves two files. This server has no tool that
-changes or deletes an existing file.
+duplicate names, so a retried call leaves two files. To change a file that
+already exists, use replace_file_content, where this server offers it.
 
 **Returns** the new file's id and link:
 
@@ -100,22 +95,7 @@ export function createFileTool(clientFactory: ClientFactory): Tool {
     handler: async (args) => {
       try {
         const parsed = CreateFileSchema.parse(args ?? {});
-        let content: Uint8Array;
-        if (parsed.content !== undefined) {
-          content = Buffer.from(parsed.content, 'utf8');
-        } else {
-          const b64 = parsed.content_base64!.replace(/\s+/g, '');
-          if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 === 1) {
-            throw new Error('content_base64 is not valid base64.');
-          }
-          content = Buffer.from(b64, 'base64');
-        }
-        if (content.byteLength > MAX_UPLOAD_BYTES) {
-          throw new Error(
-            `The content is ${(content.byteLength / (1024 * 1024)).toFixed(1)}MB, past the ` +
-              `${MAX_UPLOAD_BYTES / (1024 * 1024)}MB create_file uploads.`
-          );
-        }
+        const content = decodeContent(parsed.content, parsed.content_base64, 'create_file');
 
         const mimeType = parsed.mime_type ?? inferMimeType(parsed.name, parsed.content_base64 !== undefined);
         let convertTo: string | undefined;
