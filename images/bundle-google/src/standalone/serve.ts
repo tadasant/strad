@@ -38,8 +38,12 @@ export interface StandaloneServer {
   name: string;
   /** Build a fresh, unconnected server. Called once for stdio, once per request for HTTP. */
   build: () => { server: Server; registerHandlers: (server: Server) => Promise<void> };
-  /** Credential variables to warn about at startup when unset. Never required to boot. */
-  credentialEnv?: string[];
+  /**
+   * Credential variables to warn about at startup when unset. Never required to
+   * boot. A function when the set depends on the environment, as an auth mode's
+   * does; it runs after `validateEnv`, so it may assume a valid one.
+   */
+  credentialEnv?: readonly string[] | ((env: NodeJS.ProcessEnv) => readonly string[]);
   /**
    * Refuse to start on a setting the server would otherwise misread. Returns
    * the reason, or undefined. Checked before anything is served.
@@ -133,7 +137,8 @@ export async function serveStandalone(
     process.exit(2);
   }
 
-  const missing = (spec.credentialEnv ?? []).filter((name) => !env[name]);
+  const credentialEnv = typeof spec.credentialEnv === "function" ? spec.credentialEnv(env) : (spec.credentialEnv ?? []);
+  const missing = credentialEnv.filter((name) => !env[name]);
   if (missing.length > 0) {
     console.error(
       `[${spec.name}] ${missing.join(", ")} not set: tools will list, and every tool call will fail until they are.`,

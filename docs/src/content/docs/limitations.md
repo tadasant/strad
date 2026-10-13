@@ -3902,3 +3902,41 @@ HTML, a `create_file` into a `create_folder` folder that is refused, or a
 See `HACKS.md` #124.
 
 ---
+
+### 125. google-calendar's personal OAuth mode is a strad patch on a vendored copy
+
+The google-calendar server signs in as a service account with domain-wide
+delegation by default. `GOOGLE_CALENDAR_AUTH_MODE=oauth` makes it sign in as one
+Google account with a refresh token instead, which is the only way it reaches a
+personal `@gmail.com` calendar. The setup is in
+`images/bundle-google/vendor/google-calendar-shared/README.md`.
+
+- **strad added the mode, not upstream.** The server is a copy of a pulsemcp
+  server. Re-copying it from upstream removes the mode unless the change is
+  applied again, and a test fails if it is not.
+- **The mode is chosen, never guessed.** Unlike gmail and google-docs, which
+  switch to OAuth when its variables are present, calendar uses the service
+  account unless the variable says `oauth`. In `oauth` mode a missing variable
+  is an error, not a fallback.
+- **Its error text is matched on.** The upstream code words a 401 and a 403 for
+  a service account, and the OAuth mode rewrites those messages by matching
+  their opening words. If upstream rewords them, the OAuth mode shows the
+  service-account advice, and a token Google rejected early is reused until it
+  expires.
+- **The refresh token is yours to mint and replace.** gmail and google-docs
+  get theirs from the console's Connect Google button. Calendar has no such
+  flow, so you run the consent yourself and set the token as a secret, and
+  again whenever Google revokes it. A consent screen still in Testing mode
+  revokes it every 7 days.
+- **A mistyped mode boots inside strad.** The standalone server refuses to
+  start on one. In a bundle the server starts, and every call fails naming the
+  variable.
+- **No request has reached Google in OAuth mode.** The tests fake the token
+  exchange and the Calendar API.
+
+**How you would know.** An `oauth` call that fails with "verify the credentials
+and domain-wide delegation", or event links whose `authuser` is missing.
+
+See `HACKS.md` #125.
+
+---
