@@ -16,6 +16,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { parseOptions } from "../src/standalone/serve.js";
 
 const CALENDAR = fileURLToPath(new URL("../dist/standalone/google-calendar.js", import.meta.url));
+const DRIVE = fileURLToPath(new URL("../dist/standalone/google-drive.js", import.meta.url));
+const DRIVE_TOOLS = ["create_file", "create_folder", "get_file", "read_file", "search_files"];
 const CALENDAR_TOOLS = [
   "create_calendar_event",
   "delete_calendar_event",
@@ -30,7 +32,7 @@ const CALENDAR_TOOLS = [
 function cleanEnv(extra: Record<string, string> = {}): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (v === undefined || k.startsWith("GCAL_") || k.endsWith("ENABLED_TOOLGROUPS") || k === "PORT") continue;
+    if (v === undefined || k.startsWith("GCAL_") || k.startsWith("GOOGLE_DRIVE_") || k.endsWith("ENABLED_TOOLGROUPS") || k === "PORT") continue;
     env[k] = v;
   }
   return { ...env, ...extra };
@@ -47,8 +49,12 @@ afterEach(() => {
 });
 
 /** Start the HTTP mode on an OS-chosen port and resolve with the URL it logs. */
-async function startHttp(args: string[], env = cleanEnv()): Promise<{ url: URL; stderr: () => string }> {
-  const child = spawn(process.execPath, [CALENDAR, "--transport", "http", "--port", "0", ...args], {
+async function startHttp(
+  args: string[],
+  env = cleanEnv(),
+  entry = CALENDAR,
+): Promise<{ url: URL; stderr: () => string }> {
+  const child = spawn(process.execPath, [entry, "--transport", "http", "--port", "0", ...args], {
     env,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -215,6 +221,80 @@ describe("google-calendar standalone", () => {
     const [code] = await once(child, "exit");
     expect(code).toBe(2);
     expect(stderr).toContain("--transport");
+  });
+});
+
+describe("google-drive standalone", () => {
+  it("serves all five tools over stdio with no credentials set", async () => {
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [DRIVE],
+      env: cleanEnv(),
+      stderr: "pipe",
+    });
+    let stderr = "";
+    transport.stderr!.on("data", (d) => (stderr += d));
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(transport);
+    try {
+      expect(client.getServerVersion()?.name).toBe("google-drive-workspace-mcp-server");
+      expect(await toolNames(client)).toEqual(DRIVE_TOOLS);
+      expect(stderr).toContain("GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("serves all five tools over Streamable HTTP on the port it is given", async () => {
+    const { url } = await startHttp([], cleanEnv(), DRIVE);
+    expect(url.hostname).toBe("127.0.0.1");
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(url));
+    try {
+      expect(await toolNames(client)).toEqual(DRIVE_TOOLS);
+      expect(await toolNames(client)).toEqual(DRIVE_TOOLS);
+    } finally {
+      await client.close();
+    }
+    const health = await fetch(new URL("/healthz", url));
+    expect(await health.json()).toEqual({ ok: true, server: "google-drive" });
+  });
+
+  it("honours GOOGLE_DRIVE_ENABLED_TOOLGROUPS=readonly", async () => {
+    const { url } = await startHttp([], cleanEnv({ GOOGLE_DRIVE_ENABLED_TOOLGROUPS: "readonly" }), DRIVE);
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(url));
+    try {
+      expect(await toolNames(client)).toEqual(["get_file", "read_file", "search_files"]);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("fails a tool call, not the boot, when credentials are missing", async () => {
+    const { url } = await startHttp([], cleanEnv(), DRIVE);
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(url));
+    try {
+      const result = await client.callTool({ name: "search_files", arguments: {} });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain("GOOGLE_DRIVE_OAUTH_CLIENT_ID");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("refuses to start on a tool group it does not know, rather than serving every tool", async () => {
+    const child = spawn(process.execPath, [DRIVE], {
+      env: cleanEnv({ GOOGLE_DRIVE_ENABLED_TOOLGROUPS: "read-only" }),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    children.push(child);
+    let stderr = "";
+    child.stderr!.on("data", (d) => (stderr += d));
+    const [code] = await once(child, "exit");
+    expect(code).toBe(2);
+    expect(stderr).toContain('unknown tool group(s) "read-only"');
   });
 });
 

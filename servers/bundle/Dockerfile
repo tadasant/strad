@@ -76,6 +76,7 @@ COPY images/bundle-google/vendor/gmail-shared/package.json ./vendor/gmail-shared
 COPY images/bundle-google/vendor/google-calendar-shared/package.json ./vendor/google-calendar-shared/
 COPY images/bundle-google/vendor/google-docs-shared/package.json ./vendor/google-docs-shared/
 COPY images/bundle-google/vendor/google-sheets-shared/package.json ./vendor/google-sheets-shared/
+COPY images/bundle-google/vendor/google-drive-shared/package.json ./vendor/google-drive-shared/
 RUN npm ci --no-audit --no-fund
 COPY images/bundle-google/tsconfig.json ./
 COPY images/bundle-google/vendor ./vendor
