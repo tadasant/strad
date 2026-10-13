@@ -67,7 +67,7 @@ COPY servers/bundle-api/upstream ./upstream
 COPY servers/bundle-api/remote ./remote
 RUN npm run build && npm prune --omit=dev
 
-# ---- bundle-google: gmail / calendar / docs / sheets -------------------------
+# ---- bundle-google: gmail / calendar / docs / sheets (+ drive, built, unmounted)
 FROM ${PW} AS build-google
 WORKDIR /src
 COPY images/bundle-google/package.json images/bundle-google/package-lock.json ./

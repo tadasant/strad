@@ -3877,8 +3877,8 @@ one Google account's OAuth refresh token.
   `drive.file` write into a folder made by hand, and whether an upload converts
   into a Doc or a Sheet.
 - **Writes only create.** No tool edits, moves, shares or deletes a file. Under
-  `drive.file`, a create works only at the top of My Drive or in a folder
-  `create_folder` made.
+  `drive.file`, a create should work only at the top of My Drive or in a folder
+  `create_folder` made (the second unverified claim above).
 - **`read_file` reads text and images.** A PDF or Office file is refused with
   its link. A Google Sheet exports its first tab only.
 

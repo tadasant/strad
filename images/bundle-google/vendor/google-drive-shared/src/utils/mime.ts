@@ -77,8 +77,12 @@ export function isTextMimeType(mimeType: string): boolean {
 /** Images a model can see, returned as MCP image content. */
 export const IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 
-/** The upload type `create_file` infers from a name's extension when none is given. */
-export function inferMimeType(name: string): string {
+/**
+ * The upload type `create_file` infers from a name's extension when none is
+ * given. An unknown extension is text for `content` and opaque bytes for
+ * `content_base64`, so a binary is never stored, and later read back, as text.
+ */
+export function inferMimeType(name: string, binary = false): string {
   const ext = /\.([A-Za-z0-9]+)$/.exec(name)?.[1]?.toLowerCase();
   switch (ext) {
     case 'md':
@@ -98,14 +102,28 @@ export function inferMimeType(name: string): string {
     case 'jpg':
     case 'jpeg':
       return 'image/jpeg';
-    default:
+    case 'gif':
+      return 'image/gif';
+    case 'webp':
+      return 'image/webp';
+    case 'svg':
+      return 'image/svg+xml';
+    case 'tsv':
+      return 'text/tab-separated-values';
+    case 'txt':
       return 'text/plain';
+    default:
+      return binary ? 'application/octet-stream' : 'text/plain';
   }
 }
 
-/** The Google-native type `create_file` converts an upload into. */
+/**
+ * The Google-native types `create_file` converts an upload into, and the
+ * upload types each one is built from. Drive answers any other pairing with a
+ * bare 400, so it is refused before the call. Slides are absent: Drive builds
+ * a deck only from a .pptx or .odp, which no agent writes.
+ */
 export const CONVERT_TO = {
-  document: GOOGLE_DOC,
-  spreadsheet: GOOGLE_SHEET,
-  presentation: GOOGLE_SLIDES,
+  document: { mimeType: GOOGLE_DOC, from: ['text/plain', 'text/markdown', 'text/html'] },
+  spreadsheet: { mimeType: GOOGLE_SHEET, from: ['text/csv', 'text/tab-separated-values'] },
 } as const;

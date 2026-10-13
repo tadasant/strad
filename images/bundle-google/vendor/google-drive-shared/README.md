@@ -7,8 +7,8 @@ client, or over **Streamable HTTP** on a localhost port.
 
 The server is strad's own. It was written here, not vendored, and has the same
 shape as `../google-sheets-shared`. The standalone entrypoint is
-`../../src/standalone/google-drive.ts`. strad's bundle does not mount this server
-yet. Running it on its own, as below, is the only way to use it today.
+`../../src/standalone/google-drive.ts`. strad's bundle does not mount this server,
+so running it on its own, as below, is the only way to use it.
 
 ## Tools
 
@@ -30,7 +30,8 @@ Five, in two groups:
 - `create_folder` and `create_file` **only create**. Each call makes a new
   file with a new id. No tool here edits, overwrites, moves, shares, trashes or
   deletes a file. `create_file` can convert Markdown or HTML into a Google
-  Doc and CSV into a Google Sheet as it uploads.
+  Doc, and CSV or TSV into a Google Sheet, as it uploads. Any other pairing is
+  refused before the upload.
 
 All five are served unless you set `GOOGLE_DRIVE_ENABLED_TOOLGROUPS`. The server
 refuses to start on a group it does not recognise (`read-only`, say) and exits 2,
@@ -71,7 +72,9 @@ service-account mode.
 - `https://www.googleapis.com/auth/drive.file` — the two create tools, as well.
   It can write only files and folders this OAuth client created. So `create_file`
   and `create_folder` work at the top of My Drive and inside folders made with
-  `create_folder`. A folder someone made by hand in Drive refuses them.
+  `create_folder`. A folder someone made by hand in Drive is expected to refuse
+  them. That has not been checked against a live account (`HACKS.md` #124); a
+  token with the full `drive` scope would not be refused.
 
 For a read-only server, consent `drive.readonly` alone and set
 `GOOGLE_DRIVE_ENABLED_TOOLGROUPS=readonly`. Google then refuses a write even if
@@ -90,8 +93,11 @@ one reached it.
 
 While the OAuth consent screen is in **Testing** mode, Google expires the
 refresh token after 7 days. Every call then fails with `invalid_grant`, and the
-error says to mint a new token. Publish the consent screen to keep a token
-longer.
+error says to mint a new token. Publishing the consent screen keeps a token
+longer, but `drive.readonly` is a **restricted** scope: an unverified published
+app shows Google's "unverified app" warning at consent and is capped at 100
+users. For a Workspace account, an **Internal** consent screen avoids both the
+expiry and the warning.
 
 None of the credentials is needed to start. The server reads them on the first
 tool call, so with nothing set it still boots and answers `tools/list`, and every
@@ -202,6 +208,14 @@ of this server.
   formulas, use the google-sheets server.
 - A search across many shared drives can be partial. Drive says so, and so does
   `search_files`.
+- `name_contains` is Drive's prefix match on the words of a name, not a
+  substring match. `query` matches anywhere, in content too.
+- Each `read_file` page exports or downloads the whole file again, so paging
+  through a large Doc costs one Drive call per page.
+- Stored text is decoded as UTF-8. A file in another encoding, such as a
+  Latin-1 CSV, comes back with replacement characters.
+- A link-shared file that needs a resource key (`resourcekey=` in its URL) is
+  not supported. The key is dropped, and Drive answers 404.
 
 ## Tests
 
@@ -209,9 +223,10 @@ From `images/bundle-google`, `npm test` runs:
 
 - `vendor/google-drive-shared/test/` — the wire (every Drive request's URL,
   query and body, the multipart upload, the download cap, the 429 retry, the
-  403 reasons), the search query and id parsing, each tool against a fake
-  client, and the tiers and tool groups.
+  403 reasons), the OAuth client (one token exchange per burst, the
+  `invalid_grant` hint, a 401 that really refreshes), the search query and id
+  parsing, each tool against a fake client, and the tiers and tool groups.
 - `test/standalone.test.ts` — both transports against the built entrypoint, with
   no credentials set.
 
-Nothing in CI calls Google. No real account has been read or written through this server yet.
+Nothing in CI calls Google, and no real account has been read or written through this server (`HACKS.md` #124).

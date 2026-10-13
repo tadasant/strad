@@ -97,9 +97,10 @@ function recoveryHint(status: number, reason: string | undefined, detail: string
   if (status === 403 && (reason === 'insufficientFilePermissions' || reason === 'appNotAuthorizedToFile')) {
     return (
       'The account can see this file or folder but this credential may not write to it. ' +
-      'Under the drive.file scope a write reaches only files and folders this OAuth app ' +
-      'created, so a folder made by hand in Drive is out of reach: create the folder with ' +
-      'create_folder first, or leave parent_folder_id out to write to My Drive.'
+      'Either the account itself only has view access, or, under the drive.file scope, the ' +
+      'folder was not created by this OAuth app: a write reaches only files and folders the app ' +
+      'created. Create the folder with create_folder first, or leave parent_folder_id out to ' +
+      'write to My Drive.'
     );
   }
 

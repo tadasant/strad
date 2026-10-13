@@ -11,7 +11,10 @@ const PARAM_DESCRIPTIONS = {
   query:
     'Words to find in a file\'s name OR its content (Drive full-text search), e.g. "Q3 board deck" ' +
     'or "invoice 4471". Results come back by relevance, and order_by cannot be combined with it.',
-  name_contains: 'Only files whose NAME contains this text, e.g. "budget". Case-insensitive.',
+  name_contains:
+    'Only files with a word in their NAME that STARTS with this text, e.g. "budget" matches ' +
+    '"2026 budget v2" and "Budgeting", but "World" does not match "HelloWorld". Case-insensitive. ' +
+    'For a match anywhere, use query, which also searches content.',
   type:
     'Only one kind of file. folder | document (Google Doc) | spreadsheet (Google Sheet) | ' +
     'presentation (Google Slides) | pdf | image | video. Cannot be combined with mime_type.',
@@ -66,8 +69,8 @@ and, when there are more, a next_page_token to pass back as page_token.
 - "What changed this week?": modified_after="2026-10-06"
 - "What did people share with me?": shared_with_me=true
 
-Folders are files here (type="folder"); a shortcut is listed with the id of the
-file it points to. Searching is not recursive: folder_id lists direct children.`;
+Folders are files here (type="folder"); a shortcut is listed with its own id and
+the id of the file it points to. Searching is not recursive: folder_id lists direct children.`;
 
 export function searchFilesTool(clientFactory: ClientFactory): Tool {
   return {

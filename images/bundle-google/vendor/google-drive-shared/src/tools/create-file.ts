@@ -14,17 +14,19 @@ export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const PARAM_DESCRIPTIONS = {
   name: 'The new file\'s name, with its extension, e.g. "meeting-notes.md" or "q3.csv".',
   content: 'The file\'s text, UTF-8. Pass this OR content_base64.',
-  content_base64: 'The file\'s bytes, base64-encoded, for a binary file such as a PNG. Pass this OR content.',
+  content_base64:
+    'The file\'s bytes, standard base64 (not base64url), for a binary file such as a PNG. Pass this OR content.',
   mime_type:
     'The type of the content, e.g. "text/markdown" or "image/png". Default: inferred from the name\'s ' +
-    'extension (.md, .csv, .json, .html, .pdf, .png, .jpg), else text/plain.',
+    'extension (.txt, .md, .csv, .tsv, .json, .html, .pdf, .png, .jpg, .gif, .webp, .svg), else ' +
+    'text/plain for content and application/octet-stream for content_base64.',
   parent_folder_id:
     'The folder to create it in: an id or folder URL. Default: the top of My Drive. Under the ' +
     'least-privileged credential this has to be a folder this server created.',
   convert_to:
-    'Convert the upload into a Google-native file on the way in. document: a Google Doc (from ' +
-    'text, Markdown or HTML). spreadsheet: a Google Sheet (from CSV). presentation: Google Slides. ' +
-    'Default: none, the file is stored as uploaded.',
+    'Convert the upload into a Google-native file on the way in. document: a Google Doc, from ' +
+    'text/plain, text/markdown or text/html. spreadsheet: a Google Sheet, from text/csv or ' +
+    'text/tab-separated-values. Default: none, the file is stored as uploaded.',
 } as const;
 
 export const CreateFileSchema = z
@@ -34,7 +36,7 @@ export const CreateFileSchema = z
     content_base64: z.string().optional(),
     mime_type: z.string().min(1).optional(),
     parent_folder_id: z.string().min(1).optional(),
-    convert_to: z.enum(['document', 'spreadsheet', 'presentation']).optional(),
+    convert_to: z.enum(['document', 'spreadsheet']).optional(),
   })
   .refine((v) => (v.content === undefined) !== (v.content_base64 === undefined), {
     message: 'pass exactly one of content or content_base64',
@@ -50,13 +52,13 @@ changes or deletes an existing file.
 
 **Returns** the new file's id and link:
 
-Created "meeting-notes" (Google Doc, converted from text/markdown)
+Created "meeting-notes.md" (Google Doc, converted from text/markdown)
 **ID:** 1Ze4...Rt
 **Link:** https://docs.google.com/document/d/1Ze4...Rt/edit
 
-**convert_to** turns the upload into a Google-native file: Markdown or HTML into a
-formatted Google Doc, CSV into a Google Sheet. Without it the file is stored
-exactly as given.
+**convert_to** turns the upload into a Google-native file: text, Markdown or HTML
+into a formatted Google Doc, CSV or TSV into a Google Sheet. Without it the file
+is stored exactly as given. The name is kept as given, extension included.
 
 **Limits:** ${MAX_UPLOAD_BYTES / (1024 * 1024)}MB decoded. Which parent folders work: with the
 least-privileged credential (scope drive.file) only folders this server created,
@@ -82,7 +84,7 @@ export function createFileTool(clientFactory: ClientFactory): Tool {
         parent_folder_id: { type: 'string', description: PARAM_DESCRIPTIONS.parent_folder_id },
         convert_to: {
           type: 'string',
-          enum: ['document', 'spreadsheet', 'presentation'],
+          enum: ['document', 'spreadsheet'],
           description: PARAM_DESCRIPTIONS.convert_to,
         },
       },
@@ -115,8 +117,18 @@ export function createFileTool(clientFactory: ClientFactory): Tool {
           );
         }
 
-        const mimeType = parsed.mime_type ?? inferMimeType(parsed.name);
-        const convertTo = parsed.convert_to ? CONVERT_TO[parsed.convert_to] : undefined;
+        const mimeType = parsed.mime_type ?? inferMimeType(parsed.name, parsed.content_base64 !== undefined);
+        let convertTo: string | undefined;
+        if (parsed.convert_to) {
+          const target = CONVERT_TO[parsed.convert_to];
+          if (!(target.from as readonly string[]).includes(mimeType)) {
+            throw new Error(
+              `convert_to="${parsed.convert_to}" builds from ${target.from.join(', ')}, not ${mimeType}. ` +
+                'Set mime_type, or name the file with a matching extension.'
+            );
+          }
+          convertTo = target.mimeType;
+        }
         const file = await clientFactory().createFile({
           name: parsed.name,
           mimeType,

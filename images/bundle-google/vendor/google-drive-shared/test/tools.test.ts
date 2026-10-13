@@ -223,6 +223,42 @@ test("create_file decodes base64, and takes exactly one of content and content_b
   assert.equal(drive.creates.length, 1);
 });
 
+test("create_file refuses a conversion Drive cannot make, before calling it", async () => {
+  const drive = new FakeDrive();
+  for (const args of [
+    { name: "notes.md", content: "# Hi", convert_to: "spreadsheet" },
+    { name: "data.csv", content: "a,b", convert_to: "document" },
+    { name: "deck.txt", content: "x", convert_to: "presentation" },
+  ]) {
+    const r = await createFileTool(() => drive).handler(args);
+    assert.equal(r.isError, true, JSON.stringify(args));
+  }
+  const pair = await createFileTool(() => drive).handler({ name: "notes.md", content: "# Hi", convert_to: "spreadsheet" });
+  assert.match(text(pair), /builds from text\/csv, text\/tab-separated-values, not text\/markdown/);
+  assert.equal(drive.creates.length, 0);
+
+  await createFileTool(() => drive).handler({ name: "q3.tsv", content: "a\tb", convert_to: "spreadsheet" });
+  assert.equal(drive.creates[0].convertTo, SHEET);
+});
+
+test("a binary upload with an unknown extension is opaque bytes, never text", async () => {
+  const drive = new FakeDrive();
+  await createFileTool(() => drive).handler({ name: "report.docx", content_base64: "UEsDBA==" });
+  await createFileTool(() => drive).handler({ name: "notes", content: "hi" });
+  assert.deepEqual(
+    drive.creates.map((c) => c.mimeType),
+    ["application/octet-stream", "text/plain"],
+  );
+});
+
+test("read_file never splits a surrogate pair across pages", async () => {
+  const drive = new FakeDrive().add({ id: ID, name: "emoji.txt", mimeType: "text/plain" }, "ab😀cd");
+  const first = text(await readFileTool(() => drive).handler({ file_id: ID, max_chars: 3 }));
+  assert.match(first, /characters 0 to 2 of 6\. More: start_char=2\n\nab$/);
+  const second = text(await readFileTool(() => drive).handler({ file_id: ID, start_char: 2, max_chars: 3 }));
+  assert.match(second, /\n\n😀c$/);
+});
+
 test("create_file refuses content past the upload cap before calling Drive", async () => {
   const drive = new FakeDrive();
   const r = await createFileTool(() => drive).handler({ name: "big.txt", content: "a".repeat(MAX_UPLOAD_BYTES + 1) });

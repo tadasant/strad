@@ -20,8 +20,8 @@ client config and a curl check.
 | `google-calendar` | [`images/bundle-google/vendor/google-calendar-shared/README.md`](https://github.com/tadasant/strad/blob/main/images/bundle-google/vendor/google-calendar-shared/README.md) |
 | `google-drive`    | [`images/bundle-google/vendor/google-drive-shared/README.md`](https://github.com/tadasant/strad/blob/main/images/bundle-google/vendor/google-drive-shared/README.md)       |
 
-google-drive is not mounted by strad at all yet. Running it on its own is the
-only way to use it ([limitation #124](/limitations/#124-google-drive-runs-only-on-its-own-and-has-met-only-fakes)).
+strad does not mount google-drive, so running it on its own is the only way to
+use it ([limitation #124](/limitations/#124-google-drive-runs-only-on-its-own-and-has-met-only-fakes)).
 
 ## What strad adds, and what you give up
 

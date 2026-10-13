@@ -6412,7 +6412,9 @@ Three claims the first live call settles:
    with a 403 `insufficientFilePermissions` or `appNotAuthorizedToFile`, or with
    a 404.
 3. A multipart upload whose metadata names a Google type and whose media is
-   Markdown or CSV converts into a Doc or a Sheet.
+   text, Markdown or HTML converts into a Doc, and CSV or TSV into a Sheet.
+   Other pairings are refused before the call. Slides are not offered, since
+   Drive builds a deck only from a .pptx or .odp.
 
 **Undo.** Mount it in the bundle host, which means a per-slug OAuth mount like
 google-sheets, a `google-drive-*` slug, the console's Connect flow for its

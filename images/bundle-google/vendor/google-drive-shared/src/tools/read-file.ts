@@ -82,7 +82,9 @@ function page(file: DriveFile, how: string, text: string, start: number, max: nu
       isError: true,
     };
   }
-  const end = Math.min(start + max, total);
+  let end = Math.min(start + max, total);
+  // Never split a surrogate pair across two pages.
+  if (end < total && end > start && /[\uD800-\uDBFF]/.test(text[end - 1])) end -= 1;
   let header = `${describeMimeType(file.mimeType)} "${file.name ?? file.id}", ${how}`;
   header +=
     start === 0 && end === total

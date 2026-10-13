@@ -76,12 +76,12 @@ class OAuthGoogleDriveClient implements IGoogleDriveClient {
   constructor(
     clientId: string,
     clientSecret: string,
-    refreshToken: string,
+    private readonly refreshTokenValue: string,
     /** Where a human goes to re-consent. Optional: outside strad there is no such page. */
     private readonly reconnectUrl?: string
   ) {
     this.oauth2Client = new OAuth2Client(clientId, clientSecret);
-    this.oauth2Client.setCredentials({ refresh_token: refreshToken });
+    this.oauth2Client.setCredentials({ refresh_token: refreshTokenValue });
   }
 
   private async refreshToken(): Promise<void> {
@@ -128,8 +128,12 @@ class OAuthGoogleDriveClient implements IGoogleDriveClient {
       return await call(headers);
     } catch (error) {
       if ((error as { category?: string })?.category === 'auth') {
+        // Drop BOTH caches. OAuth2Client keeps its own access token and hands
+        // it back from getAccessToken() until its own expiry, so clearing only
+        // ours would re-cache the rejected token for another hour.
         this.cachedToken = null;
         this.tokenExpiry = 0;
+        this.oauth2Client.setCredentials({ refresh_token: this.refreshTokenValue });
       }
       throw error;
     }
