@@ -53,6 +53,15 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   messages has to keep matching; two tests there hold it to that.
   `test/confirm.test.ts` is its suite. See
   `docs/src/content/docs/servers/confirmations.md`.
+- `src/standalone/` — **one server, without strad.** `serve.ts` runs a
+  single factory over stdio or over Streamable HTTP at `/mcp` on a localhost
+  port (`--transport`, `--port`/`PORT`, `--host`), and each file beside it is
+  one server's entrypoint, built to `dist/standalone/<server>.js`. It reuses
+  the factory this image mounts, so a standalone server is the bundled one.
+  `google-calendar.ts` is the only one so far. Its how-to is
+  `vendor/google-calendar-shared/README.md`, and `test/standalone.test.ts`
+  runs both transports. Adding a server is one more entrypoint, a README in
+  its tree, and a test case.
 - `vendor/` — the upstream `shared/` factories, plus `@pulsemcp/mcp-elicitation`.
   Wired as npm workspaces.
   - `vendor/google-calendar-shared/`, `vendor/google-docs-shared/` — vendored
@@ -67,7 +76,9 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
     `test/gmail-attachments.test.ts` is the main one.
   - The only other edits to vendored code are one dependency line (gmail's
     elicitation dep → the vendored workspace) and a `types` field so the
-    entrypoint typechecks.
+    entrypoint typechecks. `vendor/google-calendar-shared/README.md` is
+    strad's, beside the copied `src/` rather than in it. It is the how-to for
+    running that server without strad.
 - `vendor/mcp-elicitation/src/` — **generated. Do not edit it here.** The same
   library is also in `servers/onepassword/elicitation`, both copies are built
   into one bundle image, and that copy is the source: `npm run elicitation:sync`
