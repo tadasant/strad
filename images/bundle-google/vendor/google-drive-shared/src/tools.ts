@@ -52,7 +52,7 @@ type ToolFactory = (clientFactory: ClientFactory) => Tool;
  */
 export const READ_TOOLS = ['search_files', 'get_file', 'read_file'] as const;
 export const WRITE_TOOLS = ['create_folder', 'create_file'] as const;
-export const ORGANIZE_TOOLS = [
+export const ORGANISE_TOOLS = [
   'update_file_metadata',
   'move_file',
   'copy_file',

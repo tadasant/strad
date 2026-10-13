@@ -3,8 +3,9 @@
 This is strad's Google Drive MCP server. It finds, describes and reads the files
 in one Google account's Drive. It can create new folders and files there, and in
 its `full` tier it renames, moves, copies, trashes and restores files that
-already exist. It never rewrites an existing file's content. You can run it on its own, with no strad gateway: over **stdio**
-for a local MCP client, or over **Streamable HTTP** on a localhost port.
+already exist. It never rewrites an existing file's content. You can run it on
+its own, with no strad gateway: over **stdio** for a local MCP client, or over
+**Streamable HTTP** on a localhost port.
 
 The server is strad's own. It was written here, not vendored, and has the same
 shape as `../google-sheets-shared`. The standalone entrypoint is
@@ -54,8 +55,8 @@ Ten, in three tiers. Each tier holds the one before it:
   it, it gets the same treatment, not a place in `full`.
 - **Editing a file's content.** No tool overwrites an existing file. Drive can
   only replace a file's whole content, and a Google Doc rebuilt that way from
-  Markdown, text or HTML loses its formatting, images, tabs and comments'
-  anchors. Editing a document in place needs the Docs API, which is a Google
+  Markdown, text or HTML loses its formatting, images and tabs, and can
+  orphan comments. Editing a document in place needs the Docs API, which is a Google
   Docs server's job. To produce new content, `create_file` makes a new file.
 
 All ten are served unless you set `GOOGLE_DRIVE_ENABLED_TOOLGROUPS`. The
@@ -272,8 +273,9 @@ From `images/bundle-google`, `npm test` runs:
 
 - `vendor/google-drive-shared/test/` — the wire: every Drive request's URL,
   query and body, the multipart upload, the metadata PATCHes and copy the
-  `full` tools send, the download cap, the 429 retry, and the 403 reasons. The OAuth client: one token exchange per burst, the `invalid_grant`
-  hint, and a 401 that refreshes. Also the search query and id parsing, each
+  `full` tools send, the download cap, the 429 retry, and the 403 reasons. The
+  OAuth client: one token exchange per burst, the `invalid_grant` hint, and a
+  401 that refreshes. Also the search query and id parsing, each
   tool against a fake client (including every refusal the `full` tools make
   before they write), and the tiers and tool groups.
 - `test/standalone.test.ts` — both transports against the built entrypoint, with

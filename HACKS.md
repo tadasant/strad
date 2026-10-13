@@ -6399,10 +6399,10 @@ Drive MCP server, in three tiers. `readonly` is `search_files`, `get_file` and
 `read_file` on `drive.readonly`. `readwrite` adds `create_folder` and
 `create_file` on `drive.file`. `full` adds `update_file_metadata`,
 `move_file`, `copy_file`, `trash_file` and `restore_file` on the full `drive`
-scope. It is built into both the
-bundle-google image and the bundle image, and **neither one mounts it**. No
-environment declares a slug for it, so the only way to run it is the standalone
-entrypoint, `dist/standalone/google-drive.js`, described in that tree's README.
+scope. It is built into both the bundle-google image and the bundle image, and
+**neither one mounts it**. No environment declares a slug for it, so the only
+way to run it is the standalone entrypoint, `dist/standalone/google-drive.js`,
+described in that tree's README.
 Its suite runs against a faked `fetch` and a fake client. No request has reached
 Google.
 

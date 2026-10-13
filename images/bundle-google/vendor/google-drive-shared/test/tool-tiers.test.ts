@@ -14,7 +14,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   READ_TOOLS,
   WRITE_TOOLS,
-  ORGANIZE_TOOLS,
+  ORGANISE_TOOLS,
   toolNames,
   parseToolGroups,
   createMCPServer,
@@ -36,17 +36,17 @@ async function listed(options: Parameters<typeof createMCPServer>[0]) {
 }
 
 test("every registered tool is in exactly one tier", () => {
-  assert.deepEqual(toolNames().sort(), [...READ_TOOLS, ...WRITE_TOOLS, ...ORGANIZE_TOOLS].sort());
+  assert.deepEqual(toolNames().sort(), [...READ_TOOLS, ...WRITE_TOOLS, ...ORGANISE_TOOLS].sort());
 });
 
 test("readwrite only creates: everything that changes an existing file is in full", async () => {
   assert.deepEqual([...WRITE_TOOLS], ["create_folder", "create_file"]);
   const readwrite = (await listed({ version: "0", env: {}, enabledToolGroups: "readwrite" })).map((t) => t.name);
   for (const name of readwrite) assert.doesNotMatch(name, /^(update|replace|delete|trash|restore|move|share|copy|rename)/);
-  for (const name of ORGANIZE_TOOLS) assert.ok(!readwrite.includes(name), name);
+  for (const name of ORGANISE_TOOLS) assert.ok(!readwrite.includes(name), name);
 });
 
-test("no tier deletes permanently, shares, or overwrites a file's content", () => {
+test("no tool name suggests a permanent delete, a share, or a content overwrite", () => {
   for (const name of toolNames()) assert.doesNotMatch(name, /delete|share|permission|empty|replace|content|overwrite|upload/);
 });
 
@@ -66,7 +66,7 @@ test("each tier holds the one before it; unset lists every tool", async () => {
   assert.deepEqual(await names("readonly"), [...READ_TOOLS]);
   assert.equal((await listed({ version: "0", env: { GOOGLE_DRIVE_ENABLED_TOOLGROUPS: "readonly" } })).length, 3);
   assert.deepEqual(await names("readwrite"), [...READ_TOOLS, ...WRITE_TOOLS]);
-  assert.deepEqual(await names("full"), [...READ_TOOLS, ...WRITE_TOOLS, ...ORGANIZE_TOOLS]);
+  assert.deepEqual(await names("full"), [...READ_TOOLS, ...WRITE_TOOLS, ...ORGANISE_TOOLS]);
   assert.equal((await listed({ version: "0", env: {} })).length, 10);
 });
 

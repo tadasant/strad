@@ -90,7 +90,7 @@ function recoveryHint(status: number, reason: string | undefined, detail: string
       'The refresh token was consented for narrower scopes than this call needs. Every read ' +
       'tool needs https://www.googleapis.com/auth/drive.readonly; create_folder and ' +
       'create_file need https://www.googleapis.com/auth/drive.file as well; the full tier\'s ' +
-      'rename, move, copy and trash tools need https://www.googleapis.com/auth/drive. Re-consent the account to mint a ' +
+      'tools need https://www.googleapis.com/auth/drive. Re-consent the account to mint a ' +
       'token with the scopes its tool group needs.'
     );
   }

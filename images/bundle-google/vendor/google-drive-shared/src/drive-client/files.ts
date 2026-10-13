@@ -6,9 +6,9 @@
  * new file id, so neither can overwrite, lose or share a file that already
  * exists. The `full` tier's calls change a file that already exists but never
  * its content: a metadata PATCH (rename, describe, move, trash, restore), and
- * a copy. Nothing here uploads over an existing file. On a file someone else made they need the full
- * `drive` scope; under `drive.file` they reach only files this OAuth app
- * created. There is no delete and no permission call: a trashed file stays
+ * a copy. Nothing here uploads over an existing file. On a file someone else
+ * made they need the full `drive` scope; under `drive.file` they reach only
+ * files this OAuth app created. There is no delete and no permission call: a trashed file stays
  * recoverable for 30 days, and nothing here can share a file.
  *
  * `supportsAllDrives` on every call that takes it: without it a file in a shared

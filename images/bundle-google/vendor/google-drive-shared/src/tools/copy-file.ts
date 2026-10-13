@@ -35,7 +35,6 @@ Copied "Proposal template" to "Acme proposal" (Google Doc)
 
 **Use cases:**
 - Start a document from a template, under its own name and folder
-- Keep a snapshot of a file before overwriting it
 - Duplicate a spreadsheet into another project's folder`;
 
 export function copyFileTool(clientFactory: ClientFactory): Tool {

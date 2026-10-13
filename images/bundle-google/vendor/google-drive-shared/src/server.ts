@@ -23,8 +23,9 @@ import type {
  * a human made.
  *
  * The `full` tier renames, moves, copies, trashes and restores files that
- * already exist, and a file a human made is reachable only with `drive`. Under `drive.file` its tools still work, on the
- * files this app created and on nothing else.
+ * already exist, and a file a human made is reachable only with `drive`. Under
+ * `drive.file` its tools still work, on the files this app created and on
+ * nothing else.
  */
 export const GOOGLE_DRIVE_SCOPES = {
   /** Every read tool: search_files, get_file, read_file. */
@@ -221,7 +222,7 @@ export function createDefaultClient(env: EnvLike = process.env): IGoogleDriveCli
       `This google-drive server has no credential: ${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not set. ` +
         'It needs an OAuth client id, client secret and refresh token for exactly one Google account, ' +
         `consented for ${GOOGLE_DRIVE_SCOPES.readonly} (and ${GOOGLE_DRIVE_SCOPES.file} for the create tools, ` +
-        `or ${GOOGLE_DRIVE_SCOPES.full} for the full tier's rename, move, copy and trash tools).`
+        `or ${GOOGLE_DRIVE_SCOPES.full} for the full tier's tools).`
     );
   }
   const clientId = env.GOOGLE_DRIVE_OAUTH_CLIENT_ID!;

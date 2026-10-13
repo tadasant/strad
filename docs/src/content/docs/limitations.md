@@ -3884,7 +3884,7 @@ port, with one Google account's OAuth refresh token.
   and a Google Doc rebuilt from Markdown that way loses its formatting. Editing
   a document belongs to a Google Docs server.
 - **No tool group set means every tool, the `full` tier included.** A setup that
-  set no group before the `full` tier existed now lists them. Set
+  set no group before the `full` tier existed now lists its five tools. Set
   `GOOGLE_DRIVE_ENABLED_TOOLGROUPS` to match the token.
 - **No permanent delete and no sharing.** `trash_file` is recoverable for 30
   days.
