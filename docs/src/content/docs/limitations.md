@@ -3923,6 +3923,14 @@ personal `@gmail.com` calendar. The setup is in
   their opening words. If upstream rewords them, the OAuth mode shows the
   service-account advice, and a token Google rejected early is reused until it
   expires.
+- **The refresh token is yours to mint and replace.** gmail and google-docs
+  get theirs from the console's Connect Google button. Calendar has no such
+  flow, so you run the consent yourself and set the token as a secret, and
+  again whenever Google revokes it. A consent screen still in Testing mode
+  revokes it every 7 days.
+- **A mistyped mode boots inside strad.** The standalone server refuses to
+  start on one. In a bundle the server starts, and every call fails naming the
+  variable.
 - **No request has reached Google in OAuth mode.** The tests fake the token
   exchange and the Calendar API.
 

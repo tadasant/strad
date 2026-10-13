@@ -127,12 +127,33 @@ test("oauth mode resolves the account's address from its primary calendar, once"
   expect(requests.filter((r) => r.url.endsWith("/calendars/primary"))).toHaveLength(1);
 });
 
-test("a failed address lookup is the bare link, and is retried next time", async () => {
-  stubToken("tok-A");
-  const client = createDefaultClient(oauthEnv());
-  statuses.push(500);
-  expect(await client.getAccountEmail()).toBe("");
-  expect(await client.getAccountEmail()).toBe("me@gmail.com");
+test("a failed address lookup is the bare link, and is retried after five minutes, not on every call", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    stubToken("tok-A");
+    const client = createDefaultClient(oauthEnv());
+    const lookups = () => requests.filter((r) => r.url.endsWith("/calendars/primary")).length;
+    statuses.push(403);
+    expect(await client.getAccountEmail()).toBe("");
+    expect(await client.getAccountEmail()).toBe("");
+    expect(lookups()).toBe(1);
+    vi.advanceTimersByTime(5 * 60 * 1000);
+    expect(await client.getAccountEmail()).toBe("me@gmail.com");
+    expect(lookups()).toBe(2);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a token the library served from its own cache keeps that token's expiry", async () => {
+  const expiry = Date.now() + 120_000;
+  vi.spyOn(OAuth2Client.prototype, "getAccessToken").mockImplementation(async function (this: OAuth2Client) {
+    this.credentials = { ...this.credentials, access_token: "tok-cached", expiry_date: expiry };
+    return { token: "tok-cached", res: null } as never;
+  });
+  const client = createDefaultClient(oauthEnv()) as unknown as { tokenExpiry: number; listCalendars(): Promise<unknown> };
+  await client.listCalendars();
+  expect(client.tokenExpiry).toBe(expiry);
 });
 
 test("a 401 is worded for a refresh token, and drops both token caches", async () => {
@@ -154,7 +175,7 @@ test("a 403 names the scope rather than the Workspace admin console", async () =
   stubToken("tok-A");
   statuses.push(403);
   await expect(createDefaultClient(oauthEnv()).listCalendars()).rejects.toThrow(
-    /Permission denied \(HTTP 403\).*https:\/\/www\.googleapis\.com\/auth\/calendar/,
+    /Permission denied \(HTTP 403\).*https:\/\/www\.googleapis\.com\/auth\/calendar.*rate or usage limit/,
   );
 });
 

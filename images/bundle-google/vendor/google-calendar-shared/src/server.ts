@@ -1,4 +1,5 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { createHash } from 'node:crypto';
 import { JWT, OAuth2Client } from 'google-auth-library';
 import { createRegisterTools, parseEnabledToolGroups, type ToolGroup } from './tools.js';
 import type {
@@ -286,6 +287,9 @@ export const GOOGLE_CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar';
 
 export type EnvLike = Readonly<Record<string, string | undefined>>;
 
+/** How long a failed account-address lookup is remembered before it is tried again. */
+const ACCOUNT_EMAIL_RETRY_MS = 5 * 60 * 1000;
+
 /** How `calendar-client/lib/api-errors.ts` opens a 401 and a 403. */
 const SERVICE_ACCOUNT_401 = 'Service account authentication failed';
 const SERVICE_ACCOUNT_403 = 'Permission denied. Ensure calendar scope';
@@ -332,6 +336,7 @@ export class OAuthCalendarClient implements ICalendarClient {
   private tokenExpiry = 0;
   private refreshPromise: Promise<void> | null = null;
   private accountEmail: Promise<string> | null = null;
+  private accountEmailFailedAt = 0;
 
   constructor(
     clientId: string,
@@ -360,7 +365,9 @@ export class OAuthCalendarClient implements ICalendarClient {
       throw error;
     }
     if (!token) throw new Error('Failed to obtain an access token from the OAuth refresh token');
-    const expiry = res?.data?.expiry_date;
+    // `res` is absent when OAuth2Client answered from its own cache; its
+    // credentials then still carry that token's real expiry.
+    const expiry = res?.data?.expiry_date ?? this.oauth2Client.credentials.expiry_date;
     this.cachedToken = token;
     this.tokenExpiry = typeof expiry === 'number' ? expiry : Date.now() + 3600000;
   }
@@ -402,8 +409,9 @@ export class OAuthCalendarClient implements ICalendarClient {
       }
       if (message.startsWith(SERVICE_ACCOUNT_403)) {
         throw new Error(
-          'Permission denied (HTTP 403). Either the account this refresh token belongs to cannot ' +
-            `do this to that calendar, or the token was not consented for ${GOOGLE_CALENDAR_SCOPE}.`
+          'Permission denied (HTTP 403). The account this refresh token belongs to cannot do ' +
+            `this to that calendar, the token was not consented for ${GOOGLE_CALENDAR_SCOPE}, ` +
+            'or a Calendar API rate or usage limit was hit.'
         );
       }
       throw error;
@@ -476,9 +484,11 @@ export class OAuthCalendarClient implements ICalendarClient {
    * A service account is told which user it acts as; a refresh token is not.
    * The primary calendar's id IS the account's address, and `calendar` covers
    * reading it. Resolved once per client. A failure is "" (the bare `?eid=`
-   * link), and is not cached, so a transient one is retried on the next call.
+   * link) and is retried after five minutes, so a lasting one (an org policy
+   * 403) costs one extra request per five minutes, not one per tool call.
    */
   async getAccountEmail(): Promise<string> {
+    if (!this.accountEmail && Date.now() - this.accountEmailFailedAt < ACCOUNT_EMAIL_RETRY_MS) return '';
     this.accountEmail ??= this.withAuth(async (headers) => {
       const response = await fetch(`${this.baseUrl}/calendars/primary`, { headers });
       if (!response.ok) throw new Error(`calendars/primary: ${response.status}`);
@@ -486,6 +496,7 @@ export class OAuthCalendarClient implements ICalendarClient {
       return typeof body.id === 'string' && body.id.includes('@') ? body.id : '';
     }).catch(() => {
       this.accountEmail = null;
+      this.accountEmailFailedAt = Date.now();
       return '';
     });
     return this.accountEmail;
@@ -518,7 +529,8 @@ export function createDefaultClient(env: EnvLike = process.env): ICalendarClient
     const clientId = env.GOOGLE_CALENDAR_OAUTH_CLIENT_ID!;
     const clientSecret = env.GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET!;
     const refreshToken = env.GOOGLE_CALENDAR_OAUTH_REFRESH_TOKEN!;
-    const key = `${clientId}\u0000${clientSecret}\u0000${refreshToken}`;
+    // Hashed, so the map holds no credential a heap dump or a debug print could show.
+    const key = createHash('sha256').update(`${clientId}\u0000${clientSecret}\u0000${refreshToken}`).digest('hex');
     let client = oauthClients.get(key);
     if (!client) {
       client = new OAuthCalendarClient(clientId, clientSecret, refreshToken);

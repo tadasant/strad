@@ -61,7 +61,9 @@ The mode is named, never guessed from which variables are set. With no
 `GOOGLE_CALENDAR_AUTH_MODE`, the server uses the service account even if OAuth
 variables are present. In `oauth` mode a missing variable is an error that names
 it. The server never falls back to a service account. Any other value, such as
-`oauth2`, stops the standalone entrypoint at startup with exit code 2.
+`oauth2`, stops the standalone entrypoint at startup with exit code 2. Inside a
+strad bundle the server still boots on one, and every tool call fails naming
+the variable.
 
 Either way the token is for `https://www.googleapis.com/auth/calendar`, which the
 write tools need. In `oauth` mode, a read-only server can get by with
@@ -247,6 +249,6 @@ the built entrypoint, with no credentials set. It checks the handshake,
 `tools/list`, the port flag and env var, the tool-group toggle, the `Host`
 check, and that a tool call fails on missing credentials instead of crashing the
 server, in both auth modes. `test/calendar-auth-mode.test.ts` covers the mode
-switch and the OAuth client: one token exchange per burst, a 401 that really
-refreshes, the `invalid_grant` hint, and the path the bundle mounts. Nothing in
+switch and the OAuth client: one token exchange per burst, a 401 that drops
+both token caches, the `invalid_grant` hint, and the path the bundle mounts. Nothing in
 CI calls Google. `npm test` from `images/bundle-google` runs it.

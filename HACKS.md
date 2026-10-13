@@ -6451,10 +6451,10 @@ reach a personal `@gmail.com` calendar. strad adds a second mode to its copy.
 `GOOGLE_CALENDAR_AUTH_MODE=oauth` signs in as one account with
 `GOOGLE_CALENDAR_OAUTH_CLIENT_ID`, `_CLIENT_SECRET` and `_REFRESH_TOKEN`.
 Unset, or `service_account`, keeps the service account, so no existing
-deployment changes. The tree is a PATCHED VENDOR now, and its README's delta
-table lists the change.
+deployment changes. The tree is a PATCHED VENDOR, and its README's delta table
+lists the change.
 
-Three things about it are not obvious:
+Five things about it are not obvious:
 
 1. **The mode is named, not inferred.** gmail and google-docs pick OAuth when
    its three variables are complete and fall back to a service account
@@ -6473,14 +6473,29 @@ Three things about it are not obvious:
    expires.
 3. **The account's address comes from its primary calendar.** A service
    account is told which user it acts as. A refresh token is not, so the OAuth
-   client reads `calendars/primary` once for the `&authuser=` on event links.
+   client reads `calendars/primary` once for the `&authuser=` on event links. A
+   failed read means links without `authuser`, retried after five minutes.
+4. **An unknown mode is a boot failure only standalone.** The standalone
+   entrypoint exits 2 on one. Inside a strad bundle the server still boots and
+   lists its tools, and every call fails naming `GOOGLE_CALENDAR_AUTH_MODE`.
+   Neither bundle host checks the variable at boot.
+5. **The refresh token is minted and rotated by hand.** gmail and google-docs
+   OAuth mounts get theirs from the console's Connect Google flow
+   (`src/connectors/`). Calendar has no connector, so an `oauth` deployment's
+   token comes from a consent flow run outside strad (the tree's README uses
+   the OAuth Playground), and is replaced by hand when it dies. A consent
+   screen in Testing mode kills it every 7 days. That is a routine step outside
+   any deploy, which the operability rule in `AGENTS.md` names a defect, and it
+   is why no deployment sets the mode yet.
 
 Both hosts, this image's `src/index.ts` and the collapsed bundle's host, mount
 the server with no client factory, so they read the mode from `process.env`
 with no change of their own. No deployment sets the mode yet, and no request in
 either mode has reached Google from CI.
 
-**Undo.** If upstream gains an OAuth mode, re-vendor and drop the delta, then
-map `GOOGLE_CALENDAR_AUTH_MODE` onto whatever upstream reads. Until then, a
+**Undo.** Point 5 is undone by giving calendar a connector, the way gmail and
+google-docs have one: a per-slug OAuth mount the console's Connect flow seeds.
+If upstream gains an OAuth mode, re-vendor and drop the delta, then map
+`GOOGLE_CALENDAR_AUTH_MODE` onto whatever upstream reads. Until then, a
 re-vendor has to re-apply the row in the tree's README, and
 `images/bundle-google/test/calendar-auth-mode.test.ts` fails if it does not.

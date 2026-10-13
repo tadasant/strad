@@ -329,14 +329,18 @@ async function buildMounts(): Promise<Mount[]> {
   mounts.push(await loadNutritionFacts());
 
   // --- bundle-google: gmail / calendar / docs / sheets ------------------------
-  // calendar builds per request — its factory is cheap and holds no client.
-  // gmail, google-docs and google-sheets cache their CLIENT per credential,
+  // calendar builds its server per request. Its service-account client is built
+  // per call; its `GOOGLE_CALENDAR_AUTH_MODE=oauth` client is cached per
+  // credential inside the tree, which reads `process.env`, so this host passes
+  // nothing for either mode. gmail, google-docs and google-sheets cache their
+  // CLIENT per credential,
   // because a client built per request would re-authenticate to Google on every
   // tool call.
   const google = await loadGoogleTree();
 
   // gmail is the SECOND server in this tree whose credential can be per slug,
-  // and the only one with two auth modes. The conventional `/gmail` keeps
+  // and one of three with two auth modes (google-docs and calendar are the
+  // others; only calendar's mode is named rather than inferred). The conventional `/gmail` keeps
   // serving the service-account credential the `gmail-ro` / `gmail-rw` /
   // `gmail-rw-external` slugs are entitled to; each slug the environment carries
   // an OAuth CLIENT for gets its own mount, holding one person's mailbox.
