@@ -19,8 +19,7 @@ client config and a curl check.
 | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | `google-calendar` | [`images/bundle-google/vendor/google-calendar-shared/README.md`](https://github.com/tadasant/strad/blob/main/images/bundle-google/vendor/google-calendar-shared/README.md) |
 
-Only Google Calendar has one so far. The rest of the open-source servers are
-meant to follow.
+Google Calendar is the only server with one.
 
 ## What strad adds, and what you give up
 
@@ -34,7 +33,9 @@ you lose is everything strad does in front of it:
 - **No per-tool policy, no confirmations, no telemetry.** A `tools: allow` list,
   a `confirmations: true` gate and strad's metrics all live in the gateway. The
   server's own tool-group variable (for google-calendar,
-  `GOOGLE_CALENDAR_ENABLED_TOOLGROUPS=readonly`) is the one narrowing left.
+  `GOOGLE_CALENDAR_ENABLED_TOOLGROUPS=readonly`) is the one narrowing left. The
+  standalone entrypoint refuses a group it does not recognise, so a typo cannot
+  quietly mean "every tool".
 - **One credential per process.** strad can mount one server once per account.
   On its own, a server is one process with one set of environment variables.
 
@@ -43,6 +44,7 @@ you lose is everything strad does in front of it:
 The pattern lives in `images/bundle-google/src/standalone/`. `serve.ts` takes a
 server factory and runs it over stdio or Streamable HTTP. Its flags are
 `--transport stdio|http`, `--port` (else `PORT`, else 3000) and `--host`.
+`validateEnv` lets an entrypoint refuse a setting the server would misread.
 A server's entrypoint is a few lines beside it that hand over the factory the
 bundle already mounts. The README goes in the server's own tree, and a case in
 `test/standalone.test.ts` boots both transports with no credentials and lists

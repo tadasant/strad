@@ -58,7 +58,7 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   port (`--transport`, `--port`/`PORT`, `--host`), and each file beside it is
   one server's entrypoint, built to `dist/standalone/<server>.js`. It reuses
   the factory this image mounts, so a standalone server is the bundled one.
-  `google-calendar.ts` is the only one so far. Its how-to is
+  `google-calendar.ts` is the only one. Its how-to is
   `vendor/google-calendar-shared/README.md`, and `test/standalone.test.ts`
   runs both transports. Adding a server is one more entrypoint, a README in
   its tree, and a test case.

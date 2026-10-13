@@ -171,6 +171,42 @@ describe("google-calendar standalone", () => {
     }
   });
 
+  it("refuses to start on a tool group it does not know, rather than serving every tool", async () => {
+    const child = spawn(process.execPath, [CALENDAR], {
+      env: cleanEnv({ GOOGLE_CALENDAR_ENABLED_TOOLGROUPS: "read-only" }),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    children.push(child);
+    let stderr = "";
+    child.stderr!.on("data", (d) => (stderr += d));
+    const [code] = await once(child, "exit");
+    expect(code).toBe(2);
+    expect(stderr).toContain('unknown tool group(s) "read-only"');
+  });
+
+  it("answers GET and DELETE with 405, and a malformed body with a JSON-RPC parse error", async () => {
+    const { url } = await startHttp([]);
+    expect((await fetch(url)).status).toBe(405);
+    expect((await fetch(url, { method: "DELETE" })).status).toBe(405);
+    const bad = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: "{not json",
+    });
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toMatchObject({ jsonrpc: "2.0", error: { code: -32700 } });
+  });
+
+  it("exits 0 and prints usage to stdout on --help", async () => {
+    const child = spawn(process.execPath, [CALENDAR, "--help"], { env: cleanEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    children.push(child);
+    let stdout = "";
+    child.stdout!.on("data", (d) => (stdout += d));
+    const [code] = await once(child, "exit");
+    expect(code).toBe(0);
+    expect(stdout).toContain("--transport");
+  });
+
   it("exits 2 with usage on an unknown flag", async () => {
     const child = spawn(process.execPath, [CALENDAR, "--prot", "1"], { env: cleanEnv(), stdio: ["ignore", "pipe", "pipe"] });
     children.push(child);
@@ -183,8 +219,9 @@ describe("google-calendar standalone", () => {
 });
 
 describe("parseOptions", () => {
-  it("defaults to stdio on 127.0.0.1:3000", () => {
-    expect(parseOptions([], {})).toEqual({ transport: "stdio", port: 3000, host: "127.0.0.1" });
+  it("defaults to stdio, and HTTP to 127.0.0.1:3000", () => {
+    expect(parseOptions([], {})).toEqual({ transport: "stdio", port: 0, host: "127.0.0.1" });
+    expect(parseOptions(["--transport", "http"], {})).toEqual({ transport: "http", port: 3000, host: "127.0.0.1" });
   });
 
   it("takes the port from --port over PORT", () => {
@@ -194,7 +231,12 @@ describe("parseOptions", () => {
 
   it("rejects a bad transport and a bad port", () => {
     expect(() => parseOptions(["--transport", "sse"], {})).toThrow(/stdio or http/);
-    expect(() => parseOptions(["--port", "http"], {})).toThrow(/integer/);
-    expect(() => parseOptions(["--port", "70000"], {})).toThrow(/integer/);
+    for (const port of ["http", "70000", "", "0x10", "1e3", "-1"]) {
+      expect(() => parseOptions(["--transport", "http", `--port=${port}`], {})).toThrow(/integer/);
+    }
+  });
+
+  it("ignores the port entirely in stdio mode", () => {
+    expect(parseOptions([], { PORT: "not-a-port" }).transport).toBe("stdio");
   });
 });

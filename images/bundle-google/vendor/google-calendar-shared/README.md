@@ -20,7 +20,10 @@ Seven, in two groups:
 | `readonly`  | `list_calendar_events`, `get_calendar_event`, `list_calendars`, `query_calendar_freebusy` |
 | `readwrite` | the four above, plus `create_calendar_event`, `update_calendar_event`, `delete_calendar_event` |
 
-All seven are served unless you set `GOOGLE_CALENDAR_ENABLED_TOOLGROUPS`.
+All seven are served unless you set `GOOGLE_CALENDAR_ENABLED_TOOLGROUPS`. The
+standalone entrypoint refuses to start on a group it does not recognise
+(`read-only`, say) and exits 2. The server on its own would read that as "all
+groups" and serve the write tools.
 
 ## Build
 
@@ -75,7 +78,8 @@ Start it with `node` directly, not through `npm run`. npm prints a banner to
 stdout, and in stdio mode stdout carries only protocol messages. The server logs
 to stderr.
 
-An MCP client launches the process itself. For Claude Desktop
+An MCP client launches the process itself. Run with `--help`, it prints the
+flags. For Claude Desktop
 (`claude_desktop_config.json`), or any client that reads the same `mcpServers`
 shape:
 
@@ -105,6 +109,9 @@ claude mcp add google-calendar \
   -- node /absolute/path/to/strad/images/bundle-google/dist/standalone/google-calendar.js
 ```
 
+This adds the server to the current project only. Add `-s user` to make it
+available in every project.
+
 ## Run it as an HTTP service on localhost
 
 ```bash
@@ -122,8 +129,10 @@ The MCP endpoint is `/mcp` (Streamable HTTP). `GET /healthz` returns
 `{"ok":true,"server":"google-calendar"}` and never contacts Google. The
 credentials are the same environment variables as in stdio mode.
 
-The server is stateless. It builds a fresh server for every request and issues
-no session id, so any number of clients can share it.
+The server is stateless. It builds a fresh server for every POST and issues no
+session id, so any number of clients can share it. With no session to resume
+or end, `GET /mcp` and `DELETE /mcp` answer `405`. Request bodies are limited to
+8 MB, the same limit strad's bundle uses.
 
 To check it, list the tools with curl:
 
@@ -133,6 +142,9 @@ curl -s http://127.0.0.1:3100/mcp \
   -H 'accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
+
+The reply is a server-sent event. The JSON is on the `data:` line, after
+`event: message`.
 
 or open it in the MCP Inspector, with transport **Streamable HTTP** and URL
 `http://127.0.0.1:3100/mcp`:
@@ -150,8 +162,8 @@ claude mcp add --transport http google-calendar http://127.0.0.1:3100/mcp
 **The HTTP endpoint has no authentication.** Anyone who can reach the port can
 act as `GCAL_IMPERSONATE_EMAIL`. On the default loopback host it refuses any
 request whose `Host` header is not loopback, so a web page in your browser cannot
-reach it through DNS rebinding. `--host 0.0.0.0` turns that check off and exposes
-the server to your network. Do that only behind something that authenticates.
+reach it through DNS rebinding. Any other `--host`, such as `0.0.0.0` or a LAN
+address, turns that check off and exposes the server to your network. Do that only behind something that authenticates.
 Authenticating callers is what strad adds in front of this server.
 
 ## Tests
