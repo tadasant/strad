@@ -407,6 +407,37 @@ describe("assertCreatable", () => {
     ).not.toThrow();
   });
 
+  it("refuses an SSH instance: who may reach a shell is the checked-in config's call", () => {
+    expect(() =>
+      assertCreatable(
+        {
+          slug: "ssh-box",
+          kind: "supplementary-image",
+          image: "ghcr.io/example/bundle:latest",
+          bundle: "bundle",
+          path: "/_instance/ssh/ssh-box",
+          params: true,
+          entitlements: ["admin"],
+        },
+        ctx,
+      ),
+    ).toThrow(/An SSH host cannot be added at runtime/);
+    // Every other instance tree is still runtime-creatable.
+    expect(() =>
+      assertCreatable(
+        {
+          slug: "tg-box",
+          kind: "supplementary-image",
+          image: "ghcr.io/example/bundle:latest",
+          bundle: "bundle",
+          path: "/_instance/telegram/tg-box",
+          params: true,
+        },
+        ctx,
+      ),
+    ).not.toThrow(/SSH/);
+  });
+
   it("refuses a builtin, because its module has to be in the image", () => {
     expect(() =>
       assertCreatable({ slug: "d", kind: "builtin", module: "./x.js" }, ctx),

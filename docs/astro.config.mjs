@@ -110,6 +110,7 @@ export default defineConfig({
             { label: "WhatsApp", slug: "servers/whatsapp" },
             { label: "BILL Spend & Expense", slug: "servers/bill-spend" },
             { label: "LiveOak Bank", slug: "servers/liveoak" },
+            { label: "SSH", slug: "servers/ssh" },
             { label: "Airtable", slug: "servers/airtable" },
             { label: "FlightAware AeroAPI", slug: "servers/flightaware" },
             { label: "DigitalOcean", slug: "servers/digitalocean" },

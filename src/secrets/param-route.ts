@@ -780,7 +780,7 @@ export function createStoreRefreshClient(
  * ## Which trees
  *
  * The ones that already take an injected environment and already run one
- * instance per slug: telegram, google-sheets and grafana. A tree that reads
+ * instance per slug: telegram, google-sheets, grafana and ssh. A tree that reads
  * `process.env` once at start-up cannot be given a second credential inside one
  * process, and is not on this list.
  */
@@ -789,7 +789,12 @@ export function createStoreRefreshClient(
 export const INSTANCE_PATH_PREFIX = "/_instance";
 
 /** The trees the bundle host can build an instance of. */
-export const INSTANCE_TREES = ["google-sheets", "grafana", "telegram"] as const;
+export const INSTANCE_TREES = [
+  "google-sheets",
+  "grafana",
+  "ssh",
+  "telegram",
+] as const;
 
 export type InstanceTree = (typeof INSTANCE_TREES)[number];
 

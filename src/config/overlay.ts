@@ -538,6 +538,23 @@ export function assertCreatable(
     );
   }
 
+  // EXCEPT AN SSH HOST. An ssh instance is a shell on a machine — on two of
+  // them, root on production — and the decision about who may reach one is the
+  // whole of its safety. A slug the overlay creates is one whose entitlements a
+  // later runtime write may move (only checked-in slugs are frozen), and a
+  // namespace outlives its entry, so a re-created slug would be served a root
+  // key a human seeded for a different, narrower one. So an SSH slug comes from
+  // the checked-in config, through a reviewed deploy, or not at all.
+  if (parseInstancePath(String(entry.path ?? ""))?.tree === "ssh") {
+    throw new NotRuntimeCreatable(
+      `An SSH host cannot be added at runtime. It is break-glass shell access, ` +
+        `and who may reach it is decided in the checked-in config, where a ` +
+        `runtime write can never change it: add the slug there, entitled to ` +
+        `the roles that should hold it, and deploy. Its credentials are still ` +
+        `seeded in the store, under the slug's own namespace.`,
+    );
+  }
+
   // A STORE-SERVED INSTANCE is the one supplementary shape that brings its own
   // credential without a deploy: its path names a tree and its own slug, and
   // the bundle host reads that slug's namespace through core when it asks. So
@@ -1032,7 +1049,7 @@ export function assertWithinReach(
   // override; (2) its OWN slug's namespace, which core serves only to the
   // component the slug is on, identified by that component's own internal
   // token (`src/http/instances.ts`, HACKS.md #63); and (3) fixed tree code —
-  // telegram, google-sheets or grafana — never the author's. None of the three
+  // telegram, google-sheets, grafana or ssh — never the author's. None of the four
   // is a credential of any existing mount, so the choice of component decides
   // only which container runs it. Who may CALL it is the entitlement bound
   // above, unchanged.

@@ -1426,7 +1426,7 @@ credential on its container. The bundle host:
    answered from core's current config, which a roster write rebuilds;
 2. reads each one's own namespace — `GET /_strad/instances/{slug}`, both kinds
    layered, `oauth/` ahead of `static/`, usable values only;
-3. builds a `telegram`, `google-sheets` or `grafana` instance from exactly those
+3. builds a `telegram`, `google-sheets`, `grafana` or `ssh` instance from exactly those
    values plus `PATH`, `HOME` and the CA settings — and **no** bare name from the
    container, so a half-seeded instance degrades rather than completing itself
    from a sibling's credential.

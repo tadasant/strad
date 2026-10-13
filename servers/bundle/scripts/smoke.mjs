@@ -15,7 +15,7 @@
  * credential-dependent. CI has no credential, the probe fails closed, and the
  * count is the read-only 4 below.
  *
- * What it is really checking is that thirty-one servers, twenty-two dependency trees and
+ * What it is really checking is that thirty-two servers, twenty-three dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  *
@@ -112,6 +112,12 @@ const EXPECT = {
   // enrolment. There is no write tool to count — the API client sends GET and
   // nothing else — so five is also the claim that none has crept in.
   liveoak: 5,
+  // The SSH server's six: the npm ssh-agent-mcp-server's five names, plus
+  // ssh_check_connection, the retry an agent calls after bringing a host back up.
+  // Every SSH slug is a store-served instance of this tree at
+  // `/_instance/ssh/{slug}`; this conventional mount is the credential-free one,
+  // degraded, listing the same surface.
+  ssh: 6,
   // Airtable: the npx package's sixteen tools by name, seven of them reads.
   airtable: 16,
   // AeroAPI v4, eight reads. Every call is billed, and there is no write to
@@ -285,7 +291,7 @@ if (unchecked.length || absent.length) {
 
 // Two trees registering the SAME slug is the collision a twelve-tree single process
 // invites, and it collapses to one route — the set above cannot see it, because a
-// Set of 31 mounts' slugs is 30 entries wide and matches EXPECT exactly.
+// Set of 32 mounts' slugs is 30 entries wide and matches EXPECT exactly.
 if (health.servers.length !== mounted.size) {
   failed += 1;
   console.log(

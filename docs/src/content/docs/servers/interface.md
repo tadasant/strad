@@ -423,7 +423,7 @@ A server **served by a container image**. strad deploys the image as an
 internal-only component and proxies to it over the private network.
 
 One bundle runs one image, but that image may host **many** servers — each on its
-own `path`. strad's own bundle image mounts thirty-one MCP servers in one process,
+own `path`. strad's own bundle image mounts thirty-two MCP servers in one process,
 and staging's slugs land on twenty `path`s of one container.
 
 Two servers may also share a `path` in one bundle — that is the capability-variant
@@ -445,9 +445,11 @@ its component's internal token. [Flow-through](/servers/flow-through/) has the
 rules.
 
 **A store-served instance** is the third shape, and the one a runtime write can
-create. Its `path:` is `/_instance/{tree}/{its own slug}`, where `{tree}` is one
-of `telegram`, `google-sheets` or `grafana` — the trees the bundle host can build
-a second copy of from an injected environment. Nothing about it is rendered onto
+create (all but an `ssh` one, which only the checked-in config may declare —
+see [SSH](/servers/ssh/#who-may-reach-one)). Its `path:` is
+`/_instance/{tree}/{its own slug}`, where `{tree}` is one of `telegram`,
+`google-sheets`, `grafana` or `ssh` — the trees the bundle host can build a
+second copy of from an injected environment. Nothing about it is rendered onto
 the container. The bundle host asks core which instances it should run, reads
 each one's own `/strad/{env}/mcp/{slug}/` namespace through core, and builds the
 instance from exactly those values, with no fallback to the container's
@@ -900,7 +902,7 @@ strad validates the whole config strictly at boot (a Zod `superRefine` in
 
 Note what is deliberately **not** an error: many servers in one bundle, and two
 servers on the same `path` of one bundle. Both are load-bearing — the first is how
-thirty-one MCP servers fit in one container, the second is how a read-only and a
+thirty-two MCP servers fit in one container, the second is how a read-only and a
 read-write variant share it.
 
 Nor is repeating one env key across servers with the **same value**. That is the

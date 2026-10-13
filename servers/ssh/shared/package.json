@@ -1,0 +1,23 @@
+{
+  "name": "ssh-shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SSH command execution and SFTP against ONE host, authenticated by a private key from the environment it is handed, against a pinned host key and nothing else.",
+  "main": "build/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "ssh2": "^1.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.6",
+    "@types/ssh2": "^1.15.5",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.9"
+  },
+  "license": "MIT"
+}

@@ -18,9 +18,11 @@
 # Thirty-nine of the forty-one land on twenty-seven upstream mounts inside the
 # one bundle image, because capability variants share a mount; the other two
 # (`zimmer-secrets` and `whatsapp-zimmer`) each run that same image on a
-# bundle of their own. The image serves thirty-one mounts: `/x-twitter`,
-# `/google-sheets`, `/grafana` and `/aws-device-farm` are in it with no
-# staging slug pointing at any of them —
+# bundle of their own. The image serves thirty-two mounts: `/x-twitter`,
+# `/google-sheets`, `/grafana`, `/aws-device-farm` and `/ssh` are in it with no
+# staging slug pointing at any of them — every SSH host is a store-served
+# instance at `/_instance/ssh/{slug}` rather than the conventional `/ssh`, and
+# none is configured here because the hosts it exists for are production's;
 # `grafana-registry` is served by a per-slug instance at `/grafana-registry`, not
 # by the conventional mount, and `/aws-device-farm` has no slug in ANY
 # environment yet because its AWS credential has not been minted. The block to
@@ -181,14 +183,14 @@ bundles:
   # (with the `op` CLI baked in), telegram, liveoak, airtable, flightaware,
   # digitalocean, image-diff, svg-tracer and the three browser servers, which
   # share ONE Chromium (never one per server: see
-  # servers/bundle/host/src/browser.ts). Five mounts have no slug here:
+  # servers/bundle/host/src/browser.ts). Six mounts have no slug here:
   # `/x-twitter`, `/google-sheets` — registered in prod, where its six slugs each
   # carry one Google account's OAuth token, and where `/gmail` takes the same
   # per-slug shape beside its conventional service-account mount — the
   # conventional `/grafana`, since staging's Grafana is the per-slug
   # `/grafana-registry` below, `/aws-device-farm`, whose AWS credential does
-  # not exist yet, and `/whatsapp`, whose one slug is served from
-  # `bundle-whatsapp`. The PROCESS registers all thirty either way — including
+  # not exist yet, `/whatsapp`, whose one slug is served from
+  # `bundle-whatsapp`, and `/ssh`, whose hosts are store-served instances. The PROCESS registers all thirty either way — including
   # `/telegram`, `/liveoak`, `/airtable`, `/flightaware` and `/digitalocean`,
   # whose slugs are disabled until their secrets are seeded —
   # which is what the sizing below is about.

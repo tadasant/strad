@@ -241,12 +241,12 @@ The boundary is enforced in `src/config/overlay.ts`, on the write path, before
 the merge is validated — so the message names the thing you can change rather
 than the schema error it would eventually cause.
 
-| Kind                  | Creatable at runtime, from either door                                                                                     |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `remote-http`         | Yes, fully.                                                                                                                |
-| `local-tunnel`        | Yes, fully.                                                                                                                |
-| `supplementary-image` | Against a mount this deployment already runs with no deploy-only field, or as a store-served instance with `params: true`. |
-| `builtin`             | Never.                                                                                                                     |
+| Kind                  | Creatable at runtime, from either door                                                                                                                                     |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `remote-http`         | Yes, fully.                                                                                                                                                                |
+| `local-tunnel`        | Yes, fully.                                                                                                                                                                |
+| `supplementary-image` | Against a mount this deployment already runs with no deploy-only field, or as a store-served instance with `params: true` — except an `ssh` one, which is checked-in only. |
+| `builtin`             | Never.                                                                                                                                                                     |
 
 `remote-http` and `local-tunnel` are unhosted: `renderAppSpec` skips them
 entirely, so they occupy no container, no component and no deploy-time
@@ -289,6 +289,11 @@ instance**: `path: /_instance/{tree}/{its own slug}` for `telegram`,
 nothing needs a deploy — the bundle host learns about it from core and reads its
 credentials out of its own namespace (see [Store-served
 instances](/operate/secrets/#store-served-instances--a-mount-credentialed-from-its-own-namespace)).
+`ssh` is an instance tree too, and the one exception: an
+[SSH host](/servers/ssh/) is never runtime-creatable. It is a shell on a machine,
+and a slug the overlay creates is one whose roles a later runtime write may move,
+so who may reach one is left to the checked-in config, where nothing at runtime
+can change it. Its credentials are still seeded in its own namespace.
 On one, `params: true` is accepted and the other six are still refused, each for
 its own reason: `env:` and `consoleEnv:` would be baked where no instance reads
 them, `paramsRefresh:` repeats what every sync does, no instance tree writes a
