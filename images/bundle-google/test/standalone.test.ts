@@ -44,7 +44,7 @@ const CALENDAR_TOOLS = [
 function cleanEnv(extra: Record<string, string> = {}): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (v === undefined || k.startsWith("GCAL_") || k.startsWith("GOOGLE_DRIVE_") || k.endsWith("ENABLED_TOOLGROUPS") || k === "PORT") continue;
+    if (v === undefined || k.startsWith("GCAL_") || k.startsWith("GOOGLE_CALENDAR_") || k.startsWith("GOOGLE_DRIVE_") || k.endsWith("ENABLED_TOOLGROUPS") || k === "PORT") continue;
     env[k] = v;
   }
   return { ...env, ...extra };
@@ -200,6 +200,34 @@ describe("google-calendar standalone", () => {
     const [code] = await once(child, "exit");
     expect(code).toBe(2);
     expect(stderr).toContain('unknown tool group(s) "read-only"');
+  });
+
+  it("in GOOGLE_CALENDAR_AUTH_MODE=oauth, warns about and fails on the OAuth variables instead", async () => {
+    const { url, stderr } = await startHttp([], cleanEnv({ GOOGLE_CALENDAR_AUTH_MODE: "oauth" }));
+    expect(stderr()).toContain("GOOGLE_CALENDAR_OAUTH_CLIENT_ID, GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET, GOOGLE_CALENDAR_OAUTH_REFRESH_TOKEN not set");
+    expect(stderr()).not.toContain("GCAL_");
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(url));
+    try {
+      const result = await client.callTool({ name: "list_calendars", arguments: {} });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain("GOOGLE_CALENDAR_AUTH_MODE=oauth, but GOOGLE_CALENDAR_OAUTH_CLIENT_ID");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("refuses to start on an auth mode it does not know", async () => {
+    const child = spawn(process.execPath, [CALENDAR], {
+      env: cleanEnv({ GOOGLE_CALENDAR_AUTH_MODE: "personal" }),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    children.push(child);
+    let stderr = "";
+    child.stderr!.on("data", (d) => (stderr += d));
+    const [code] = await once(child, "exit");
+    expect(code).toBe(2);
+    expect(stderr).toContain('GOOGLE_CALENDAR_AUTH_MODE="personal" is not a mode');
   });
 
   it("answers GET and DELETE with 405, and a malformed body with a JSON-RPC parse error", async () => {

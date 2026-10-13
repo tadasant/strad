@@ -6441,3 +6441,46 @@ overwritten. It stays in the version history.
 google-sheets, a `google-drive-*` slug, the console's Connect flow for its
 scopes, and the counts in `servers/bundle/scripts/smoke.mjs`. The first real
 calls through that slug settle 1 to 5.
+
+## 125. google-calendar has a personal OAuth mode that strad added to a vendored tree
+
+**What.** `images/bundle-google/vendor/google-calendar-shared` is a copy of
+`pulsemcp/mcp-servers`' `experimental/google-calendar/shared`, and upstream
+signs in only as a service account with domain-wide delegation, which cannot
+reach a personal `@gmail.com` calendar. strad adds a second mode to its copy.
+`GOOGLE_CALENDAR_AUTH_MODE=oauth` signs in as one account with
+`GOOGLE_CALENDAR_OAUTH_CLIENT_ID`, `_CLIENT_SECRET` and `_REFRESH_TOKEN`.
+Unset, or `service_account`, keeps the service account, so no existing
+deployment changes. The tree is a PATCHED VENDOR now, and its README's delta
+table lists the change.
+
+Three things about it are not obvious:
+
+1. **The mode is named, not inferred.** gmail and google-docs pick OAuth when
+   its three variables are complete and fall back to a service account
+   otherwise. Calendar does neither. A stray OAuth variable on a
+   service-account deployment changes nothing, and an `oauth` deployment
+   missing its token fails naming it rather than quietly using the service
+   account. An unknown value fails every call, and the standalone entrypoint
+   refuses to start on one.
+2. **The vendored error text is reworded, not edited.** `api-errors.ts` words a
+   401 and a 403 for a service account ("verify domain-wide delegation"). The
+   OAuth client matches those two messages by their opening words and replaces
+   them, so the vendored file stays as upstream wrote it. If upstream rewords
+   them, the OAuth mode shows the service-account wording again. The 401
+   still reaches the client as an error, but its token cache is no longer
+   dropped, so a token Google rejected before its expiry is reused until it
+   expires.
+3. **The account's address comes from its primary calendar.** A service
+   account is told which user it acts as. A refresh token is not, so the OAuth
+   client reads `calendars/primary` once for the `&authuser=` on event links.
+
+Both hosts, this image's `src/index.ts` and the collapsed bundle's host, mount
+the server with no client factory, so they read the mode from `process.env`
+with no change of their own. No deployment sets the mode yet, and no request in
+either mode has reached Google from CI.
+
+**Undo.** If upstream gains an OAuth mode, re-vendor and drop the delta, then
+map `GOOGLE_CALENDAR_AUTH_MODE` onto whatever upstream reads. Until then, a
+re-vendor has to re-apply the row in the tree's README, and
+`images/bundle-google/test/calendar-auth-mode.test.ts` fails if it does not.

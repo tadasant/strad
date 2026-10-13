@@ -65,9 +65,13 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   its tree, and a test case.
 - `vendor/` — the upstream `shared/` factories, plus `@pulsemcp/mcp-elicitation`.
   Wired as npm workspaces.
-  - `vendor/google-calendar-shared/`, `vendor/google-docs-shared/` — vendored
-    verbatim from
-    `github.com/pulsemcp/mcp-servers/experimental/{google-calendar,google-docs}`.
+  - `vendor/google-docs-shared/` — vendored verbatim from
+    `github.com/pulsemcp/mcp-servers/experimental/google-docs`.
+  - `vendor/google-calendar-shared/` — a **patched vendor** of
+    `experimental/google-calendar`: upstream `0ed34de` plus one delta, the
+    `GOOGLE_CALENDAR_AUTH_MODE=oauth` mode in `src/server.ts`. Its README's
+    delta table lists it and `test/calendar-auth-mode.test.ts` defends it. A
+    re-vendor has to re-apply it.
   - `vendor/gmail-shared/` — **a fork**, not a copy. strad owns it and changes
     land here; do not re-vendor over it. It adds attachments to
     `send_email` and `upsert_draft_email`, the sender's display name,
@@ -151,14 +155,22 @@ can drop everything that is not the OAuth app pair; see
 
 | Purpose | Variables |
 | --- | --- |
-| **Service account (domain-wide delegation)** — the ONLY mode; no OAuth path | `GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL`, `GCAL_SERVICE_ACCOUNT_PRIVATE_KEY`, `GCAL_IMPERSONATE_EMAIL` |
+| **Mode selector** | `GOOGLE_CALENDAR_AUTH_MODE` = `service_account` (default) \| `oauth`. Anything else fails every call, and the standalone entrypoint refuses to start |
+| **Service account (domain-wide delegation)** — `service_account` mode | `GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL`, `GCAL_SERVICE_ACCOUNT_PRIVATE_KEY`, `GCAL_IMPERSONATE_EMAIL` |
+| **OAuth2 (one account's refresh token)** — `oauth` mode | `GOOGLE_CALENDAR_OAUTH_CLIENT_ID`, `GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET`, `GOOGLE_CALENDAR_OAUTH_REFRESH_TOKEN` |
 | **Capability toggle** | `GOOGLE_CALENDAR_ENABLED_TOOLGROUPS` = `readonly` \| `readwrite` (default: all) |
+
+The mode is named, not inferred from which variables are set, unlike gmail and
+google-docs. A deployment with no `GOOGLE_CALENDAR_AUTH_MODE` keeps the service
+account, whatever OAuth variables are present. An `oauth` deployment missing a
+variable fails naming it, and never falls back to a service account. The OAuth
+mode is a strad delta on the vendored tree (`HACKS.md` #125).
 
 > The upstream stdio server reads a bare `ENABLED_TOOLGROUPS`. This bundle passes
 > `GOOGLE_CALENDAR_ENABLED_TOOLGROUPS` through explicitly so the toggle is
 > namespaced like the others and never collides with a sibling in the container.
 
-Scope: `https://www.googleapis.com/auth/calendar`.
+Scope, in either mode: `https://www.googleapis.com/auth/calendar`.
 
 ### google-docs (`/google-docs`)
 
