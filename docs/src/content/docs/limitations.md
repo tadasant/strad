@@ -3868,36 +3868,31 @@ See `HACKS.md` #123.
 
 `images/bundle-google/vendor/google-drive-shared` is a Google Drive MCP server
 in three tiers: three read tools on `drive.readonly`, `create_folder` and
-`create_file` on `drive.file`, and six tools that edit, rename, move, copy,
-trash and restore existing files on the full `drive` scope. No strad slug mounts
+`create_file` on `drive.file`, and five tools that rename, move, copy, trash
+and restore existing files on the full `drive` scope. No strad slug mounts
 it. You run it [on its own](/servers/standalone/), over stdio or on a localhost
 port, with one Google account's OAuth refresh token.
 
-- **No request has reached Google.** Its tests fake the network. Five things are
-  still unverified: the Markdown a Doc exports as, how Drive refuses a
-  `drive.file` write into a folder made by hand, whether an upload converts
-  into a Doc or a Sheet, whether a Markdown upload over an existing Doc replaces
-  its body, and that a stored file keeps its type when its content is replaced.
+- **No request has reached Google.** Its tests fake the network. Three things
+  are still unverified: the Markdown a Doc exports as, how Drive refuses a
+  `drive.file` write into a folder made by hand, and whether an upload converts
+  into a Doc or a Sheet.
 - **Only the `full` tier changes existing files.** `readwrite` only creates, so
   it can stay on `drive.file`. Under `drive.file`, a create should work only at
   the top of My Drive or in a folder `create_folder` made.
-- **No tool group set means every tool, the edit tools included.** A setup that
+- **No tool rewrites a file's content.** Drive can only replace a whole file,
+  and a Google Doc rebuilt from Markdown that way loses its formatting. Editing
+  a document belongs to a Google Docs server.
+- **No tool group set means every tool, the `full` tier included.** A setup that
   set no group before the `full` tier existed now lists them. Set
   `GOOGLE_DRIVE_ENABLED_TOOLGROUPS` to match the token.
-- **A Doc rewritten from Markdown keeps only what Markdown can say.** Images,
-  extra tabs, headers and footers, suggestions and most styling do not survive
-  `replace_file_content`. The google-docs server edits part of a Doc.
 - **No permanent delete and no sharing.** `trash_file` is recoverable for 30
   days.
-- **A replace has no "unchanged since" check.** An edit someone makes in the
-  browser between a read and a `replace_file_content` is overwritten, and stays
-  in the version history. A Google Sheet is refused, not overwritten.
 - **`read_file` reads text and images.** A PDF or Office file is refused with
   its link. A Google Sheet exports its first tab only.
 
 **How you would know.** A `read_file` on a Doc that comes back empty or as raw
-HTML, a `create_file` into a `create_folder` folder that is refused, or a
-`replace_file_content` on a Doc that returns an error or leaves the old text.
+HTML, or a `create_file` into a `create_folder` folder that is refused.
 
 See `HACKS.md` #124.
 

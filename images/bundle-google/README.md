@@ -96,8 +96,9 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
 - `vendor/google-drive-shared/` — strad's own Google Drive server, written here
   in google-sheets' shape: one Google account per OAuth refresh token, read
   out of an injected env. Three tiers: three read tools on `drive.readonly`,
-  two create-only tools on `drive.file` (`readwrite`), and six that change an
-  existing file on the full `drive` scope (`full`). **Neither this image's `src/index.ts`
+  two create-only tools on `drive.file` (`readwrite`), and five that rename,
+  move, copy, trash and restore an existing file on the full `drive` scope
+  (`full`). No tool rewrites a file's content. **Neither this image's `src/index.ts`
   nor the collapsed bundle mounts it.** It runs only through
   `src/standalone/google-drive.ts`, and its README is the how-to.
   `vendor/google-drive-shared/test/` is its suite. See `HACKS.md` #124.

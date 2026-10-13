@@ -90,7 +90,7 @@ function recoveryHint(status: number, reason: string | undefined, detail: string
       'The refresh token was consented for narrower scopes than this call needs. Every read ' +
       'tool needs https://www.googleapis.com/auth/drive.readonly; create_folder and ' +
       'create_file need https://www.googleapis.com/auth/drive.file as well; the full tier\'s ' +
-      'edit tools need https://www.googleapis.com/auth/drive. Re-consent the account to mint a ' +
+      'rename, move, copy and trash tools need https://www.googleapis.com/auth/drive. Re-consent the account to mint a ' +
       'token with the scopes its tool group needs.'
     );
   }
@@ -101,8 +101,8 @@ function recoveryHint(status: number, reason: string | undefined, detail: string
       'Either the account itself only has view access (and in My Drive only the owner may ' +
       'trash a file), or the token holds only the drive.file scope, which reaches only files ' +
       'and folders this OAuth app created. For a create, make the folder with create_folder ' +
-      'first, or leave parent_folder_id out to write to My Drive. To edit a file someone else ' +
-      'made, re-consent with https://www.googleapis.com/auth/drive.'
+      'first, or leave parent_folder_id out to write to My Drive. To rename, move or trash a ' +
+      'file someone else made, re-consent with https://www.googleapis.com/auth/drive.'
     );
   }
 

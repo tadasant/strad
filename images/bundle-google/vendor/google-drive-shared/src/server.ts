@@ -22,8 +22,8 @@ import type {
  * whole Drive and add to it, and cannot edit, trash, move or share a single file
  * a human made.
  *
- * The `full` tier changes files that already exist, and a file a human made is
- * reachable only with `drive`. Under `drive.file` its tools still work, on the
+ * The `full` tier renames, moves, copies, trashes and restores files that
+ * already exist, and a file a human made is reachable only with `drive`. Under `drive.file` its tools still work, on the
  * files this app created and on nothing else.
  */
 export const GOOGLE_DRIVE_SCOPES = {
@@ -31,7 +31,7 @@ export const GOOGLE_DRIVE_SCOPES = {
   readonly: 'https://www.googleapis.com/auth/drive.readonly',
   /** The two create tools, in addition to `readonly`. */
   file: 'https://www.googleapis.com/auth/drive.file',
-  /** The `full` tier's edit tools, on any file the account may edit. Covers the other two. */
+  /** The `full` tier's organising tools, on any file the account may change. Covers the other two. */
   full: 'https://www.googleapis.com/auth/drive',
 } as const;
 
@@ -63,7 +63,7 @@ export function missingCredentials(env: EnvLike): string[] {
   return GOOGLE_DRIVE_ENV_NAMES.filter((name) => !env[name]);
 }
 
-/** Everything the tools can ask Drive for: four reads, two creates, then three edit calls (a content upload, a metadata PATCH, a copy). */
+/** Everything the tools can ask Drive for: four reads, two creates, then a metadata PATCH and a copy. */
 export interface IGoogleDriveClient {
   listFiles(params: ListFilesParams): Promise<DriveFileList>;
   getFile(fileId: string): Promise<DriveFile>;
@@ -71,7 +71,6 @@ export interface IGoogleDriveClient {
   downloadFile(fileId: string, maxBytes: number): Promise<Uint8Array>;
   createFolder(name: string, parentId?: string): Promise<DriveFile>;
   createFile(request: CreateFileRequest): Promise<DriveFile>;
-  updateFileContent(fileId: string, mimeType: string, content: Uint8Array): Promise<DriveFile>;
   updateFile(fileId: string, patch: FileMetadataPatch, parents?: ParentChange): Promise<DriveFile>;
   copyFile(request: CopyFileRequest): Promise<DriveFile>;
 }
@@ -190,11 +189,6 @@ class OAuthGoogleDriveClient implements IGoogleDriveClient {
     return this.withAuth((h) => createFile(h, request));
   }
 
-  async updateFileContent(fileId: string, mimeType: string, content: Uint8Array): Promise<DriveFile> {
-    const { updateFileContent } = await this.lib();
-    return this.withAuth((h) => updateFileContent(h, fileId, mimeType, content));
-  }
-
   async updateFile(fileId: string, patch: FileMetadataPatch, parents?: ParentChange): Promise<DriveFile> {
     const { updateFile } = await this.lib();
     return this.withAuth((h) => updateFile(h, fileId, patch, parents));
@@ -227,7 +221,7 @@ export function createDefaultClient(env: EnvLike = process.env): IGoogleDriveCli
       `This google-drive server has no credential: ${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not set. ` +
         'It needs an OAuth client id, client secret and refresh token for exactly one Google account, ' +
         `consented for ${GOOGLE_DRIVE_SCOPES.readonly} (and ${GOOGLE_DRIVE_SCOPES.file} for the create tools, ` +
-        `or ${GOOGLE_DRIVE_SCOPES.full} for the full tier's edit tools).`
+        `or ${GOOGLE_DRIVE_SCOPES.full} for the full tier's rename, move, copy and trash tools).`
     );
   }
   const clientId = env.GOOGLE_DRIVE_OAUTH_CLIENT_ID!;

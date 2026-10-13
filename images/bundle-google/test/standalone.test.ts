@@ -24,7 +24,6 @@ const DRIVE_TOOLS = [
   "get_file",
   "move_file",
   "read_file",
-  "replace_file_content",
   "restore_file",
   "search_files",
   "trash_file",
@@ -265,7 +264,7 @@ describe("google-calendar standalone", () => {
 });
 
 describe("google-drive standalone", () => {
-  it("serves all eleven tools over stdio with no credentials set", async () => {
+  it("serves all ten tools over stdio with no credentials set", async () => {
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: [DRIVE],
@@ -285,7 +284,7 @@ describe("google-drive standalone", () => {
     }
   });
 
-  it("serves all eleven tools over Streamable HTTP on the port it is given", async () => {
+  it("serves all ten tools over Streamable HTTP on the port it is given", async () => {
     const { url } = await startHttp([], cleanEnv(), DRIVE);
     expect(url.hostname).toBe("127.0.0.1");
     const client = new Client({ name: "standalone-test", version: "0.0.0" });

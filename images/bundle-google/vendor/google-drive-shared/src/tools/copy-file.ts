@@ -34,7 +34,7 @@ Copied "Proposal template" to "Acme proposal" (Google Doc)
 **Link:** https://docs.google.com/document/d/1Ze4...Rt/edit
 
 **Use cases:**
-- Start a document from a template, then fill it in with replace_file_content
+- Start a document from a template, under its own name and folder
 - Keep a snapshot of a file before overwriting it
 - Duplicate a spreadsheet into another project's folder`;
 

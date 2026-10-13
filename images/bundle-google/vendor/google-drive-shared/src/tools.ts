@@ -6,7 +6,6 @@ import { getFileTool } from './tools/get-file.js';
 import { readFileTool } from './tools/read-file.js';
 import { createFolderTool } from './tools/create-folder.js';
 import { createFileTool } from './tools/create-file.js';
-import { replaceFileContentTool } from './tools/replace-file-content.js';
 import { updateFileMetadataTool } from './tools/update-file-metadata.js';
 import { moveFileTool } from './tools/move-file.js';
 import { copyFileTool } from './tools/copy-file.js';
@@ -43,8 +42,9 @@ export interface Tool {
 type ToolFactory = (clientFactory: ClientFactory) => Tool;
 
 /**
- * The tools that only read, the tools that create, and the tools that change a
- * file that already exists.
+ * The tools that only read, the tools that create, and the tools that organise
+ * files that already exist: rename, move, copy, trash, restore. None of them
+ * writes a file's content.
  *
  * Exported because a strad `-ro` slug's `tools: allow:` is READ_TOOLS, and a
  * list transcribed by hand into a config in another repository goes stale.
@@ -52,8 +52,7 @@ type ToolFactory = (clientFactory: ClientFactory) => Tool;
  */
 export const READ_TOOLS = ['search_files', 'get_file', 'read_file'] as const;
 export const WRITE_TOOLS = ['create_folder', 'create_file'] as const;
-export const EDIT_TOOLS = [
-  'replace_file_content',
+export const ORGANIZE_TOOLS = [
   'update_file_metadata',
   'move_file',
   'copy_file',
@@ -66,10 +65,13 @@ export const EDIT_TOOLS = [
  *
  * readonly:  the three reads                          drive.readonly
  * readwrite: the reads, and the two creates           + drive.file
- * full:      all of that, and the six edits           drive
+ * full:      all of that, and the five organising tools  drive
  *
  * `readwrite` is deliberately create-only, so it can stay on `drive.file` and
- * never touch a file a human made. Editing those is `full`, and needs `drive`.
+ * never touch a file a human made. Renaming, moving or trashing those is
+ * `full`, and needs `drive`. No tier overwrites a file's content: rewriting a
+ * Google Doc through Drive's upload conversion loses its formatting, and
+ * in-place document editing belongs to a Docs server.
  */
 export type ToolGroup = 'readonly' | 'readwrite' | 'full';
 export const TOOL_GROUPS: readonly ToolGroup[] = ['readonly', 'readwrite', 'full'];
@@ -80,7 +82,6 @@ const ALL_TOOLS: Array<{ factory: ToolFactory; groups: ToolGroup[] }> = [
   { factory: readFileTool, groups: ['readonly', 'readwrite', 'full'] },
   { factory: createFolderTool, groups: ['readwrite', 'full'] },
   { factory: createFileTool, groups: ['readwrite', 'full'] },
-  { factory: replaceFileContentTool, groups: ['full'] },
   { factory: updateFileMetadataTool, groups: ['full'] },
   { factory: moveFileTool, groups: ['full'] },
   { factory: copyFileTool, groups: ['full'] },

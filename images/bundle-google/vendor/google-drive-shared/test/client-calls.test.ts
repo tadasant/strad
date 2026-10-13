@@ -19,7 +19,6 @@ import {
   getFile,
   listFiles,
   updateFile,
-  updateFileContent,
 } from "../src/drive-client/files.js";
 import { DriveApiError } from "../src/drive-client/api-errors.js";
 
@@ -211,23 +210,6 @@ test("Drive's 403 reasons are told apart, each with its own recovery", async () 
 test("a 404 says the file is not visible to this account", async () => {
   responses.push(json({ error: { code: 404, message: "File not found: x." } }, 404));
   await assert.rejects(getFile(HEADERS, "x"), /No file or folder with that id is visible/);
-});
-
-test("a content replace is ONE media PATCH to the upload URL, typed as the content", async () => {
-  responses.push(json({ id: "doc1", name: "Q3 plan" }));
-  const bytes = new TextEncoder().encode("# New\n");
-  await updateFileContent(HEADERS, "doc/1", "text/markdown", bytes);
-  assert.equal(calls.length, 1);
-  const call = calls[0];
-  const url = new URL(call.url);
-  assert.equal(call.method, "PATCH");
-  assert.equal(url.origin + url.pathname, "https://www.googleapis.com/upload/drive/v3/files/doc%2F1");
-  assert.equal(url.searchParams.get("uploadType"), "media");
-  assert.equal(url.searchParams.get("supportsAllDrives"), "true");
-  assert.match(url.searchParams.get("fields")!, /modifiedTime/);
-  assert.equal(call.headers["Content-Type"], "text/markdown");
-  assert.equal(call.headers.Authorization, "Bearer test");
-  assert.deepEqual([...Buffer.from(call.body as Uint8Array)], [...bytes]);
 });
 
 test("a metadata update PATCHes only the fields it was given, with no parent change", async () => {

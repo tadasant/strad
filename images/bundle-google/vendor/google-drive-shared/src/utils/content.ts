@@ -1,7 +1,7 @@
-/** The bytes a write tool was handed, as text or as base64, under one cap. */
+/** The bytes `create_file` was handed, as text or as base64, under one cap. */
 
 /**
- * The largest file `create_file` and `replace_file_content` upload, decoded.
+ * The largest file `create_file` uploads, decoded.
  * Through strad, core's 4MB `/mcp` body is the tighter bound on
  * `content_base64` anyway.
  */

@@ -14,7 +14,7 @@ export {
 export {
   READ_TOOLS,
   WRITE_TOOLS,
-  EDIT_TOOLS,
+  ORGANIZE_TOOLS,
   TOOL_GROUPS,
   createRegisterTools,
   parseToolGroups,
