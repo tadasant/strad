@@ -18,6 +18,7 @@ import {
 import {
   SearchGrocerySchema,
   GetGroceryDetailsSchema,
+  GetGroceryNutritionSchema,
   AddToCartSchema,
   GetPastOrderGroceriesSchema,
   AddFavoriteSchema,
@@ -67,7 +68,44 @@ Returns comprehensive details including:
 - Product description
 - Delivery availability dates
 
+For calories, macros or serving size use get_grocery_nutrition instead.
+
 **Tip:** This tool checks if you're already on the product page to minimize navigation.`;
+
+const GET_GROCERY_NUTRITION_DESCRIPTION = `Get nutrition facts and product photo URLs for one Good Eggs product.
+
+Good Eggs publishes structured nutrition ONLY for products made by its own
+kitchen (producer "goodeggskitchen"), in help-center tables that lag the
+catalog. Every other product has photos and no nutrition data. So the result
+always carries an explicit nutrition.status, plus photo URLs (never image bytes)
+that you can download without a session — e.g. to read a label from them.
+
+nutrition.status:
+- found — facts from Good Eggs Kitchen's table. sizeMatches: false means the
+  row is for another package size; per-serving values hold, servingsPerPackage may not.
+- ambiguous — several rows share the name; all are in candidates, pick by size.
+- not_in_kitchen_tables — a kitchen product with no row in the tables.
+- not_published — not a kitchen product; Good Eggs has no nutrition for it.
+  Read the label from the images if one shows it, or look up producer + name +
+  retailUnits in a nutrition database.
+- unknown — the tables could not be read right now. NOT the same as absent; retry.
+
+A nutrient is a number when the table prints one, the printed text when it
+does not ("less than 1"), and null when the cell is blank or the column absent.
+
+Example (abridged):
+{"name":"Black Beans","producer":"Good Eggs Kitchen","retailUnits":"10 oz",
+ "nutrition":{"status":"found","sizeMatches":true,"facts":{"servingsPerPackage":2.5,
+ "servingSize":"113 gr","calories":130,"totalFatG":0.5,"totalCarbohydrateG":23,
+ "proteinG":8,...},"matchedRow":{"recipeName":"Black Beans - 10 oz","source":{...}}},
+ "images":[{"url":"https://images.goodeggs.com/cdn-cgi/image/width=2000,.../<id>.jpg",
+ "originalUrl":"https://images.goodeggs.com/<id>.jpg","alt":"..."}],"imagesNote":"..."}
+
+Use it to: total the macros of a basket; compare protein per dollar; check
+serving size before planning portions; fetch a product photo to read its label.
+
+An error means the product page could not be read — nutrition and images are
+UNKNOWN, not absent.`;
 
 const ADD_TO_CART_DESCRIPTION = `Add a grocery item to your shopping cart.
 
@@ -429,6 +467,43 @@ export function createRegisterTools(
               {
                 type: 'text',
                 text: `Error getting grocery details: ${error instanceof Error ? error.message : String(error)}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      },
+    },
+    {
+      name: 'get_grocery_nutrition',
+      description: GET_GROCERY_NUTRITION_DESCRIPTION,
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          grocery_url: {
+            type: 'string',
+            description:
+              'The Good Eggs product URL (from search results, favorites, the cart or a past order)',
+          },
+        },
+        required: ['grocery_url'],
+      },
+      handler: async (args: unknown) => {
+        try {
+          const validated = GetGroceryNutritionSchema.parse(args);
+          const goodEggsClient = await getClient();
+          const nutrition = await goodEggsClient.getGroceryNutrition(validated.grocery_url);
+          return {
+            content: [{ type: 'text', text: JSON.stringify(nutrition, null, 2) }],
+          };
+        } catch (error) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  'Could not read this product, so its nutrition and images are UNKNOWN, ' +
+                  `not absent: ${error instanceof Error ? error.message : String(error)}`,
               },
             ],
             isError: true,

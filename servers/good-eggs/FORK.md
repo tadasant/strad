@@ -517,6 +517,97 @@ client over a fake page through `setSharedBrowserProvider`. That covers the
 list-then-read flow, that a lookup reloads a list it is already sitting on, and
 that the path never falls back to a DOM scrape when the payload is there.
 
+## 12. `get_grocery_nutrition`: what Good Eggs publishes about a product's nutrition, and nothing it does not
+
+**Upstream.** No such tool. `get_grocery_details` scrapes a name, price,
+description and one `img` off the drawn page.
+
+**Here.** A twelfth tool, `get_grocery_nutrition(grocery_url)`, built in
+`shared/src/nutrition.ts`. It loads the product page and reads
+`storeData.productDetails`, the product payload the page renders, for the name,
+producer, retail units and photos. It returns JSON with three parts:
+
+- **`nutrition.status`**, always set:
+  - `found` comes with `facts`: calories, total fat, carbohydrate, protein,
+    serving size, servings per package, and the other ten columns the table
+    carries. It also comes with the matched row and the article it came from,
+    including the article's `updatedAt`. `sizeMatches: false` flags a row for a
+    different package size.
+  - `ambiguous` lists every candidate row.
+  - `not_in_kitchen_tables`.
+  - `not_published`.
+  - `unknown`: the tables could not be read. That is not the same as absent.
+- **`images`**: for each photo, an uncropped JPEG rendition at most 2000px wide,
+  and the original upload. Both are public CDN URLs. The tool returns URLs and
+  never bytes.
+- **The product's identity** (producer, name, retail units, product type), so a
+  caller can take a `not_published` product to a nutrition database.
+
+A nutrient is a number when the table prints one. It is the printed text when
+the table prints something else (`"less than 1"`), and `null` when the cell is
+blank or the column is missing.
+
+**Why it looks like this. Good Eggs has no structured nutrition, except for one
+producer.** Measured on 2026-10-15:
+
+- The product payload has no nutrition field. `storeData.productDetails` carries
+  `product`, `photoUrl`, `photosUrls`, `breadCrumbs`, `rawDescription`, `tags`
+  and availability, and none of `calor|serving|nutri` appears anywhere in
+  `storeData` except category names ("Shop by Serving Size").
+- The product page makes no product API call. Its network log is the document,
+  two bundles, Cloudflare's challenge script and a chat widget.
+- Its JavaScript names nutrition once:
+  `"goodeggskitchen"===e.currentProducer.slug && … "View Nutritional Information"`,
+  a link to a help-center section.
+- That section, read through Zendesk's public API
+  (`/api/v2/help_center/en-us/sections/360007686892/articles.json`: HTTP 200
+  with no cookie, where the HTML section page is behind a Cloudflare challenge),
+  is 13 articles with one HTML table each. It has 498 product rows, headed
+  `Recipe name | Servings per Package | Serving Size | Calories | Total Fat (g) | … | Protein (g) | …`.
+- Every product checked (eleven favorites and the kitchen range) has one or two
+  photos. The ones looked at were front of pack (Oatly, Ezekiel bread) or plated
+  food (Corn Chowder's second photo), not a Nutrition Facts panel. Both URL
+  forms return `200` to an unauthenticated `curl`:
+
+  ```
+  200 image/jpeg 298821B   https://images.goodeggs.com/cdn-cgi/image/width=2000,fit=scale-down,format=jpeg,quality=85/27e44621-….jpg
+  200 image/jpeg 5719840B  https://images.goodeggs.com/27e44621-….jpg
+  ```
+
+  So no signed or temporary hosting is needed. The URLs are the download
+  links.
+
+**How the tables are read.** Each table's header row is repeated through it
+(496 header rows in all), and every header row restarts the column map. Columns
+are mapped by header TEXT, because one real article has no
+`Servings per Package` column. Mapping by position would read its calories as
+serving size. A response with no `articles` array, or one that parses to zero
+rows, throws. A section that changed shape must not come back as "no row for
+this product". A good read is cached for six hours. A failed one is not cached,
+so the next call retries.
+
+**How a product is matched to a row.** The product's whole name and the row's
+name are compared after folding case, accents, apostrophes, and `&` to `and`. The
+row's name has its size suffix removed first (`Black Beans - 10 oz`,
+`Grana Padano- 2 oz`, `Chicken Tenders-16oz`). A substring never matches,
+because a near miss would report another product's macros. If nothing matches,
+a parenthetical such as `(Frozen)` is dropped from both names and the comparison
+runs once more. Rows with identical values fold into one: one article repeats a
+row seven times. When several rows remain, the product's retail units choose
+between them. If that does not leave exactly one, the answer is `ambiguous`.
+That case is real: `Achiote Marinade - 2 oz` is 70 kcal in one article and 140
+kcal in another.
+
+**Coverage.** On 2026-10-15, 3 of the 15 kitchen products on
+`/goodeggskitchen` had a row: Corn Chowder, Baked Pasta with Pork & Beef Ragu,
+and Brown Butter Squash Soup (Frozen). Most articles were last edited in
+2020–2022. `HACKS.md` #126 records this.
+
+`shared/test/nutrition.test.ts` pins the parse and the match against real rows
+in `shared/test/fixtures/kitchen-nutrition.mjs`, and every status against real
+product payloads. It also covers the HTTPS source's caching and retry, the
+client's page read, and the tool's description, JSON result and error.
+
 ## Deltas that predate this fork
 
 These were already in the tree when it was still a vendor copy, and are listed so

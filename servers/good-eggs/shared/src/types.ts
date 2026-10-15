@@ -95,6 +95,12 @@ export const GetGroceryDetailsSchema = z.object({
   ),
 });
 
+export const GetGroceryNutritionSchema = z.object({
+  grocery_url: goodEggsUrlSchema.describe(
+    'The Good Eggs product URL to get nutrition and photo URLs for'
+  ),
+});
+
 export const AddToCartSchema = z.object({
   grocery_url: goodEggsUrlSchema.describe('The Good Eggs URL of the grocery item to add to cart'),
   quantity: z

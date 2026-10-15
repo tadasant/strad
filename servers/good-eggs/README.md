@@ -4,7 +4,7 @@ The [Good Eggs](https://www.goodeggs.com) MCP server, packaged as a strad
 `supplementary-image` bundle: its own container, published to
 `ghcr.io/tadasant/strad-server-good-eggs`, run as an **internal-only** App
 Platform component that the strad core gateway proxies to over the private
-network at `http://bundle-goodeggs:8080/mcp`. Its 11 tools are namespaced
+network at `http://bundle-goodeggs:8080/mcp`. Its 12 tools are namespaced
 `good-eggs__*` at the gateway.
 
 ## Layout
@@ -20,8 +20,8 @@ servers/good-eggs/
 - **`shared/`** is a **fork** of
   [`pulsemcp/mcp-servers` `experimental/good-eggs/shared`](https://github.com/pulsemcp/mcp-servers/tree/main/experimental/good-eggs)
   at `44f32a32afe27ffe9d00f23b24934c8242730f65`. It holds the Playwright
-  automation and the 11 tools (`search_for_grocery`, `get_cart`, `get_favorites`,
-  `add_to_cart`, …). **Fix it here.** The deltas — and the reason there is no
+  automation and the 12 tools (`search_for_grocery`, `get_cart`, `get_favorites`,
+  `add_to_cart`, `get_grocery_nutrition`, …). **Fix it here.** The deltas — and the reason there is no
   upstream to send them to — are in [`FORK.md`](FORK.md). `shared/test/` is what
   defends them; CI runs it as `servers (good-eggs)` on every PR.
 - **`remote/`** swaps the upstream stdio transport for an Express +

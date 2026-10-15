@@ -6490,3 +6490,34 @@ If upstream gains an OAuth mode, re-vendor and drop the delta, then map
 `GOOGLE_CALENDAR_AUTH_MODE` onto whatever upstream reads. Until then, a
 re-vendor has to re-apply the row in the tree's README, and
 `images/bundle-google/test/calendar-auth-mode.test.ts` fails if it does not.
+
+---
+
+## 126. good-eggs nutrition comes from Good Eggs Kitchen's help-center tables, and only covers those
+
+**What.** `get_grocery_nutrition` reads `storeData.productDetails` off the
+product page for the product's name, producer, retail units and photos. When the
+producer is `goodeggskitchen` it also reads the Good Eggs Kitchen nutrition
+section through Zendesk's public Help Center API
+(`help.goodeggs.com/api/v2/help_center/en-us/sections/360007686892/articles.json`),
+parses the per-category HTML tables, and matches the product to a row by its
+whole folded name, split by retail units when one name has several sizes. Every
+other product gets `nutrition.status: not_published` and its photo URLs.
+`servers/good-eggs/FORK.md` #12 has the evidence.
+
+**Why.** Good Eggs exposes nutrition nowhere else. The product payload, the
+page's markup and the product page's own JavaScript carry no nutrition fields.
+The bundle's only nutrition reference is the "View Nutritional Information"
+link it renders for `goodeggskitchen` products, and that link is this section.
+Each product has one or two photos, and the ones checked were front of pack or
+plated food, not a Nutrition Facts panel. The tables are the only structured
+source, and they lag the catalog. On 2026-10-15, 3 of the 15 kitchen products on
+the producer page had a row. Most articles were last edited in 2020–2022. One
+product, Achiote Marinade 2 oz, appears in two articles with different values
+(70 kcal and 140 kcal).
+
+**Undo.** If Good Eggs starts publishing nutrition on the product payload, read
+it from there and drop the help-center read. Until then a caller that needs
+macros for a `not_published` or `not_in_kitchen_tables` product takes the
+producer, name and retail units to a nutrition database, or reads the label off
+a photo when one shows it.
