@@ -3935,3 +3935,28 @@ and domain-wide delegation", or event links whose `authuser` is missing.
 See `HACKS.md` #125.
 
 ---
+
+### 126. good-eggs nutrition covers Good Eggs Kitchen products only, from tables that lag the catalog
+
+`get_grocery_nutrition` returns structured calories, fat, carbohydrate, protein,
+serving size and servings per package only for products Good Eggs' own kitchen
+makes, and only when the kitchen's help-center tables have a row for them. Good
+Eggs publishes no nutrition for any other product: not on the product payload,
+not on the page, not in an API the page calls. For those the tool says
+`not_published` and returns the product's photo URLs, which are public and
+usually front of pack, so they rarely show the label.
+
+The tables cover little of the kitchen's current range. On 2026-10-15, 3 of the 15
+kitchen products on the producer page had a row, and most of the articles were
+last edited in 2020–2022. A row is matched on the product's whole name, never a
+substring. When rows under one name disagree and the product's retail units do
+not single one out, as happens for one product across two articles, the answer
+is `ambiguous` and lists them all. A table the parser cannot fully read makes the
+answer `unknown` for every kitchen product, not "no row".
+
+**How you would know.** From the tool's own answer. `nutrition.status` is always
+set, and `matchedRow.source.updatedAt` says how old the table is.
+
+See `HACKS.md` #126 and `servers/good-eggs/FORK.md` #12.
+
+---

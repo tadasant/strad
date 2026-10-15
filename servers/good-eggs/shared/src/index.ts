@@ -47,6 +47,28 @@ export {
   type StoreOrderItem,
 } from './pastOrders.js';
 
+// Nutrition — Good Eggs Kitchen's published tables, and photo URLs (see FORK.md #12)
+export {
+  groceryNutritionFromHtml,
+  parseKitchenNutritionArticles,
+  matchKitchenRow,
+  normalizeName,
+  splitRecipeName,
+  productImageFromUrl,
+  HttpKitchenNutritionSource,
+  setKitchenNutritionSource,
+  getKitchenNutritionSource,
+  KITCHEN_PRODUCER_SLUG,
+  KITCHEN_NUTRITION_API_URL,
+  KITCHEN_NUTRITION_SECTION_URL,
+  type GroceryNutrition,
+  type NutritionFacts,
+  type NutritionStatus,
+  type KitchenNutritionRow,
+  type KitchenNutritionSource,
+  type ProductImage,
+} from './nutrition.js';
+
 // MCP App (io.modelcontextprotocol/ui) exports
 export {
   MCP_APPS_EXTENSION,

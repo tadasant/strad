@@ -14,6 +14,11 @@ import {
   pastOrdersFromStoreData,
   type PastOrdersStoreData,
 } from './pastOrders.js';
+import {
+  getKitchenNutritionSource,
+  groceryNutritionFromHtml,
+  type GroceryNutrition,
+} from './nutrition.js';
 import type {
   GoodEggsConfig,
   GroceryItem,
@@ -123,7 +128,7 @@ type SignedInSignal = 'signed-in' | 'anonymous' | 'unknown';
  * A payload that carries no `user` key AT ALL is `unknown`, not `anonymous`.
  * That distinction is the difference between this being a safety net and being
  * a second way to break the server: refusing a basket read on a payload nobody
- * recognises is cheap, and refusing a LOGIN on one takes all eleven tools down.
+ * recognises is cheap, and refusing a LOGIN on one takes every tool down.
  * So a shape change, an error page and a page that ships no payload all leave
  * the verdict to the URL.
  */
@@ -424,6 +429,12 @@ export interface IGoodEggsClient {
    * Get detailed information about a specific grocery item
    */
   getGroceryDetails(groceryUrl: string): Promise<GroceryDetails>;
+
+  /**
+   * Nutrition and photo URLs for a product — what Good Eggs publishes, with an
+   * explicit status when it publishes nothing (FORK.md #12)
+   */
+  getGroceryNutrition(groceryUrl: string): Promise<GroceryNutrition>;
 
   /**
    * Add an item to the shopping cart
@@ -922,6 +933,28 @@ export class GoodEggsClient implements IGoodEggsClient {
     }, groceryUrl);
 
     return details;
+  }
+
+  async getGroceryNutrition(groceryUrl: string): Promise<GroceryNutrition> {
+    const page = await this.ensureBrowser();
+    const fullUrl = groceryUrl.startsWith('http') ? groceryUrl : `${BASE_URL}${groceryUrl}`;
+    const productId = extractProductId(fullUrl);
+
+    // Always load the page, and read the SERVED document straight after
+    // domcontentloaded, the way the basket read does: the payload is the
+    // server's state for this product, and nothing here needs React to draw.
+    await withNavigationRetry(
+      () => page.goto(fullUrl, { waitUntil: 'domcontentloaded' }),
+      async () => {}
+    );
+    const html = await page.content();
+
+    return groceryNutritionFromHtml(
+      html,
+      fullUrl,
+      getKitchenNutritionSource(),
+      PRODUCT_ID_PATTERN.test(productId) ? productId : undefined
+    );
   }
 
   async addToCart(groceryUrl: string, quantity: number): Promise<CartResult> {
