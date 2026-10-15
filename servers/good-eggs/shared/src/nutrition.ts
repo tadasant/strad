@@ -111,15 +111,41 @@ interface ZendeskArticle {
   body?: unknown;
 }
 
+/** Named entities a Zendesk editor emits in these tables; the rest pass through as text. */
+const NAMED_ENTITIES: Record<string, string> = {
+  nbsp: ' ',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  rsquo: "'",
+  lsquo: "'",
+  rdquo: '"',
+  ldquo: '"',
+  ndash: '–',
+  mdash: '—',
+  hellip: '…',
+  deg: '°',
+  frac12: '½',
+  frac14: '¼',
+  frac34: '¾',
+};
+
 function decodeEntities(s: string): string {
-  return s
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&rsquo;|&lsquo;/g, "'")
-    .replace(/&#(\d+);/g, (_, n: string) => String.fromCodePoint(Number(n)))
-    .replace(/&amp;/g, '&');
+  return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]*);/gi, (whole, ref: string) => {
+    if (ref[0] === '#') {
+      const code =
+        ref[1] === 'x' || ref[1] === 'X' ? parseInt(ref.slice(2), 16) : Number(ref.slice(1));
+      return Number.isFinite(code) ? String.fromCodePoint(code) : whole;
+    }
+    const lower = ref.toLowerCase();
+    if (lower === 'amp') return '&';
+    if (NAMED_ENTITIES[lower] !== undefined) return NAMED_ENTITIES[lower];
+    // Accented Latin letters (`&eacute;`, `&ntilde;`, `&uuml;`…) fold to their base
+    // letter, which is all normalizeName() keeps of them anyway.
+    const accented = ref.match(/^([a-z])(acute|grave|circ|tilde|uml|cedil|ring)$/i);
+    return accented ? accented[1] : whole;
+  });
 }
 
 function cellText(html: string): string {
@@ -163,9 +189,11 @@ function emptyFacts(): NutritionFacts {
  * has no "Servings per Package" column, and positional parsing would shift every
  * value after it one place left — calories read as serving size, fat as calories.
  *
- * Throws when the response is not the shape it should be, or yields no rows at
- * all: a section that parses to nothing is a shape change, and reporting it as
- * "no row for this product" would be a confident wrong answer.
+ * Throws when any part of the section cannot be read: no articles array, an
+ * article with no body, merged cells, a row whose width differs from its
+ * header, a table that yields no rows, or no rows at all. A partly unreadable
+ * section must come back UNKNOWN — reporting its products as "no row" would be
+ * a confident wrong answer.
  */
 export function parseKitchenNutritionArticles(json: unknown): KitchenNutritionRow[] {
   const articles = (json as { articles?: unknown } | null)?.articles;
@@ -174,13 +202,22 @@ export function parseKitchenNutritionArticles(json: unknown): KitchenNutritionRo
   }
   const rows: KitchenNutritionRow[] = [];
   for (const raw of articles as ZendeskArticle[]) {
-    if (typeof raw?.body !== 'string') continue;
+    // An article this parser cannot read is a reason to say UNKNOWN for every
+    // product, not to skip it: its products would otherwise come back as a
+    // confident "not in the tables".
+    if (typeof raw?.body !== 'string') {
+      throw new Error('a help-center article carried no body');
+    }
     const articleTitle = typeof raw.title === 'string' ? raw.title : '';
     const articleUrl =
       typeof raw.html_url === 'string' ? raw.html_url : KITCHEN_NUTRITION_SECTION_URL;
     const articleUpdatedAt = typeof raw.updated_at === 'string' ? raw.updated_at : undefined;
 
     let columns: (keyof NutritionFacts | typeof NAME_HEADER | null)[] | null = null;
+    const before = rows.length;
+    if (/\b(colspan|rowspan)\s*=/i.test(raw.body)) {
+      throw new Error(`article "${articleTitle}" has merged cells, which this parser cannot place`);
+    }
     for (const tr of raw.body.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
       const cells = [...tr[1].matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi)].map((c) =>
         cellText(c[1]),
@@ -194,12 +231,23 @@ export function parseKitchenNutritionArticles(json: unknown): KitchenNutritionRo
         continue;
       }
       if (!columns || !cells[0]) continue;
+      if (cells.length !== columns.length) {
+        throw new Error(
+          `article "${articleTitle}" has a row of ${cells.length} cells under a header of ` +
+            `${columns.length}; its columns cannot be placed`,
+        );
+      }
       const facts = emptyFacts();
       cells.forEach((text, i) => {
         const field = columns![i];
         if (field && field !== NAME_HEADER) facts[field] = parseCell(text);
       });
+      // A name with no values is a heading or a spacer, not a product.
+      if (Object.values(facts).every((v) => v === null)) continue;
       rows.push({ recipeName: cells[0], facts, articleTitle, articleUrl, articleUpdatedAt });
+    }
+    if (rows.length === before && /<table/i.test(raw.body)) {
+      throw new Error(`article "${articleTitle}" has a table this parser read no rows from`);
     }
   }
   if (rows.length === 0) {
@@ -212,7 +260,7 @@ export function parseKitchenNutritionArticles(json: unknown): KitchenNutritionRo
 export function normalizeName(name: string): string {
   return name
     .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
+    .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/[’‘'`]/g, '')
     .replace(/&/g, ' and ')
@@ -220,11 +268,29 @@ export function normalizeName(name: string): string {
     .trim();
 }
 
-/** Split "Black Beans - 10 oz" / "Chicken Tenders-16oz" into a name and a size label. */
+/** What a size label in these tables starts with: a quantity, a parenthetical, or a size word. */
+const SIZE_LABEL = /^(\d|\(|(large|small|medium|regular|family|individual)\b)/i;
+
+/**
+ * Split "Black Beans - 10 oz" / "Grana Padano- 2 oz" / "Chicken Tenders-16oz"
+ * into a name and a size label. The split is at the LAST dash whose suffix reads
+ * as a size, so "Chicken - Lemon Herb - 16 oz" keeps "Chicken - Lemon Herb" as
+ * its name; a dash followed by anything else is part of the name.
+ */
 export function splitRecipeName(recipeName: string): { base: string; size?: string } {
-  const m = recipeName.match(/^(.*?)(?:\s+-\s+|\s*-(?=\s*\d))(.*)$/);
-  if (!m) return { base: recipeName.trim() };
-  return { base: m[1].trim(), size: m[2].trim() || undefined };
+  const separators = [...recipeName.matchAll(/\s*[-–—]\s*/g)];
+  for (let i = separators.length - 1; i >= 0; i--) {
+    const sep = separators[i];
+    const start = sep.index!;
+    const size = recipeName.slice(start + sep[0].length).trim();
+    // A dash between two letters ("Sun-Dried") is a hyphen, not a separator.
+    const spaced = /\s/.test(sep[0]) || /^\d/.test(size);
+    if (spaced && size && SIZE_LABEL.test(size)) {
+      const base = recipeName.slice(0, start).trim();
+      if (base) return { base, size };
+    }
+  }
+  return { base: recipeName.trim() };
 }
 
 function sizeKey(size: string | undefined): string {
@@ -234,7 +300,13 @@ function sizeKey(size: string | undefined): string {
     .replace(/[^a-z0-9.]/g, '');
 }
 
-const dropParenthetical = (s: string) => s.replace(/\s*\(.*?\)\s*/g, ' ').trim();
+/**
+ * Qualifiers that say how a product is stored, not what it is. Only these are
+ * dropped on the second try: "(Vegan)" or "(Half Batch)" can be a different
+ * recipe, and matching through them would report another product's facts.
+ */
+const dropStorageQualifier = (s: string) =>
+  s.replace(/\s*\((frozen|fresh|chilled|refrigerated)\)\s*/gi, ' ').trim();
 
 export type KitchenMatch =
   | { kind: 'found'; row: KitchenNutritionRow; sizeMatches: boolean }
@@ -244,8 +316,8 @@ export type KitchenMatch =
 /**
  * Find a product's row. The match is on the WHOLE name, after folding case,
  * punctuation and accents — never a substring or a "closest" row, because a
- * near-miss here is another product's macros reported as this one's. A
- * parenthetical such as "(Frozen)" is dropped and tried once more.
+ * near-miss here is another product's macros reported as this one's. A storage
+ * qualifier such as "(Frozen)" is dropped and tried once more.
  *
  * Several rows under one name are told apart by the product's retail units;
  * when that does not leave exactly one, every candidate is returned and the
@@ -261,22 +333,25 @@ export function matchKitchenRow(
 
   let candidates = tryKey(normalizeName(productName));
   if (candidates.length === 0) {
-    const stripped = normalizeName(dropParenthetical(productName));
+    const stripped = normalizeName(dropStorageQualifier(productName));
     candidates = rows.filter(
-      (r) => normalizeName(dropParenthetical(splitRecipeName(r.recipeName).base)) === stripped,
+      (r) => normalizeName(dropStorageQualifier(splitRecipeName(r.recipeName).base)) === stripped,
     );
   }
 
-  // The same row can appear in two articles; identical facts are one row.
+  const units = sizeKey(retailUnits);
+  const rowSize = (r: KitchenNutritionRow) => sizeKey(splitRecipeName(r.recipeName).size);
+  const sizeMatches = (r: KitchenNutritionRow) => units !== '' && rowSize(r) === units;
+
+  // The same row can appear twice (one article repeats a row seven times); the
+  // same size with identical facts is one row. Two sizes stay two rows even when
+  // their per-serving facts agree, so the size check below still has both.
   const unique: KitchenNutritionRow[] = [];
   for (const c of candidates) {
-    if (!unique.some((u) => JSON.stringify(u.facts) === JSON.stringify(c.facts))) unique.push(c);
+    const key = rowSize(c) + JSON.stringify(c.facts);
+    if (!unique.some((u) => rowSize(u) + JSON.stringify(u.facts) === key)) unique.push(c);
   }
   if (unique.length === 0) return { kind: 'no_row' };
-
-  const units = sizeKey(retailUnits);
-  const sizeMatches = (r: KitchenNutritionRow) =>
-    units !== '' && sizeKey(splitRecipeName(r.recipeName).size) === units;
 
   if (unique.length === 1)
     return { kind: 'found', row: unique[0], sizeMatches: sizeMatches(unique[0]) };
@@ -298,10 +373,14 @@ export interface HttpKitchenNutritionSourceOptions {
   now?: () => number;
 }
 
+const MAX_PAGES = 5;
+
 /**
  * Reads the section over HTTPS and keeps a good read for `ttlMs` (6 hours by
  * default — the articles change a few times a year). Pages are followed through
- * `next_page`, up to five.
+ * `next_page`, up to five, and only on the help center's own origin and section:
+ * the URL comes from the response, and this runs inside strad's private network.
+ * A section longer than five pages throws rather than being read in part.
  */
 export class HttpKitchenNutritionSource implements KitchenNutritionSource {
   private cache: { rows: KitchenNutritionRow[]; at: number } | null = null;
@@ -335,8 +414,16 @@ export class HttpKitchenNutritionSource implements KitchenNutritionSource {
 
   private async load(): Promise<KitchenNutritionRow[]> {
     const articles: unknown[] = [];
+    const allowed = new URL(KITCHEN_NUTRITION_API_URL);
     let url: string | null = KITCHEN_NUTRITION_API_URL;
-    for (let page = 0; url && page < 5; page++) {
+    for (let page = 0; url; page++) {
+      if (page === MAX_PAGES) {
+        throw new Error(`the help-center section runs past ${MAX_PAGES} pages`);
+      }
+      const next = new URL(url);
+      if (next.origin !== allowed.origin || next.pathname !== allowed.pathname) {
+        throw new Error(`the help center pointed next_page off its own section (${next.origin})`);
+      }
       const res = await this.fetchImpl(url, {
         headers: { accept: 'application/json', 'user-agent': 'Mozilla/5.0 (strad good-eggs)' },
         signal: AbortSignal.timeout(this.timeoutMs),
@@ -380,7 +467,9 @@ export function productImageFromUrl(photoUrl: string, alt?: string): ProductImag
   if (photoUrl.startsWith(RESIZE_PREFIX)) {
     const rest = photoUrl.slice(RESIZE_PREFIX.length);
     const slash = rest.indexOf('/');
-    if (slash !== -1) {
+    // A resize of a REMOTE source (`…/cdn-cgi/image/<opts>/https://…`) has no
+    // original on this host to point at.
+    if (slash !== -1 && !rest.slice(slash + 1).includes('://')) {
       const path = rest.slice(slash + 1);
       return {
         url: `${RESIZE_PREFIX}${READABLE_RENDITION}/${path}`,
@@ -476,9 +565,9 @@ export async function groceryNutritionFromHtml(
         'images are UNKNOWN, not absent.',
     );
   }
-  if (expectedProductId && product.id && product.id !== expectedProductId) {
+  if (expectedProductId && product.id !== expectedProductId) {
     throw new Error(
-      `the page served product ${product.id}, not the requested ${expectedProductId} ` +
+      `the page served product ${product.id ?? '(no id)'}, not the requested ${expectedProductId} ` +
         "(a redirect?); refusing to report another product's nutrition.",
     );
   }
@@ -509,6 +598,20 @@ export async function groceryNutritionFromHtml(
     imagesNote: images.length > 0 ? IMAGES_NOTE : 'Good Eggs serves no photo for this product.',
   };
 
+  if (!producerSlug) {
+    // Whether this is a kitchen product is exactly what decides between the
+    // tables and "Good Eggs publishes nothing", so a payload that does not say
+    // cannot be answered either way.
+    return {
+      ...base,
+      nutrition: {
+        status: 'unknown',
+        note:
+          'The product payload names no producer, so whether Good Eggs publishes nutrition ' +
+          'for it (its own kitchen does; nobody else does) is UNKNOWN, not absent.',
+      },
+    };
+  }
   if (producerSlug !== KITCHEN_PRODUCER_SLUG) {
     return {
       ...base,

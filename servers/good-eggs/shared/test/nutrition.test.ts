@@ -396,7 +396,7 @@ test('the source follows next_page', async () => {
   const source = new HttpKitchenNutritionSource({
     fetchImpl: (async (url: string) =>
       url === KITCHEN_NUTRITION_API_URL
-        ? jsonResponse({ articles: [first], next_page: 'https://help.goodeggs.com/page2' })
+        ? jsonResponse({ articles: [first], next_page: `${KITCHEN_NUTRITION_API_URL}&page=2` })
         : jsonResponse({ articles: rest, next_page: null })) as unknown as typeof fetch,
   });
   assert.equal((await source.getRows()).length, ROWS.length);
@@ -535,4 +535,185 @@ test('a URL off goodeggs.com is refused before any browsing', async () => {
   }).call('get_grocery_nutrition', { grocery_url: 'https://example.com/x' });
   assert.equal(result.isError, true);
   assert.equal(called, false);
+});
+
+// ---------------------------------------------------------------------------
+// The ways a partial or odd read could have come back as a confident answer
+// ---------------------------------------------------------------------------
+
+/** One article with a header and the given body rows, in the real table shape. */
+function article(rowsHtml: string, header = ['Recipe name', 'Calories', 'Protein (g)']) {
+  return {
+    title: 'Good Eggs Kitchen Test',
+    html_url: 'https://help.goodeggs.com/hc/en-us/articles/1',
+    body:
+      '<table><tbody><tr>' +
+      header.map((h) => `<td><strong>${h}</strong></td>`).join('') +
+      '</tr>' +
+      rowsHtml +
+      '</tbody></table>',
+  };
+}
+const tr = (...cells: string[]) => `<tr>${cells.map((c) => `<td>${c}</td>`).join('')}</tr>`;
+
+test('a name with an inner dash splits at the size, not at the first dash', () => {
+  assert.deepEqual(splitRecipeName('Chicken - Lemon Herb - 16 oz'), {
+    base: 'Chicken - Lemon Herb',
+    size: '16 oz',
+  });
+  assert.deepEqual(splitRecipeName('Corn Chowder – 28 oz'), {
+    base: 'Corn Chowder',
+    size: '28 oz',
+  });
+  assert.deepEqual(splitRecipeName('Chicken Caesar Salad - Large'), {
+    base: 'Chicken Caesar Salad',
+    size: 'Large',
+  });
+  // A dash followed by something that is not a size stays in the name.
+  assert.deepEqual(splitRecipeName('Chicken - Lemon Herb'), { base: 'Chicken - Lemon Herb' });
+});
+
+test('"Chicken" does not match "Chicken - Lemon Herb - 16 oz", and that product matches its own row', () => {
+  const rows = parseKitchenNutritionArticles({
+    articles: [article(tr('Chicken - Lemon Herb - 16 oz', '220', '30'))],
+  });
+  assert.equal(matchKitchenRow('Chicken', '16 oz', rows).kind, 'no_row');
+  assert.equal(matchKitchenRow('Chicken - Lemon Herb', '16 oz', rows).kind, 'found');
+});
+
+test('named, decimal and hex entities decode, so an accented name still matches', () => {
+  const rows = parseKitchenNutritionArticles({
+    articles: [
+      article(
+        tr('Saut&eacute;ed Greens &ndash; 8 oz', '90', '3') +
+          tr('Mac &#x26; Cheese &#8211; 12 oz', '400', '15'),
+      ),
+    ],
+  });
+  assert.deepEqual(
+    rows.map((r) => r.recipeName),
+    ['Sauteed Greens – 8 oz', 'Mac & Cheese – 12 oz'],
+  );
+  assert.equal(matchKitchenRow('Sautéed Greens', '8 oz', rows).kind, 'found');
+  assert.equal(matchKitchenRow('Mac and Cheese', '12 oz', rows).kind, 'found');
+});
+
+test('only a storage qualifier is dropped: "(Vegan)" is a different product', () => {
+  const rows = parseKitchenNutritionArticles({
+    articles: [article(tr('Chicken Soup - 28 oz', '180', '12'))],
+  });
+  assert.equal(matchKitchenRow('Chicken Soup (Vegan)', '28 oz', rows).kind, 'no_row');
+  assert.equal(matchKitchenRow('Chicken Soup (Frozen)', '28 oz', rows).kind, 'found');
+});
+
+test('two sizes with identical per-serving facts are still told apart by size', () => {
+  const rows = parseKitchenNutritionArticles({
+    articles: [article(tr('Pork Broth - 14 oz', '20', '3') + tr('Pork Broth - 28 oz', '20', '3'))],
+  });
+  const m = matchKitchenRow('Pork Broth', '28 oz', rows);
+  assert.equal(m.kind, 'found');
+  assert.equal(m.kind === 'found' && m.row.recipeName, 'Pork Broth - 28 oz');
+  assert.equal(m.kind === 'found' && m.sizeMatches, true);
+});
+
+test('a row with a name and no values is a heading, not a product', () => {
+  const rows = parseKitchenNutritionArticles({
+    articles: [article(tr('Soups', '', '') + tr('Corn Chowder - 28 oz', '240', '8'))],
+  });
+  assert.deepEqual(
+    rows.map((r) => r.recipeName),
+    ['Corn Chowder - 28 oz'],
+  );
+});
+
+test('any unreadable article makes the whole section unreadable, never a silent gap', () => {
+  const good = article(tr('Corn Chowder - 28 oz', '240', '8'));
+  const parse = (bad: unknown) => () => parseKitchenNutritionArticles({ articles: [good, bad] });
+  assert.throws(parse({ title: 'x' }), /no body/);
+  assert.throws(
+    parse(article('<tr><td colspan="2">Black Beans - 10 oz</td><td>8</td></tr>')),
+    /merged cells/,
+  );
+  assert.throws(
+    parse(article(tr('Black Beans - 10 oz', '180'))),
+    /row of 2 cells under a header of 3/,
+  );
+  // A header renamed out from under the parser.
+  assert.throws(
+    parse(article(tr('Black Beans - 10 oz', '180', '10'), ['Product', 'Calories', 'Protein (g)'])),
+    /read no rows from/,
+  );
+});
+
+test('a payload with no producer is UNKNOWN, not "Good Eggs publishes nothing"', async () => {
+  const details = chowderDetails({ currentProducer: null, vendor: null });
+  const source = rowsSource();
+  const result = await groceryNutritionFromHtml(page(details), CHOWDER_URL, source);
+  assert.equal(result.nutrition.status, 'unknown');
+  assert.match(result.nutrition.note, /names no producer/);
+  assert.equal(source.calls, 0);
+});
+
+test('a page with no product id is refused when the URL named one', async () => {
+  await assert.rejects(
+    groceryNutritionFromHtml(
+      page(chowderDetails({ id: undefined })),
+      CHOWDER_URL,
+      rowsSource(),
+      '5cccb5efa4f746000e935c13',
+    ),
+    /served product \(no id\)/,
+  );
+});
+
+test('a resize of a remote source is passed through, not rewritten into a broken original', () => {
+  const remote =
+    'https://images.goodeggs.com/cdn-cgi/image/width=840/https://cdn.example.com/a.jpg';
+  const img = productImageFromUrl(remote);
+  assert.equal(img.url, remote);
+  assert.equal(img.originalUrl, remote);
+});
+
+test('next_page off the help center section is refused before it is fetched', async () => {
+  for (const next of [
+    'http://169.254.169.254/latest/meta-data/',
+    'https://help.goodeggs.com/api/v2/users.json',
+    'https://evil.example.com/api/v2/help_center/en-us/sections/360007686892/articles.json',
+  ]) {
+    const urls: string[] = [];
+    const source = new HttpKitchenNutritionSource({
+      fetchImpl: (async (url: string) => {
+        urls.push(url);
+        return jsonResponse({ articles: KITCHEN_SECTION_RESPONSE.articles, next_page: next });
+      }) as unknown as typeof fetch,
+    });
+    await assert.rejects(source.getRows(), /next_page off its own section/);
+    assert.deepEqual(urls, [KITCHEN_NUTRITION_API_URL]);
+  }
+});
+
+test('a section longer than the page cap throws rather than being read in part', async () => {
+  let n = 0;
+  const source = new HttpKitchenNutritionSource({
+    fetchImpl: (async () =>
+      jsonResponse({
+        articles: KITCHEN_SECTION_RESPONSE.articles,
+        next_page: `${KITCHEN_NUTRITION_API_URL}&page=${++n + 1}`,
+      })) as unknown as typeof fetch,
+  });
+  await assert.rejects(source.getRows(), /runs past 5 pages/);
+  assert.equal(n, 5);
+});
+
+test('concurrent calls share one read', async () => {
+  let calls = 0;
+  const source = new HttpKitchenNutritionSource({
+    fetchImpl: (async () => {
+      calls++;
+      return jsonResponse(KITCHEN_SECTION_RESPONSE);
+    }) as unknown as typeof fetch,
+  });
+  const results = await Promise.all([source.getRows(), source.getRows(), source.getRows()]);
+  assert.equal(calls, 1);
+  assert.ok(results.every((r) => r.length === ROWS.length));
 });

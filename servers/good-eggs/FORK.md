@@ -543,6 +543,10 @@ producer, retail units and photos. It returns JSON with three parts:
 - **The product's identity** (producer, name, retail units, product type), so a
   caller can take a `not_published` product to a nutrition database.
 
+A payload that names no producer is `unknown` rather than `not_published`: the
+producer is what decides between the two. A page whose product id differs from
+the URL's, or that carries none when the URL names one, is an error.
+
 A nutrient is a number when the table prints one. It is the printed text when
 the table prints something else (`"less than 1"`), and `null` when the cell is
 blank or the column is missing.
@@ -581,19 +585,29 @@ producer.** Measured on 2026-10-15:
 (496 header rows in all), and every header row restarts the column map. Columns
 are mapped by header TEXT, because one real article has no
 `Servings per Package` column. Mapping by position would read its calories as
-serving size. A response with no `articles` array, or one that parses to zero
-rows, throws. A section that changed shape must not come back as "no row for
-this product". A good read is cached for six hours. A failed one is not cached,
-so the next call retries.
+serving size. Anything the parser cannot read throws, so the answer is
+`unknown`: no `articles` array, an article with no body, merged cells
+(`colspan`/`rowspan`), a row whose width differs from its header, or a table that
+yields no rows (a renamed header). A section that has partly changed shape must
+not come back as "no row for this product". A row with a name and no values is a
+heading and is skipped. `next_page` is followed only on the section's own URL
+(the URL comes from the response, and this runs inside strad's private network),
+and a section longer than five pages throws rather than being read in part. A
+good read is cached for six hours. A failed one is not cached, so the next call
+retries.
 
 **How a product is matched to a row.** The product's whole name and the row's
-name are compared after folding case, accents, apostrophes, and `&` to `and`. The
-row's name has its size suffix removed first (`Black Beans - 10 oz`,
-`Grana Padano- 2 oz`, `Chicken Tenders-16oz`). A substring never matches,
-because a near miss would report another product's macros. If nothing matches,
-a parenthetical such as `(Frozen)` is dropped from both names and the comparison
-runs once more. Rows with identical values fold into one: one article repeats a
-row seven times. When several rows remain, the product's retail units choose
+name are compared after folding case, accents, apostrophes, and `&` to `and`. Named,
+decimal and hex HTML entities are decoded first. The row's name has its size
+suffix removed, at the LAST dash (`-`, `–` or `—`) followed by something that
+reads as a size: `Black Beans - 10 oz`, `Grana Padano- 2 oz`,
+`Chicken Tenders-16oz`, `Chicken Caesar Salad - Large`. So a name with a dash of
+its own keeps it. A substring never matches, because a near miss would report
+another product's macros. If nothing matches, a storage qualifier (`(Frozen)`,
+`(Fresh)`, `(Chilled)`, `(Refrigerated)`) is dropped from both names and the
+comparison runs once more. Any other parenthetical, such as `(Vegan)`, can be a
+different recipe and is kept. Rows with the same size and identical values fold
+into one: one article repeats a row seven times. When several rows remain, the product's retail units choose
 between them. If that does not leave exactly one, the answer is `ambiguous`.
 That case is real: `Achiote Marinade - 2 oz` is 70 kcal in one article and 140
 kcal in another.
