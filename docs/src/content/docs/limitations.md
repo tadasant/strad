@@ -3784,7 +3784,9 @@ every text part quoted-printable so a long paragraph stays one line.
   reflow and the HTML part. `images/bundle-google/vendor/gmail-shared/FORK.md` lists the delta.
 
 **How you would know.** The draft or the Sent copy shows the paragraph as one
-line where the caller sent several.
+line where the caller sent several, and a message sent with only a
+`plaintext_body` is `multipart/alternative`, with a `<div dir="auto">` HTML
+part the caller did not write.
 
 **Undo:** callers that write each paragraph as one line, as the tool
 descriptions ask, make the reflow a no-op.

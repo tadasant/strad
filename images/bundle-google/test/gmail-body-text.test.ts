@@ -392,6 +392,26 @@ describe("plainTextToHtml", () => {
     );
   });
 
+  it("leaves markdown emphasis and unopened brackets outside the link", () => {
+    expect(plainTextToHtml("**https://x.test/b** [docs](https://x.test/c) [https://x.test/d]")).toBe(
+      '<div dir="auto">**<a href="https://x.test/b">https://x.test/b</a>** ' +
+        '[docs](<a href="https://x.test/c">https://x.test/c</a>) ' +
+        '[<a href="https://x.test/d">https://x.test/d</a>]</div>',
+    );
+  });
+
+  it("links an upper-case scheme, and never a bare scheme", () => {
+    expect(plainTextToHtml("HTTPS://X.test/a and http://. too")).toBe(
+      '<div dir="auto"><a href="HTTPS://X.test/a">HTTPS://X.test/a</a> and http://. too</div>',
+    );
+  });
+
+  it("keeps runs of spaces and tabs inside a line, so columns stay aligned", () => {
+    expect(plainTextToHtml("| a    | b |\n\tx  y")).toBe(
+      '<div dir="auto">| a&nbsp;&nbsp;&nbsp; | b |<br>\n&nbsp;&nbsp;&nbsp;&nbsp;x&nbsp; y</div>',
+    );
+  });
+
   it("keeps the indent of an indented line", () => {
     expect(plainTextToHtml("code:\n    x = 1")).toBe(
       '<div dir="auto">code:<br>\n&nbsp;&nbsp;&nbsp;&nbsp;x = 1</div>',

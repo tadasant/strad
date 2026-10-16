@@ -1,6 +1,7 @@
 /**
- * Body text handling for outgoing mail: reflowing hard-wrapped plain text, and
- * the quoted-printable transfer encoding every text body part is sent in.
+ * Body text handling for outgoing mail: reflowing hard-wrapped plain text, the
+ * HTML rendering sent beside a plain-text-only body, and the quoted-printable
+ * transfer encoding every text body part is sent in.
  *
  * Callers are mostly LLM agents, and agents hard-wrap prose at 72-80 columns
  * the way they wrap code comments. A text/plain part without `format=flowed`
@@ -212,7 +213,7 @@ export function encodeQuotedPrintable(text: string): string {
     .join('\r\n');
 }
 
-const URL_IN_TEXT = /\bhttps?:\/\/[^\s<>"]+/g;
+const URL_IN_TEXT = /\bhttps?:\/\/[^\s<>"]+/gi;
 
 function escapeHtml(text: string): string {
   return text
@@ -223,39 +224,59 @@ function escapeHtml(text: string): string {
     .replace(/'/g, '&#39;');
 }
 
+/** Brackets a URL may close only if it opened them: `(see https://x.test/a)`. */
+const CLOSERS: Record<string, string> = { ')': '(', ']': '[' };
+
+function count(text: string, char: string): number {
+  return text.split(char).length - 1;
+}
+
 /**
- * Splits trailing sentence punctuation off a URL found in prose, so
- * `see https://x.test/a.` links `https://x.test/a`. A closing parenthesis
- * stays only when the URL opened one.
+ * Splits trailing punctuation off a URL found in prose, so `see
+ * https://x.test/a.` links `https://x.test/a`, and `**https://x.test/a**`
+ * (markdown emphasis, which agents write into plain text) links it too. A
+ * closing bracket stays only when the URL opened one. Returns null when
+ * nothing past the scheme is left to link.
  */
-function splitUrl(match: string): [string, string] {
+function splitUrl(match: string): [string, string] | null {
   let url = match;
   for (;;) {
     const last = url.slice(-1);
-    if (/[.,;:!?'"]/.test(last)) {
+    const opener = CLOSERS[last];
+    if (/[.,;:!?'"*_~]/.test(last)) {
       url = url.slice(0, -1);
-    } else if (last === ')' && url.split('(').length < url.split(')').length) {
+    } else if (opener && count(url, opener) < count(url, last)) {
       url = url.slice(0, -1);
     } else {
       break;
     }
   }
+  if (/^https?:\/\/$/i.test(url)) return null;
   return [url, match.slice(url.length)];
 }
 
-/** One line of plain text as HTML: escaped, its URLs linked, its indent kept. */
+/**
+ * One line of plain text as HTML: escaped, its URLs linked, its spacing kept.
+ * HTML collapses a run of spaces to one, so an indent, an aligned column or a
+ * code line would lose its layout; every space after the first in a run (and
+ * every space of an indent) is a non-breaking one, and a tab is four.
+ */
 function lineToHtml(line: string): string {
   let html = '';
   let at = 0;
   for (const match of line.matchAll(URL_IN_TEXT)) {
-    const [url, rest] = splitUrl(match[0]);
+    const split = splitUrl(match[0]);
+    if (!split) continue;
+    const [url, rest] = split;
     html += escapeHtml(line.slice(at, match.index));
     html += `<a href="${escapeHtml(url)}">${escapeHtml(url)}</a>${escapeHtml(rest)}`;
     at = match.index + match[0].length;
   }
   html += escapeHtml(line.slice(at));
-  // HTML collapses runs of spaces; an indented line keeps its indent.
-  return html.replace(/^ +/, (spaces) => '&nbsp;'.repeat(spaces.length)).replace(/\t/g, '&nbsp;'.repeat(4));
+  return html
+    .replace(/\t/g, '    ')
+    .replace(/^ +/, (spaces) => '&nbsp;'.repeat(spaces.length))
+    .replace(/ {2,}/g, (spaces) => `${'&nbsp;'.repeat(spaces.length - 1)} `);
 }
 
 /**
