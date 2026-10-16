@@ -2,7 +2,7 @@
  * MIME message utilities for building and encoding email messages
  */
 
-import { encodeQuotedPrintable, reflowPlainText } from './body-text.js';
+import { encodeQuotedPrintable, plainTextToHtml, reflowPlainText } from './body-text.js';
 
 export interface MimeMessageOptions {
   to: string;
@@ -56,47 +56,47 @@ function generateBoundary(tag: string): string {
 }
 
 /**
- * A text body part. Plain text is reflowed first, so prose an agent
- * hard-wrapped reads as paragraphs (see body-text.ts). Both kinds go out
- * quoted-printable: a paragraph stays one logical line, and no line on the
- * wire is long enough for a relay to fold it.
+ * A text body part, sent quoted-printable: a paragraph stays one logical
+ * line, and no line on the wire is long enough for a relay to fold it.
  */
 function textPart(subtype: 'plain' | 'html', body: string): { headers: string[]; body: string } {
-  const text = stripLeadingNewlines(body);
   return {
     headers: [
       `Content-Type: text/${subtype}; charset=utf-8`,
       'Content-Transfer-Encoding: quoted-printable',
     ],
-    body: encodeQuotedPrintable(subtype === 'plain' ? reflowPlainText(text) : text),
+    body: encodeQuotedPrintable(body),
   };
 }
 
 /**
  * Builds the body entity (headers + content) for the message text.
- * If both plaintextBody and htmlBody are provided, creates a multipart/alternative entity.
- * If only one is provided, creates a single-part entity with the appropriate content type.
+ *
+ * Plain text is reflowed first, so prose an agent hard-wrapped reads as
+ * paragraphs (see body-text.ts). A message with any plain text is
+ * multipart/alternative: with the caller's html_body when there is one, and
+ * otherwise with an HTML rendering of the plain text, because Gmail breaks a
+ * text/plain-only message at about 70 columns when it displays it. An
+ * html_body alone is sent as a single text/html part.
  */
 function buildBodyEntity(options: MimeMessageOptions): { headers: string[]; body: string } {
-  if (options.plaintextBody && options.htmlBody) {
-    const boundary = generateBoundary('boundary');
-    const parts = [
-      textPart('plain', options.plaintextBody),
-      textPart('html', options.htmlBody),
-    ].map((part) => `--${boundary}\r\n${part.headers.join('\r\n')}\r\n\r\n${part.body}`);
-    parts.push(`--${boundary}--`);
-
-    return {
-      headers: [`Content-Type: multipart/alternative; boundary="${boundary}"`],
-      body: parts.join('\r\n'),
-    };
+  if (options.htmlBody && !options.plaintextBody) {
+    return textPart('html', stripLeadingNewlines(options.htmlBody));
   }
 
-  if (options.htmlBody) {
-    return textPart('html', options.htmlBody);
-  }
+  const plain = reflowPlainText(stripLeadingNewlines(options.plaintextBody ?? ''));
+  const html = options.htmlBody ? stripLeadingNewlines(options.htmlBody) : plainTextToHtml(plain);
+  const boundary = generateBoundary('boundary');
+  const parts = [textPart('plain', plain), textPart('html', html)].map(
+    (part) => `--${boundary}\r\n${part.headers.join('\r\n')}\r\n\r\n${part.body}`
+  );
+  parts.push(`--${boundary}--`);
 
-  return textPart('plain', options.plaintextBody ?? '');
+  return {
+    // Folded: on one line, the header outgrows 78 characters.
+    headers: [`Content-Type: multipart/alternative;\r\n boundary="${boundary}"`],
+    body: parts.join('\r\n'),
+  };
 }
 
 /**

@@ -211,3 +211,64 @@ export function encodeQuotedPrintable(text: string): string {
     })
     .join('\r\n');
 }
+
+const URL_IN_TEXT = /\bhttps?:\/\/[^\s<>"]+/g;
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Splits trailing sentence punctuation off a URL found in prose, so
+ * `see https://x.test/a.` links `https://x.test/a`. A closing parenthesis
+ * stays only when the URL opened one.
+ */
+function splitUrl(match: string): [string, string] {
+  let url = match;
+  for (;;) {
+    const last = url.slice(-1);
+    if (/[.,;:!?'"]/.test(last)) {
+      url = url.slice(0, -1);
+    } else if (last === ')' && url.split('(').length < url.split(')').length) {
+      url = url.slice(0, -1);
+    } else {
+      break;
+    }
+  }
+  return [url, match.slice(url.length)];
+}
+
+/** One line of plain text as HTML: escaped, its URLs linked, its indent kept. */
+function lineToHtml(line: string): string {
+  let html = '';
+  let at = 0;
+  for (const match of line.matchAll(URL_IN_TEXT)) {
+    const [url, rest] = splitUrl(match[0]);
+    html += escapeHtml(line.slice(at, match.index));
+    html += `<a href="${escapeHtml(url)}">${escapeHtml(url)}</a>${escapeHtml(rest)}`;
+    at = match.index + match[0].length;
+  }
+  html += escapeHtml(line.slice(at));
+  // HTML collapses runs of spaces; an indented line keeps its indent.
+  return html.replace(/^ +/, (spaces) => '&nbsp;'.repeat(spaces.length)).replace(/\t/g, '&nbsp;'.repeat(4));
+}
+
+/**
+ * The HTML alternative sent beside a plain-text-only body. Gmail renders a
+ * `text/plain` part by breaking it at about 70 columns of its own choosing —
+ * the hard breaks land in the reader's view and in the quote of every reply,
+ * however long the line on the wire was — and it ignores `format=flowed`.
+ * An HTML part is laid out by the reader's client at the reader's width.
+ * Every line break of the (already reflowed) text is kept as a `<br>`, so the
+ * two parts say the same thing with the same structure; bare URLs become
+ * links whose text is the URL.
+ */
+export function plainTextToHtml(text: string): string {
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  return `<div dir="auto">${lines.map(lineToHtml).join('<br>\n')}</div>`;
+}
