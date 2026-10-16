@@ -93,7 +93,7 @@ function createMockGmailClient(): IGmailClient {
 
 function boundaryOf(message: string, type: string): string {
   const match = message.match(
-    new RegExp(`Content-Type: ${type}; boundary="([^"]+)"`),
+    new RegExp(`Content-Type: ${type};\\s+boundary="([^"]+)"`),
   );
   if (!match) throw new Error(`no ${type} boundary in message`);
   return match[1];
@@ -153,8 +153,12 @@ describe("MIME attachments", () => {
     const parts = splitParts(result, boundary);
     expect(parts).toHaveLength(2);
 
-    expect(parts[0]).toContain("Content-Type: text/plain; charset=utf-8");
-    expect(partBody(parts[0])).toBe("See attached.");
+    // The body entity: the text, and the HTML rendering of it.
+    const alt = boundaryOf(parts[0], "multipart/alternative");
+    const textParts = splitParts(parts[0], alt);
+    expect(textParts[0]).toContain("Content-Type: text/plain; charset=utf-8");
+    expect(partBody(textParts[0])).toBe("See attached.");
+    expect(textParts[1]).toContain("Content-Type: text/html; charset=utf-8");
 
     expect(parts[1]).toContain(
       'Content-Type: application/pdf; name="statement.pdf"',
@@ -197,7 +201,7 @@ describe("MIME attachments", () => {
     const parts = splitParts(result, mixed);
     expect(parts).toHaveLength(3);
     expect(parts[0]).toMatch(
-      /^Content-Type: multipart\/alternative; boundary="/,
+      /^Content-Type: multipart\/alternative;\s+boundary="/,
     );
     const altParts = splitParts(partBody(parts[0]), alt);
     expect(altParts.map(partBody)).toEqual(["plain", "<p>html</p>"]);

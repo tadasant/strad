@@ -1,6 +1,7 @@
 /**
- * Body text handling for outgoing mail: reflowing hard-wrapped plain text, and
- * the quoted-printable transfer encoding every text body part is sent in.
+ * Body text handling for outgoing mail: reflowing hard-wrapped plain text, the
+ * HTML rendering sent beside a plain-text-only body, and the quoted-printable
+ * transfer encoding every text body part is sent in.
  *
  * Callers are mostly LLM agents, and agents hard-wrap prose at 72-80 columns
  * the way they wrap code comments. A text/plain part without `format=flowed`
@@ -210,4 +211,85 @@ export function encodeQuotedPrintable(text: string): string {
       return wire.join('\r\n');
     })
     .join('\r\n');
+}
+
+const URL_IN_TEXT = /\bhttps?:\/\/[^\s<>"]+/gi;
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/** Brackets a URL may close only if it opened them: `(see https://x.test/a)`. */
+const CLOSERS: Record<string, string> = { ')': '(', ']': '[' };
+
+function count(text: string, char: string): number {
+  return text.split(char).length - 1;
+}
+
+/**
+ * Splits trailing punctuation off a URL found in prose, so `see
+ * https://x.test/a.` links `https://x.test/a`, and `**https://x.test/a**`
+ * (markdown emphasis, which agents write into plain text) links it too. A
+ * closing bracket stays only when the URL opened one. Returns null when
+ * nothing past the scheme is left to link.
+ */
+function splitUrl(match: string): [string, string] | null {
+  let url = match;
+  for (;;) {
+    const last = url.slice(-1);
+    const opener = CLOSERS[last];
+    if (/[.,;:!?'"*_~]/.test(last)) {
+      url = url.slice(0, -1);
+    } else if (opener && count(url, opener) < count(url, last)) {
+      url = url.slice(0, -1);
+    } else {
+      break;
+    }
+  }
+  if (/^https?:\/\/$/i.test(url)) return null;
+  return [url, match.slice(url.length)];
+}
+
+/**
+ * One line of plain text as HTML: escaped, its URLs linked, its spacing kept.
+ * HTML collapses a run of spaces to one, so an indent, an aligned column or a
+ * code line would lose its layout; every space after the first in a run (and
+ * every space of an indent) is a non-breaking one, and a tab is four.
+ */
+function lineToHtml(line: string): string {
+  let html = '';
+  let at = 0;
+  for (const match of line.matchAll(URL_IN_TEXT)) {
+    const split = splitUrl(match[0]);
+    if (!split) continue;
+    const [url, rest] = split;
+    html += escapeHtml(line.slice(at, match.index));
+    html += `<a href="${escapeHtml(url)}">${escapeHtml(url)}</a>${escapeHtml(rest)}`;
+    at = match.index + match[0].length;
+  }
+  html += escapeHtml(line.slice(at));
+  return html
+    .replace(/\t/g, '    ')
+    .replace(/^ +/, (spaces) => '&nbsp;'.repeat(spaces.length))
+    .replace(/ {2,}/g, (spaces) => `${'&nbsp;'.repeat(spaces.length - 1)} `);
+}
+
+/**
+ * The HTML alternative sent beside a plain-text-only body. Gmail renders a
+ * `text/plain` part by breaking it at about 70 columns of its own choosing —
+ * the hard breaks land in the reader's view and in the quote of every reply,
+ * however long the line on the wire was — and it ignores `format=flowed`.
+ * An HTML part is laid out by the reader's client at the reader's width.
+ * Every line break of the (already reflowed) text is kept as a `<br>`, so the
+ * two parts say the same thing with the same structure; bare URLs become
+ * links whose text is the URL.
+ */
+export function plainTextToHtml(text: string): string {
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  return `<div dir="auto">${lines.map(lineToHtml).join('<br>\n')}</div>`;
 }

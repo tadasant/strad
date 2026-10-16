@@ -150,7 +150,7 @@ was sent to test it.
 
 ---
 
-## 3. Plain-text bodies are reflowed, and every text part is quoted-printable
+## 3. Plain-text bodies are reflowed and sent with an HTML rendering, and every text part is quoted-printable
 
 **Upstream.** The body is sent exactly as given, in a part with no
 `Content-Transfer-Encoding`. Agents hard-wrap prose at 72-80 columns, and a
@@ -178,14 +178,27 @@ long enough, which a relay is free to fold.
   76 characters, and a soft break never splits one character's bytes; the
   soft breaks disappear when the recipient decodes, so a
   paragraph stays one logical line.
-- The `plaintext_body` descriptions on `send_email` and `upsert_draft_email`
-  ask callers to write each paragraph as one line.
+- A `plaintext_body` sent without an `html_body` goes out as
+  `multipart/alternative`: the reflowed text, and `plainTextToHtml` of it.
+  Gmail lays out a `text/plain`-only message at about 70 columns of its own,
+  with a hard break at each, whatever the line on the wire was, and it ignores
+  `format=flowed`; the reflow alone could not fix that. On 2026-10-16 a reply
+  whose Sent copy held each paragraph on one line reached Gmail's app with a
+  break every ~70 columns, and the quote in the answer to it carried those
+  breaks as `<br>`. The HTML rendering escapes the text, keeps each of its
+  line breaks as a `<br>` and each indent as `&nbsp;`, and links bare
+  `http(s)` URLs with the URL as their text, so the two parts say the same
+  thing. A caller's own `html_body` is sent as given and nothing is generated.
+- The `send_email` and `upsert_draft_email` descriptions ask callers to write
+  each paragraph as one line, and to put links in `html_body` as anchors with
+  descriptive text, beside a matching `plaintext_body`.
 
 What the heuristic gets wrong is `HACKS.md` #121.
 
 **Tests.** `images/bundle-google/test/gmail-body-text.test.ts`: the reflow
-rules, the encoding (wire line lengths and a decode round trip), the MIME
-headers for each body shape, and the raw message `sendMessage` and
+rules, the HTML rendering, the encoding (wire line lengths and a decode round
+trip), the MIME headers for each body shape, the 2026-10-16 reply as a
+regression, and the raw message `sendMessage` and
 `createDraft` hand Gmail.
 
 ---

@@ -3754,7 +3754,7 @@ See `HACKS.md` #120.
 
 ---
 
-### 121. gmail reflows a plain-text body that looks hard-wrapped
+### 121. gmail reflows a plain-text body that looks hard-wrapped, and sends HTML beside it
 
 Agents hard-wrap prose at 72-80 columns. Sent as plain text, every one of those
 newlines is a hard break, and on a phone a paragraph comes out as alternating
@@ -3774,11 +3774,19 @@ every text part quoted-printable so a long paragraph stays one line.
   keeps it.
 - **There is no way to turn it off.** Send `html_body`, or indent the lines,
   when every newline has to survive as written.
+- **A `plaintext_body` sent alone also goes out as HTML the caller did not
+  write.** Gmail breaks a plain-text-only message at about 70 columns when it
+  shows it, whatever the line on the wire was, so the reflow alone still
+  arrived broken. The HTML part is the reflowed text escaped, a `<br>` per line
+  break, bare URLs linked by their own text. It cannot give a link anchor text;
+  the tool descriptions ask for an `html_body` for that.
 - **The gmail tree is a fork.** Re-vendoring it from upstream would remove the
-  reflow. `images/bundle-google/vendor/gmail-shared/FORK.md` lists the delta.
+  reflow and the HTML part. `images/bundle-google/vendor/gmail-shared/FORK.md` lists the delta.
 
 **How you would know.** The draft or the Sent copy shows the paragraph as one
-line where the caller sent several.
+line where the caller sent several, and a message sent with only a
+`plaintext_body` is `multipart/alternative`, with a `<div dir="auto">` HTML
+part the caller did not write.
 
 **Undo:** callers that write each paragraph as one line, as the tool
 descriptions ask, make the reflow a no-op.

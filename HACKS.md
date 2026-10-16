@@ -6270,7 +6270,7 @@ could return a signed link through the same grant. 3 and 4 move with the
 bundle's size: a larger instance, or these mounts on their own component,
 raises both.
 
-## 121. gmail reflows a plain-text body it judges hard-wrapped, by a heuristic
+## 121. gmail reflows a plain-text body it judges hard-wrapped, by a heuristic, and sends HTML beside it
 
 **What.** `vendor/gmail-shared` in `images/bundle-google` is a fork, and its
 third delta (`FORK.md` §3) rewrites the `plaintext_body` of `send_email` and
@@ -6299,10 +6299,20 @@ The fork joins those lines back into paragraphs and sends every text part
 4. **It is a fork.** A re-vendor from `pulsemcp/mcp-servers` drops
    `body-text.ts` and puts the raw body back on the wire, with only
    `images/bundle-google/test/gmail-body-text.test.ts` failing.
+5. **A `plaintext_body` sent alone carries an HTML part the caller did not
+   write.** Gmail breaks a `text/plain`-only message at about 70 columns when
+   it shows it, and ignores `format=flowed`, so a reflowed paragraph still
+   arrived broken. The fork adds `plainTextToHtml` of the reflowed text as the
+   `text/html` alternative, and every HTML-capable client shows that instead:
+   escaped text, a `<br>` per line break, bare URLs linked by their own text.
+   It is a rendering, not a rewrite, so it cannot give a link anchor text; the
+   tool descriptions ask callers for an `html_body` when there are links.
 
 **Undo.** 1 and 2 go if every caller writes each paragraph as one line, which
 the tool descriptions ask for, and a reflow is no longer needed. 3 is a
-`preserve_line_breaks` argument, if a caller ever needs it.
+`preserve_line_breaks` argument, if a caller ever needs it. 5 goes when
+Gmail lays out `text/plain` at the reader's width, or when every caller sends
+its own `html_body`.
 
 ## 122. nutrition-facts ships its data in the image, and calls FatSecret only through a proxy
 
