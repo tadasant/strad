@@ -78,12 +78,21 @@ be swapped in.
 - Names are matched by word overlap after folding case, punctuation and
   plurals. USDA's "this is the plain one" qualifiers — "no added fat", "NS as
   to …", "NFS" — do not count against a name. A prefix is not a word: "apple"
-  does not find Applebee's.
+  does not find Applebee's. Nor is a word with "-ed" on it: "buttered" is not
+  butter, "salted" is not salt.
+- A few phrases change what a word means and are folded first. "Without
+  salt" and "no salt added" are "unsalted", so SR Legacy's "Butter, without
+  salt" is an exact match for "butter, unsalted". A negated word ("no butter",
+  "without peanuts") is glued to its negation and never matches the bare word.
 - `kind` steers which USDA dataset wins a near-tie: `ingredient` favours
   Foundation and SR Legacy, `dish` favours FNDDS, `branded` (or a `brand`) adds
   USDA Branded and FatSecret's brand foods. USDA's names lead with the food,
   so a name that leads with the query's first word ranks above one that only
-  mentions it ("Egg, whole" over "Bread, egg").
+  mentions it ("Egg, whole" over "Bread, egg"), and a name led by a compound
+  the query only half names ranks below one that is not ("unsalted peanuts"
+  finds "Peanuts, roasted, unsalted", not "Peanut butter, …, without salt").
+  Both move the ranking only; the score and its `match` label are the word
+  overlap alone.
 - If the top text match cannot be scaled to the requested unit and one within
   0.1 of it can, the scalable one is the source's best match.
 - Restaurants are matched loosely, by letters only: "mcd" and "maccas" find
@@ -96,6 +105,8 @@ be swapped in.
 Quantities become grams through each source's **own** portions. A mass unit
 converts itself. A volume converts through a volume portion the source
 published (its "1 cup = 158 g" fixes the food's density, so "3 tbsp" follows).
+When a source lists several portions in the requested unit, the whole one
+("1 cup") is used over a fraction of it, then the largest.
 A count word ("medium", "slice", "whole") converts only through a portion with
 that word; "serving" means the source's serving, FNDDS's "Quantity not
 specified", a branded label's serving, or a single-serve package. Nothing is
@@ -104,7 +115,18 @@ guessed: when no portion converts, the component has no estimate, is flagged
 again in grams.
 
 Every candidate says `grams_assumed` and, in words, how it got there
-(`grams_basis`: `2 cup via source portion "1 cup" = 200 g`).
+(`grams_basis`: `0.75 cup via source portion "1 cup" = 258 g`). The caller's
+amount is shown as given, not rounded.
+
+**USDA's truncated fractions are restored at build time.** USDA writes a
+fractional amount as a truncated decimal: SR Legacy's "0.33 cup" is a third,
+and Foundation's whole-milk ricotta lists "0.2 cup" = 64.6 g beside "1 cup" =
+258 g, a quarter cup by its own numbers. Scaling divides by the amount, so
+read literally, 0.75 cup of that ricotta came out 242 g instead of 194. The
+build rewrites such a portion as the fraction it stands for ("1/4 cup"): a
+two-decimal third, sixth, eighth or twelfth always, any other decimal only when
+another portion of the same food in the same unit puts its grams within 2% of a
+household fraction. Tofu's "0.2 block" has no such sibling and stays a fifth.
 
 ### The estimate
 
@@ -112,7 +134,9 @@ Per component:
 
 - `candidates` — each source's best match, scaled: id, source, dataset, name,
   brand or restaurant, data year, `match` (`exact` / `strong` / `partial` /
-  `weak` / `pinned`), grams assumed and the eight nutrients.
+  `weak` / `pinned`), grams assumed, the eight nutrients, and `in_range`. A
+  candidate left out of the range says why in `not_in_range_because` (a weak
+  match, no conversion to the amount, or the restaurant rule below).
 - `alternatives` — the runners-up per source (default 2, up to 5).
 - `range` — `low` / `expected` / `high` for calories, protein, carbs, fat,
   fiber, sugar, saturated fat and sodium. `expected` comes from the best match
@@ -141,8 +165,10 @@ or FatSecret), the expected value is the closest USDA FNDDS generic dish and the
 component is flagged `independent_restaurant_estimate`. A chain that is in
 MenuStat but has no close item (Chipotle's menu is listed as components, so
 "chicken burrito" finds only "Chicken") takes the same path, and the note says
-which. When a chain item does match, the USDA dish is still shown as evidence
-with `in_range: false`.
+which. When a chain item does match, a generic USDA dish is still shown as
+evidence with `in_range: false`. The exception is an FNDDS record named for the
+chain itself — FNDDS lists "Big Mac (McDonalds)" — which is the same item and
+enters the range beside the menu's.
 
 ## Configuration
 

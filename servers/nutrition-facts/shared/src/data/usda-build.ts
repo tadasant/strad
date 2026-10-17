@@ -143,6 +143,7 @@ export function buildUsda(files: CsvFiles): UsdaRecord[] {
 
   const out: UsdaRecord[] = [];
   for (const { rec, raw } of foods.values()) {
+    rec.p = exactPortions(rec.p);
     const tuple = NUTRIENT_KEYS.map((key) => {
       for (const id of NUTRIENT_IDS[key]) {
         const v = raw.get(id);
@@ -196,4 +197,80 @@ function portionLabel(
 function trimNumber(text: string): string {
   const n = Number(text);
   return Number.isFinite(n) ? String(n) : text;
+}
+
+const DECIMAL_LABEL = /^(\d+\.\d+) (.+)$/;
+
+/** Household fractions a portion amount is written in. */
+const DENOMINATORS = [2, 3, 4, 6, 8, 12];
+
+/** The nearest k/n to `v` over `denominators`, as [k, n]. */
+function nearestFraction(v: number, denominators: readonly number[]): [number, number] {
+  let best: [number, number] = [Math.round(v), 1];
+  for (const n of denominators) {
+    const k = Math.round(v * n);
+    if (k > 0 && Math.abs(k / n - v) < Math.abs(best[0] / best[1] - v)) best = [k, n];
+  }
+  return best;
+}
+
+/** 5/4 → "1 1/4", 1/3 → "1/3". */
+function fractionText([k, n]: [number, number]): string {
+  const whole = Math.floor(k / n);
+  const rest = k - whole * n;
+  if (rest === 0) return String(whole);
+  return whole === 0 ? `${rest}/${n}` : `${whole} ${rest}/${n}`;
+}
+
+/**
+ * USDA writes a fractional portion amount as a TRUNCATED DECIMAL: SR Legacy's
+ * "0.33 cup" is a third of a cup, and Foundation's whole-milk ricotta lists
+ * "0.2 cup" = 64.6 g beside "1 cup" = 258 g — a quarter cup, by its own
+ * numbers. Scaling divides by the amount, so 0.75 cup through "0.2 cup" came
+ * out 25% heavy. The amount is restored to the fraction it stands for:
+ *
+ *   - a two-decimal third, sixth, eighth or twelfth (0.33, 0.66, 0.67, 0.16,
+ *     0.12, 0.08) always: no measured amount is written that way;
+ *   - any other decimal only when a portion of the same food in the same
+ *     unit puts the grams within 2% of a household fraction the decimal is a
+ *     truncation of. Tofu's "0.2 block" has no such sibling and stays a fifth.
+ *
+ * The label is rewritten ("1/4 cup"), so the amount the server divides by and
+ * the label the caller reads are the same number.
+ */
+export function exactPortions(portions: Array<[string, number]>): Array<[string, number]> {
+  const parsed = portions.map(([label, grams]) => {
+    const m = DECIMAL_LABEL.exec(label);
+    const lead = /^(\d+(?:\.\d+)?) (.+)$/.exec(label);
+    return {
+      label,
+      grams,
+      decimal: m ? m[1]! : null,
+      amount: lead ? Number(lead[1]) : null,
+      tail: lead ? lead[2]! : null,
+    };
+  });
+  return parsed.map((p) => {
+    if (p.decimal === null || p.amount === null) return [p.label, p.grams];
+    const a = p.amount;
+    let exact: [number, number] | null = null;
+    if (p.decimal.split(".")[1]!.length === 2) {
+      const f = nearestFraction(a, [3, 6, 8, 12]);
+      if (f[1] !== 1 && Math.abs(f[0] / f[1] - a) < 0.01) exact = f;
+    }
+    if (!exact) {
+      for (const s of parsed) {
+        if (s === p || s.tail !== p.tail || s.amount === null) continue;
+        const implied = p.grams / (s.grams / s.amount);
+        if (Math.abs(implied - a) / a <= 0.02) break;
+        const f = nearestFraction(implied, DENOMINATORS);
+        const v = f[0] / f[1];
+        if (f[1] !== 1 && Math.abs(v - implied) / v <= 0.02 && Math.abs(v - a) < 0.1) {
+          exact = f;
+          break;
+        }
+      }
+    }
+    return exact ? [`${fractionText(exact)} ${p.tail}`, p.grams] : [p.label, p.grams];
+  });
 }

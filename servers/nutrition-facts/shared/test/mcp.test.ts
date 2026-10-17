@@ -236,6 +236,59 @@ describe("estimate_components with FatSecret", () => {
   });
 });
 
+describe("estimate_components accuracy (issue #436)", () => {
+  it("scales a volume through the whole-cup portion, not USDA's truncated quarter cup", async () => {
+    const { call } = await connect();
+    const { json } = await call("estimate_components", {
+      components: [
+        { name: "ricotta", quantity: 0.75, unit: "cup", food_id: "usda:1004" },
+        { name: "ricotta", quantity: 0.25, unit: "cup", food_id: "usda:1004" },
+      ],
+    });
+    const [three, one] = json.components;
+    // 0.75 × 258 g, not 0.75 / 0.2 × 64.6 g = 242 g.
+    expect(three.candidates[0].grams_assumed).toBe(193.5);
+    expect(three.candidates[0].grams_basis).toBe('0.75 cup via source portion "1 cup" = 258 g');
+    expect(three.range.calories.expected).toBe(306);
+    expect(one.candidates[0].grams_assumed).toBe(64.5);
+  });
+
+  it("shows a caller's amount as given", async () => {
+    const { call } = await connect();
+    const { json } = await call("estimate_components", {
+      components: [{ name: "rice", quantity: 0.75, unit: "lb", food_id: "usda:3004" }],
+    });
+    expect(json.components[0].candidates[0].grams_basis).toBe("0.75 lb = 340.2 g");
+  });
+
+  it('matches "butter, unsalted" to butter, not a buttered pretzel', async () => {
+    const { call } = await connect();
+    const { json } = await call("estimate_components", {
+      components: [
+        { name: "butter, unsalted", quantity: 21, unit: "g" },
+        { name: "unsalted butter", quantity: 1.5, unit: "tbsp" },
+      ],
+    });
+    for (const c of json.components) {
+      expect(c.expected_from).toBe("usda:2004");
+      expect(c.candidates[0]).toMatchObject({ name: "Butter, without salt", match: "exact" });
+      expect(c.flags).not.toContain("low_confidence_match");
+      // The pretzel may still be shown as a runner-up, but only as a weak one.
+      const pretzel = (c.alternatives.usda ?? []).find((a: Json) => a.id === "usda:3006");
+      if (pretzel) expect(pretzel.match_score).toBeLessThan(0.5);
+    }
+    // 717 kcal/100 g × 21 g.
+    expect(json.components[0].range.calories.expected).toBe(151);
+  });
+
+  it("never calls a buttered pretzel a strong match for butter when butter is not there", async () => {
+    const { call } = await connect();
+    const { json } = await call("search_foods", { query: "butter, unsalted", sources: ["usda"], kind: "dish" });
+    const pretzel = json.results.usda.results.find((r: Json) => r.id === "usda:3006");
+    expect(pretzel === undefined || pretzel.match === "weak").toBe(true);
+  });
+});
+
 describe("estimate_restaurant_item", () => {
   it('matches "mcd" to McDonald\'s, uses the latest MenuStat year, and buffers the high end 15%', async () => {
     const { call } = await connect();
@@ -244,13 +297,28 @@ describe("estimate_restaurant_item", () => {
     expect(c.expected_from).toBe("menustat:180");
     const ms = c.candidates.find((x: Json) => x.source === "menustat");
     expect(ms).toMatchObject({ restaurant: "McDonald's", data_year: 2018, in_range: true });
-    expect(c.range.calories).toEqual({ low: 540, expected: 540, high: 621 });
+    // FNDDS's "Big Mac (McDonalds)" is the chain's own item, so it is in the
+    // range: 257 kcal/100 g × 205 g = 527, beside MenuStat's 540.
+    expect(c.range.calories).toEqual({ low: 527, expected: 540, high: 621 });
     expect(c.buffer).toMatchObject({ applied_to: "high", pct: 15 });
     expect(c.flags).not.toContain("independent_restaurant_estimate");
-    // The USDA generic dish is evidence, but a chain match keeps it out of the range.
-    expect(c.candidates.find((x: Json) => x.source === "usda").in_range).toBe(false);
+    expect(c.flags).not.toContain("sources_disagree");
+    const usda = c.candidates.find((x: Json) => x.source === "usda");
+    expect(usda).toMatchObject({ id: "usda:3003", in_range: true });
+    expect(usda.not_in_range_because).toBeUndefined();
     expect(c.notes.join(" ")).toContain("McDonald's");
     expect(json.totals.buffer_included).toBe(true);
+  });
+
+  it("keeps a generic USDA dish out of a chain item's range, and says why", async () => {
+    const { call } = await connect();
+    const { json } = await call("estimate_restaurant_item", { restaurant: "McDonald's", item: "cheeseburger" });
+    const c = json.components[0];
+    expect(c.expected_from).toBe("menustat:184");
+    expect(c.range.calories).toEqual({ low: 300, expected: 300, high: 345 });
+    const usda = c.candidates.find((x: Json) => x.source === "usda");
+    expect(usda).toMatchObject({ id: "usda:3002", in_range: false });
+    expect(usda.not_in_range_because).toContain("chain menu item matched");
   });
 
   it("takes the buffer as configured", async () => {
@@ -296,8 +364,10 @@ describe("estimate_restaurant_item", () => {
     const { json } = await call("estimate_restaurant_item", { restaurant: "mcd", item: "big mac" });
     const c = json.components[0];
     expect(c.buffer.nutrients).toEqual(["calories", "fat_g", "saturated_fat_g"]);
-    expect(c.range.fat_g.high).toBe(32.2);
-    expect(c.range.protein_g).toEqual({ low: 25, expected: 25, high: 25 });
+    // FNDDS's Big Mac: 14.6 g/100 g × 205 g = 29.9 g, × 1.15.
+    expect(c.range.fat_g.high).toBe(34.4);
+    // Protein is not buffered: FNDDS's 24.2 g is the low end, MenuStat's 25 the high.
+    expect(c.range.protein_g).toEqual({ low: 24.2, expected: 25, high: 25 });
   });
 
   it("keeps a numeric size in the query instead of treating it as a unit", async () => {
@@ -315,7 +385,7 @@ describe("estimate_restaurant_item", () => {
     const c = json.components[0];
     const fs = c.candidates.find((x: Json) => x.source === "fatsecret");
     expect(fs).toMatchObject({ id: "fatsecret:41963", brand: "McDonald's", in_range: true });
-    expect(c.range.calories.low).toBe(540);
+    expect(c.range.calories.low).toBe(527);
     // 590 × 1.15
     expect(c.range.calories.high).toBe(679);
     expect(json.attribution.text).toBe("Powered by fatsecret Platform API");

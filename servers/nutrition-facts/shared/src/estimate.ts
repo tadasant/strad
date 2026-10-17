@@ -37,7 +37,7 @@ import {
   type NutrientKey,
 } from "./nutrients.js";
 import { ATTRIBUTION } from "./remote/fatsecret.js";
-import { matchLabel, MIN_SCORE, RANGE_MIN_SCORE } from "./text.js";
+import { matchLabel, MIN_SCORE, RANGE_MIN_SCORE, squash } from "./text.js";
 import { parseUnit, resolve, type Resolution, type Unit } from "./units.js";
 
 /** A partial match (text.ts) may set the estimate when nothing better can. */
@@ -81,6 +81,8 @@ interface SourceSlot {
   alternatives: Candidate[];
   /** Whether this source's best may enter the range at all (restaurant rule). */
   rangeEligible: boolean;
+  /** Why not, when it may not: shown on the candidate. */
+  ineligibleReason?: string;
 }
 
 interface Scaled {
@@ -89,6 +91,8 @@ interface Scaled {
   res: Resolution;
   pinned: boolean;
   inRange: boolean;
+  /** Why a candidate is shown but not in the range. */
+  outReason?: string;
 }
 
 export interface ComponentResult {
@@ -149,6 +153,7 @@ function candidateView(s: Scaled): Record<string, unknown> {
     grams_basis: s.res.basis,
     nutrients: s.res.nutrients ? rounded(s.res.nutrients) : null,
     in_range: s.inRange,
+    ...(!s.inRange && s.outReason ? { not_in_range_because: s.outReason } : {}),
   };
   if (!s.res.nutrients && c.per100g) view.per_100g = rounded(c.per100g);
   const flags = c.flags.filter((f) => f !== "summary_only");
@@ -192,7 +197,7 @@ function slotFrom(
   result: SourceResult | { notQueried: string },
   pinned: Candidate | undefined,
   alternatives: number,
-  rangeEligible = true,
+  eligibility: { eligible: (c: Candidate) => boolean; reason: string } | boolean = true,
   scalable?: (c: Candidate) => boolean,
 ): SourceSlot {
   const list =
@@ -211,12 +216,17 @@ function slotFrom(
     top && scalable
       ? (list.find((c) => c.score >= top.score - SCALABLE_MARGIN && scalable(c)) ?? top)
       : top;
+  const rangeEligible =
+    typeof eligibility === "boolean" ? eligibility : best ? eligibility.eligible(best) : false;
   return {
     source,
     result,
     ...(best ? { best } : {}),
     alternatives: list.filter((c) => c !== best).slice(0, alternatives),
     rangeEligible,
+    ...(typeof eligibility !== "boolean" && !rangeEligible
+      ? { ineligibleReason: eligibility.reason }
+      : {}),
   };
 }
 
@@ -249,9 +259,16 @@ function assemble(slots: SourceSlot[], o: AssembleOptions): ComponentResult {
       res = resolve(o.quantity, o.unit, c.per100g, c.portions, c.defaultPortion);
     }
     const pinned = c.id === o.pinnedId;
-    const inRange =
-      slot.rangeEligible && res.nutrients !== null && (pinned || c.score >= RANGE_MIN_SCORE);
-    scaled.push({ slot, cand: c, res, pinned, inRange });
+    const strongEnough = pinned || c.score >= RANGE_MIN_SCORE;
+    const inRange = slot.rangeEligible && res.nutrients !== null && strongEnough;
+    const outReason = !slot.rangeEligible
+      ? (slot.ineligibleReason ?? "this source does not set this estimate")
+      : res.nutrients === null
+        ? "could not be scaled to the requested amount"
+        : !strongEnough
+          ? `match score below ${RANGE_MIN_SCORE}`
+          : undefined;
+    scaled.push({ slot, cand: c, res, pinned, inRange, ...(outReason ? { outReason } : {}) });
   }
 
   let inRange = scaled.filter((s) => s.inRange);
@@ -449,12 +466,25 @@ export async function estimateRestaurant(
   const sizeParsed = sizeWord ? parseUnit(sizeWord) : undefined;
   const sizeUnit = sizeParsed?.kind === "count" ? sizeParsed : undefined;
   const servingScalable = scalableFor(input.quantity, serving);
+  // A chain's item outranks a generic dish, so with a chain match USDA is
+  // shown, not used — unless the FNDDS record IS the chain's item: FNDDS names
+  // a few by chain ("Big Mac (McDonalds)"), and that one agrees with the menu.
+  const ownerKey = squash(owner);
+  const usdaEligible = {
+    eligible: (c: Candidate) =>
+      !chainMatched || (ownerKey.length >= 3 && squash(c.name).includes(ownerKey)),
+    reason: "a chain menu item matched; a generic USDA dish is shown as evidence, not used",
+  };
+  // With no chain match, only the USDA dish may set the estimate: a weak
+  // chain item ("Chicken" for "chicken burrito") is shown, never used.
+  const chainEligible = {
+    eligible: () => chainMatched,
+    reason: "no chain menu item matched closely; only the USDA dish sets this estimate",
+  };
   const slots = [
-    slotFrom("usda", usda, pinned, alternatives, !chainMatched, servingScalable),
-    // With no chain match, only the USDA dish may set the estimate: a weak
-    // chain item ("Chicken" for "chicken burrito") is shown, never used.
-    slotFrom("menustat", menustat, pinned, alternatives, chainMatched, servingScalable),
-    slotFrom("fatsecret", fatsecret, pinned, alternatives, chainMatched),
+    slotFrom("usda", usda, pinned, alternatives, usdaEligible, servingScalable),
+    slotFrom("menustat", menustat, pinned, alternatives, chainEligible, servingScalable),
+    slotFrom("fatsecret", fatsecret, pinned, alternatives, chainEligible),
   ];
   const fs = slots[2]!;
   if (fs.best) fs.best = await lookups.fatsecretDetail(fs.best);
