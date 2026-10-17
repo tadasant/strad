@@ -3302,13 +3302,13 @@ See `HACKS.md` #103.
 
 ### 104. A new spreadsheet lands in the Drive root, shared with no one
 
-[`create_spreadsheet`](/servers/google-sheets/#the-tools) needs nothing wider than the `https://www.googleapis.com/auth/spreadsheets` scope a `-rw` slug already holds, and that is exactly why it stops where it does. The file lands in the **root** of the slug account's My Drive, owned by that account and shared with no one. Putting it in a folder, sharing it and deleting it are Drive API writes, and this server asks for no Drive write scope — so a human moves or shares it, in Drive.
+[`create_spreadsheet`](/servers/google-sheets/#the-tools) needs nothing wider than the `https://www.googleapis.com/auth/spreadsheets` scope a `-rw` slug already holds, and that is exactly why it stops where it does. The file lands in the **root** of the slug account's My Drive, owned by that account and shared with no one. Putting it in a folder and deleting it are Drive API writes this server never makes — so a human moves it, in Drive. Sharing it is [`share_spreadsheet`](/servers/google-sheets/#sharing-is-its-own-tier), on an `-rw-external` slug that holds the full `drive` scope; on a `-rw` slug a human shares it.
 
 It is **not idempotent**. A call that times out after Google made the file, retried, leaves two; nothing here can remove the first. The tool's own description tells a caller to look before retrying. The tabs and their header rows go in the same single request as the file, so a failure never leaves a half-built spreadsheet behind.
 
 **How you would know.** The tool's answer names the new file's id and URL; a duplicate is a second id with the same title.
 
-**Undo:** a move/share pair behind `drive.file`, on a slug whose operator has decided that scope is worth it. The create itself stays on `spreadsheets`.
+**Undo:** a move tool behind `drive.file`, on a slug whose operator has decided that scope is worth it. The create itself stays on `spreadsheets`.
 
 See `HACKS.md` #104.
 

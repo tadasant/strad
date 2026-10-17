@@ -7,8 +7,9 @@ Read and edit Google Sheets from an agent, as a specific Google account.
 
 `google-sheets` is strad's own MCP server — source in
 `images/bundle-google/vendor/google-sheets-shared/`, mounted at `/google-sheets`
-inside the bundle image. It serves ten tools: four that read and six that
-write — one of which creates a new spreadsheet, and one of which styles cells.
+inside the bundle image. It serves eleven tools: four that read, six that
+write — one of which creates a new spreadsheet, and one of which styles cells —
+and one that shares a spreadsheet with someone else.
 
 ## One server, one account per slug
 
@@ -77,8 +78,8 @@ complete marker set is the only evidence a deployment asked for one.
 
 ## The read tier is the gateway's, and can also be Google's
 
-The mount serves all ten tools. A `-ro` slug is that same mount with the six
-write tools withheld by strad's
+The mount serves all eleven tools. A `-ro` slug is that same mount with the six
+write tools and `share_spreadsheet` withheld by strad's
 [tool policy](/intro/architecture/), enforced on `tools/list` **and** on
 `tools/call`:
 
@@ -111,10 +112,18 @@ console — and `render-spec` fails the **whole** app spec on one unresolvable
 reference, so a single unconnected slug would take every other server's deploy
 with it.
 
-The `-rw` slug is the same entry with no `tools:` block — the full ten are that
-tier, so a write tool added to the server reaches it on the next image with no
-config change — its own `path`, and `scopes: [https://www.googleapis.com/auth/spreadsheets]`,
-so it holds its own credential consented for the wider scope.
+The `-rw` slug is the same entry with its own `path`,
+`scopes: [https://www.googleapis.com/auth/spreadsheets]` — so it holds its own
+credential consented for the wider scope — and a `tools: allow:` naming the ten
+read and write tools, which is everything but `share_spreadsheet`. An allow list
+is exhaustive, so a write tool added to the server reaches a `-rw` slug only once
+its list names it. That is the price of keeping sharing off it: a `-rw` slug with
+no `tools:` block is the external tier in all but its scopes, and its share calls
+fail on Google's side for want of `drive`.
+
+The `-rw-external` slug is the one with no `tools:` block — the full eleven are
+that tier — and `https://www.googleapis.com/auth/drive` beside `spreadsheets`.
+See [sharing](#sharing-is-its-own-tier).
 
 Unlike [1Password](/limitations/#22-onepassword-ro-is-read-only-because-strad-says-so),
 where read-only had to become policy when the containers collapsed, this server
@@ -146,6 +155,12 @@ Six write:
 | `create_spreadsheet` | Make a new spreadsheet file, optionally with named tabs and a frozen header row on each. Returns its id and URL |
 | `format_cells` | Style a list of ranges: fill and font colour, bold/italic/size/font, number format (currency, percent, a custom pattern like `$#,##0,,"M"`), alignment, wrapping, borders. Never touches a value |
 
+One external, on the `-rw-external` tier only:
+
+| Tool | What it does |
+| --- | --- |
+| `share_spreadsheet` | Grant a user, a group, a Workspace domain or anyone with the link `reader`, `commenter` or `writer` on a spreadsheet. Returns the permission id and the URL |
+
 `create_spreadsheet` needs nothing wider than
 `https://www.googleapis.com/auth/spreadsheets`, the scope a `-rw` slug already
 holds: Google lists `drive`, `drive.file` and `spreadsheets` as each sufficient
@@ -168,10 +183,48 @@ conditional formatting are not reachable. It needs the same
 `https://www.googleapis.com/auth/spreadsheets` scope as every other write.
 
 There is no tool that deletes a tab: adding is recoverable and deleting is not,
-so it is left out on purpose. Nor is there one that deletes, shares or moves a
-spreadsheet **file** — those are Drive **writes**, a scope this server never asks
-for. The one Drive scope it can use is `drive.readonly`, and only to
-[read an Office file](#office-files-in-drive-are-read-too).
+so it is left out on purpose. Nor is there one that deletes or moves a
+spreadsheet **file**. The Drive scopes it can use are `drive.readonly`, only to
+[read an Office file](#office-files-in-drive-are-read-too), and `drive`, only to
+[share one](#sharing-is-its-own-tier).
+
+### Sharing is its own tier
+
+`share_spreadsheet` is a Drive `permissions.create` on the file, made as the
+slug's account — the same grant google-docs' `share_document` makes, with the
+same arguments. It is the one tool here that hands a spreadsheet to someone
+outside the account, so it is withheld from `-rw` the way `share_document` is:
+by the slug's `tools:` list, not by Google.
+
+Google cannot draw that line for you. Sharing a file this app did not create
+needs the full `https://www.googleapis.com/auth/drive` scope — `drive.file`
+reaches only app-created files — and `drive` is read and write over **every
+file in the account's Drive**. So the scope belongs on the `-rw-external` slug
+alone; a `-rw` slug that held it would be kept off sharing by policy and nothing
+else.
+
+```yaml
+- slug: google-sheets-someone-rw-external
+  kind: supplementary-image
+  image: ghcr.io/tadasant/strad-bundle:latest
+  bundle: bundle
+  path: /google-sheets-someone-rw-external
+  entitlements: [admin]
+  oauth:
+    provider: google
+    account: someone@example.com
+    scopes:
+      - https://www.googleapis.com/auth/spreadsheets
+      - https://www.googleapis.com/auth/drive
+  # No `tools:` — the full eleven, including share_spreadsheet.
+```
+
+`send_notification_email` defaults to Google's own default, which emails a user
+or group a link; `domain` and `anyone` grants never email. Nothing here removes a
+grant — that is a human's, in the Share dialog. A token consented without `drive`
+fails the call naming the scope and the Reconnect step, and as with any scope
+added to a config, an existing slug needs **Reconnect Google** before its token
+holds it.
 
 Reads are capped and say when they truncate — a retirement model is tens of
 thousands of cells, and a whole-tab read that silently returned a prefix would be
@@ -185,7 +238,8 @@ console; the rest happen in strad's own.
 1. **Enable the Google Sheets API** on the GCP project behind the OAuth client.
 2. **Configure the OAuth consent screen** with the Sheets scope — and with
    `drive.readonly` if any slug is to
-   [read Office files](#office-files-in-drive-are-read-too) — add each Google
+   [read Office files](#office-files-in-drive-are-read-too), and `drive` if any
+   slug is to [share](#sharing-is-its-own-tier) — add each Google
    account as a **test user** while the app is unverified, and register strad's
    exact redirect URI — `https://<your gateway>/ui/oauth/callback`. Staging and
    production are different URIs; both need registering.

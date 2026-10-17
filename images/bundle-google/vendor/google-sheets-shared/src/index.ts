@@ -10,7 +10,17 @@ export {
   type ClientFactory,
   type EnvLike,
 } from './server.js';
-export { READ_TOOLS, WRITE_TOOLS, createRegisterTools, toolNames } from './tools.js';
+export {
+  READ_TOOLS,
+  WRITE_TOOLS,
+  EXTERNAL_TOOLS,
+  createRegisterTools,
+  toolNames,
+} from './tools.js';
+export type {
+  CreatePermissionOptions,
+  DrivePermission,
+} from './drive-client/lib/permissions.js';
 export {
   DRIVE_READONLY_SCOPE,
   isOfficeFileError,

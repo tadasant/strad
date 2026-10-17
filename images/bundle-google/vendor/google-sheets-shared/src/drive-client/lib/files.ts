@@ -1,9 +1,9 @@
 /**
- * The two Drive API calls this server makes, and nothing else.
+ * The two read-only Drive API calls this server makes. The one Drive write,
+ * sharing, is in ./permissions.ts.
  *
  * SCOPE DISCIPLINE. Everything here is `drive.readonly` work: describe a file,
- * download its bytes. There is no create, no copy, no export and no permission
- * call — notably NOT `files.copy` with `mimeType: application/vnd.google-apps.spreadsheet`,
+ * download its bytes. There is no create, no copy and no export — notably NOT `files.copy` with `mimeType: application/vnd.google-apps.spreadsheet`,
  * which is the obvious way to make an .xlsx readable and is wrong for a read
  * tier: it leaves a second file in the owner's Drive every time an agent reads a
  * spreadsheet. `files.export` is not an option either; Drive exports only NATIVE

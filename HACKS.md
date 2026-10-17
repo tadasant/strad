@@ -5508,8 +5508,10 @@ nothing else. It needs only `https://www.googleapis.com/auth/spreadsheets` — t
 scope every `-rw` slug already holds; Google's discovery document lists `drive`,
 `drive.file` and `spreadsheets` as each sufficient — and the file lands in the
 ROOT of the slug account's My Drive, owned by that account and shared with no
-one. Filing it in a folder, sharing it and deleting it are all Drive API writes,
-and this server asks for no Drive write scope, so none of them is a tool.
+one. Filing it in a folder and deleting it are Drive API writes this server
+never makes, so neither is a tool. Sharing is one — `share_spreadsheet`, a
+`permissions.create` on the full `drive` scope, held only by an `-rw-external`
+slug — so on a `-rw` slug the new file stays shared with no one.
 
 It is also not idempotent. A call that times out after Google made the file and
 is then retried leaves two files, and nothing here can remove the first. The tool
@@ -5521,8 +5523,8 @@ reach only files this app created — so it could file a new spreadsheet but not
 one a human made. The tab titles and the frozen header row ride in the same one
 request, so a failure never leaves a half-built file behind.
 
-**Undo.** A `move_spreadsheet` / `share_spreadsheet` pair behind `drive.file`, on
-a slug whose operator has decided that scope is worth it. The create stays on
+**Undo.** A `move_spreadsheet` behind `drive.file`, on a slug whose operator has
+decided that scope is worth it. The create stays on
 `spreadsheets` either way.
 
 ## 105. A client id metadata document is fetched on an unauthenticated request, and trusted only at `/authorize`

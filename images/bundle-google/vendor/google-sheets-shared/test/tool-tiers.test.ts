@@ -2,7 +2,8 @@
  * The tier lists, and the credential.
  *
  * READ_TOOLS is what a strad `google-sheets-*-ro` slug's `tools: allow:` has to
- * contain, and that config lives in ANOTHER REPOSITORY. An allow-list is
+ * contain, READ_TOOLS + WRITE_TOOLS a `-rw` slug's, and that config lives in
+ * ANOTHER REPOSITORY. An allow-list is
  * exhaustive and fail-closed, so a tool added here without a tier decision either
  * silently joins the read tier (if someone copies the wrong list) or is
  * unreachable from every slug. This is the test that makes that a CI failure
@@ -14,6 +15,7 @@ import assert from "node:assert/strict";
 import {
   READ_TOOLS,
   WRITE_TOOLS,
+  EXTERNAL_TOOLS,
   toolNames,
   missingCredentials,
   createDefaultClient,
@@ -23,7 +25,7 @@ import {
 
 test("every registered tool is in exactly one tier", () => {
   const registered = toolNames().sort();
-  const tiered = [...READ_TOOLS, ...WRITE_TOOLS].sort();
+  const tiered = [...READ_TOOLS, ...WRITE_TOOLS, ...EXTERNAL_TOOLS].sort();
   assert.deepEqual(registered, tiered);
   assert.equal(new Set(tiered).size, tiered.length);
 });
@@ -46,12 +48,28 @@ test("the write tier can edit, style and create a spreadsheet but cannot destroy
     "create_spreadsheet",
     "format_cells",
   ]);
-  // No delete_sheet, no delete_spreadsheet, no share or move tool. Creating a
-  // file needs only the `spreadsheets` scope; deleting, sharing and filing one in
-  // a folder are Drive writes, and this server asks for no Drive write scope, so
-  // they are out of reach by construction rather than by policy.
+  // No delete_sheet, no delete_spreadsheet, no move tool. Creating a file needs
+  // only the `spreadsheets` scope; deleting and filing one in a folder are Drive
+  // writes this server never makes.
   for (const name of toolNames()) {
-    assert.doesNotMatch(name, /^(delete|share|move)/);
+    assert.doesNotMatch(name, /^(delete|move)/);
+  }
+  // Sharing IS a Drive write, and it lives in its own tier so a `-rw` allow
+  // list built from READ_TOOLS + WRITE_TOOLS never reaches it.
+  for (const name of [...READ_TOOLS, ...WRITE_TOOLS]) {
+    assert.doesNotMatch(name, /^share/);
+  }
+});
+
+test("sharing is the external tier, alone", () => {
+  // A `-rw` slug's allow list is READ_TOOLS + WRITE_TOOLS. A share tool in
+  // either would hand that slug the one call that gives someone else the file —
+  // what google-docs withholds from its `-rw` tier for the same reason.
+  assert.deepEqual([...EXTERNAL_TOOLS], ["share_spreadsheet"]);
+  for (const name of toolNames()) {
+    if (/^share/.test(name)) {
+      assert.ok((EXTERNAL_TOOLS as readonly string[]).includes(name), name);
+    }
   }
 });
 

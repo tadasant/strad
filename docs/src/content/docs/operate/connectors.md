@@ -304,6 +304,21 @@ the Drive API on documents the app never created, which `drive.file` cannot
 reach, so the write tiers hold the same grant and differ only by policy — the
 same trade as the service-account tiers.
 
+**google-sheets has the same three tiers**, with one difference: its `-rw` tier
+needs no Drive write at all, so only the external tier carries `drive`.
+
+| Tier           | Scopes                                    | What enforces the tier                                                         |
+| -------------- | ----------------------------------------- | ------------------------------------------------------------------------------ |
+| `-ro`          | `spreadsheets.readonly`, `drive.readonly` | Google and the gateway's `tools:` list                                         |
+| `-rw`          | `spreadsheets`, `drive.readonly`          | Google and the gateway: `tools:` withholds `share_spreadsheet`, and no `drive` |
+| `-rw-external` | `spreadsheets`, `drive`                   | Nothing narrower; this tier is the full eleven                                 |
+
+`drive.readonly` is optional on the first two — it only reads Office files out of
+Drive. `drive` is what `share_spreadsheet` needs, because sharing a file the app
+did not create is out of `drive.file`'s reach, and it is read and write over the
+whole Drive. Adding it to an existing slug takes a **Reconnect Google** on that
+slug's page. See [Google Sheets](/servers/google-sheets/#sharing-is-its-own-tier).
+
 ### The credential arrives under the slug's own variable name, and only that one
 
 A connector's variables are baked onto the container as
