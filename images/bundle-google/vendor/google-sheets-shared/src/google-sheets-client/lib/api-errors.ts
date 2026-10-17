@@ -60,9 +60,8 @@ function categoryPrefix(category: GoogleApiError['category']): string {
  * the download is what failed. So this branch is what a WRITE hits — and what
  * any caller of the client library gets if it does not take the Office path.
  */
-function recoveryHint(status: number, detail: string, operation: string): string | undefined {
+function recoveryHint(status: number, detail: string, sharing: boolean): string | undefined {
   const text = detail.toLowerCase();
-  const sharing = operation.startsWith('Share ');
 
   if (
     status === 400 &&
@@ -95,11 +94,18 @@ function recoveryHint(status: number, detail: string, operation: string): string
     );
   }
 
+  // Drive answers a sharing quota with 403, not 429. Retrying later is the fix;
+  // checking who owns the file is not.
+  if (sharing && status === 403 && text.includes('rate limit')) {
+    return 'Google is rate-limiting sharing for this account. Wait a few minutes and try again.';
+  }
+
   if (sharing && status === 403) {
     return (
       'Only an owner of the file, or someone it is shared with as an editor, can share it — ' +
-      'and an owner can switch that off for editors. Check that the account this refresh ' +
-      'token belongs to is one of them.'
+      'and an owner can switch that off for editors. A Workspace admin policy can also forbid ' +
+      'the grant, typically sharing outside the domain or with "anyone". Check that the ' +
+      'account this refresh token belongs to may share the file, and with this grantee.'
     );
   }
 
@@ -136,9 +142,19 @@ function recoveryHint(status: number, detail: string, operation: string): string
  * Reads the body once, attempts to parse it as JSON for a Google API error message,
  * and falls back to the raw text otherwise.
  */
+export interface GoogleApiErrorOptions {
+  /**
+   * The call was a Drive `permissions.create`. Its scope, its API and its 403s
+   * are not the Sheets ones, and the Sheets hints would send a human after a
+   * scope the token already holds.
+   */
+  sharing?: boolean;
+}
+
 export async function throwForGoogleApiError(
   response: Response,
-  operation: string
+  operation: string,
+  options: GoogleApiErrorOptions = {}
 ): Promise<never> {
   const bodyText = await response.text().catch(() => '');
   let detail = bodyText;
@@ -155,7 +171,7 @@ export async function throwForGoogleApiError(
     // bodyText is not JSON - keep as raw text
   }
   const category = categorize(response.status);
-  const hint = recoveryHint(response.status, detail, operation);
+  const hint = recoveryHint(response.status, detail, options.sharing ?? false);
   const message =
     `${categoryPrefix(category)} (${operation}): ${response.status} ${response.statusText}` +
     `${detail ? ` - ${detail}` : ''}${hint ? `\n\nHint: ${hint}` : ''}`;

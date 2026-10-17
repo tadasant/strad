@@ -737,7 +737,8 @@ servers:
   # full https://www.googleapis.com/auth/drive scope — `drive.file` reaches only
   # app-created files — and that scope is read and write over the account's whole
   # Drive, so it lives on this slug alone. Its own path and its own consent,
-  # like the two above. docs: servers/google-sheets#sharing-is-its-own-tier.
+  # like the two above. It needs no drive.readonly beside `drive`, which already
+  # covers reading an Office file. docs: servers/google-sheets#sharing-is-its-own-tier.
   - slug: google-sheets-rw-external
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest

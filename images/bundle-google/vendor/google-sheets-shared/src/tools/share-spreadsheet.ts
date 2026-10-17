@@ -26,7 +26,9 @@ export const ShareSpreadsheetSchema = z
     spreadsheet_id: z.string().min(1).describe(PARAM_DESCRIPTIONS.spreadsheet_id),
     type: z.enum(['user', 'group', 'domain', 'anyone']).describe(PARAM_DESCRIPTIONS.type),
     role: z.enum(['reader', 'commenter', 'writer']).describe(PARAM_DESCRIPTIONS.role),
-    email_address: z.string().email().optional().describe(PARAM_DESCRIPTIONS.email_address),
+    // Checked as an address only where it is sent: an `anyone` or `domain`
+    // grant drops it, so a stray one there is not worth refusing the grant.
+    email_address: z.string().optional().describe(PARAM_DESCRIPTIONS.email_address),
     domain: z.string().min(1).optional().describe(PARAM_DESCRIPTIONS.domain),
     send_notification_email: z
       .boolean()
@@ -34,12 +36,20 @@ export const ShareSpreadsheetSchema = z
       .describe(PARAM_DESCRIPTIONS.send_notification_email),
   })
   .superRefine((data, ctx) => {
-    if ((data.type === 'user' || data.type === 'group') && !data.email_address) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `email_address is required when type is "${data.type}"`,
-        path: ['email_address'],
-      });
+    if (data.type === 'user' || data.type === 'group') {
+      if (!data.email_address) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `email_address is required when type is "${data.type}"`,
+          path: ['email_address'],
+        });
+      } else if (!z.string().email().safeParse(data.email_address).success) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `"${data.email_address}" is not an email address`,
+          path: ['email_address'],
+        });
+      }
     }
     if (data.type === 'domain' && !data.domain) {
       ctx.addIssue({

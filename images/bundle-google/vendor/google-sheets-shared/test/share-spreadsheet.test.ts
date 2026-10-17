@@ -78,6 +78,9 @@ test("a user grant is one POST to the file's Drive permissions, from a pasted UR
   assert.equal(call.method, "POST");
   assert.equal(call.url.pathname, `/drive/v3/files/${ID}/permissions`);
   assert.equal(call.url.searchParams.get("supportsAllDrives"), "true");
+  // Without `fields`, Drive answers id/type/kind only and the reply could not
+  // confirm what was granted.
+  assert.equal(call.url.searchParams.get("fields"), "id,type,role,emailAddress,domain");
   // Unset means Google's default — it emails a user. Not forced either way.
   assert.equal(call.url.searchParams.has("sendNotificationEmail"), false);
   assert.deepEqual(call.body, { type: "user", role: "writer", emailAddress: "julie@example.com" });
@@ -107,6 +110,10 @@ test("anyone and domain grants never ask Google to email, and carry only their o
   await share({ spreadsheet_id: ID, type: "domain", role: "commenter", domain: "example.com" });
   assert.equal(calls[1].url.searchParams.get("sendNotificationEmail"), "false");
   assert.deepEqual(calls[1].body, { type: "domain", role: "commenter", domain: "example.com" });
+
+  await share({ spreadsheet_id: ID, type: "group", role: "reader", email_address: "team@example.com" });
+  assert.equal(calls[2].url.searchParams.has("sendNotificationEmail"), false);
+  assert.deepEqual(calls[2].body, { type: "group", role: "reader", emailAddress: "team@example.com" });
 });
 
 test("an incomplete or impossible grant is refused before anything reaches Google", async () => {
@@ -145,6 +152,35 @@ test("a token without the drive scope is told to add drive, not spreadsheets", a
   assert.match(text, /https:\/\/www\.googleapis\.com\/auth\/drive /);
   assert.match(text, /Reconnect Google/);
   assert.doesNotMatch(text, /writing needs https:\/\/www\.googleapis\.com\/auth\/spreadsheets/);
+});
+
+test("a sharing quota is a wait, not an ownership problem", async () => {
+  reply = () =>
+    new Response(JSON.stringify({ error: { message: "Rate limit exceeded. User message: \"Sorry, you have exceeded your sharing quota.\"" } }), {
+      status: 403,
+      statusText: "Forbidden",
+      headers: { "content-type": "application/json" },
+    });
+
+  const text = textOf(
+    await share({ spreadsheet_id: ID, type: "user", role: "reader", email_address: "julie@example.com" }),
+  );
+  assert.match(text, /try again/);
+  assert.doesNotMatch(text, /owner of the file/);
+});
+
+test("a Drive API that is not enabled is named as Drive, not Sheets", async () => {
+  reply = () =>
+    new Response(JSON.stringify({ error: { message: "Google Drive API has not been used in project 123 before or it is disabled." } }), {
+      status: 403,
+      statusText: "Forbidden",
+      headers: { "content-type": "application/json" },
+    });
+
+  const text = textOf(
+    await share({ spreadsheet_id: ID, type: "user", role: "reader", email_address: "julie@example.com" }),
+  );
+  assert.match(text, /Google Drive API is not enabled/);
 });
 
 test("a 403 that is not about scope names who may share", async () => {

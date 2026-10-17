@@ -58,7 +58,7 @@ export async function createPermission(
     { method: 'POST', headers, body: JSON.stringify(body) }
   );
   if (!response.ok) {
-    await throwForGoogleApiError(response, `Share Drive file ${fileId}`);
+    await throwForGoogleApiError(response, `Share Drive file ${fileId}`, { sharing: true });
   }
   return (await response.json()) as DrivePermission;
 }
