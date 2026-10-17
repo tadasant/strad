@@ -27,6 +27,9 @@ describe("text matching", () => {
     expect(score("butter", "Pretzels, soft, buttered").coverage).toBe(0);
     expect(score("salt", "Butter, salted").coverage).toBe(0);
     expect(score("bread", "Chicken, breaded").coverage).toBe(0);
+    // A cooking method's "-ed" form is the same food.
+    expect(score("roast chicken", "Chicken, roasted").coverage).toBe(1);
+    expect(score("smoke salmon", "Salmon, smoked").coverage).toBe(1);
     // A spelling the plural fold missed still matches.
     expect(score("tomatoe", "Tomato, raw").coverage).toBe(1);
   });
@@ -38,6 +41,10 @@ describe("text matching", () => {
     expect(score("butter, unsalted", "Butter, without salt").score).toBe(1);
     expect(score("butter", "Pretzels, soft, unsalted, no butter").coverage).toBe(0);
     expect(score("peanuts", "Mixed nuts, without peanuts").coverage).toBe(0);
+    expect(tokens("Peanuts, with salt added")).toEqual(["peanut", "salted"]);
+    expect(tokens("Applesauce, no sugar added")).toEqual(["applesauce", "nosugar"]);
+    expect(tokens("Applesauce, no added sugar")).toEqual(["applesauce", "nosugar"]);
+    expect(score("chicken skin", "Chicken, without the skin").coverage).toBe(0.5);
   });
 
   it("scores the real butter above a buttered pretzel, and the pretzel weak", () => {

@@ -100,6 +100,27 @@ describe("exactPortions", () => {
     ]);
   });
 
+  it("never rewrites an exact half or quarter, nor a decimal the fraction would not be written as", () => {
+    // A weighed half cup 17% off its "1 cup" is still a half cup, not 5/12.
+    const half: Array<[string, number]> = [["0.5 cup", 102], ["1 cup", 245]];
+    expect(exactPortions(half)).toEqual(half);
+    const exact: Array<[string, number]> = [["0.25 cup", 60], ["0.75 cup", 180], ["0.09 cup", 9]];
+    expect(exactPortions(exact)).toEqual(exact);
+  });
+
+  it("measures against a whole-number sibling, not another cut decimal", () => {
+    expect(exactPortions([["0.2 cup", 64.6], ["0.2 cup, packed", 80], ["1 cup", 258]])).toEqual([
+      ["1/4 cup", 64.6],
+      ["0.2 cup, packed", 80],
+      ["1 cup", 258],
+    ]);
+    // A cut sibling alone proves nothing.
+    expect(exactPortions([["0.2 cup", 64.6], ["0.5 cup", 129]])).toEqual([
+      ["0.2 cup", 64.6],
+      ["0.5 cup", 129],
+    ]);
+  });
+
   it("leaves a decimal alone without a sibling that proves it truncated", () => {
     // Tofu's "0.2 block" is a fifth: its 1 block puts it at 0.28, no fraction.
     const tofu: Array<[string, number]> = [["0.2 block", 91], ["1 block", 320]];

@@ -190,23 +190,18 @@ function fmtAmount(n: number): string {
 }
 
 /**
- * The portion to scale through, among several in the same unit: a whole
- * amount first ("1 cup" over "0.5 cup"), then the largest. A source's
+ * The portion to scale through, among several in the same unit: the first
+ * with a whole amount ("1 cup" over "0.5 cup"), else the largest. A source's
  * fractional amount is the one it may have rounded — USDA writes a quarter cup
  * as "0.2 cup" — and the larger the amount, the less a rounding moves the
- * grams per unit.
+ * grams per unit. Among whole amounts the source's order stands, so its first
+ * preparation ("1 cup, chopped") keeps deciding the density.
  */
 function preferWhole<P extends Portion>(portions: readonly P[]): P | undefined {
+  const whole = portions.find((p) => Number.isInteger(p.amount));
+  if (whole) return whole;
   let best: P | undefined;
-  for (const p of portions) {
-    if (!best) {
-      best = p;
-      continue;
-    }
-    const whole = Number.isInteger(p.amount);
-    const bestWhole = Number.isInteger(best.amount);
-    if ((whole && !bestWhole) || (whole === bestWhole && p.amount > best.amount)) best = p;
-  }
+  for (const p of portions) if (!best || p.amount > best.amount) best = p;
   return best;
 }
 

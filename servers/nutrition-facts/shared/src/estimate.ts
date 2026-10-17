@@ -280,7 +280,10 @@ function assemble(slots: SourceSlot[], o: AssembleOptions): ComponentResult {
       (s) => s.slot.rangeEligible && s.res.nutrients !== null && s.cand.score >= PARTIAL_MIN_SCORE,
     );
     if (partial.length) {
-      for (const s of partial) s.inRange = true;
+      for (const s of partial) {
+        s.inRange = true;
+        delete s.outReason;
+      }
       inRange = partial;
       flags.push("low_confidence_match");
     }
@@ -469,10 +472,13 @@ export async function estimateRestaurant(
   // A chain's item outranks a generic dish, so with a chain match USDA is
   // shown, not used — unless the FNDDS record IS the chain's item: FNDDS names
   // a few by chain ("Big Mac (McDonalds)"), and that one agrees with the menu.
-  const ownerKey = squash(owner);
+  const chainKey = menustat.chain ? squash(menustat.chain.restaurant) : null;
+  const namesChain = (c: Candidate) => {
+    const paren = /\(([^)]*)\)\s*$/.exec(c.name);
+    return chainKey !== null && paren !== null && squash(paren[1]!) === chainKey;
+  };
   const usdaEligible = {
-    eligible: (c: Candidate) =>
-      !chainMatched || (ownerKey.length >= 3 && squash(c.name).includes(ownerKey)),
+    eligible: (c: Candidate) => !chainMatched || namesChain(c),
     reason: "a chain menu item matched; a generic USDA dish is shown as evidence, not used",
   };
   // With no chain match, only the USDA dish may set the estimate: a weak

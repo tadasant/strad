@@ -43,7 +43,8 @@ export function estimateRestaurantItemTool(ctx: ToolContext): ToolDefinition {
       "`buffer` field says so. expected is never buffered.\n\n" +
       "Returns the same shape as estimate_components, with one component: " +
       "candidates (best per source: id, source, name, restaurant or brand, " +
-      "data_year, match, grams_assumed, nutrients, in_range), alternatives, " +
+      "data_year, match, grams_assumed, nutrients, in_range, " +
+      "not_in_range_because), alternatives, " +
       "range (low/expected/high per nutrient), flags (sources_disagree when " +
       "calories differ by >20%), notes (e.g. which chain was matched), " +
       "totals, sources (answered / no_match / unavailable, with reasons) and, " +

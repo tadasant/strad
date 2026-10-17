@@ -79,7 +79,9 @@ be swapped in.
   plurals. USDA's "this is the plain one" qualifiers — "no added fat", "NS as
   to …", "NFS" — do not count against a name. A prefix is not a word: "apple"
   does not find Applebee's. Nor is a word with "-ed" on it: "buttered" is not
-  butter, "salted" is not salt.
+  butter, "salted" is not salt. A cooking method is the exception: "roast"
+  matches "roasted", and likewise smoke, grill, steam, bake, broil, poach,
+  toast, boil and braise.
 - A few phrases change what a word means and are folded first. "Without
   salt" and "no salt added" are "unsalted", so SR Legacy's "Butter, without
   salt" is an exact match for "butter, unsalted". A negated word ("no butter",
@@ -123,10 +125,12 @@ fractional amount as a truncated decimal: SR Legacy's "0.33 cup" is a third,
 and Foundation's whole-milk ricotta lists "0.2 cup" = 64.6 g beside "1 cup" =
 258 g, a quarter cup by its own numbers. Scaling divides by the amount, so
 read literally, 0.75 cup of that ricotta came out 242 g instead of 194. The
-build rewrites such a portion as the fraction it stands for ("1/4 cup"): a
-two-decimal third, sixth, eighth or twelfth always, any other decimal only when
-another portion of the same food in the same unit puts its grams within 2% of a
-household fraction. Tofu's "0.2 block" has no such sibling and stays a fifth.
+build rewrites such a portion as the fraction it stands for ("1/4 cup"), when
+the decimal is that fraction cut short or rounded and is not already exact (a
+half or a quarter is never rewritten): a two-decimal third, sixth, eighth or
+twelfth always, any other decimal only when a whole-number portion of the same
+food in the same unit puts its grams within 2% of such a fraction. Tofu's "0.2
+block" has no such sibling and stays a fifth.
 
 ### The estimate
 
@@ -167,8 +171,9 @@ MenuStat but has no close item (Chipotle's menu is listed as components, so
 "chicken burrito" finds only "Chicken") takes the same path, and the note says
 which. When a chain item does match, a generic USDA dish is still shown as
 evidence with `in_range: false`. The exception is an FNDDS record named for the
-chain itself — FNDDS lists "Big Mac (McDonalds)" — which is the same item and
-enters the range beside the menu's.
+chain itself — FNDDS lists "Big Mac (McDonalds)", and the parenthetical names
+the matched MenuStat chain — which is the same item and enters the range beside
+the menu's.
 
 ## Configuration
 

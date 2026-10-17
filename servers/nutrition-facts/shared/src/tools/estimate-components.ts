@@ -75,7 +75,8 @@ export function estimateComponentsTool(ctx: ToolContext): ToolDefinition {
       "not_queried, with the reason.\n\n" +
       "Flags: sources_disagree (calories differ by >20%), needs_grams (no " +
       "portion converts this unit — per_100g values are given; call again in " +
-      "g). A weak match is shown with in_range: false.\n\n" +
+      "g). A weak match is shown with in_range: false and " +
+      "not_in_range_because.\n\n" +
       'Example: {"components":[{"expected_from":"usda:2512381","range":' +
       '{"calories":{"low":205,"expected":205,"high":242}},"flags":[],' +
       '"candidates":[{"id":"usda:2512381","source":"usda","dataset":"fndds",' +

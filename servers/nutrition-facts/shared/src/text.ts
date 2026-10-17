@@ -42,12 +42,12 @@ const STOP_WORDS = new Set([
  * unsalted" and loses to "Pretzels, soft, unsalted, buttered". And "no butter"
  * names a food WITHOUT butter, so the negated word is glued to its negation
  * ("nobutter") and no longer matches the bare word. USDA's own "no added fat"
- * is left alone: `nameTokens` drops it as a neutral qualifier.
+ * never reaches here in a name: `nameTokens` drops it as a neutral qualifier.
  */
 const MEANING_PHRASES: Array<[RegExp, string]> = [
   [/\b(?:without|no)(?: added)? salt(?: added)?\b/g, "unsalted"],
-  [/\bwith(?: added)? salt\b/g, "salted"],
-  [/\b(no|without) (?!added\b)([a-z]+)/g, "$1$2"],
+  [/\bwith(?: added)? salt(?: added)?\b/g, "salted"],
+  [/\b(no|without)(?: added)?(?: the)? ([a-z]+)(?: added)?\b/g, "$1$2"],
 ];
 
 /**
@@ -108,6 +108,20 @@ export function stem(token: string): string {
   return token;
 }
 
+/** Cooking methods whose "-ed" form names the same food. */
+const COOKING_VERBS = new Set([
+  "roast",
+  "smoke",
+  "grill",
+  "steam",
+  "bake",
+  "broil",
+  "poach",
+  "toast",
+  "boil",
+  "braise",
+]);
+
 export function tokenMatches(q: string, n: string): boolean {
   if (q === n) return true;
   // Near-equal only: a spelling the plural fold missed ("tomatoe"/"tomato").
@@ -115,8 +129,14 @@ export function tokenMatches(q: string, n: string): boolean {
   // "applebees", and "cheeseburger" is not "cheese".
   const [short, long] = q.length <= n.length ? [q, n] : [n, q];
   // Nor is a word with "-ed" on it: "buttered" is a pretzel, not butter, and
-  // "salted" is not salt.
-  if (long === `${short}ed` || (short.endsWith("e") && long === `${short}d`)) return false;
+  // "salted" is not salt. A cooking method is the exception — "roast" chicken
+  // is "roasted" chicken.
+  if (
+    (long === `${short}ed` || (short.endsWith("e") && long === `${short}d`)) &&
+    !COOKING_VERBS.has(short)
+  ) {
+    return false;
+  }
   return short.length >= 4 && long.startsWith(short) && long.length - short.length <= 2;
 }
 
