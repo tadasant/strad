@@ -8,7 +8,7 @@ Streamable HTTP, each on its own path.
 /gmail             -> gmail-workspace-mcp-server        (8 tools)
 /google-calendar   -> google-calendar-workspace-mcp-server (7 tools)
 /google-docs       -> google-docs-workspace-mcp-server   (11 tools)
-/google-sheets     -> google-sheets-workspace-mcp-server  (10 tools)
+/google-sheets     -> google-sheets-workspace-mcp-server  (11 tools)
 ```
 
 All four are **pure Google API** servers — no browser, no subprocess — so they
@@ -216,6 +216,12 @@ token without the scope serves native spreadsheets exactly as before and fails a
 Office file with a message naming the scope. The scope is read-only but BROAD: it
 reaches every file in the account's Drive. No write tool ever uses it. See
 `HACKS.md` #102.
+
+**Optionally `https://www.googleapis.com/auth/drive`**, and only for
+`share_spreadsheet` — a Drive `permissions.create`, the one Drive write this
+server makes. It is full Drive read and write, so it belongs on an
+`-rw-external` slug; strad's gateway keeps the tool off `-ro` and `-rw` slugs by
+their `tools: allow:` lists. A token without it fails the share naming the scope.
 
 A refresh token is ONE Google account, which is why this server reads an injected
 env rather than `process.env`: the collapsed bundle mounts it once per strad slug,

@@ -8,6 +8,10 @@ import type { ReadValuesOptions, ValueInputOption } from './google-sheets-client
 import type { CreateSpreadsheetRequest } from './google-sheets-client/lib/create-spreadsheet.js';
 import type { FormatEntry, FormatCellsResult } from './google-sheets-client/lib/format-cells.js';
 import type {
+  CreatePermissionOptions,
+  DrivePermission,
+} from './drive-client/lib/permissions.js';
+import type {
   UpdateValuesResponse,
   AppendValuesResponse,
   ClearValuesResponse,
@@ -44,6 +48,16 @@ export const GOOGLE_SHEETS_SCOPES = {
    * app-created files, and `drive.metadata.readonly` cannot read content.
    */
   driveReadonly: 'https://www.googleapis.com/auth/drive.readonly',
+  /**
+   * OPTIONAL, and only for `share_spreadsheet` — the one Drive WRITE here.
+   *
+   * Full Drive read and write over every file in the account, because sharing
+   * acts on files this app mostly did not create, which `drive.file` cannot
+   * reach. It is what makes a slug able to grant someone else access, so it
+   * belongs on an `-rw-external` slug only; a `-rw` slug that holds it anyway is
+   * kept off sharing by its `tools: allow:` list alone.
+   */
+  drive: 'https://www.googleapis.com/auth/drive',
 } as const;
 
 /**
@@ -88,7 +102,7 @@ export function missingCredentials(env: EnvLike): string[] {
   return GOOGLE_SHEETS_ENV_NAMES.filter((name) => !env[name]);
 }
 
-/** Everything the tools can ask Google for. Read first, then the six writes. */
+/** Everything the tools can ask Google for. Read first, then the six writes, then sharing. */
 export interface IGoogleSheetsClient {
   getSpreadsheet(spreadsheetId: string): Promise<Spreadsheet>;
   getValues(
@@ -124,6 +138,8 @@ export interface IGoogleSheetsClient {
     entries: FormatEntry[],
     defaultSheetId?: number
   ): Promise<FormatCellsResult>;
+  /** A Drive permission on the file. Needs the `drive` scope; see GOOGLE_SHEETS_SCOPES. */
+  createPermission(fileId: string, options: CreatePermissionOptions): Promise<DrivePermission>;
 }
 
 /**
@@ -335,6 +351,14 @@ class OAuthGoogleSheetsClient implements IGoogleSheetsClient {
     const { formatCells } = await import('./google-sheets-client/lib/format-cells.js');
     return this.withAuth((headers) => formatCells(headers, spreadsheetId, entries, defaultSheetId));
   }
+
+  async createPermission(
+    fileId: string,
+    options: CreatePermissionOptions
+  ): Promise<DrivePermission> {
+    const { createPermission } = await import('./drive-client/lib/permissions.js');
+    return this.withAuth((headers) => createPermission(headers, fileId, options));
+  }
 }
 
 export type ClientFactory = () => IGoogleSheetsClient;
@@ -406,14 +430,15 @@ export function createDefaultClient(env: EnvLike = process.env): IGoogleSheetsCl
 }
 
 /**
- * ONE server, read tools AND write tools.
+ * ONE server: read tools, write tools AND the share tool.
  *
- * The `-ro` / `-rw` split is NOT made here. strad's gateway carries a `tools:`
- * allow-list per slug and enforces it on `tools/list` and on `tools/call`
- * (src/gateway/toolPolicy.ts), so `google-sheets-tadas412-ro` is this same server
- * with the six write tools withheld. Deciding it in the container instead would
- * mean a container per tier per account — six of them — which is the architecture
- * this bundle exists to have deleted.
+ * The `-ro` / `-rw` / `-rw-external` split is NOT made here. strad's gateway
+ * carries a `tools:` allow-list per slug and enforces it on `tools/list` and on
+ * `tools/call` (src/gateway/toolPolicy.ts), so `google-sheets-tadas412-ro` is
+ * this same server with the six write tools and `share_spreadsheet` withheld,
+ * and a `-rw` slug withholds `share_spreadsheet` alone. Deciding it in the
+ * container instead would mean a container per tier per account, which is the
+ * architecture this bundle exists to have deleted.
  *
  * Because each slug carries its OWN credential, a deployment that wants the read
  * tier enforced by Google as well as by strad can seed the `-ro` slug a refresh

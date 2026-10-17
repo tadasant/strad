@@ -60,8 +60,9 @@ function categoryPrefix(category: GoogleApiError['category']): string {
  * the download is what failed. So this branch is what a WRITE hits — and what
  * any caller of the client library gets if it does not take the Office path.
  */
-function recoveryHint(status: number, detail: string): string | undefined {
+function recoveryHint(status: number, detail: string, operation: string): string | undefined {
   const text = detail.toLowerCase();
+  const sharing = operation.startsWith('Share ');
 
   if (
     status === 400 &&
@@ -79,7 +80,27 @@ function recoveryHint(status: number, detail: string): string | undefined {
   }
 
   if (status === 403 && text.includes('has not been used in project')) {
-    return 'The Google Sheets API is not enabled on the GCP project behind this OAuth client.';
+    return `The Google ${sharing ? 'Drive' : 'Sheets'} API is not enabled on the GCP project behind this OAuth client.`;
+  }
+
+  // Sharing is a Drive write, so the scope it lacks is not a Sheets one — and
+  // the hint below would send a human to re-consent for a scope the token
+  // already holds.
+  if (sharing && status === 403 && text.includes('insufficient')) {
+    return (
+      'Sharing is a Drive write, and this refresh token was not consented for ' +
+      'https://www.googleapis.com/auth/drive — `spreadsheets` and `drive.readonly` cannot ' +
+      "create a permission. Add the drive scope to this slug's oauth.scopes, deploy, and press " +
+      "Reconnect Google on the slug's console page to mint a token that holds it."
+    );
+  }
+
+  if (sharing && status === 403) {
+    return (
+      'Only an owner of the file, or someone it is shared with as an editor, can share it — ' +
+      'and an owner can switch that off for editors. Check that the account this refresh ' +
+      'token belongs to is one of them.'
+    );
   }
 
   if (status === 403 && text.includes('insufficient')) {
@@ -134,7 +155,7 @@ export async function throwForGoogleApiError(
     // bodyText is not JSON - keep as raw text
   }
   const category = categorize(response.status);
-  const hint = recoveryHint(response.status, detail);
+  const hint = recoveryHint(response.status, detail, operation);
   const message =
     `${categoryPrefix(category)} (${operation}): ${response.status} ${response.statusText}` +
     `${detail ? ` - ${detail}` : ''}${hint ? `\n\nHint: ${hint}` : ''}`;

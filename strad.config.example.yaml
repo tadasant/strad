@@ -695,9 +695,12 @@ servers:
         - batch_get_sheet_values
         - find_in_spreadsheet
 
-  # The write tier: no `tools:` block, because the full ten ARE this tier. Its
-  # consent is for the wider https://www.googleapis.com/auth/spreadsheets, so
-  # Google enforces the split as well as the gateway.
+  # The write tier. Its consent is for the wider
+  # https://www.googleapis.com/auth/spreadsheets, so Google enforces the split
+  # from -ro as well as the gateway. Its `tools:` list is every tool but
+  # share_spreadsheet — the one that hands the file to someone else, which only
+  # the -rw-external slug below reaches. Drop the list and this slug lists the
+  # share too, failing it on Google's side for want of the `drive` scope.
   - slug: google-sheets-rw
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
@@ -713,9 +716,40 @@ servers:
         # out of Drive. Writing one back is not a thing this server does under
         # any scope — the write tools refuse an Office file and say so.
         - https://www.googleapis.com/auth/drive.readonly
+    tools:
+      allow:
+        - get_spreadsheet
+        - get_sheet_values
+        - batch_get_sheet_values
+        - find_in_spreadsheet
+        - update_sheet_values
+        - append_sheet_rows
+        - clear_sheet_values
+        - add_sheet
+        - create_spreadsheet
+        - format_cells
     # FLOW-THROUGH: the target's half of a grant. Uncomment together with the
     # `reaches:` block below; either half alone is a config error.
     # reachableFrom: [my-sheet-app]
+
+  # The external tier: no `tools:` block, because the full eleven ARE this tier,
+  # share_spreadsheet included. Sharing a file this app did not create needs the
+  # full https://www.googleapis.com/auth/drive scope — `drive.file` reaches only
+  # app-created files — and that scope is read and write over the account's whole
+  # Drive, so it lives on this slug alone. Its own path and its own consent,
+  # like the two above. docs: servers/google-sheets#sharing-is-its-own-tier.
+  - slug: google-sheets-rw-external
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /google-sheets-rw-external
+    entitlements: [admin]
+    oauth:
+      provider: google
+      account: someone@example.com
+      scopes:
+        - https://www.googleapis.com/auth/spreadsheets
+        - https://www.googleapis.com/auth/drive
 
   # A HOSTED SERVER THAT CALLS ANOTHER SLUG'S TOOLS THROUGH CORE, as itself, with
   # no credential of its own. `tools:` is exhaustive and bounded by the target's

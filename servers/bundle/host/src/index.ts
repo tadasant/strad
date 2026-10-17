@@ -1027,8 +1027,9 @@ function loadGoogleDocs(
  * can mint the token: the Connect button lives on the slug's console page.
  *
  * The READ/WRITE half of a slug's name is NOT decided here. This mount serves all
- * ten tools and strad's gateway withholds the six writes from a `-ro` slug
- * (src/gateway/toolPolicy.ts) — the same trade every other capability variant in
+ * eleven tools and strad's gateway withholds the six writes and the share from a
+ * `-ro` slug, and the share from a `-rw` one (src/gateway/toolPolicy.ts) — the
+ * same trade every other capability variant in
  * this container makes. A deployment that wants Google to enforce it too can seed
  * the `-ro` slug a token consented only for `spreadsheets.readonly`; because the
  * credential is per slug, that costs nothing here.
