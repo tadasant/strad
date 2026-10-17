@@ -184,6 +184,27 @@ function fmt(n: number): string {
   return String(Math.round(n * 10) / 10);
 }
 
+/** A caller's or a source's amount, as given: 0.75 stays 0.75. */
+function fmtAmount(n: number): string {
+  return String(Math.round(n * 1000) / 1000);
+}
+
+/**
+ * The portion to scale through, among several in the same unit: the first
+ * with a whole amount ("1 cup" over "0.5 cup"), else the largest. A source's
+ * fractional amount is the one it may have rounded — USDA writes a quarter cup
+ * as "0.2 cup" — and the larger the amount, the less a rounding moves the
+ * grams per unit. Among whole amounts the source's order stands, so its first
+ * preparation ("1 cup, chopped") keeps deciding the density.
+ */
+function preferWhole<P extends Portion>(portions: readonly P[]): P | undefined {
+  const whole = portions.find((p) => Number.isInteger(p.amount));
+  if (whole) return whole;
+  let best: P | undefined;
+  for (const p of portions) if (!best || p.amount > best.amount) best = p;
+  return best;
+}
+
 function labelWords(p: Portion): string[] {
   return p.label
     .toLowerCase()
@@ -265,7 +286,7 @@ export function resolve(
       grams,
       unit.name === "g" || unit.name === "gram" || unit.name === "grams"
         ? `${fmt(grams)} g as given`
-        : `${fmt(quantity)} ${unit.name} = ${fmt(grams)} g`,
+        : `${fmtAmount(quantity)} ${unit.name} = ${fmt(grams)} g`,
     );
   }
 
@@ -274,9 +295,7 @@ export function resolve(
       (p): p is Portion & { unit: { kind: "volume"; ml: number } } =>
         p.unit.kind === "volume" && (p.grams !== null || !!p.nutrients),
     );
-    const same = volumes.find(
-      (p) => p.unit.kind === "volume" && p.unit.ml === unit.ml,
-    );
+    const same = preferWhole(volumes.filter((p) => p.unit.ml === unit.ml));
     const p = same ?? volumes[0];
     if (p) {
       const factor = (quantity * unit.ml) / (p.amount * p.unit.ml);
@@ -284,7 +303,7 @@ export function resolve(
       return fromPortion(
         p,
         factor,
-        `${fmt(quantity)} ${unit.name} via source portion "${p.label}"${grams}`,
+        `${fmtAmount(quantity)} ${unit.name} via source portion "${p.label}"${grams}`,
       );
     }
     return { grams: null, nutrients: null, basis: "no volume portion" };
@@ -305,7 +324,7 @@ export function resolve(
     return fromPortion(
       p,
       factor,
-      `${fmt(quantity)} ${unit.name} via source portion "${p.label}"${grams}`,
+      `${fmtAmount(quantity)} ${unit.name} via source portion "${p.label}"${grams}`,
     );
   }
   return {

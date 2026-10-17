@@ -22,7 +22,7 @@ import {
   type UsdaRecord,
 } from "../data/format.js";
 import { fromTuple } from "../nutrients.js";
-import { MIN_SCORE, nameTokens, scoreTokens, tokens } from "../text.js";
+import { MIN_SCORE, nameTokens, scoreTokens, tokenMatches, tokens } from "../text.js";
 import { portion } from "../units.js";
 
 export type FoodKind = "auto" | "ingredient" | "dish" | "branded";
@@ -36,10 +36,29 @@ const BONUS: Record<FoodKind, Record<UsdaDataset, number>> = {
 
 const HEAD_BONUS = 0.08;
 
+/**
+ * A name whose leading food is a COMPOUND the query only half names is about
+ * something else: "unsalted peanuts" is not "Peanut butter, …, without salt",
+ * and "brown rice" is not "Rice flour, brown". The head is the name up to its
+ * first comma, parentheticals aside ("Big Mac (McDonalds)" is headed "big
+ * mac").
+ */
+const PARTIAL_HEAD_PENALTY = 0.08;
+
+function headTokens(name: string): string[] {
+  return nameTokens(name.split(",")[0]!.replace(/\([^)]*\)/g, " "));
+}
+
+function halfNamesHead(query: readonly string[], head: readonly string[]): boolean {
+  const named = head.filter((h) => query.some((q) => tokenMatches(q, h))).length;
+  return named > 0 && named < head.length;
+}
+
 interface Entry {
   rec: UsdaRecord;
   dataset: UsdaDataset;
   nameTokens: string[];
+  headTokens: string[];
 }
 
 export interface UsdaSearchOptions {
@@ -60,6 +79,7 @@ export class UsdaIndex {
         rec,
         dataset: DATASET_CODES[rec.d]!,
         nameTokens: nameTokens(rec.n),
+        headTokens: headTokens(rec.n),
       };
       this.byId.set(rec.i, entry);
       return entry;
@@ -83,7 +103,9 @@ export class UsdaIndex {
       // USDA names lead with the food ("Egg, whole, raw"); a name that leads
       // with the query's first word is about it, not merely mentioning it
       // ("Bread, egg").
-      const head = entry.nameTokens[0] === q[0] ? HEAD_BONUS : 0;
+      const head =
+        (entry.nameTokens[0] === q[0] ? HEAD_BONUS : 0) -
+        (halfNamesHead(q, entry.headTokens) ? PARTIAL_HEAD_PENALTY : 0);
       scored.push({ entry, score, rank: score + head + BONUS[kind][entry.dataset] });
     }
     scored.sort(

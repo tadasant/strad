@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { csvRows } from "../src/data/csv.js";
 import { buildMenuStat } from "../src/data/menustat-build.js";
 import { MENUSTAT_SOURCE, USDA_SOURCES } from "../src/data/sources.js";
+import { exactPortions } from "../src/data/usda-build.js";
 import { fromTuple } from "../src/nutrients.js";
 import { buildFixtureData, MENUSTAT_CSV } from "./fixtures.js";
 
@@ -28,7 +29,7 @@ describe("buildUsda", () => {
   const byId = (id: number) => usda.foods.find((f) => f.i === id)!;
 
   it("keeps only foundation, SR Legacy and FNDDS foods", () => {
-    expect(usda.foods.map((f) => f.i)).toEqual([1001, 1002, 2001, 2002, 2003, 3001, 3002, 3003, 3004, 3005]);
+    expect(usda.foods.map((f) => f.i)).toEqual([1001, 1002, 1004, 2001, 2002, 2003, 2004, 3001, 3002, 3003, 3004, 3005, 3006, 3007]);
     expect(usda.foods.find((f) => f.i === 1003)).toBeUndefined();
   });
 
@@ -70,11 +71,66 @@ describe("buildUsda", () => {
     ]);
   });
 
+  it("restores a portion amount USDA truncated, by the food's own other portions", () => {
+    // Foundation writes ricotta's quarter cup as "0.2 cup" = 64.6 g; its own
+    // "1 cup" = 258 g makes that 0.25.
+    expect(byId(1004).p).toEqual([
+      ["1/4 cup", 64.6],
+      ["0.5 cup", 129],
+      ["1 cup", 258],
+    ]);
+  });
+
   it("uses the SR Legacy release year, categories, and a missing value as null", () => {
     expect(byId(2001).y).toBe(2018);
     expect(byId(2001).c).toBe("Cereal Grains and Pasta");
     expect(byId(3001).c).toBe("Asian mixed dishes");
     expect(fromTuple(byId(2002).k).fiber_g).toBeNull();
+  });
+});
+
+describe("exactPortions", () => {
+  it("reads a two-decimal third, sixth, eighth or twelfth as that fraction", () => {
+    expect(exactPortions([["0.33 cup", 56], ["0.66 cup (#6 scoop)", 167], ["0.12 pie", 131], ["1.33 tbsp", 9], ["0.08 package", 34]])).toEqual([
+      ["1/3 cup", 56],
+      ["2/3 cup (#6 scoop)", 167],
+      ["1/8 pie", 131],
+      ["1 1/3 tbsp", 9],
+      ["1/12 package", 34],
+    ]);
+  });
+
+  it("never rewrites an exact half or quarter, nor a decimal the fraction would not be written as", () => {
+    // A weighed half cup 17% off its "1 cup" is still a half cup, not 5/12.
+    const half: Array<[string, number]> = [["0.5 cup", 102], ["1 cup", 245]];
+    expect(exactPortions(half)).toEqual(half);
+    const exact: Array<[string, number]> = [["0.25 cup", 60], ["0.75 cup", 180], ["0.09 cup", 9]];
+    expect(exactPortions(exact)).toEqual(exact);
+  });
+
+  it("measures against a whole-number sibling, not another cut decimal", () => {
+    expect(exactPortions([["0.2 cup", 64.6], ["0.2 cup, packed", 80], ["1 cup", 258]])).toEqual([
+      ["1/4 cup", 64.6],
+      ["0.2 cup, packed", 80],
+      ["1 cup", 258],
+    ]);
+    // A cut sibling alone proves nothing.
+    expect(exactPortions([["0.2 cup", 64.6], ["0.5 cup", 129]])).toEqual([
+      ["0.2 cup", 64.6],
+      ["0.5 cup", 129],
+    ]);
+  });
+
+  it("leaves a decimal alone without a sibling that proves it truncated", () => {
+    // Tofu's "0.2 block" is a fifth: its 1 block puts it at 0.28, no fraction.
+    const tofu: Array<[string, number]> = [["0.2 block", 91], ["1 block", 320]];
+    expect(exactPortions(tofu)).toEqual(tofu);
+    expect(exactPortions([["0.2 package", 79], ["5.3 oz", 150], ["0.35 oz", 9.9], ["0.7 oz", 20]])).toEqual([
+      ["0.2 package", 79],
+      ["5.3 oz", 150],
+      ["0.35 oz", 9.9],
+      ["0.7 oz", 20],
+    ]);
   });
 });
 

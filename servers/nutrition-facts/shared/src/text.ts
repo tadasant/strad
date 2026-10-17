@@ -35,11 +35,28 @@ const STOP_WORDS = new Set([
 ]);
 
 /**
- * Lowercase, strip accents and punctuation, drop stop words, fold simple
- * plurals. "Tomatoes, grape, raw" → ["tomato", "grape", "raw"].
+ * Phrases that change what a word means, folded before the text is split.
+ *
+ * SR Legacy writes "Butter, without salt" where FNDDS and every caller write
+ * "unsalted"; counted as words, the real butter shares one word of "butter,
+ * unsalted" and loses to "Pretzels, soft, unsalted, buttered". And "no butter"
+ * names a food WITHOUT butter, so the negated word is glued to its negation
+ * ("nobutter") and no longer matches the bare word. USDA's own "no added fat"
+ * never reaches here in a name: `nameTokens` drops it as a neutral qualifier.
+ */
+const MEANING_PHRASES: Array<[RegExp, string]> = [
+  [/\b(?:without|no)(?: added)? salt(?: added)?\b/g, "unsalted"],
+  [/\bwith(?: added)? salt(?: added)?\b/g, "salted"],
+  [/\b(no|without)(?: added)?(?: the)? ([a-z]+)(?: added)?\b/g, "$1$2"],
+];
+
+/**
+ * Lowercase, strip accents and punctuation, fold the phrases above, drop stop
+ * words, fold simple plurals. "Tomatoes, grape, raw" → ["tomato", "grape",
+ * "raw"].
  */
 export function tokens(text: string): string[] {
-  return normalize(text)
+  return MEANING_PHRASES.reduce((t, [re, to]) => t.replace(re, to), normalize(text))
     .split(" ")
     .filter((t) => t.length > 0 && !STOP_WORDS.has(t))
     .map(stem);
@@ -91,12 +108,35 @@ export function stem(token: string): string {
   return token;
 }
 
-function tokenMatches(q: string, n: string): boolean {
+/** Cooking methods whose "-ed" form names the same food. */
+const COOKING_VERBS = new Set([
+  "roast",
+  "smoke",
+  "grill",
+  "steam",
+  "bake",
+  "broil",
+  "poach",
+  "toast",
+  "boil",
+  "braise",
+]);
+
+export function tokenMatches(q: string, n: string): boolean {
   if (q === n) return true;
   // Near-equal only: a spelling the plural fold missed ("tomatoe"/"tomato").
   // A real prefix match is wrong more often than right here — "apple" is not
   // "applebees", and "cheeseburger" is not "cheese".
   const [short, long] = q.length <= n.length ? [q, n] : [n, q];
+  // Nor is a word with "-ed" on it: "buttered" is a pretzel, not butter, and
+  // "salted" is not salt. A cooking method is the exception — "roast" chicken
+  // is "roasted" chicken.
+  if (
+    (long === `${short}ed` || (short.endsWith("e") && long === `${short}d`)) &&
+    !COOKING_VERBS.has(short)
+  ) {
+    return false;
+  }
   return short.length >= 4 && long.startsWith(short) && long.length - short.length <= 2;
 }
 
