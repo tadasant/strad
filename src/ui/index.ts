@@ -781,6 +781,16 @@ async function describeClientGrant(
 }
 
 /**
+ * A value as the console's textareas submit it, as the store should hold it.
+ * See the comment where handleSecretAction reads `body.value`.
+ */
+export function formValue(raw: string): string {
+  const lf = raw.replace(/\r\n?/g, "\n");
+  const body = lf.replace(/\n+$/, "");
+  return body.includes("\n") ? lf : body;
+}
+
+/**
  * Write ONE new parameter — the single form and every line of a bulk add go
  * through here, so the two cannot drift on what a create does.
  *
@@ -1092,10 +1102,12 @@ async function handleSecretAction(
   // a browser submits every line break in a textarea as CRLF. A key stored with
   // `\r\n` is one some parsers reject, so a line break is stored as `\n`,
   // whichever form it arrived in: the same rule `parseBulkCsv` applies to a
-  // quoted value. Nothing else is touched — no trim, so a trailing newline the
-  // human pasted is a trailing newline stored.
-  const value =
-    typeof body.value === "string" ? body.value.replace(/\r\n?/g, "\n") : "";
+  // quoted value. A ONE-LINE value loses a trailing line break, as it did in
+  // the password input this field replaced: Enter in a textarea adds one, a
+  // terminal copy often ends in one, and a token stored as `tok\n` fails
+  // upstream with nothing on the page to show why. A multi-line value is kept
+  // exactly — a PEM's final newline included. Nothing else is trimmed.
+  const value = typeof body.value === "string" ? formValue(body.value) : "";
   const note = typeof body.note === "string" ? body.note.trim() : "";
   // A parameter is a SECRET one when the create form's checkbox is ticked.
   const secret = body.secret === "on" || body.secret === "true";

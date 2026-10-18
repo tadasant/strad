@@ -485,7 +485,7 @@ export function renderSecrets(opts: SecretsViewOptions): string {
           }
           <form method="post" action="${action}/rotate" class="inline rotate-form">
             <input type="hidden" name="path" value="${esc(p.path)}" />${nsField}
-            <textarea class="in in-sm in-value in-masked" name="value" rows="1" placeholder="new value" spellcheck="false"
+            <textarea class="in in-sm in-value in-masked" name="value" rows="1" placeholder="new value" spellcheck="false" data-gramm="false" data-enable-grammarly="false"
                       autocapitalize="off" autocomplete="off" required></textarea>
             <button class="btn btn-ghost">Rotate</button>
           </form>
@@ -643,7 +643,7 @@ ${reveal}
     </label>
     <div class="field value-field">
       <label class="field-l" for="addvalue">Value</label>
-      <textarea class="in in-value in-masked" id="addvalue" name="value" rows="4" required spellcheck="false"
+      <textarea class="in in-value in-masked" id="addvalue" name="value" rows="4" required spellcheck="false" data-gramm="false" data-enable-grammarly="false"
                 autocapitalize="off" autocomplete="off" aria-describedby="addvalue-help"></textarea>
       <span class="field-h" id="addvalue-help">Multi-line values (a PEM key) are kept as pasted.
         <label class="value-show"><input type="checkbox" class="value-show-box" /> show</label></span>
@@ -1661,6 +1661,7 @@ function bulkClientScript(namespace: string, existing: string[]): string {
     var value = el("textarea", "in in-row in-value in-masked bulk-val");
     value.rows = 1; value.placeholder = "value"; value.spellcheck = false;
     value.setAttribute("autocomplete", "off"); value.setAttribute("autocapitalize", "off");
+    value.setAttribute("data-gramm", "false"); value.setAttribute("data-enable-grammarly", "false");
     value.setAttribute("aria-label", "Value");
     value.value = r.value;
     var note = el("input", "in in-row bulk-note");
@@ -2359,6 +2360,7 @@ form.inline{display:flex;align-items:center;gap:.25rem;margin:0}
    value as typed. */
 .in-value{resize:vertical;line-height:1.4}
 textarea.in-sm{height:1.8rem;min-height:1.8rem;vertical-align:middle}
+textarea.in-row{height:1.95rem;min-height:1.95rem}
 .in-masked{-webkit-text-security:disc}
 .value-field:has(.value-show-box:checked) .in-masked{-webkit-text-security:none}
 .value-show{margin-left:.4rem;cursor:pointer;white-space:nowrap}

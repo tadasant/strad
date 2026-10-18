@@ -6534,6 +6534,32 @@ macros for a `not_published` or `not_in_kitchen_tables` product takes the
 producer, name and retail units to a nutrition database, or reads the label off
 a photo when one shows it.
 
+---
+
+## 127. The console masks a value field with CSS, not with a password input
+
+**What.** Every field on the parameters console that takes a value is a
+`<textarea>` with `-webkit-text-security: disc`: the create form, each row's
+Rotate field, and the bulk editor's Rows view (`src/ui/render.ts`). A browser
+without that property shows the value as it is typed. The fields carry
+`spellcheck="false"` and Grammarly's opt-out attributes, but an extension that
+ignores those can still read a textarea, where it would have skipped a password
+input. A value with no line break except at the end has that trailing line break
+dropped (`src/ui/index.ts`). A multi-line value is stored exactly as pasted.
+
+**Why.** A browser strips line breaks from an `<input type="password">`, so a
+pasted PEM key was stored as one line that no key parser accepts. Zimmer's APNs
+key spent twelve days like that. No input element is both masked and
+multi-line. The trailing-newline rule keeps the old field's behaviour for a
+one-line token: Enter in a textarea adds a line break where it used to submit,
+and a terminal copy often ends in one.
+
+**Undo.** If browsers ship a masked multi-line input, use it. Until then, a
+deployment that needs masking in every browser can fall back to a password input
+for values known to be one line, at the cost of the PEM case.
+
+---
+
 ## 128. good-eggs adds through Good Eggs' undocumented basket endpoint, measured live only against an anonymous basket
 
 **What.** `add_to_cart` sends `POST /api/basket/update-item` with

@@ -2657,10 +2657,13 @@ Every field that takes a value is a masked textarea: the create form, each row's
 an `<input type="password">`, because a browser strips the line breaks from a
 password input's value, so a pasted PEM key would be stored as one line that no
 key parser accepts. A line break is stored as `\n`, though a browser submits a
-textarea's line breaks as `\r\n`. Nothing is trimmed, so a trailing newline
-you pasted is stored too. The create form has a **show** box that unmasks its
+textarea's line breaks as `\r\n`. A multi-line value is stored exactly, its
+final newline included. A one-line value has a trailing line break dropped, as
+the password input did, so a token copied with one, or an Enter pressed after
+it, is not stored as `token\n`. The create form has a **show** box that unmasks its
 value so you can check a paste before submitting. The dots come from CSS
-`-webkit-text-security`, and a browser without it shows the value as you type.
+`-webkit-text-security`, and a browser without it shows the value as you type
+([limitation #127](/limitations/#127-the-console-masks-a-value-field-with-css-so-not-every-browser-masks-it)).
 
 ### The namespace field is free text
 

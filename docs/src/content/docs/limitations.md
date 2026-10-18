@@ -3969,6 +3969,24 @@ See `HACKS.md` #126 and `servers/good-eggs/FORK.md` #12.
 
 ---
 
+---
+
+### 127. The console masks a value field with CSS, so not every browser masks it
+
+The parameters console's value fields are textareas, so a pasted PEM key keeps
+its line breaks. A password input would have stripped them. The dots come from
+CSS `-webkit-text-security`, and a browser that does not support it shows the
+value as you type it. A browser extension that reads text fields can see the
+value too, where it would have skipped a password input. A one-line value has a
+trailing line break dropped, and a multi-line value is stored exactly as pasted.
+
+**How you would know.** You see the characters instead of dots in the **Value**
+field.
+
+See `HACKS.md` #127 and [the parameters page](/operate/secrets/#a-value-is-kept-exactly-as-pasted-line-breaks-included).
+
+---
+
 ### 128. good-eggs adds through an endpoint Good Eggs does not document
 
 `add_to_cart` sends the same request as the "Add to basket" button on a product
