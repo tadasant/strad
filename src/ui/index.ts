@@ -1087,7 +1087,15 @@ async function handleSecretAction(
 
   // A value is read into a local and never leaves this function except toward
   // the parameter store, or into the one-shot reveal panel.
-  const value = typeof body.value === "string" ? body.value : "";
+  //
+  // The value fields are textareas, so a pasted PEM keeps its line breaks — and
+  // a browser submits every line break in a textarea as CRLF. A key stored with
+  // `\r\n` is one some parsers reject, so a line break is stored as `\n`,
+  // whichever form it arrived in: the same rule `parseBulkCsv` applies to a
+  // quoted value. Nothing else is touched — no trim, so a trailing newline the
+  // human pasted is a trailing newline stored.
+  const value =
+    typeof body.value === "string" ? body.value.replace(/\r\n?/g, "\n") : "";
   const note = typeof body.note === "string" ? body.note.trim() : "";
   // A parameter is a SECRET one when the create form's checkbox is ticked.
   const secret = body.secret === "on" || body.secret === "true";

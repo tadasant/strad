@@ -2647,6 +2647,21 @@ reason the console does not; `test/readiness.test.ts` is the canary.
 value can be written or a secret value read back. A few things about how it
 addresses the store are worth knowing before you use it.
 
+The two create forms, **Add a parameter** and **Add several parameters**, sit
+above the listing, so a namespace with a long list does not bury them.
+
+### A value is kept exactly as pasted, line breaks included
+
+Every field that takes a value is a masked textarea: the create form, each row's
+**Rotate** field, and each row of the bulk editor's **Rows** view. None of them is
+an `<input type="password">`, because a browser strips the line breaks from a
+password input's value, so a pasted PEM key would be stored as one line that no
+key parser accepts. A line break is stored as `\n`, though a browser submits a
+textarea's line breaks as `\r\n`. Nothing is trimmed, so a trailing newline
+you pasted is stored too. The create form has a **show** box that unmasks its
+value so you can check a paste before submitting. The dots come from CSS
+`-webkit-text-security`, and a browser without it shows the value as you type.
+
 ### The namespace field is free text
 
 `SECRETS_NAMESPACES` is a comma-separated **list**, and it seeds the picker's

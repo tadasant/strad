@@ -485,7 +485,8 @@ export function renderSecrets(opts: SecretsViewOptions): string {
           }
           <form method="post" action="${action}/rotate" class="inline rotate-form">
             <input type="hidden" name="path" value="${esc(p.path)}" />${nsField}
-            <input class="in in-sm" type="password" name="value" placeholder="new value" autocomplete="off" required />
+            <textarea class="in in-sm in-value in-masked" name="value" rows="1" placeholder="new value" spellcheck="false"
+                      autocapitalize="off" autocomplete="off" required></textarea>
             <button class="btn btn-ghost">Rotate</button>
           </form>
           <form method="post" action="${action}/note" class="inline">
@@ -540,7 +541,7 @@ export function renderSecrets(opts: SecretsViewOptions): string {
       : `<div class="state">
          <div class="state-icon">${KEY_SVG}</div>
          <p class="state-title">No parameters in this namespace yet</p>
-         <p class="state-sub">Add one below. Agents can see a parameter's name, kind and note — and, for a non-secret parameter, its value; never a secret value.</p>
+         <p class="state-sub">Add one above. Agents can see a parameter's name, kind and note — and, for a non-secret parameter, its value; never a secret value.</p>
        </div>`;
 
   const reveal = opts.revealed
@@ -591,8 +592,6 @@ ${driftBanner(revealUi)}
 ${flash}
 ${unreadableBanner}
 ${reveal}
-${listing}
-
 <section class="addbox">
   <h2 class="addbox-title">Add a parameter</h2>
   <form method="post" action="${action}/create" class="addform">
@@ -642,14 +641,19 @@ ${listing}
              placeholder="What is this for? Who issued it? When should it rotate?" />
       <span class="field-h">Agents CAN read this note, for either kind.</span>
     </label>
-    <label class="field">
-      <span class="field-l">Value</span>
-      <input class="in" type="password" name="value" required autocomplete="off" />
-    </label>
+    <div class="field value-field">
+      <label class="field-l" for="addvalue">Value</label>
+      <textarea class="in in-value in-masked" id="addvalue" name="value" rows="4" required spellcheck="false"
+                autocapitalize="off" autocomplete="off" aria-describedby="addvalue-help"></textarea>
+      <span class="field-h" id="addvalue-help">Multi-line values (a PEM key) are kept as pasted.
+        <label class="value-show"><input type="checkbox" class="value-show-box" /> show</label></span>
+    </div>
     <button class="btn btn-primary">Create parameter</button>
   </form>
 </section>
 ${bulkBox(action, nsField, ns, store.namespacesStrict, config, opts.bulk)}
+${listing}
+
 ${pathPreviewScript(ns)}
 ${comboBoxScript()}
 ${bulkClientScript(
@@ -1471,7 +1475,8 @@ function pathPreviewScript(namespace: string): string {
  * checks every line before the button lights. Rows are written back into the
  * textarea on submit, so the server only ever parses one format.
  *
- * VALUES. A row's value is a password field. The preview masks a secret value
+ * VALUES. A row's value is a masked textarea, so a multi-line value (a PEM
+ * key) pastes into a row intact. The preview masks a secret value
  * as the table does with reveal off; a non-secret one is shown, as agents can
  * read it anyway. Neither leaves the page until submit, and nothing the server
  * sends back contains one — the refilled lines have their values blanked.
@@ -1650,18 +1655,14 @@ function bulkClientScript(namespace: string, existing: string[]): string {
     secret.type = "checkbox"; secret.checked = parseBulkKind(r.kind) !== false;
     secret.setAttribute("aria-label", "Secret");
     secretWrap.appendChild(secret);
-    var value = el("input", "in in-row bulk-val");
-    value.type = "password"; value.placeholder = "value"; value.autocomplete = "new-password";
+    // A textarea, not a password field: a password field strips line breaks,
+    // so a PEM pasted here would be stored as one line. rows=1 keeps the grid;
+    // the field grows by dragging, and the dots are the in-masked rule.
+    var value = el("textarea", "in in-row in-value in-masked bulk-val");
+    value.rows = 1; value.placeholder = "value"; value.spellcheck = false;
+    value.setAttribute("autocomplete", "off"); value.setAttribute("autocapitalize", "off");
     value.setAttribute("aria-label", "Value");
-    // A password field cannot hold a line break. A multi-line value (a PEM key)
-    // stays on the row object and the field says where to edit it.
-    if (/[\\r\\n]/.test(r.value)) {
-      row._multi = r.value;
-      value.disabled = true;
-      value.placeholder = "multi-line value: edit in CSV";
-    } else {
-      value.value = r.value;
-    }
+    value.value = r.value;
     var note = el("input", "in in-row bulk-note");
     note.type = "text"; note.placeholder = "note (optional)"; note.value = r.note;
     note.setAttribute("aria-label", "Note");
@@ -1705,7 +1706,7 @@ function bulkClientScript(namespace: string, existing: string[]): string {
     return {
       prefix: f.prefix.value.trim(), variable: f.variable.value.trim(),
       kind: f.secret.checked ? "secret" : "plain",
-      value: r._multi !== undefined ? r._multi : f.value.value,
+      value: f.value.value,
       note: f.note.value.trim()
     };
   }
@@ -2352,6 +2353,17 @@ form.inline{display:flex;align-items:center;gap:.25rem;margin:0}
    save is the control that page is not supposed to render. */
 .in:disabled{opacity:.45;cursor:not-allowed}
 .in-sm{font-size:.74rem;padding:.28rem .4rem;width:8.5rem}
+/* A value field is a textarea, never a password input: a password
+   input strips line breaks on paste, so a PEM key would land as one line. The
+   dots are text-security, which a browser without it ignores and shows the
+   value as typed. */
+.in-value{resize:vertical;line-height:1.4}
+textarea.in-sm{height:1.8rem;min-height:1.8rem;vertical-align:middle}
+.in-masked{-webkit-text-security:disc}
+.value-field:has(.value-show-box:checked) .in-masked{-webkit-text-security:none}
+.value-show{margin-left:.4rem;cursor:pointer;white-space:nowrap}
+.value-show input{vertical-align:middle;accent-color:var(--accent)}
+.addbox + .listing,.addbox + .state{margin-top:1.5rem}
 .addbox{margin-top:1.5rem;border:1px solid var(--g5);border-radius:.6rem;background:var(--g7);padding:1.2rem 1.4rem}
 .addbox-title{margin:0 0 .9rem;font-size:1rem;color:var(--white)}
 .addform{display:flex;flex-direction:column;gap:.9rem;max-width:34rem}
