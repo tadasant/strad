@@ -444,6 +444,36 @@ describe("google-docs standalone", () => {
     }
   });
 
+  it("serves the union of comma-separated groups", async () => {
+    const { url } = await startHttp([], cleanEnv({ GOOGLE_DOCS_ENABLED_TOOLGROUPS: "readonly, readwrite_external" }), DOCS);
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(url));
+    try {
+      expect(await toolNames(client)).toEqual(DOCS_TOOLS);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("refuses a half-set OAuth trio beside a complete service account, rather than serving the Workspace user", async () => {
+    const child = spawn(process.execPath, [DOCS], {
+      env: cleanEnv({
+        GOOGLE_DOCS_OAUTH_CLIENT_ID: "id",
+        GOOGLE_DOCS_OAUTH_CLIENT_SECRET: "secret",
+        GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL: "sa@example.iam.gserviceaccount.com",
+        GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY: "key",
+        GOOGLE_DOCS_IMPERSONATE_EMAIL: "user@example.com",
+      }),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    children.push(child);
+    let stderr = "";
+    child.stderr!.on("data", (d) => (stderr += d));
+    const [code] = await once(child, "exit");
+    expect(code).toBe(2);
+    expect(stderr).toContain("GOOGLE_DOCS_OAUTH_REFRESH_TOKEN not set, so this would serve the service account's user");
+  });
+
   it("refuses to start on a tool group it does not know, rather than serving every tool", async () => {
     const child = spawn(process.execPath, [DOCS], {
       env: cleanEnv({ GOOGLE_DOCS_ENABLED_TOOLGROUPS: "read-only" }),

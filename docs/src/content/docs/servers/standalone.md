@@ -40,9 +40,8 @@ you lose is everything strad does in front of it:
   `GOOGLE_DRIVE_ENABLED_TOOLGROUPS=readonly`) is the one narrowing left. In
   strad, google-docs' `share_document` is kept off every slug but the external
   tier by a `tools:` allow list; on its own, it is served unless you set the
-  group. The
-  standalone entrypoint refuses a group it does not recognise, so a typo cannot
-  quietly mean "every tool".
+  group. The standalone entrypoint refuses a group it does not recognise, so a
+  typo cannot quietly mean "every tool".
 - **One credential per process.** strad can mount one server once per account.
   On its own, a server is one process with one set of environment variables.
 

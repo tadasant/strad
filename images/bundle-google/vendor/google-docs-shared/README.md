@@ -38,8 +38,8 @@ Eleven, in three groups. Each group holds the one before it:
 - `delete_document` moves a document to Drive's trash, recoverable for 30
   days. With `permanent=true` it deletes it for good.
 - `share_document` adds a Drive permission: a user, group, domain or anyone
-  with the link, as reader, commenter or writer. Google emails a user or group
-  it is shared with. It is the one tool that sends a document to someone else,
+  with the link, as reader, commenter or writer. By default Google emails a
+  user or group it is shared with. It is the one tool that sends a document to someone else,
   which is why it has a group of its own.
 
 **Every group is served unless you set `GOOGLE_DOCS_ENABLED_TOOLGROUPS`**, and
@@ -84,12 +84,15 @@ reached through a service account a Workspace admin has authorized.
 | `GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY`  | its PEM private key. Literal `\n` sequences are turned into newlines |
 | `GOOGLE_DOCS_IMPERSONATE_EMAIL`            | the Workspace user whose documents it reads                    |
 
-If all three OAuth variables are set, OAuth wins. Set one mode, not both.
+If all three OAuth variables are set, OAuth wins. Set one mode, not both: the
+standalone entrypoint refuses to start, with exit 2, when some OAuth variables
+are set beside a complete service account, because that would quietly serve
+the Workspace user's documents instead of your account's.
 `GOOGLE_DOCS_ENABLED_TOOLGROUPS` (optional) is `readonly`, `readwrite` or
 `readwrite_external`, comma-separated if you want more than one.
 
-**Scopes.** The token's scopes are what Google enforces. The tool group only
-decides which tools a client sees.
+**Scopes (OAuth).** The token's scopes are what Google enforces. The tool
+group only decides which tools a client sees.
 
 | Group                               | Consent for                                                                                                         |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
@@ -102,9 +105,15 @@ The Drive scope is not optional. `export_document`, `list_comments`,
 enough for documents you already have. Both Drive scopes reach every file in
 the account, not just Docs.
 
-For a read-only server, consent the two `.readonly` scopes and set
+For a read-only OAuth server, consent the two `.readonly` scopes and set
 `GOOGLE_DOCS_ENABLED_TOOLGROUPS=readonly`. Google then refuses a write even if
 one reached it.
+
+**Scopes (service account).** The service-account client always asks for the
+full `https://www.googleapis.com/auth/documents` and
+`https://www.googleapis.com/auth/drive`, whatever the group. Delegating only the
+`.readonly` scopes makes every call fail at the token. In this mode the tool
+group is the only thing narrowing what the server can do.
 
 **Getting a refresh token** with the OAuth Playground:
 
@@ -128,7 +137,7 @@ Workspace account, an **Internal** consent screen avoids both the expiry and
 the warning.
 
 **The service-account mode needs a Workspace admin.** It does nothing until an
-admin authorizes the service account's client id for the scopes above, in
+admin authorizes the service account's client id for those two full scopes, in
 **Admin Console → Security → API Controls → Domain-wide Delegation**. It does
 not work for a personal `@gmail.com` account.
 
@@ -136,7 +145,7 @@ None of the credentials is needed to start. The server reads them on the first
 tool call, so with nothing set it still boots and answers `tools/list`, and every
 tool call returns an error naming the missing variables. It says so on stderr at
 startup: the service account's three by default, the OAuth three once any
-OAuth variable is set.
+OAuth variable is present, even empty.
 
 ## Run it locally (stdio)
 
@@ -246,12 +255,13 @@ what strad adds in front of this server.
 
 From `images/bundle-google`, `npm test` runs:
 
-- `test/docs.test.ts` — strad's per-account layer, `../../src/docs.ts`: which
-  mode an environment is in, which variables it is short of, and the client
-  cache.
+- `test/docs.test.ts` — strad's per-account layer, `src/docs.ts`: which mode
+  an environment is in, which variables it is short of, the client cache, the
+  per-mount tool-group toggle and the `invalid_grant` hint.
 - `test/standalone.test.ts` — both transports against the built entrypoint,
   with no credentials set: all eleven tools, each of the three groups,
-  `share_document` only in `readwrite_external`, a tool call that fails naming
-  the missing variables in each mode, and an unknown group refused with exit 2.
+  `share_document` only in `readwrite_external`, comma-separated groups, a tool
+  call that fails naming the missing variables in each mode, and exit 2 on an
+  unknown group or a half-set OAuth trio beside a service account.
 
 Nothing in CI calls Google.

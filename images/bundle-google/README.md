@@ -63,8 +63,8 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   `vendor/google-docs-shared/README.md` and
   `vendor/google-drive-shared/README.md`, and `test/standalone.test.ts`
   runs both transports for each. `google-docs.ts` goes through `src/docs.ts`,
-  the layer `/google-docs` mounts, not the vendored factory. Adding a server is one more entrypoint, a README in
-  its tree, and a test case.
+  the layer `/google-docs` mounts, not the vendored factory. Adding a server
+  is one more entrypoint, a README in its tree, and a test case.
 - `vendor/` — the upstream `shared/` factories, plus `@pulsemcp/mcp-elicitation`.
   Wired as npm workspaces.
   - `vendor/google-docs-shared/` — vendored verbatim from
