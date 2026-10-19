@@ -6539,8 +6539,9 @@ a photo when one shows it.
 **What.** `add_to_cart` sends `POST /api/basket/update-item` with
 `{ productId, quantity, shouldSubscribe: false }` from inside the product page.
 That is the request the page's own "Add to basket" button sends. The button is
-kept as the fallback. `quantity` is the line's new total, so the update is sent
-only when the prior total is known and below the request.
+kept as the fallback after a definite refusal. `quantity` is the line's new
+total, so the update is sent only when the prior total is known and below the
+request. An unknown prior total means no add at all.
 `servers/good-eggs/FORK.md` #13 has the evidence.
 
 **Why.** Clicking a drawn button failed about two adds in three during the
@@ -6553,7 +6554,9 @@ signed-in account was used, because nothing in this repo may write to the
 household's real basket to test it.
 
 **Undo.** Nothing to undo while Good Eggs serves the endpoint. If it moves or
-changes shape, every add reports `Good Eggs refused the basket update …` and
-falls back to the button, which is the old behaviour. Re-read the button's
+changes shape, a non-2xx answer reports `Good Eggs refused the basket update …`
+and falls back to the button, which is the old behaviour. A 2xx in a shape this
+code cannot read is not followed by the button, because it may have applied. The
+basket re-read reports what landed. Re-read the button's
 request from the browser's network panel and update `BASKET_UPDATE_PATH` and
 `parseBasketUpdateResponse()`.

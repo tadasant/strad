@@ -158,16 +158,23 @@ export const ADD_BUTTON_SELECTOR =
 // REMOVE units. FORK.md #13.
 export const BASKET_UPDATE_PATH = '/api/basket/update-item';
 
-/** What Good Eggs answered a basket update with. */
+/**
+ * What Good Eggs answered a basket update with. `refused` is a definite no — a
+ * non-2xx answer — so nothing changed and the button may be tried. `unknown`
+ * is a 2xx this code cannot read, or a request whose answer never came back:
+ * the update may have been applied, so nothing else may be sent after it.
+ */
 export type BasketUpdateOutcome =
-  | { accepted: true; quantity: number }
-  | { accepted: false; reason: string };
+  | { kind: 'accepted'; quantity: number }
+  | { kind: 'refused'; reason: string }
+  | { kind: 'unknown'; reason: string };
 
 /**
  * Read the answer to a `POST /api/basket/update-item`. Accepted means a 2xx
- * whose `basketItem` names the product and carries a numeric quantity; any
- * other answer is a refusal, with the reason Good Eggs gave when it gave one
- * (`{"error":{"message":"Product could not be added to basket"}}` on a 500).
+ * whose `basketItem` names the product and carries a numeric quantity. Any
+ * other 2xx is `unknown`. A non-2xx is a refusal, with the reason Good Eggs
+ * gave when it gave one (`{"error":{"message":"Product could not be added to
+ * basket"}}` on a 500).
  */
 export function parseBasketUpdateResponse(
   status: number,
@@ -188,16 +195,16 @@ export function parseBasketUpdateResponse(
     const product = record(item?.product);
     const quantity = item?.quantity;
     if (product?.id === productId && typeof quantity === 'number') {
-      return { accepted: true, quantity };
+      return { kind: 'accepted', quantity };
     }
     return {
-      accepted: false,
+      kind: 'unknown',
       reason: `Good Eggs answered the basket update with HTTP ${status} but no basket line for this product`,
     };
   }
   const message = record(root?.error)?.message;
   const said = typeof message === 'string' && message.trim() ? `: ${message.trim().slice(0, 200)}` : '';
-  return { accepted: false, reason: `Good Eggs refused the basket update with HTTP ${status}${said}` };
+  return { kind: 'refused', reason: `Good Eggs refused the basket update with HTTP ${status}${said}` };
 }
 
 /**
@@ -228,13 +235,14 @@ export function findCartItemForUrl(
   cartItems: CartItem[],
   groceryUrl: string
 ): CartItem | undefined {
-  const productId = extractProductId(groceryUrl);
+  // Ids are lowercase hex; a URL typed in another case is the same product.
+  const productId = extractProductId(groceryUrl).toLowerCase();
   if (!productId) return undefined;
   // `productId` is read off the basket payload and survives a product whose
   // presentation data (and therefore whose url) the page didn't ship; fall back
   // to the url only for items that predate it.
   return cartItems.find(
-    (item) => (item.productId || extractProductId(item.url)) === productId
+    (item) => (item.productId || extractProductId(item.url)).toLowerCase() === productId
   );
 }
 
@@ -257,7 +265,7 @@ export interface ReconcileAddParams {
    */
   addSent: boolean;
   /**
-   * Why the add was not sent, when it was not. It goes into the failure
+   * Why the add did not go through, when it did not. It goes into the failure
    * message, so a failed add says what went wrong instead of guessing.
    */
   addFailure?: string;
@@ -310,7 +318,7 @@ export function reconcileAddResult(params: ReconcileAddParams): CartResult {
         ? `Sent the add for ${name}, but the basket could not be read back, so the result is ` +
           `UNVERIFIED. Do not re-add it without checking the cart first — a blind retry is how ` +
           `duplicates happen.`
-        : `The add for ${name} was not sent (${notSent}) and the basket could not be read ` +
+        : `The add for ${name} did not go through (${notSent}) and the basket could not be read ` +
           `back, so the result is UNVERIFIED. Check the cart before retrying.`,
       itemName,
     };
@@ -345,7 +353,7 @@ export function reconcileAddResult(params: ReconcileAddParams): CartResult {
         ? `Sent the add for ${displayName}, but it is not in your cart afterward. The add did ` +
           `not take effect (a delivery day may need to be selected, or the item may be ` +
           `unavailable).`
-        : `The add for ${displayName} was not sent (${notSent}), and it is not in your cart. ` +
+        : `The add for ${displayName} did not go through (${notSent}), and it is not in your cart. ` +
           `The add did not succeed.`,
       itemName: displayName,
       quantity: 0,
@@ -360,7 +368,7 @@ export function reconcileAddResult(params: ReconcileAddParams): CartResult {
         verified: true,
         message: addSent
           ? `Successfully added ${displayName} to cart (cart now has ${cartQuantity}).`
-          : `The add was not sent (${notSent}), but the cart quantity for ` +
+          : `The add did not go through (${notSent}), but the cart quantity for ` +
             `${displayName} increased to ${cartQuantity}. The add succeeded.`,
         itemName: displayName,
         quantity: cartQuantity,
@@ -401,7 +409,7 @@ export function reconcileAddResult(params: ReconcileAddParams): CartResult {
         ? `Sent the add for ${displayName}, but the cart quantity did not change (still ` +
           `${cartQuantity}, below the requested ${requestedQuantity}). The add did not take ` +
           `effect (a delivery day may need to be selected).`
-        : `The add for ${displayName} was not sent (${notSent}) and its cart quantity did ` +
+        : `The add for ${displayName} did not go through (${notSent}) and its cart quantity did ` +
           `not change (still ${cartQuantity}, below the requested ${requestedQuantity}). The ` +
           `add did not take effect.`,
       itemName: displayName,
@@ -415,7 +423,7 @@ export function reconcileAddResult(params: ReconcileAddParams): CartResult {
     message: addSent
       ? `Sent the add for ${displayName}, but it does not appear in your cart afterward. ` +
         `The add did not take effect (a delivery day may need to be selected, or the item may be unavailable).`
-      : `The add for ${displayName} was not sent (${notSent}), and it is not in your cart. ` +
+      : `The add for ${displayName} did not go through (${notSent}), and it is not in your cart. ` +
         `The add did not succeed.`,
     itemName: displayName,
     quantity: 0,
@@ -1073,7 +1081,7 @@ export class GoodEggsClient implements IGoodEggsClient {
     // and on a product page with no delivery day chosen the first such element
     // is the day picker — which is why successful adds were reported against an
     // item called "Select a delivery day".
-    const productId = extractProductId(fullUrl);
+    const productId = extractProductId(fullUrl).toLowerCase();
     const itemName =
       productNameFromHtml(productHtml, productId) ??
       (await page.evaluate(() => {
@@ -1083,40 +1091,53 @@ export class GoodEggsClient implements IGoodEggsClient {
 
     let addSent = false;
     let addFailure: string | undefined;
-    const alreadySatisfied = priorQuantityKnown && priorQuantity >= quantity;
+    const priorLine = priorCartItems ? findCartItemForUrl(priorCartItems, groceryUrl) : undefined;
 
-    if (alreadySatisfied) {
-      // Nothing to send. The basket update sets a TOTAL, so posting the request
-      // here could only lower the line; reconciliation reports it as already met.
+    if (!priorQuantityKnown) {
+      // The update SETS a total, so without the line's current total it could
+      // lower it. Nor is the button a safe substitute: it posts the same total.
+      // A basket readable neither on /basket nor on a signed-in product page is
+      // almost always a lapsed login, where any add lands in an anonymous basket.
+      addFailure =
+        'the basket could not be read before the add, so its current quantity is unknown ' +
+        'and no add was attempted';
+    } else if (priorQuantity >= quantity) {
+      // Nothing to send: the update could only lower the line. Reconciliation
+      // reports it as already met.
+      addFailure = `the cart already held ${priorQuantity}`;
     } else if (!PRODUCT_ID_PATTERN.test(productId)) {
       addFailure = `the URL carries no Good Eggs product id (got "${productId.slice(0, 40)}")`;
-    } else if (priorQuantityKnown) {
+    } else {
       // The primary path: the request the site's own button sends, with the
       // quantity the line should end at. It does not depend on how, or how fast,
-      // the page draws its controls — which is what failed half the adds in the
-      // 2026-10-19 shop (strad#439).
-      const outcome = await this.sendBasketUpdate(page, productId, quantity, elementTimeout);
-      if (outcome.accepted) {
+      // the page draws its controls — which is what failed two adds in three in
+      // the 2026-10-19 shop (strad#439). An existing line keeps its
+      // Subscribe & Save setting.
+      const outcome = await this.sendBasketUpdate(
+        page,
+        productId,
+        quantity,
+        priorLine?.subscribed === true,
+        elementTimeout
+      );
+      if (outcome.kind === 'accepted') {
+        addSent = true;
+      } else if (outcome.kind === 'unknown') {
+        // It was sent and may have been applied. A second add on top of it
+        // could double the line, so the button is not tried and the basket
+        // re-read decides.
         addSent = true;
       } else {
-        addFailure = outcome.reason;
-      }
-    } else {
-      // The basket could not be read before the add, so the line's current total
-      // is unknown and a total-setting request could lower it. Leave the add to
-      // the page's own button, which only ever adds.
-      addFailure = 'the basket could not be read before the add';
-    }
-
-    if (!addSent && !alreadySatisfied) {
-      const clicked = await this.clickAddButton(page, quantity, elementTimeout);
-      if (clicked) {
-        addSent = true;
-        addFailure = undefined;
-      } else {
-        addFailure = addFailure
-          ? `${addFailure}; the add-to-cart button was not found either`
-          : 'the add-to-cart button was not found';
+        // A definite refusal: nothing changed, so the page's own button may try.
+        // It only renders "Add to basket" for a product NOT in the basket ("in
+        // basket" otherwise, which the selector does not match), so it cannot
+        // lower a line either.
+        const clicked = await this.clickAddButton(page, quantity, elementTimeout);
+        if (clicked) {
+          addSent = true;
+        } else {
+          addFailure = `${outcome.reason}; the add-to-cart button was not found either`;
+        }
       }
     }
 
@@ -1156,25 +1177,27 @@ export class GoodEggsClient implements IGoodEggsClient {
   /**
    * POST the basket update from inside the product page, the way the page's
    * own button does: same origin, the session's cookies, a JSON body. Never
-   * throws — a network failure or a timeout is a refusal with its reason.
+   * throws. A request whose answer never came back — a timeout, a page torn
+   * down mid-flight — is `unknown`, because it may have reached Good Eggs.
    */
   private async sendBasketUpdate(
     page: import('playwright').Page,
     productId: string,
     quantity: number,
+    shouldSubscribe: boolean,
     timeoutMs: number
   ): Promise<BasketUpdateOutcome> {
     let answer: { status: number; body: string };
     try {
       answer = await page.evaluate(
-        async ({ path, productId, quantity, timeoutMs }) => {
+        async ({ path, productId, quantity, shouldSubscribe, timeoutMs }) => {
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), timeoutMs);
           try {
             const response = await fetch(path, {
               method: 'POST',
               headers: { 'content-type': 'application/json', accept: 'application/json' },
-              body: JSON.stringify({ productId, quantity, shouldSubscribe: false }),
+              body: JSON.stringify({ productId, quantity, shouldSubscribe }),
               credentials: 'same-origin',
               signal: controller.signal,
             });
@@ -1183,13 +1206,13 @@ export class GoodEggsClient implements IGoodEggsClient {
             clearTimeout(timer);
           }
         },
-        { path: BASKET_UPDATE_PATH, productId, quantity, timeoutMs }
+        { path: BASKET_UPDATE_PATH, productId, quantity, shouldSubscribe, timeoutMs }
       );
     } catch (error) {
       const message = error instanceof Error ? error.message.split('\n')[0] : String(error);
       return {
-        accepted: false,
-        reason: `the basket update could not be sent (${message.slice(0, 200)})`,
+        kind: 'unknown',
+        reason: `the basket update got no answer (${message.slice(0, 200)})`,
       };
     }
     return parseBasketUpdateResponse(answer.status, answer.body, productId);

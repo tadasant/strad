@@ -32,6 +32,8 @@ export interface CartItem {
    * makes it the join key `remove_from_cart` matches on.
    */
   productId?: string;
+  /** Whether the line is a Subscribe & Save line. A basket update sends it back. */
+  subscribed?: boolean;
 }
 
 export interface GroceryDetails {

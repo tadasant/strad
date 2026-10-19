@@ -3977,13 +3977,13 @@ publishes no API, so the request was read out of the site's own traffic, and its
 meaning was measured against an anonymous basket. `quantity` sets the line's
 total. It does not add to it. So the tool sends the update only when it has read
 the line's current total and that total is below the request. With the total
-unknown, it clicks the button instead, which only ever adds. A signed-in account
-has exercised this path only through tests with fakes.
+unknown it attempts no add, and says so. A signed-in account has exercised this
+path only through tests with fakes.
 
 **How you would know.** From the tool's answer. If Good Eggs moves or reshapes
 the endpoint, a failed add names the HTTP status and Good Eggs' reason
 (`Good Eggs refused the basket update with HTTP …`) before falling back to the
-button. Every add is still checked against a fresh read of the basket.
+button. Every add is checked against a fresh read of the basket.
 
 See `HACKS.md` #128 and `servers/good-eggs/FORK.md` #13.
 

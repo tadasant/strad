@@ -645,14 +645,21 @@ POST /api/basket/update-item
 {"productId":"5e8ce389caa412000ec13df7","quantity":1,"shouldSubscribe":false}
 ```
 
-`parseBasketUpdateResponse()` reads the answer. A 2xx whose `basketItem` names
-the product is accepted. Anything else is refused, with Good Eggs' own reason
-when it gives one (`HTTP 500: Product could not be added to basket` for a product
-it will not sell). A refused or unsendable update falls back to the old button
-path. The button selector now ends `>> visible=true`, so hidden matches are
-filtered out before Playwright picks one. When neither path sends the add, the
-failure message says why each one failed. It no longer just says the button
-could not be found.
+`parseBasketUpdateResponse()` reads the answer three ways:
+
+- **Accepted**: a 2xx whose `basketItem` names the product.
+- **Refused**: a non-2xx, with Good Eggs' own reason when it gives one
+  (`HTTP 500: Product could not be added to basket` for a product it will not
+  sell). Nothing changed, so the page's button is tried next. Its selector ends
+  `>> visible=true`, so hidden matches are filtered out before Playwright picks
+  one.
+- **Unknown**: a 2xx this code cannot read, or a request whose answer never came
+  back (a timeout, a page torn down mid-flight). The update may have been
+  applied, and a click on top of it could double the line. So nothing else is
+  sent, and the basket re-read decides.
+
+A failed add names what went wrong on each path, Good Eggs' answer included,
+rather than "the button could not be found".
 
 **`quantity` is a total, and that decides when the update may be sent.**
 Measured on live `www.goodeggs.com` against an anonymous basket: posting
@@ -665,10 +672,19 @@ Measured on live `www.goodeggs.com` against an anonymous basket: posting
   the requested quantity. That is the target-total contract `reconcileAddResult`
   already judged results by. A retry after a lost answer is idempotent, so it
   cannot make a duplicate.
-- With the prior total unknown, no total is posted, because it could lower the
-  line. A `/basket` read that failed gets a second chance from the product
-  page's own payload, which carries the same basket and counts only when signed
-  in. If that fails too, the add goes through the button, which only ever adds.
+- With the prior total unknown, nothing is sent. A `/basket` read that failed
+  gets a second chance from the product page's own payload, which carries the
+  same basket and counts only when signed in. If that fails too, the add is not
+  attempted and the result says so. The button is no substitute: it posts the
+  same total. A basket readable in neither place is almost always a lapsed
+  login, where any add would land in an anonymous basket anyway.
+- An existing line's Subscribe & Save setting (`shouldSubscribe`) is read from
+  the basket payload and sent back unchanged. A new line is a one-time purchase,
+  the page's default.
+
+The button fallback cannot lower a line either. Good Eggs draws "Add to basket"
+only for a product that is not in the basket. Once it is, the same button reads
+"in basket" (measured live), which the selector does not match.
 
 An accepted update does not prove the line landed. The basket is still re-read
 afterwards and the result reconciled against it (delta 2). Good Eggs clamps a
@@ -695,20 +711,25 @@ established:
 - The update request does not depend on the drawn page at all. It answered in
   about a quarter of a second.
 
-So the add no longer depends on the page drawing in time. The fallback no longer
-fails on a hidden duplicate either. This is the same rule the fork applies to
-reads (deltas 1, 7 and 11): ask for the state, not for its rendering.
+So the add does not depend on the page drawing in time, and the fallback does
+not fail on a hidden duplicate. This is the same rule the fork applies to reads
+(deltas 1, 7 and 11): ask for the state, not for its rendering.
 
 `shared/test/add-to-cart.test.ts` runs the real `addToCart()` over a fake page
 through `setSharedBrowserProvider`, with a server-side basket the payload, the
-update and the button all act on. It pins that the update is sent with
-`shouldSubscribe: false` and needs no button, and that the quantity sent is the
-target total. It pins that a line already at the request is not sent a lowering
-update, and that an accepted update the basket does not show is a failure. It
-pins the fallback to the button on a refused or unsendable update, and the
-message when both fail. It covers the product-page prior read, and that no total
-is posted when the prior is unknown everywhere. It also pins the response parse
-against live bodies and the `visible=true` filter.
+update and the button all act on. It pins:
+
+- the update needs no button, and the quantity sent is the target total;
+- a line already at the request gets no lowering update, including through a URL
+  whose id is in another case;
+- a subscribed line keeps `shouldSubscribe: true`;
+- an accepted update the basket does not show is a failure;
+- the button follows a refusal, but never an update whose answer was lost or
+  could not be read;
+- the message when both paths fail;
+- the product-page prior read, and that nothing is sent when the prior total is
+  unknown everywhere;
+- the response parse against live bodies, and the `visible=true` filter.
 
 **What this delta does not cover.** The update path has been exercised against
 live Good Eggs only for an anonymous basket. A signed-in account has met it only

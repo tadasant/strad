@@ -1,12 +1,12 @@
 // How add_to_cart puts an item in the basket (FORK.md #13, strad#439).
 //
-// During the 2026-10-19 shop about half the adds answered "Could not find the
+// During the 2026-10-19 shop two adds in three answered "Could not find the
 // add-to-cart button" on in-stock products whose pages had a visible "Add to
 // basket" button, and a retry of the same product could go either way. The
 // add depended on the drawn page: a fixed 3-second wait, then a 10-second wait
 // for a button to become visible. Good Eggs' own button sends one request,
-// `POST /api/basket/update-item`, and that request is now the add. The button
-// is the fallback.
+// `POST /api/basket/update-item`, and that request is the add here. The button
+// is the fallback after a definite refusal.
 //
 // These run the real `addToCart()` over a fake page through
 // `setSharedBrowserProvider`, the way `favorites-truthfulness.test.ts` does. The
@@ -48,6 +48,8 @@ const REFUSED_BODY = JSON.stringify({
 interface FakeOptions {
   /** Quantity of the tomatoes already in the basket. */
   prior?: number;
+  /** Whether that existing line is a Subscribe & Save line. */
+  priorSubscribed?: boolean;
   /** Whether the page's add button ever becomes visible. */
   buttonRenders?: boolean;
   /** Overrides the update endpoint's answer. */
@@ -71,11 +73,13 @@ class FakePage {
   updates: Array<{ productId: string; quantity: number; shouldSubscribe: boolean }> = [];
   buttonWaits: string[] = [];
   clicks = 0;
+  priorSubscribed = false;
   opts: FakeOptions;
 
   constructor(opts: FakeOptions = {}) {
     this.opts = opts;
     if (opts.prior) this.basket.set(TOMATOES_ID, opts.prior);
+    this.priorSubscribed = opts.priorSubscribed ?? false;
   }
 
   private storeData(signedIn: boolean) {
@@ -90,7 +94,7 @@ class FakePage {
             id: `basket-item:${id}`,
             product: { id },
             quantity,
-            shouldSubscribe: false,
+            shouldSubscribe: id === TOMATOES_ID && this.priorSubscribed,
           })),
         totals: { subtotal: 0, lineItemTotals: {} },
       },
@@ -124,10 +128,21 @@ class FakePage {
     }
     return renderPage(this.storeData(this.opts.productPageSignedIn ?? true));
   }
-  async evaluate(_fn: unknown, arg?: { path?: string; productId: string; quantity: number }) {
+  async evaluate(
+    _fn: unknown,
+    arg?: { path?: string; productId: string; quantity: number; shouldSubscribe: boolean }
+  ) {
     if (arg?.path !== BASKET_UPDATE_PATH) return 'Unknown item';
-    if (this.opts.updateThrows) throw new Error('Execution context was destroyed');
-    this.updates.push({ productId: arg.productId, quantity: arg.quantity, shouldSubscribe: false });
+    this.updates.push({
+      productId: arg.productId,
+      quantity: arg.quantity,
+      shouldSubscribe: arg.shouldSubscribe,
+    });
+    if (this.opts.updateThrows) {
+      // The request went out and was applied; only its answer was lost.
+      this.basket.set(arg.productId, arg.quantity);
+      throw new Error('Execution context was destroyed');
+    }
     if (this.opts.updateAnswer) return this.opts.updateAnswer;
     // The live endpoint SETS the line's total.
     this.basket.set(arg.productId, arg.quantity);
@@ -135,17 +150,22 @@ class FakePage {
   }
   async waitForSelector(selector: string) {
     this.buttonWaits.push(selector);
-    if (!this.opts.buttonRenders) throw new Error('Timeout 10000ms exceeded.');
+    // Good Eggs draws "Add to basket" only for a product NOT in the basket; a
+    // line already there reads "in basket", which the selector does not match.
+    if (!this.opts.buttonRenders || (this.basket.get(TOMATOES_ID) ?? 0) > 0) {
+      throw new Error('Timeout 10000ms exceeded.');
+    }
     return {
       click: async () => {
         this.clicks++;
-        this.basket.set(TOMATOES_ID, (this.basket.get(TOMATOES_ID) ?? 0) + 1);
+        // The button posts the selected quantity, 1 here, as the line's total.
+        this.basket.set(TOMATOES_ID, 1);
       },
     };
   }
 }
 
-async function addOver(page: FakePage, quantity = 1) {
+async function addOver(page: FakePage, quantity = 1, url = TOMATOES_URL) {
   const browser = {
     newContext: async () => ({ newPage: async () => page, close: async () => {} }),
   };
@@ -159,7 +179,7 @@ async function addOver(page: FakePage, quantity = 1) {
     });
     await client.initialize();
     page.loggedIn = true;
-    return await client.addToCart(TOMATOES_URL, quantity);
+    return await client.addToCart(url, quantity);
   } finally {
     setSharedBrowserProvider(null);
   }
@@ -253,12 +273,57 @@ test('a refused update with no button says what Good Eggs answered', async () =>
   assert.match(result.message, /add-to-cart button was not found either/);
 });
 
-test('an update that could not be sent falls back to the button', async () => {
+test('an update whose answer was lost is not followed by the button', async () => {
+  // The request reached Good Eggs and was applied; a click on top of it could
+  // double the line. The basket re-read decides instead.
   const page = new FakePage({ updateThrows: true, buttonRenders: true });
   const result = await addOver(page);
 
-  assert.equal(page.clicks, 1);
+  assert.equal(page.updates.length, 1);
+  assert.equal(page.clicks, 0);
+  assert.deepEqual(page.buttonWaits, []);
+  assert.equal(page.basket.get(TOMATOES_ID), 1);
   assert.equal(result.success, true);
+});
+
+test('a 2xx this code cannot read is not followed by the button', async () => {
+  const page = new FakePage({
+    updateAnswer: { status: 200, body: '{"ok":true}' },
+    buttonRenders: true,
+  });
+  const result = await addOver(page);
+
+  assert.equal(page.clicks, 0);
+  assert.equal(result.success, false);
+  assert.match(result.message, /Sent the add/);
+});
+
+test('a subscribed line keeps its Subscribe & Save setting', async () => {
+  const page = new FakePage({ prior: 1, priorSubscribed: true });
+  await addOver(page, 2);
+
+  assert.deepEqual(page.updates, [{ productId: TOMATOES_ID, quantity: 2, shouldSubscribe: true }]);
+});
+
+test('a URL whose id is in another case still finds the existing line', async () => {
+  // A miss would read the prior as 0 and post a total of 1 over a line of 2.
+  const page = new FakePage({ prior: 2 });
+  const upper = TOMATOES_URL.replace(TOMATOES_ID, TOMATOES_ID.toUpperCase());
+  const result = await addOver(page, 1, upper);
+
+  assert.deepEqual(page.updates, []);
+  assert.equal(page.basket.get(TOMATOES_ID), 2);
+  assert.match(result.message, /already in your cart at quantity 2/);
+});
+
+test('a URL with no product id sends nothing and says so', async () => {
+  const page = new FakePage({ buttonRenders: true });
+  const result = await addOver(page, 1, 'https://www.goodeggs.com/bluehousefarm/tomatoes/not-an-id');
+
+  assert.deepEqual(page.updates, []);
+  assert.equal(page.clicks, 0);
+  assert.equal(result.success, false);
+  assert.match(result.message, /the URL carries no Good Eggs product id/);
 });
 
 // ---------------------------------------------------------------------------
@@ -277,21 +342,22 @@ test('a failed basket read borrows the product page payload for the prior total'
   assert.equal(result.verified, false);
 });
 
-test('with no readable prior total anywhere, no total-setting update is sent', async () => {
+test('with no readable prior total anywhere, no add is attempted', async () => {
   // An anonymous product page is not this account's basket, so the prior
-  // total stays unknown, and posting a total could lower the line. The button
-  // only ever adds.
+  // total stays unknown. The update posts a total and so does the button, so
+  // either could lower the line.
   const page = new FakePage({
     prior: 3,
     basketPage: 'no-payload',
     productPageSignedIn: false,
     buttonRenders: true,
   });
-  await addOver(page, 1);
+  const result = await addOver(page, 1);
 
   assert.deepEqual(page.updates, []);
-  assert.equal(page.clicks, 1);
-  assert.equal(page.basket.get(TOMATOES_ID), 4);
+  assert.equal(page.clicks, 0);
+  assert.equal(page.basket.get(TOMATOES_ID), 3);
+  assert.match(result.message, /no add was attempted/);
 });
 
 // ---------------------------------------------------------------------------
@@ -300,28 +366,27 @@ test('with no readable prior total anywhere, no total-setting update is sent', a
 
 test('an accepted answer carries the line total Good Eggs now holds', () => {
   assert.deepEqual(parseBasketUpdateResponse(200, acceptedBody(TOMATOES_ID, 3), TOMATOES_ID), {
-    accepted: true,
+    kind: 'accepted',
     quantity: 3,
   });
 });
 
 test("a refusal carries Good Eggs' own reason", () => {
   assert.deepEqual(parseBasketUpdateResponse(500, REFUSED_BODY, TOMATOES_ID), {
-    accepted: false,
+    kind: 'refused',
     reason:
       'Good Eggs refused the basket update with HTTP 500: Product could not be added to basket',
   });
 });
 
-test('a 200 for another product, or a body that is not JSON, is not an acceptance', () => {
+test('a 200 for another product is unknown, and a non-2xx without JSON is refused', () => {
   assert.equal(
-    parseBasketUpdateResponse(200, acceptedBody('5ed67507d485740c50baf6bf', 1), TOMATOES_ID)
-      .accepted,
-    false
+    parseBasketUpdateResponse(200, acceptedBody('5ed67507d485740c50baf6bf', 1), TOMATOES_ID).kind,
+    'unknown'
   );
   const html = parseBasketUpdateResponse(403, '<html>Just a moment...</html>', TOMATOES_ID);
   assert.deepEqual(html, {
-    accepted: false,
+    kind: 'refused',
     reason: 'Good Eggs refused the basket update with HTTP 403',
   });
 });

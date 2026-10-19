@@ -82,6 +82,7 @@ test('cartItemsFromStoreData joins basket lines to the products map', () => {
     quantity: 2,
     price: '$11.98',
     imageUrl: 'https://images.goodeggs.com/tomatoes.jpg',
+    subscribed: false,
   });
   assert.equal(items[1].name, 'Organic Yellow Onion');
   assert.equal(items[1].price, '$1.29');
