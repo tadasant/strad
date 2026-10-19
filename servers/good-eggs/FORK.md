@@ -622,6 +622,100 @@ in `shared/test/fixtures/kitchen-nutrition.mjs`, and every status against real
 product payloads. It also covers the HTTPS source's caching and retry, the
 client's page read, and the tool's description, JSON result and error.
 
+## 13. `add_to_cart` sends the basket update, and the button is the fallback
+
+**Upstream (and this tree until this delta).** `addToCart()` loads the product
+page, waits a fixed three seconds, then waits up to ten more for
+
+```ts
+page.waitForSelector(
+  'button:has-text("add to basket"), button:has-text("add to cart"), ' +
+    '[role="button"]:has-text("add to basket"), [role="button"]:has-text("add to cart")',
+  { state: 'visible' }
+);
+```
+
+and clicks what it finds. No visible button in that window means no add.
+
+**Here.** The add is the request Good Eggs' own button sends, made from inside
+the product page so it carries the page's origin, cookies and referer:
+
+```
+POST /api/basket/update-item
+{"productId":"5e8ce389caa412000ec13df7","quantity":1,"shouldSubscribe":false}
+```
+
+`parseBasketUpdateResponse()` reads the answer. A 2xx whose `basketItem` names
+the product is accepted. Anything else is refused, with Good Eggs' own reason
+when it gives one (`HTTP 500: Product could not be added to basket` for a product
+it will not sell). A refused or unsendable update falls back to the old button
+path. The button selector now ends `>> visible=true`, so hidden matches are
+filtered out before Playwright picks one. When neither path sends the add, the
+failure message says why each one failed. It no longer just says the button
+could not be found.
+
+**`quantity` is a total, and that decides when the update may be sent.**
+Measured on live `www.goodeggs.com` against an anonymous basket: posting
+`quantity: 1` for a line already at 1 left it at 1, and posting 3 then set it to
+3. Posting less than the line holds removes units. So:
+
+- With the prior total known and already at or above the request, nothing is
+  sent. Reconciliation reports "already in your cart", as it did before.
+- With the prior total known and below the request, the update sets the line to
+  the requested quantity. That is the target-total contract `reconcileAddResult`
+  already judged results by. A retry after a lost answer is idempotent, so it
+  cannot make a duplicate.
+- With the prior total unknown, no total is posted, because it could lower the
+  line. A `/basket` read that failed gets a second chance from the product
+  page's own payload, which carries the same basket and counts only when signed
+  in. If that fails too, the add goes through the button, which only ever adds.
+
+An accepted update does not prove the line landed. The basket is still re-read
+afterwards and the result reconciled against it (delta 2). Good Eggs clamps a
+line to the product's `maxQuantity` without saying so in the update's answer.
+Asked for 2 eggs with a `maxQuantity` of 1, it answered `quantity: 2` and the
+basket held 1. The re-read reports that as a partial add.
+
+**Why.** During the 2026-10-19 weekly shop
+([strad#439](https://github.com/tadasant/strad/issues/439), Zimmer session
+25407), 46 of 68 `add_to_cart` calls answered "Could not find the add-to-cart
+button" on in-stock products whose pages showed an "Add to basket" button. The
+same product went either way on a retry: bacon failed four times and then
+landed. Failures took 26–32 s and successes 31–37 s, consistent with the
+ten-second wait running out. Why the signed-in page sometimes drew its
+button late, or drew a match that was not the visible one, was not established.
+Anonymous product pages, measured the same day, render exactly one matching
+button, server-side, visible within about 1.2 s of navigation. Two things are
+established:
+
+- `waitForSelector(…, { state: 'visible' })` judges only the FIRST element a
+  selector list resolves to. With a hidden "Add to basket" button placed ahead
+  of the real one on a live page, the old selector timed out and the new one
+  resolved.
+- The update request does not depend on the drawn page at all. It answered in
+  about a quarter of a second.
+
+So the add no longer depends on the page drawing in time. The fallback no longer
+fails on a hidden duplicate either. This is the same rule the fork applies to
+reads (deltas 1, 7 and 11): ask for the state, not for its rendering.
+
+`shared/test/add-to-cart.test.ts` runs the real `addToCart()` over a fake page
+through `setSharedBrowserProvider`, with a server-side basket the payload, the
+update and the button all act on. It pins that the update is sent with
+`shouldSubscribe: false` and needs no button, and that the quantity sent is the
+target total. It pins that a line already at the request is not sent a lowering
+update, and that an accepted update the basket does not show is a failure. It
+pins the fallback to the button on a refused or unsendable update, and the
+message when both fail. It covers the product-page prior read, and that no total
+is posted when the prior is unknown everywhere. It also pins the response parse
+against live bodies and the `visible=true` filter.
+
+**What this delta does not cover.** The update path has been exercised against
+live Good Eggs only for an anonymous basket. A signed-in account has met it only
+through the fakes. The request is the one the site's own button sends from the
+same page and the same session, but it is still an undocumented endpoint.
+`HACKS.md` #128 records this.
+
 ## Deltas that predate this fork
 
 These were already in the tree when it was still a vendor copy, and are listed so

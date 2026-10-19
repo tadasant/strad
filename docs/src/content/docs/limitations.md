@@ -3968,3 +3968,23 @@ set, and `matchedRow.source.updatedAt` says how old the table is.
 See `HACKS.md` #126 and `servers/good-eggs/FORK.md` #12.
 
 ---
+
+### 128. good-eggs adds through an endpoint Good Eggs does not document
+
+`add_to_cart` sends the same request as the "Add to basket" button on a product
+page, `POST /api/basket/update-item`. It does not click the button. Good Eggs
+publishes no API, so the request was read out of the site's own traffic, and its
+meaning was measured against an anonymous basket. `quantity` sets the line's
+total. It does not add to it. So the tool sends the update only when it has read
+the line's current total and that total is below the request. With the total
+unknown, it clicks the button instead, which only ever adds. A signed-in account
+has exercised this path only through tests with fakes.
+
+**How you would know.** From the tool's answer. If Good Eggs moves or reshapes
+the endpoint, a failed add names the HTTP status and Good Eggs' reason
+(`Good Eggs refused the basket update with HTTP …`) before falling back to the
+button. Every add is still checked against a fresh read of the basket.
+
+See `HACKS.md` #128 and `servers/good-eggs/FORK.md` #13.
+
+---

@@ -110,7 +110,7 @@ export const AddToCartSchema = z.object({
     .max(99, 'Quantity cannot exceed 99')
     .optional()
     .default(1)
-    .describe('Quantity to add (minimum 1, maximum 99, default: 1)'),
+    .describe('How many of this item the cart should hold (minimum 1, maximum 99, default: 1)'),
 });
 
 export const GetPastOrderGroceriesSchema = z.object({
