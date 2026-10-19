@@ -17,6 +17,17 @@ import { parseOptions } from "../src/standalone/serve.js";
 
 const CALENDAR = fileURLToPath(new URL("../dist/standalone/google-calendar.js", import.meta.url));
 const DRIVE = fileURLToPath(new URL("../dist/standalone/google-drive.js", import.meta.url));
+const DOCS = fileURLToPath(new URL("../dist/standalone/google-docs.js", import.meta.url));
+const DOCS_READ_TOOLS = ["export_document", "get_document", "get_document_outline", "list_comments"];
+const DOCS_WRITE_TOOLS = [
+  "append_text",
+  "create_document",
+  "delete_document",
+  "insert_text",
+  "replace_text",
+  "update_document",
+];
+const DOCS_TOOLS = [...DOCS_READ_TOOLS, ...DOCS_WRITE_TOOLS, "share_document"].sort();
 const DRIVE_TOOLS = [
   "copy_file",
   "create_file",
@@ -43,7 +54,7 @@ const CALENDAR_TOOLS = [
 function cleanEnv(extra: Record<string, string> = {}): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (v === undefined || k.startsWith("GCAL_") || k.startsWith("GOOGLE_CALENDAR_") || k.startsWith("GOOGLE_DRIVE_") || k.endsWith("ENABLED_TOOLGROUPS") || k === "PORT") continue;
+    if (v === undefined || k.startsWith("GCAL_") || k.startsWith("GOOGLE_CALENDAR_") || k.startsWith("GOOGLE_DRIVE_") || k.startsWith("GOOGLE_DOCS_") || k.endsWith("ENABLED_TOOLGROUPS") || k === "PORT") continue;
     env[k] = v;
   }
   return { ...env, ...extra };
@@ -345,6 +356,135 @@ describe("google-drive standalone", () => {
     const [code] = await once(child, "exit");
     expect(code).toBe(2);
     expect(stderr).toContain('unknown tool group(s) "read-only"');
+  });
+});
+describe("google-docs standalone", () => {
+  it("serves all eleven tools over stdio with no credentials set", async () => {
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [DOCS],
+      env: cleanEnv(),
+      stderr: "pipe",
+    });
+    let stderr = "";
+    transport.stderr!.on("data", (d) => (stderr += d));
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(transport);
+    try {
+      expect(client.getServerVersion()?.name).toBe("google-docs-workspace-mcp-server");
+      expect(await toolNames(client)).toEqual(DOCS_TOOLS);
+      // Nothing started, so the default mode's names: the service account's.
+      expect(stderr).toContain(
+        "GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL, GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY, GOOGLE_DOCS_IMPERSONATE_EMAIL not set",
+      );
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("serves all eleven tools over Streamable HTTP on the port it is given", async () => {
+    const { url } = await startHttp([], cleanEnv(), DOCS);
+    expect(url.hostname).toBe("127.0.0.1");
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(url));
+    try {
+      expect(await toolNames(client)).toEqual(DOCS_TOOLS);
+      expect(await toolNames(client)).toEqual(DOCS_TOOLS);
+    } finally {
+      await client.close();
+    }
+    const health = await fetch(new URL("/healthz", url));
+    expect(await health.json()).toEqual({ ok: true, server: "google-docs" });
+  });
+
+  it("honours GOOGLE_DOCS_ENABLED_TOOLGROUPS: readonly, readwrite, and share_document only in readwrite_external", async () => {
+    const tiers: Array<[string, string[]]> = [
+      ["readonly", DOCS_READ_TOOLS],
+      ["readwrite", [...DOCS_READ_TOOLS, ...DOCS_WRITE_TOOLS].sort()],
+      ["readwrite_external", DOCS_TOOLS],
+    ];
+    for (const [group, expected] of tiers) {
+      const { url } = await startHttp([], cleanEnv({ GOOGLE_DOCS_ENABLED_TOOLGROUPS: group }), DOCS);
+      const client = new Client({ name: "standalone-test", version: "0.0.0" });
+      await client.connect(new StreamableHTTPClientTransport(url));
+      try {
+        expect(await toolNames(client), group).toEqual(expected);
+      } finally {
+        await client.close();
+      }
+    }
+  });
+
+  it("fails a tool call, not the boot, when credentials are missing", async () => {
+    const { url } = await startHttp([], cleanEnv(), DOCS);
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(url));
+    try {
+      const result = await client.callTool({ name: "get_document", arguments: { document_id: "1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd" } });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain("GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("once an OAuth variable is set, warns about and fails on the OAuth variables instead", async () => {
+    const { url, stderr } = await startHttp([], cleanEnv({ GOOGLE_DOCS_OAUTH_CLIENT_ID: "id" }), DOCS);
+    expect(stderr()).toContain("GOOGLE_DOCS_OAUTH_CLIENT_SECRET, GOOGLE_DOCS_OAUTH_REFRESH_TOKEN not set");
+    expect(stderr()).not.toContain("SERVICE_ACCOUNT");
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(url));
+    try {
+      const result = await client.callTool({ name: "get_document", arguments: { document_id: "1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd" } });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain("GOOGLE_DOCS_OAUTH_REFRESH_TOKEN");
+      expect(JSON.stringify(result.content)).not.toContain("SERVICE_ACCOUNT");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("serves the union of comma-separated groups", async () => {
+    const { url } = await startHttp([], cleanEnv({ GOOGLE_DOCS_ENABLED_TOOLGROUPS: "readonly, readwrite_external" }), DOCS);
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(url));
+    try {
+      expect(await toolNames(client)).toEqual(DOCS_TOOLS);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("refuses a half-set OAuth trio beside a complete service account, rather than serving the Workspace user", async () => {
+    const child = spawn(process.execPath, [DOCS], {
+      env: cleanEnv({
+        GOOGLE_DOCS_OAUTH_CLIENT_ID: "id",
+        GOOGLE_DOCS_OAUTH_CLIENT_SECRET: "secret",
+        GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL: "sa@example.iam.gserviceaccount.com",
+        GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY: "key",
+        GOOGLE_DOCS_IMPERSONATE_EMAIL: "user@example.com",
+      }),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    children.push(child);
+    let stderr = "";
+    child.stderr!.on("data", (d) => (stderr += d));
+    const [code] = await once(child, "exit");
+    expect(code).toBe(2);
+    expect(stderr).toContain("GOOGLE_DOCS_OAUTH_REFRESH_TOKEN not set, so this would serve the service account's user");
+  });
+
+  it("refuses to start on a tool group it does not know, rather than serving every tool", async () => {
+    const child = spawn(process.execPath, [DOCS], {
+      env: cleanEnv({ GOOGLE_DOCS_ENABLED_TOOLGROUPS: "read-only" }),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    children.push(child);
+    let stderr = "";
+    child.stderr!.on("data", (d) => (stderr += d));
+    const [code] = await once(child, "exit");
+    expect(code).toBe(2);
+    expect(stderr).toContain("Invalid tool group(s) in GOOGLE_DOCS_ENABLED_TOOLGROUPS: read-only");
   });
 });
 
