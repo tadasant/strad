@@ -111,20 +111,21 @@ const ADD_TO_CART_DESCRIPTION = `Add a grocery item to your shopping cart.
 
 Provide:
 - grocery_url: The Good Eggs URL of the item to add
-- quantity: Number of items to add (default: 1)
+- quantity: How many of this item the cart should hold (default: 1). An item
+  already in the cart at that quantity or more is left as it is; this tool never
+  lowers a quantity.
 
 Returns confirmation of the item added and the resulting cart quantity. After
-attempting the add, the basket is re-read to verify the item actually landed, so
-the result reflects the true basket state rather than just whether a button was
-clicked. Possible outcomes: a confirmed add, a partial add (cart quantity below
-what was requested), a genuine failure (e.g. a delivery day still needs to be
-selected), or an UNVERIFIED result.
+the add, the basket is re-read to verify the item actually landed, so the result
+reflects the true basket state rather than what the add request answered.
+Possible outcomes: a confirmed add, a partial add (cart quantity below what was
+requested, e.g. Good Eggs caps a product's quantity per order), a genuine
+failure (the message says why, e.g. Good Eggs refused the product or a delivery
+day still needs to be selected), or an UNVERIFIED result.
 
 An UNVERIFIED result means the basket could not be read back, so the outcome is
 unknown. Do not retry a blind add on one — read the cart first, or you will
-create duplicates.
-
-**Tip:** This tool checks if you're already on the product page to minimize navigation.`;
+create duplicates.`;
 
 // The sweep checks exactly these two pages (`searchFreebieGroceries` in
 // server.ts, and `test/freebie-scope.test.ts` pins that it visits no others).
@@ -523,7 +524,8 @@ export function createRegisterTools(
           },
           quantity: {
             type: 'number',
-            description: 'Quantity to add (default: 1)',
+            description:
+              'How many of this item the cart should hold (default: 1). Never lowers a quantity.',
           },
         },
         required: ['grocery_url'],

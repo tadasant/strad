@@ -210,6 +210,7 @@ export function cartItemsFromStoreData(
       quantity: typeof item.quantity === 'number' ? item.quantity : 1,
       price: formatCents(subtotal),
       imageUrl: product.photoUrl || undefined,
+      subscribed: item.shouldSubscribe === true,
     };
   });
 }

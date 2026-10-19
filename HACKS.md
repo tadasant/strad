@@ -6533,3 +6533,30 @@ it from there and drop the help-center read. Until then a caller that needs
 macros for a `not_published` or `not_in_kitchen_tables` product takes the
 producer, name and retail units to a nutrition database, or reads the label off
 a photo when one shows it.
+
+## 128. good-eggs adds through Good Eggs' undocumented basket endpoint, measured live only against an anonymous basket
+
+**What.** `add_to_cart` sends `POST /api/basket/update-item` with
+`{ productId, quantity, shouldSubscribe: false }` from inside the product page.
+That is the request the page's own "Add to basket" button sends. The button is
+kept as the fallback after a definite refusal. `quantity` is the line's new
+total, so the update is sent only when the prior total is known and below the
+request. An unknown prior total means no add at all.
+`servers/good-eggs/FORK.md` #13 has the evidence.
+
+**Why.** Clicking a drawn button failed about two adds in three during the
+2026-10-19 shop ([strad#439](https://github.com/tadasant/strad/issues/439)),
+because the button was not found visible in time. The request does not depend on
+the page drawing. It is read out of the site's own traffic, and Good Eggs
+publishes no API. The endpoint, its total-not-increment meaning and its answer
+shapes were measured on 2026-10-19 against an anonymous basket. No live
+signed-in account was used, because nothing in this repo may write to the
+household's real basket to test it.
+
+**Undo.** Nothing to undo while Good Eggs serves the endpoint. If it moves or
+changes shape, a non-2xx answer reports `Good Eggs refused the basket update …`
+and falls back to the button, which is the old behaviour. A 2xx in a shape this
+code cannot read is not followed by the button, because it may have applied. The
+basket re-read reports what landed. Re-read the button's
+request from the browser's network panel and update `BASKET_UPDATE_PATH` and
+`parseBasketUpdateResponse()`.
