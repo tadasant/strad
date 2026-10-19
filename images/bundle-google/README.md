@@ -58,10 +58,12 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   port (`--transport`, `--port`/`PORT`, `--host`), and each file beside it is
   one server's entrypoint, built to `dist/standalone/<server>.js`. It reuses
   the factory this image mounts, so a standalone server is the bundled one.
-  `google-calendar.ts` and `google-drive.ts` are the two. Their how-tos are
-  `vendor/google-calendar-shared/README.md` and
+  `google-calendar.ts`, `google-docs.ts` and `google-drive.ts` are the three.
+  Their how-tos are `vendor/google-calendar-shared/README.md`,
+  `vendor/google-docs-shared/README.md` and
   `vendor/google-drive-shared/README.md`, and `test/standalone.test.ts`
-  runs both transports for each. Adding a server is one more entrypoint, a README in
+  runs both transports for each. `google-docs.ts` goes through `src/docs.ts`,
+  the layer `/google-docs` mounts, not the vendored factory. Adding a server is one more entrypoint, a README in
   its tree, and a test case.
 - `vendor/` — the upstream `shared/` factories, plus `@pulsemcp/mcp-elicitation`.
   Wired as npm workspaces.
@@ -81,9 +83,10 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
     `test/gmail-attachments.test.ts` is the main one.
   - The only other edits to vendored code are one dependency line (gmail's
     elicitation dep → the vendored workspace) and a `types` field so the
-    entrypoint typechecks. `vendor/google-calendar-shared/README.md` is
-    strad's, beside the copied `src/` rather than in it. It is the how-to for
-    running that server without strad.
+    entrypoint typechecks. `vendor/google-calendar-shared/README.md` and
+    `vendor/google-docs-shared/README.md` are strad's, beside the copied `src/`
+    rather than in it. Each is the how-to for running that server without
+    strad.
 - `vendor/mcp-elicitation/src/` — **generated. Do not edit it here.** The same
   library is also in `servers/onepassword/elicitation`, both copies are built
   into one bundle image, and that copy is the source: `npm run elicitation:sync`
