@@ -127,8 +127,14 @@ export interface AppOptions {
    * The resolver the runtime providers read through, for the store-served
    * instance routes. Absent under the `env` provider — and in a test that mounts
    * none, where the env route answers 503 rather than reading anything.
+   *
+   * Also the read half of a `/tokens` mint or revoke, which the console's own
+   * credential may not make on prod. See src/auth/token-admin.ts.
    */
-  resolver?: InstancesHandlerOptions["resolver"];
+  resolver?:
+    | (NonNullable<InstancesHandlerOptions["resolver"]> &
+        NonNullable<ConsoleUiOptions["resolver"]>)
+    | null;
   /** Test seam: substitute the GCS listing surface behind the console UI. */
   gcsList?: GcsLister;
   /** Test seam: substitute the parameter store behind the console UI. */
@@ -581,6 +587,7 @@ export function createApp(opts: AppOptions): Express {
       fetchImpl: opts.fetchImpl,
       presence: opts.presence,
       diagnosticStore: opts.diagnosticStore,
+      resolver: opts.resolver,
       sessions: auth.sessions,
       googleReady: auth.ready,
       consoleTokens,

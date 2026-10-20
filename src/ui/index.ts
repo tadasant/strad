@@ -29,6 +29,7 @@ import {
   type Capabilities,
   type ParameterListing,
   type ParameterMeta,
+  type ParameterResolver,
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
 import { DeadlineError } from "../util/deadline.ts";
@@ -210,6 +211,12 @@ export interface ConsoleUiOptions {
    * `resolverFromEnv(env)`; explicit `null` disables the diagnosis.
    */
   diagnosticStore?: Pick<ParameterStore, "list" | "resolveDetailed"> | null;
+  /**
+   * The gateway's resolver, for the one read the console's own credential may
+   * not make: the token roster `/tokens` rewrites. See src/auth/token-admin.ts.
+   * Absent under the `env` provider, where `/tokens` offers no forms anyway.
+   */
+  resolver?: Pick<ParameterResolver, "renderPath" | "projectId"> | null;
   /** Session sealers, so the gate can verify a Google login (src/auth/session.ts). */
   sessions?: ConsoleSessions | null;
   /** Whether Google sign-in can complete end to end. See resolveConsoleAuth(). */
@@ -344,6 +351,7 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     secrets: opts.secrets,
     env: opts.env,
     secretProvider: opts.secretProvider,
+    reader: opts.resolver,
     parametersStore: opts.parametersStore,
   });
 

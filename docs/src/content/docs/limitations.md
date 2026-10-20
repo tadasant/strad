@@ -457,7 +457,8 @@ that would always fail.
 What remains under `parameter-store`:
 
 1. **No compare-and-swap.** Parameter Manager has none, so a write is a
-   read-modify-write whose read is a direct reveal immediately before the write.
+   read-modify-write whose read is a live `:render` through the gateway's
+   resolver immediately before the write.
    Two humans minting inside that window lose one of the two mints — the same
    limitation as [#91](#91-a-rotated-refresh-token-can-be-overwritten-by-a-re-seed).
    A lost mint is a token that does not work, which is loud; revoke and forget
