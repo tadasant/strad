@@ -150,6 +150,17 @@ id — which is the gateway's own access-control list.
 Under `store: env` the page still renders the roster, read-only, and says why it
 cannot write.
 
+**Two credentials, one each way.** A mint or revoke reads the records the store
+holds right now, changes them, and writes them back. The write goes through the
+console's admin credential. The read does not, because on prod that credential
+holds no read path at all ([secrets IAM §1](/operate/secrets-iam/#1-prod-console-write-but-never-read)).
+It goes through the gateway's resolver, by `:render` — the same read `/mcp` makes
+of the same parameter on every request. So `/tokens` needs no read grant that
+`/mcp` does not already need, and the console still cannot read a secret. When
+either half is refused, the page says which credential, which permission, and
+links [Token admin](/operate/secrets-iam/#token-admin) rather than answering a
+bare 502.
+
 <aside class="starlight-aside starlight-aside--caution">
 
 **There is no `/mcp` equivalent of this page, deliberately.** A tool that minted

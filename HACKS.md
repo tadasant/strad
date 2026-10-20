@@ -192,8 +192,9 @@ with no data move, and what keeps a rollback to an older image working. Two
 narrower residuals, both stated on the limitations page:
 
 1. **No compare-and-swap.** Parameter Manager has none, so every write is a
-   read-modify-write whose read is a direct `reveal()` immediately before the
-   write. Two humans minting inside that window lose one of the two mints. Same
+   read-modify-write whose read is a live `:render` through the gateway's
+   resolver immediately before the write (the console's own credential cannot
+   read on prod; see `docs/operate/secrets-iam.md#token-admin`). Two humans minting inside that window lose one of the two mints. Same
    as hack #91.
 2. **"Effective on the next request" assumes ONE core instance.** A write drops
    the reading held by the process that made it, and core runs

@@ -4,6 +4,7 @@ import type { ServerSecretProviders } from "../secrets/provider/index.ts";
 import {
   gatewayParameterPath,
   ParameterStoreError,
+  type ParameterResolver,
 } from "../secrets/parameters/index.ts";
 import { storeForPath, type StoreClientOptions } from "../ui/store-client.ts";
 import { event } from "../telemetry/index.ts";
@@ -45,10 +46,32 @@ import {
  * it finds, and re-classifying somebody's parameter underneath them is not this
  * code's call.
  *
+ * ## The read goes through the RESOLVER, the write through the console
+ *
+ * Every write here is a read-modify-write, and the two halves use two different
+ * credentials on purpose. The console's admin credential WRITES. It cannot READ
+ * a secret value on prod: docs/operate/secrets-iam.md §1 withholds
+ * `secretmanager.versions.access` from it, and its deny policy withholds
+ * `parameterVersions.render` as well. A `reveal()` through it is therefore a
+ * 403 on prod, and every mint and revoke failed on that read before writing
+ * anything.
+ *
+ * So the read is the gateway's own: the resolver's live `:render` of this ONE
+ * path (`renderPath`), the same read `/mcp` makes of the same parameter on every
+ * request. That widens nothing. The resolver already holds this exact read,
+ * because the token store cannot work without it, and the console's credential
+ * gains no read at all — not on this parameter, and not on any other. The
+ * alternative, binding the console `secretAccessor` on this one secret (the
+ * `grantConsoleRead` route connectors use), would leave a standing read grant
+ * on the gateway's access-control list for a credential that never needs to
+ * DISPLAY it, and a deny policy on the console blocks that grant anyway. The
+ * refresh-token write-back made the same choice for the same reason
+ * (src/http/params.ts).
+ *
  * ## What it does NOT do: compare-and-swap
  *
  * Parameter Manager has no CAS, so every write here is a read-modify-write. The
- * read is a direct `reveal()` against the store (never the gateway's cached
+ * read is a live `:render` against the store (never the gateway's cached
  * reading), which narrows the window to the gap between two calls — but two
  * humans minting inside that window still lose one of the two mints. The same
  * limitation the connector write-back has, for the same reason; `HACKS.md` #91.
@@ -85,9 +108,19 @@ export interface TokenAdminOptions {
    * to a day later, which is exactly the property this feature exists to fix.
    */
   secretProvider?: ServerSecretProviders;
+  /**
+   * What the read half of a mint or revoke goes through: the gateway's
+   * resolver, by `:render`. Null or absent where there is none (the `env`
+   * provider), and then nothing here writes. See the header.
+   */
+  reader?: Pick<ParameterResolver, "renderPath" | "projectId"> | null;
   /** Test seam, threaded to `storeForPath`. */
   parametersStore?: StoreClientOptions["parametersStore"];
 }
+
+/** Where the read and write failures point a human. */
+const IAM_DOC =
+  "https://docs.strad.tadasant.com/operate/secrets-iam/#token-admin";
 
 /**
  * Why this deployment cannot mint or revoke, or `null` if it can.
@@ -114,13 +147,29 @@ export function tokenWritability(opts: TokenAdminOptions): string | null {
       `Nothing in a running container can change one.`
     );
   }
-  const resolved = storeForPath(
-    opts.config,
-    opts.secrets,
-    tokensParameterPath(opts.config),
-    opts,
-  );
-  return resolved.store ? null : resolved.reason;
+  const path = tokensParameterPath(opts.config);
+  const resolved = storeForPath(opts.config, opts.secrets, path, opts);
+  if (!resolved.store) return resolved.reason;
+  if (!opts.reader?.renderPath) {
+    return (
+      `this process has no resolver that can read ${path}, so a mint or ` +
+      `revoke could not start from the records the store holds. The console's ` +
+      `own credential is never used for that read — see ${IAM_DOC}.`
+    );
+  }
+  // The read vouches for the write only if both mean the same store. A
+  // `consoleStores:` entry for another project would read the gateway's roster
+  // and write a copy nothing serves.
+  const reads = opts.reader.projectId;
+  const writes = resolved.store.projectId;
+  if (reads !== undefined && writes !== undefined && reads !== writes) {
+    return (
+      `the gateway reads ${path} from project ${reads}, but the console's ` +
+      `store for it is project ${writes}. A write there would change a roster ` +
+      `/mcp does not read.`
+    );
+  }
+  return null;
 }
 
 export type TokenWriteResult<T> =
@@ -147,15 +196,18 @@ async function mutate<T>(
   if (blocked) return { ok: false, status: 503, reason: blocked };
 
   const resolved = storeForPath(opts.config, opts.secrets, path, opts);
-  if (!resolved.store) {
-    return { ok: false, status: 503, reason: resolved.reason };
+  const read = opts.reader?.renderPath?.bind(opts.reader);
+  if (!resolved.store || !read) {
+    // `tokenWritability` above has already refused both; this is the type
+    // narrowing, not a second policy.
+    return { ok: false, status: 503, reason: "no store to write to" };
   }
   const store = resolved.store;
 
   let current: TokenRecord[];
   let exists = true;
   try {
-    current = parseTokenRecords(await store.reveal(path));
+    current = parseTokenRecords(await read(path));
   } catch (err) {
     if (err instanceof ParameterStoreError && err.status === 404) {
       // NO PARAMETER YET, SO NO RECORDS YET — and deliberately not "seed from
@@ -178,7 +230,15 @@ async function mutate<T>(
       exists = false;
       current = [];
     } else {
-      return { ok: false, status: statusOf(err), reason: errorSummary(err) };
+      event({ evt: "strad.token_write_failed" });
+      console.error(
+        `[strad] could not read ${path} before writing it: ${errorSummary(err)}. No record changed.`,
+      );
+      return {
+        ok: false,
+        status: statusOf(err),
+        reason: failureReason("read", path, err),
+      };
     }
   }
 
@@ -204,7 +264,11 @@ async function mutate<T>(
     console.error(
       `[strad] could not write ${path}: ${errorSummary(err)}. No record changed.`,
     );
-    return { ok: false, status: statusOf(err), reason: errorSummary(err) };
+    return {
+      ok: false,
+      status: statusOf(err),
+      reason: failureReason("write", path, err),
+    };
   }
 
   // The gateway reads through the resolver's snapshot; this is what makes a
@@ -228,6 +292,51 @@ async function mutate<T>(
 function statusOf(err: unknown): number {
   if (err instanceof ParameterStoreError && err.status === 404) return 404;
   return 502;
+}
+
+/**
+ * What a human reads when the store refused, in place of a bare "502".
+ *
+ * Names WHICH credential failed at WHAT, because the two halves of a mint use
+ * two different ones and the fix for each is a different IAM grant. A refusal
+ * (`401`/`403`) gets the grant spelled out; anything else is the store's own
+ * method-and-resource summary, which is what `errorSummary` may show a human.
+ */
+function failureReason(
+  stage: "read" | "write",
+  path: string,
+  err: unknown,
+): string {
+  const status = err instanceof ParameterStoreError ? err.status : undefined;
+  const refused = status === 401 || status === 403;
+  if (stage === "read") {
+    if (refused) {
+      return (
+        `Nothing was changed: the gateway's resolver credential was refused ` +
+        `(${status}) reading ${path}, so the current records could not be ` +
+        `loaded. It needs parametermanager.parameterVersions.render on the ` +
+        `project, and the parameter's own principal needs ` +
+        `secretmanager.secretAccessor on its secret — the same read /mcp ` +
+        `makes, so /mcp is likely rejecting every token too. See ${IAM_DOC}.`
+      );
+    }
+    return (
+      `Nothing was changed: the current records in ${path} could not be read ` +
+      `(${errorSummary(err)}). See ${IAM_DOC}.`
+    );
+  }
+  if (refused) {
+    return (
+      `Nothing was changed: the console's admin credential was refused ` +
+      `(${status}) writing ${path}. It needs the write half of secrets-iam ` +
+      `§1 — secretmanager.versions.add for a secret parameter, ` +
+      `parametermanager.parameterVersions.create for a plain one. See ${IAM_DOC}.`
+    );
+  }
+  return (
+    `Nothing was changed: ${path} could not be written ` +
+    `(${errorSummary(err)}). See ${IAM_DOC}.`
+  );
 }
 
 /** Every record, as the STORE holds them. For the console's roster. */

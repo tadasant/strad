@@ -77,6 +77,33 @@ so a custom role containing it fails to create at all rather than creating a rol
 that grants nothing.
 :::
 
+## Token admin
+
+`/tokens` mints, revokes and forgets `/mcp` tokens by rewriting one secret
+parameter, `/strad/{env}/gateway/static/STRAD_TOKENS`. Each of those is a
+read-modify-write, and the two halves use different credentials:
+
+| Half      | Credential                                                                    | What it calls                                                         | Permissions                                                                                           |
+| --------- | ----------------------------------------------------------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| **read**  | the gateway's **resolver** (`STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON`) | PM versions list + GET, then `…/versions/{v}:render` on that one path | the resolver's roles below, plus the parameter's own principal holding `secretAccessor` on its secret |
+| **write** | the console's **admin** (`SECRETS_ADMIN_KEY_JSON`)                            | the `rotate` row above, or the `create` row on the first mint         | §1's custom roles, unchanged                                                                          |
+
+**Why not the console's own read.** On prod the console holds no read path (§1),
+so a `reveal()` through it is a 403. Granting it one, even `secretAccessor` on
+this one secret, would put a standing read of the gateway's access-control list
+on a credential that never needs to display it, and §1's deny policy blocks that
+grant anyway. The resolver already holds exactly this read: `/mcp` makes it on
+every request, because the token store cannot work without it. Borrowing it adds
+no grant anywhere.
+
+**So there is nothing to apply for `/tokens`.** A deployment where `/mcp`
+accepts its tokens already has every grant a mint or revoke needs. If `/tokens`
+reports the resolver was refused, `/mcp` is failing the same read; fix it with
+[the resolver's roles](#the-resolvers-roles-parameterviewer-is-not-enough) and
+[the parameter's own grant](#why-a-parameter-must-be-granted-access-to-its-own-secret).
+If it reports the console's admin credential was refused, the console is
+missing the write half of §1.
+
 ## Never grant the `secrets` MCP credential `parameterAccessor`
 
 :::danger[This is the one grant that would open `/mcp` to prod secret values]
