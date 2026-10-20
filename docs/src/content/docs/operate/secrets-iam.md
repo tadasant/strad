@@ -101,6 +101,10 @@ accepts its tokens already has every grant a mint or revoke needs. If `/tokens`
 reports the resolver was refused, `/mcp` is failing the same read; fix it with
 [the resolver's roles](#the-resolvers-roles-parameterviewer-is-not-enough) and
 [the parameter's own grant](#why-a-parameter-must-be-granted-access-to-its-own-secret).
+If it reports the parameter would not render (`400`), the parameter's own
+principal lacks `secretAccessor` on its secret — the shape of a parameter seeded
+outside strad; see
+[Backfilling](#backfilling-parameters-created-before-strad-made-this-grant).
 If it reports the console's admin credential was refused, the console is
 missing the write half of §1.
 

@@ -36,8 +36,8 @@ import {
  * And under PROD'S IAM, which is the other half of that claim. The console's
  * client holds `WRITE_ONLY_CONSOLE_PERMISSIONS` — docs/operate/secrets-iam.md
  * §1, no read path of any kind — and the resolver holds `RESOLVER_PERMISSIONS`.
- * An all-powerful client on both sides is what let every test here pass while
- * every mint and revoke on prod was a 502.
+ * An all-powerful client on both sides would hide that split: a console read
+ * passes here and is a 403 on prod.
  */
 
 const BOOTSTRAP = "bootstrap-secret-xyz";
@@ -693,6 +693,46 @@ describe("under prod's IAM: the console writes, the resolver reads", () => {
     expect(html).toContain("resolver credential was refused (403)");
     expect(html).toContain("parametermanager.parameterVersions.render");
     expect(html).toContain("operate/secrets-iam/#token-admin");
+    expect((await stored())[0]?.revokedAt).toBeFalsy();
+  });
+
+  it("a parameter whose principal may not read its secret names THAT grant", async () => {
+    const existing = await seed();
+    // The binding `create()` made, removed: the shape of a parameter seeded by
+    // hand. The resolver may render; the parameter may not deref.
+    for (const id of fake.secretPolicies.keys())
+      fake.secretPolicies.set(id, []);
+
+    const res = await post("/tokens/revoke", { pubid: existing.record.pubid });
+    expect(res.status).toBe(502);
+    const html = await res.text();
+    expect(html).toContain("would not render (400)");
+    expect(html).toContain("secretmanager.secretAccessor");
+    expect((await stored())[0]?.revokedAt).toBeFalsy();
+  });
+
+  it("refuses to write when the resolver reads a different project than the console writes", async () => {
+    server.close();
+    await boot(undefined, {
+      resolver: (f) => {
+        const real = f.storeAs(RESOLVER_PERMISSIONS);
+        // Same reads, a different store: what a `consoleStores:` entry for
+        // another project looks like from here.
+        return Object.assign(Object.create(real) as ParameterStore, {
+          projectId: "some-other-project",
+        });
+      },
+    });
+    const existing = await seed();
+
+    const html = await (
+      await fetch(`${baseUrl}/tokens`, { headers: auth })
+    ).text();
+    expect(html).toContain("some-other-project");
+    expect(html).not.toContain('action="/tokens/mint"');
+
+    const res = await post("/tokens/revoke", { pubid: existing.record.pubid });
+    expect(res.status).toBe(503);
     expect((await stored())[0]?.revokedAt).toBeFalsy();
   });
 

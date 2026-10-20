@@ -53,8 +53,7 @@ import {
  * a secret value on prod: docs/operate/secrets-iam.md §1 withholds
  * `secretmanager.versions.access` from it, and its deny policy withholds
  * `parameterVersions.render` as well. A `reveal()` through it is therefore a
- * 403 on prod, and every mint and revoke failed on that read before writing
- * anything.
+ * 403 on prod, so the read cannot go through it.
  *
  * So the read is the gateway's own: the resolver's live `:render` of this ONE
  * path (`renderPath`), the same read `/mcp` makes of the same parameter on every
@@ -314,10 +313,22 @@ function failureReason(
       return (
         `Nothing was changed: the gateway's resolver credential was refused ` +
         `(${status}) reading ${path}, so the current records could not be ` +
-        `loaded. It needs parametermanager.parameterVersions.render on the ` +
-        `project, and the parameter's own principal needs ` +
-        `secretmanager.secretAccessor on its secret — the same read /mcp ` +
-        `makes, so /mcp is likely rejecting every token too. See ${IAM_DOC}.`
+        `loaded. It needs the resolver's roles — parameterViewer plus ` +
+        `parameterAccessor (parametermanager.parameterVersions.render). This ` +
+        `is the read /mcp makes, so /mcp is likely rejecting every token too. ` +
+        `See ${IAM_DOC}.`
+      );
+    }
+    if (status === 400) {
+      // `400 SECRET_REFERENCE_ERROR`: the CALLER was permitted, and the
+      // parameter's own principal may not read its secret. The likeliest read
+      // failure on a parameter seeded by hand, and its fix is a different grant.
+      return (
+        `Nothing was changed: ${path} would not render (400). The usual cause ` +
+        `is that the parameter's own principal lacks ` +
+        `secretmanager.secretAccessor on its secret — a parameter seeded ` +
+        `outside strad is born without it. This is the read /mcp makes, so ` +
+        `/mcp is likely rejecting every token too. See ${IAM_DOC}.`
       );
     }
     return (
