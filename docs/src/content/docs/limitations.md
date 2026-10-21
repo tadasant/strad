@@ -3594,6 +3594,13 @@ bank's Apiture API. LiveOak publishes neither. What it costs:
   account holder's phone, and Cognito's challenge lives about three minutes
   unless the pool says otherwise. The pending challenge is in one container's
   memory, so a deploy between `enrol_device` and `confirm_device` drops it.
+- **A confirmed device whose keys could not be stored lives in memory.** LiveOak
+  remembers the device before this server writes it to the bucket.
+  `enrol_device` checks the bucket takes a write before it texts a code, so this
+  takes a storage failure in the seconds between the two calls. If it happens,
+  the next `enrol_device` stores the held keys with no code. A restart first
+  loses them, `force: true` enrols again, and the old device stays on the
+  account doing nothing.
 - **A pool that issues no device makes this server useless unattended.** If
   LiveOak's pool does not track devices, every login asks for a code.
   `confirm_device` says so instead of reporting success.

@@ -42,7 +42,7 @@ agent drives, a fill-the-form helper, or a tool argument. Here:
 
 | Tool              | Group    | What it does                                                                |
 | ----------------- | -------- | --------------------------------------------------------------------------- |
-| `get_status`      | readonly | Configured? Device enrolled? Enrolment waiting for a code? No login         |
+| `get_status`      | readonly | Configured? Device enrolled? Storage readable? Code pending? No login       |
 | `list_statements` | readonly | Statements whose end date falls in a range, newest first, every account     |
 | `get_statement`   | readonly | Fetch one statement's PDF; return its size, SHA-256 and a single-use link   |
 | `enrol_device`    | admin    | Log in and have LiveOak text a code to the account holder (step 1 of 2)     |
@@ -67,7 +67,7 @@ Six values, in the store (`/ui/secrets`), on the slug that points at `/liveoak`:
 | `LIVEOAK_STATE_ENCRYPTION_KEY` | 32 random bytes (`openssl rand -base64 32`). Seals the device state |
 | `LIVEOAK_GCS_BUCKET`           | A private bucket the sealed device state lives in                   |
 | `LIVEOAK_GCS_CLIENT_EMAIL`     | A service account with `roles/storage.objectAdmin` on that bucket   |
-| `LIVEOAK_GCS_PRIVATE_KEY`      | Its private key                                                     |
+| `LIVEOAK_GCS_PRIVATE_KEY`      | Its key: the JSON key file, or its `private_key` (below)            |
 
 Two more are plain config:
 
@@ -81,8 +81,33 @@ Two more are plain config:
 The staging entry in `infra/strad.staging.yaml` ships `enabled: false`. There is
 no staging bank, so its references would resolve to the one real account.
 
+### What to paste for `LIVEOAK_GCS_PRIVATE_KEY`
+
+Create a JSON key for the service account
+(`gcloud iam service-accounts keys create key.json --iam-account=…`) and paste
+either of these:
+
+- **The whole file.** Its `client_email` must match `LIVEOAK_GCS_CLIENT_EMAIL`,
+  and a mismatch is refused, naming both.
+- **Its `private_key` value**, from the `BEGIN PRIVATE KEY` line through the
+  `END PRIVATE KEY` line.
+
+The server rebuilds the key from what is between the two armour lines, so the
+usual damage from copying it around is harmless: the surrounding JSON quotes,
+`\n` escapes, `\r\n` line ends, line breaks stripped or turned into spaces (a
+password field does that), or the whole thing base64-encoded once more. It
+then loads the key and checks that it is RSA, when the server starts and again
+on the first tool call. A value that is still not a key is reported by
+`get_status` and every other tool as
+`LIVEOAK_GCS_PRIVATE_KEY is set but is not a usable private key: …`, with what is
+wrong with it: no armour, a public key, an EC or OpenSSH key, a passphrase, a missing END
+line, or base64 that does not decode. The value itself is never quoted. The same
+sentence is logged at boot.
+
 With the values seeded and the slug enabled, `get_status` answers
-`device_enrolled: false` until the next step is done.
+`device_enrolled: false` until the next step is done. It reads the device
+storage, so a service account that cannot reach the bucket shows up there as
+`device_store_error`, before anyone is texted a code.
 
 ## Enrolling the device
 
@@ -92,9 +117,11 @@ Cognito remembered device: three keys Cognito issues once the code is accepted,
 which let later logins skip the code. This server enrols itself the same way,
 once, with a human in the loop:
 
-1. Call `enrol_device`. It logs in with the stored credentials, and LiveOak
-   texts a code. The result names the masked destination
-   (`"+*******1234"`).
+1. Call `enrol_device`. It first writes and deletes a throwaway object
+   (`{LIVEOAK_GCS_PREFIX}/write-probe`) to prove the device can be stored. If
+   that fails it stops with `No code was sent: …` and never logs in. Otherwise
+   it logs in with the stored credentials, and LiveOak texts a code. The result
+   names the masked destination (`"+*******1234"`).
 2. Ask the account holder for the code, then call `confirm_device` with it
    within about three minutes. Three minutes is Cognito's default, and LiveOak's
    pool may set it differently. A wrong code can be retried against the same
@@ -122,6 +149,17 @@ about to type. So `list_statements` and `get_statement` refuse until
 
 The pending challenge lives in this container's memory. A deploy or restart
 between the two calls drops it; call `enrol_device` again.
+
+**When the device is confirmed but cannot be stored.** Cognito confirms and
+remembers the device before this server writes its keys, so a write that fails
+then leaves a device LiveOak knows and the bucket does not. `confirm_device`
+says so, and the server keeps the keys in memory: reads use them, and
+`get_status` shows `device_unsaved: true`. Fix the storage problem, then call
+`enrol_device` without `force`. It stores the held device and sends no code. If
+the container restarts first the keys are gone, and `enrol_device` with
+`force: true` enrols a new device for one more code. The orphaned device stays
+on the LiveOak account and does nothing; the account holder can remove it in
+the portal.
 
 **`force: true` neither reads nor deletes the stored device.** Not reading is
 what lets it recover from a changed `LIVEOAK_STATE_ENCRYPTION_KEY`, which

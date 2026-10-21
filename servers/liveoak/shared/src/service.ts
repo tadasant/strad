@@ -35,7 +35,7 @@ import {
   NonceLedger,
   verifyDownloadToken,
 } from "./download-link.js";
-import type { BlobStore } from "./gcs.js";
+import { GcsError, type BlobStore } from "./gcs.js";
 import { SealError } from "./crypto.js";
 import { logInfo, logWarning, redact } from "./logging.js";
 import {
@@ -96,6 +96,13 @@ export interface StatusResult {
   device_enrolled: boolean;
   enrolled_at?: string;
   device_state_unreadable?: string;
+  /** Storage could not be read: the problem, in words safe to show. */
+  device_store_error?: string;
+  /**
+   * A device LiveOak confirmed whose keys could not be stored. It is held in
+   * this container's memory until enrol_device stores it.
+   */
+  device_unsaved?: true;
   enrolment_pending: boolean;
   download_links: boolean;
   download_links_unavailable?: string;
@@ -122,6 +129,17 @@ export type EnrolResult =
     }
   | { status: "enrolled"; enrolled_at: string; message: string };
 
+/** The refusal a write could not land, with what to do in each case. */
+function unsavedMessage(cause: string): string {
+  return (
+    `LiveOak confirmed this server as a remembered device, but its keys could not ` +
+    `be stored: ${cause} The keys are held in this container's memory, and reads ` +
+    `use them meanwhile. Fix the storage problem, then call enrol_device WITHOUT ` +
+    `force to store them: no new code is sent. If this container restarts first ` +
+    `they are lost, and enrol_device with force: true enrols again (one new code).`
+  );
+}
+
 interface Cached {
   statementId: string;
   filename: string;
@@ -140,6 +158,8 @@ export class LiveOakService {
   private chain: Promise<unknown> = Promise.resolve();
   private session: { value: Session; at: number } | undefined;
   private pending: { challenge: MfaChallenge; at: number } | undefined;
+  /** A confirmed device whose save failed. See {@link unsavedMessage}. */
+  private unsaved: DeviceState | undefined;
 
   constructor(private readonly options: ServiceOptions) {
     this.login = new CognitoLogin(options.cognito ?? LIVEOAK_COGNITO);
@@ -153,14 +173,17 @@ export class LiveOakService {
   async status(): Promise<StatusResult> {
     let device: DeviceState | null = null;
     let unreadable: string | undefined;
+    let storeError: string | undefined;
     try {
       device = await this.devices.load();
     } catch (err) {
-      // A changed key or an altered object. Reported, not thrown: status is
-      // what an operator reads to find out, and enrol_device {force:true} is
-      // the way back.
-      if (!(err instanceof SealError)) throw err;
-      unreadable = err.message;
+      // A changed key or an altered object, or a store this server cannot
+      // reach. Reported, not thrown: status is what an operator reads to find
+      // out. enrol_device {force:true} is the way back from the first; the
+      // second needs the GCS settings fixed.
+      if (err instanceof SealError) unreadable = err.message;
+      else if (err instanceof GcsError) storeError = err.message;
+      else throw err;
     }
     const { downloadLink, downloadUnavailable } = this.options.config;
     return {
@@ -168,6 +191,8 @@ export class LiveOakService {
       device_enrolled: device !== null,
       ...(device ? { enrolled_at: device.enrolledAt } : {}),
       ...(unreadable ? { device_state_unreadable: unreadable } : {}),
+      ...(storeError ? { device_store_error: storeError } : {}),
+      ...(this.unsaved ? { device_unsaved: true as const } : {}),
       enrolment_pending: this.livePending() !== undefined,
       download_links: downloadLink !== undefined,
       ...(downloadUnavailable ? { download_links_unavailable: downloadUnavailable } : {}),
@@ -235,6 +260,15 @@ export class LiveOakService {
       const { username, password } = this.options.config;
       this.session = undefined;
       this.pending = undefined;
+      // A device LiveOak already confirmed, whose save failed: store it now
+      // rather than texting a code for a new one.
+      if (this.unsaved && !force) return this.persistEnrolment(this.unsaved, "stored the device confirmed earlier");
+      // STORAGE FIRST. Every login below may text a code, and a code whose
+      // device cannot then be stored is a text to a person for nothing.
+      await this.preflight();
+      // Force discards a held device, but only once storage works: until
+      // then it is what reads log in with.
+      this.unsaved = undefined;
       // FORCE DOES NOT READ, AND DOES NOT DELETE. Not reading is what lets it
       // recover from a changed LIVEOAK_STATE_ENCRYPTION_KEY, whose stored
       // state no longer opens. Not deleting means a forced enrolment that is
@@ -370,7 +404,21 @@ export class LiveOakService {
     };
   }
 
-  private async persistEnrolment(device: DeviceState | null): Promise<EnrolResult> {
+  /** The store takes a write and a delete, or enrolment stops here, before any login. */
+  private async preflight(): Promise<void> {
+    try {
+      await this.devices.probe();
+    } catch (err) {
+      if (!(err instanceof GcsError)) throw err;
+      throw new LiveOakError(
+        `No code was sent: this server cannot write to its device storage, so a ` +
+          `device enrolled now could not be kept. ${err.message} Fix that, then ` +
+          `call enrol_device again.`,
+      );
+    }
+  }
+
+  private async persistEnrolment(device: DeviceState | null, how?: string): Promise<EnrolResult> {
     if (!device) {
       throw new LiveOakError(
         "The login succeeded, but LiveOak's Cognito pool issued no device to " +
@@ -379,12 +427,22 @@ export class LiveOakService {
           "docs/servers/liveoak (Limitations).",
       );
     }
-    await this.devices.save(device);
+    try {
+      await this.devices.save(device);
+      this.unsaved = undefined;
+    } catch (err) {
+      // Cognito has ALREADY confirmed and remembered this device. Keep it, so
+      // fixing the store does not cost the account holder another code.
+      this.unsaved = device;
+      logWarning(`enrolment: device confirmed but not stored (${err instanceof Error ? err.name : "unknown error"})`);
+      throw new LiveOakError(unsavedMessage(err instanceof GcsError ? err.message : "the write failed."));
+    }
     logInfo("enrolment: device remembered and sealed to GCS");
     return {
       status: "enrolled",
       enrolled_at: device.enrolledAt,
       message:
+        `${how ? `No code was sent: ${how}. ` : ""}` +
         "This server is now a remembered device on the LiveOak account. " +
         "list_statements and get_statement log in without a code from here on.",
     };
@@ -430,7 +488,7 @@ export class LiveOakService {
             "expire and call enrol_device.",
         );
       }
-      const device = await this.devices.load();
+      const device = this.unsaved ?? (await this.devices.load());
       if (!device) {
         throw new LiveOakError(
           "No device is enrolled, and a login without one makes LiveOak text a " +
@@ -454,9 +512,11 @@ export class LiveOakService {
       }
       const session = outcome.session;
       if (!session.device) {
+        this.unsaved = undefined;
         await this.devices.clear();
         logWarning("login: Cognito dropped the enrolled device; the stored state was cleared");
       } else if (session.device.deviceKey !== device.deviceKey) {
+        this.unsaved = undefined;
         await this.devices.save(session.device);
       }
       this.session = { value: session, at: now };

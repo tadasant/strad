@@ -6,12 +6,15 @@ import { loginError } from "../src/cognito.js";
 import { open, seal, SealError } from "../src/crypto.js";
 import { DeviceStore } from "../src/device-store.js";
 import { deriveDownloadKey, mintDownloadToken, verifyDownloadToken } from "../src/download-link.js";
-import { GcsBlobStore, MemoryBlobStore } from "../src/gcs.js";
+import { GcsBlobStore, GcsError, MemoryBlobStore } from "../src/gcs.js";
 import { redact, registerSecret } from "../src/logging.js";
 import { normalizeStatement, resolveRange, statementFilename } from "../src/statements.js";
 import { listen, type Listening } from "./fakes.js";
 
 const KEY = Buffer.alloc(32, 9).toString("base64");
+const GCS_KEY = generateKeyPairSync("rsa", { modulusLength: 2048 })
+  .privateKey.export({ type: "pkcs8", format: "pem" })
+  .toString();
 
 const fullEnv = (): NodeJS.ProcessEnv => ({
   LIVEOAK_USERNAME: "me@example.com",
@@ -19,7 +22,7 @@ const fullEnv = (): NodeJS.ProcessEnv => ({
   LIVEOAK_STATE_ENCRYPTION_KEY: KEY,
   LIVEOAK_GCS_BUCKET: "bucket",
   LIVEOAK_GCS_CLIENT_EMAIL: "sa@p.iam.gserviceaccount.com",
-  LIVEOAK_GCS_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----",
+  LIVEOAK_GCS_PRIVATE_KEY: GCS_KEY.replace(/\n/g, "\\n"),
 });
 
 describe("config", () => {
@@ -36,7 +39,7 @@ describe("config", () => {
   it("keeps the password exactly as set, unescapes the PEM, and defaults the prefix", () => {
     const c = loadConfig(fullEnv());
     expect(c.password).toBe("pass word ");
-    expect(c.privateKey).toContain("\nabc\n");
+    expect(c.privateKey).toBe(GCS_KEY);
     expect(c.prefix).toBe("liveoak");
     expect(c.downloadLink).toBeUndefined();
     expect(c.downloadUnavailable).toContain("STRAD_PUBLIC_URL");
@@ -249,6 +252,43 @@ describe("GcsBlobStore", () => {
     expect(await store.read("liveoak/device.sealed")).toBeNull();
     // One token, reused.
     expect(seen.filter((s) => s.endsWith("/token"))).toHaveLength(1);
+  });
+
+  it("a key that will not sign is a GcsError saying what to re-paste, not OpenSSL's DECODER error", async () => {
+    const store = new GcsBlobStore({ bucket: "bkt", clientEmail: "sa@example.com", privateKey: "garbage" });
+    const err = await store.read("liveoak/device.sealed").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GcsError);
+    expect((err as Error).message).toContain("LIVEOAK_GCS_PRIVATE_KEY could not sign");
+    expect((err as Error).message).not.toMatch(/DECODER/);
+  });
+
+  it("a refused token says the email and key must be the same account", async () => {
+    gcs = await listen((_req, res) => {
+      res.statusCode = 400;
+      res.end('{"error":"invalid_grant"}');
+    });
+    const store = new GcsBlobStore({
+      bucket: "bkt",
+      clientEmail: "sa@example.com",
+      privateKey: GCS_KEY,
+      apiEndpoint: gcs.url,
+      tokenUrl: `${gcs.url}/token`,
+    });
+    const err = await store.write("x", Buffer.from("y")).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GcsError);
+    expect((err as Error).message).toMatch(/HTTP 400.*same service account/);
+  });
+
+  it("an unreachable GCS is a GcsError, not `fetch failed`", async () => {
+    const store = new GcsBlobStore({
+      bucket: "bkt",
+      clientEmail: "sa@example.com",
+      privateKey: GCS_KEY,
+      tokenUrl: "http://127.0.0.1:1/token",
+    });
+    const err = await store.read("x").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GcsError);
+    expect((err as Error).message).toContain("could not be reached");
   });
 });
 
