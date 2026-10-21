@@ -60,6 +60,7 @@ async function harness(opts: {
   blobs?: MemoryBlobStore;
   apiOptions?: Partial<ConstructorParameters<typeof FakeApiture>[0]>;
   toolGroups?: ("readonly" | "admin")[];
+  now?: () => number;
 } = {}): Promise<Harness> {
   api = await new FakeApiture({ cognito, documents: DOCUMENTS, ...opts.apiOptions }).start();
   started.push(api);
@@ -70,7 +71,7 @@ async function harness(opts: {
     blobs,
     cognito: { userPoolId: POOL_ID, clientId: CLIENT_ID, endpoint: cognito.endpoint },
     apiture: { apiRoot: api.apiRoot },
-    now: () => NOW,
+    now: opts.now ?? (() => NOW),
     ...(opts.toolGroups ? { toolGroups: opts.toolGroups } : {}),
   });
   const server = new Server({ name: "t", version: "t" }, { capabilities: { tools: {} } });
@@ -507,6 +508,53 @@ describe("unusable device storage", () => {
     // And a fresh process logs in from what was stored, with no code.
     const fresh = await harness({ blobs });
     expect((await fresh.call("list_statements")).isError).toBe(false);
+    expect(cognito.smsCodes.length).toBe(sent);
+  });
+
+  it("force: true keeps the held device while storage is still broken, and drops it once a new one is stored", async () => {
+    const blobs = new BrokenBlobStore();
+    const h = await harness({ blobs });
+    await h.call("enrol_device");
+    blobs.failWrites = true;
+    expect((await h.call("confirm_device", { code: cognito.smsCodes.at(-1)! })).isError).toBe(true);
+
+    const sent = cognito.smsCodes.length;
+    const refused = await h.call("enrol_device", { force: true });
+    expect(refused.text).toMatch(/^No code was sent/);
+    expect(cognito.smsCodes.length).toBe(sent);
+    expect((await h.call("get_status")).json.device_unsaved).toBe(true);
+    expect((await h.call("list_statements")).isError).toBe(false);
+
+    blobs.failWrites = false;
+    expect((await h.call("enrol_device", { force: true })).json.status).toBe("code_sent");
+    expect((await h.call("confirm_device", { code: cognito.smsCodes.at(-1)! })).json.status).toBe("enrolled");
+    const status = (await h.call("get_status")).json;
+    expect(status).toMatchObject({ device_enrolled: true });
+    expect(status.device_unsaved).toBeUndefined();
+  });
+
+  it("a held device is released once a later confirm stores a new one", async () => {
+    let clock = NOW;
+    const blobs = new BrokenBlobStore();
+    const h = await harness({ blobs, now: () => clock });
+    await h.call("enrol_device");
+    blobs.failWrites = true;
+    expect((await h.call("confirm_device", { code: cognito.smsCodes.at(-1)! })).isError).toBe(true);
+    blobs.failWrites = false;
+
+    // LiveOak stops honouring the held device. The next read, past the reuse
+    // window, logs in with it, is challenged, and holds the challenge.
+    cognito.forgetAllDevices();
+    clock += 11 * 60_000;
+    const list = await h.call("list_statements");
+    expect(list.text).toContain("no longer accepts the enrolled device");
+    expect((await h.call("confirm_device", { code: cognito.smsCodes.at(-1)! })).json.status).toBe("enrolled");
+    expect((await h.call("get_status")).json.device_unsaved).toBeUndefined();
+
+    // The next fresh login uses the STORED new device, not the stale held one.
+    const sent = cognito.smsCodes.length;
+    clock += 11 * 60_000;
+    expect((await h.call("list_statements")).isError).toBe(false);
     expect(cognito.smsCodes.length).toBe(sent);
   });
 

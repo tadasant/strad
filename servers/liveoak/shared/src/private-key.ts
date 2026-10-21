@@ -6,7 +6,7 @@
  * PEM inside it is a JSON string with escaped newlines. Between that file and
  * this process it can be pasted with its quotes, pasted as the whole file,
  * carried with `\r\n`, or have its line breaks stripped by a password input
- * (strad's console did that until #438). Every one of those still holds the
+ * (a pasted PEM arrives as one line). Every one of those still holds the
  * same base64 between the same two armour lines, so the key is rebuilt from
  * that rather than refused. Node's own refusal for all of them is
  * `error:1E08010C:DECODER routines::unsupported`, which names nothing a human
@@ -93,7 +93,10 @@ function fromPem(raw: string): string {
   }
   const label = armour[1]!;
   if (/PUBLIC KEY|CERTIFICATE/.test(label)) refuse(`it is a ${label.toLowerCase()}, not a private key`);
-  if (label === "ENCRYPTED PRIVATE KEY") refuse("it is encrypted with a passphrase");
+  if (label === "ENCRYPTED PRIVATE KEY" || /Proc-Type:\s*4,ENCRYPTED/.test(armour[2]!)) {
+    refuse("it is encrypted with a passphrase");
+  }
+  if (label === "OPENSSH PRIVATE KEY") refuse("it is an OpenSSH key, and a Google service-account key is PKCS#8");
   if (!/PRIVATE KEY$/.test(label)) refuse(`its armour says ${label.toLowerCase()}, not a private key`);
   const body = armour[2]!.replace(/\s+/g, "");
   if (body === "" || !/^[A-Za-z0-9+/]+={0,2}$/.test(body)) {

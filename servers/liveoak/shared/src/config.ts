@@ -147,11 +147,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): LiveOakConfig 
   const clientEmail = read(env, ENV.clientEmail)!;
   const key = parsePrivateKey(read(env, ENV.privateKey)!);
   if (key.clientEmail && key.clientEmail !== clientEmail) {
-    // Neither address is a secret, and naming both is the whole fix.
+    // Neither address is a secret, and naming both is the whole fix. Only the
+    // part before the @: `redact` removes any 40-character run, which a long
+    // project id's domain can be.
+    const local = (email: string): string => email.split("@")[0]!;
     throw new ConfigError(
-      `${ENV.privateKey} is the key file for ${key.clientEmail}, but ` +
-        `${ENV.clientEmail} is ${clientEmail}. Google refuses a token signed by ` +
-        `one account's key in another's name: set them to the same account.`,
+      `${ENV.privateKey} is the key file for service account ` +
+        `"${local(key.clientEmail)}@…", but ${ENV.clientEmail} is ` +
+        `"${local(clientEmail)}@…"${local(key.clientEmail) === local(clientEmail) ? " (in another project)" : ""}. ` +
+        `Google refuses a token signed by one account's key in another's name: ` +
+        `set them to the same account.`,
     );
   }
 

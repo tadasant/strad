@@ -100,7 +100,7 @@ then loads the key and checks that it is RSA, when the server starts and again
 on the first tool call. A value that is still not a key is reported by
 `get_status` and every other tool as
 `LIVEOAK_GCS_PRIVATE_KEY is set but is not a usable private key: …`, with what is
-wrong with it: no armour, a public key, an EC key, a passphrase, a missing END
+wrong with it: no armour, a public key, an EC or OpenSSH key, a passphrase, a missing END
 line, or base64 that does not decode. The value itself is never quoted. The same
 sentence is logged at boot.
 

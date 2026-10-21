@@ -78,8 +78,8 @@ export class GcsBlobStore implements BlobStore {
       { method: "GET" },
     );
     if (res.status === 404) return null;
-    if (!res.ok) throw new GcsError(res.status, "read the device state");
-    return Buffer.from(await res.arrayBuffer());
+    if (!res.ok) throw new GcsError(res.status, `read ${name}`);
+    return Buffer.from(await reach(() => res.arrayBuffer()));
   }
 
   async write(name: string, data: Buffer): Promise<void> {
@@ -91,8 +91,8 @@ export class GcsBlobStore implements BlobStore {
         body: new Uint8Array(data),
       },
     );
-    if (!res.ok) throw new GcsError(res.status, "write the device state");
-    await res.arrayBuffer();
+    if (!res.ok) throw new GcsError(res.status, `write ${name}`);
+    await reach(() => res.arrayBuffer());
   }
 
   async delete(name: string): Promise<void> {
@@ -100,8 +100,8 @@ export class GcsBlobStore implements BlobStore {
       `${this.api}/storage/v1/b/${encodeURIComponent(this.options.bucket)}/o/${encodeURIComponent(name)}`,
       { method: "DELETE" },
     );
-    if (!res.ok && res.status !== 404) throw new GcsError(res.status, "delete the device state");
-    await res.arrayBuffer();
+    if (!res.ok && res.status !== 404) throw new GcsError(res.status, `delete ${name}`);
+    await reach(() => res.arrayBuffer());
   }
 
   private async request(url: string, init: RequestInit): Promise<Response> {
@@ -161,18 +161,22 @@ export class GcsBlobStore implements BlobStore {
           : undefined,
       );
     }
-    const body = (await res.json()) as { access_token?: string; expires_in?: number };
-    if (!body.access_token) throw new GcsError(res.status, "issue a service-account token");
+    const issued = (await reach(() => res.json())) as { access_token?: string; expires_in?: number } | null;
+    if (!issued?.access_token) throw new GcsError(res.status, "issue a service-account token");
     this.token = {
-      value: body.access_token,
-      expiresAt: Date.now() + (body.expires_in ?? 3600) * 1000,
+      value: issued.access_token,
+      expiresAt: Date.now() + (issued.expires_in ?? 3600) * 1000,
     };
     return this.token.value;
   }
 }
 
-/** A request that never got an HTTP answer, as a GcsError rather than `fetch failed`. */
-async function reach(send: () => Promise<Response>): Promise<Response> {
+/**
+ * A request, or the body of its answer, that failed below HTTP: a GcsError
+ * rather than `fetch failed`, `terminated` or a JSON SyntaxError. Covers the
+ * token endpoint too, hence "Google" rather than "Cloud Storage".
+ */
+async function reach<T>(send: () => Promise<T>): Promise<T> {
   try {
     return await send();
   } catch (err) {
@@ -181,8 +185,8 @@ async function reach(send: () => Promise<Response>): Promise<Response> {
       0,
       "answer",
       timedOut
-        ? "Google Cloud Storage did not answer in time: transient; retry the call."
-        : "Google Cloud Storage could not be reached: transient; retry the call.",
+        ? "Google (Cloud Storage or its token endpoint) did not answer in time: transient; retry the call."
+        : "Google (Cloud Storage or its token endpoint) could not be reached: transient; retry the call.",
     );
   }
 }

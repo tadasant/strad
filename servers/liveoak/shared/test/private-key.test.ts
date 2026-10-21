@@ -74,6 +74,16 @@ describe("LIVEOAK_GCS_PRIVATE_KEY: what it refuses, and how", () => {
     ["a body that is not base64", "-----BEGIN PRIVATE KEY-----\n!!!\n-----END PRIVATE KEY-----", /not base64/],
     ["a key file with no private_key", JSON.stringify({ type: "service_account" }), /no "private_key" field/],
     ["a key file cut short", KEY_FILE.slice(0, 200), /not valid JSON/],
+    [
+      "an OpenSSH key",
+      "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----",
+      /an OpenSSH key/,
+    ],
+    [
+      "an encrypted PKCS#1 key",
+      "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,00\n\nAAAA\n-----END RSA PRIVATE KEY-----",
+      /encrypted with a passphrase/,
+    ],
   ];
   for (const [what, value, expected] of cases) {
     it(what, () => {
@@ -117,7 +127,7 @@ describe("loadConfig and the key", () => {
 
   it("refuses a key file for a different account than LIVEOAK_GCS_CLIENT_EMAIL, naming both", () => {
     expect(() => loadConfig(env(KEY_FILE, "other@project.iam.gserviceaccount.com"))).toThrow(
-      /key file for liveoak@project\.iam\.gserviceaccount\.com, but LIVEOAK_GCS_CLIENT_EMAIL is other@/,
+      /key file for service account "liveoak@…", but LIVEOAK_GCS_CLIENT_EMAIL is "other@…"/,
     );
   });
 });

@@ -261,13 +261,14 @@ export class LiveOakService {
       this.session = undefined;
       this.pending = undefined;
       // A device LiveOak already confirmed, whose save failed: store it now
-      // rather than texting a code for a new one. Force discards it.
-      const unsaved = this.unsaved;
-      this.unsaved = undefined;
-      if (unsaved && !force) return this.persistEnrolment(unsaved, "stored the device confirmed earlier");
+      // rather than texting a code for a new one.
+      if (this.unsaved && !force) return this.persistEnrolment(this.unsaved, "stored the device confirmed earlier");
       // STORAGE FIRST. Every login below may text a code, and a code whose
       // device cannot then be stored is a text to a person for nothing.
       await this.preflight();
+      // Force discards a held device, but only once storage works: until
+      // then it is what reads log in with.
+      this.unsaved = undefined;
       // FORCE DOES NOT READ, AND DOES NOT DELETE. Not reading is what lets it
       // recover from a changed LIVEOAK_STATE_ENCRYPTION_KEY, whose stored
       // state no longer opens. Not deleting means a forced enrolment that is
@@ -428,6 +429,7 @@ export class LiveOakService {
     }
     try {
       await this.devices.save(device);
+      this.unsaved = undefined;
     } catch (err) {
       // Cognito has ALREADY confirmed and remembered this device. Keep it, so
       // fixing the store does not cost the account holder another code.

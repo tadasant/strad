@@ -6104,10 +6104,16 @@ query, and `window.open(_links["apiture:document"].href)`.
 5. **Read-only is enforced by `apiture.ts`, not by the token**, whose scopes
    include `banking/write`. `test/server.test.ts` asserts every API request is a
    GET.
+6. **A device confirmed but not stored is held in process memory.** Cognito
+   confirms and remembers the device inside `sendMFACode`, before the GCS
+   write, so a failed write cannot be ordered first. `enrol_device` probes the
+   store before logging in, which makes this rare. When it happens anyway, the
+   keys wait in memory for the next `enrol_device`, and a restart before that
+   loses them and leaves an orphaned remembered device on the account.
 
 **Undo.** 1 lapses with the first real enrolment and statement fetch in prod;
-anything it finds is a fix here. 2 wants a key-rotation path. 3 and 4 are the
-design while the bundle runs one instance. 5 is the design for as long as
+anything it finds is a fix here. 2 wants a key-rotation path. 3, 4 and 6 are
+the design while the bundle runs one instance. 5 is the design for as long as
 LiveOak issues one token for everything.
 
 ## 117. gmail attachments: `content_base64` is capped by core's body limit, and a URL's host is checked before the fetch, not by it
