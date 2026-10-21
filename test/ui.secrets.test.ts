@@ -1,6 +1,7 @@
 import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { formValue } from "../src/ui/index.ts";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { parseConfig } from "../src/config/load.ts";
 import { Registry } from "../src/gateway/registry.ts";
@@ -445,6 +446,85 @@ describe("the parameters console, end to end", () => {
     expect(await fake.store.list(NS)).toHaveLength(2);
   });
 
+  describe("a multi-line value (a PEM key) round-trips unchanged", () => {
+    const PEM =
+      "-----BEGIN PRIVATE KEY-----\n" +
+      "MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgCANARYvalue0000\n" +
+      "oAoGCCqGSM49AwEHoUQDQgAEfakefakefakefakefakefakefakefakefake11\n" +
+      "-----END PRIVATE KEY-----\n";
+    // What a browser actually submits for a textarea: every line break as CRLF.
+    const AS_SUBMITTED = PEM.replace(/\n/g, "\r\n");
+
+    it("CREATE: a CRLF submission is stored as LF, trailing newline kept", async () => {
+      await resetStore();
+      const res = await post("/ui/secrets/create", {
+        variable: "APNS_AUTH_KEY_P8",
+        secret: "on",
+        value: AS_SUBMITTED,
+      });
+      expect(res.status).toBe(200);
+      expect(await res.text()).not.toContain("BEGIN PRIVATE KEY");
+      expect(await fake.store.reveal(`${NS}APNS_AUTH_KEY_P8`)).toBe(PEM);
+    });
+
+    it("CREATE: an LF submission is stored byte for byte", async () => {
+      await resetStore();
+      await post("/ui/secrets/create", {
+        variable: "APNS_AUTH_KEY_P8",
+        secret: "on",
+        value: PEM,
+      });
+      expect(await fake.store.reveal(`${NS}APNS_AUTH_KEY_P8`)).toBe(PEM);
+    });
+
+    it("ROTATE: the same rule", async () => {
+      await resetStore();
+      await post("/ui/secrets/rotate", {
+        path: `${NS}SEEDED_KEY`,
+        value: AS_SUBMITTED,
+      });
+      expect(await fake.store.reveal(`${NS}SEEDED_KEY`)).toBe(PEM);
+    });
+
+    it("ROTATE: a one-line value loses a trailing line break, as the password input did", async () => {
+      await resetStore();
+      await post("/ui/secrets/rotate", {
+        path: `${NS}SEEDED_KEY`,
+        value: "tok_123\r\n",
+      });
+      expect(await fake.store.reveal(`${NS}SEEDED_KEY`)).toBe("tok_123");
+    });
+
+    it("no value field is a password input, which would strip the line breaks", async () => {
+      await resetStore();
+      const html = await (
+        await fetch(`${baseUrl}/ui/secrets`, { headers: auth })
+      ).text();
+      expect(html).not.toMatch(/<input[^>]*type="password"/);
+      // The create form, and one Rotate field per seeded row.
+      const rows = (html.match(/class="inline rotate-form"/g) ?? []).length;
+      expect(rows).toBe(2);
+      const fields = html.match(/<textarea[^>]*name="value"/g) ?? [];
+      expect(fields).toHaveLength(1 + rows);
+      expect(fields.every((f) => f.includes("in-masked"))).toBe(true);
+      // The Rows view builds its value field as a textarea too.
+      expect(html).toMatch(
+        /el\("textarea", "[^"]*\bin-masked\b[^"]*\bbulk-val\b/,
+      );
+    });
+
+    it("the create forms sit above the listing", async () => {
+      await resetStore();
+      const html = await (
+        await fetch(`${baseUrl}/ui/secrets`, { headers: auth })
+      ).text();
+      const listing = html.indexOf('class="listing"');
+      expect(listing).toBeGreaterThan(0);
+      expect(html.indexOf('action="/ui/secrets/create"')).toBeLessThan(listing);
+      expect(html.indexOf('action="/ui/secrets/bulk"')).toBeLessThan(listing);
+    });
+  });
+
   it("the create form's variable pattern is a VALID regex under Chrome's v-flag parser", async () => {
     // An invalid `pattern` does not fail loudly — the browser stops validating and
     // the field silently accepts anything. Compile it under the `v` flag, as Chrome
@@ -457,5 +537,20 @@ describe("the parameters console, end to end", () => {
     const re = new RegExp(`^${pattern}$`, "v");
     expect(re.test("REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL")).toBe(true);
     expect(re.test("1bad")).toBe(false);
+  });
+});
+
+describe("formValue: a textarea's submission, as the store holds it", () => {
+  it.each([
+    ["a one-line value", "tok", "tok"],
+    ["a one-line value with a trailing CRLF", "tok\r\n", "tok"],
+    ["a one-line value with several trailing breaks", "tok\n\n", "tok"],
+    ["leading and trailing spaces", "  tok  ", "  tok  "],
+    ["a PEM with CRLF", "A\r\nB\r\nC\r\n", "A\nB\nC\n"],
+    ["a PEM with no final newline", "A\nB", "A\nB"],
+    ["a lone CR", "A\rB", "A\nB"],
+    ["an empty value", "", ""],
+  ])("%s", (_label, raw, stored) => {
+    expect(formValue(raw)).toBe(stored);
   });
 });
