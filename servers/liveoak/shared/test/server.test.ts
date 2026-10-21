@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { seal } from "../src/crypto.js";
 import type { LiveOakConfig } from "../src/config.js";
-import { MemoryBlobStore } from "../src/gcs.js";
+import { GcsError, MemoryBlobStore } from "../src/gcs.js";
 import { createMCPServer } from "../src/server.js";
 import { CLIENT_ID, FakeApiture, FakeCognito, PDF, POOL_ID } from "./fakes.js";
 
@@ -430,6 +430,135 @@ describe("unconfigured", () => {
       expect(res.content[0].text).toContain(name);
     }
     expect(await created.handleDownload("x")).toMatchObject({ ok: false, status: 404 });
+  });
+});
+
+/** A store whose reads or writes fail the way an unusable GCS credential does. */
+class BrokenBlobStore extends MemoryBlobStore {
+  failReads = false;
+  failWrites = false;
+  override async read(name: string): Promise<Buffer | null> {
+    if (this.failReads) throw new GcsError(0, "sign", "LIVEOAK_GCS_PRIVATE_KEY could not sign a Google token request.");
+    return super.read(name);
+  }
+  override async write(name: string, data: Buffer): Promise<void> {
+    if (this.failWrites) throw new GcsError(403, "write the device state");
+    return super.write(name, data);
+  }
+}
+
+describe("unusable device storage", () => {
+  it("enrol_device refuses BEFORE logging in, so no code is texted", async () => {
+    const blobs = new BrokenBlobStore();
+    blobs.failWrites = true;
+    const h = await harness({ blobs });
+    for (const force of [false, true]) {
+      const res = await h.call("enrol_device", { force });
+      expect(res.isError).toBe(true);
+      expect(res.text).toMatch(/^No code was sent: this server cannot write to its device storage/);
+      expect(res.text).toContain("HTTP 403");
+    }
+    expect(cognito.calls).toHaveLength(0);
+    expect(cognito.smsCodes).toHaveLength(0);
+  });
+
+  it("get_status reports a store it cannot read, rather than failing", async () => {
+    const blobs = new BrokenBlobStore();
+    blobs.failReads = true;
+    const h = await harness({ blobs });
+    const status = await h.call("get_status");
+    expect(status.isError).toBe(false);
+    expect(status.json.device_store_error).toContain("LIVEOAK_GCS_PRIVATE_KEY could not sign");
+    expect(status.json.device_enrolled).toBe(false);
+  });
+
+  it("a device confirmed but not stored is held, used, and stored by enrol_device with no new code", async () => {
+    const blobs = new BrokenBlobStore();
+    const h = await harness({ blobs });
+    expect((await h.call("enrol_device")).json.status).toBe("code_sent");
+    // Storage breaks between the code being sent and being answered.
+    blobs.failWrites = true;
+    const confirm = await h.call("confirm_device", { code: cognito.smsCodes.at(-1)! });
+    expect(confirm.isError).toBe(true);
+    expect(confirm.text).toContain("LiveOak confirmed this server as a remembered device");
+    expect(confirm.text).toContain("call enrol_device WITHOUT force");
+    expect(confirm.text).not.toContain("Unexpected error");
+    expect((await h.call("get_status")).json).toMatchObject({ device_enrolled: false, device_unsaved: true });
+
+    // Reads work meanwhile, from the held device, with no new code.
+    const sent = cognito.smsCodes.length;
+    expect((await h.call("list_statements")).isError).toBe(false);
+
+    // Still broken: the retry fails the same way and keeps holding the device.
+    const retry = await h.call("enrol_device");
+    expect(retry.isError).toBe(true);
+    expect((await h.call("get_status")).json.device_unsaved).toBe(true);
+
+    blobs.failWrites = false;
+    const stored = await h.call("enrol_device");
+    expect(stored.json.status).toBe("enrolled");
+    expect(stored.json.message).toContain("No code was sent");
+    expect(cognito.smsCodes.length).toBe(sent);
+    expect(blobs.objects.has("liveoak/device.sealed")).toBe(true);
+    const status = (await h.call("get_status")).json;
+    expect(status.device_enrolled).toBe(true);
+    expect(status.device_unsaved).toBeUndefined();
+
+    // And a fresh process logs in from what was stored, with no code.
+    const fresh = await harness({ blobs });
+    expect((await fresh.call("list_statements")).isError).toBe(false);
+    expect(cognito.smsCodes.length).toBe(sent);
+  });
+
+  it("after a restart lost the held device, enrol_device force: true enrols again cleanly", async () => {
+    const blobs = new BrokenBlobStore();
+    const first = await harness({ blobs });
+    await first.call("enrol_device");
+    blobs.failWrites = true;
+    expect((await first.call("confirm_device", { code: cognito.smsCodes.at(-1)! })).isError).toBe(true);
+    blobs.failWrites = false;
+
+    // The container restarted: the orphaned device lives only in Cognito.
+    const second = await harness({ blobs });
+    expect((await second.call("get_status")).json).toMatchObject({ device_enrolled: false });
+    expect((await second.call("enrol_device", { force: true })).json.status).toBe("code_sent");
+    const confirm = await second.call("confirm_device", { code: cognito.smsCodes.at(-1)! });
+    expect(confirm.json.status).toBe("enrolled");
+    expect((await second.call("list_statements")).isError).toBe(false);
+  });
+
+  it("a mangled key in the environment is reported by name at boot and on every tool, never as `Unexpected error`", async () => {
+    const warn = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const created = createMCPServer({
+        version: "t",
+        env: {
+          LIVEOAK_USERNAME: USERNAME,
+          LIVEOAK_PASSWORD: PASSWORD,
+          LIVEOAK_STATE_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
+          LIVEOAK_GCS_BUCKET: "b",
+          LIVEOAK_GCS_CLIENT_EMAIL: "sa@example.com",
+          LIVEOAK_GCS_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----MIIEvQIBADANBg",
+        },
+      });
+      expect(warn.mock.calls.map((c) => String(c[0])).join("\n")).toContain(
+        "LIVEOAK_GCS_PRIVATE_KEY is set but is not a usable private key",
+      );
+      const server = new Server({ name: "t", version: "t" }, { capabilities: { tools: {} } });
+      await created.registerHandlers(server);
+      const [a, b] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: "test", version: "t" });
+      await Promise.all([server.connect(a), client.connect(b)]);
+      for (const name of ["get_status", "enrol_device"]) {
+        const res = (await client.callTool({ name, arguments: {} })) as any;
+        expect(res.isError).toBe(true);
+        expect(res.content[0].text).toContain("no matching END line");
+        expect(res.content[0].text).not.toContain("Unexpected error");
+      }
+      expect(cognito.calls).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

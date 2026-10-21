@@ -1,9 +1,9 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { ApitureOptions } from "./apiture.js";
 import type { CognitoOptions } from "./cognito.js";
-import { downloadLinkConfig, loadConfig, missingCredentials, type LiveOakConfig } from "./config.js";
+import { ConfigError, downloadLinkConfig, loadConfig, missingCredentials, type LiveOakConfig } from "./config.js";
 import { GcsBlobStore, type BlobStore } from "./gcs.js";
-import { logInfo, redact, errMessage, registerSecret } from "./logging.js";
+import { logInfo, logWarning, redact, errMessage, registerSecret } from "./logging.js";
 import { LiveOakService, type DownloadOutcome } from "./service.js";
 import { parseToolGroups, registerTools, type ServiceFactory, type ToolGroup } from "./tools.js";
 
@@ -67,6 +67,14 @@ export function createMCPServer(options: CreateMCPServerOptions) {
 
   const configured = options.config !== undefined || missingCredentials(env).length === 0;
   if (configured && !options.config) {
+    // Every variable is set; say now if one is set WRONG (a mangled key, say),
+    // rather than on the first tool call. A ConfigError never quotes a value.
+    try {
+      loadConfig(env);
+    } catch (err) {
+      if (!(err instanceof ConfigError)) throw err;
+      logWarning(`config: ${err.message}`);
+    }
     const link = downloadLinkConfig(env);
     logInfo(
       link.downloadLink

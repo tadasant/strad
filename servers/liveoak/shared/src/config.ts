@@ -18,6 +18,7 @@
  * not put it in front of a model.
  */
 import type { DownloadLinkConfig } from "./download-link.js";
+import { parsePrivateKey } from "./private-key.js";
 
 export const ENV = {
   username: "LIVEOAK_USERNAME",
@@ -28,6 +29,10 @@ export const ENV = {
   bucket: "LIVEOAK_GCS_BUCKET",
   /** A service account that can read, write and delete objects in it. */
   clientEmail: "LIVEOAK_GCS_CLIENT_EMAIL",
+  /**
+   * The service account's key: its JSON key file whole, or the PEM from its
+   * `private_key`. See private-key.ts for every shape it is accepted in.
+   */
   privateKey: "LIVEOAK_GCS_PRIVATE_KEY",
   /** Optional. Object prefix inside the bucket. Default `liveoak`. */
   prefix: "LIVEOAK_GCS_PREFIX",
@@ -62,6 +67,7 @@ export interface LiveOakConfig {
   encryptionKey: Buffer;
   bucket: string;
   clientEmail: string;
+  /** A PEM proven to load as an RSA private key. */
   privateKey: string;
   /** No leading or trailing slash. */
   prefix: string;
@@ -138,6 +144,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): LiveOakConfig 
     );
   }
 
+  const clientEmail = read(env, ENV.clientEmail)!;
+  const key = parsePrivateKey(read(env, ENV.privateKey)!);
+  if (key.clientEmail && key.clientEmail !== clientEmail) {
+    // Neither address is a secret, and naming both is the whole fix.
+    throw new ConfigError(
+      `${ENV.privateKey} is the key file for ${key.clientEmail}, but ` +
+        `${ENV.clientEmail} is ${clientEmail}. Google refuses a token signed by ` +
+        `one account's key in another's name: set them to the same account.`,
+    );
+  }
+
   return {
     username: read(env, ENV.username)!,
     // NOT trimmed: a password may legitimately end in a space. Only the
@@ -145,9 +162,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): LiveOakConfig 
     password: env[ENV.password]!,
     encryptionKey: parseEncryptionKey(read(env, ENV.encryptionKey)!),
     bucket: read(env, ENV.bucket)!,
-    clientEmail: read(env, ENV.clientEmail)!,
-    // App Platform env vars carry a PEM with escaped newlines.
-    privateKey: read(env, ENV.privateKey)!.replace(/\\n/g, "\n"),
+    clientEmail,
+    privateKey: key.pem,
     prefix,
     ...downloadLinkConfig(env),
   };

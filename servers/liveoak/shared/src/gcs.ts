@@ -22,16 +22,27 @@ export interface BlobStore {
 }
 
 export class GcsError extends Error {
+  /**
+   * `status` 0 is a failure before any HTTP answer: the key would not sign,
+   * or GCS could not be reached. `message` replaces the default wording.
+   */
   constructor(
     readonly status: number,
     what: string,
+    message?: string,
   ) {
     // The response BODY is never quoted: GCS error bodies can echo the object
     // name and request details, and none of it helps a caller.
-    super(`Google Cloud Storage refused to ${what}: HTTP ${status}.`);
+    super(message ?? `Google Cloud Storage refused to ${what}: HTTP ${status}.`);
     this.name = "GcsError";
   }
 }
+
+/** What a 400/401/403 from the token endpoint means, which the bare status does not say. */
+const TOKEN_REFUSED_HINT =
+  " Google did not accept the service account's signed request: check that " +
+  "LIVEOAK_GCS_CLIENT_EMAIL and LIVEOAK_GCS_PRIVATE_KEY belong to the same " +
+  "service account and that the key has not been deleted.";
 
 export interface GcsBlobStoreOptions {
   bucket: string;
@@ -95,11 +106,13 @@ export class GcsBlobStore implements BlobStore {
 
   private async request(url: string, init: RequestInit): Promise<Response> {
     const token = await this.accessToken();
-    return fetch(url, {
-      ...init,
-      headers: { ...(init.headers as Record<string, string>), authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
+    return reach(() =>
+      fetch(url, {
+        ...init,
+        headers: { ...(init.headers as Record<string, string>), authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(this.timeoutMs),
+      }),
+    );
   }
 
   private async accessToken(): Promise<string> {
@@ -113,17 +126,41 @@ export class GcsBlobStore implements BlobStore {
       iat: now,
       exp: now + 3600,
     })}`;
-    const signature = createSign("RSA-SHA256").update(unsigned).sign(this.options.privateKey, "base64url");
-    const res = await fetch(this.tokenUrl, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        assertion: `${unsigned}.${signature}`,
+    let signature: string;
+    try {
+      signature = createSign("RSA-SHA256").update(unsigned).sign(this.options.privateKey, "base64url");
+    } catch {
+      // OpenSSL's own words (`DECODER routines::unsupported`) name nothing a
+      // human can act on, and loadConfig has already proven the key parses.
+      throw new GcsError(
+        0,
+        "sign",
+        "LIVEOAK_GCS_PRIVATE_KEY could not sign a Google token request. Paste the " +
+          "service account's JSON key file, or its private_key value, again. See " +
+          "docs/servers/liveoak (Setup).",
+      );
+    }
+    const res = await reach(() =>
+      fetch(this.tokenUrl, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+          assertion: `${unsigned}.${signature}`,
+        }),
+        signal: AbortSignal.timeout(this.timeoutMs),
       }),
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
-    if (!res.ok) throw new GcsError(res.status, "issue a service-account token");
+    );
+    if (!res.ok) {
+      const refused = res.status === 400 || res.status === 401 || res.status === 403;
+      throw new GcsError(
+        res.status,
+        "issue a service-account token",
+        refused
+          ? `Google refused to issue a service-account token: HTTP ${res.status}.${TOKEN_REFUSED_HINT}`
+          : undefined,
+      );
+    }
     const body = (await res.json()) as { access_token?: string; expires_in?: number };
     if (!body.access_token) throw new GcsError(res.status, "issue a service-account token");
     this.token = {
@@ -131,6 +168,22 @@ export class GcsBlobStore implements BlobStore {
       expiresAt: Date.now() + (body.expires_in ?? 3600) * 1000,
     };
     return this.token.value;
+  }
+}
+
+/** A request that never got an HTTP answer, as a GcsError rather than `fetch failed`. */
+async function reach(send: () => Promise<Response>): Promise<Response> {
+  try {
+    return await send();
+  } catch (err) {
+    const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+    throw new GcsError(
+      0,
+      "answer",
+      timedOut
+        ? "Google Cloud Storage did not answer in time: transient; retry the call."
+        : "Google Cloud Storage could not be reached: transient; retry the call.",
+    );
   }
 }
 
