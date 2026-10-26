@@ -91,8 +91,9 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
     elicitation dep → the vendored workspace) and a `types` field so the
     entrypoint typechecks. `vendor/google-calendar-shared/README.md` and
     `vendor/google-docs-shared/README.md` are strad's, beside the copied `src/`
-    rather than in it. Each is the how-to for running that server without
-    strad.
+    rather than in it. Each of them, `vendor/gmail-shared/README.md` and
+    `vendor/google-drive-shared/README.md` is the how-to for running that
+    server without strad.
 - `vendor/mcp-elicitation/src/` — **generated. Do not edit it here.** The same
   library is also in `servers/onepassword/elicitation`, both copies are built
   into one bundle image, and that copy is the source: `npm run elicitation:sync`

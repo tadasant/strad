@@ -504,7 +504,11 @@ describe("gmail standalone", () => {
     children.push(child);
     let stderr = "";
     child.stderr!.on("data", (d) => (stderr += d));
-    const [code] = await once(child, "exit");
+    // A refusal that regressed would sit serving stdio; fail fast instead.
+    const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
+    const [code, signal] = await once(child, "exit");
+    clearTimeout(timer);
+    expect(signal, `still running: ${stderr}`).toBeNull();
     return { code: code as number | null, stderr };
   }
 
@@ -550,6 +554,7 @@ describe("gmail standalone", () => {
       ["readonly", GMAIL_READ_TOOLS],
       ["readwrite", GMAIL_TOOLS],
       [" ReadOnly , readwrite ", GMAIL_TOOLS],
+      ["readonly,", GMAIL_READ_TOOLS],
       ["", GMAIL_TOOLS],
     ];
     for (const [group, expected] of tiers) {
@@ -573,11 +578,14 @@ describe("gmail standalone", () => {
   });
 
   it("refuses to start on a tool group it does not know, rather than serving every tool", async () => {
-    for (const groups of ["read-only", "readonly,bogus", ","]) {
+    for (const groups of ["read-only", "readonly,bogus"]) {
       const { code, stderr } = await refused({ GMAIL_ENABLED_TOOLGROUPS: groups });
       expect(code, groups).toBe(2);
       expect(stderr).toContain("Invalid tool group(s) in GMAIL_ENABLED_TOOLGROUPS");
     }
+    const { code, stderr } = await refused({ GMAIL_ENABLED_TOOLGROUPS: " , " });
+    expect(code).toBe(2);
+    expect(stderr).toContain("names no group");
   });
 
   it("fails a tool call, not the boot, when credentials are missing", async () => {
@@ -640,6 +648,17 @@ describe("gmail standalone", () => {
     });
     expect(code).toBe(2);
     expect(stderr).toContain("GMAIL_OAUTH_REFRESH_TOKEN not set, so this would serve the service account's mailbox");
+  });
+
+  it("counts an EMPTY OAuth variable as started, so it too is refused beside a service account", async () => {
+    const { code, stderr } = await refused({
+      GMAIL_OAUTH_REFRESH_TOKEN: "",
+      GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL: "sa@example.iam.gserviceaccount.com",
+      GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY: "key",
+      GMAIL_IMPERSONATE_EMAIL: "user@example.com",
+    });
+    expect(code).toBe(2);
+    expect(stderr).toContain("GMAIL_OAUTH_CLIENT_ID, GMAIL_OAUTH_CLIENT_SECRET, GMAIL_OAUTH_REFRESH_TOKEN not set");
   });
 });
 

@@ -17,8 +17,12 @@
  * So the `readwrite_external` group, the one that holds `send_email`, is
  * refused at startup rather than served. A draft is the standalone way to
  * write mail: `upsert_draft_email` saves it, and a person sends it from Gmail.
+ * The mailbox the tools are handed refuses to send as well, so a tool that
+ * reaches a send from another group is refused there too.
  */
+import type { IGmailClient } from "gmail-workspace-mcp-server-shared";
 import {
+  createDefaultClient,
   createMCPServer,
   GMAIL_OAUTH_ENV_NAMES,
   GMAIL_SERVICE_ACCOUNT_ENV_NAMES,
@@ -33,6 +37,23 @@ const STANDALONE_GROUPS = ["readonly", "readwrite"] as const;
 /** What an unset `GMAIL_ENABLED_TOOLGROUPS` means here: read, label and draft. */
 const DEFAULT_GROUPS = "readonly,readwrite";
 
+/** The mailbox's two methods that send. */
+const SENDS = new Set(["sendMessage", "sendDraft"]);
+
+/** The mailbox, with both sends refused before they mint a token. */
+function withoutSends(client: IGmailClient): IGmailClient {
+  return new Proxy(client, {
+    get(t, prop, receiver) {
+      const value: unknown = Reflect.get(t, prop, receiver);
+      if (typeof value !== "function") return value;
+      if (typeof prop === "string" && SENDS.has(prop)) {
+        return () => Promise.reject(new Error("the standalone gmail server does not send mail; nothing was sent"));
+      }
+      return (value as (...args: unknown[]) => unknown).bind(t);
+    },
+  });
+}
+
 /**
  * `GMAIL_ENABLED_TOOLGROUPS` as this entrypoint serves it, or the reason it
  * will not. Never empty: the vendored parser reads an empty value, and a value
@@ -40,7 +61,13 @@ const DEFAULT_GROUPS = "readonly,readwrite";
  */
 function enabledGroups(raw: string | undefined): { groups: string } | { invalid: string } {
   if (raw === undefined || raw.trim() === "") return { groups: DEFAULT_GROUPS };
-  const requested = raw.split(",").map((g) => g.trim().toLowerCase());
+  const requested = raw
+    .split(",")
+    .map((g) => g.trim().toLowerCase())
+    .filter((g) => g !== "");
+  if (requested.length === 0) {
+    return { invalid: `GMAIL_ENABLED_TOOLGROUPS="${raw}" names no group. Valid groups: ${STANDALONE_GROUPS.join(", ")}.` };
+  }
   if (requested.includes("readwrite_external")) {
     return {
       invalid:
@@ -64,15 +91,18 @@ function enabledGroups(raw: string | undefined): { groups: string } | { invalid:
 serveStandalone({
   name: "gmail",
   // The same factory as the `/gmail` mount in `src/index.ts`, handed an env
-  // whose tool groups have been checked above. It reads its credential from
-  // that env lazily, at the first tool call, as it would in a bundle.
+  // whose tool groups have been checked above, and the same lazy client, minus
+  // its sends. It reads its credential from that env at the first tool call,
+  // as it would in a bundle.
   build: () => {
     const resolved = enabledGroups(process.env.GMAIL_ENABLED_TOOLGROUPS);
     if (!("groups" in resolved)) throw new Error(resolved.invalid);
-    return createMCPServer({
-      version: VERSION,
-      env: { ...process.env, GMAIL_ENABLED_TOOLGROUPS: resolved.groups },
-    });
+    const env = { ...process.env, GMAIL_ENABLED_TOOLGROUPS: resolved.groups };
+    const { server, registerHandlers } = createMCPServer({ version: VERSION, env });
+    return {
+      server,
+      registerHandlers: (target) => registerHandlers(target, () => withoutSends(createDefaultClient(env))),
+    };
   },
   validateEnv: (env) => {
     const resolved = enabledGroups(env.GMAIL_ENABLED_TOOLGROUPS);
@@ -81,7 +111,8 @@ serveStandalone({
     // trio is incomplete, with nothing printed: the person who set an OAuth
     // variable meant their own mailbox. Refuse it rather than serve another.
     const oauthMissing = GMAIL_OAUTH_ENV_NAMES.filter((name) => !env[name]);
-    const oauthStarted = GMAIL_OAUTH_ENV_NAMES.some((name) => env[name]);
+    // Started means SET, even empty, as `missingCredentials` decides the mode.
+    const oauthStarted = GMAIL_OAUTH_ENV_NAMES.some((name) => name in env);
     const serviceAccount = GMAIL_SERVICE_ACCOUNT_ENV_NAMES.every((name) => env[name]);
     if (oauthStarted && oauthMissing.length > 0 && serviceAccount) {
       return (
