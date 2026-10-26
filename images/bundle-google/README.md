@@ -58,13 +58,18 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   port (`--transport`, `--port`/`PORT`, `--host`), and each file beside it is
   one server's entrypoint, built to `dist/standalone/<server>.js`. It reuses
   the factory this image mounts, so a standalone server is the bundled one.
-  `google-calendar.ts`, `google-docs.ts` and `google-drive.ts` are the three.
-  Their how-tos are `vendor/google-calendar-shared/README.md`,
+  `gmail.ts`, `google-calendar.ts`, `google-docs.ts` and `google-drive.ts`
+  are the four. Their how-tos are `vendor/gmail-shared/README.md`,
+  `vendor/google-calendar-shared/README.md`,
   `vendor/google-docs-shared/README.md` and
   `vendor/google-drive-shared/README.md`, and `test/standalone.test.ts`
-  runs both transports for each. `google-docs.ts` goes through `src/docs.ts`,
-  the layer `/google-docs` mounts, not the vendored factory. Adding a server
-  is one more entrypoint, a README in its tree, and a test case.
+  runs both transports for each. `gmail.ts` and `google-docs.ts` go through
+  `src/gmail.ts` and `src/docs.ts`, the layers `/gmail` and `/google-docs`
+  mount, not the vendored factories. `gmail.ts` serves `readonly` and
+  `readwrite` by default and refuses `readwrite_external` at startup:
+  `send_email`'s confirmation channel comes from strad core, and a standalone
+  process has no core to trust it from. Adding a server is one more
+  entrypoint, a README in its tree, and a test case.
 - `vendor/` — the upstream `shared/` factories, plus `@pulsemcp/mcp-elicitation`.
   Wired as npm workspaces.
   - `vendor/google-docs-shared/` — vendored verbatim from
@@ -80,7 +85,8 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
     plain-text reflow and the HTML part sent beside it, and the sender-verification headers
     `get_email_conversation` returns. `vendor/gmail-shared/FORK.md` lists every delta
     from upstream `0ed34de` and the tests that defend each one;
-    `test/gmail-attachments.test.ts` is the main one.
+    `test/gmail-attachments.test.ts` is the main one. Its `README.md` is
+    the how-to for running it without strad.
   - The only other edits to vendored code are one dependency line (gmail's
     elicitation dep → the vendored workspace) and a `types` field so the
     entrypoint typechecks. `vendor/google-calendar-shared/README.md` and
