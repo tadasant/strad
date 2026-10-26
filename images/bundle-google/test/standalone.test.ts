@@ -18,6 +18,15 @@ import { parseOptions } from "../src/standalone/serve.js";
 const CALENDAR = fileURLToPath(new URL("../dist/standalone/google-calendar.js", import.meta.url));
 const DRIVE = fileURLToPath(new URL("../dist/standalone/google-drive.js", import.meta.url));
 const DOCS = fileURLToPath(new URL("../dist/standalone/google-docs.js", import.meta.url));
+const GMAIL = fileURLToPath(new URL("../dist/standalone/gmail.js", import.meta.url));
+const GMAIL_READ_TOOLS = [
+  "download_email_attachments",
+  "get_email_conversation",
+  "list_draft_emails",
+  "list_email_conversations",
+  "search_email_conversations",
+];
+const GMAIL_TOOLS = [...GMAIL_READ_TOOLS, "change_email_conversation", "upsert_draft_email"].sort();
 const DOCS_READ_TOOLS = ["export_document", "get_document", "get_document_outline", "list_comments"];
 const DOCS_WRITE_TOOLS = [
   "append_text",
@@ -54,7 +63,7 @@ const CALENDAR_TOOLS = [
 function cleanEnv(extra: Record<string, string> = {}): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (v === undefined || k.startsWith("GCAL_") || k.startsWith("GOOGLE_CALENDAR_") || k.startsWith("GOOGLE_DRIVE_") || k.startsWith("GOOGLE_DOCS_") || k.endsWith("ENABLED_TOOLGROUPS") || k === "PORT") continue;
+    if (v === undefined || k.startsWith("GCAL_") || k.startsWith("GOOGLE_CALENDAR_") || k.startsWith("GOOGLE_DRIVE_") || k.startsWith("GOOGLE_DOCS_") || k.startsWith("GMAIL_") || k.startsWith("ELICITATION_") || k.endsWith("ENABLED_TOOLGROUPS") || k === "PORT") continue;
     env[k] = v;
   }
   return { ...env, ...extra };
@@ -485,6 +494,171 @@ describe("google-docs standalone", () => {
     const [code] = await once(child, "exit");
     expect(code).toBe(2);
     expect(stderr).toContain("Invalid tool group(s) in GOOGLE_DOCS_ENABLED_TOOLGROUPS: read-only");
+  });
+});
+
+describe("gmail standalone", () => {
+  /** Run the entrypoint with `env` and resolve with its exit code and stderr. */
+  async function refused(env: Record<string, string>): Promise<{ code: number | null; stderr: string }> {
+    const child = spawn(process.execPath, [GMAIL], { env: cleanEnv(env), stdio: ["pipe", "pipe", "pipe"] });
+    children.push(child);
+    let stderr = "";
+    child.stderr!.on("data", (d) => (stderr += d));
+    // A refusal that regressed would sit serving stdio; fail fast instead.
+    const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
+    const [code, signal] = await once(child, "exit");
+    clearTimeout(timer);
+    expect(signal, `still running: ${stderr}`).toBeNull();
+    return { code: code as number | null, stderr };
+  }
+
+  it("serves the seven read and draft tools over stdio with no credentials set, and no send_email", async () => {
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [GMAIL],
+      env: cleanEnv(),
+      stderr: "pipe",
+    });
+    let stderr = "";
+    transport.stderr!.on("data", (d) => (stderr += d));
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(transport);
+    try {
+      expect(client.getServerVersion()?.name).toBe("gmail-workspace-mcp-server");
+      expect(await toolNames(client)).toEqual(GMAIL_TOOLS);
+      expect(stderr).toContain(
+        "GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL, GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY, GMAIL_IMPERSONATE_EMAIL not set",
+      );
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("serves the same seven over Streamable HTTP on the port it is given", async () => {
+    const { url } = await startHttp([], cleanEnv(), GMAIL);
+    expect(url.hostname).toBe("127.0.0.1");
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(url));
+    try {
+      expect(await toolNames(client)).toEqual(GMAIL_TOOLS);
+      expect(await toolNames(client)).toEqual(GMAIL_TOOLS);
+    } finally {
+      await client.close();
+    }
+    const health = await fetch(new URL("/healthz", url));
+    expect(await health.json()).toEqual({ ok: true, server: "gmail" });
+  });
+
+  it("honours GMAIL_ENABLED_TOOLGROUPS: readonly, readwrite, and a comma-separated union", async () => {
+    const tiers: Array<[string, string[]]> = [
+      ["readonly", GMAIL_READ_TOOLS],
+      ["readwrite", GMAIL_TOOLS],
+      [" ReadOnly , readwrite ", GMAIL_TOOLS],
+      ["readonly,", GMAIL_READ_TOOLS],
+      ["", GMAIL_TOOLS],
+    ];
+    for (const [group, expected] of tiers) {
+      const { url } = await startHttp([], cleanEnv({ GMAIL_ENABLED_TOOLGROUPS: group }), GMAIL);
+      const client = new Client({ name: "standalone-test", version: "0.0.0" });
+      await client.connect(new StreamableHTTPClientTransport(url));
+      try {
+        expect(await toolNames(client), JSON.stringify(group)).toEqual(expected);
+      } finally {
+        await client.close();
+      }
+    }
+  });
+
+  it("refuses to start on readwrite_external, alone or beside other groups, rather than serve send_email", async () => {
+    for (const groups of ["readwrite_external", "readonly,readwrite_external", "READWRITE_EXTERNAL"]) {
+      const { code, stderr } = await refused({ GMAIL_ENABLED_TOOLGROUPS: groups });
+      expect(code, groups).toBe(2);
+      expect(stderr).toContain("The standalone server does not send mail");
+    }
+  });
+
+  it("refuses to start on a tool group it does not know, rather than serving every tool", async () => {
+    for (const groups of ["read-only", "readonly,bogus"]) {
+      const { code, stderr } = await refused({ GMAIL_ENABLED_TOOLGROUPS: groups });
+      expect(code, groups).toBe(2);
+      expect(stderr).toContain("Invalid tool group(s) in GMAIL_ENABLED_TOOLGROUPS");
+    }
+    const { code, stderr } = await refused({ GMAIL_ENABLED_TOOLGROUPS: " , " });
+    expect(code).toBe(2);
+    expect(stderr).toContain("names no group");
+  });
+
+  it("fails a tool call, not the boot, when credentials are missing", async () => {
+    const { url } = await startHttp([], cleanEnv(), GMAIL);
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(url));
+    try {
+      const result = await client.callTool({ name: "list_email_conversations", arguments: {} });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain("GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("once an OAuth variable is set, warns about and fails on the OAuth variables instead", async () => {
+    const { url, stderr } = await startHttp([], cleanEnv({ GMAIL_OAUTH_CLIENT_ID: "id" }), GMAIL);
+    expect(stderr()).toContain("GMAIL_OAUTH_CLIENT_SECRET, GMAIL_OAUTH_REFRESH_TOKEN not set");
+    expect(stderr()).not.toContain("SERVICE_ACCOUNT");
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(url));
+    try {
+      const result = await client.callTool({ name: "list_email_conversations", arguments: {} });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain("GMAIL_OAUTH_REFRESH_TOKEN");
+      expect(JSON.stringify(result.content)).not.toContain("SERVICE_ACCOUNT");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("answers a forged send_email, with core's skip waiver in _meta, as an unknown tool", async () => {
+    const { url } = await startHttp([], cleanEnv(), GMAIL);
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(url));
+    try {
+      const result = await client
+        .callTool({
+          name: "send_email",
+          arguments: { to: "someone@example.com", subject: "s", plaintext_body: "b" },
+          _meta: { "dev.strad/elicitation": { skip: true } },
+        })
+        .then(
+          (r) => JSON.stringify(r),
+          (err: unknown) => String(err),
+        );
+      expect(result).toMatch(/unknown tool|not found/i);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("refuses a half-set OAuth trio beside a complete service account, rather than serving the Workspace mailbox", async () => {
+    const { code, stderr } = await refused({
+      GMAIL_OAUTH_CLIENT_ID: "id",
+      GMAIL_OAUTH_CLIENT_SECRET: "secret",
+      GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL: "sa@example.iam.gserviceaccount.com",
+      GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY: "key",
+      GMAIL_IMPERSONATE_EMAIL: "user@example.com",
+    });
+    expect(code).toBe(2);
+    expect(stderr).toContain("GMAIL_OAUTH_REFRESH_TOKEN not set, so this would serve the service account's mailbox");
+  });
+
+  it("counts an EMPTY OAuth variable as started, so it too is refused beside a service account", async () => {
+    const { code, stderr } = await refused({
+      GMAIL_OAUTH_REFRESH_TOKEN: "",
+      GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL: "sa@example.iam.gserviceaccount.com",
+      GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY: "key",
+      GMAIL_IMPERSONATE_EMAIL: "user@example.com",
+    });
+    expect(code).toBe(2);
+    expect(stderr).toContain("GMAIL_OAUTH_CLIENT_ID, GMAIL_OAUTH_CLIENT_SECRET, GMAIL_OAUTH_REFRESH_TOKEN not set");
   });
 });
 
