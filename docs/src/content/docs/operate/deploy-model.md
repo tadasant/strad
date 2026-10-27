@@ -551,8 +551,9 @@ and the difference is a deploy-ordering property rather than a style:
 
 So each variable is injected if — and only if — the store holds it, and the
 config gate refuses a `${NAME}` reference to one. An unconnected slug renders with
-two variables and no third: it deploys, mounts, lists its tools and reports itself
-degraded on `/healthz`. The order is one-phase:
+two variables and no third: it deploys, mounts, lists its tools and its mount
+reports itself degraded on `/healthz` — or, for a server that cannot list without
+the token, the slug reads as `unconfigured` there rather than as a fault. The order is one-phase:
 
 ```text
 seed client id + secret  →  deploy  →  connect in the console  →  next deploy

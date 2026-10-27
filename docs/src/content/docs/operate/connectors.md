@@ -214,9 +214,11 @@ than one slug.
 So the renderer **injects** a connector's three variables from the slug's own
 namespace, each one only if the store holds it, and the config gate refuses a
 `${NAME}` reference to any of them by name. An unconnected slug therefore renders
-with two variables and no third: it deploys, mounts, lists its tools, and reports
-itself degraded — which is the state the Google Sheets server is already built to
-survive. The ordering is one-phase:
+with two variables and no third: it deploys, mounts, lists its tools, and its
+mount reports itself degraded — which is the state the Google Sheets server is
+already built to survive. A server that cannot list without a token reads as
+[`unconfigured`](#a-slug-nobody-has-connected-is-unconfigured-not-down) instead,
+not as a fault. The ordering is one-phase:
 
 ```text
 seed client id + secret  →  deploy (slug mounts, degraded)

@@ -59,10 +59,10 @@ export class ServerUnconfiguredError
     const list = [...new Set(names)].sort();
     super(
       reason === "unconnected"
-        ? `server "${slug}" is not connected yet: its oauth: connector holds ` +
-            `no ${list.join(", ")}, because nobody has completed Connect for ` +
-            `it in the console. The server deploys and stays inactive until ` +
-            `someone does; nothing is broken and there is nothing to restart.`
+        ? `server "${slug}" is not connected yet: the store holds no ` +
+            `${list.join(", ")} for its oauth: connector. Complete Connect for ` +
+            `it in the console; until then it stays inactive, and there is ` +
+            `nothing to restart.`
         : `server "${slug}" is not configured yet: ` +
             `${list.join(", ")} ${list.length === 1 ? "is" : "are"} declared ` +
             `mayBeUnseeded and no value has been seeded. The server deploys and ` +
@@ -139,14 +139,17 @@ export async function resolvingFor<T>(
  * check" is not evidence that nobody connected.
  *
  * `held` answers from the slug's own `oauth/` and `static/` namespaces and
- * nothing else; the caller builds it. The value it reads is compared and
- * dropped, never logged or returned.
+ * nothing else, from metadata: the caller builds it on the same listing and
+ * rule as the console's Connected badge, so a parameter that exists but will
+ * not render counts as HELD and its fault stands.
  */
 export function awaitingConsent(
   adapter: ServerAdapter,
   variable: string,
   held: () => Promise<boolean>,
 ): ServerAdapter {
+  // Asked on EVERY failure, transient ones included. A slice of the held
+  // snapshot while it is fresh; one enumeration of the store when it is not.
   const translate = async (err: unknown): Promise<never> => {
     if (err instanceof ServerUnconfiguredError) throw err;
     let present: boolean;

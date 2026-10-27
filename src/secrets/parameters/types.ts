@@ -209,6 +209,16 @@ export interface ParameterResolver {
    */
   resolveDetailed?(namespace: string): Promise<ResolvedNamespace>;
   /**
+   * Every parameter whose path starts with `namespace`: metadata, no value, no
+   * `:render`. Sliced from the same snapshot `resolve()` reads.
+   *
+   * Optional because only a caller asking whether something EXISTS needs it:
+   * core's "has this `oauth:` slug ever been connected" check
+   * (`awaitingConsent` in src/gateway/unconfigured.ts), which must not
+   * dereference a refresh token to learn that one is there.
+   */
+  list?(namespace: string): Promise<ParameterMeta[]>;
+  /**
    * ONE parameter's current value, by its full path, read live through
    * `:render` — the read this resolver's `resolve()` makes, without the
    * snapshot. A `404` when the parameter does not exist.

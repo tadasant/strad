@@ -126,10 +126,12 @@ export interface ConnectorUiOptions extends ConnectorDeps {
    */
   connectorFetch?: typeof fetch;
   /**
-   * Called after a Connect wrote values a running server resolves — the
-   * `remote-http` flow, whose `${NAME}`s core reads per request. Drops this
-   * process's cached reading so the slug serves on its next request rather
-   * than after a TTL. Absent: nothing is cached, or nothing reads it here.
+   * Called after a Connect wrote a credential this process reads back. Drops
+   * this process's cached reading of the store, so the next read sees the
+   * write rather than waiting out a TTL: for the `remote-http` flow, whose
+   * `${NAME}`s core resolves per request, that is the slug serving on its next
+   * request; for a `supplementary-image` connector it is core knowing the slug
+   * is connected. Absent: nothing is cached, or nothing reads it here.
    */
   afterUpstreamWrite?: () => void;
 }
@@ -673,6 +675,11 @@ async function handleCallback(
       grant.token,
       connectionNote(grant.identity, grant.grantedScopes, new Date()),
     );
+    // Core's own reading of the store is what decides whether this slug has
+    // ever been connected (`awaitingConsent` in src/gateway/unconfigured.ts).
+    // Dropping it here is what stops a failure after this Connect from being
+    // reported as "not connected yet" for the rest of the snapshot's TTL.
+    opts.afterUpstreamWrite?.();
 
     event({
       evt: "strad.connector_connected",

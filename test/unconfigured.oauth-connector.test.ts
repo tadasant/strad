@@ -21,7 +21,11 @@ import {
   awaitingConsent,
   ServerUnconfiguredError,
 } from "../src/gateway/unconfigured.ts";
-import { createFakeGcp } from "../src/secrets/parameters/fake.ts";
+import {
+  createFakeGcp,
+  PARAMETER_VIEWER_PERMISSIONS,
+  RESOLVER_PERMISSIONS,
+} from "../src/secrets/parameters/fake.ts";
 import { serverParameterPath } from "../src/secrets/parameters/namespace.ts";
 import {
   buildSecretProviders,
@@ -109,29 +113,45 @@ servers:
 `);
 }
 
-/** A core registry over the store, with or without the slug connected. */
-async function storeRegistry(connected: boolean): Promise<{
+/**
+ * A core registry over the store, with or without the slug connected.
+ *
+ * The resolver holds its snapshot for a day, as prod's does, and the token is
+ * written by a DIFFERENT client — the console's admin store — so nothing about
+ * the write reaches the resolver's reading unless something drops it.
+ */
+async function storeRegistry(
+  connected: boolean,
+  resolverPermissions: readonly string[] = RESOLVER_PERMISSIONS,
+): Promise<{
   registry: Registry;
   config: StradConfig;
+  connect: () => Promise<void>;
+  providers: ReturnType<typeof buildSecretProviders>;
 }> {
   const config = configFor("gcp-parameter-store");
-  const fake = createFakeGcp();
-  if (connected) {
-    await fake.store.create({
+  const fake = createFakeGcp({ snapshotTtlMs: 86_400_000 });
+  const admin = fake.another();
+  const connect = async () => {
+    await admin.create({
       path: serverParameterPath(ENV, SLUG, "oauth", REFRESH),
       secret: true,
       value: "1//refresh-token",
     });
-  }
+  };
+  if (connected) await connect();
   const env = { STRAD_BUNDLE_URL_BUNDLE: await brokenBundle() };
+  const resolver = fake.storeAs(resolverPermissions);
+  const providers = buildSecretProviders({ config, env, resolver });
   const registry = await Registry.build({
     config,
-    secrets: buildSecretProviders({ config, env, resolver: fake.store }),
+    secrets: providers,
     mode: "core",
     env,
+    resolver,
   });
   cleanup.push(() => registry.close());
-  return { registry, config };
+  return { registry, config, connect, providers };
 }
 
 /** Run `drive` with the OTLP log export wired the way the process wires it. */
@@ -268,6 +288,42 @@ describe("an oauth: slug that IS connected, and fails", () => {
     const { snapshot } = await probeToolSurfaces({ registry });
     expect(snapshot.degraded).toEqual([SLUG]);
     expect(snapshot.unconfigured).toEqual([]);
+  });
+});
+
+describe("connecting a running gateway's slug", () => {
+  it("pages on the next failure once Connect has dropped the store reading", async () => {
+    const { registry, config, connect, providers } = await storeRegistry(false);
+    expect(
+      (await namedListing(registry, config)).records.find(
+        (r) => r.body === "mcp.server_unconfigured",
+      ),
+    ).toBeDefined();
+
+    await connect();
+    // What the console's Connect callback calls (`afterUpstreamWrite`).
+    providers.invalidate();
+
+    const { records } = await namedListing(registry, config);
+    expect(
+      records.find((r) => r.body === "mcp.list_tools_failed")?.severityNumber,
+    ).toBe(SeverityNumber.ERROR);
+    expect(
+      records.find((r) => r.body === "mcp.server_unconfigured"),
+    ).toBeUndefined();
+  });
+
+  it("decides from metadata: a token core cannot render is still HELD", async () => {
+    // A resolver that may list but not dereference. The token exists, so the
+    // console calls the slug Connected, and its failure must page.
+    const { registry, config } = await storeRegistry(
+      true,
+      PARAMETER_VIEWER_PERMISSIONS,
+    );
+    const { records } = await namedListing(registry, config);
+    expect(
+      records.find((r) => r.body === "mcp.list_tools_failed")?.severityNumber,
+    ).toBe(SeverityNumber.ERROR);
   });
 });
 

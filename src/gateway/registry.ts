@@ -23,6 +23,7 @@ import {
 } from "./adapters/oauth-refresh.ts";
 import type { ServerAdapter } from "./adapters/types.ts";
 import { awaitingConsent, resolvingFor } from "./unconfigured.ts";
+import { presenceFrom } from "../connectors/index.ts";
 import { componentToken } from "../auth/internal-token.ts";
 
 /** Shared empty waiver set — most slugs declare none. */
@@ -430,18 +431,29 @@ export class Registry {
 
       // AN `oauth:` SLUG NOBODY HAS CONNECTED IS UNCONFIGURED, NOT BROKEN.
       //
-      // Only where there is a store to ask: under the `env` provider a slug has
-      // no own namespace, every lookup is a miss, and translating on a miss
-      // would silence every real fault such a slug ever had. See
-      // `awaitingConsent` for why this is decided at the failure.
+      // Only where there is a store to ask, and asked from its METADATA: the
+      // same listing and the same rule the console's Connected badge reads
+      // (`presenceFrom`), so the two never disagree and no refresh token is
+      // rendered into core to learn that one exists. Under the `env` provider
+      // there is no resolver and nothing is translated — a slug there has no
+      // own namespace, and a miss on every lookup would silence every real
+      // fault it ever had. See `awaitingConsent` for why this is decided at
+      // the failure.
       const connector = server.oauth;
       const built = adapters.get(server.slug);
-      if (connector && built && secrets.gatewayStore) {
-        const own = secrets.forServerIsolated(server.slug);
+      const listing = resolver?.list?.bind(resolver);
+      if (connector && built && listing) {
+        const entry = { server, oauth: connector };
+        const prefix = `/strad/${config.gateway.env}/mcp/${server.slug}/`;
+        const namespaces = serverNamespaces(config.gateway.env, server.slug);
         adapters.set(
           server.slug,
-          awaitingConsent(built, connector.refreshTokenVariable, async () =>
-            Boolean(await own.get(connector.refreshTokenVariable)),
+          awaitingConsent(
+            built,
+            connector.refreshTokenVariable,
+            async () =>
+              presenceFrom(entry, namespaces, await listing(prefix))
+                .refreshToken,
           ),
         );
       }
