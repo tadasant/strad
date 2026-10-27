@@ -22,7 +22,7 @@ import {
   withBearer,
 } from "./adapters/oauth-refresh.ts";
 import type { ServerAdapter } from "./adapters/types.ts";
-import { resolvingFor } from "./unconfigured.ts";
+import { awaitingConsent, resolvingFor } from "./unconfigured.ts";
 import { componentToken } from "../auth/internal-token.ts";
 
 /** Shared empty waiver set — most slugs declare none. */
@@ -426,6 +426,24 @@ export class Registry {
           void unhandled;
           break;
         }
+      }
+
+      // AN `oauth:` SLUG NOBODY HAS CONNECTED IS UNCONFIGURED, NOT BROKEN.
+      //
+      // Only where there is a store to ask: under the `env` provider a slug has
+      // no own namespace, every lookup is a miss, and translating on a miss
+      // would silence every real fault such a slug ever had. See
+      // `awaitingConsent` for why this is decided at the failure.
+      const connector = server.oauth;
+      const built = adapters.get(server.slug);
+      if (connector && built && secrets.gatewayStore) {
+        const own = secrets.forServerIsolated(server.slug);
+        adapters.set(
+          server.slug,
+          awaitingConsent(built, connector.refreshTokenVariable, async () =>
+            Boolean(await own.get(connector.refreshTokenVariable)),
+          ),
+        );
       }
     }
 

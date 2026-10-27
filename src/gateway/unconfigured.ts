@@ -1,5 +1,6 @@
 import { SecretNotFoundError } from "../secrets/provider/index.ts";
 import type { ErrorKind, SelfClassifyingError } from "../telemetry/index.ts";
+import type { ServerAdapter } from "./adapters/types.ts";
 
 /**
  * A slug that is waiting for a credential nobody has seeded yet.
@@ -42,19 +43,36 @@ export class ServerUnconfiguredError
    * two credentials will name the second one on the next probe.
    */
   readonly names: string[];
+  /**
+   * Which deferral this is. `unseeded` is a `mayBeUnseeded` name nobody has
+   * seeded; `unconnected` is an `oauth:` slug whose refresh token nobody has
+   * minted, because nobody has clicked Connect. Same state to every consumer —
+   * the only difference is the sentence, which sends a human to the right place.
+   */
+  readonly reason: "unseeded" | "unconnected";
 
-  constructor(slug: string, names: string[]) {
+  constructor(
+    slug: string,
+    names: string[],
+    reason: "unseeded" | "unconnected" = "unseeded",
+  ) {
     const list = [...new Set(names)].sort();
     super(
-      `server "${slug}" is not configured yet: ` +
-        `${list.join(", ")} ${list.length === 1 ? "is" : "are"} declared ` +
-        `mayBeUnseeded and no value has been seeded. The server deploys and ` +
-        `stays inactive until one is; nothing is broken and there is nothing ` +
-        `to restart.`,
+      reason === "unconnected"
+        ? `server "${slug}" is not connected yet: its oauth: connector holds ` +
+            `no ${list.join(", ")}, because nobody has completed Connect for ` +
+            `it in the console. The server deploys and stays inactive until ` +
+            `someone does; nothing is broken and there is nothing to restart.`
+        : `server "${slug}" is not configured yet: ` +
+            `${list.join(", ")} ${list.length === 1 ? "is" : "are"} declared ` +
+            `mayBeUnseeded and no value has been seeded. The server deploys and ` +
+            `stays inactive until one is; nothing is broken and there is nothing ` +
+            `to restart.`,
     );
     this.name = "ServerUnconfiguredError";
     this.slug = slug;
     this.names = list;
+    this.reason = reason;
   }
 
   /**
@@ -93,4 +111,74 @@ export async function resolvingFor<T>(
     }
     throw err;
   }
+}
+
+/**
+ * An `oauth:` slug that has never been connected says so, instead of failing as
+ * its upstream.
+ *
+ * ## Why at the failure, and not before resolution like `resolvingFor`
+ *
+ * A connector's refresh token is never a `${NAME}` (see `OAuthConnector` in
+ * src/config/schema.ts): the renderer injects it onto the slug's own container
+ * only if the store holds it, so core resolves nothing that could miss, and the
+ * upstream is what fails — an ordinary `upstream_error`, which pages. The log
+ * record cannot tell "never connected" from "connected and broken", so the
+ * distinction has to be made here, where the store can be asked.
+ *
+ * Asked ONLY once an operation has already failed. A connected slug that works
+ * costs nothing, and a slug whose server is built to survive an absent token
+ * (Google Sheets lists its tools unconnected) keeps doing so.
+ *
+ * ## It must never silence a real fault
+ *
+ * The translation fires on exactly one answer: the store was reached and holds
+ * no refresh token in this slug's namespaces. A token that IS held — revoked,
+ * expired, or fine behind a bundle that will not start — leaves the original
+ * error untouched, and so does a store that cannot be read, because "I could not
+ * check" is not evidence that nobody connected.
+ *
+ * `held` answers from the slug's own `oauth/` and `static/` namespaces and
+ * nothing else; the caller builds it. The value it reads is compared and
+ * dropped, never logged or returned.
+ */
+export function awaitingConsent(
+  adapter: ServerAdapter,
+  variable: string,
+  held: () => Promise<boolean>,
+): ServerAdapter {
+  const translate = async (err: unknown): Promise<never> => {
+    if (err instanceof ServerUnconfiguredError) throw err;
+    let present: boolean;
+    try {
+      present = await held();
+    } catch {
+      throw err;
+    }
+    if (present) throw err;
+    throw new ServerUnconfiguredError(adapter.slug, [variable], "unconnected");
+  };
+  const guarded = <A extends unknown[], R>(
+    op: (...args: A) => Promise<R>,
+  ): ((...args: A) => Promise<R>) => {
+    return (...args) => op(...args).catch(translate);
+  };
+
+  const wrapped: ServerAdapter = {
+    slug: adapter.slug,
+    kind: adapter.kind,
+    ...(adapter.host ? { host: adapter.host } : {}),
+    listTools: guarded(() => adapter.listTools()),
+    callTool: guarded((name, args, ctx) => adapter.callTool(name, args, ctx)),
+    close: () => adapter.close(),
+  };
+  if (adapter.listResources) {
+    wrapped.listResources = guarded(() => adapter.listResources!());
+  }
+  if (adapter.readResource) {
+    wrapped.readResource = guarded((uri: string) => adapter.readResource!(uri));
+  }
+  if (adapter.postRaw) wrapped.postRaw = adapter.postRaw.bind(adapter);
+  if (adapter.getRaw) wrapped.getRaw = adapter.getRaw.bind(adapter);
+  return wrapped;
 }

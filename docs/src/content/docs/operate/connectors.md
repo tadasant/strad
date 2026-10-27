@@ -509,6 +509,33 @@ token is evidence that a human once consented; it is not evidence that Google
 still accepts it, and the store cannot see a revocation. The only honest live
 signal is a real call, and the console does not make one.
 
+### A slug nobody has connected is `unconfigured`, not down
+
+Before the first Connect there is no refresh token anywhere, and a mount that
+needs one fails its listing the way a broken upstream does. strad tells the two
+apart in core: when an operation on an `oauth:` slug fails, it asks the store
+whether the slug's own `oauth/` or `static/` namespace holds a value for
+`refreshTokenVariable`. Only on a definite "no" is the failure reported as the
+slug being **unconfigured**, the same state a [`mayBeUnseeded:`
+credential](/operate/secrets/#what-the-slug-looks-like-while-it-waits) is in:
+`/healthz` lists it under `unconfigured` and not `degraded`, a named
+`tools/list` or a `tools/call` gets an error saying the slug is not connected
+yet, and the log record is `mcp.server_unconfigured` at Info, which pages
+nothing.
+
+Everything else stays a fault. A token that IS held, whether revoked, expired or
+fine behind a bundle that will not start, leaves the original error alone, and
+`mcp.list_tools_failed` ships at ERROR and pages. So does a store that cannot be
+read, because "strad could not check" is not evidence that nobody connected. A
+listing that succeeds never asks the store, so a server built to list its tools
+unconnected (Google Sheets) is unaffected. Under `provider: env` there is no
+per-slug namespace to ask, and nothing is translated.
+
+The check reads the store, not the container. Between a Connect and the deploy
+that carries the token onto the box (step 4 above), the store holds a token the
+mount does not have yet, and a failure in that window is reported as the fault
+it looks like.
+
 ## Telemetry
 
 Six events. Every field comes from the config or from a closed set of strad's

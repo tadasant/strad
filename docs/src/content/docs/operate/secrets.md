@@ -819,6 +819,10 @@ out.
 | `tools/list` with no `?servers=`   | the slug contributes no tools; every other server is unaffected   |
 | logs                               | `strad.tool_surface_unconfigured`, at Info — it does not page     |
 
+An [`oauth:` slug nobody has connected yet](/operate/connectors/#a-slug-nobody-has-connected-is-unconfigured-not-down)
+is reported the same way, naming its `refreshTokenVariable` where this table
+says `${NAME}`.
+
 Keeping it out of `degraded` is load-bearing rather than cosmetic: `degraded` is
 what the staging deploy gate asserts on, so counting a deliberate deferral there
 would red the deploy this feature exists to let through, one layer further down
