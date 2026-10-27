@@ -6605,15 +6605,19 @@ returns only the first tab's content, in the top-level `body`, and nothing
 says other tabs exist. Every read tool saw one tab and called it the document.
 strad's copy asks for every tab. `get_document` and `get_document_outline`
 walk the tab tree, nested child tabs included, and each takes an optional
-`tab_id`. `get_document` also reads the tab a `?tab=` URL links to. The tree
+`tab_id`. A `?tab=` in a pasted URL is deliberately NOT read: Docs puts
+`?tab=t.0` on nearly every URL, single-tab documents included, so honouring it
+would read the first tab alone again. The tree
 is a PATCHED VENDOR, and its README's delta table lists the change.
 
 Four things about it are not obvious:
 
-1. **A single-tab document is unchanged, byte for byte.** One tab is read the
-   way a document fetched without the flag is: its content is lifted back to
-   the top level, so `format=json` keeps `body` there and the text output has
-   no tab sections. A test compares the two outputs directly.
+1. **A single-tab document is unchanged.** One tab is read the way a document
+   fetched without the flag is: its content is lifted back to the top level,
+   so `format=json` keeps `body`, `lists`, `namedStyles` and the rest there,
+   and the text output has no tab sections. The text is identical; the JSON
+   has the same fields and values, though its key order can differ from
+   Google's own legacy response. A test compares the two directly.
 2. **A multi-tab `format=json` changes shape.** With no `tab_id` it is the
    full resource, and the content is under `tabs[].documentTab.body` with no
    top-level `body`. A caller that read `body` off a multi-tab document was

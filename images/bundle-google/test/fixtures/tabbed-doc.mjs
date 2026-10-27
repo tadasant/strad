@@ -16,6 +16,12 @@ const body = (...content) => ({ content });
 
 export const DOCUMENT_ID = "1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
 
+const FIRST_TAB_STYLE = {
+  documentStyle: { pageSize: { width: { magnitude: 612, unit: "PT" } } },
+  namedStyles: { styles: [{ namedStyleType: "NORMAL_TEXT" }] },
+  lists: { "kix.list1": { listProperties: {} } },
+};
+
 export const TABBED_DOC = {
   documentId: DOCUMENT_ID,
   title: "Trip plan",
@@ -23,7 +29,10 @@ export const TABBED_DOC = {
   tabs: [
     {
       tabProperties: { tabId: "t.0", title: "Overview", index: 0 },
-      documentTab: { body: body(para("Overview", "HEADING_1"), para("Dates are in the itinerary tab.")) },
+      documentTab: {
+        body: body(para("Overview", "HEADING_1"), para("Dates are in the itinerary tab.")),
+        ...FIRST_TAB_STYLE,
+      },
     },
     {
       tabProperties: { tabId: "t.itin", title: "Itinerary", index: 1 },
@@ -44,9 +53,12 @@ export const TABBED_DOC = {
   ],
 };
 
+// Keys in the order Google sends them, which is not the order the server
+// rebuilds them in: the comparison is by value.
 export const LEGACY_FIRST_TAB = {
-  documentId: DOCUMENT_ID,
   title: "Trip plan",
-  revisionId: "rev-7",
   body: TABBED_DOC.tabs[0].documentTab.body,
+  ...FIRST_TAB_STYLE,
+  revisionId: "rev-7",
+  documentId: DOCUMENT_ID,
 };

@@ -109,14 +109,39 @@ test("get_document with tab_id reads just that tab, a nested one included", asyn
   expect(text).not.toContain("Dates are in the itinerary tab.");
 });
 
-test("get_document reads the tab a pasted ?tab= URL links to", async () => {
+test("a pasted URL's ?tab= does not narrow the read — Docs puts ?tab=t.0 on nearly every URL", async () => {
   const { client } = fakeClient(TABBED_DOC, LEGACY_FIRST_TAB);
   const { text } = await call(client, "get_document", {
-    document_id: `https://docs.google.com/document/d/${DOCUMENT_ID}/edit?tab=t.itin`,
+    document_id: `https://docs.google.com/document/d/${DOCUMENT_ID}/edit?tab=t.0`,
   });
-  expect(text).toContain("**Tab:** Itinerary (tab_id: `t.itin`)");
+  expect(text).toContain("Dates are in the itinerary tab.");
   expect(text).toContain("Fly to Lisbon.");
-  expect(text).not.toContain("Cervejaria Ramiro");
+  expect(text).toContain("Cervejaria Ramiro");
+});
+
+test("one tab of a multi-tab document says the others exist", async () => {
+  const { client } = fakeClient(TABBED_DOC, LEGACY_FIRST_TAB);
+  const { text } = await call(client, "get_document", { document_id: DOCUMENT_ID, tab_id: "t.0" });
+  expect(text).toContain("**Other tabs:** 2 more in this document");
+});
+
+test("an empty tab, and a tab with no content or properties, still render", async () => {
+  const doc: GoogleDoc = {
+    documentId: DOCUMENT_ID,
+    title: "Sparse",
+    tabs: [
+      { tabProperties: { tabId: "t.a", title: "Empty", index: 0 }, documentTab: { body: { content: [] } } },
+      { tabProperties: { index: 1 } },
+    ],
+  };
+  const { client } = fakeClient(doc, LEGACY_FIRST_TAB);
+  const { text, isError } = await call(client, "get_document", { document_id: DOCUMENT_ID });
+  expect(isError).toBe(false);
+  expect(text).toContain("- Empty (tab_id: `t.a`)\n- (Untitled Tab)\n");
+  expect(text).toContain("## Tab: Empty\n\n**Tab ID:** t.a\n\n### Body\n\n(empty tab)");
+  const outline = await call(client, "get_document_outline", { document_id: DOCUMENT_ID });
+  expect(outline.isError).toBe(false);
+  expect(outline.text).toContain("## Tab: (Untitled Tab)");
 });
 
 test("an unknown tab_id is an error naming the tabs that exist", async () => {
@@ -146,11 +171,16 @@ test("a single-tab document reads exactly as it did without includeTabsContent",
   const legacy = fakeClient(LEGACY_FIRST_TAB, LEGACY_FIRST_TAB);
   const single = fakeClient(SINGLE_TAB_DOC, LEGACY_FIRST_TAB);
 
-  for (const format of ["text", "json"]) {
-    const before = await call(legacy.client, "get_document", { document_id: DOCUMENT_ID, format });
-    const after = await call(single.client, "get_document", { document_id: DOCUMENT_ID, format });
-    expect(after.text, format).toBe(before.text);
-  }
+  const textBefore = await call(legacy.client, "get_document", { document_id: DOCUMENT_ID });
+  const textAfter = await call(single.client, "get_document", { document_id: DOCUMENT_ID });
+  expect(textAfter.text).toBe(textBefore.text);
+
+  // Same fields, same values — every content key lifted back to the top level.
+  const jsonBefore = await call(legacy.client, "get_document", { document_id: DOCUMENT_ID, format: "json" });
+  const jsonAfter = await call(single.client, "get_document", { document_id: DOCUMENT_ID, format: "json" });
+  expect(JSON.parse(jsonAfter.text)).toEqual(JSON.parse(jsonBefore.text));
+  expect(JSON.parse(jsonAfter.text).namedStyles).toEqual(LEGACY_FIRST_TAB.namedStyles);
+
   const before = await call(legacy.client, "get_document_outline", { document_id: DOCUMENT_ID });
   const after = await call(single.client, "get_document_outline", { document_id: DOCUMENT_ID });
   expect(after.text).toBe(before.text);
@@ -168,6 +198,10 @@ test("get_document_outline lists every tab with its id and headings", async () =
   const one = await call(fake.client, "get_document_outline", { document_id: DOCUMENT_ID, tab_id: "t.itin" });
   expect(one.text).toContain("## Tab: Itinerary\n");
   expect(one.text).not.toContain("Overview\n\n**Tab ID");
+
+  const missing = await call(fake.client, "get_document_outline", { document_id: DOCUMENT_ID, tab_id: "t.nope" });
+  expect(missing.isError).toBe(true);
+  expect(missing.text).toContain('"t.itin" (Itinerary)');
 });
 
 test("append_text still targets the first tab, where batchUpdate's default lands", async () => {

@@ -29,6 +29,8 @@ before the trailing newline.
 - text: Plain text to append (required)
 
 **Notes:**
+- In a document with several tabs, this appends to the FIRST tab. To append
+  to another tab, use update_document with that tab's "tabId" in the location.
 - For formatted edits or precise placement, use update_document directly.
 - This requires a round-trip to fetch the document first to determine the
   insertion index.`;

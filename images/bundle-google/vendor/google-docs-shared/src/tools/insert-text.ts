@@ -32,6 +32,8 @@ Issues a single batchUpdate with one insertText request at the given location.
 
 **Notes:**
 - The Docs API uses 1-based indices over the document body.
+- In a document with several tabs, the index is in the FIRST tab. To insert
+  into another tab, use update_document with that tab's "tabId" in the location.
 - Use get_document with format="json" to find the index of a specific
   paragraph or text run.
 - For more complex edits (deletions, replacements with formatting), use

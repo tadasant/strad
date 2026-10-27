@@ -4019,8 +4019,8 @@ See `HACKS.md` #128 and `servers/good-eggs/FORK.md` #13.
 
 The google-docs server reads every tab of a document, nested tabs included.
 `get_document` and `get_document_outline` take a `tab_id` to read one, and
-`get_document` reads the tab a `?tab=` link points at. The upstream server it
-is copied from reads only the first tab.
+a `?tab=` in a pasted link is ignored, because Docs puts `?tab=t.0` on nearly
+every link. The upstream server it is copied from reads only the first tab.
 
 - **strad added it, not upstream.** Re-copying the server from upstream
   removes it unless the change is applied again, and a test fails if it is

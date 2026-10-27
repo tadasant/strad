@@ -19,7 +19,7 @@ standalone entrypoint, which hands that same layer to the shared runner.
 
 | Delta | Where | Defended by |
 | ----- | ----- | ----------- |
-| Every tab is read, not only the first: `documents.get` is asked for `includeTabsContent=true`, and `get_document` and `get_document_outline` take a `tab_id` (`HACKS.md` #129) | `src/utils/tabs.ts`, `src/types.ts` (`Tab`), `src/google-docs-client/lib/get-document.ts`, `src/server.ts` (`getDocument`'s options), `src/tools/get-document.ts`, `src/tools/get-document-outline.ts`, the tab notes in `src/tools/update-document.ts` and `src/tools/export-document.ts` | `../../test/docs-tabs.test.ts`, `../../test/standalone.test.ts` |
+| Every tab is read, not only the first: `documents.get` is asked for `includeTabsContent=true`, and `get_document` and `get_document_outline` take a `tab_id` (`HACKS.md` #129) | `src/utils/tabs.ts`, `src/types.ts` (`Tab`), `src/google-docs-client/lib/get-document.ts`, `src/server.ts` (`getDocument`'s options), `src/tools/get-document.ts`, `src/tools/get-document-outline.ts`, the tab notes in `src/tools/update-document.ts`, `src/tools/append-text.ts`, `src/tools/insert-text.ts` and `src/tools/export-document.ts` | `../../test/docs-tabs.test.ts`, `../../test/standalone.test.ts` |
 
 ## Tools
 
@@ -37,9 +37,10 @@ Eleven, in three groups. Each group holds the one before it:
 - Both read **every tab** of a document, nested child tabs included. With
   more than one tab, `get_document_outline` gives each tab a section with its
   `tab_id`, and `get_document` returns every tab's outline and body, one
-  section each. Pass `tab_id` to either to read one tab, or hand
-  `get_document` a URL with `?tab=` in it. A single-tab document reads the
-  same as it always has. `export_document` has no per-tab option, because
+  section each. Pass `tab_id` to either to read one tab. A `?tab=` in a
+  pasted URL does not narrow the read: Docs puts `?tab=t.0` on nearly every
+  URL, and honouring it would read the first tab alone again. A single-tab
+  document reads the same as it always has. `export_document` has no per-tab option, because
   Drive's export has none.
 - In a multi-tab document, `update_document`, `append_text` and `insert_text`
   edit the first tab unless a request's location carries a `tabId`. Only

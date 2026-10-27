@@ -72,8 +72,10 @@ export function findTab(doc: GoogleDoc, tabId: string): FlatTab | undefined {
  * level, where `documents.get` without `includeTabsContent` puts them.
  *
  * That is the shape every text extractor in `extract-text.ts` reads, and for a
- * single-tab document it is the legacy `format=json` resource, so a caller that
- * never heard of tabs sees what it always saw. `tabs` is dropped: the content
+ * single-tab document it carries the same fields and values as the legacy
+ * `format=json` resource, so a caller that never heard of tabs sees what it
+ * always saw. Key ORDER may differ from Google's own legacy response; JSON
+ * does not mean anything by it. `tabs` is dropped: the content
  * it held is the content now at the top level.
  */
 export function tabAsDocument(doc: GoogleDoc, flat: FlatTab): GoogleDoc {
@@ -99,7 +101,8 @@ export function unknownTabError(doc: GoogleDoc, tabId: string): Error {
 export function renderTabList(tabs: FlatTab[]): string {
   let out = '';
   for (const t of tabs) {
-    out += `${'  '.repeat(t.depth)}- ${t.title} (tab_id: \`${t.tabId}\`)\n`;
+    const id = t.tabId ? ` (tab_id: \`${t.tabId}\`)` : '';
+    out += `${'  '.repeat(t.depth)}- ${t.title}${id}\n`;
   }
   return out;
 }
@@ -125,13 +128,4 @@ function legacyContent(doc: GoogleDoc): Record<string, unknown> {
     if (doc[key] !== undefined) out[key] = doc[key];
   }
   return out;
-}
-
-/**
- * The tab a Docs URL points at — `…/edit?tab=t.abc123` — or undefined for a
- * bare id or a URL with no tab. A link copied while a tab is open carries it,
- * and reading the first tab instead of the one linked is the wrong answer.
- */
-export function parseTabIdFromUrl(input: string): string | undefined {
-  return input.match(/[?&#]tab=([A-Za-z0-9._-]+)/)?.[1];
 }

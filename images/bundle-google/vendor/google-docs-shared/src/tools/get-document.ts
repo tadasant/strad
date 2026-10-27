@@ -7,7 +7,6 @@ import { extractPlainText, extractHeadings, type HeadingEntry } from '../utils/e
 import {
   findTab,
   flattenTabs,
-  parseTabIdFromUrl,
   renderTabList,
   tabAsDocument,
   unknownTabError,
@@ -26,7 +25,8 @@ const PARAM_DESCRIPTIONS = {
   tab_id:
     'Read only this tab, e.g. "t.abc123" — get_document_outline lists every ' +
     "tab's id, nested child tabs included. Omit it to read every tab. A " +
-    'document URL with "?tab=t.abc123" in it reads that tab without this.',
+    'document URL\'s "?tab=" is NOT read: Docs puts "?tab=t.0" on nearly ' +
+    'every URL, so pass tab_id to narrow.',
 } as const;
 
 export const GetDocumentSchema = z.object({
@@ -41,7 +41,7 @@ const TOOL_DESCRIPTION = `Fetch a Google Doc's content and metadata.
 - document_id: Document ID or full Docs URL (required)
 - format: "text" (default, human-readable) or "json" (raw Docs API resource)
 - tab_id: Read only this tab (optional). Omit it to read every tab. A
-  document URL carrying "?tab=…" reads the tab it links to.
+  "?tab=" in a pasted URL does not narrow the read; pass tab_id.
 
 **Tabs:** A document can have several tabs, nested under each other. Every
 tab is read, not only the first.
@@ -95,27 +95,30 @@ export function getDocumentTool(_server: Server, clientFactory: ClientFactory) {
       try {
         const parsed = GetDocumentSchema.parse(args ?? {});
         const documentId = parseDocumentId(parsed.document_id);
-        const tabId = parsed.tab_id ?? parseTabIdFromUrl(parsed.document_id);
         const client = clientFactory();
 
         const doc = await client.getDocument(documentId, { includeTabsContent: true });
         const tabs = flattenTabs(doc);
 
-        if (tabId !== undefined) {
-          const tab = findTab(doc, tabId);
-          if (!tab) throw unknownTabError(doc, tabId);
+        if (parsed.tab_id !== undefined) {
+          const tab = findTab(doc, parsed.tab_id);
+          if (!tab) throw unknownTabError(doc, parsed.tab_id);
           const tabDoc = tabAsDocument(doc, tab);
           if (parsed.format === 'json') {
             return json({ ...tabDoc, tabProperties: tab.tab.tabProperties });
           }
           let output = header(doc);
-          output += `**Tab:** ${tab.path} (tab_id: \`${tab.tabId}\`)\n\n`;
-          output += renderContent(tabDoc, '##');
+          output += `**Tab:** ${tab.path} (tab_id: \`${tab.tabId}\`)\n`;
+          if (tabs.length > 1) {
+            output += `**Other tabs:** ${tabs.length - 1} more in this document; omit tab_id to read them all.\n`;
+          }
+          output += '\n';
+          output += renderContent(tabDoc, '##', 'tab');
           return text(output);
         }
 
-        // A document with one tab reads exactly as it does fetched without
-        // includeTabsContent: same text, same JSON shape.
+        // A document with one tab reads as it does fetched without
+        // includeTabsContent: the same text, and JSON with the same fields.
         if (tabs.length === 1) {
           const tabDoc = tabAsDocument(doc, tabs[0]);
           if (parsed.format === 'json') return json(tabDoc);
@@ -129,7 +132,7 @@ export function getDocumentTool(_server: Server, clientFactory: ClientFactory) {
         for (const tab of tabs) {
           output += `## Tab: ${tab.path}\n\n`;
           output += `**Tab ID:** ${tab.tabId}\n\n`;
-          output += renderContent(tabAsDocument(doc, tab), '###');
+          output += renderContent(tabAsDocument(doc, tab), '###', 'tab');
           output += '\n\n';
         }
         return text(output.trimEnd());
@@ -159,7 +162,7 @@ function header(doc: GoogleDoc): string {
 }
 
 /** A document's (or one tab's) outline and body, under headings at `level`. */
-function renderContent(doc: GoogleDoc, level: string): string {
+function renderContent(doc: GoogleDoc, level: string, what: 'document' | 'tab' = 'document'): string {
   const headings = extractHeadings(doc);
   const body = extractPlainText(doc);
   let output = '';
@@ -167,7 +170,7 @@ function renderContent(doc: GoogleDoc, level: string): string {
     output += `${level} Outline\n\n${renderHeadings(headings)}\n`;
   }
   output += `${level} Body\n\n`;
-  output += body.length > 0 ? body : '(empty document)';
+  output += body.length > 0 ? body : `(empty ${what})`;
   return output;
 }
 
