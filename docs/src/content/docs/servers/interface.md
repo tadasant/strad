@@ -125,8 +125,9 @@ gate refuses a reference by name. The reason is a genuine ordering cycle:
 `render-spec` fails the whole app spec on one unresolvable `${NAME}`, the refresh
 token cannot exist until a human has consented in the console, and the console
 page does not exist until the slug is deployed. Injection breaks it — an
-unconnected slug deploys, mounts and reports itself degraded, costing its own
-capability and nobody else's. See [Connectors](/operate/connectors/).
+unconnected slug deploys, mounts and reports itself degraded (or `unconfigured`,
+if it cannot list without the token), costing its own capability and nobody
+else's. See [Connectors](/operate/connectors/).
 
 ## The four kinds
 
