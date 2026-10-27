@@ -437,6 +437,64 @@ describe("google-docs standalone", () => {
     }
   });
 
+  // Every tab, not only the first (`HACKS.md` #129). The built binary runs
+  // with `fixtures/docs-api-stub.mjs` preloaded, which fakes the token
+  // exchange and answers `documents.get` the way Google does: the first tab
+  // alone unless `includeTabsContent=true` is asked for.
+  const DOCS_API_STUB = new URL("./fixtures/docs-api-stub.mjs", import.meta.url).href;
+  const tabsEnv = () =>
+    cleanEnv({
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${DOCS_API_STUB}`.trim(),
+      GOOGLE_DOCS_OAUTH_CLIENT_ID: "id",
+      GOOGLE_DOCS_OAUTH_CLIENT_SECRET: "secret",
+      GOOGLE_DOCS_OAUTH_REFRESH_TOKEN: "refresh",
+    });
+  const TABBED_ID = "1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
+
+  async function readsEveryTab(client: Client): Promise<void> {
+    const all = await client.callTool({ name: "get_document", arguments: { document_id: TABBED_ID } });
+    expect(all.isError).toBeFalsy();
+    const text = JSON.stringify(all.content);
+    expect(text).toContain("Dates are in the itinerary tab.");
+    expect(text).toContain("Fly to Lisbon.");
+    expect(text).toContain("Cervejaria Ramiro, Tuesday 8pm.");
+
+    const outline = JSON.stringify(
+      (await client.callTool({ name: "get_document_outline", arguments: { document_id: TABBED_ID } })).content,
+    );
+    expect(outline).toContain("## Tab: Itinerary / Restaurants");
+    expect(outline).toContain("**Tab ID:** t.food");
+
+    const one = JSON.stringify(
+      (await client.callTool({ name: "get_document", arguments: { document_id: TABBED_ID, tab_id: "t.food" } }))
+        .content,
+    );
+    expect(one).toContain("Cervejaria Ramiro");
+    expect(one).not.toContain("Fly to Lisbon.");
+  }
+
+  it("reads every tab of a document over stdio", async () => {
+    const transport = new StdioClientTransport({ command: process.execPath, args: [DOCS], env: tabsEnv(), stderr: "pipe" });
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(transport);
+    try {
+      await readsEveryTab(client);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("reads every tab of a document over Streamable HTTP", async () => {
+    const { url } = await startHttp([], tabsEnv(), DOCS);
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(url));
+    try {
+      await readsEveryTab(client);
+    } finally {
+      await client.close();
+    }
+  });
+
   it("once an OAuth variable is set, warns about and fails on the OAuth variables instead", async () => {
     const { url, stderr } = await startHttp([], cleanEnv({ GOOGLE_DOCS_OAUTH_CLIENT_ID: "id" }), DOCS);
     expect(stderr()).toContain("GOOGLE_DOCS_OAUTH_CLIENT_SECRET, GOOGLE_DOCS_OAUTH_REFRESH_TOKEN not set");

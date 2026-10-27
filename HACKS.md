@@ -6593,3 +6593,51 @@ code cannot read is not followed by the button, because it may have applied. The
 basket re-read reports what landed. Re-read the button's
 request from the browser's network panel and update `BASKET_UPDATE_PATH` and
 `parseBasketUpdateResponse()`.
+
+---
+
+## 129. google-docs reads every tab, a strad delta on a vendored tree
+
+**What.** `images/bundle-google/vendor/google-docs-shared` is a copy of
+`pulsemcp/mcp-servers`' `experimental/google-docs/shared`, and upstream calls
+`documents.get` without `includeTabsContent`. Without that flag the Docs API
+returns only the first tab's content, in the top-level `body`, and nothing
+says other tabs exist. Every read tool saw one tab and called it the document.
+strad's copy asks for every tab. `get_document` and `get_document_outline`
+walk the tab tree, nested child tabs included, and each takes an optional
+`tab_id`. A `?tab=` in a pasted URL is deliberately NOT read: Docs puts
+`?tab=t.0` on nearly every URL, single-tab documents included, so honouring it
+would read the first tab alone again. The tree
+is a PATCHED VENDOR, and its README's delta table lists the change.
+
+Four things about it are not obvious:
+
+1. **A single-tab document is unchanged.** One tab is read the way a document
+   fetched without the flag is: its content is lifted back to the top level,
+   so `format=json` keeps `body`, `lists`, `namedStyles` and the rest there,
+   and the text output has no tab sections. The text is identical; the JSON
+   has the same fields and values, though its key order can differ from
+   Google's own legacy response. A test compares the two directly.
+2. **A multi-tab `format=json` changes shape.** With no `tab_id` it is the
+   full resource, and the content is under `tabs[].documentTab.body` with no
+   top-level `body`. A caller that read `body` off a multi-tab document was
+   reading the first tab alone. With a `tab_id` it is that tab with its
+   `body` at the top level and its `tabProperties` beside it.
+3. **Writes still default to the first tab.** `append_text` still fetches
+   without the flag, so its end index is the first tab's, which is where a
+   `batchUpdate` request with no `tabId` lands. `update_document`'s
+   description says how to target another tab. No write tool gained a
+   `tab_id`.
+4. **Export is not per tab.** Drive's `files.export` has no tab parameter, so
+   `export_document` exports whatever Drive gives for the whole document, and
+   its description points at `get_document` with `tab_id` for one tab. What
+   Drive puts in an export of a multi-tab document has not been measured.
+
+No request with the flag has reached Google from CI. The tests fake the Docs
+API, and answer the way its reference says: the first tab alone without the
+flag, every tab with it.
+
+**Undo.** If upstream starts reading tabs, re-vendor and drop the delta. Until
+then a re-vendor has to re-apply the row in the tree's README, and
+`images/bundle-google/test/docs-tabs.test.ts` and the tab tests in
+`images/bundle-google/test/standalone.test.ts` fail if it does not.

@@ -2,15 +2,20 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
 import { parseDocumentId } from '../utils/parse-document-id.js';
-import { extractHeadings } from '../utils/extract-text.js';
+import { extractHeadings, type HeadingEntry } from '../utils/extract-text.js';
+import { findTab, flattenTabs, tabAsDocument, unknownTabError } from '../utils/tabs.js';
 import { logError } from '../logging.js';
 
 const PARAM_DESCRIPTIONS = {
   document_id: 'The Google Docs document ID, or the full document URL. Both forms are accepted.',
+  tab_id:
+    'Outline only this tab, e.g. "t.abc123". Omit it to outline every tab, ' +
+    'which is also how to learn the tab ids.',
 } as const;
 
 export const GetDocumentOutlineSchema = z.object({
   document_id: z.string().min(1).describe(PARAM_DESCRIPTIONS.document_id),
+  tab_id: z.string().min(1).optional().describe(PARAM_DESCRIPTIONS.tab_id),
 });
 
 const TOOL_DESCRIPTION = `List the headings in a Google Doc as a navigable outline.
@@ -19,8 +24,14 @@ Returns the title plus every TITLE/SUBTITLE/HEADING_1..HEADING_6 paragraph in
 document order. Useful for quickly understanding a document's structure
 without fetching the full body.
 
+**Tabs:** A document with several tabs gets one section per tab, nested
+child tabs included, each headed by the tab's path and its tab_id — the id
+get_document and update_document take to address that tab. A single-tab
+document's outline has no tab sections.
+
 **Parameters:**
 - document_id: Document ID or full Docs URL (required)
+- tab_id: Outline only this tab (optional)
 
 **Returns:**
 Markdown-formatted outline indented by heading level.`;
@@ -36,6 +47,10 @@ export function getDocumentOutlineTool(_server: Server, clientFactory: ClientFac
           type: 'string',
           description: PARAM_DESCRIPTIONS.document_id,
         },
+        tab_id: {
+          type: 'string',
+          description: PARAM_DESCRIPTIONS.tab_id,
+        },
       },
       required: ['document_id'],
     },
@@ -45,19 +60,25 @@ export function getDocumentOutlineTool(_server: Server, clientFactory: ClientFac
         const documentId = parseDocumentId(parsed.document_id);
         const client = clientFactory();
 
-        const doc = await client.getDocument(documentId);
-        const headings = extractHeadings(doc);
+        const doc = await client.getDocument(documentId, { includeTabsContent: true });
+        let tabs = flattenTabs(doc);
+        if (parsed.tab_id !== undefined) {
+          const tab = findTab(doc, parsed.tab_id);
+          if (!tab) throw unknownTabError(doc, parsed.tab_id);
+          tabs = [tab];
+        }
 
         let output = `# Outline: ${doc.title || '(Untitled Document)'}\n\n`;
         output += `**Document ID:** ${doc.documentId}\n\n`;
 
-        if (headings.length === 0) {
-          output += '_No headings found in this document._\n';
+        if (tabs.length === 1 && parsed.tab_id === undefined) {
+          output += renderHeadings(extractHeadings(tabAsDocument(doc, tabs[0])), 'document');
         } else {
-          for (const h of headings) {
-            const indent = h.level === 0 ? '' : '  '.repeat(Math.max(0, h.level - 1));
-            const prefix = h.level === 0 ? `[${h.styleType}]` : `H${h.level}`;
-            output += `${indent}- ${prefix}: ${h.text}\n`;
+          for (const tab of tabs) {
+            output += `## Tab: ${tab.path}\n\n`;
+            output += `**Tab ID:** ${tab.tabId}\n\n`;
+            output += renderHeadings(extractHeadings(tabAsDocument(doc, tab)), 'tab');
+            output += '\n';
           }
         }
 
@@ -83,4 +104,15 @@ export function getDocumentOutlineTool(_server: Server, clientFactory: ClientFac
       }
     },
   };
+}
+
+function renderHeadings(headings: HeadingEntry[], what: 'document' | 'tab'): string {
+  if (headings.length === 0) return `_No headings found in this ${what}._\n`;
+  let output = '';
+  for (const h of headings) {
+    const indent = h.level === 0 ? '' : '  '.repeat(Math.max(0, h.level - 1));
+    const prefix = h.level === 0 ? `[${h.styleType}]` : `H${h.level}`;
+    output += `${indent}- ${prefix}: ${h.text}\n`;
+  }
+  return output;
 }

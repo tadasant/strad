@@ -48,9 +48,49 @@ export interface DocumentBody {
   [k: string]: unknown;
 }
 
+/**
+ * A tab's identity and place in the tab tree (`Tab.tabProperties`). `index` is
+ * the position among its siblings; `nestingLevel` is 0 for a top-level tab.
+ */
+export interface TabProperties {
+  tabId?: string;
+  title?: string;
+  parentTabId?: string;
+  index?: number;
+  nestingLevel?: number;
+  [k: string]: unknown;
+}
+
+/**
+ * A tab's content (`Tab.documentTab`). It carries the same fields the legacy
+ * single-tab `Document` carries at its top level — `body`, `lists`,
+ * `inlineObjects`, `namedStyles`, … — scoped to this tab.
+ */
+export interface DocumentTab {
+  body?: DocumentBody;
+  [k: string]: unknown;
+}
+
+/**
+ * One tab of a document. Only populated when `documents.get` is called with
+ * `includeTabsContent=true`; tabs nest through `childTabs`.
+ */
+export interface Tab {
+  tabProperties?: TabProperties;
+  childTabs?: Tab[];
+  documentTab?: DocumentTab;
+  [k: string]: unknown;
+}
+
 export interface GoogleDoc {
   documentId: string;
   title?: string;
+  /**
+   * Every tab, top-level ones here and nested ones under `childTabs`. Present
+   * only when fetched with `includeTabsContent=true`, in which case the
+   * top-level content fields (`body`, `lists`, …) are empty.
+   */
+  tabs?: Tab[];
   body?: DocumentBody;
   revisionId?: string;
   documentStyle?: Record<string, unknown>;
