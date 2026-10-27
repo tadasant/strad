@@ -1,8 +1,17 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
+import type { GoogleDoc } from '../types.js';
 import { parseDocumentId } from '../utils/parse-document-id.js';
-import { extractPlainText, extractHeadings } from '../utils/extract-text.js';
+import { extractPlainText, extractHeadings, type HeadingEntry } from '../utils/extract-text.js';
+import {
+  findTab,
+  flattenTabs,
+  parseTabIdFromUrl,
+  renderTabList,
+  tabAsDocument,
+  unknownTabError,
+} from '../utils/tabs.js';
 import { logError } from '../logging.js';
 
 const PARAM_DESCRIPTIONS = {
@@ -14,11 +23,16 @@ const PARAM_DESCRIPTIONS = {
     'headings — best for reading. "json" returns the raw Docs API document ' +
     'resource (suitable when constructing batchUpdate requests that need ' +
     'startIndex/endIndex values).',
+  tab_id:
+    'Read only this tab, e.g. "t.abc123" — get_document_outline lists every ' +
+    "tab's id, nested child tabs included. Omit it to read every tab. A " +
+    'document URL with "?tab=t.abc123" in it reads that tab without this.',
 } as const;
 
 export const GetDocumentSchema = z.object({
   document_id: z.string().min(1).describe(PARAM_DESCRIPTIONS.document_id),
   format: z.enum(['text', 'json']).optional().describe(PARAM_DESCRIPTIONS.format),
+  tab_id: z.string().min(1).optional().describe(PARAM_DESCRIPTIONS.tab_id),
 });
 
 const TOOL_DESCRIPTION = `Fetch a Google Doc's content and metadata.
@@ -26,6 +40,18 @@ const TOOL_DESCRIPTION = `Fetch a Google Doc's content and metadata.
 **Parameters:**
 - document_id: Document ID or full Docs URL (required)
 - format: "text" (default, human-readable) or "json" (raw Docs API resource)
+- tab_id: Read only this tab (optional). Omit it to read every tab. A
+  document URL carrying "?tab=…" reads the tab it links to.
+
+**Tabs:** A document can have several tabs, nested under each other. Every
+tab is read, not only the first.
+- One tab: the output is the same as for any single-tab document.
+- Several tabs, no tab_id: format=text lists the tabs, then each tab's
+  outline and body under its own heading, parent tabs before their children.
+  format=json is the full resource with every tab under "tabs" (each tab's
+  content is at tabs[].documentTab.body, child tabs under childTabs).
+- tab_id: just that tab, shaped like a single-tab document; format=json puts
+  the tab's body at the top level, with its "tabProperties".
 
 **Returns:**
 For format=text:
@@ -34,10 +60,13 @@ For format=text:
 - Full plain-text body
 
 For format=json:
-- The complete Docs API document resource as JSON. Use this when you need
-  startIndex / endIndex values to build update_document requests.
+- The Docs API document resource as JSON. Use this when you need
+  startIndex / endIndex values to build update_document requests. Indices are
+  per tab: an edit to any tab but the first needs that tab's "tabId" in its
+  location (see update_document).
 
-**Tip:** If you only need the structure, use get_document_outline instead — it's lighter.`;
+**Tip:** If you only need the structure, or a document's tab ids, use
+get_document_outline instead — it's lighter.`;
 
 export function getDocumentTool(_server: Server, clientFactory: ClientFactory) {
   return {
@@ -55,6 +84,10 @@ export function getDocumentTool(_server: Server, clientFactory: ClientFactory) {
           enum: ['text', 'json'],
           description: PARAM_DESCRIPTIONS.format,
         },
+        tab_id: {
+          type: 'string',
+          description: PARAM_DESCRIPTIONS.tab_id,
+        },
       },
       required: ['document_id'],
     },
@@ -62,52 +95,44 @@ export function getDocumentTool(_server: Server, clientFactory: ClientFactory) {
       try {
         const parsed = GetDocumentSchema.parse(args ?? {});
         const documentId = parseDocumentId(parsed.document_id);
+        const tabId = parsed.tab_id ?? parseTabIdFromUrl(parsed.document_id);
         const client = clientFactory();
 
-        const doc = await client.getDocument(documentId);
+        const doc = await client.getDocument(documentId, { includeTabsContent: true });
+        const tabs = flattenTabs(doc);
 
-        if (parsed.format === 'json') {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify(doc, null, 2),
-              },
-            ],
-          };
-        }
-
-        const headings = extractHeadings(doc);
-        const body = extractPlainText(doc);
-
-        let output = `# ${doc.title || '(Untitled Document)'}\n\n`;
-        output += `**Document ID:** ${doc.documentId}\n`;
-        if (doc.revisionId) {
-          output += `**Revision:** ${doc.revisionId}\n`;
-        }
-        output += '\n';
-
-        if (headings.length > 0) {
-          output += '## Outline\n\n';
-          for (const h of headings) {
-            const indent = h.level === 0 ? '' : '  '.repeat(Math.max(0, h.level - 1));
-            const prefix = h.level === 0 ? `[${h.styleType}]` : `H${h.level}`;
-            output += `${indent}- ${prefix}: ${h.text}\n`;
+        if (tabId !== undefined) {
+          const tab = findTab(doc, tabId);
+          if (!tab) throw unknownTabError(doc, tabId);
+          const tabDoc = tabAsDocument(doc, tab);
+          if (parsed.format === 'json') {
+            return json({ ...tabDoc, tabProperties: tab.tab.tabProperties });
           }
-          output += '\n';
+          let output = header(doc);
+          output += `**Tab:** ${tab.path} (tab_id: \`${tab.tabId}\`)\n\n`;
+          output += renderContent(tabDoc, '##');
+          return text(output);
         }
 
-        output += '## Body\n\n';
-        output += body.length > 0 ? body : '(empty document)';
+        // A document with one tab reads exactly as it does fetched without
+        // includeTabsContent: same text, same JSON shape.
+        if (tabs.length === 1) {
+          const tabDoc = tabAsDocument(doc, tabs[0]);
+          if (parsed.format === 'json') return json(tabDoc);
+          return text(header(doc) + renderContent(tabDoc, '##'));
+        }
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: output,
-            },
-          ],
-        };
+        if (parsed.format === 'json') return json(doc);
+
+        let output = header(doc);
+        output += `## Tabs\n\n${renderTabList(tabs)}\n`;
+        for (const tab of tabs) {
+          output += `## Tab: ${tab.path}\n\n`;
+          output += `**Tab ID:** ${tab.tabId}\n\n`;
+          output += renderContent(tabAsDocument(doc, tab), '###');
+          output += '\n\n';
+        }
+        return text(output.trimEnd());
       } catch (error) {
         logError('get-document-tool', error);
         return {
@@ -122,4 +147,44 @@ export function getDocumentTool(_server: Server, clientFactory: ClientFactory) {
       }
     },
   };
+}
+
+function header(doc: GoogleDoc): string {
+  let output = `# ${doc.title || '(Untitled Document)'}\n\n`;
+  output += `**Document ID:** ${doc.documentId}\n`;
+  if (doc.revisionId) {
+    output += `**Revision:** ${doc.revisionId}\n`;
+  }
+  return output + '\n';
+}
+
+/** A document's (or one tab's) outline and body, under headings at `level`. */
+function renderContent(doc: GoogleDoc, level: string): string {
+  const headings = extractHeadings(doc);
+  const body = extractPlainText(doc);
+  let output = '';
+  if (headings.length > 0) {
+    output += `${level} Outline\n\n${renderHeadings(headings)}\n`;
+  }
+  output += `${level} Body\n\n`;
+  output += body.length > 0 ? body : '(empty document)';
+  return output;
+}
+
+function renderHeadings(headings: HeadingEntry[]): string {
+  let output = '';
+  for (const h of headings) {
+    const indent = h.level === 0 ? '' : '  '.repeat(Math.max(0, h.level - 1));
+    const prefix = h.level === 0 ? `[${h.styleType}]` : `H${h.level}`;
+    output += `${indent}- ${prefix}: ${h.text}\n`;
+  }
+  return output;
+}
+
+function text(output: string) {
+  return { content: [{ type: 'text', text: output }] };
+}
+
+function json(value: unknown) {
+  return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
 }

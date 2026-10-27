@@ -6,14 +6,20 @@ reach. You can run it on its own, with no strad gateway and none of the other
 Google servers: over **stdio** for a local MCP client, or over **Streamable
 HTTP** on a localhost port.
 
-`src/` here is vendored **verbatim** from
+`src/` here is a **patched vendor** of
 [`pulsemcp/mcp-servers`](https://github.com/pulsemcp/mcp-servers/tree/main/experimental/google-docs)
-(`experimental/google-docs/shared`). Do not edit it here: a re-vendor copies
-upstream `src/` over this tree. This README is strad's and is not part of that
-copy. strad's own code for this server lives outside the tree:
+(`experimental/google-docs/shared`): upstream as of `0ed34de`, plus the deltas
+below. strad changes this server here, not upstream first. A re-vendor copies
+upstream `src/` over this tree and then has to re-apply every row, or it
+silently removes them. This README is strad's and is not part of that copy.
+strad's own code for this server lives outside the tree:
 `../../src/docs.ts` is the per-account layer the bundle mounts (the credential
 and the tool-group toggle), and `../../src/standalone/google-docs.ts` is the
 standalone entrypoint, which hands that same layer to the shared runner.
+
+| Delta | Where | Defended by |
+| ----- | ----- | ----------- |
+| Every tab is read, not only the first: `documents.get` is asked for `includeTabsContent=true`, and `get_document` and `get_document_outline` take a `tab_id` (`HACKS.md` #129) | `src/utils/tabs.ts`, `src/types.ts` (`Tab`), `src/google-docs-client/lib/get-document.ts`, `src/server.ts` (`getDocument`'s options), `src/tools/get-document.ts`, `src/tools/get-document-outline.ts`, the tab notes in `src/tools/update-document.ts` and `src/tools/export-document.ts` | `../../test/docs-tabs.test.ts`, `../../test/standalone.test.ts` |
 
 ## Tools
 
@@ -28,6 +34,17 @@ Eleven, in three groups. Each group holds the one before it:
 - `get_document` returns a document's title, heading outline and plain-text
   body, or the raw Docs API resource with `format=json`.
   `get_document_outline` returns the headings alone.
+- Both read **every tab** of a document, nested child tabs included. With
+  more than one tab, `get_document_outline` gives each tab a section with its
+  `tab_id`, and `get_document` returns every tab's outline and body, one
+  section each. Pass `tab_id` to either to read one tab, or hand
+  `get_document` a URL with `?tab=` in it. A single-tab document reads the
+  same as it always has. `export_document` has no per-tab option, because
+  Drive's export has none.
+- In a multi-tab document, `update_document`, `append_text` and `insert_text`
+  edit the first tab unless a request's location carries a `tabId`. Only
+  `update_document` takes raw requests, so it is the one that can target
+  another tab. `replace_text` replaces in every tab.
 - `export_document` exports through Drive: `markdown`, `html` and `txt` come
   back as text, `pdf`, `docx`, `odt`, `rtf` and `epub` as base64.
 - `list_comments` lists comments with their quoted text, replies and resolved

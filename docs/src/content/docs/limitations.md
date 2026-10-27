@@ -4014,3 +4014,31 @@ button. Every add is checked against a fresh read of the basket.
 See `HACKS.md` #128 and `servers/good-eggs/FORK.md` #13.
 
 ---
+
+### 129. google-docs reading every tab is a strad patch on a vendored copy
+
+The google-docs server reads every tab of a document, nested tabs included.
+`get_document` and `get_document_outline` take a `tab_id` to read one, and
+`get_document` reads the tab a `?tab=` link points at. The upstream server it
+is copied from reads only the first tab.
+
+- **strad added it, not upstream.** Re-copying the server from upstream
+  removes it unless the change is applied again, and a test fails if it is
+  not.
+- **`format=json` on a multi-tab document has no top-level `body`.** The
+  content is under `tabs[].documentTab.body`. Pass `tab_id` to get one tab
+  with its `body` at the top level. A single-tab document is unchanged.
+- **Writes go to the first tab** unless an `update_document` request names a
+  `tabId`. `append_text` and `insert_text` take none. `replace_text` replaces
+  in every tab.
+- **`export_document` cannot export one tab.** Drive's export has no option
+  for it, and what it does with a multi-tab document has not been measured.
+- **No tabbed read has reached Google from CI.** The tests fake the Docs API.
+
+**How you would know.** A tool answer that shows one tab of a document that
+has several, or a `tab_id` that comes back "not found" with the tab list
+missing the one you expected.
+
+See `HACKS.md` #129.
+
+---

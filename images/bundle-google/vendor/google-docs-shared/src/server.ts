@@ -11,6 +11,7 @@ import type {
 } from './types.js';
 import type { CreatePermissionOptions } from './google-docs-client/lib/drive-permissions.js';
 import type { ListCommentsOptions } from './google-docs-client/lib/drive-comments.js';
+import type { GetDocumentOptions } from './google-docs-client/lib/get-document.js';
 
 /**
  * OAuth scopes required by this server.
@@ -38,7 +39,7 @@ export const GOOGLE_DOCS_SCOPES = [
  * Both auth modes (OAuth2 and service account) implement this same surface.
  */
 export interface IGoogleDocsClient {
-  getDocument(documentId: string): Promise<GoogleDoc>;
+  getDocument(documentId: string, options?: GetDocumentOptions): Promise<GoogleDoc>;
   batchUpdate(
     documentId: string,
     requests: DocsBatchUpdateRequest[]
@@ -112,10 +113,10 @@ abstract class BaseGoogleDocsClient implements IGoogleDocsClient {
     };
   }
 
-  async getDocument(documentId: string): Promise<GoogleDoc> {
+  async getDocument(documentId: string, options?: GetDocumentOptions): Promise<GoogleDoc> {
     const headers = await this.getHeaders();
     const { getDocument } = await import('./google-docs-client/lib/get-document.js');
-    return getDocument(headers, documentId);
+    return getDocument(headers, documentId, options);
   }
 
   async batchUpdate(

@@ -39,6 +39,12 @@ tables, deletions, paragraph formatting, etc.
 **Tip:** Call get_document with format="json" first if you need exact
 startIndex / endIndex values to target specific ranges.
 
+**Tabs:** In a document with several tabs, a request edits the FIRST tab
+unless its location or range carries a "tabId" (e.g.
+{ "location": { "index": 1, "tabId": "t.abc123" } }). get_document_outline
+lists the tab ids; get_document with tab_id and format="json" gives that tab's
+indices. replaceAllText applies to every tab unless its tabsCriteria narrows it.
+
 **Returns:**
 The Docs API batchUpdate response (replies array + documentId), serialized as JSON.`;
 
