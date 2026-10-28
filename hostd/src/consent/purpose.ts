@@ -4,7 +4,7 @@
  * It is untrusted text headed for a UI, so it is normalised before anything else
  * sees it: control characters out, whitespace collapsed, length capped. Two
  * sentences is the owner's rule — a purpose is a reason, not a briefing, and a
- * dialog that has to be read in five seconds cannot carry a paragraph.
+ * dialog that has to be read in a few seconds cannot carry a paragraph.
  *
  * A purpose that breaks the rule is REFUSED, not trimmed. A silently truncated
  * purpose is a dialog that shows the harmless first half of a sentence.

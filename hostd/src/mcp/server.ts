@@ -133,7 +133,7 @@ Idempotent: ending a grant that is already gone returns {"ended":false}.`,
       name: "get_control_status",
       description: `Report whether this server is usable right now, without asking for anything and without showing a dialog.
 
-**Returns:** {"machine":"…","server":"${name}","enabled":true,"consent":{"mode":"modal","window_seconds":5,"on_timeout":"deny"},"grant":{"active":true,"expires_at":"…","calls":4}}
+**Returns:** {"machine":"…","server":"${name}","enabled":true,"consent":{"mode":"modal","window_seconds":10,"on_timeout":"deny"},"grant":{"active":true,"expires_at":"…","calls":4}}
 "enabled": false means the owner has switched remote control off. "grant" appears only when you pass a grant_id. A server that depends on the native helper adds "helper": {"running":true,"accessibility":true,"screen_recording":false}.
 
 **Use cases:**
@@ -191,7 +191,7 @@ Idempotent: ending a grant that is already gone returns {"ended":false}.`,
       if (tool === "request_control") {
         // A server that cannot work gets no dialog: the helper is down, or a
         // TCC grant is missing, and neither is something the person at the
-        // screen can fix in five seconds. The switch is asked first, so a
+        // screen can fix in ten seconds. The switch is asked first, so a
         // machine its owner turned off says so rather than "helper down".
         const blocked = killSwitch.isDisabled()
           ? undefined

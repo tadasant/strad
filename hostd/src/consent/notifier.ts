@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 /**
  * A notification on the machine when a grant starts and when it ends.
  *
- * The consent dialog is gone in five seconds, and under `onTimeout: "allow"` it
+ * The consent dialog is gone in seconds, and under `onTimeout: "allow"` it
  * can come and go with nobody looking. A notification stays in the OS's
  * notification list, so "something took control of this machine while I was
  * away" is a thing its owner finds out from the machine, not from a log.

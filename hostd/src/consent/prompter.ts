@@ -74,12 +74,12 @@ function run(
  * the focused button answers Space — so a dialog that takes focus while the
  * owner is typing in another app gets decided by the next keystroke. Here every
  * button has its key equivalent cleared and refuses first responder, so Return,
- * Escape, Space and Tab do nothing, and the window has no initial first
- * responder to fall back to. Typing into it is swallowed, not answered.
+ * Escape, Space and Tab do nothing, the window has no default button cell for
+ * Return to reach, and no initial first responder to fall back to. Typing into it is swallowed, not answered.
  *
  * The countdown is `abortModal` scheduled on the run loop, the stock NSAlert
  * timeout: `runModal` then returns an abort code and the script prints
- * `timeout`, so an unanswered dialog reaches `onTimeout` exactly as before.
+ * `timeout`, so an unanswered dialog reaches `onTimeout` like any other.
  * Text arrives as `argv`, never as source.
  */
 export const JXA_DIALOG = `ObjC.import("Cocoa");
@@ -95,6 +95,7 @@ function run(argv) {
     buttons[i].refusesFirstResponder = true;
   }
   alert.layout;
+  alert.window.defaultButtonCell = null;
   alert.window.initialFirstResponder = null;
   alert.window.level = 3; // NSFloatingWindowLevel
   app.activateIgnoringOtherApps(true);
@@ -117,7 +118,7 @@ export const APPLESCRIPT_DIALOG = `on run argv
   return button returned of r
 end run`;
 
-/** Said under the request on macOS, where Return no longer does anything. */
+/** Said under the request in the JXA dialog, the one no key answers. */
 export const MOUSE_ONLY_NOTE =
   "Click Allow or Reject. The keyboard cannot answer this dialog.";
 
@@ -142,24 +143,31 @@ export class MacDialogPrompter implements Prompter {
   constructor(private readonly runner: DialogRunner = run) {}
 
   async prompt(req: PromptRequest): Promise<PromptAnswer> {
-    const text = `${dialogText(req)}\n\n${MOUSE_ONLY_NOTE}`;
-    const argv = [text, "strad-hostd", String(req.seconds)];
+    const tail = ["strad-hostd", String(req.seconds)];
     const jxa = await this.runner(
       "/usr/bin/osascript",
-      ["-l", "JavaScript", "-e", JXA_DIALOG, ...argv],
+      [
+        "-l",
+        "JavaScript",
+        "-e",
+        JXA_DIALOG,
+        `${dialogText(req)}\n\n${MOUSE_ONLY_NOTE}`,
+        ...tail,
+      ],
       req,
     );
     if (jxa.spawnFailed) return "unavailable";
     const first = parseMac(jxa.stdout);
     if (first) return first;
     if (req.signal?.aborted) return "unavailable";
-    // A JXA run that printed nothing and exited 0 showed a dialog nobody
-    // answered; only a failed one earns a second dialog.
-    if (jxa.code === 0) return "timeout";
+    // Only a run that FAILED earns a second dialog. One that exited 0 showed a
+    // dialog nobody answered; one killed by the backstop (`code: null`) hung
+    // with a dialog up, and a second would double the stall.
+    if (jxa.code === 0 || jxa.code === null) return "timeout";
 
     const as = await this.runner(
       "/usr/bin/osascript",
-      ["-e", APPLESCRIPT_DIALOG, ...argv],
+      ["-e", APPLESCRIPT_DIALOG, dialogText(req), ...tail],
       req,
     );
     if (as.spawnFailed) return "unavailable";

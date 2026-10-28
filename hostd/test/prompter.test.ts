@@ -64,6 +64,7 @@ describe("the macOS consent dialog", () => {
     expect(JXA_DIALOG).toContain('keyEquivalent = ""');
     expect(JXA_DIALOG).toContain("refusesFirstResponder = true");
     expect(JXA_DIALOG).toContain("initialFirstResponder = null");
+    expect(JXA_DIALOG).toContain("defaultButtonCell = null");
     // The countdown still ends the dialog, as an abort the script reads as timeout.
     expect(JXA_DIALOG).toContain('"abortModal"');
     // It is JavaScript osascript can parse; `$` and `ObjC` are its globals.
@@ -83,6 +84,13 @@ describe("the macOS consent dialog", () => {
     expect(await new MacDialogPrompter(runner).prompt(REQ)).toBe("rejected");
     expect(calls).toHaveLength(2);
     expect(calls[1]!.slice(0, 2)).toEqual(["-e", APPLESCRIPT_DIALOG]);
+    // Space can still answer that one, so it does not claim the keyboard cannot.
+    expect(calls[1]![2]).not.toContain(MOUSE_ONLY_NOTE);
+  });
+
+  it("reads a fallback that exited 0 having answered nothing as the countdown", async () => {
+    const { runner } = scripted(out("", 1), out("", 0));
+    expect(await new MacDialogPrompter(runner).prompt(REQ)).toBe("timeout");
   });
 
   it("is unavailable when neither dialog could be shown", async () => {
@@ -105,6 +113,11 @@ describe("the macOS consent dialog", () => {
     const b = scripted(out("", 0));
     expect(await new MacDialogPrompter(b.runner).prompt(REQ)).toBe("timeout");
     expect(b.calls).toHaveLength(1);
+
+    // Killed by the backstop with a dialog up: a second would double the stall.
+    const c = scripted(out("", null));
+    expect(await new MacDialogPrompter(c.runner).prompt(REQ)).toBe("timeout");
+    expect(c.calls).toHaveLength(1);
   });
 
   it("is unavailable when osascript itself will not start", async () => {
