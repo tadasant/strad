@@ -25,8 +25,9 @@ const TOOL_DESCRIPTION = `List draft emails from Gmail.
 - Discover existing drafts before creating a new one
 - Find a draft ID to pass to upsert_draft_email for updating
 - Check which drafts exist for a specific email conversation
+- Find a stale or duplicate draft to remove with delete_draft_email
 
-**Note:** Use the returned draft IDs with upsert_draft_email to update drafts, or with send_email's from_draft_id to send them.`;
+**Note:** Use the returned draft IDs with upsert_draft_email to update drafts, with delete_draft_email to delete them, or with send_email's from_draft_id to send them.`;
 
 export function listDraftEmailsTool(server: Server, clientFactory: ClientFactory) {
   return {
@@ -114,7 +115,7 @@ export function listDraftEmailsTool(server: Server, clientFactory: ClientFactory
         }
 
         responseText +=
-          '\n---\n\nUse upsert_draft_email with a draft_id to update a draft, or send_email with from_draft_id to send one.';
+          '\n---\n\nUse upsert_draft_email with a draft_id to update a draft, delete_draft_email to delete one, or send_email with from_draft_id to send one.';
 
         return {
           content: [

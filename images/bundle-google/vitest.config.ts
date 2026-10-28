@@ -25,7 +25,8 @@ import { defineConfig } from "vitest/config";
 //     trees, `src/confirm.ts`, and the `src/standalone/` entrypoints), plus the
 //     gmail fork's deltas (`test/gmail-attachments.test.ts`,
 //     `test/gmail-from-name.test.ts`, `test/gmail-body-text.test.ts`,
-//     `test/gmail-sender-verification.test.ts`), and the calendar copy's
+//     `test/gmail-sender-verification.test.ts`,
+//     `test/gmail-delete-draft.test.ts`), and the calendar copy's
 //     one delta (`test/calendar-auth-mode.test.ts`), and the docs copy's one
 //     delta (`test/docs-tabs.test.ts`).
 //

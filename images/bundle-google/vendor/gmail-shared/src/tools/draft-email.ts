@@ -12,12 +12,10 @@ import {
 
 const PARAM_DESCRIPTIONS = {
   draft_id:
-    'ID of an existing draft to update or delete. If provided, the draft is replaced in-place ' +
-    'with the new content (or deleted if delete is true). If omitted, a new draft is created. ' +
-    'Get draft IDs from list_draft_emails or from a previous upsert_draft_email response.',
-  delete:
-    'Set to true to delete the draft specified by draft_id. ' +
-    'Requires draft_id. All other parameters are ignored when deleting.',
+    'ID of an existing draft to update. If provided, the draft is replaced in-place ' +
+    'with the new content. If omitted, a new draft is created. ' +
+    'Get draft IDs from list_draft_emails or from a previous upsert_draft_email response. ' +
+    'To delete a draft, use delete_draft_email.',
   to: 'Recipient email address(es). For multiple recipients, separate with commas.',
   subject: 'Subject line of the email.',
   plaintext_body:
@@ -38,7 +36,6 @@ const PARAM_DESCRIPTIONS = {
 export const UpsertDraftEmailSchema = z
   .object({
     draft_id: z.string().optional().describe(PARAM_DESCRIPTIONS.draft_id),
-    delete: z.boolean().optional().describe(PARAM_DESCRIPTIONS.delete),
     to: z.string().min(1).optional().describe(PARAM_DESCRIPTIONS.to),
     subject: z.string().min(1).optional().describe(PARAM_DESCRIPTIONS.subject),
     plaintext_body: z.string().min(1).optional().describe(PARAM_DESCRIPTIONS.plaintext_body),
@@ -50,15 +47,6 @@ export const UpsertDraftEmailSchema = z
     attachments: AttachmentsSchema,
   })
   .superRefine((data, ctx) => {
-    if (data.delete) {
-      if (!data.draft_id) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'draft_id is required when delete is true.',
-        });
-      }
-      return;
-    }
     if (!data.to || !data.subject || (!data.plaintext_body && !data.html_body)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -67,15 +55,14 @@ export const UpsertDraftEmailSchema = z
     }
   });
 
-const TOOL_DESCRIPTION = `Create, update, or delete a draft email.
+const TOOL_DESCRIPTION = `Create or update a draft email.
 
 **Parameters:**
-- draft_id: ID of an existing draft to update or delete (optional — omit to create a new draft)
-- delete: Set to true to delete the draft specified by draft_id (optional)
-- to: Recipient email address(es) (required for create/update)
-- subject: Email subject line (required for create/update)
-- plaintext_body: Plain text body content (at least one of plaintext_body or html_body required for create/update)
-- html_body: HTML body content for rich text formatting (at least one of plaintext_body or html_body required for create/update)
+- draft_id: ID of an existing draft to update (optional — omit to create a new draft)
+- to: Recipient email address(es) (required)
+- subject: Email subject line (required)
+- plaintext_body: Plain text body content (at least one of plaintext_body or html_body required)
+- html_body: HTML body content for rich text formatting (at least one of plaintext_body or html_body required)
 - cc: CC recipients (optional)
 - bcc: BCC recipients (optional)
 - thread_id: Thread ID to reply to an existing conversation (optional)
@@ -83,7 +70,7 @@ const TOOL_DESCRIPTION = `Create, update, or delete a draft email.
 - attachments: Files to attach, each given as an HTTPS \`url\` or as \`content_base64\` + \`filename\` (optional)
 
 **Body content:**
-At least one of plaintext_body or html_body must be provided for create/update. If both are provided, a multipart email is sent with both plain text and HTML versions; if only plaintext_body is, an HTML rendering of it is sent beside it.
+At least one of plaintext_body or html_body must be provided. If both are provided, a multipart email is sent with both plain text and HTML versions; if only plaintext_body is, an HTML rendering of it is sent beside it.
 
 **Links:** when the email links to anything, put the link in html_body as an \`<a href>\` anchor with descriptive text — \`<a href="https://…">this session</a>\`, not the raw URL pasted on its own line — and send a matching plaintext_body with the same words, each URL after its anchor text (\`this session: https://…\`). Use html_body the same way for bold text or lists.
 
@@ -101,14 +88,13 @@ To create a draft reply to an existing email:
 To update an existing draft, provide the draft_id from a previous upsert_draft_email response or from list_draft_emails. The draft is replaced in-place — all fields must be provided (not just the ones you want to change).
 
 **Deleting a draft:**
-To delete a draft, provide the draft_id and set delete to true. All other parameters are ignored when deleting.
+Use delete_draft_email with the draft_id. Do not leave a superseded draft behind: update it in place, or delete the old one once its replacement exists.
 
 **Use cases:**
 - Draft a new email for later review
 - Prepare a reply to an email conversation
 - Revise a draft after user feedback (without creating duplicates)
 - Save an email without sending it immediately
-- Delete a corrupted or unwanted draft
 
 **Note:** The draft will be saved in Gmail's Drafts folder. Use send_email with from_draft_id to send it.`;
 
@@ -122,10 +108,6 @@ export function upsertDraftEmailTool(server: Server, clientFactory: ClientFactor
         draft_id: {
           type: 'string',
           description: PARAM_DESCRIPTIONS.draft_id,
-        },
-        delete: {
-          type: 'boolean',
-          description: PARAM_DESCRIPTIONS.delete,
         },
         to: {
           type: 'string',
@@ -165,21 +147,15 @@ export function upsertDraftEmailTool(server: Server, clientFactory: ClientFactor
     },
     handler: async (args: unknown) => {
       try {
+        // Zod strips an unknown key, so a caller still sending upstream's
+        // `delete: true` with a full draft would get an update instead.
+        if (args && typeof args === 'object' && 'delete' in args) {
+          throw new Error(
+            'upsert_draft_email does not delete drafts. Use delete_draft_email with the draft_id.'
+          );
+        }
         const parsed = UpsertDraftEmailSchema.parse(args ?? {});
         const client = clientFactory();
-
-        // Delete mode
-        if (parsed.delete) {
-          await client.deleteDraft(parsed.draft_id!);
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Draft deleted successfully!\n\n**Draft ID:** ${parsed.draft_id}`,
-              },
-            ],
-          };
-        }
 
         const attachments = await resolveAttachments(parsed.attachments);
 
@@ -261,11 +237,7 @@ export function upsertDraftEmailTool(server: Server, clientFactory: ClientFactor
         };
       } catch (error) {
         const typedArgs = args as Record<string, unknown>;
-        const errorAction = typedArgs?.delete
-          ? 'deleting'
-          : typedArgs?.draft_id
-            ? 'updating'
-            : 'creating';
+        const errorAction = typedArgs?.draft_id ? 'updating' : 'creating';
         return {
           content: [
             {

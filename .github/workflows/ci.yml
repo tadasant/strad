@@ -486,7 +486,7 @@ jobs:
   #
   # The smoke test is the honest half. It lists tools from every mount of the
   # RUNNING container and asserts the full-capability counts (slack 13, tailscale
-  # 15, monarch 24, gmail 8, docs 11, calendar 7, 1Password 9, secrets 4, …).
+  # 15, monarch 24, gmail 9, docs 11, calendar 7, 1Password 9, secrets 4, …).
   # Those are the numbers the gateway's read-only allow-lists are carved out of, so
   # if an upstream grows a tool, this is where we find out — not in production. For
   # secrets the count is a security assertion: a FIFTH tool on a server whose
@@ -763,7 +763,7 @@ jobs:
             // 2. It serves the full surface. A strad `-ro` slug is this same
             //    mount with tools withheld by the GATEWAY, not by the container.
             const tools = dump.mounts[`/${slug}`]?.tools ?? [];
-            if (tools.length !== 8) throw new Error(`per-slug gmail listed ${tools.length} tools, expected 8: ${tools.join(", ")}`);
+            if (tools.length !== 9) throw new Error(`per-slug gmail listed ${tools.length} tools, expected 9: ${tools.join(", ")}`);
 
             // 3. THE TRAP. It is degraded, and degraded on its TOKEN — not
             //    quietly serving the service-account mailbox sitting beside it.
@@ -773,11 +773,11 @@ jobs:
             for (const leaked of ["GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL", "GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY", "GMAIL_IMPERSONATE_EMAIL"])
               if (degraded.includes(leaked)) throw new Error(`per-slug gmail is reporting ${leaked}, which belongs to the conventional mount`);
 
-            // 4. And the conventional mount is untouched: same 8 tools, and NOT
+            // 4. And the conventional mount is untouched: same 9 tools, and NOT
             //    degraded, because its service-account credential is right there.
             if (bySlug.gmail?.degraded) throw new Error(`the conventional /gmail mount went degraded: ${bySlug.gmail.degraded}`);
             const conventional = dump.mounts["/gmail"]?.tools ?? [];
-            if (conventional.length !== 8) throw new Error(`/gmail listed ${conventional.length} tools, expected 8`);
+            if (conventional.length !== 9) throw new Error(`/gmail listed ${conventional.length} tools, expected 9`);
 
             console.log(`/${slug}: ${tools.length} tools, degraded on "${degraded}"; /gmail: ${conventional.length} tools, not degraded`);
 
