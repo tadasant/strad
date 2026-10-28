@@ -17,7 +17,7 @@ const BASE = process.env.SMOKE_BASE_URL ?? process.argv[2] ?? "http://127.0.0.1:
 // Default (all tool groups) tool counts for each vendored server. A mismatch
 // means a server failed to register its full toolset.
 const EXPECTED = {
-  "/gmail": 8,
+  "/gmail": 9,
   "/google-calendar": 7,
   "/google-docs": 11,
   // Four read tools, six write tools and share_spreadsheet. A strad `-ro` slug

@@ -301,7 +301,7 @@ describe("staging config", () => {
 
   it.each([
     // These tiers ARE the full tool set, so they carry no policy at all. Their
-    // counts (gmail 8, docs 11, calendar 7, 1Password 9, slack 13, tailscale 15,
+    // counts (gmail 9, docs 11, calendar 7, 1Password 9, slack 13, tailscale 15,
     // monarch 24) are asserted against the running image by the bundle's smoke test.
     "slack",
     "tailscale-readwrite",
