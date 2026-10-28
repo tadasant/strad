@@ -249,3 +249,49 @@ lower one that passes, a Subject carrying a forged section, a value carrying
 newlines, a fence, bidi, C1, zero-width and astral format characters, a
 forged `Authentication-Results` with none of Google's above it, the `absent`
 list, and upstream's lines unchanged.
+
+---
+
+## 5. Deleting a draft is its own tool, `delete_draft_email`
+
+**Upstream.** A draft is deleted through `upsert_draft_email` with
+`delete: true` and a `draft_id`. Nothing in the tool's name says it can
+delete, so agents did not find it and asked a person to discard a stale
+draft by hand. A tool policy also could not allow drafting without allowing
+deletion, since both are one tool. And the `draft_id` went into the request
+path as given: `fetch` resolves `..`, so `drafts/../messages/<id>` would have
+been a `DELETE` on a message (Gmail refuses that to a `gmail.modify`
+credential, which is the only thing that stopped it).
+
+**Here.**
+
+- `delete_draft_email` takes a required `draft_id`. It reads the draft first
+  (`GET users/me/drafts/<id>`), and a 404 there, which is what a message ID, a
+  thread ID or an already-deleted draft gets, is refused with nothing changed.
+  Then it sends `DELETE users/me/drafts/<id>`, Gmail's `users.drafts.delete`,
+  and answers with the draft's ID, thread, `To` and `Subject`.
+- It deletes the draft and nothing else: no message, no thread, no trash.
+  Gmail deletes a draft permanently; it does not go to Trash.
+- It is in the `readwrite` and `readwrite_external` groups, beside
+  `upsert_draft_email`. `drafts.delete` is authorized by `gmail.modify` or
+  `gmail.compose`, which every writing credential already holds, so it needs
+  no new scope. It asks no human, the same as `upsert_draft_email`, which can
+  already overwrite a draft's whole content.
+- `upsert_draft_email` no longer takes `delete`. It creates and updates, and
+  its description points at `delete_draft_email`.
+- Every draft call (`getDraft`, `updateDraft`, `deleteDraft`) refuses an ID
+  outside `[A-Za-z0-9_-]` (`DRAFT_ID_PATTERN`) before it builds a URL.
+
+What it costs is `HACKS.md` #130.
+
+**Files.** `src/tools/delete-draft-email.ts` (new), `src/tools.ts`,
+`src/tools/draft-email.ts`, `src/tools/list-draft-emails.ts`,
+`src/gmail-client/lib/drafts.ts`.
+
+**Tests.** `images/bundle-google/test/gmail-delete-draft.test.ts`: the read
+before the delete, the refusal of a non-draft ID with no delete sent, the
+traversal guard at every draft call, the exact requests (a `GET` and a
+`DELETE` on `/drafts/<id>`), and `upsert_draft_email` without `delete`. The
+tool lists in `images/bundle-google/test/gmail.test.ts` and
+`images/bundle-google/test/standalone.test.ts` hold the groups. It has run
+against stubs only. No draft was deleted to test it.

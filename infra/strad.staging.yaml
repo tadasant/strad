@@ -996,6 +996,7 @@ servers:
         - list_draft_emails
         - change_email_conversation
         - upsert_draft_email
+        - delete_draft_email
 
   # readwrite_external: the tier that may act on people OUTSIDE the org (send
   # mail to, share docs with). It is the only tier that gets `send_email`.

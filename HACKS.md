@@ -6641,3 +6641,28 @@ flag, every tab with it.
 then a re-vendor has to re-apply the row in the tree's README, and
 `images/bundle-google/test/docs-tabs.test.ts` and the tab tests in
 `images/bundle-google/test/standalone.test.ts` fail if it does not.
+
+## 130. gmail's `delete_draft_email` deletes permanently, and asks nobody
+
+**What.** `delete_draft_email` (`images/bundle-google/vendor/gmail-shared`,
+`FORK.md` delta 5) sends Gmail's `users.drafts.delete`, which removes the
+draft for good: it is not moved to Trash and cannot be restored. The tool is
+on the `-rw` and `-rw-external` tiers and is not a confirmed tool, so an agent
+on either tier can delete any draft in the mailbox, including one a person
+wrote and meant to keep, and no human is asked.
+
+**Why.** It is a draft mutation, not a send. `upsert_draft_email`, on the same
+tiers and also unconfirmed, can already replace a draft's whole content, which
+loses it just as surely. Asking a human for every discard would put a prompt
+in front of the clean-up the tool exists for: an agent removing a draft it
+superseded so nobody sends the wrong one.
+
+**What bounds it.** One draft per call, by ID. The draft is read first and a
+non-draft ID is refused, so no message or thread is touched, and every draft
+call refuses an ID that is not draft-shaped before it builds a URL. The answer
+names the draft's recipient and subject.
+
+**Undo.** Add `delete_draft_email` to `CONFIRMED_TOOLS` in
+`images/bundle-google/src/confirm.ts` and make the tool call
+`requestConfirmation()`, if a deleted draft someone wanted ever turns up.
+Withhold the tool from a slug with its `tools: allow` list in the meantime.

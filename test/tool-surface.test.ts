@@ -32,6 +32,7 @@ const GMAIL_TOOLS = [
   "list_draft_emails",
   "change_email_conversation",
   "upsert_draft_email",
+  "delete_draft_email",
   "send_email",
 ];
 

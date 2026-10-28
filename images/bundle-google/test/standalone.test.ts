@@ -26,7 +26,12 @@ const GMAIL_READ_TOOLS = [
   "list_email_conversations",
   "search_email_conversations",
 ];
-const GMAIL_TOOLS = [...GMAIL_READ_TOOLS, "change_email_conversation", "upsert_draft_email"].sort();
+const GMAIL_TOOLS = [
+  ...GMAIL_READ_TOOLS,
+  "change_email_conversation",
+  "delete_draft_email",
+  "upsert_draft_email",
+].sort();
 const DOCS_READ_TOOLS = ["export_document", "get_document", "get_document_outline", "list_comments"];
 const DOCS_WRITE_TOOLS = [
   "append_text",
@@ -570,7 +575,7 @@ describe("gmail standalone", () => {
     return { code: code as number | null, stderr };
   }
 
-  it("serves the seven read and draft tools over stdio with no credentials set, and no send_email", async () => {
+  it("serves the eight read and draft tools over stdio with no credentials set, and no send_email", async () => {
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: [GMAIL],
@@ -592,7 +597,7 @@ describe("gmail standalone", () => {
     }
   });
 
-  it("serves the same seven over Streamable HTTP on the port it is given", async () => {
+  it("serves the same eight over Streamable HTTP on the port it is given", async () => {
     const { url } = await startHttp([], cleanEnv(), GMAIL);
     expect(url.hostname).toBe("127.0.0.1");
     const client = new Client({ name: "standalone-test", version: "0.0.0" });

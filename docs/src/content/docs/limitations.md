@@ -4042,3 +4042,26 @@ missing the one you expected.
 See `HACKS.md` #129.
 
 ---
+
+### 130. gmail's `delete_draft_email` deletes permanently, and asks nobody
+
+`delete_draft_email` removes one draft, by ID, and Gmail does not keep it in
+Trash. It is on the `-rw` and `-rw-external` tiers, and like
+`upsert_draft_email` it asks no human. An agent on either tier can delete a
+draft a person wrote.
+
+- **It deletes drafts only.** It reads the draft first and refuses an ID
+  that is not one, so a message or a thread is never touched.
+- **`upsert_draft_email` no longer deletes.** It creates and updates. A slug
+  can allow drafting and withhold deletion by leaving `delete_draft_email`
+  off its `tools: allow` list.
+- **The gmail tree is a fork.** Re-vendoring it from upstream would remove the
+  tool. `images/bundle-google/vendor/gmail-shared/FORK.md` lists the delta.
+
+**How you would know.** A draft is missing from Gmail's Drafts folder and not
+in Sent. The calling agent's transcript has the `delete_draft_email` answer,
+which names the draft's recipient and subject.
+
+See `HACKS.md` #130.
+
+---
