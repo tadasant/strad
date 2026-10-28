@@ -89,14 +89,17 @@ No config file is needed. Then, from the client:
 
 ### `--no-consent`
 
-Without the flag, `request_control` puts a dialog on the screen and waits five
+Without the flag, `request_control` puts a dialog on the screen and waits ten
 seconds, and an unanswered dialog is a denial. That is the right default for a
 server reached over a network. Run locally, the person who started the process is
 at the keyboard and their MCP client already asks about each tool call, so the
 flag drops the second dialog. The `serve` command refuses to run without the
 dialog; the flag exists for stdio only.
 
-The dialog uses `osascript` on macOS and `zenity` on Linux. With neither, every
+The dialog uses `osascript` on macOS and `zenity` on Linux. On macOS only a
+mouse click answers it: Return, Escape, Space and Tab do nothing, so typing
+that lands on it is swallowed rather than taken as a decision. `zenity` keeps
+its own keys (Return rejects). With neither, every
 request is denied as `no_display`, so use `--no-consent` there.
 
 ### The browser server
@@ -266,7 +269,7 @@ matter:
 | Field                                                      | Default             |                                                                    |
 | ---------------------------------------------------------- | ------------------- | ------------------------------------------------------------------ |
 | `consent.onTimeout`                                        | `"deny"`            | what an unanswered dialog means. `"allow"` makes it a veto window  |
-| `consent.windowSeconds`                                    | `5`                 | how long the dialog stays up (3 is the minimum)                    |
+| `consent.windowSeconds`                                    | `10`                | how long the dialog stays up (3 is the minimum)                    |
 | `capabilities.<server>.clientKeys`                         | `{}`                | named extra keys for that server; `strad-hostd key add` writes it  |
 | `consent.grantMinutes` / `maxGrantMinutes` / `idleMinutes` | `30` / `120` / `10` | grant lifetime                                                     |
 | `shell.defaultCwd`                                         | `$HOME`             |                                                                    |
@@ -301,7 +304,7 @@ Linux. The Swift helper itself is built and smoke-tested over stdio on a
 GitHub macOS runner (`.github/workflows/hostd-ax.yml`), which holds no
 permission grants: reading a real tree, a real screenshot and the banner under
 a real grant run only on a Mac whose owner has granted them. The other macOS
-halves (the `osascript` dialog, the LaunchAgents, the installer's `cloudflared`
+halves (the `osascript` dialog and its mouse-only buttons, the LaunchAgents, the installer's `cloudflared`
 branch, the signing script) are not exercised by any suite.
 
 The Messages server is tested against `test/fake-messages.ts`, which runs the

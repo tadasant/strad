@@ -113,7 +113,7 @@ strad-hostd helper
 The second line reports what the helper holds. Until Accessibility is granted,
 `request_control` on either computer-use server refuses with
 `helper_unavailable` and shows no dialog: nothing the person at the screen can
-click in five seconds would fix it.
+click in ten seconds would fix it.
 
 macOS 15 asks again, roughly monthly, whether the helper may keep recording the
 screen. Every capture that does not go through the system's own picker gets
@@ -237,7 +237,9 @@ Keep these slugs `admin`-only unless you have read
 Every server starts the same way:
 
 1. `request_control` with a `purpose` of at most two sentences. A dialog appears
-   on the machine and the call blocks for up to five seconds.
+   on the machine and the call blocks for up to ten seconds. Only a mouse
+   click on **Allow** or **Reject** answers it: no key does, so someone typing
+   in another app when it appears cannot decide it by accident.
 2. Pass the returned `grant_id` to every other tool.
 3. `end_control` when done.
 

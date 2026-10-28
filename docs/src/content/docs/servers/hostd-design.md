@@ -149,14 +149,36 @@ requests a grant on one connection and uses it on another for that reason.
 Remote control requested by shell-tadas-mbp MCP server for purpose: Find the Q3
 invoice PDFs in ~/Documents and report their file names.
 
-Denied automatically in 5 seconds unless you allow it.
+Denied automatically in 10 seconds unless you allow it.
+
+Click Allow or Reject. The keyboard cannot answer this dialog.
 ```
 
-Buttons are **Reject** (the default, so a reflexive Return refuses) and **Allow**.
-On macOS it is `osascript`'s own `display dialog … giving up after 5`, which needs
-no TCC grant and no helper app. The purpose travels as an argument to a constant
-script. It is never interpolated into AppleScript source, so a purpose cannot
-close a string and start a `do shell script`.
+Buttons are **Reject** and **Allow**, and only a mouse click on one of them
+answers the dialog. It takes focus when it appears, and the owner may be typing
+in another app at that moment, so a key that answered it would decide requests
+nobody meant to decide. No key decides it, in either direction. Typing that
+lands on it is swallowed.
+
+On macOS it is an `NSAlert` built from JavaScript for Automation
+(`osascript -l JavaScript`), which needs no TCC grant and no helper app. Each
+button has its key equivalent cleared and refuses first responder, so Return,
+Escape, Space (under Full Keyboard Access) and Tab do nothing. The countdown is
+`abortModal` scheduled on the run loop, and an aborted dialog is a `timeout`
+that goes to `onTimeout` like any other. `display dialog` cannot be made to
+ignore the keyboard, so it is only the fallback for an `osascript` whose Cocoa
+bridge will not load, and even then it has no default button and no button
+named Cancel, so Return and Escape do nothing there either. The purpose travels
+as an argument to a constant script. It is never interpolated into script
+source, so a purpose cannot close a string and start a `do shell script`.
+
+None of this has run on a Mac. Whether no key answers the `NSAlert`, and
+whether a first click on a button presses it rather than only bringing the
+window forward (macOS 14 can decline `activateIgnoringOtherApps`), are
+reasoned from AppKit, not observed.
+
+On Linux it is `zenity`, whose keys cannot be switched off: Return there
+rejects.
 
 The purpose is untrusted text headed for a screen. `src/consent/purpose.ts`
 strips control characters and bidi overrides (a right-to-left override can make a
@@ -171,7 +193,7 @@ saw the request, so nobody agreed to it, and what is being granted is a shell on
 a personal machine.
 
 This is stricter than the words of the request, which describe a veto window:
-stall five seconds, give the person at the laptop the chance to reject, then
+stall a few seconds, give the person at the laptop the chance to reject, then
 proceed. That reading is what unattended use from a phone needs. Both are
 supported and the choice belongs to the owner: `onTimeout: "allow"` in
 `~/.strad-hostd/config.json`, a file only they can write. The dialog says which
@@ -461,7 +483,7 @@ Accessibility tree and capturing the screen run on a serial queue of their own,
 so a stuck app cannot freeze the Kill button. `hello` reports the two grants, and the
 daemon asks it **before** showing a consent dialog: a server that cannot work
 gets `helper_unavailable` and no dialog, because nothing the person at the
-screen can click in five seconds would fix a missing grant.
+screen can click in ten seconds would fix a missing grant.
 
 ### computer-use headless — built
 
@@ -619,7 +641,7 @@ machine. The daemon adds:
 any prompt injection that lands in one: a web page, an email, an issue body. For
 the first `local-tunnel` slug the worst case was a damaged flashcard deck. Here it
 is a shell on a personal laptop, or a browser signed in to a bank. The dialog is
-the last line and it is a five-second one. Under `onTimeout: "allow"` with nobody
+the last line and it is a ten-second one. Under `onTimeout: "allow"` with nobody
 at the screen, it is no line.
 
 Recommended tiering:

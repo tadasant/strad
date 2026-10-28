@@ -74,12 +74,17 @@ describe("what the machine is told", () => {
   it("passes caller text to osascript as ARGV, never inside the script source", () => {
     // A purpose is caller-authored. Interpolated into AppleScript it could close
     // the string and reach `do shell script`; as argv it is only ever data.
-    for (const file of ["src/consent/notifier.ts", "src/consent/prompter.ts"]) {
+    const scripts: [string, string, string][] = [
+      ["src/consent/notifier.ts", "APPLESCRIPT", "item 1 of argv"],
+      ["src/consent/prompter.ts", "APPLESCRIPT_DIALOG", "item 1 of argv"],
+      ["src/consent/prompter.ts", "JXA_DIALOG", "argv[0]"],
+    ];
+    for (const [file, name, reads] of scripts) {
       const src = readFileSync(file, "utf8");
-      const script = /const APPLESCRIPT = `([^`]*)`/.exec(src)?.[1];
-      expect(script, file).toBeDefined();
-      expect(script, file).not.toContain("${");
-      expect(script, file).toContain("item 1 of argv");
+      const script = new RegExp(`const ${name} = \`([^\`]*)\``).exec(src)?.[1];
+      expect(script, name).toBeDefined();
+      expect(script, name).not.toContain("${");
+      expect(script, name).toContain(reads);
     }
   });
 });
