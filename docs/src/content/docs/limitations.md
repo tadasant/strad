@@ -4052,7 +4052,7 @@ draft a person wrote.
 
 - **It deletes drafts only.** It reads the draft first and refuses an ID
   that is not one, so a message or a thread is never touched.
-- **`upsert_draft_email` no longer deletes.** It creates and updates. A slug
+- **`upsert_draft_email` does not delete.** It creates and updates. A slug
   can allow drafting and withhold deletion by leaving `delete_draft_email`
   off its `tools: allow` list.
 - **The gmail tree is a fork.** Re-vendoring it from upstream would remove the

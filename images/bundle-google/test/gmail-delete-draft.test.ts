@@ -8,7 +8,7 @@
  * Gmail; and the requests that do go out are a GET and a DELETE on
  * `/drafts/<id>`, never `/messages` or `/threads`.
  *
- * They also hold that `upsert_draft_email` no longer deletes: a tool policy can
+ * They also hold that `upsert_draft_email` does not delete: a tool policy can
  * allow drafting without allowing deletion only if the two are separate tools.
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
@@ -168,7 +168,7 @@ describe("the draft calls' requests", () => {
 });
 
 describe("upsert_draft_email", () => {
-  it("no longer deletes: `delete` is gone from its schema and its handler", async () => {
+  it("does not delete: `delete` is not in its schema, and a call sending it is refused", async () => {
     const client = mailbox({
       updateDraft: vi.fn(async () => DRAFT),
     } as Partial<IGmailClient>);
@@ -176,8 +176,17 @@ describe("upsert_draft_email", () => {
     expect(Object.keys(tool.inputSchema.properties)).not.toContain("delete");
     expect(tool.description).toContain("delete_draft_email");
 
-    const result = await tool.handler({ draft_id: DRAFT.id, delete: true });
+    // A full draft beside it, so the refusal is not just a missing field.
+    const result = await tool.handler({
+      draft_id: DRAFT.id,
+      delete: true,
+      to: "adam@example.com",
+      subject: "Re: the apartment",
+      plaintext_body: "b",
+    });
     expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Use delete_draft_email");
     expect(client.deleteDraft).not.toHaveBeenCalled();
+    expect(client.updateDraft).not.toHaveBeenCalled();
   });
 });

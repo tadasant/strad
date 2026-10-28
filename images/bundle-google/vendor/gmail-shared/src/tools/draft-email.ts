@@ -147,6 +147,13 @@ export function upsertDraftEmailTool(server: Server, clientFactory: ClientFactor
     },
     handler: async (args: unknown) => {
       try {
+        // Zod strips an unknown key, so a caller still sending upstream's
+        // `delete: true` with a full draft would get an update instead.
+        if (args && typeof args === 'object' && 'delete' in args) {
+          throw new Error(
+            'upsert_draft_email does not delete drafts. Use delete_draft_email with the draft_id.'
+          );
+        }
         const parsed = UpsertDraftEmailSchema.parse(args ?? {});
         const client = clientFactory();
 

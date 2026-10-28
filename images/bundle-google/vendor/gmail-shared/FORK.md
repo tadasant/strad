@@ -277,8 +277,9 @@ credential, which is the only thing that stopped it).
   `gmail.compose`, which every writing credential already holds, so it needs
   no new scope. It asks no human, the same as `upsert_draft_email`, which can
   already overwrite a draft's whole content.
-- `upsert_draft_email` no longer takes `delete`. It creates and updates, and
-  its description points at `delete_draft_email`.
+- `upsert_draft_email` does not take `delete`. It creates and updates, and a
+  call that still sends `delete` is refused, naming `delete_draft_email`,
+  rather than read as an update.
 - Every draft call (`getDraft`, `updateDraft`, `deleteDraft`) refuses an ID
   outside `[A-Za-z0-9_-]` (`DRAFT_ID_PATTERN`) before it builds a URL.
 
