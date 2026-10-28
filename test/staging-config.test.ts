@@ -281,7 +281,7 @@ describe("staging config", () => {
     "tailscale-readonly": 7,
     "monarch-money-readonly": 10,
     "gmail-ro": 5,
-    "gmail-rw": 7,
+    "gmail-rw": 8,
     "google-docs-ro": 4,
     "google-docs-rw": 10,
     "google-calendar-ro": 4,
