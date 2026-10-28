@@ -5378,7 +5378,8 @@ secrets per slug are seeded at `/ui/secrets`. Whether the machine is up is on
   posture, not a fault. `consent.onTimeout: "allow"` in
   `~/.strad-hostd/config.json` makes the dialog a veto window, and is again a
   file on the box.
-- The macOS halves have never run in CI, which is Linux: the `osascript` dialog,
+- The macOS halves have never run in CI, which is Linux: the `osascript` dialog
+  (and that its JXA `NSAlert` ignores every key, which only a Mac can show),
   the LaunchAgent, the installer's `cloudflared` branch, and Chrome 144's
   debugging toggle against a real default profile. The design page lists what was
   run and what was reasoned about.

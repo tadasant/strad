@@ -38,7 +38,7 @@ describe("the consent gate", () => {
       expect.objectContaining({
         server: "shell-test-mbp",
         purpose: PURPOSE,
-        seconds: 5,
+        seconds: 10,
         onTimeout: "deny",
       }),
     ]);

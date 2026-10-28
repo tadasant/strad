@@ -193,7 +193,7 @@ describe("the headless computer-use server, through a real MCP client", () => {
     await client.close();
   });
 
-  it("shows NO dialog when the helper is not trusted: the owner cannot fix that in five seconds", async () => {
+  it("shows NO dialog when the helper is not trusted: the owner cannot fix that in ten seconds", async () => {
     fake.state.accessibility = false;
     const shown = prompter.seen.length;
     const client = await connect(

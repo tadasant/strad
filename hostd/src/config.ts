@@ -76,7 +76,7 @@ const ConsentConfig = z
      */
     mode: z.enum(["modal", "none"]).default("modal"),
     /** How long the dialog stays up, and so how long a request stalls. */
-    windowSeconds: z.number().int().min(3).max(60).default(5),
+    windowSeconds: z.number().int().min(3).max(60).default(10),
     /**
      * What an unanswered dialog means. `deny` — fail closed — is the default:
      * nobody saw the request, so nobody agreed to it. `allow` turns the dialog

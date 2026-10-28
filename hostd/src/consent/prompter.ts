@@ -65,33 +65,109 @@ function run(
   });
 }
 
-const APPLESCRIPT = `on run argv
-  set r to display dialog (item 1 of argv) with title (item 2 of argv) buttons {"Reject", "Allow"} default button "Reject" giving up after ((item 3 of argv) as integer) with icon caution
+/**
+ * The macOS dialog, as JavaScript for Automation over the Cocoa bridge: an
+ * `NSAlert` whose buttons answer the MOUSE and nothing else.
+ *
+ * `display dialog` cannot be made to do that. Its default button answers
+ * Return, a button named Cancel answers Escape, and with Full Keyboard Access on
+ * the focused button answers Space — so a dialog that takes focus while the
+ * owner is typing in another app gets decided by the next keystroke. Here every
+ * button has its key equivalent cleared and refuses first responder, so Return,
+ * Escape, Space and Tab do nothing, and the window has no initial first
+ * responder to fall back to. Typing into it is swallowed, not answered.
+ *
+ * The countdown is `abortModal` scheduled on the run loop, the stock NSAlert
+ * timeout: `runModal` then returns an abort code and the script prints
+ * `timeout`, so an unanswered dialog reaches `onTimeout` exactly as before.
+ * Text arrives as `argv`, never as source.
+ */
+export const JXA_DIALOG = `ObjC.import("Cocoa");
+function run(argv) {
+  var app = $.NSApplication.sharedApplication;
+  app.setActivationPolicy(1); // NSApplicationActivationPolicyAccessory
+  var alert = $.NSAlert.alloc.init;
+  alert.messageText = argv[1];
+  alert.informativeText = argv[0];
+  var buttons = [alert.addButtonWithTitle("Reject"), alert.addButtonWithTitle("Allow")];
+  for (var i = 0; i < buttons.length; i++) {
+    buttons[i].keyEquivalent = "";
+    buttons[i].refusesFirstResponder = true;
+  }
+  alert.layout;
+  alert.window.initialFirstResponder = null;
+  alert.window.level = 3; // NSFloatingWindowLevel
+  app.activateIgnoringOtherApps(true);
+  app.performSelectorWithObjectAfterDelayInModes("abortModal", null, parseInt(argv[2], 10), $(["kCFRunLoopCommonModes"]));
+  var r = alert.runModal;
+  if (r === 1000) return "Reject"; // NSAlertFirstButtonReturn
+  if (r === 1001) return "Allow"; // NSAlertSecondButtonReturn
+  return "timeout";
+}`;
+
+/**
+ * The fallback when the Cocoa bridge cannot run: `display dialog` with NO
+ * default button and no button named Cancel, so neither Return nor Escape
+ * answers it. Space on a focused button still does under Full Keyboard Access,
+ * which is why this is the fallback and not the dialog.
+ */
+export const APPLESCRIPT_DIALOG = `on run argv
+  set r to display dialog (item 1 of argv) with title (item 2 of argv) buttons {"Reject", "Allow"} giving up after ((item 3 of argv) as integer) with icon caution
   if gave up of r then return "timeout"
   return button returned of r
 end run`;
 
+/** Said under the request on macOS, where Return no longer does anything. */
+export const MOUSE_ONLY_NOTE =
+  "Click Allow or Reject. The keyboard cannot answer this dialog.";
+
+export type DialogRunner = typeof run;
+
+function parseMac(stdout: string): PromptAnswer | undefined {
+  const answer = stdout.trim();
+  if (answer === "Allow") return "allowed";
+  if (answer === "Reject") return "rejected";
+  if (answer === "timeout") return "timeout";
+  return undefined;
+}
+
 /**
- * macOS: `osascript`'s own `display dialog`, which needs no TCC grant and no
- * helper app. The purpose is passed as an ARGUMENT to a constant script — it is
- * never interpolated into AppleScript source, so a purpose cannot close a string
- * and start a `do shell script`.
+ * macOS: `osascript`, which needs no TCC grant and no helper app. The JXA
+ * dialog first; if it exits having answered nothing (a bridge that would not
+ * load), the AppleScript one. Either way the purpose is an ARGUMENT to a
+ * constant script — it is never interpolated into source, so a purpose cannot
+ * close a string and start a `do shell script`.
  */
 export class MacDialogPrompter implements Prompter {
+  constructor(private readonly runner: DialogRunner = run) {}
+
   async prompt(req: PromptRequest): Promise<PromptAnswer> {
-    const { stdout, spawnFailed, code } = await run(
+    const text = `${dialogText(req)}\n\n${MOUSE_ONLY_NOTE}`;
+    const argv = [text, "strad-hostd", String(req.seconds)];
+    const jxa = await this.runner(
       "/usr/bin/osascript",
-      ["-e", APPLESCRIPT, dialogText(req), "strad-hostd", String(req.seconds)],
+      ["-l", "JavaScript", "-e", JXA_DIALOG, ...argv],
       req,
     );
-    if (spawnFailed) return "unavailable";
-    const answer = stdout.trim();
-    if (answer === "Allow") return "allowed";
-    if (answer === "Reject") return "rejected";
-    if (answer === "timeout") return "timeout";
+    if (jxa.spawnFailed) return "unavailable";
+    const first = parseMac(jxa.stdout);
+    if (first) return first;
+    if (req.signal?.aborted) return "unavailable";
+    // A JXA run that printed nothing and exited 0 showed a dialog nobody
+    // answered; only a failed one earns a second dialog.
+    if (jxa.code === 0) return "timeout";
+
+    const as = await this.runner(
+      "/usr/bin/osascript",
+      ["-e", APPLESCRIPT_DIALOG, ...argv],
+      req,
+    );
+    if (as.spawnFailed) return "unavailable";
+    const second = parseMac(as.stdout);
+    if (second) return second;
     // No window server (an ssh session, a logged-out Mac): osascript exits
     // non-zero having shown nothing.
-    return code === 0 ? "timeout" : "unavailable";
+    return as.code === 0 ? "timeout" : "unavailable";
   }
 }
 
