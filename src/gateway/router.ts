@@ -33,6 +33,7 @@ import {
   elicitationChannelFrom,
 } from "./elicitation.ts";
 import { buildGatewayServer } from "./mcpServer.ts";
+import { selectionSupportsEvents } from "./events.ts";
 import type { Mode, Registry } from "./registry.ts";
 import { compileToolPolicies } from "./toolPolicy.ts";
 
@@ -386,6 +387,13 @@ export function createMcpHandler(opts: McpHandlerOptions) {
     // action — is `buildGatewayServer`, shared with the console playground so
     // that a human and an agent are answered by the same code. Everything above
     // this line (auth, `?servers=`, the 424) is this endpoint's alone.
+    // MCP Events: the extension is advertised on `initialize` only, and only
+    // when a selected upstream's own handshake advertised it. Every other
+    // request has no capabilities to answer, so it pays nothing here.
+    const advertiseEvents = isInitialize(req.body)
+      ? await selectionSupportsEvents(selected, opts.registry)
+      : false;
+
     const server = buildGatewayServer({
       config: opts.config,
       registry: opts.registry,
@@ -398,6 +406,7 @@ export function createMcpHandler(opts: McpHandlerOptions) {
       log,
       clientCapabilities,
       elicitation,
+      events: { advertise: advertiseEvents },
       // Did the CALLER name these servers, or is this "everything I'm entitled
       // to"? It decides whether a broken upstream is an error or a smaller
       // toolset. See listToolsFor.
@@ -474,4 +483,15 @@ function authenticateInternal(
     label: "strad core",
     roles: [],
   };
+}
+
+/** Is this POST body, or any message in a batch, an `initialize`? */
+function isInitialize(body: unknown): boolean {
+  const messages: unknown[] = Array.isArray(body) ? body : [body];
+  return messages.some(
+    (m) =>
+      typeof m === "object" &&
+      m !== null &&
+      (m as { method?: unknown }).method === "initialize",
+  );
 }

@@ -73,8 +73,59 @@ export interface ServerAdapter {
    */
   getRaw?(path: string, req: Request, res: Response): Promise<void>;
 
+  /**
+   * MCP Events (draft SEP-3415, poll mode — see src/gateway/events.ts).
+   *
+   * OPTIONAL, all three, and present together: a kind that cannot carry
+   * events omits them and the gateway treats it as serving none. Names here
+   * are BARE, like tool names; the gateway adds the `<slug>__` prefix.
+   *
+   * `supportsEvents` answers from the upstream's handshake — whether it
+   * advertised `io.modelcontextprotocol/events` — and is what decides whether
+   * core advertises the extension on `initialize`.
+   */
+  supportsEvents?(): Promise<boolean>;
+  listEvents?(): Promise<EventDescriptor[]>;
+  pollEvents?(params: PollEventsParams): Promise<PollEventsResult>;
+
   /** Release upstream connections. */
   close(): Promise<void>;
+}
+
+/** One event type, as `events/list` describes it. */
+export interface EventDescriptor {
+  name: string;
+  description?: string;
+  delivery: string[];
+  inputSchema?: Record<string, unknown>;
+  payloadSchema?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface PollEventsParams {
+  /** Bare (unprefixed). */
+  name: string;
+  arguments: Record<string, unknown>;
+  cursor: string | null;
+  maxEvents?: number;
+  maxAgeMs?: number;
+}
+
+export interface EventOccurrence {
+  eventId: string;
+  name: string;
+  timestamp: string;
+  data: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface PollEventsResult {
+  events: EventOccurrence[];
+  cursor: string | null;
+  truncated: boolean;
+  hasMore: boolean;
+  nextPollMs?: number;
+  [key: string]: unknown;
 }
 
 /**

@@ -221,7 +221,7 @@ of which, `servers`, is a twenty-two-leg matrix over the server trees:
   itself has its own workflow, below.
 - **`bundle_image`** — builds `servers/bundle/Dockerfile`, **boots the container**,
   and runs `scripts/smoke.mjs` against every mount of the running image, asserting
-  the full-capability tool count for each (slack 13, tailscale 15, monarch-money 24,
+  the full-capability tool count for each (slack 14, tailscale 15, monarch-money 24,
   gmail 9, google-docs 11, google-calendar 7, 1Password 9, secrets 4, …). Those
   counts are the numbers the gateway's read-only allow-lists are carved out of, so
   if an upstream grows or renames a tool, this is where it surfaces. For `secrets`

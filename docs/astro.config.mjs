@@ -112,6 +112,7 @@ export default defineConfig({
             { label: "Slack attachments", slug: "servers/slack-attachments" },
             { label: "Telegram", slug: "servers/telegram" },
             { label: "WhatsApp", slug: "servers/whatsapp" },
+            { label: "MCP Events (draft)", slug: "servers/events" },
             { label: "BILL Spend & Expense", slug: "servers/bill-spend" },
             { label: "LiveOak Bank", slug: "servers/liveoak" },
             { label: "Airtable", slug: "servers/airtable" },

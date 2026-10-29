@@ -233,6 +233,13 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      */
     "mcp.tool_denied": ["slug"],
     /**
+     * One selected slug's `events/list` failed, so its event types are missing
+     * from the union (src/gateway/events.ts). `slug` has matched the request's
+     * selection, so it is one of the config's own slugs; the upstream's message
+     * is not carried at all.
+     */
+    "mcp.events_list_failed": ["slug"],
+    /**
      * A flow-through call refused for sending a value other than the one its
      * grant pins (src/config/reach.ts). `slug` has matched the selection and
      * `argument` is a KEY of the grant's own `pin:` map or the literal
@@ -625,6 +632,12 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
     "per request — mcp.auth_failed's queue-starvation argument, on the console " +
     "door. A refusal of a token whose secret DID verify is a different event, " +
     "console.token_exchange_failed, and that one ships.",
+  "mcp.events_forbidden":
+    "An events/poll naming an event whose server the request did not select. " +
+    "The only field is `principal`, which is a token pubid through /mcp, and " +
+    "the event name the caller sent is its own bytes and is not recorded at " +
+    "all. Client-driven, one per refused poll, so it would be the queue-" +
+    "starvation shape too; the refusal itself is the caller's answer.",
   "mcp.auth_failed":
     "Its attributes are safe — `reason` is a closed set — but it is emitted " +
     "BEFORE authentication succeeds, so anyone who can reach /mcp produces one " +
@@ -759,6 +772,8 @@ const THROTTLED = new Set([
   // throttled; `strad.mcp.tool_denials` is the continuous half of this pair,
   // and the record is the narration.
   "mcp.tool_denied",
+  // Every events/list a client sends, for as long as one upstream cannot list.
+  "mcp.events_list_failed",
   // Driven by a hosted server's own calls, one per refused call.
   "mcp.pin_refused",
   // Client-driven through the request path, though the minter's backoff

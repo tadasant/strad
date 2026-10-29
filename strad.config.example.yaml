@@ -606,6 +606,8 @@ servers:
         - slack_get_dms
         - slack_get_dm
         - slack_find_user
+        # The MCP Events feed's state. Reports, calls nothing; no secret value.
+        - slack_events_status
 
   # A SERVER WHOSE CREDENTIAL IS ONE PERSON.
   #

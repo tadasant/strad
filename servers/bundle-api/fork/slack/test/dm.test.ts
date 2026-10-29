@@ -909,12 +909,13 @@ async function registeredNames(groups) {
   return tools.map((t) => t.name).sort();
 }
 
-test('the read-only tier is exactly these seven, and slack_send_dm is not one', async () => {
+test('the read-only tier is exactly these eight, and slack_send_dm is not one', async () => {
   // `slack-readonly` carves its allow-list out of this group, and every read
   // path here was built to justify it: slack_get_dm resolves an EXISTING DM
   // rather than calling conversations.open, which would create one.
   assert.deepEqual(await registeredNames(['readonly']), [
     'slack_download_file',
+    'slack_events_status',
     'slack_find_user',
     'slack_get_channel',
     'slack_get_channels',

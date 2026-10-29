@@ -4065,3 +4065,34 @@ which names the draft's recipient and subject.
 See `HACKS.md` #130.
 
 ---
+
+### 131. MCP Events follows a draft, in poll mode only
+
+strad's [MCP Events](/servers/events/) support is built from draft SEP-3415,
+pinned in `docs/mcp-events-spec-pin.md`. The draft can still change, and so can
+its error codes. Only `events/list` and `events/poll` exist. There is no push,
+no webhook, no `list_changed` notification and no `server/discover`.
+
+The Slack `message_posted` feed has met fakes only. No real Socket Mode
+connection has run in CI, and it stays off until `SLACK_APP_TOKEN` and the
+`SLACK_EVENTS_*` variables are seeded.
+
+- **Backfill has a horizon.** After a gap, a thread reply is recovered only if
+  its parent is less than 48 hours older than the gap. Each read stops at 10
+  pages.
+- **The buffer is written every couple of seconds.** A crash loses what was
+  buffered since. The next connection's backfill recovers what Slack returns.
+- **One instance is a lease, not a render check.** A second replica stops
+  writing within 30 seconds, but its socket takes a share of Slack's events
+  until then.
+- **`tools:` does not narrow events.** A read-only slug sharing the mount sees
+  the same events.
+- **The bucket is made by hand.** The GCS bucket and the service account that
+  writes it are created once in GCP, outside any deploy, as for WhatsApp.
+
+**How you would know.** `slack_events_status` reports the state, the last
+backfill and how many reads were cut short, and the last GCS write.
+
+See `HACKS.md` #131.
+
+---

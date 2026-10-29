@@ -15,6 +15,8 @@ import { findUserTool } from './tools/find-user.js';
 import { getDmsTool } from './tools/get-dms.js';
 import { getDmTool } from './tools/get-dm.js';
 import { sendDmTool } from './tools/send-dm.js';
+import { eventsStatusTool } from './tools/events-status.js';
+import type { SlackEventsIngest } from './events/ingest.js';
 
 /**
  * Tool groups for permission-based access control
@@ -67,12 +69,14 @@ interface Tool {
 /**
  * Per-mount wiring a tool may need beyond a Slack client.
  *
- * Threaded as a third argument so the twelve tools that need none of it keep
+ * Threaded as a third argument so the tools that need none of it keep
  * their two-parameter signatures unchanged — a narrower function is assignable
  * to a wider one, which is what keeps this additive.
  */
 export interface ToolContext {
   downloadLink?: DownloadLinkConfig;
+  /** The MCP Events ingest, for `slack_events_status`. See src/events/ingest.ts. */
+  events?: SlackEventsIngest;
 }
 
 type ToolFactory = (
@@ -98,6 +102,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   { factory: getDmsTool, groups: ['readonly', 'write'] },
   { factory: getDmTool, groups: ['readonly', 'write'] },
   { factory: findUserTool, groups: ['readonly', 'write'] },
+  { factory: eventsStatusTool, groups: ['readonly', 'write'] },
   // Write tools
   { factory: postMessageTool, groups: ['write'] },
   { factory: replyToThreadTool, groups: ['write'] },
