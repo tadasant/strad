@@ -236,13 +236,15 @@ async function registeredNames(groups) {
   return tools.map((t) => t.name).sort();
 }
 
-test('the fork renames and drops no upstream tool, and adds exactly the DM four', async () => {
+test('the fork renames and drops no upstream tool, and adds exactly the DM four and the events status tool', async () => {
   // Read from createRegisterTools rather than a hand-written list, so a tool
   // dropped from ALL_TOOLS in src/tools.ts fails here too. Every caller of the
   // published package addresses these names — upstream's nine are untouched, and
-  // the four the fork ADDS are the DM surface (test/dm.test.ts covers them).
+  // the four the fork ADDS are the DM surface (test/dm.test.ts covers them), plus
+  // slack_events_status, the MCP Events feed's state (test/events.test.ts).
   assert.deepEqual(await registeredNames(['readonly', 'write']), [
     'slack_download_file',
+    'slack_events_status',
     'slack_find_user',
     'slack_get_channel',
     'slack_get_channels',
@@ -258,12 +260,13 @@ test('the fork renames and drops no upstream tool, and adds exactly the DM four'
   ]);
 });
 
-test('the readonly group is exactly the seven tools slack-readonly allows', async () => {
+test('the readonly group is exactly the eight tools slack-readonly allows', async () => {
   // infra/strad.staging.yaml and strad.config.example.yaml both carve the
   // `slack-readonly` slug's `tools: allow` list out of this group. An allow-list
   // is exhaustive, so a tool moving between groups narrows that slug in silence.
   assert.deepEqual(await registeredNames(['readonly']), [
     'slack_download_file',
+    'slack_events_status',
     'slack_find_user',
     'slack_get_channel',
     'slack_get_channels',

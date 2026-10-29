@@ -11,6 +11,7 @@ import {
 import {
   ErrorCode,
   McpError,
+  ResultSchema,
   type Tool,
   type Resource,
   type ReadResourceResult,
@@ -45,8 +46,12 @@ import type {
   CallContext,
   CallProgress,
   CallToolResult,
+  EventDescriptor,
+  PollEventsParams,
+  PollEventsResult,
   ServerAdapter,
 } from "./types.ts";
+import { EVENTS_EXTENSION } from "../events.ts";
 import { errorText } from "../../util/error-text.ts";
 import {
   isRetryableStatus,
@@ -1007,6 +1012,93 @@ export class HttpServerAdapter implements ServerAdapter {
     return this.lease(conn, "read_resource", (client) =>
       client.readResource({ uri }, { timeout: this.opts.timeoutMs }),
     );
+  }
+
+  // --- MCP Events (draft SEP-3415, poll mode; see src/gateway/events.ts) ------
+
+  /**
+   * Whether this upstream advertised the events extension in its handshake.
+   * Free once connected: the handshake is cached with the connection.
+   */
+  async supportsEvents(): Promise<boolean> {
+    const conn = await this.leased();
+    try {
+      return this.advertisesEvents(conn);
+    } finally {
+      conn.release();
+    }
+  }
+
+  private advertisesEvents(conn: Conn): boolean {
+    const extensions = (
+      conn.client.getServerCapabilities() as
+        { extensions?: Record<string, unknown> } | undefined
+    )?.extensions;
+    return (
+      extensions !== undefined && Object.hasOwn(extensions, EVENTS_EXTENSION)
+    );
+  }
+
+  /**
+   * The upstream's event types. Gated on the advertised extension, the way
+   * `listResources` is gated on `resources`: most upstreams have none, and
+   * asking each of them would be a round trip per listing to be told `-32601`.
+   */
+  async listEvents(): Promise<EventDescriptor[]> {
+    return this.transient(() =>
+      this.authorized(async () => {
+        const conn = await this.leased();
+        if (!this.advertisesEvents(conn)) {
+          conn.release();
+          return [];
+        }
+        const res = await this.lease(conn, "list_events", (client) =>
+          client.request(
+            { method: "events/list", params: {} },
+            ResultSchema.passthrough(),
+            { timeout: this.opts.timeoutMs },
+          ),
+        );
+        const events = (res as { events?: unknown }).events;
+        return Array.isArray(events)
+          ? (events as EventDescriptor[]).map((e) => ({
+              ...e,
+              name: this.strip(e.name),
+            }))
+          : [];
+      }),
+    );
+  }
+
+  /**
+   * One poll, forwarded whether or not the upstream advertised the extension:
+   * an upstream that registers the handlers while it is not configured answers
+   * with WHY (a missing credential, by name), and that answer is worth more to
+   * the caller than core's own "serves no events". One that has no handlers
+   * answers `-32601`, which src/gateway/events.ts turns into NotFound.
+   */
+  async pollEvents(params: PollEventsParams): Promise<PollEventsResult> {
+    return this.authorized(async () => {
+      const conn = await this.leased();
+      const res = await this.lease(conn, "poll_events", (client) =>
+        client.request(
+          {
+            method: "events/poll",
+            params: { ...params, name: this.restore(params.name) },
+          },
+          ResultSchema.passthrough(),
+          { timeout: this.opts.timeoutMs },
+        ),
+      );
+      const out = res as unknown as PollEventsResult;
+      return {
+        ...out,
+        events: (Array.isArray(out.events) ? out.events : []).map((e) => ({
+          ...e,
+          name: this.strip(e.name),
+        })),
+      };
+    });
   }
 
   async postRaw(path: string, req: Request, res: Response): Promise<void> {

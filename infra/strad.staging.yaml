@@ -74,7 +74,7 @@
 # call with an auth error naming no cause.
 #
 # The allow-lists below are derived from each upstream's own tool-group
-# definitions, so the counts stay honest: slack 7/13 · tailscale 7/15 ·
+# definitions, so the counts stay honest: slack 8/14 · tailscale 7/15 ·
 # monarch 10/24 · gmail 5/8/9 · google-docs 4/10/11 · google-calendar 4/7 ·
 # 1Password 5/9 · telegram 5/6 · bill-spend 4/5 · digitalocean 19/29.
 # test/staging-config.test.ts
@@ -396,6 +396,8 @@ servers:
         - slack_get_dms
         - slack_get_dm
         - slack_find_user
+        # The MCP Events feed's state. Reports, calls nothing; no secret value.
+        - slack_events_status
 
   # ---------------------------------------------------------------------------
   # Tailscale — 15 tools full, 7 read-only (policy/devices/keys, reads only).

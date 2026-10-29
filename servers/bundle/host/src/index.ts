@@ -132,6 +132,7 @@ interface Created {
     isError?: boolean;
   }>;
   handleDownload?: (token: string) => Promise<DownloadOutcome>;
+  close?: () => Promise<void>;
 }
 
 /**
@@ -231,6 +232,12 @@ async function buildMounts(): Promise<Mount[]> {
     capabilities: { tools: {} },
     register: (s) => api.slack.registerHandlers(s),
     download: api.slack.handleDownload,
+    // The MCP Events ingest (fork/slack/src/events): one Socket Mode socket and
+    // a sealed buffer in GCS, opened only where SLACK_APP_TOKEN and the
+    // SLACK_EVENTS_* variables are set. Inert everywhere else. `close` flushes
+    // the buffer on SIGTERM; `events/list` and `events/poll` are registered
+    // by the tree's own `registerHandlers`.
+    close: api.slack.close,
   });
 
   mounts.push({

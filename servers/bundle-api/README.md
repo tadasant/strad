@@ -51,9 +51,12 @@ Upstream's write tools call the format "Slack markdown" and never mention the
 tilde, so the fix has to live in the tool definitions. The fork also **adds four
 DM tools** — `slack_send_dm`, `slack_get_dm`, `slack_get_dms`, `slack_find_user`
 — because upstream can address a channel and a thread but not a person, and
-Slack's DM flow is a two-call dance no agent should have to know. Thirteen tools,
-seven of them read-only. Both deltas, the recipient-naming rules and the OAuth
-scopes are in [`fork/slack/FORK.md`](fork/slack/FORK.md).
+Slack's DM flow is a two-call dance no agent should have to know. And it serves
+**MCP Events** (draft SEP-3415, poll mode): a Socket Mode ingest, inert until
+`SLACK_APP_TOKEN` is seeded, buffers `message_posted` for `events/poll`, and
+`slack_events_status` reports its state. Fourteen tools, eight of them
+read-only. Every delta, the recipient-naming rules and the OAuth scopes are in
+[`fork/slack/FORK.md`](fork/slack/FORK.md).
 
 **`fork/google-flights`.** Three defects that each returned a confident, wrong
 answer with no error attached: cabin class and passenger counts were encoded at

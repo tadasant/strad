@@ -6667,3 +6667,49 @@ names the draft's recipient and subject.
 `images/bundle-google/src/confirm.ts` and make the tool call
 `requestConfirmation()`, if a deleted draft someone wanted ever turns up.
 Withhold the tool from a slug with its `tools: allow` list in the meantime.
+
+## 131. MCP Events tracks a draft SEP, in poll mode only, and the Slack feed has met only fakes
+
+**What.** strad serves MCP Events (`events/list`, `events/poll`, the
+`io.modelcontextprotocol/events` extension) from draft SEP-3415, pinned at
+commit `b08e4f9dd684f39d846d94089487fbeb28e666f5` in
+`docs/mcp-events-spec-pin.md`. Only poll mode is built: no `events/stream`, no
+webhooks, no `list_changed`, no `server/discover`. The error codes (`-32023`,
+`-32024`) are the draft's provisional numbers. The `Mcp-Method` / `Mcp-Name`
+headers are accepted and not checked. Results carry no `resultType`.
+
+The one event source is Slack's `message_posted`
+(`servers/bundle-api/fork/slack/src/events/`): one Socket Mode socket, a sealed
+7-day ring buffer in GCS and a lease, the WhatsApp bridge's pattern. The socket,
+the envelope ack, the backfill and GCS have met fakes only. Nothing in CI has
+held a real Socket Mode connection, and no deployment has seeded
+`SLACK_APP_TOKEN` yet.
+
+**Why.** Zimmer's deterministic triggers want a feed of Slack messages from the
+server strad already runs, rather than a second Slack client polling with its
+own copy of the bot token. Poll is the one mode Zimmer can consume with no
+public ingress.
+
+**What it costs.**
+
+- A change to the draft can break the wire. Re-read the live SEP against the
+  pin before changing anything here.
+- Backfill sees a thread reply in a gap only if the thread's parent is less than
+  48 hours older than the gap, and each read stops at 10 pages of 200. A read cut
+  short is counted on `slack_events_status` as `reads_cut_short`.
+- The buffer is one object, rewritten at most every couple of seconds. Events
+  buffered since the last write are lost if the process dies; the next
+  connection's backfill recovers what Slack still returns.
+- Two processes merging after a conflict can each have sequenced events the
+  other's cursor already passed. Dedupe on `eventId` absorbs a repeat; a skip
+  in that window is possible and is not flagged as `truncated`.
+- The single-instance rule is enforced by the lease, not by the renderer.
+  `SINGLE_SOCKET_PATHS` names `/whatsapp` and not `/slack`, because the shared
+  bundle serves `/slack` with no app token and must stay free to scale.
+- `tools:` policy does not narrow events. A `-readonly` slug on the same mount
+  as one with an app token would see the same events.
+
+**Undo.** Unseed `SLACK_APP_TOKEN`: the mount goes inert, lists no event types
+and stops advertising the extension. Removing the feature is deleting
+`src/gateway/events.ts`, its hooks in `mcpServer.ts`, `router.ts` and the HTTP
+adapter, and `fork/slack/src/events/`.

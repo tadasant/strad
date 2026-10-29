@@ -52,7 +52,7 @@ const AUTH = TOKEN ? { authorization: `Bearer ${TOKEN}` } : {};
 
 /** The mounts, and the tool count each should list at FULL capability. */
 const EXPECT = {
-  slack: 13, // upstream's 9 plus the fork's four DM tools
+  slack: 14, // upstream's 9, the fork's four DM tools and slack_events_status
   "serpapi-hotels": 3,
   tailscale: 15,
   "monarch-money": 24,

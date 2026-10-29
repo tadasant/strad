@@ -12,9 +12,10 @@ v0.0.7. At that commit the vendored copy was byte-identical to upstream.
 
 ## Why it is forked
 
-Three reasons, in the order they arrived: the message format upstream describes
-wrongly, the conversation type upstream cannot address at all, and the file
-download upstream reports as a success the caller cannot use.
+Four reasons, in the order they arrived: the message format upstream describes
+wrongly, the conversation type upstream cannot address at all, the file
+download upstream reports as a success the caller cannot use, and the feed of
+new messages upstream does not have.
 
 ### 1. mrkdwn is not Markdown
 
@@ -270,6 +271,37 @@ which is the property that mattered for the documents that prompted it.
 The other half of this lives outside the tree: the bundle host serves
 `GET /<mount>/download/:token`, and the gateway proxies it at
 `/mcp-download/<slug>/<token>`. See strad's `servers/slack-attachments` page.
+
+### 4. Upstream has no feed of what happened
+
+Upstream can read a channel when asked, and cannot say that something was just
+posted. A trigger that fires on a new message needs that feed, and the
+alternative was a second Slack client in Zimmer, polling `conversations.history`
+on a cron with its own copy of the bot token. This fork serves the feed as
+**MCP Events** (draft SEP-3415, poll mode): one event type, `message_posted`,
+behind `events/list` and `events/poll`. strad core prefixes and entitles it.
+See strad's `servers/events` page.
+
+Inert unless `SLACK_APP_TOKEN` and the `SLACK_EVENTS_*` variables are set: no
+socket, no GCS, no Slack call, no event types listed, no extension advertised.
+No existing tool changed.
+
+| File | Change |
+| --- | --- |
+| `src/events/config.ts` | **New.** The six required variables, and the error that names whichever are missing. |
+| `src/events/normalize.ts` | **New.** One Slack message to one `message_posted` payload, or nothing: the bot's own posts, non-posting subtypes, hidden events and group DMs are dropped. Event id `slack:<channel_id>:<ts>`. |
+| `src/events/buffer.ts` | **New.** The ring buffer, the subscription arguments, and the cursor (a clock-based sequence, so it survives a deploy). |
+| `src/events/store.ts`, `crypto.ts` | **New.** The sealed buffer object and the lease in GCS, after the WhatsApp bridge's `store.ts`. |
+| `src/events/blob-store.ts` | **New.** A copy of `servers/whatsapp/shared/src/blob-store.ts`, the GCS JSON API on Node's `fetch`. |
+| `src/events/slack-api.ts` | **New.** `auth.test`, `apps.connections.open`, `users.conversations`, `conversations.history`, `conversations.replies`. |
+| `src/events/ingest.ts` | **New.** The Socket Mode client: ack every envelope first, buffer second, backfill on every hello, stand down when the lease is lost. |
+| `src/events/protocol.ts` | **New.** `events/list`, `events/poll`, and the extension, advertised only when configured. |
+| `src/tools/events-status.ts` | **New.** `slack_events_status`, read-only. |
+| `src/server.ts`, `src/tools.ts`, `src/index.ts` | One ingest per process, threaded to the status tool and the handlers; `close()` flushes the buffer. |
+
+Fourteen tools, eight of them read-only. `test/events.test.ts` pins the event id,
+what is dropped, the cursor, backfill across a restart, the lease handover, and
+the unconfigured mount.
 
 ## Re-vendoring
 
