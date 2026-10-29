@@ -106,9 +106,7 @@ export function permalinkFor(
 ): string {
   const base = workspaceUrl.replace(/\/+$/, '');
   const link = `${base}/archives/${channelId}/p${ts.replace('.', '')}`;
-  return threadTs && threadTs !== ts
-    ? `${link}?thread_ts=${threadTs}&cid=${channelId}`
-    : link;
+  return threadTs ? `${link}?thread_ts=${threadTs}&cid=${channelId}` : link;
 }
 
 export function tsToIso(ts: string): string {
@@ -136,7 +134,10 @@ export function toMessagePosted(
   if (raw.bot_id !== undefined && bot.botId !== undefined && raw.bot_id === bot.botId) return null;
 
   const text = raw.text ?? '';
-  const threadTs = raw.thread_ts && raw.thread_ts !== '' ? raw.thread_ts : undefined;
+  // A parent carries `thread_ts === ts` once it has replies — always when read
+  // back by backfill, never when it arrives live. One payload per eventId: a
+  // parent is top-level, and only a reply names a thread.
+  const threadTs = raw.thread_ts && raw.thread_ts !== ts ? raw.thread_ts : undefined;
 
   const data: MessagePostedData = {
     channel_id: channelId,
@@ -147,9 +148,16 @@ export function toMessagePosted(
     ...(raw.bot_id ? { bot_id: raw.bot_id } : {}),
     ...(raw.username ? { username: raw.username } : {}),
     is_dm: channelType === 'im',
-    mentions_bot: text.includes(`<@${bot.userId}>`),
+    mentions_bot: text.includes(`<@${bot.userId}>`) || text.includes(`<@${bot.userId}|`),
     permalink: permalinkFor(bot.workspaceUrl, channelId, ts, threadTs),
-    text: text.length > MAX_TEXT_CHARS ? text.slice(0, MAX_TEXT_CHARS) : text,
+    text: cut(text),
   };
   return { eventId: eventIdFor(channelId, ts), timestamp: tsToIso(ts), data };
+}
+
+/** At most MAX_TEXT_CHARS UTF-16 units, never ending on half a surrogate pair. */
+function cut(text: string): string {
+  if (text.length <= MAX_TEXT_CHARS) return text;
+  const end = /[\uD800-\uDBFF]/.test(text[MAX_TEXT_CHARS - 1]!) ? MAX_TEXT_CHARS - 1 : MAX_TEXT_CHARS;
+  return text.slice(0, end);
 }

@@ -267,24 +267,47 @@ export class EventBuffer {
   }
 
   /**
-   * Folds a persisted document in: the union by event id, re-sorted by
-   * sequence. Used at boot (into an empty buffer) and when a conditional write
-   * finds another process wrote first.
+   * Folds a persisted document in: the union by event id.
+   *
+   * `resequence` decides what a FOREIGN event's sequence number is. At boot
+   * (false) the document is the past, its numbers are the ones clients were
+   * handed, and they are kept. After a write CONFLICT (true) the document is
+   * another live process's — the old one, during a deploy overlap — and its
+   * numbers may sit below a cursor this process has already handed out, so a
+   * client would never see those events and nothing would say so. Each event
+   * new to this buffer is given a fresh sequence, in its own order, which puts
+   * it after every cursor issued so far.
    */
-  merge(doc: BufferDoc): void {
+  merge(doc: BufferDoc, opts: { resequence: boolean }): void {
     if (doc.version !== 1) return;
-    for (const e of doc.events) {
+    this.lastSeq = Math.max(this.lastSeq, doc.last_seq);
+    this.evictedThrough = Math.max(this.evictedThrough, doc.evicted_through);
+    const foreign = [...doc.events].sort((a, b) => a.seq - b.seq);
+    for (const e of foreign) {
       if (this.ids.has(e.eventId)) continue;
-      this.events.push(e);
+      this.events.push(opts.resequence ? { ...e, seq: this.nextSeq() } : e);
       this.ids.add(e.eventId);
     }
     this.events.sort((a, b) => a.seq - b.seq);
-    this.lastSeq = Math.max(this.lastSeq, doc.last_seq);
-    this.evictedThrough = Math.max(this.evictedThrough, doc.evicted_through);
     if (doc.live_through !== null) {
       this.liveThrough = Math.max(this.liveThrough ?? 0, doc.live_through);
     }
     this.revision++;
     this.prune();
+  }
+
+  /**
+   * Becomes exactly the document: the owner's buffer, numbers and all. A
+   * superseded process answers polls this way, so the cursors it hands out are
+   * the owner's and stay valid when the next poll lands on the owner.
+   */
+  replace(doc: BufferDoc): void {
+    if (doc.version !== 1) return;
+    this.events = [...doc.events].sort((a, b) => a.seq - b.seq);
+    this.ids = new Set(this.events.map((e) => e.eventId));
+    this.lastSeq = doc.last_seq;
+    this.evictedThrough = doc.evicted_through;
+    this.liveThrough = doc.live_through;
+    this.revision++;
   }
 }

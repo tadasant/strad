@@ -6700,9 +6700,12 @@ public ingress.
 - The buffer is one object, rewritten at most every couple of seconds. Events
   buffered since the last write are lost if the process dies; the next
   connection's backfill recovers what Slack still returns.
-- Two processes merging after a conflict can each have sequenced events the
-  other's cursor already passed. Dedupe on `eventId` absorbs a repeat; a skip
-  in that window is possible and is not flagged as `truncated`.
+- A superseded process answers polls from the owner's persisted buffer, which
+  lags the owner's memory by up to one flush (a couple of seconds).
+- Making the GCS bucket and the service account that writes it is a one-off
+  step by hand in GCP, outside any deploy, as it is for the WhatsApp bridge.
+  Seeding the six variables is done through the console and a deploy. The
+  bucket is the one step an agent cannot do without project IAM.
 - The single-instance rule is enforced by the lease, not by the renderer.
   `SINGLE_SOCKET_PATHS` names `/whatsapp` and not `/slack`, because the shared
   bundle serves `/slack` with no app token and must stay free to scale.

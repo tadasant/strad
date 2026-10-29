@@ -15,7 +15,10 @@
  *     saw; a conflict means another process wrote it, and the lease decides
  *     whether to merge and retry (ours) or stop (theirs);
  *   - the lease is re-read every LEASE_CHECK_MS, so an old process that has
- *     nothing to write still learns it has been replaced and closes its socket.
+ *     nothing to write still learns it has been replaced and closes its socket;
+ *   - the owner refreshes a heartbeat in the lease on each check, and a
+ *     superseded process takes the lease back once that heartbeat is stale, so
+ *     a newer container that dies does not leave the feed down until a restart.
  */
 import { randomUUID } from 'node:crypto';
 import { PreconditionFailed, type BlobStore } from './blob-store.js';
@@ -63,35 +66,102 @@ export class EventsStore {
     return { instanceId: this.instanceId, owner: this.leaseOwner, superseded: this.superseded };
   }
 
-  async claimLease(): Promise<void> {
-    await this.blobs.write(
-      this.name('lease.json'),
-      Buffer.from(JSON.stringify({ owner: this.instanceId, claimed_at: this.clock() }))
+  private leaseBody(): Buffer {
+    return Buffer.from(
+      JSON.stringify({ owner: this.instanceId, heartbeat_at: this.clock() })
     );
+  }
+
+  /** Unconditional: the newest process takes the socket, whoever held it. */
+  async claimLease(): Promise<void> {
+    await this.blobs.write(this.name('lease.json'), this.leaseBody());
     this.leaseOwner = this.instanceId;
+    this.superseded = false;
     this.lastLeaseCheck = this.clock();
   }
 
-  /** True while this process still owns the socket. Sets `superseded` if not. */
+  private async readLease(): Promise<{
+    owner?: string;
+    heartbeatAt?: number;
+    generation: string | null;
+  }> {
+    const lease = await this.blobs.read(this.name('lease.json'));
+    if (!lease) return { generation: null };
+    try {
+      const body = JSON.parse(lease.data.toString('utf8')) as {
+        owner?: unknown;
+        heartbeat_at?: unknown;
+        claimed_at?: unknown;
+      };
+      const at = typeof body.heartbeat_at === 'number' ? body.heartbeat_at : body.claimed_at;
+      return {
+        owner: typeof body.owner === 'string' ? body.owner : undefined,
+        heartbeatAt: typeof at === 'number' ? at : undefined,
+        generation: lease.generation,
+      };
+    } catch {
+      return { generation: lease.generation };
+    }
+  }
+
+  /**
+   * True while this process still owns the socket. Sets `superseded` if not.
+   *
+   * The owner refreshes `heartbeat_at` on every check, CONDITIONALLY on the
+   * generation it just read: an unconditional refresh racing a newer process's
+   * claim would take the lease back from it. A lost race is a lost lease.
+   */
   async checkLease(force = false): Promise<boolean> {
     if (this.superseded) return false;
     if (!force && this.clock() - this.lastLeaseCheck < LEASE_CHECK_MS) return true;
     this.lastLeaseCheck = this.clock();
-    const lease = await this.blobs.read(this.name('lease.json'));
-    let owner: string | undefined;
-    try {
-      owner = lease ? (JSON.parse(lease.data.toString('utf8')).owner as string) : undefined;
-    } catch {
-      owner = undefined;
-    }
+    const lease = await this.readLease();
     // A missing or unreadable lease is nobody else's: take it back.
-    if (owner === undefined) {
+    if (lease.owner === undefined) {
       await this.claimLease();
       return true;
     }
-    this.leaseOwner = owner;
-    if (owner !== this.instanceId) this.superseded = true;
+    this.leaseOwner = lease.owner;
+    if (lease.owner !== this.instanceId) {
+      this.superseded = true;
+      return false;
+    }
+    try {
+      await this.blobs.write(this.name('lease.json'), this.leaseBody(), lease.generation);
+    } catch (err) {
+      if (!(err instanceof PreconditionFailed)) throw err;
+      const now = await this.readLease();
+      this.leaseOwner = now.owner ?? null;
+      if (now.owner !== this.instanceId) this.superseded = true;
+    }
     return !this.superseded;
+  }
+
+  /**
+   * A superseded process takes the lease back when its owner has stopped
+   * heartbeating — the newer container that claimed it crashed, or its deploy
+   * was rolled back — so the survivor recovers with no restart by hand. The
+   * write is conditional on the stale lease it read, so two survivors cannot
+   * both win. True when this process owns the lease again.
+   */
+  async reclaimIfStale(staleAfterMs: number): Promise<boolean> {
+    if (!this.superseded) return true;
+    const lease = await this.readLease();
+    const stale =
+      lease.owner === undefined ||
+      lease.heartbeatAt === undefined ||
+      this.clock() - lease.heartbeatAt > staleAfterMs;
+    if (!stale) return false;
+    try {
+      await this.blobs.write(this.name('lease.json'), this.leaseBody(), lease.generation);
+    } catch (err) {
+      if (err instanceof PreconditionFailed) return false;
+      throw err;
+    }
+    this.leaseOwner = this.instanceId;
+    this.superseded = false;
+    this.lastLeaseCheck = this.clock();
+    return true;
   }
 
   async readBuffer(): Promise<BufferDoc | null> {

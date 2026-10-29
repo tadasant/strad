@@ -204,6 +204,31 @@ describe('EventBuffer', () => {
     expect(b.add(msg('C1', ts(T0 - 1000)))).toBeNull();
   });
 
+  it('a conflict merge re-sequences foreign events above every cursor already issued', () => {
+    let now = T0;
+    const mine = new EventBuffer(7 * 86_400_000, () => now);
+    const theirs = new EventBuffer(7 * 86_400_000, () => now);
+    theirs.add(msg('C1', ts(T0, 1))); // the old process's event, an early seq
+    now += 1000;
+    mine.add(msg('C1', ts(now, 2)));
+    const held = mine.poll({ cursor: null, args: all, maxEvents: 10 }).cursor;
+    mine.merge(theirs.toDoc(), { resequence: true });
+    const got = mine.poll({ cursor: held, args: all, maxEvents: 10 });
+    expect(got.events.map((e) => e.data.ts)).toEqual([ts(T0, 1)]);
+    expect(got.truncated).toBe(false);
+    // A boot merge keeps the numbers clients were handed.
+    const booted = new EventBuffer(7 * 86_400_000, () => now);
+    booted.merge(theirs.toDoc(), { resequence: false });
+    expect(booted.poll({ cursor: held, args: all, maxEvents: 10 }).events).toEqual([]);
+  });
+
+  it('a parent backfilled with thread_ts === ts has the same payload as one seen live', () => {
+    const live = msg('C1', ts(T0, 1));
+    const backfilled = msg('C1', ts(T0, 1), { thread_ts: ts(T0, 1) });
+    expect(backfilled.data).toEqual(live.data);
+    expect(backfilled.data.thread_ts).toBeUndefined();
+  });
+
   it('a fresh buffer starts above every cursor an older process minted', () => {
     let now = T0;
     const old = new EventBuffer(7 * 86_400_000, () => now);
@@ -389,6 +414,76 @@ describe('SlackEventsIngest', () => {
     expect(a.sockets[0]!.closed).not.toBeNull();
     expect((a.ingest.status().lease as { superseded: boolean }).superseded).toBe(true);
 
+    await b.ingest.close();
+  });
+
+  it('a backfill that fails for one conversation reads the rest and does not advance live_through', async () => {
+    const blobs = new MemoryBlobStore();
+    const slack = fakeSlack();
+    let now = T0;
+    const a = await bootIngest(blobs, slack, () => now);
+    a.sockets[0]!.frame({ type: 'hello' });
+    await settle();
+    await a.ingest.liveTick();
+    await a.ingest.close();
+
+    now = T0 + 10 * 60_000;
+    slack.history.C1 = [{ type: 'message', ts: ts(now, 1), user: 'U2', text: 'recovered' }];
+    slack.history.C2 = [];
+    const real = slack.fetch;
+    slack.fetch = (async (input: string | URL, init?: RequestInit) => {
+      const params = new URLSearchParams(String(init?.body ?? ''));
+      if (String(input).endsWith('conversations.history') && params.get('channel') === 'C2') {
+        return new Response(JSON.stringify({ ok: false, error: 'channel_not_found' }));
+      }
+      return real(input, init);
+    }) as typeof fetch;
+
+    const b = await bootIngest(blobs, slack, () => now);
+    b.sockets[0]!.frame({ type: 'hello' });
+    await settle();
+    const status = b.ingest.status() as {
+      backfill: { conversations_failed: number; events_added: number; gap_still_owed: boolean };
+      buffer: { live_through: string };
+    };
+    expect(status.backfill).toMatchObject({ conversations_failed: 1, events_added: 1, gap_still_owed: true });
+    now += 60_000;
+    await b.ingest.liveTick();
+    // Still the old moment: the next reconnect re-reads the whole gap.
+    expect((b.ingest.status().buffer as { live_through: string }).live_through).toBe(
+      new Date(T0).toISOString()
+    );
+    await b.ingest.close();
+  });
+
+  it('a superseded process takes the lease back once the owner stops heartbeating', async () => {
+    const blobs = new MemoryBlobStore();
+    const slack = fakeSlack();
+    let now = T0;
+    const a = await bootIngest(blobs, slack, () => now);
+    a.sockets[0]!.frame({ type: 'hello' });
+    await settle();
+    const b = await bootIngest(blobs, slack, () => now);
+    now += 31_000;
+    await a.ingest.leaseTick();
+    expect(a.ingest.state).toBe('superseded');
+
+    // B is alive and heartbeating: A stays down.
+    await b.ingest.leaseTick();
+    now += 31_000;
+    await a.ingest.leaseTick();
+    expect(a.ingest.state).toBe('superseded');
+
+    // B dies without a word. Past three check intervals, A takes it back.
+    now += 100_000;
+    await a.ingest.leaseTick();
+    expect(a.ingest.state).toBe('reconnecting');
+    expect((a.ingest.status().lease as { superseded: boolean }).superseded).toBe(false);
+    // And B, if it were still running, would learn it lost.
+    now += 31_000;
+    await b.ingest.leaseTick();
+    expect(b.ingest.state).toBe('superseded');
+    await a.ingest.close();
     await b.ingest.close();
   });
 

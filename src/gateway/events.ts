@@ -7,6 +7,7 @@ import {
   namespaced,
   type EventDescriptor,
   type PollEventsResult,
+  type ServerAdapter,
 } from "./adapters/types.ts";
 import type { Registry } from "./registry.ts";
 
@@ -81,24 +82,34 @@ export class EventsError extends Error {
 
 /** How long `initialize` waits on one upstream's handshake to decide the advertisement. */
 export const SUPPORTS_EVENTS_DEADLINE_MS = 3_000;
+/** How long `events/list` waits on one upstream's listing. */
+export const LIST_EVENTS_DEADLINE_MS = 10_000;
 
 const ListEventsRequestSchema = z.object({
   method: z.literal("events/list"),
   params: z.object({ cursor: z.string().optional() }).passthrough().optional(),
 });
 
+/**
+ * The SDK parses a request against the schema it was registered with and
+ * answers a mismatch as `-32603` with the parser's dump. So the registered
+ * schema only matches the method, and the params are checked inside the
+ * handler, where a mismatch can be the `-32602` the draft says it is.
+ */
 const PollEventsRequestSchema = z.object({
   method: z.literal("events/poll"),
-  params: z
-    .object({
-      name: z.string(),
-      arguments: z.record(z.unknown()).nullish(),
-      cursor: z.string().nullish(),
-      maxEvents: z.number().int().positive().optional(),
-      maxAgeMs: z.number().nonnegative().optional(),
-    })
-    .passthrough(),
+  params: z.unknown().optional(),
 });
+
+const PollEventsParamsSchema = z
+  .object({
+    name: z.string(),
+    arguments: z.record(z.unknown()).nullish(),
+    cursor: z.string().nullish(),
+    maxEvents: z.number().int().positive().optional(),
+    maxAgeMs: z.number().nonnegative().optional(),
+  })
+  .passthrough();
 
 /**
  * Does any selected slug serve events? Asked on `initialize` only, in
@@ -113,19 +124,31 @@ export async function selectionSupportsEvents(
   const answers = await Promise.all(
     selected.map(async (slug) => {
       const adapter = registry.get(slug);
-      if (!adapter?.supportsEvents) return false;
-      try {
-        return await withDeadline(
-          () => adapter.supportsEvents!(),
-          deadlineMs,
-          "the events handshake",
-        );
-      } catch {
-        return false;
-      }
+      return adapter ? supportsWithin(adapter, deadlineMs) : false;
     }),
   );
   return answers.some(Boolean);
+}
+
+/**
+ * One slug's "do you serve events", bounded and never throwing. An upstream
+ * that is unconfigured, offline or slow is a "no" — for this request — and
+ * nothing is logged: none of those is an events fault.
+ */
+async function supportsWithin(
+  adapter: ServerAdapter,
+  deadlineMs = SUPPORTS_EVENTS_DEADLINE_MS,
+): Promise<boolean> {
+  if (!adapter.supportsEvents) return false;
+  try {
+    return await withDeadline(
+      () => adapter.supportsEvents!(),
+      deadlineMs,
+      "the events handshake",
+    );
+  } catch {
+    return false;
+  }
 }
 
 export interface EventHandlerOptions {
@@ -154,8 +177,16 @@ export function registerEventHandlers(
       selected.map(async (slug): Promise<EventDescriptor[]> => {
         const adapter = registry.get(slug);
         if (!adapter?.listEvents) return [];
+        // Asked first, so an upstream that is unconfigured, offline or has no
+        // events is skipped quietly, the way the handshake already answered it.
+        // What fails AFTER a handshake that advertised events is a fault.
+        if (!(await supportsWithin(adapter))) return [];
         try {
-          const events = await adapter.listEvents();
+          const events = await withDeadline(
+            () => adapter.listEvents!(),
+            LIST_EVENTS_DEADLINE_MS,
+            "events/list",
+          );
           return events.map((e) => ({ ...e, name: namespaced(slug, e.name) }));
         } catch {
           // One upstream that cannot list does not hide the others' events.
@@ -169,7 +200,16 @@ export function registerEventHandlers(
   });
 
   server.setRequestHandler(PollEventsRequestSchema, async (request) => {
-    const { name } = request.params;
+    const checked = PollEventsParamsSchema.safeParse(request.params);
+    if (!checked.success) {
+      const issue = checked.error.issues[0];
+      throw new EventsError(
+        EVENTS_ERROR.invalidParams,
+        `events/poll: ${issue ? `${issue.path.join(".") || "params"}: ${issue.message}` : "invalid params"}`,
+      );
+    }
+    const params = checked.data;
+    const { name } = params;
     const parsed = denamespace(name);
     if (!parsed) {
       throw new EventsError(
@@ -203,14 +243,12 @@ export function registerEventHandlers(
     try {
       result = await adapter.pollEvents({
         name: parsed.tool,
-        arguments: request.params.arguments ?? {},
-        cursor: request.params.cursor ?? null,
-        ...(request.params.maxEvents !== undefined
-          ? { maxEvents: request.params.maxEvents }
+        arguments: params.arguments ?? {},
+        cursor: params.cursor ?? null,
+        ...(params.maxEvents !== undefined
+          ? { maxEvents: params.maxEvents }
           : {}),
-        ...(request.params.maxAgeMs !== undefined
-          ? { maxAgeMs: request.params.maxAgeMs }
-          : {}),
+        ...(params.maxAgeMs !== undefined ? { maxAgeMs: params.maxAgeMs } : {}),
       });
     } catch (err) {
       throw relayed(err, parsed.slug);

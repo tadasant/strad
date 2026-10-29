@@ -4087,6 +4087,8 @@ connection has run in CI, and it stays off until `SLACK_APP_TOKEN` and the
   until then.
 - **`tools:` does not narrow events.** A read-only slug sharing the mount sees
   the same events.
+- **The bucket is made by hand.** The GCS bucket and the service account that
+  writes it are created once in GCP, outside any deploy, as for WhatsApp.
 
 **How you would know.** `slack_events_status` reports the state, the last
 backfill and how many reads were cut short, and the last GCS write.

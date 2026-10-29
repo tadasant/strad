@@ -345,6 +345,26 @@ describe("events/poll", () => {
     await c.close();
   });
 
+  it("answers malformed params as InvalidParams (-32602), not an internal error", async () => {
+    const c = await client("feed");
+    for (const params of [
+      {
+        name: "feed__message_posted",
+        arguments: {},
+        cursor: null,
+        maxEvents: 0,
+      },
+      { name: "feed__message_posted", arguments: {}, cursor: 5 },
+      { name: "feed__message_posted", arguments: "nope", cursor: null },
+      { arguments: {}, cursor: null },
+    ]) {
+      await expect(
+        c.request({ method: "events/poll", params }, Loose),
+      ).rejects.toMatchObject({ code: -32602 });
+    }
+    await c.close();
+  });
+
   it("refuses a name that is not namespaced", async () => {
     const c = await client("feed");
     await expect(poll(c, "message_posted", null)).rejects.toMatchObject({

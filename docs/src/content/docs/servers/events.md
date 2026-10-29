@@ -24,7 +24,13 @@ Three things, all on the ordinary `/mcp` endpoint:
   `capabilities.extensions["io.modelcontextprotocol/events"] = {}` when a slug
   selected for the request serves events. Core does not decide that from config.
   It asks each selected upstream's own handshake, in parallel, with a 3-second
-  bound per slug. A slow or failing slug counts as "no" for that request.
+  bound per slug. A slow or failing slug counts as "no" for that request. A
+  `local-tunnel` slug is never asked: it is a machine that is often off, and
+  nothing on one serves events.
+- **`events/list`** only asks a slug whose handshake advertised events, so an
+  unconfigured, offline or tools-only slug is skipped quietly. A listing that
+  fails after the handshake advertised events is a fault, and exports
+  `mcp.events_list_failed`.
 - **`events/list`** `{cursor?}` returns `{events: [...]}`, the union over the
   selected slugs. Each name is prefixed `<slug>__`, like a tool:
   `slack-zimmer__message_posted`. There is one page and no `nextCursor`.
@@ -77,7 +83,7 @@ is the dedupe key. The payload:
 | `channel_id`   |                                                             |
 | `channel_type` | `channel`, `group` (a private channel) or `im`              |
 | `ts`           | the message's Slack timestamp                               |
-| `thread_ts`    | present on a thread reply, and on a parent that has replies |
+| `thread_ts`    | present on a thread reply only; a parent is top-level       |
 | `user_id`      | absent on a bot or integration post                         |
 | `bot_id`, `username` | present on a bot or integration post                  |
 | `is_dm`        | `channel_type` is `im`                                      |
@@ -115,6 +121,13 @@ This copies the [WhatsApp](/servers/whatsapp/) bridge.
   app's events across all of its open Socket Mode connections, so two live
   sockets would each get half the stream.
 - **Written every couple of seconds**, not per event, and on SIGTERM.
+- **A heartbeat in the lease.** The owner refreshes it every 30 seconds. A
+  superseded process takes the lease back once the heartbeat is 90 seconds old,
+  so a newer container that dies or rolls back does not leave the feed down
+  until somebody restarts the old one.
+- **Merging after a write conflict re-sequences.** The other writer's events
+  that are new to this buffer get fresh sequence numbers, above every cursor
+  already handed out, so a client never steps over them.
 - **The cursor is a sequence number** that grows with the clock, so a cursor
   from one process still works after a deploy, and after the buffer is lost.
 - **`truncated: true`** means an event after the cursor was evicted, by age or
@@ -128,6 +141,12 @@ before the last moment any process held a live socket. Top-level messages come
 from `conversations.history`. Replies come from `conversations.replies`, which
 is asked only for a parent whose latest reply falls inside the gap. The dedupe
 on `channel:ts` drops what the buffer already holds.
+
+**The gap is not given up until it has been read.** `live_through` does not
+move while a backfill is owed. A conversation that fails is counted, the others
+are still read, and the gap is re-read on the next pass. That pass is the
+settle pass below, a retry every five minutes while the socket is up, or the
+next reconnect.
 
 It runs once more about 75 seconds after connecting. During a deploy the old
 and new containers overlap, and Slack can hand some events to the old socket in
@@ -159,10 +178,20 @@ The ingest needs six variables on the component serving the slug:
 | `SLACK_EVENTS_GCS_PRIVATE_KEY`   | its key's `private_key`                                               |
 
 `SLACK_EVENTS_GCS_PREFIX` (default `slack-events`) and
-`SLACK_EVENTS_RETENTION_DAYS` (default 7, at most 30) are optional. Seed them
-in the console's secrets page for the slug. A slug with `params: true` reads
-them from its own namespace, such as
-`/strad/prod/mcp/slack-zimmer/static/SLACK_APP_TOKEN`.
+`SLACK_EVENTS_RETENTION_DAYS` (default 7, at most 30) are optional.
+
+**How they reach the container.** Use `params: true` on the slug, with the
+`gcp-parameter-store` provider. The slug's whole namespace lands on its
+component, so seeding `/strad/prod/mcp/slack-zimmer/static/SLACK_APP_TOKEN` and
+its siblings in the console is the whole step, followed by a deploy. Do **not**
+add them to the slug's `env:` map behind `mayBeUnseeded:` before they are
+seeded. That marks the whole slug `unconfigured` until they land, which takes
+the existing Slack tools down with it. Under the `env` provider, add them to
+`env:` only once all six are seeded.
+
+The bucket and its service account are made in GCP by hand, once, the same way
+as the [WhatsApp](/servers/whatsapp/) bridge's. See
+[Limitations #131](/limitations/).
 
 Until all six are present the mount is inert. It opens no socket, makes no
 Slack or GCS call, lists no event types and does not advertise the extension.

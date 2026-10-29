@@ -76,6 +76,18 @@ const BACKFILL_OVERLAP_MS = 120_000;
 const BACKFILL_MAX_PAGES = 10;
 const FLUSH_DEBOUNCE_MS = 2_000;
 const LIVE_HEARTBEAT_MS = 60_000;
+/**
+ * How stale `live_through` may get before advancing it is worth a write of its
+ * own. The buffer is one object, so a write is the whole buffer; between those,
+ * the moment rides along with whatever flush the next event causes.
+ */
+const LIVE_PERSIST_MS = 5 * 60_000;
+/** A connection that lived this long earns a reset backoff; a flapping one does not. */
+const STABLE_CONNECTION_MS = 60_000;
+/** While a backfill is owed, retry it at most this often. */
+const BACKFILL_RETRY_MS = 5 * 60_000;
+/** Take the lease back once its owner's heartbeat is this old. */
+const LEASE_STALE_MS = LEASE_CHECK_MS * 3;
 const BACKOFF_START_MS = 1_000;
 const BACKOFF_MAX_MS = 60_000;
 /** A credential Slack refused does not get better in a second. */
@@ -147,6 +159,19 @@ export class SlackEventsIngest {
   private flushing: Promise<void> | null = null;
   private backoffMs = BACKOFF_START_MS;
   private lastSupersededReload = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private settleTimer: ReturnType<typeof setTimeout> | null = null;
+  private bootFailure: unknown = null;
+  private connectLoopRunning = false;
+  /**
+   * True from a `hello` until a backfill for that connection completes with no
+   * conversation failing. While it is, `live_through` does not move: advancing
+   * it past a gap nobody re-read is how a gap is lost for good.
+   */
+  private backfillPending = false;
+  private backfillChain: Promise<void> = Promise.resolve();
+  private lastBackfillAttempt = 0;
+  private livePersistedAt = 0;
 
   // What the status tool reports.
   private connectedSince: number | null = null;
@@ -160,6 +185,7 @@ export class SlackEventsIngest {
     conversations: number;
     added: number;
     incomplete: number;
+    failed: number;
     error?: string;
   } | null = null;
   private envelopes = 0;
@@ -223,7 +249,11 @@ export class SlackEventsIngest {
 
   /** Idempotent. Resolves once the persisted buffer is loaded; the socket keeps going on its own. */
   start(): Promise<void> {
-    if (!this.config) return Promise.resolve();
+    if (!this.config || this.stopped) return Promise.resolve();
+    // A failed boot owns ONE retry timer. Until it fires, a caller is told the
+    // stored failure rather than starting a second boot — and a second chain of
+    // retries behind it.
+    if (this.retryTimer) return Promise.reject(this.bootFailure);
     this.ready ??= this.boot();
     return this.ready;
   }
@@ -233,9 +263,10 @@ export class SlackEventsIngest {
     const buffer = this.buffer!;
     try {
       const doc = await store.readBuffer();
-      if (doc) buffer.merge(doc);
+      if (doc) buffer.merge(doc, { resequence: false });
       this.flushedRevision = buffer.revision;
       await store.claimLease();
+      this.bootFailure = null;
     } catch (err) {
       // The buffer could not be read. Serving from an empty one would hand
       // every client "nothing happened"; the state and the error say otherwise,
@@ -243,11 +274,17 @@ export class SlackEventsIngest {
       this.fail(`loading the buffer from GCS: ${errText(err)}`);
       this.state = 'reconnecting';
       this.ready = null;
-      if (!this.manual) {
-        setTimeout(() => this.start().catch(() => {}), this.nextBackoff()).unref?.();
+      this.bootFailure = err;
+      if (!this.manual && !this.stopped) {
+        this.retryTimer = setTimeout(() => {
+          this.retryTimer = null;
+          this.start().catch(() => {});
+        }, this.nextBackoff());
+        this.retryTimer.unref?.();
       }
       throw err;
     }
+    if (this.stopped) return;
     if (!this.manual) {
       this.timers.push(
         setInterval(() => void this.leaseTick(), LEASE_CHECK_MS),
@@ -281,7 +318,15 @@ export class SlackEventsIngest {
       ws.addEventListener('close', (ev) => {
         if (this.ws === ws) {
           this.ws = null;
+          if (
+            this.connectedSince !== null &&
+            this.clock() - this.connectedSince >= STABLE_CONNECTION_MS
+          ) {
+            this.backoffMs = BACKOFF_START_MS;
+          }
           this.connectedSince = null;
+          if (this.settleTimer) clearTimeout(this.settleTimer);
+          this.settleTimer = null;
           if (!this.stopped && !this.store!.superseded) this.state = 'reconnecting';
           if (ev.code !== undefined && ev.code !== 1000) {
             this.lastError = `socket closed (${ev.code}${ev.reason ? ` ${ev.reason}` : ''})`;
@@ -293,6 +338,16 @@ export class SlackEventsIngest {
   }
 
   private async connectLoop(): Promise<void> {
+    if (this.connectLoopRunning) return;
+    this.connectLoopRunning = true;
+    try {
+      await this.connectLoopBody();
+    } finally {
+      this.connectLoopRunning = false;
+    }
+  }
+
+  private async connectLoopBody(): Promise<void> {
     while (!this.stopped && !this.store!.superseded) {
       let wait: number;
       try {
@@ -339,16 +394,27 @@ export class SlackEventsIngest {
       }
     }
     switch (frame.type) {
-      case 'hello':
+      case 'hello': {
         this.state = 'connected';
-        this.connectedSince = this.clock();
-        this.backoffMs = BACKOFF_START_MS;
+        const connectedAt = this.clock();
+        this.connectedSince = connectedAt;
         this.lastError = null;
-        void this.backfill().then(() => this.markLive());
+        this.backfillPending = true;
+        void this.runBackfill();
+        // The settle pass: what Slack handed the OLD process's socket while a
+        // deploy overlapped the two, which that process will not write. It
+        // reads from before this connection opened, whatever the first pass
+        // did to `live_through`.
         if (!this.manual) {
-          setTimeout(() => void this.backfill(), LEASE_CHECK_MS * 2 + 15_000).unref?.();
+          if (this.settleTimer) clearTimeout(this.settleTimer);
+          this.settleTimer = setTimeout(() => {
+            this.settleTimer = null;
+            void this.runBackfill(connectedAt);
+          }, LEASE_CHECK_MS * 2 + 15_000);
+          this.settleTimer.unref?.();
         }
         return;
+      }
       case 'disconnect':
         // `refresh_requested` is routine; `link_disabled` means Socket Mode was
         // turned off for the app, which the close and the next open will say.
@@ -389,32 +455,65 @@ export class SlackEventsIngest {
    * the gap. Bounded at {@link BACKFILL_MAX_PAGES} pages per read; a read cut
    * short is counted as `incomplete` on the status tool.
    */
-  async backfill(): Promise<void> {
-    if (!this.config || !this.bot || this.store!.superseded) return;
+  /**
+   * Backfills are serialised: a `hello`, its settle pass and a retry never read
+   * the same conversations at once. `notAfter` caps the start of the window at
+   * that moment (the settle pass's connection time).
+   */
+  runBackfill(notAfter?: number): Promise<void> {
+    this.backfillChain = this.backfillChain.then(async () => {
+      if (this.stopped) return;
+      this.lastBackfillAttempt = this.clock();
+      const complete = await this.backfill(notAfter);
+      if (complete && this.backfillPending) {
+        this.backfillPending = false;
+        this.markLive(true);
+      }
+    });
+    return this.backfillChain;
+  }
+
+  /**
+   * Re-reads every conversation the bot is in from just before `live_through`.
+   * True when every conversation was read; a failed one is counted, the rest
+   * still run, and `live_through` stays where it was so the gap is re-read.
+   */
+  async backfill(notAfter?: number): Promise<boolean> {
+    if (!this.config || !this.bot || this.store!.superseded || this.stopped) return false;
     const buffer = this.buffer!;
     const api = this.api!;
     const now = this.clock();
     const retentionStart = now - this.config.retentionDays * 86_400_000;
-    const record = {
+    const record: NonNullable<SlackEventsIngest['lastBackfill']> = {
       at: now,
-      since: null as number | null,
+      since: null,
       conversations: 0,
       added: 0,
       incomplete: 0,
+      failed: 0,
     };
     if (buffer.liveThrough === null) {
       this.lastBackfill = record;
-      return;
+      return true;
     }
-    const since = Math.max(buffer.liveThrough - BACKFILL_OVERLAP_MS, retentionStart);
+    const from = notAfter !== undefined ? Math.min(buffer.liveThrough, notAfter) : buffer.liveThrough;
+    const since = Math.max(from - BACKFILL_OVERLAP_MS, retentionStart);
     record.since = since;
     const sinceTs = toSlackTs(since);
     const lookbackTs = toSlackTs(Math.max(since - THREAD_LOOKBACK_MS, retentionStart));
+    let conversations: { id: string; type: 'channel' | 'group' | 'im' }[];
     try {
-      const conversations = await api.memberConversations();
-      record.conversations = conversations.length;
-      for (const conv of conversations) {
-        const hint = { id: conv.id, type: conv.type };
+      conversations = await api.memberConversations();
+    } catch (err) {
+      this.lastBackfill = { ...record, failed: 1, error: errText(err) };
+      logWarning('slack-events', `backfill could not list conversations: ${errText(err)}`);
+      return false;
+    }
+    record.conversations = conversations.length;
+    for (const conv of conversations) {
+      if (this.stopped || this.store!.superseded) return false;
+      const hint = { id: conv.id, type: conv.type };
+      try {
         // Collected, then ingested in message order, so a recovered reply is
         // sequenced after the top-level messages that preceded it.
         const found = new Map<string, RawSlackMessage>();
@@ -435,25 +534,49 @@ export class SlackEventsIngest {
         for (const t of [...found.keys()].sort()) {
           if (this.ingest(found.get(t)!, hint)) record.added++;
         }
+      } catch (err) {
+        record.failed++;
+        record.error ??= `${conv.id}: ${errText(err)}`;
       }
-      this.lastBackfill = record;
-    } catch (err) {
-      this.lastBackfill = { ...record, error: errText(err) };
-      logWarning('slack-events', `backfill failed: ${errText(err)}`);
     }
+    this.lastBackfill = record;
+    if (record.failed > 0) {
+      logWarning(
+        'slack-events',
+        `backfill read ${record.conversations - record.failed}/${record.conversations} ` +
+          `conversations; first failure: ${record.error}`
+      );
+    }
+    return record.failed === 0;
   }
 
   // --- persistence and the lease -----------------------------------------------
 
-  private markLive(): void {
-    if (this.state !== 'connected' || this.store!.superseded) return;
-    this.buffer!.liveThrough = this.clock();
-    this.buffer!.revision++;
-    this.scheduleFlush();
+  /**
+   * Moves `live_through` to now — never while a backfill is owed. `persist`
+   * forces a write; otherwise one is only worth it every LIVE_PERSIST_MS, and
+   * the moment rides along with the next event's flush in between.
+   */
+  private markLive(persist = false): void {
+    if (this.state !== 'connected' || this.store!.superseded || this.backfillPending) return;
+    const now = this.clock();
+    this.buffer!.liveThrough = now;
+    if (persist || now - this.livePersistedAt >= LIVE_PERSIST_MS) {
+      this.livePersistedAt = now;
+      this.buffer!.revision++;
+      this.scheduleFlush();
+    }
   }
 
   /** Exposed for tests; the interval calls it. */
   async liveTick(): Promise<void> {
+    if (
+      this.backfillPending &&
+      this.state === 'connected' &&
+      this.clock() - this.lastBackfillAttempt >= BACKFILL_RETRY_MS
+    ) {
+      void this.runBackfill();
+    }
     this.markLive();
     this.buffer?.prune();
     await this.flush();
@@ -461,12 +584,33 @@ export class SlackEventsIngest {
 
   /** Exposed for tests; the interval calls it. */
   async leaseTick(): Promise<void> {
-    if (!this.store || this.store.superseded) return;
+    if (!this.store || this.stopped) return;
     try {
+      if (this.store.superseded) {
+        await this.tryReclaim();
+        return;
+      }
       if (!(await this.store.checkLease())) this.onSuperseded();
     } catch (err) {
       logWarning('slack-events', `lease check failed: ${errText(err)}`);
     }
+  }
+
+  /**
+   * The newer process that took the lease has stopped heartbeating — its
+   * container died, or its deploy rolled back. Take the socket back, from the
+   * buffer it last wrote, rather than leaving the feed down until a restart.
+   */
+  private async tryReclaim(): Promise<void> {
+    const store = this.store!;
+    if (!(await store.reclaimIfStale(LEASE_STALE_MS))) return;
+    const doc = await store.readBuffer();
+    if (doc) this.buffer!.replace(doc);
+    this.flushedRevision = this.buffer!.revision;
+    this.state = 'reconnecting';
+    this.lastError = null;
+    logWarning('slack-events', 'took the lease back from an owner that stopped heartbeating');
+    if (!this.manual) void this.connectLoop();
   }
 
   private onSuperseded(): void {
@@ -498,7 +642,7 @@ export class SlackEventsIngest {
     const revision = buffer.revision;
     this.flushing = this.store
       .writeBuffer(buffer.toDoc(), (theirs: BufferDoc) => {
-        buffer.merge(theirs);
+        buffer.merge(theirs, { resequence: true });
         return buffer.toDoc();
       })
       .then(() => {
@@ -525,6 +669,9 @@ export class SlackEventsIngest {
     this.stopped = true;
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
+    for (const t of [this.retryTimer, this.settleTimer]) if (t) clearTimeout(t);
+    this.retryTimer = null;
+    this.settleTimer = null;
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.flushTimer = null;
     this.ws?.close(1000, 'shutdown');
@@ -590,7 +737,8 @@ export class SlackEventsIngest {
   /**
    * A superseded process can still be routed a poll while a deploy overlaps,
    * and its memory stops at the moment it stopped writing. It answers from the
-   * live owner's persisted buffer instead, re-read at most every few seconds.
+   * live owner's persisted buffer instead — replaced, not merged, so its cursors
+   * are the owner's — re-read at most every few seconds.
    */
   private async refreshIfSuperseded(): Promise<void> {
     if (!this.store!.superseded) return;
@@ -598,7 +746,7 @@ export class SlackEventsIngest {
     this.lastSupersededReload = this.clock();
     try {
       const doc = await this.store!.readBuffer();
-      if (doc) this.buffer!.merge(doc);
+      if (doc) this.buffer!.replace(doc);
     } catch (err) {
       logWarning('slack-events', `superseded re-read failed: ${errText(err)}`);
     }
@@ -633,6 +781,8 @@ export class SlackEventsIngest {
         conversations: this.lastBackfill.conversations,
         events_added: this.lastBackfill.added,
         reads_cut_short: this.lastBackfill.incomplete,
+        conversations_failed: this.lastBackfill.failed,
+        gap_still_owed: this.backfillPending,
         error: this.lastBackfill.error ?? null,
       },
       buffer: {

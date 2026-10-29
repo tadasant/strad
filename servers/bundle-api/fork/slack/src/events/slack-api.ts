@@ -115,7 +115,7 @@ export class SlackApi {
     return out;
   }
 
-  /** Messages with `ts` after `oldest`, oldest first, up to `maxPages` pages of 200. */
+  /** Messages with `ts` after `oldest`, newest first (Slack's order), up to `maxPages` pages of 200. */
   async history(
     channel: string,
     oldest: string,

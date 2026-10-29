@@ -1021,6 +1021,10 @@ export class HttpServerAdapter implements ServerAdapter {
    * Free once connected: the handshake is cached with the connection.
    */
   async supportsEvents(): Promise<boolean> {
+    // A local-tunnel upstream is a machine somebody owns, off much of the
+    // time, and nothing on one serves events. Asking would put its connect
+    // timeout in front of every `initialize` and `events/list`.
+    if (this.kind === "local-tunnel") return false;
     const conn = await this.leased();
     try {
       return this.advertisesEvents(conn);
@@ -1045,6 +1049,7 @@ export class HttpServerAdapter implements ServerAdapter {
    * asking each of them would be a round trip per listing to be told `-32601`.
    */
   async listEvents(): Promise<EventDescriptor[]> {
+    if (this.kind === "local-tunnel") return [];
     return this.transient(() =>
       this.authorized(async () => {
         const conn = await this.leased();
@@ -1078,6 +1083,9 @@ export class HttpServerAdapter implements ServerAdapter {
    * answers `-32601`, which src/gateway/events.ts turns into NotFound.
    */
   async pollEvents(params: PollEventsParams): Promise<PollEventsResult> {
+    if (this.kind === "local-tunnel") {
+      throw new McpError(ErrorCode.MethodNotFound, "events/poll");
+    }
     return this.authorized(async () => {
       const conn = await this.leased();
       const res = await this.lease(conn, "poll_events", (client) =>
