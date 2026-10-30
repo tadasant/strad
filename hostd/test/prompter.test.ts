@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   APPLESCRIPT_DIALOG,
+  COOLDOWN_LABEL,
   JXA_DIALOG,
   MOUSE_ONLY_NOTE,
   MacDialogPrompter,
+  ZenityPrompter,
   type DialogRunner,
   type PromptRequest,
 } from "../src/consent/prompter.js";
@@ -51,6 +53,30 @@ describe("the macOS consent dialog", () => {
     expect(seconds).toBe("10");
   });
 
+  it("puts Allow in the primary place and 'Disallow and cool down' last", () => {
+    const order = ["Allow", "Reject", COOLDOWN_LABEL].map((label) =>
+      JXA_DIALOG.indexOf(`addButtonWithTitle("${label}")`),
+    );
+    expect(order.every((i) => i > 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(JXA_DIALOG).toContain('if (r === 1000) return "Allow"');
+    expect(JXA_DIALOG).toContain('if (r === 1001) return "Reject"');
+    expect(JXA_DIALOG).toContain('if (r === 1002) return "Cooldown"');
+  });
+
+  it("reads 'Disallow and cool down' as a rejection that asks for quiet", async () => {
+    expect(
+      await new MacDialogPrompter(scripted(out("Cooldown\n")).runner).prompt(
+        REQ,
+      ),
+    ).toBe("rejected_cooldown");
+    expect(
+      await new MacDialogPrompter(
+        scripted(out("", 1), out("Cooldown")).runner,
+      ).prompt(REQ),
+    ).toBe("rejected_cooldown");
+  });
+
   it("maps Reject and the countdown the way it always has", async () => {
     expect(
       await new MacDialogPrompter(scripted(out("Reject")).runner).prompt(REQ),
@@ -76,7 +102,12 @@ describe("the macOS consent dialog", () => {
   it("the AppleScript fallback has no default button and no Cancel, so neither Return nor Escape answers it", () => {
     expect(APPLESCRIPT_DIALOG).not.toMatch(/default button/);
     expect(APPLESCRIPT_DIALOG).not.toMatch(/cancel button|"Cancel"/);
-    expect(APPLESCRIPT_DIALOG).toContain('buttons {"Reject", "Allow"}');
+    expect(APPLESCRIPT_DIALOG).toContain(
+      `buttons {"${COOLDOWN_LABEL}", "Reject", "Allow"}`,
+    );
+    expect(APPLESCRIPT_DIALOG).toContain(
+      `if button returned of r is "${COOLDOWN_LABEL}" then return "Cooldown"`,
+    );
   });
 
   it("falls back to AppleScript only when the JXA dialog failed without answering", async () => {
@@ -127,5 +158,19 @@ describe("the macOS consent dialog", () => {
       spawnFailed: true,
     });
     expect(await new MacDialogPrompter(runner).prompt(REQ)).toBe("unavailable");
+  });
+});
+
+describe("the zenity consent dialog", () => {
+  it("tells its extra button from a plain Reject by what it prints", async () => {
+    const z = (o: Outcome) =>
+      new ZenityPrompter(scripted(o).runner).prompt(REQ);
+    expect(await z(out(`${COOLDOWN_LABEL}\n`, 1))).toBe("rejected_cooldown");
+    expect(await z(out("", 1))).toBe("rejected");
+    expect(await z(out("", 0))).toBe("allowed");
+    expect(await z(out("", 5))).toBe("timeout");
+    const { runner, calls } = scripted(out("", 1));
+    await new ZenityPrompter(runner).prompt(REQ);
+    expect(calls[0]).toContain(`--extra-button=${COOLDOWN_LABEL}`);
   });
 });

@@ -151,11 +151,13 @@ invoice PDFs in ~/Documents and report their file names.
 
 Denied automatically in 10 seconds unless you allow it.
 
-Click Allow or Reject. The keyboard cannot answer this dialog.
+Click a button. The keyboard cannot answer this dialog.
 ```
 
-Buttons are **Reject** and **Allow**, and only a mouse click on one of them
-answers the dialog. It takes focus when it appears, and the owner may be typing
+Buttons are **Allow** (in the primary place), **Reject** and **Disallow and
+cool down**, and only a mouse click on one of them answers the dialog. Reject
+refuses this one request. Disallow and cool down refuses it and holds that
+server off for the cooldown (see the table below). It takes focus when it appears, and the owner may be typing
 in another app at that moment, so a key that answered it would decide requests
 nobody meant to decide. No key decides it, in either direction. Typing that
 lands on it is swallowed.
@@ -172,13 +174,14 @@ named Cancel, so Return and Escape do nothing there either. The purpose travels
 as an argument to a constant script. It is never interpolated into script
 source, so a purpose cannot close a string and start a `do shell script`.
 
-None of this has run on a Mac. Whether no key answers the `NSAlert`, and
+None of this has run on a Mac. Whether no key answers the `NSAlert`, whether
+its three buttons come back as the codes the script reads, and
 whether a first click on a button presses it rather than only bringing the
 window forward (macOS 14 can decline `activateIgnoringOtherApps`), are
 reasoned from AppKit, not observed.
 
 On Linux it is `zenity`, whose keys cannot be switched off: Return there
-rejects.
+rejects. Disallow and cool down is its `--extra-button`.
 
 The purpose is untrusted text headed for a screen. `src/consent/purpose.ts`
 strips control characters and bidi overrides (a right-to-left override can make a
@@ -199,7 +202,7 @@ supported and the choice belongs to the owner: `onTimeout: "allow"` in
 `~/.strad-hostd/config.json`, a file only they can write. The dialog says which
 rule is in force, and `request_control`'s description tells the caller, so an
 agent knows whether the owner has to be at the screen. Two outcomes are denials
-under either setting: a click on Reject, and a dialog that could not be shown at
+under either setting: a click on Reject (or Disallow and cool down), and a dialog that could not be shown at
 all (`no_display`: nobody is logged in to the desktop).
 
 The unattended configuration is therefore `onTimeout: "allow"` with
@@ -217,8 +220,9 @@ mentioned.
 | lifetime | 30 min, caller may ask up to 120 | a task, not a standing permission |
 | idle | 10 min | a caller that went away gives the grant back |
 | live grants | 4 | several sessions can work |
-| dialogs on screen | 1, machine-wide | the cooldown is only written when a rejection comes back, so without this a caller firing twenty requests at once gets several dialogs up before the first "no" lands. The rest are refused as `dialog_busy` |
-| after a Reject | 60 s cooldown for that server, no dialog shown | a rejection is an answer, and a caller cannot wear the owner down |
+| dialogs on screen | 1, machine-wide | a caller firing twenty requests at once would otherwise stack twenty dialogs, and a cooldown chosen in the first could not reach the others. The rest are refused as `dialog_busy` |
+| after a Kill, or "Disallow and cool down" | 60 s cooldown for that server (`consent.rejectCooldownSeconds`), no dialog shown | the owner deliberately ended or refused that server's control and asked for quiet. The Kill is the status page's (one grant or all), `strad-hostd kill`, or the banner's |
+| after a plain Reject, or an unanswered dialog | no cooldown: the next request gets a fresh dialog | a mis-click costs one request, not a minute of them. One dialog at a time is what keeps a caller from stacking them |
 | daemon restart | ends every grant | grants are in memory only; one that outlived the process that showed its dialog would be a permission nobody can see |
 
 ### The kill switch and the status page

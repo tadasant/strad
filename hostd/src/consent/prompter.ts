@@ -7,8 +7,20 @@ import { spawn } from "node:child_process";
  * shown and ignored is a decision the owner's config may interpret, and a dialog
  * that could not be shown at all is a request nobody had the chance to refuse.
  * The second is always a denial.
+ *
+ * `rejected_cooldown` is a Reject that also asks for quiet: the owner chose
+ * "Disallow and cool down", so the server's next requests are refused without a
+ * dialog for the cooldown. A plain Reject asks for nothing more than this once.
  */
-export type PromptAnswer = "allowed" | "rejected" | "timeout" | "unavailable";
+export type PromptAnswer =
+  "allowed" | "rejected" | "rejected_cooldown" | "timeout" | "unavailable";
+
+/**
+ * The third button's label, in every dialog that has one. The scripts spell it
+ * out rather than interpolate it, so no script source carries a `${`; the
+ * prompter tests hold them to this constant.
+ */
+export const COOLDOWN_LABEL = "Disallow and cool down";
 
 export interface PromptRequest {
   /** The requesting server's display name, e.g. `shell-tadas-mbp`. */
@@ -89,7 +101,11 @@ function run(argv) {
   var alert = $.NSAlert.alloc.init;
   alert.messageText = argv[1];
   alert.informativeText = argv[0];
-  var buttons = [alert.addButtonWithTitle("Reject"), alert.addButtonWithTitle("Allow")];
+  var buttons = [
+    alert.addButtonWithTitle("Allow"),
+    alert.addButtonWithTitle("Reject"),
+    alert.addButtonWithTitle("Disallow and cool down")
+  ];
   for (var i = 0; i < buttons.length; i++) {
     buttons[i].keyEquivalent = "";
     buttons[i].refusesFirstResponder = true;
@@ -101,8 +117,9 @@ function run(argv) {
   app.activateIgnoringOtherApps(true);
   app.performSelectorWithObjectAfterDelayInModes("abortModal", null, parseInt(argv[2], 10), $(["kCFRunLoopCommonModes"]));
   var r = alert.runModal;
-  if (r === 1000) return "Reject"; // NSAlertFirstButtonReturn
-  if (r === 1001) return "Allow"; // NSAlertSecondButtonReturn
+  if (r === 1000) return "Allow"; // NSAlertFirstButtonReturn
+  if (r === 1001) return "Reject"; // NSAlertSecondButtonReturn
+  if (r === 1002) return "Cooldown"; // NSAlertThirdButtonReturn
   return "timeout";
 }`;
 
@@ -113,14 +130,15 @@ function run(argv) {
  * which is why this is the fallback and not the dialog.
  */
 export const APPLESCRIPT_DIALOG = `on run argv
-  set r to display dialog (item 1 of argv) with title (item 2 of argv) buttons {"Reject", "Allow"} giving up after ((item 3 of argv) as integer) with icon caution
+  set r to display dialog (item 1 of argv) with title (item 2 of argv) buttons {"Disallow and cool down", "Reject", "Allow"} giving up after ((item 3 of argv) as integer) with icon caution
   if gave up of r then return "timeout"
+  if button returned of r is "Disallow and cool down" then return "Cooldown"
   return button returned of r
 end run`;
 
 /** Said under the request in the JXA dialog, the one no key answers. */
 export const MOUSE_ONLY_NOTE =
-  "Click Allow or Reject. The keyboard cannot answer this dialog.";
+  "Click a button. The keyboard cannot answer this dialog.";
 
 export type DialogRunner = typeof run;
 
@@ -128,6 +146,7 @@ function parseMac(stdout: string): PromptAnswer | undefined {
   const answer = stdout.trim();
   if (answer === "Allow") return "allowed";
   if (answer === "Reject") return "rejected";
+  if (answer === "Cooldown") return "rejected_cooldown";
   if (answer === "timeout") return "timeout";
   return undefined;
 }
@@ -181,8 +200,10 @@ export class MacDialogPrompter implements Prompter {
 
 /** Linux desktops, for the run-it-on-a-friend's-laptop case: `zenity`. */
 export class ZenityPrompter implements Prompter {
+  constructor(private readonly runner: DialogRunner = run) {}
+
   async prompt(req: PromptRequest): Promise<PromptAnswer> {
-    const { code, spawnFailed } = await run(
+    const { code, stdout, spawnFailed } = await this.runner(
       "zenity",
       [
         "--question",
@@ -191,6 +212,7 @@ export class ZenityPrompter implements Prompter {
         "--no-markup",
         "--ok-label=Allow",
         "--cancel-label=Reject",
+        `--extra-button=${COOLDOWN_LABEL}`,
         "--default-cancel",
         `--timeout=${req.seconds}`,
       ],
@@ -198,7 +220,11 @@ export class ZenityPrompter implements Prompter {
     );
     if (spawnFailed) return "unavailable";
     if (code === 0) return "allowed";
-    if (code === 1) return "rejected";
+    // The extra button exits 1 like Reject, and says which it was on stdout.
+    if (code === 1)
+      return stdout.trim() === COOLDOWN_LABEL
+        ? "rejected_cooldown"
+        : "rejected";
     if (code === 5) return "timeout";
     return "unavailable";
   }

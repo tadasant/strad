@@ -99,7 +99,14 @@ dialog; the flag exists for stdio only.
 The dialog uses `osascript` on macOS and `zenity` on Linux. On macOS only a
 mouse click answers it: Return, Escape, Space and Tab do nothing, so typing
 that lands on it is swallowed rather than taken as a decision. `zenity` keeps
-its own keys (Return rejects). With neither, every
+its own keys (Return rejects).
+
+The dialog has three buttons: **Allow**, **Reject**, and **Disallow and cool
+down**. Reject refuses one request and the next gets a fresh dialog, as does an
+unanswered one. A server is refused as `cooldown`, with no dialog, for
+`consent.rejectCooldownSeconds` only after you kill one of its grants (status
+page, `strad-hostd kill`, the banner) or pick Disallow and cool down. The kill
+switch starts none: it refuses everything until you turn it back on. With neither, every
 request is denied as `no_display`, so use `--no-consent` there.
 
 ### The browser server
@@ -266,20 +273,21 @@ except a command that moved itself into a new session (`setsid`).
 error. `src/config.ts` is the schema and documents each field. The ones that
 matter:
 
-| Field                                                      | Default             |                                                                    |
-| ---------------------------------------------------------- | ------------------- | ------------------------------------------------------------------ |
-| `consent.onTimeout`                                        | `"deny"`            | what an unanswered dialog means. `"allow"` makes it a veto window  |
-| `consent.windowSeconds`                                    | `10`                | how long the dialog stays up (3 is the minimum)                    |
-| `capabilities.<server>.clientKeys`                         | `{}`                | named extra keys for that server; `strad-hostd key add` writes it  |
-| `consent.grantMinutes` / `maxGrantMinutes` / `idleMinutes` | `30` / `120` / `10` | grant lifetime                                                     |
-| `shell.defaultCwd`                                         | `$HOME`             |                                                                    |
-| `native.mode`                                              | `"auto"`            | `socket` (the LaunchAgent, never a child), `stdio`, or `auto`      |
-| `native.binary` / `native.socketPath`                      | see `src/config.ts` | where `strad-hostd-ax` is, or where its LaunchAgent listens        |
-| `capabilities.<server>.onTimeout`                          | unset               | that server's own `consent.onTimeout`; `add messages` sets `allow` |
-| `messages.binary` / `messages.socketPath`                  | see `src/config.ts` | where `strad-hostd-messages` is, or where its LaunchAgent listens  |
-| `messages.maxAttachmentBytes`                              | `10485760`          | largest attachment returned, after conversion                      |
-| `computer.maxScreenshotWidth`                              | `1280`              | widest image `take_screenshot` returns                             |
-| `port` / `controlPort`                                     | `7311` / `7312`     | daemon mode only, both on `127.0.0.1`                              |
+| Field                                                      | Default             |                                                                        |
+| ---------------------------------------------------------- | ------------------- | ---------------------------------------------------------------------- |
+| `consent.onTimeout`                                        | `"deny"`            | what an unanswered dialog means. `"allow"` makes it a veto window      |
+| `consent.windowSeconds`                                    | `10`                | how long the dialog stays up (3 is the minimum)                        |
+| `consent.rejectCooldownSeconds`                            | `60`                | how long a server is held off after a Kill or "Disallow and cool down" |
+| `capabilities.<server>.clientKeys`                         | `{}`                | named extra keys for that server; `strad-hostd key add` writes it      |
+| `consent.grantMinutes` / `maxGrantMinutes` / `idleMinutes` | `30` / `120` / `10` | grant lifetime                                                         |
+| `shell.defaultCwd`                                         | `$HOME`             |                                                                        |
+| `native.mode`                                              | `"auto"`            | `socket` (the LaunchAgent, never a child), `stdio`, or `auto`          |
+| `native.binary` / `native.socketPath`                      | see `src/config.ts` | where `strad-hostd-ax` is, or where its LaunchAgent listens            |
+| `capabilities.<server>.onTimeout`                          | unset               | that server's own `consent.onTimeout`; `add messages` sets `allow`     |
+| `messages.binary` / `messages.socketPath`                  | see `src/config.ts` | where `strad-hostd-messages` is, or where its LaunchAgent listens      |
+| `messages.maxAttachmentBytes`                              | `10485760`          | largest attachment returned, after conversion                          |
+| `computer.maxScreenshotWidth`                              | `1280`              | widest image `take_screenshot` returns                                 |
+| `port` / `controlPort`                                     | `7311` / `7312`     | daemon mode only, both on `127.0.0.1`                                  |
 
 `STRAD_HOSTD_HOME` moves the state directory.
 
