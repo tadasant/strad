@@ -114,6 +114,21 @@ describe("the consent gate", () => {
     ]);
   });
 
+  it("a kill-all cools down every server that held a grant", async () => {
+    const { gate } = gateWith(new ScriptedPrompter("allowed"));
+    const browser = () =>
+      gate.request({
+        capability: "browser",
+        server: "browser-use-test-mbp-headless",
+        purpose: PURPOSE,
+      });
+    expect((await ask(gate)).ok).toBe(true);
+    expect((await browser()).ok).toBe(true);
+    expect(gate.grants.endAll("killed")).toBe(2);
+    expect(await ask(gate)).toMatchObject({ code: "cooldown" });
+    expect(await browser()).toMatchObject({ code: "cooldown" });
+  });
+
   it("goes quiet after the owner KILLS a grant, and not after any other ending", async () => {
     const prompter = new ScriptedPrompter("allowed");
     const { gate, clock } = gateWith(prompter);

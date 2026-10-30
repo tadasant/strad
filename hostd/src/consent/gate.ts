@@ -89,7 +89,11 @@ export class ConsentGate {
           `${g.server} no longer has control`,
           reason === "owner_input"
             ? `You pressed a key or clicked, so the grant ended after ${g.calls} call${g.calls === 1 ? "" : "s"}.`
-            : `Grant ${reason} after ${g.calls} call${g.calls === 1 ? "" : "s"}.`,
+            : `Grant ${reason} after ${g.calls} call${g.calls === 1 ? "" : "s"}.${
+                reason === "killed" && deps.config.consent.rejectCooldownSeconds
+                  ? ` ${g.server} is refused for ${deps.config.consent.rejectCooldownSeconds}s.`
+                  : ""
+              }`,
         );
       },
     });
@@ -143,9 +147,10 @@ export class ConsentGate {
       );
     }
     // ONE dialog on screen at a time, machine-wide, so a caller firing N
-    // requests at once cannot stack N dialogs, and "Disallow and cool down" on
-    // the one that is up holds off the rest. Checked and claimed with no
-    // `await` between, so it cannot be raced.
+    // requests at once cannot stack N dialogs: the rest are refused as busy,
+    // and "Disallow and cool down" on the one that is up holds off that
+    // server's later requests. Checked and claimed with no `await` between, so
+    // it cannot be raced.
     if (consent.mode !== "none" && this.pending.size > 0) {
       return deny(
         "dialog_busy",

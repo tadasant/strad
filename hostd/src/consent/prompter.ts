@@ -113,6 +113,14 @@ function run(argv) {
   alert.layout;
   alert.window.defaultButtonCell = null;
   alert.window.initialFirstResponder = null;
+  // Allow is the first button, the one AppKit gives Return. If clearing that
+  // did not take, Return would ALLOW: refuse to show this dialog, so osascript
+  // fails and the keyless AppleScript one is shown instead.
+  for (var j = 0; j < buttons.length; j++) {
+    if (buttons[j].keyEquivalent.js !== "") throw new Error("a button kept a key");
+  }
+  var cell = alert.window.defaultButtonCell;
+  if (cell && typeof cell.isNil === "function" && !cell.isNil()) throw new Error("a default button remains");
   alert.window.level = 3; // NSFloatingWindowLevel
   app.activateIgnoringOtherApps(true);
   app.performSelectorWithObjectAfterDelayInModes("abortModal", null, parseInt(argv[2], 10), $(["kCFRunLoopCommonModes"]));

@@ -178,7 +178,10 @@ None of this has run on a Mac. Whether no key answers the `NSAlert`, whether
 its three buttons come back as the codes the script reads, and
 whether a first click on a button presses it rather than only bringing the
 window forward (macOS 14 can decline `activateIgnoringOtherApps`), are
-reasoned from AppKit, not observed.
+reasoned from AppKit, not observed. Allow is the button
+AppKit hands Return to, so the script checks that every key equivalent is
+empty and no default button remains before it shows anything, and if one
+survived it fails, and the keyless AppleScript dialog is shown instead.
 
 On Linux it is `zenity`, whose keys cannot be switched off: Return there
 rejects. Disallow and cool down is its `--extra-button`.

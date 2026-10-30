@@ -192,4 +192,18 @@ describe("the control page", () => {
     ).toBe(303);
     expect(daemon.core.deps.killSwitch.isDisabled()).toBe(false);
   });
+
+  it("Kill all cools down the server that held a grant (last: shell stays cold)", async () => {
+    const gate = daemon.core.deps.gate;
+    const a = await grant("Hold a shell grant for kill-all.");
+    // The browser is still cooling from the kill test; it is not asked again.
+    expect(gate.grants.active().map((g) => g.id)).toEqual([a.id]);
+    expect(
+      (await request("POST", "/kill-all", form({ token: daemon.controlToken })))
+        .status,
+    ).toBe(303);
+    await expect(grant("Ask again after kill-all.")).rejects.toThrow(
+      /ended this server's control/,
+    );
+  });
 });

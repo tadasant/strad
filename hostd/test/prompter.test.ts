@@ -91,6 +91,13 @@ describe("the macOS consent dialog", () => {
     expect(JXA_DIALOG).toContain("refusesFirstResponder = true");
     expect(JXA_DIALOG).toContain("initialFirstResponder = null");
     expect(JXA_DIALOG).toContain("defaultButtonCell = null");
+    // Allow is first, so a key that survived would allow: the script checks,
+    // and throws (osascript fails, the fallback runs) rather than show it.
+    expect(JXA_DIALOG).toContain('keyEquivalent.js !== ""');
+    expect(JXA_DIALOG).toContain("!cell.isNil()");
+    expect(JXA_DIALOG.indexOf("throw")).toBeLessThan(
+      JXA_DIALOG.indexOf("runModal"),
+    );
     // The countdown still ends the dialog, as an abort the script reads as timeout.
     expect(JXA_DIALOG).toContain('"abortModal"');
     // It is JavaScript osascript can parse; `$` and `ObjC` are its globals.

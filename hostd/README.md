@@ -99,15 +99,15 @@ dialog; the flag exists for stdio only.
 The dialog uses `osascript` on macOS and `zenity` on Linux. On macOS only a
 mouse click answers it: Return, Escape, Space and Tab do nothing, so typing
 that lands on it is swallowed rather than taken as a decision. `zenity` keeps
-its own keys (Return rejects).
+its own keys (Return rejects). With neither, every request is denied as
+`no_display`, so use `--no-consent` there.
 
 The dialog has three buttons: **Allow**, **Reject**, and **Disallow and cool
 down**. Reject refuses one request and the next gets a fresh dialog, as does an
 unanswered one. A server is refused as `cooldown`, with no dialog, for
 `consent.rejectCooldownSeconds` only after you kill one of its grants (status
 page, `strad-hostd kill`, the banner) or pick Disallow and cool down. The kill
-switch starts none: it refuses everything until you turn it back on. With neither, every
-request is denied as `no_display`, so use `--no-consent` there.
+switch starts none: it refuses everything until you turn it back on.
 
 ### The browser server
 
