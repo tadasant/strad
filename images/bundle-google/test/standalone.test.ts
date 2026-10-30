@@ -512,7 +512,7 @@ describe("google-docs standalone", () => {
     expect(added.isError).toBeFalsy();
     const addedText = JSON.stringify(added.content);
     expect(addedText).toContain(`**Comment ID:** comment-on-${TABBED_ID}`);
-    expect(addedText).toContain("(shown, not anchored)");
+    expect(addedText).toContain("(not anchored)");
 
     const replied = await client.callTool({
       name: "reply_to_comment",

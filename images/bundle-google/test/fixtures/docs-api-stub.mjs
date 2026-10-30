@@ -3,9 +3,10 @@
  * by `../standalone.test.ts`, so the real binary — its real client, its real
  * `documents.get` — runs against a fake Docs API rather than Google's.
  *
- * Two seams: the OAuth token exchange (`OAuth2Client.getAccessToken`, which
- * goes through gaxios and node-fetch, not `globalThis.fetch`) and the Docs API
- * request itself (`globalThis.fetch`). The stub answers like the API does —
+ * Three seams: the OAuth token exchange (`OAuth2Client.getAccessToken`, which
+ * goes through gaxios and node-fetch, not `globalThis.fetch`), the Docs API
+ * request itself (`globalThis.fetch`), and Drive's comment writes (the same
+ * `globalThis.fetch`, below). The stub answers like the API does —
  * every tab with `includeTabsContent=true`, the first tab alone without it —
  * so a server that stops asking for tabs reads one tab here exactly as it
  * would against Google.

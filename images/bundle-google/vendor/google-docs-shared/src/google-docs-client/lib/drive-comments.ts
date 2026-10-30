@@ -108,8 +108,8 @@ export interface CreateCommentOptions {
   /** The comment's text. */
   content: string;
   /**
-   * Document text the comment is about. Drive stores it as `quotedFileContent`
-   * and Docs shows it as the comment's quote, but the comment is NOT attached
+   * Document text the comment is about. Drive stores it as `quotedFileContent`,
+   * the comment's quoted text, but the comment is NOT attached
    * to that text: Docs does not honour an API-supplied anchor, so an API
    * comment is unanchored whatever is sent.
    */

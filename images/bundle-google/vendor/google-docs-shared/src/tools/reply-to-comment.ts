@@ -21,11 +21,18 @@ export const ReplyToCommentSchema = z
   .object({
     document_id: z.string().min(1).describe(PARAM_DESCRIPTIONS.document_id),
     comment_id: z.string().trim().min(1).describe(PARAM_DESCRIPTIONS.comment_id),
-    content: z.string().trim().min(1).optional().describe(PARAM_DESCRIPTIONS.content),
+    content: z.string().optional().describe(PARAM_DESCRIPTIONS.content),
     resolve: z.boolean().optional().describe(PARAM_DESCRIPTIONS.resolve),
   })
   .superRefine((data, ctx) => {
-    if (data.content === undefined && data.resolve === undefined) {
+    const hasText = data.content !== undefined && data.content.trim().length > 0;
+    if (data.content !== undefined && !hasText && data.resolve === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'content must not be blank',
+        path: ['content'],
+      });
+    } else if (data.content === undefined && data.resolve === undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: 'content is required unless resolve is set',
@@ -53,10 +60,10 @@ the thread.
 **Examples:**
 - Answer a question: \`{ comment_id, content: "Yes, Q3." }\`
 - Close a thread with a note: \`{ comment_id, content: "Done.", resolve: true }\`
-- Close it silently: \`{ comment_id, resolve: true }\`
+- Close it without a note: \`{ comment_id, resolve: true }\`
 
-Google notifies the thread's participants of a reply the way it does in the
-Docs editor.`;
+Google may notify the thread's participants, per their own Docs notification
+settings, as it does for a reply made in the editor.`;
 
 export function replyToCommentTool(_server: Server, clientFactory: ClientFactory) {
   return {
@@ -80,8 +87,10 @@ export function replyToCommentTool(_server: Server, clientFactory: ClientFactory
         const action =
           parsed.resolve === undefined ? undefined : parsed.resolve ? 'resolve' : 'reopen';
 
+        // Blank text beside a resolve is no text: Drive takes the bare action.
+        const content = parsed.content?.trim() ? parsed.content : undefined;
         const reply = await client.createReply(documentId, parsed.comment_id, {
-          content: parsed.content,
+          content,
           action,
         });
 
@@ -91,6 +100,9 @@ export function replyToCommentTool(_server: Server, clientFactory: ClientFactory
         if (reply.createdTime) output += `- **Created:** ${reply.createdTime}\n`;
         if (reply.action === 'resolve') output += '- **Thread:** resolved\n';
         if (reply.action === 'reopen') output += '- **Thread:** reopened\n';
+        if (action && reply.action !== action) {
+          output += `- **Thread:** asked to ${action}, and Drive's answer did not confirm it\n`;
+        }
 
         return { content: [{ type: 'text', text: output.trimEnd() }] };
       } catch (error) {

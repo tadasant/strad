@@ -6732,18 +6732,18 @@ Three things about them are not obvious:
    way to attach a comment to a range, and Google Docs does not honour an
    anchor supplied through the API: the comment shows in the comments panel
    and highlights nothing. `add_comment` sends no anchor. Its optional
-   `quoted_text` becomes `quotedFileContent`, which Docs shows as the
-   comment's quote, and the tool description says it is a quote and not an
-   anchor.
+   `quoted_text` becomes `quotedFileContent`, the comment's quoted text, and
+   the tool description says it is a quote and not an anchor. How the Docs
+   editor renders that quote on an unanchored comment has not been seen.
 2. **Resolving is a reply.** Drive has no "resolve" call. A reply carrying
    `action: resolve` (or `reopen`) is how the editor does it, so
    `reply_to_comment` takes `resolve: true | false` and may be sent with no
    text.
-3. **Google sends the notifications.** A new comment notifies the document's
-   owner and editors, a reply notifies the thread, and a `+email` mention emails
-   that person, exactly as in the editor. That is why neither tool is on a
-   read-only tier, and why a mention reaching someone outside the account is
-   not gated the way `share_document` is.
+3. **Google sends the notifications.** A comment or reply may notify people
+   who already have access to the document, per their own Docs notification
+   settings, as one made in the editor does. Neither tool grants anyone access,
+   which is why both sit on `-rw` beside the other edits and not on
+   `-rw-external` with `share_document`.
 
 No scope changed: the read-write tiers already consent the full `drive` scope,
 which covers both calls. No request has reached Google from CI. The tests fake

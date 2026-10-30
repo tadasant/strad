@@ -4105,10 +4105,11 @@ only.
 
 - **A comment highlights nothing.** Google Docs ignores a text anchor sent
   through the API, so an API comment sits in the comments panel unattached.
-  `quoted_text` is shown as its quote, which is the closest the API gets.
-- **Google notifies people.** A comment notifies the document's owner and
-  editors, a reply notifies the thread, and a `+email` mention emails that
-  person, with no gate in strad.
+  `quoted_text` is stored as its quoted text, which is the closest the API
+  gets.
+- **Google may notify people.** A comment or reply can notify people who
+  already have access to the document, per their own Docs settings, with no
+  gate in strad. Neither tool grants anyone access.
 - **strad added them, not upstream.** Re-copying the server from upstream
   removes them unless the change is applied again, and a test fails if it is
   not.

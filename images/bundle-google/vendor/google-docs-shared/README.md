@@ -54,9 +54,9 @@ Thirteen, in three groups. Each group holds the one before it:
 - `add_comment` starts a comment thread, and `reply_to_comment` replies to one
   by that ID; `resolve=true` resolves the thread and `resolve=false` reopens
   it. Docs does not honour a text anchor sent through the API, so a new
-  comment highlights nothing. Its optional `quoted_text` is shown as the
-  comment's quote. Google notifies the document's people as it does for a
-  comment made in the editor.
+  comment highlights nothing. Its optional `quoted_text` is stored as the
+  comment's quoted text. Google may notify people with access to the
+  document, as it does for a comment made in the editor.
 - `update_document` takes raw Docs `batchUpdate` requests: styling, tables,
   lists, deletions. `append_text`, `insert_text` and `replace_text` are
   wrappers over it for the common cases.
