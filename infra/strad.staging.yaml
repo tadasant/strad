@@ -75,7 +75,7 @@
 #
 # The allow-lists below are derived from each upstream's own tool-group
 # definitions, so the counts stay honest: slack 8/14 · tailscale 7/15 ·
-# monarch 10/24 · gmail 5/8/9 · google-docs 4/10/11 · google-calendar 4/7 ·
+# monarch 10/24 · gmail 5/8/9 · google-docs 4/12/13 · google-calendar 4/7 ·
 # 1Password 5/9 · telegram 5/6 · bill-spend 4/5 · digitalocean 19/29.
 # test/staging-config.test.ts
 # asserts every one of those numbers.
@@ -1015,7 +1015,7 @@ servers:
     # No `tools:` — every tool this server has. The full set IS this tier.
 
   # ---------------------------------------------------------------------------
-  # Google Docs — 11 full, 10 read-write, 4 read-only.
+  # Google Docs — 13 full, 12 read-write, 4 read-only.
   # ---------------------------------------------------------------------------
   - slug: google-docs-ro
     kind: supplementary-image
@@ -1056,6 +1056,8 @@ servers:
         - append_text
         - insert_text
         - replace_text
+        - add_comment
+        - reply_to_comment
 
   - slug: google-docs-rw-external
     kind: supplementary-image
@@ -1067,7 +1069,7 @@ servers:
       GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GOOGLE_DOCS_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL}"
       GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY: "${GOOGLE_DOCS_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY}"
       GOOGLE_DOCS_IMPERSONATE_EMAIL: "${GOOGLE_DOCS_IMPERSONATE_EMAIL}"
-    # No `tools:` — the full 11, including share_document (the external one).
+    # No `tools:` — the full 13, including share_document (the external one).
 
   # ---------------------------------------------------------------------------
   # Google Calendar — 7 full, 4 read-only. (No external tier exists.)

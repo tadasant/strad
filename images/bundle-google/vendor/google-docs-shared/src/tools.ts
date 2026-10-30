@@ -11,6 +11,8 @@ import { replaceTextTool } from './tools/replace-text.js';
 import { getDocumentOutlineTool } from './tools/get-document-outline.js';
 import { exportDocumentTool } from './tools/export-document.js';
 import { listCommentsTool } from './tools/list-comments.js';
+import { addCommentTool } from './tools/add-comment.js';
+import { replyToCommentTool } from './tools/reply-to-comment.js';
 import { shareDocumentTool } from './tools/share-document.js';
 
 interface Tool {
@@ -34,7 +36,7 @@ type ToolFactory = (server: Server, clientFactory: ClientFactory) => Tool;
  *
  * - readonly: Pure read operations (get, outline, export, list comments). Cannot modify or share.
  * - readwrite: Read + edit operations on existing documents owned by the auth principal.
- *   Includes create/delete; trashed docs are recoverable from Drive's trash.
+ *   Includes create/delete and adding or replying to comments; trashed docs are recoverable from Drive's trash.
  * - readwrite_external: All readwrite operations + sharing with external users via
  *   Drive permissions (the most sensitive operation — grants others access).
  */
@@ -72,6 +74,8 @@ const ALL_TOOLS: ToolDefinition[] = [
   { factory: appendTextTool, groups: ['readwrite', 'readwrite_external'] },
   { factory: insertTextTool, groups: ['readwrite', 'readwrite_external'] },
   { factory: replaceTextTool, groups: ['readwrite', 'readwrite_external'] },
+  { factory: addCommentTool, groups: ['readwrite', 'readwrite_external'] },
+  { factory: replyToCommentTool, groups: ['readwrite', 'readwrite_external'] },
   // External-facing tools (only in readwrite_external)
   { factory: shareDocumentTool, groups: ['readwrite_external'] },
 ];

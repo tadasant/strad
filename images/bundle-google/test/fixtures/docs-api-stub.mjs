@@ -30,3 +30,29 @@ globalThis.fetch = async (input, init) => {
     headers: { "content-type": "application/json" },
   });
 };
+
+/**
+ * Drive's `comments.create` and `replies.create`, for the comment-write tests
+ * (`HACKS.md` #132). Each echoes what a real create returns for the request's
+ * own body, and refuses a request without the `fields` mask Drive requires.
+ */
+const docsFetch = globalThis.fetch;
+globalThis.fetch = async (input, init) => {
+  const url = new URL(typeof input === "string" ? input : input.url);
+  if (url.hostname !== "www.googleapis.com") return docsFetch(input, init);
+  const match = url.pathname.match(/^\/drive\/v3\/files\/([^/]+)\/comments(?:\/([^/]+)\/replies)?$/);
+  if (!match || init?.method !== "POST" || !url.searchParams.get("fields")) {
+    return new Response(JSON.stringify({ error: { code: 400, message: "bad request" } }), {
+      status: 400,
+    });
+  }
+  const body = JSON.parse(String(init.body));
+  const author = { displayName: "Stub User", emailAddress: "stub@example.com", me: true };
+  const created = match[2]
+    ? { id: `reply-to-${match[2]}`, author, createdTime: "2026-10-30T12:00:00.000Z", ...body }
+    : { id: `comment-on-${match[1]}`, author, createdTime: "2026-10-30T12:00:00.000Z", resolved: false, ...body };
+  return new Response(JSON.stringify(created), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+};

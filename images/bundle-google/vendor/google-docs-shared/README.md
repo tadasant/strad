@@ -1,7 +1,7 @@
 # google-docs, without strad
 
 This is the Google Docs MCP server strad serves at `/google-docs`. It reads,
-edits, exports, comments-lists and shares the Google Docs one account can
+edits, exports, comments on and shares the Google Docs one account can
 reach. You can run it on its own, with no strad gateway and none of the other
 Google servers: over **stdio** for a local MCP client, or over **Streamable
 HTTP** on a localhost port.
@@ -20,16 +20,17 @@ standalone entrypoint, which hands that same layer to the shared runner.
 | Delta | Where | Defended by |
 | ----- | ----- | ----------- |
 | Every tab is read, not only the first: `documents.get` is asked for `includeTabsContent=true`, and `get_document` and `get_document_outline` take a `tab_id` (`HACKS.md` #129) | `src/utils/tabs.ts`, `src/types.ts` (`Tab`), `src/google-docs-client/lib/get-document.ts`, `src/server.ts` (`getDocument`'s options), `src/tools/get-document.ts`, `src/tools/get-document-outline.ts`, the tab notes in `src/tools/update-document.ts`, `src/tools/append-text.ts`, `src/tools/insert-text.ts` and `src/tools/export-document.ts` | `../../test/docs-tabs.test.ts`, `../../test/standalone.test.ts` |
+| Comments can be written: `add_comment` (Drive `comments.create`) and `reply_to_comment` (Drive `replies.create`, which also resolves and reopens), both in `readwrite` (`HACKS.md` #132) | `src/tools/add-comment.ts`, `src/tools/reply-to-comment.ts`, `src/google-docs-client/lib/drive-comments.ts` (`createComment`, `createReply`), `src/server.ts` (the two client methods), `src/tools.ts` (registration) | `../../test/docs-comments.test.ts`, `../../test/standalone.test.ts` |
 
 ## Tools
 
-Eleven, in three groups. Each group holds the one before it:
+Thirteen, in three groups. Each group holds the one before it:
 
 | Group                | Tools                                                                                                                       |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `readonly`           | `get_document`, `get_document_outline`, `export_document`, `list_comments`                                                  |
-| `readwrite`          | the four above, plus `create_document`, `update_document`, `append_text`, `insert_text`, `replace_text`, `delete_document` |
-| `readwrite_external` | the ten above, plus `share_document`                                                                                        |
+| `readwrite`          | the four above, plus `create_document`, `update_document`, `append_text`, `insert_text`, `replace_text`, `delete_document`, `add_comment`, `reply_to_comment` |
+| `readwrite_external` | the twelve above, plus `share_document`                                                                                     |
 
 - `get_document` returns a document's title, heading outline and plain-text
   body, or the raw Docs API resource with `format=json`.
@@ -49,7 +50,13 @@ Eleven, in three groups. Each group holds the one before it:
 - `export_document` exports through Drive: `markdown`, `html` and `txt` come
   back as text, `pdf`, `docx`, `odt`, `rtf` and `epub` as base64.
 - `list_comments` lists comments with their quoted text, replies and resolved
-  state.
+  state, and each comment's ID.
+- `add_comment` starts a comment thread, and `reply_to_comment` replies to one
+  by that ID; `resolve=true` resolves the thread and `resolve=false` reopens
+  it. Docs does not honour a text anchor sent through the API, so a new
+  comment highlights nothing. Its optional `quoted_text` is shown as the
+  comment's quote. Google notifies the document's people as it does for a
+  comment made in the editor.
 - `update_document` takes raw Docs `batchUpdate` requests: styling, tables,
   lists, deletions. `append_text`, `insert_text` and `replace_text` are
   wrappers over it for the common cases.
@@ -117,7 +124,7 @@ group only decides which tools a client sees.
 | `readonly`                          | `https://www.googleapis.com/auth/documents.readonly` and `https://www.googleapis.com/auth/drive.readonly`          |
 | `readwrite` and `readwrite_external` | `https://www.googleapis.com/auth/documents` and `https://www.googleapis.com/auth/drive`                             |
 
-The Drive scope is not optional. `export_document`, `list_comments`,
+The Drive scope is not optional. `export_document`, the three comment tools,
 `delete_document` and `share_document` go through the Drive API, and
 `drive.file` only reaches documents this OAuth client created, so it is not
 enough for documents you already have. Both Drive scopes reach every file in
@@ -276,8 +283,11 @@ From `images/bundle-google`, `npm test` runs:
 - `test/docs.test.ts` — strad's per-account layer, `src/docs.ts`: which mode
   an environment is in, which variables it is short of, the client cache, the
   per-mount tool-group toggle and the `invalid_grant` hint.
+- `test/docs-comments.test.ts` — `add_comment` and `reply_to_comment` through
+  the same layer, against a fake client: what each sends to Drive, the
+  resolve and reopen mapping, and that neither is listed in `readonly`.
 - `test/standalone.test.ts` — both transports against the built entrypoint,
-  with no credentials set: all eleven tools, each of the three groups,
+  with no credentials set: all thirteen tools, each of the three groups,
   `share_document` only in `readwrite_external`, comma-separated groups, a tool
   call that fails naming the missing variables in each mode, and exit 2 on an
   unknown group or a half-set OAuth trio beside a service account.

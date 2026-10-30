@@ -4096,3 +4096,27 @@ backfill and how many reads were cut short, and the last GCS write.
 See `HACKS.md` #131.
 
 ---
+
+### 132. google-docs comments cannot be attached to text
+
+`add_comment` and `reply_to_comment` write comments to a Google Doc through
+Drive's comments API, as the slug's account. They are on the read-write tiers
+only.
+
+- **A comment highlights nothing.** Google Docs ignores a text anchor sent
+  through the API, so an API comment sits in the comments panel unattached.
+  `quoted_text` is shown as its quote, which is the closest the API gets.
+- **Google notifies people.** A comment notifies the document's owner and
+  editors, a reply notifies the thread, and a `+email` mention emails that
+  person, with no gate in strad.
+- **strad added them, not upstream.** Re-copying the server from upstream
+  removes them unless the change is applied again, and a test fails if it is
+  not.
+- **No comment has reached Google from CI.** The tests fake the Drive API.
+
+**How you would know.** A comment you added appears in the panel with no
+highlight in the text. That is the limitation, not a failure.
+
+See `HACKS.md` #132.
+
+---

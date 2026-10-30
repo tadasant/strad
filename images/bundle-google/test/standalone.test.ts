@@ -34,11 +34,13 @@ const GMAIL_TOOLS = [
 ].sort();
 const DOCS_READ_TOOLS = ["export_document", "get_document", "get_document_outline", "list_comments"];
 const DOCS_WRITE_TOOLS = [
+  "add_comment",
   "append_text",
   "create_document",
   "delete_document",
   "insert_text",
   "replace_text",
+  "reply_to_comment",
   "update_document",
 ];
 const DOCS_TOOLS = [...DOCS_READ_TOOLS, ...DOCS_WRITE_TOOLS, "share_document"].sort();
@@ -495,6 +497,50 @@ describe("google-docs standalone", () => {
     await client.connect(new StreamableHTTPClientTransport(url));
     try {
       await readsEveryTab(client);
+    } finally {
+      await client.close();
+    }
+  });
+
+  // Comment writes (`HACKS.md` #132), against the same preload's Drive stub,
+  // which echoes a create and refuses one without Drive's `fields` mask.
+  async function writesComments(client: Client): Promise<void> {
+    const added = await client.callTool({
+      name: "add_comment",
+      arguments: { document_id: TABBED_ID, content: "Is this the right date?", quoted_text: "Fly to Lisbon." },
+    });
+    expect(added.isError).toBeFalsy();
+    const addedText = JSON.stringify(added.content);
+    expect(addedText).toContain(`**Comment ID:** comment-on-${TABBED_ID}`);
+    expect(addedText).toContain("(shown, not anchored)");
+
+    const replied = await client.callTool({
+      name: "reply_to_comment",
+      arguments: { document_id: TABBED_ID, comment_id: "AAAAc1", content: "Yes.", resolve: true },
+    });
+    expect(replied.isError).toBeFalsy();
+    const repliedText = JSON.stringify(replied.content);
+    expect(repliedText).toContain("**Reply ID:** reply-to-AAAAc1");
+    expect(repliedText).toContain("**Thread:** resolved");
+  }
+
+  it("adds and replies to comments over stdio", async () => {
+    const transport = new StdioClientTransport({ command: process.execPath, args: [DOCS], env: tabsEnv(), stderr: "pipe" });
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(transport);
+    try {
+      await writesComments(client);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("adds and replies to comments over Streamable HTTP", async () => {
+    const { url } = await startHttp([], tabsEnv(), DOCS);
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(url));
+    try {
+      await writesComments(client);
     } finally {
       await client.close();
     }

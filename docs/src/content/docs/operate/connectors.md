@@ -299,7 +299,7 @@ discovers it and serves spreadsheets at its path. The scopes per tier:
 | -------------- | -------------------------------------- | ------------------------------------------------------ |
 | `-ro`          | `documents.readonly`, `drive.readonly` | Google and the gateway's `tools:` list                 |
 | `-rw`          | `documents`, `drive`                   | The gateway alone: `tools:` withholds `share_document` |
-| `-rw-external` | `documents`, `drive`                   | Nothing narrower; this tier is the full eleven         |
+| `-rw-external` | `documents`, `drive`                   | Nothing narrower; this tier is the full thirteen       |
 
 `-rw` cannot be narrowed on Google's side: deleting and sharing both go through
 the Drive API on documents the app never created, which `drive.file` cannot
