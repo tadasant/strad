@@ -7,7 +7,7 @@ Streamable HTTP, each on its own path.
 ```
 /gmail             -> gmail-workspace-mcp-server        (9 tools)
 /google-calendar   -> google-calendar-workspace-mcp-server (7 tools)
-/google-docs       -> google-docs-workspace-mcp-server   (11 tools)
+/google-docs       -> google-docs-workspace-mcp-server   (13 tools)
 /google-sheets     -> google-sheets-workspace-mcp-server  (11 tools)
 ```
 

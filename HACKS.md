@@ -6716,3 +6716,40 @@ public ingress.
 and stops advertising the extension. Removing the feature is deleting
 `src/gateway/events.ts`, its hooks in `mcpServer.ts`, `router.ts` and the HTTP
 adapter, and `fork/slack/src/events/`.
+
+## 132. google-docs adds and answers comments, unanchored, a strad delta on a vendored tree
+
+**What.** `add_comment` and `reply_to_comment` are strad's additions to
+`images/bundle-google/vendor/google-docs-shared`, a PATCHED VENDOR (#129). They
+call Drive's `comments.create` and `replies.create`. Both are in the
+`readwrite` group, so a `-ro` slug never lists them and a `-rw` slug lists them
+beside `update_document`. They write as the mount's account, which is the
+author Docs shows.
+
+Three things about them are not obvious:
+
+1. **A comment cannot be attached to text.** Drive's `anchor` field is the only
+   way to attach a comment to a range, and Google Docs does not honour an
+   anchor supplied through the API: the comment shows in the comments panel
+   and highlights nothing. `add_comment` sends no anchor. Its optional
+   `quoted_text` becomes `quotedFileContent`, the comment's quoted text, and
+   the tool description says it is a quote and not an anchor. How the Docs
+   editor renders that quote on an unanchored comment has not been seen.
+2. **Resolving is a reply.** Drive has no "resolve" call. A reply carrying
+   `action: resolve` (or `reopen`) is how the editor does it, so
+   `reply_to_comment` takes `resolve: true | false` and may be sent with no
+   text.
+3. **Google sends the notifications.** A comment or reply may notify people
+   who already have access to the document, per their own Docs notification
+   settings, as one made in the editor does. Neither tool grants anyone access,
+   which is why both sit on `-rw` beside the other edits and not on
+   `-rw-external` with `share_document`.
+
+No scope changed: the read-write tiers already consent the full `drive` scope,
+which covers both calls. No request has reached Google from CI. The tests fake
+the Drive API, against the shapes its reference documents.
+
+**Undo.** If upstream gains comment writes, re-vendor and drop the delta. Until
+then a re-vendor has to re-apply the row in the tree's README, and
+`images/bundle-google/test/docs-comments.test.ts` and the comment tests in
+`images/bundle-google/test/standalone.test.ts` fail if it does not.

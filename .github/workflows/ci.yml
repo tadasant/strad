@@ -486,7 +486,7 @@ jobs:
   #
   # The smoke test is the honest half. It lists tools from every mount of the
   # RUNNING container and asserts the full-capability counts (slack 13, tailscale
-  # 15, monarch 24, gmail 9, docs 11, calendar 7, 1Password 9, secrets 4, …).
+  # 15, monarch 24, gmail 9, docs 13, calendar 7, 1Password 9, secrets 4, …).
   # Those are the numbers the gateway's read-only allow-lists are carved out of, so
   # if an upstream grows a tool, this is where we find out — not in production. For
   # secrets the count is a security assertion: a FIFTH tool on a server whose
@@ -785,7 +785,7 @@ jobs:
             const docsSlug = "google-docs-ci-personal-ro";
             if (!bySlug[docsSlug]) throw new Error(`no per-slug google-docs mount: ${health.servers.map((s) => s.slug).join(", ")}`);
             const docsTools = dump.mounts[`/${docsSlug}`]?.tools ?? [];
-            if (docsTools.length !== 11) throw new Error(`per-slug google-docs listed ${docsTools.length} tools, expected 11: ${docsTools.join(", ")}`);
+            if (docsTools.length !== 13) throw new Error(`per-slug google-docs listed ${docsTools.length} tools, expected 13: ${docsTools.join(", ")}`);
             const docsDegraded = bySlug[docsSlug].degraded ?? "";
             if (!/GOOGLE_DOCS_OAUTH_REFRESH_TOKEN/.test(docsDegraded))
               throw new Error(`an unconnected per-slug google-docs mount is not degraded on its token: ${JSON.stringify(docsDegraded)}`);
@@ -793,7 +793,7 @@ jobs:
               if (docsDegraded.includes(leaked)) throw new Error(`per-slug google-docs is reporting ${leaked}, which belongs to the conventional mount`);
             if (bySlug["google-docs"]?.degraded) throw new Error(`the conventional /google-docs mount went degraded: ${bySlug["google-docs"].degraded}`);
             const docsConventional = dump.mounts["/google-docs"]?.tools ?? [];
-            if (docsConventional.length !== 11) throw new Error(`/google-docs listed ${docsConventional.length} tools, expected 11`);
+            if (docsConventional.length !== 13) throw new Error(`/google-docs listed ${docsConventional.length} tools, expected 13`);
             console.log(`/${docsSlug}: ${docsTools.length} tools, degraded on "${docsDegraded}"; /google-docs: ${docsConventional.length} tools, not degraded`);
 
             // 6. A per-slug 1Password mount: its own token, its own path, all

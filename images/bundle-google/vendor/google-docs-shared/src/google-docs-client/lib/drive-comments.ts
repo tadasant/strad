@@ -1,6 +1,6 @@
 import { throwForGoogleApiError } from './api-errors.js';
 import { logWarning } from '../../logging.js';
-import type { DriveComment, DriveCommentList } from '../../types.js';
+import type { DriveComment, DriveCommentList, DriveCommentReply } from '../../types.js';
 
 const DRIVE_BASE_URL = 'https://www.googleapis.com/drive/v3/files';
 
@@ -18,6 +18,15 @@ const COMMENT_FIELDS =
   'replies(id,author(displayName,emailAddress,me),content,htmlContent,' +
   'createdTime,modifiedTime,action,deleted)' +
   ')';
+
+/**
+ * The fields `comments.create` and `replies.create` are asked to echo back.
+ * Both return 400 without a `fields` mask, like `comments.list`.
+ */
+const CREATED_COMMENT_FIELDS =
+  'id,author(displayName,emailAddress,me),content,createdTime,resolved,' +
+  'quotedFileContent(mimeType,value)';
+const CREATED_REPLY_FIELDS = 'id,author(displayName,emailAddress,me),content,createdTime,action';
 
 /** Drive caps `pageSize` at 100 for comments.list. */
 const PAGE_SIZE = 100;
@@ -93,4 +102,80 @@ export async function listComments(
   }
 
   return { comments, truncated };
+}
+
+export interface CreateCommentOptions {
+  /** The comment's text. */
+  content: string;
+  /**
+   * Document text the comment is about. Drive stores it as `quotedFileContent`,
+   * the comment's quoted text, but the comment is NOT attached
+   * to that text: Docs does not honour an API-supplied anchor, so an API
+   * comment is unanchored whatever is sent.
+   */
+  quotedText?: string;
+}
+
+/**
+ * Create a comment on a Drive file (`comments.create`).
+ *
+ * The `drive` scope covers it; `drive.file` would only for files this app
+ * created or opened.
+ */
+export async function createComment(
+  headers: Record<string, string>,
+  fileId: string,
+  options: CreateCommentOptions
+): Promise<DriveComment> {
+  const body: Record<string, unknown> = { content: options.content };
+  if (options.quotedText) {
+    body.quotedFileContent = { mimeType: 'text/plain', value: options.quotedText };
+  }
+  const params = new URLSearchParams({ fields: CREATED_COMMENT_FIELDS });
+
+  const response = await fetch(
+    `${DRIVE_BASE_URL}/${encodeURIComponent(fileId)}/comments?${params.toString()}`,
+    { method: 'POST', headers, body: JSON.stringify(body) }
+  );
+
+  if (!response.ok) {
+    await throwForGoogleApiError(response, `Create comment on ${fileId}`);
+  }
+
+  return (await response.json()) as DriveComment;
+}
+
+export interface CreateReplyOptions {
+  /** The reply's text. Drive requires it unless `action` is set. */
+  content?: string;
+  /** `resolve` closes the thread, `reopen` opens a resolved one. */
+  action?: 'resolve' | 'reopen';
+}
+
+/**
+ * Reply to a comment thread (`replies.create`). A reply carrying an `action`
+ * is how Drive resolves or reopens a thread; there is no other way.
+ */
+export async function createReply(
+  headers: Record<string, string>,
+  fileId: string,
+  commentId: string,
+  options: CreateReplyOptions
+): Promise<DriveCommentReply> {
+  const body: Record<string, unknown> = {};
+  if (options.content) body.content = options.content;
+  if (options.action) body.action = options.action;
+  const params = new URLSearchParams({ fields: CREATED_REPLY_FIELDS });
+
+  const response = await fetch(
+    `${DRIVE_BASE_URL}/${encodeURIComponent(fileId)}/comments/` +
+      `${encodeURIComponent(commentId)}/replies?${params.toString()}`,
+    { method: 'POST', headers, body: JSON.stringify(body) }
+  );
+
+  if (!response.ok) {
+    await throwForGoogleApiError(response, `Reply to comment ${commentId} on ${fileId}`);
+  }
+
+  return (await response.json()) as DriveCommentReply;
 }

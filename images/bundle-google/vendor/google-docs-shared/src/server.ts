@@ -7,10 +7,16 @@ import type {
   DocsBatchUpdateResponse,
   DriveFile,
   DrivePermission,
+  DriveComment,
   DriveCommentList,
+  DriveCommentReply,
 } from './types.js';
 import type { CreatePermissionOptions } from './google-docs-client/lib/drive-permissions.js';
-import type { ListCommentsOptions } from './google-docs-client/lib/drive-comments.js';
+import type {
+  CreateCommentOptions,
+  CreateReplyOptions,
+  ListCommentsOptions,
+} from './google-docs-client/lib/drive-comments.js';
 import type { GetDocumentOptions } from './google-docs-client/lib/get-document.js';
 
 /**
@@ -19,7 +25,7 @@ import type { GetDocumentOptions } from './google-docs-client/lib/get-document.j
  * - `documents`: full read/write of Google Docs content (required for get + batchUpdate).
  * - `drive`: full read/write access to the authenticated/impersonated user's Drive files,
  *   including files created outside this app. Required so the server can export and read
- *   comments (`comments.list`) on arbitrary existing docs — which the narrower `drive.file`
+ *   comments (`comments.list`, `comments.create`, `replies.create`) on arbitrary existing docs — which the narrower `drive.file`
  *   scope cannot do for files the app never created or opened — and so create/trash/delete/
  *   share work across the user's whole Drive rather than only app-created files.
  *
@@ -53,6 +59,12 @@ export interface IGoogleDocsClient {
   ): Promise<{ bytes: Uint8Array; mimeType: string }>;
   createPermission(documentId: string, options: CreatePermissionOptions): Promise<DrivePermission>;
   listComments(documentId: string, options?: ListCommentsOptions): Promise<DriveCommentList>;
+  createComment(documentId: string, options: CreateCommentOptions): Promise<DriveComment>;
+  createReply(
+    documentId: string,
+    commentId: string,
+    options: CreateReplyOptions
+  ): Promise<DriveCommentReply>;
 }
 
 export interface ServiceAccountCredentials {
@@ -168,6 +180,22 @@ abstract class BaseGoogleDocsClient implements IGoogleDocsClient {
     const headers = await this.getHeaders();
     const { listComments } = await import('./google-docs-client/lib/drive-comments.js');
     return listComments(headers, documentId, options);
+  }
+
+  async createComment(documentId: string, options: CreateCommentOptions): Promise<DriveComment> {
+    const headers = await this.getHeaders();
+    const { createComment } = await import('./google-docs-client/lib/drive-comments.js');
+    return createComment(headers, documentId, options);
+  }
+
+  async createReply(
+    documentId: string,
+    commentId: string,
+    options: CreateReplyOptions
+  ): Promise<DriveCommentReply> {
+    const headers = await this.getHeaders();
+    const { createReply } = await import('./google-docs-client/lib/drive-comments.js');
+    return createReply(headers, documentId, commentId, options);
   }
 }
 

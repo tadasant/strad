@@ -19,7 +19,7 @@ const BASE = process.env.SMOKE_BASE_URL ?? process.argv[2] ?? "http://127.0.0.1:
 const EXPECTED = {
   "/gmail": 9,
   "/google-calendar": 7,
-  "/google-docs": 11,
+  "/google-docs": 13,
   // Four read tools, six write tools and share_spreadsheet. A strad `-ro` slug
   // is this same mount with the write six and the share withheld by the
   // gateway's tools.allow, and a `-rw` slug withholds the share alone.
