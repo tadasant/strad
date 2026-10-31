@@ -6046,10 +6046,13 @@ that costs:
    through it. It is narrower than the alternative (Full Disk Access on
    `node`, which would hand every file the grant reaches to every Node script
    and to the shell slug): the connection is `SQLITE_OPEN_READONLY`, ATTACH is
-   denied so no other database is reachable, and attachments are read by id
+   denied so no database beyond chat.db and the Contacts files the helper
+   enumerates itself is reachable, and attachments are read by id
    from chat.db, never by a caller's path, and only under the database's own
    directory. As in #108, two processes of one macOS user cannot keep secrets
-   from each other; it is not a privilege boundary.
+   from each other; it is not a privilege boundary. The same socket reads the
+   owner's Contacts databases the same way (below), so it is an oracle for
+   those too.
 4. **The unattended read is allowed on timeout.** `strad-hostd init` and
    `add messages` write `onTimeout: "allow"` on this one server, so a nightly
    sweep with nobody at the screen is granted after the dialog's window
@@ -6062,13 +6065,31 @@ that costs:
    with the deprecated `NSUnarchiver` behind an Objective-C `@try`, with a byte
    scan as fallback. A macOS release that moves the body elsewhere shows up as
    `text: null` on messages that have text.
+6. **Contact names come from Contacts' own files, under the same grant.**
+   `sender_name` and each participant's `name` are matched from the
+   `AddressBook-v22.abcddb` files under
+   `~/Library/Application Support/AddressBook` (the top-level one and each `Sources/<id>/`), read as
+   SQLite under the Full Disk Access the helper already holds, not through
+   Contacts.framework, which asks for a separate Contacts grant a LaunchAgent
+   cannot answer unattended. That Full Disk Access reaches those files is
+   documented by other tools that read them, not yet observed on the owner's
+   Mac; `get_control_status` reports `helper.contacts`. The Core Data schema
+   (`ZABCDRECORD`, `ZABCDPHONENUMBER`, `ZABCDEMAILADDRESS`) is Apple's and
+   undocumented, like chat.db's. Numbers match on E.164, with the Mac's
+   region supplying a missing country code, and fall back to the national
+   number only for a contact number that is not valid in the Mac's region and
+   that exactly one name claims. A short code is never named. The book is read once per ten
+   minutes, so a contact added since then is unnamed until the next read. A
+   book that cannot be read adds a `contacts_warning` and never fails the
+   read of the messages: names are null if it has never been read, and the
+   last read's if a re-read failed.
 
 **Why it cannot be designed out.** 1 and 2 are #101's: the box is a personal
-Mac. 3 is what reading a TCC-guarded file from a daemon costs on macOS.
+Mac. 3 and 6 are what reading a TCC-guarded file from a daemon costs on macOS.
 
 **What stays off the box.** The slug, its entitlement and `recovery:` text
 ship by deploy; the key is seeded at `/ui/secrets`; `get_control_status`
-reports `helper: {running, full_disk_access, chat_db}`, and `request_control`
+reports `helper: {running, full_disk_access, chat_db, contacts}`, and `request_control`
 refuses with `helper_unavailable` before any dialog when the grant is missing.
 
 **Undo.** 1 and 3 go if Apple ships a Messages API, which it has not. 2 goes

@@ -11,7 +11,11 @@ import { ConfigSchema, enableCapability, onTimeoutFor } from "../src/config.js";
 import { startDaemon, type RunningDaemon } from "../src/daemon.js";
 import { cleanText, targetGuid } from "../src/messages/chatdb.js";
 import type { Message } from "../src/messages/chatdb.js";
-import { buildChatDb, FakeMessagesHelper } from "./fake-messages.js";
+import {
+  buildAddressBook,
+  buildChatDb,
+  FakeMessagesHelper,
+} from "./fake-messages.js";
 import {
   connect,
   resultJson,
@@ -50,7 +54,10 @@ function config() {
 
 beforeAll(async () => {
   const dir = mkdtempSync(join(tmpdir(), "hostd-messages-"));
-  fake = new FakeMessagesHelper(buildChatDb(dir));
+  fake = new FakeMessagesHelper(buildChatDb(dir), {
+    contactsDir: buildAddressBook(dir),
+    region: "US",
+  });
   daemon = await startDaemon(config(), {
     stateDir: tmpState(),
     prompter,
@@ -125,6 +132,7 @@ describe("the messages server, through a real MCP client", () => {
       running: true,
       full_disk_access: true,
       chat_db: "readable",
+      contacts: "readable",
     });
 
     const shell = await connect(daemon.mcpPort, "/shell/mcp", SHELL_KEY);
@@ -144,7 +152,7 @@ describe("the messages server, through a real MCP client", () => {
         chat_id: string;
         name: string | null;
         is_group: boolean;
-        participants: string[];
+        participants: { handle: string; name: string | null }[];
         last_rowid: number;
         last_message_at: string;
       }[];
@@ -162,12 +170,22 @@ describe("the messages server, through a real MCP client", () => {
     expect(all.chats[0]).toMatchObject({
       name: "Wedding planning",
       is_group: true,
-      participants: ["+15551234567", "grace@example.com"],
+      // Each participant named from Contacts on its own: a number saved
+      // without its country code, an email saved in another case.
+      participants: [
+        { handle: "+15551234567", name: "Alex Example" },
+        { handle: "grace@example.com", name: "Grace" },
+      ],
       last_rowid: 10,
       last_message_at: "2026-10-07T19:02:11.000Z",
     });
     // An empty display name is no name.
     expect(all.chats[1]).toMatchObject({ name: null, is_group: false });
+    // A number no card has keeps its handle and has no name.
+    expect(all.chats[2]!.participants).toEqual([
+      { handle: "+15559876543", name: null },
+    ]);
+    expect(all).not.toHaveProperty("contacts_warning");
 
     const found = resultJson<{ chats: { chat_id: string }[] }>(
       await client.callTool({
@@ -285,6 +303,7 @@ describe("the messages server, through a real MCP client", () => {
       kind: "message",
       from_me: false,
       sender: "grace@example.com",
+      sender_name: "Grace",
       text: "Venue contract attached",
       chat_name: "Wedding planning",
       sent_at: "2026-10-03T12:00:00.000Z",
@@ -314,7 +333,9 @@ describe("the messages server, through a real MCP client", () => {
     ]);
     // The body only in attributedBody, decoded by the helper.
     expect(byId.get(10)).toMatchObject({ text: "Friday works — see you at 6" });
-    const query = fake.ops.filter((o) => o.op === "query").at(-2)!;
+    const query = fake.ops
+      .filter((o) => o.op === "query" && !("contacts_source" in o.args))
+      .at(-2)!;
     expect(query.args.decode).toEqual(["attributedBody"]);
 
     const other = resultJson<Page>(
@@ -327,14 +348,42 @@ describe("the messages server, through a real MCP client", () => {
         },
       }),
     );
-    expect(other.messages.map((m) => [m.rowid, m.from_me, m.sender])).toEqual([
-      [1, false, "+15551234567"],
-      [2, true, null],
-      [8, true, null],
+    expect(
+      other.messages.map((m) => [m.rowid, m.from_me, m.sender, m.sender_name]),
+    ).toEqual([
+      [1, false, "+15551234567", "Alex Example"],
+      [2, true, null, null],
+      [8, true, null, null],
     ]);
     expect(other.messages[2]).toMatchObject({ unsent: true });
     // Unsending stamps date_edited too; that is not an edit.
     expect(other.messages[2]!.edited).toBeUndefined();
+  });
+
+  it("names every sender in a sweep from one read of Contacts, not one per message", async () => {
+    const { client, grantId } = await granted();
+    const contactOps = () =>
+      fake.ops.filter(
+        (o) => o.op === "contacts_sources" || "contacts_source" in o.args,
+      ).length;
+    // Earlier tests have read the book already; a sweep reads it no more.
+    const before = contactOps();
+    const page = resultJson<Page>(
+      await client.callTool({
+        name: "imessage_get_messages",
+        arguments: { grant_id: grantId, after_rowid: 0, limit: 200 },
+      }),
+    );
+    expect(contactOps()).toBe(before);
+    expect(page).not.toHaveProperty("contacts_warning");
+    const named = new Map(
+      page.messages.map((m) => [m.rowid, [m.sender, m.sender_name]]),
+    );
+    expect(named.get(1)).toEqual(["+15551234567", "Alex Example"]);
+    expect(named.get(3)).toEqual(["+15559876543", null]);
+    expect(named.get(4)).toEqual(["grace@example.com", "Grace"]);
+    expect(named.get(11)).toEqual(["+15551234567", "Alex Example"]);
+    expect(named.get(2)).toEqual([null, null]);
   });
 
   it("warns when the cursor is past every message: the database was rebuilt", async () => {
@@ -455,6 +504,63 @@ describe("the messages server before the owner has set it up", () => {
         await client.callTool({ name: "get_control_status", arguments: {} }),
       );
       expect(status.helper).toEqual({ running: false });
+    } finally {
+      await d.stop();
+    }
+  });
+});
+
+describe("contact names when Contacts cannot be read", () => {
+  it("still returns every message and chat, with null names and a warning", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hostd-messages-"));
+    const helper = new FakeMessagesHelper(buildChatDb(dir), {
+      contactsDir: buildAddressBook(dir),
+      contactsDenied: true,
+    });
+    const d = await startDaemon(config(), {
+      stateDir: tmpState(),
+      prompter: new ScriptedPrompter("allowed"),
+      messagesTransport: helper.transport,
+      ephemeralPorts: true,
+    });
+    try {
+      const client = await connect(d.mcpPort, "/messages/mcp", MESSAGES_KEY);
+      const grantId = resultJson<{ grant_id: string }>(
+        await client.callTool({
+          name: "request_control",
+          arguments: { purpose: PURPOSE },
+        }),
+      ).grant_id;
+      const page = resultJson<Page & { contacts_warning?: string }>(
+        await client.callTool({
+          name: "imessage_get_messages",
+          arguments: { grant_id: grantId, after_rowid: 0, limit: 5 },
+        }),
+      );
+      expect(page.messages.map((m) => m.rowid)).toEqual([1, 2, 3, 4, 5]);
+      expect(page.messages.every((m) => m.sender_name === null)).toBe(true);
+      expect(page.messages[0]!.sender).toBe("+15551234567");
+      expect(page.contacts_warning).toMatch(
+        /contact names unavailable.*Full Disk Access/,
+      );
+      const chats = resultJson<{
+        chats: { participants: { handle: string; name: null }[] }[];
+        contacts_warning?: string;
+      }>(
+        await client.callTool({
+          name: "imessage_list_chats",
+          arguments: { grant_id: grantId },
+        }),
+      );
+      expect(chats.chats[0]!.participants).toEqual([
+        { handle: "+15551234567", name: null },
+        { handle: "grace@example.com", name: null },
+      ]);
+      expect(chats.contacts_warning).toMatch(/unavailable/);
+      const status = resultJson<{ helper: Record<string, unknown> }>(
+        await client.callTool({ name: "get_control_status", arguments: {} }),
+      );
+      expect(status.helper.contacts).toBe("denied");
     } finally {
       await d.stop();
     }

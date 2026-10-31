@@ -522,11 +522,11 @@ works (BlueBubbles, imessage-exporter, the Messages MCP servers).
   folded into `strad-hostd-ax`: that helper posts mouse and keyboard input,
   and the grant that reads every message should not sit in the same process.
 - **The SQL is the daemon's; the guarantee is the helper's.** The helper
-  serves three ops — `hello`, `query`, `read_attachment` — and `query` runs
-  one statement it is sent. The statements live in `src/messages/chatdb.ts`,
+  serves four ops — `hello`, `query`, `read_attachment`, `contacts_sources` —
+  and `query` runs one statement it is sent. The statements live in `src/messages/chatdb.ts`,
   where `test/messages.test.ts` runs them against a fixture database on Linux.
   What the helper guarantees is that nothing it runs writes or reaches beyond
-  this file: the connection is `SQLITE_OPEN_READONLY`, a statement SQLite does
+  chat.db and the Contacts databases it enumerates itself: the connection is `SQLITE_OPEN_READONLY`, a statement SQLite does
   not report read-only is refused, so is anything after the first statement,
   and ATTACH — which `sqlite3_stmt_readonly` calls read-only because it changes
   the connection, not a file — is denied by an authorizer and a limit of zero,
@@ -562,9 +562,27 @@ works (BlueBubbles, imessage-exporter, the Messages MCP servers).
   about the AX helper; with `com.strad.hostd-messages` installed, the daemon
   reaches this helper over its socket whatever that setting says, because a
   spawned child would need Full Disk Access on `node`.
-- **What it does not have.** Contact names: they live in the Contacts
-  database, a separate TCC grant, and a sender is a phone number or an email.
-  A send tool: posting as the owner is a different grant, and would be a
+- **Contact names, from Contacts' files.** A sender and each participant
+  come with the name the owner's Contacts give them (`sender_name`, a
+  participant's `name`), resolved on the Mac so a name never has to be
+  looked up anywhere else. Contacts keeps one Core Data SQLite file per
+  account, `AddressBook-v22.abcddb` at the top of `~/Library/Application
+  Support/AddressBook` and one under each `Sources/<id>/`. They are read as
+  files, under the Full Disk Access the helper already holds:
+  Contacts.framework would ask for a separate Contacts grant, a prompt an
+  unattended LaunchAgent cannot answer. `contacts_sources` returns the ids
+  the helper found, and `query` takes one as `contacts_source`, so the daemon
+  names a source and never a path; the statement runs under the same
+  read-only guards as chat.db's, and the SQL lives in
+  `src/messages/contacts.ts`. The whole book is read into one index (phones
+  in E.164 with the Mac's region filling a missing country code, emails
+  lowercased) and kept for ten minutes, so a page of 200 messages is 200 map
+  lookups. A contact saved in another country's local form matches on its
+  national number when that number is not valid in the Mac's region and
+  exactly one name claims it. An unreadable book means a `contacts_warning`,
+  never a failed read: null names if it has never been read, the last read's
+  if a re-read failed.
+- **What it does not have.** A send tool: posting as the owner is a different grant, and would be a
   separate server and slug. Freshness on a sleeping Mac: see below.
 - **Consent.** The intended caller is a nightly sweep, which runs with nobody
   at the screen. `init` and `add` write `onTimeout: "allow"` on this server
@@ -717,7 +735,9 @@ MCP client against `test/fake-messages.ts`, which executes the daemon's own
 SQL with `node:sqlite` on a read-only connection to a fixture chat.db: the
 ROWID cursor across every chat and within one, the newest-first read,
 reactions, replies, edits, unsends, system rows, an `attributedBody`-only body,
-attachments, a rebuilt database's warning, the per-server timeout rule beside
+attachments, a rebuilt database's warning, contact names matched from fixture
+Contacts databases (and null, with a warning, when they cannot be read), the
+per-server timeout rule beside
 a shell that still denies, and the pre-dialog refusals for a helper that is
 missing or has no Full Disk Access.
 

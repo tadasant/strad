@@ -1,6 +1,6 @@
 import Foundation
 
-let VERSION = "0.1.0"
+let VERSION = "0.2.0"
 
 /// A refusal the daemon can act on: `code` is stable and machine-readable,
 /// `message` is for the caller's error text.
@@ -46,24 +46,28 @@ struct Args {
     }
 }
 
-/// Every op the daemon may send. There are three, and none of them writes:
-/// the database is opened read-only, and the only file this helper creates is
-/// a converted copy of an attachment in a private temporary directory, deleted
-/// before the answer is sent.
+/// Every op the daemon may send. There are four, and none of them writes:
+/// every database is opened read-only, and the only file this helper creates
+/// is a converted copy of an attachment in a private temporary directory,
+/// deleted before the answer is sent.
 final class Dispatcher {
     let db: ChatDB
+    let contacts: AddressBook
 
-    init(db: ChatDB) {
+    init(db: ChatDB, contacts: AddressBook) {
         self.db = db
+        self.contacts = contacts
     }
 
     func hello() -> [String: Any] {
         let access = db.access()
+        let book = contacts.describe()
         return [
             "version": VERSION,
             "pid": Int(getpid()),
             "executable": Bundle.main.executablePath ?? CommandLine.arguments[0],
             "chat_db": access,
+            "contacts": ["state": book["state"] ?? "error", "sources": (book["sources"] as? [String])?.count ?? 0],
             "full_disk_access": (access["state"] as? String) == "readable",
         ]
     }
@@ -72,7 +76,21 @@ final class Dispatcher {
         switch op {
         case "hello":
             return hello()
+        case "contacts_sources":
+            return contacts.describe()
         case "query":
+            // A Contacts source, by the id `contacts_sources` returned; chat.db
+            // otherwise.
+            if let raw = args.raw["contacts_source"] {
+                guard let source = raw as? String else {
+                    throw HelperError(code: "bad_args", message: "contacts_source must be a string")
+                }
+                return try contacts.query(
+                    source: source,
+                    sql: args.requireString("sql"),
+                    params: args.array("params"),
+                    maxRows: max(1, min(args.int("max_rows", default: 500), 5000)))
+            }
             return try db.query(
                 sql: args.requireString("sql"),
                 params: args.array("params"),

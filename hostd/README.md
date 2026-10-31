@@ -250,6 +250,10 @@ the other helper). `node build/cli.js messages` says whether it can read the
 database, and `--grant` opens the list. It opens the database read-only and
 refuses any statement that is not; it never sends, and reading marks nothing
 as read. `imessage_get_messages` pages by `after_rowid`, an exact cursor.
+Senders and chat participants come with the name your Contacts give them
+(`sender_name`, a participant's `name`), read from Contacts' own files under
+`~/Library/Application Support/AddressBook` with the same Full Disk Access, so
+there is no Contacts prompt; `null` when no contact matches.
 
 ### The shell server
 
@@ -311,5 +315,7 @@ The Messages server is tested against `test/fake-messages.ts`, which runs the
 daemon's own SQL with `node:sqlite` against a fixture chat.db. The same
 workflow builds `strad-hostd-messages`, reads a fixture database made by
 `messages/fixture.swift` (with an `attributedBody` NSArchiver wrote), and runs
-the daemon's queries through it (`messages/smoke.mjs`). Reading the real
-database under a real Full Disk Access grant runs only on the owner's Mac.
+the daemon's queries through it (`messages/smoke.mjs`), including its
+Contacts read against a fixture AddressBook directory. Reading the real
+database and the real Contacts under a real Full Disk Access grant runs only on
+the owner's Mac.

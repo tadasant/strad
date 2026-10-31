@@ -105,4 +105,35 @@ exec("""
     INSERT INTO message_attachment_join VALUES (2, 1);
     """)
 sqlite3_close(db)
+
+// A Contacts directory shaped like ~/Library/Application Support/AddressBook:
+// a top-level database and one account under Sources/. Every name, number
+// and address is invented.
+func addressBook(_ path: String, _ inserts: String) {
+    try! FileManager.default.createDirectory(
+        atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+    unlink(path)
+    guard sqlite3_open(path, &db) == SQLITE_OK else { fatalError("open \(path)") }
+    exec("""
+        PRAGMA journal_mode = WAL;
+        CREATE TABLE ZABCDRECORD (Z_PK INTEGER PRIMARY KEY, Z_ENT INTEGER, ZFIRSTNAME VARCHAR, ZMIDDLENAME VARCHAR,
+          ZLASTNAME VARCHAR, ZNICKNAME VARCHAR, ZORGANIZATION VARCHAR);
+        CREATE TABLE ZABCDPHONENUMBER (Z_PK INTEGER PRIMARY KEY, ZOWNER INTEGER, ZLABEL VARCHAR, ZFULLNUMBER VARCHAR);
+        CREATE TABLE ZABCDEMAILADDRESS (Z_PK INTEGER PRIMARY KEY, ZOWNER INTEGER, ZLABEL VARCHAR, ZADDRESS VARCHAR);
+        \(inserts)
+        """)
+    sqlite3_close(db)
+}
+let book = dir.appendingPathComponent("AddressBook")
+addressBook(book.appendingPathComponent("AddressBook-v22.abcddb").path, """
+    INSERT INTO ZABCDRECORD (Z_PK, ZFIRSTNAME, ZLASTNAME) VALUES (1, 'Alex', 'Example');
+    INSERT INTO ZABCDRECORD (Z_PK, ZFIRSTNAME) VALUES (2, 'Grace');
+    INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZFULLNUMBER) VALUES (1, '(555) 123-4567');
+    INSERT INTO ZABCDEMAILADDRESS (ZOWNER, ZADDRESS) VALUES (2, 'Grace@Example.COM');
+    """)
+addressBook(
+    book.appendingPathComponent("Sources/0A1B2C3D-0000-4000-8000-00000000F1C7/AddressBook-v22.abcddb").path, """
+    INSERT INTO ZABCDRECORD (Z_PK, ZFIRSTNAME, ZLASTNAME) VALUES (1, 'Jordan', 'Sample');
+    INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZFULLNUMBER) VALUES (1, '+44 7700 900456');
+    """)
 print(dbPath)
