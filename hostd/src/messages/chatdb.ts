@@ -88,6 +88,8 @@ export interface Message {
   from_me: boolean;
   /** The other party's phone number or email; null for the owner's own messages. */
   sender: string | null;
+  /** The sender's name in the owner's Contacts; null when none matches, or from_me. */
+  sender_name: string | null;
   service: string | null;
   kind: "message" | "reaction" | "system";
   text: string | null;
@@ -103,13 +105,20 @@ export interface Message {
   attachments: Attachment[];
 }
 
+export interface Participant {
+  /** The phone number or email, as chat.db holds it. */
+  handle: string;
+  /** Their name in the owner's Contacts; null when none matches. */
+  name: string | null;
+}
+
 export interface Chat {
   chat_id: string;
   name: string | null;
   identifier: string | null;
   service: string | null;
   is_group: boolean;
-  participants: string[];
+  participants: Participant[];
   last_rowid: number;
   last_message_at: string;
 }
@@ -307,7 +316,7 @@ export class ChatDb {
       ),
     );
     const ids = rows.map((r) => Number(r.id));
-    const people = new Map<number, string[]>();
+    const people = new Map<number, Participant[]>();
     if (ids.length > 0) {
       const p = records(
         await this.query(
@@ -319,7 +328,7 @@ export class ChatDb {
       );
       for (const row of p) {
         const list = people.get(Number(row.chat_id)) ?? [];
-        list.push(String(row.handle));
+        list.push({ handle: String(row.handle), name: null });
         people.set(Number(row.chat_id), list);
       }
     }
@@ -368,6 +377,7 @@ function toMessage(
     sent_at: isoFromUnix(r.unix),
     from_me: fromMe,
     sender: fromMe ? null : typeof r.sender === "string" ? r.sender : null,
+    sender_name: null,
     service: typeof r.service === "string" ? r.service : null,
     kind,
     text: kind === "system" ? (text ?? cleanText(r.group_title)) : text,

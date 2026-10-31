@@ -266,8 +266,15 @@ from there. A cursor past every rowid the database has ever handed out comes
 back with a `warning`, because it means the database was rebuilt and its
 numbering restarted.
 
-Senders are phone numbers and email addresses: the Messages database holds no
-contact names. Attachments come back by `attachment_id`; HEIC, HEIF and TIFF
+Senders are phone numbers and email addresses, and each comes with the name
+your Contacts on the Mac give it: `sender_name` on a message, `name` on each
+of a chat's `participants`. A number matches on E.164, with the Mac's region
+supplying a country code the contact or the handle lacks; an email matches
+lowercased. No match leaves the name `null` and the handle as it was. The
+names come from Contacts' own files, read under the same Full Disk Access
+grant, so there is no second prompt; the book is re-read every ten minutes,
+and when it cannot be read every name is `null` and the result carries a
+`contacts_warning`. Attachments come back by `attachment_id`; HEIC, HEIF and TIFF
 photos, and any JPEG, PNG or WebP over 3.5 MB, are converted to a JPEG at most
 2048 pixels on a side on the Mac, and anything else comes back as a file with
 its MIME type. An attachment Messages in iCloud has not downloaded to this

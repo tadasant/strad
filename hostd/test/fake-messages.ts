@@ -1,6 +1,7 @@
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   writeFileSync,
@@ -24,6 +25,15 @@ import { Duplex, PassThrough } from "node:stream";
 export interface FakeMessagesState {
   /** What `hello` says about the database. */
   chatDb: "readable" | "denied" | "missing";
+  /**
+   * A directory shaped like `~/Library/Application Support/AddressBook`
+   * (`buildAddressBook`). Unset: this Mac has no Contacts.
+   */
+  contactsDir?: string;
+  /** Contacts are there, but Full Disk Access does not reach them. */
+  contactsDenied?: boolean;
+  /** The Mac's region, as the helper reads it from its locale. */
+  region?: string;
   /** Fail every connection with this message: the helper is not running. */
   fail?: string;
 }
@@ -81,9 +91,25 @@ export class FakeMessagesHelper {
           pid: 1,
           executable: "/fake/strad-hostd-messages",
           chat_db: { path: this.dbPath, state: this.state.chatDb },
+          contacts: {
+            state: this.contactsSources().state,
+            sources: this.contactsSources().sources.length,
+          },
           full_disk_access: this.state.chatDb === "readable",
         };
+      case "contacts_sources":
+        return this.contactsSources();
       case "query":
+        if (typeof args.contacts_source === "string") {
+          const path = this.contactsPath(args.contacts_source);
+          return this.query(
+            String(args.sql),
+            (args.params as (string | number | null)[]) ?? [],
+            new Set(),
+            Number(args.max_rows ?? 500),
+            path,
+          );
+        }
         this.requireReadable();
         return this.query(
           String(args.sql),
@@ -103,6 +129,48 @@ export class FakeMessagesHelper {
     }
   }
 
+  /** AddressBook.describe() and sources() in Contacts.swift. */
+  contactsSources(): {
+    state: string;
+    region?: string;
+    sources: string[];
+    path: string;
+  } {
+    const root = this.state.contactsDir ?? "/nonexistent/AddressBook";
+    const region = this.state.region ? { region: this.state.region } : {};
+    if (this.state.contactsDenied)
+      return { path: root, ...region, state: "denied", sources: [] };
+    if (!existsSync(root))
+      return { path: root, ...region, state: "missing", sources: [] };
+    const sources: string[] = [];
+    if (existsSync(join(root, ADDRESS_BOOK))) sources.push("main");
+    const dir = join(root, "Sources");
+    if (existsSync(dir))
+      for (const name of readdirSync(dir).sort())
+        if (existsSync(join(dir, name, ADDRESS_BOOK))) sources.push(name);
+    return {
+      path: root,
+      ...region,
+      state: sources.length ? "readable" : "missing",
+      sources,
+    };
+  }
+
+  private contactsPath(source: string): string {
+    if (this.state.contactsDenied)
+      throw Object.assign(new Error("no Full Disk Access"), {
+        code: "contacts_denied",
+      });
+    if (!this.contactsSources().sources.includes(source))
+      throw Object.assign(new Error(`no Contacts source has id ${source}`), {
+        code: "not_found",
+      });
+    const root = this.state.contactsDir!;
+    return source === "main"
+      ? join(root, ADDRESS_BOOK)
+      : join(root, "Sources", source, ADDRESS_BOOK);
+  }
+
   private requireReadable(): void {
     if (this.state.chatDb === "denied")
       throw Object.assign(new Error("no Full Disk Access"), {
@@ -115,10 +183,11 @@ export class FakeMessagesHelper {
     params: (string | number | null)[],
     decode: Set<string>,
     maxRows: number,
+    path = this.dbPath,
   ): { columns: string[]; rows: unknown[][]; truncated: boolean } {
     // Read-only, like the helper's SQLITE_OPEN_READONLY: a write the daemon
     // ever sent would fail here too.
-    const db = new DatabaseSync(this.dbPath, { readOnly: true });
+    const db = new DatabaseSync(path, { readOnly: true });
     try {
       const stmt = db.prepare(sql);
       const columns = stmt.columns().map((c) => c.name);
@@ -459,4 +528,93 @@ export function buildChatDb(dir: string): string {
   db.exec("INSERT INTO message_attachment_join VALUES (4, 1), (9, 2), (9, 3)");
   db.close();
   return path;
+}
+
+const ADDRESS_BOOK = "AddressBook-v22.abcddb";
+
+/** One fake card: every name and number in these fixtures is invented. */
+export interface FakeCard {
+  first?: string;
+  last?: string;
+  nickname?: string;
+  organization?: string;
+  phones?: string[];
+  emails?: string[];
+}
+
+/**
+ * One Contacts database, with the three Core Data tables the server reads and
+ * the columns it reads from them. `omitNickname` drops a column, as an older
+ * macOS might.
+ */
+export function writeAddressBook(
+  path: string,
+  cards: FakeCard[],
+  opts: { omitNickname?: boolean } = {},
+): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const db = new DatabaseSync(path);
+  db.exec(`
+    CREATE TABLE ZABCDRECORD (Z_PK INTEGER PRIMARY KEY, Z_ENT INTEGER, ZFIRSTNAME VARCHAR, ZMIDDLENAME VARCHAR,
+      ZLASTNAME VARCHAR, ${opts.omitNickname ? "" : "ZNICKNAME VARCHAR, "}ZORGANIZATION VARCHAR);
+    CREATE TABLE ZABCDPHONENUMBER (Z_PK INTEGER PRIMARY KEY, ZOWNER INTEGER, ZLABEL VARCHAR, ZFULLNUMBER VARCHAR);
+    CREATE TABLE ZABCDEMAILADDRESS (Z_PK INTEGER PRIMARY KEY, ZOWNER INTEGER, ZLABEL VARCHAR, ZADDRESS VARCHAR);
+  `);
+  const person = opts.omitNickname
+    ? db.prepare(
+        "INSERT INTO ZABCDRECORD (Z_PK, Z_ENT, ZFIRSTNAME, ZLASTNAME, ZORGANIZATION) VALUES (?, 22, ?, ?, ?)",
+      )
+    : db.prepare(
+        "INSERT INTO ZABCDRECORD (Z_PK, Z_ENT, ZFIRSTNAME, ZLASTNAME, ZNICKNAME, ZORGANIZATION) VALUES (?, 22, ?, ?, ?, ?)",
+      );
+  const phone = db.prepare(
+    "INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZLABEL, ZFULLNUMBER) VALUES (?, '_$!<Mobile>!$_', ?)",
+  );
+  const email = db.prepare(
+    "INSERT INTO ZABCDEMAILADDRESS (ZOWNER, ZLABEL, ZADDRESS) VALUES (?, '_$!<Home>!$_', ?)",
+  );
+  db.exec("BEGIN");
+  cards.forEach((c, i) => {
+    const pk = i + 1;
+    if (opts.omitNickname)
+      person.run(pk, c.first ?? null, c.last ?? null, c.organization ?? null);
+    else
+      person.run(
+        pk,
+        c.first ?? null,
+        c.last ?? null,
+        c.nickname ?? null,
+        c.organization ?? null,
+      );
+    for (const p of c.phones ?? []) phone.run(pk, p);
+    for (const e of c.emails ?? []) email.run(pk, e);
+  });
+  db.exec("COMMIT");
+  db.close();
+}
+
+/** The source id of the fixture's second account. */
+export const FIXTURE_SOURCE = "0A1B2C3D-0000-4000-8000-00000000F1C7";
+
+/**
+ * A fake `~/Library/Application Support/AddressBook`: a top-level database
+ * and one account under Sources/, matching the handles in `buildChatDb` —
+ * a US number saved without its country code, an email saved in another
+ * case, the same person in both accounts — and a number chat.db holds that
+ * no card has. Every name, number and address is invented.
+ */
+export function buildAddressBook(dir: string): string {
+  const root = join(dir, "AddressBook");
+  writeAddressBook(join(root, ADDRESS_BOOK), [
+    { first: "Alex", last: "Example", phones: ["(555) 123-4567"] },
+    { first: "Grace", emails: ["Grace@Example.COM"] },
+    { organization: "Example Florist", phones: ["+44 7700 900123"] },
+  ]);
+  writeAddressBook(join(root, "Sources", FIXTURE_SOURCE, ADDRESS_BOOK), [
+    { first: "Alex", last: "Example", phones: ["+1 555-123-4567"] },
+    { first: "Jordan", last: "Sample", phones: ["07700 900456"] },
+  ]);
+  // A directory with no database in it is not a source.
+  mkdirSync(join(root, "Sources", "EMPTY-SOURCE"), { recursive: true });
+  return root;
 }

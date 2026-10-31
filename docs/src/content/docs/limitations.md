@@ -3549,17 +3549,19 @@ See `HACKS.md` #114.
 
 ### 115. The Messages server needs Full Disk Access granted by hand, and an awake Mac
 
-The `imessage-*` server of [strad-hostd](/servers/hostd/) reads the owner's Messages history from `~/Library/Messages/chat.db` through a native helper, `strad-hostd-messages`, the one process on the machine strad-hostd asks Full Disk Access for. Four things about it are not what the rest of strad is like.
+The `imessage-*` server of [strad-hostd](/servers/hostd/) reads the owner's Messages history from `~/Library/Messages/chat.db` through a native helper, `strad-hostd-messages`, the one process on the machine strad-hostd asks Full Disk Access for. Five things about it are not what the rest of strad is like.
 
 The grant is clicked at the Mac. There is no API that asks for Full Disk Access; the owner drags the helper into System Settings › Privacy & Security › Full Disk Access, and `strad-hostd messages --grant` opens the list and shows the binary. It lands on the helper rather than on `node` because the helper runs as its own LaunchAgent, which is reasoned from how macOS attributes grants and has not been observed on a real Mac.
 
 The data is only as fresh as the Mac. iMessage exists only on Apple hardware, and a sleeping Mac receives nothing. With Messages in iCloud on, a Mac that wakes catches up, and the ROWID cursor `imessage_get_messages` takes then reads what arrived meanwhile; without it, what arrived during sleep may never reach this Mac's database. Nothing keeps the Mac awake.
 
-The helper's socket answers any process running as the owner, and reads chat.db for it, read-only and nothing else: no other database, and attachments only by id from inside the Messages directory. That is narrower than granting Full Disk Access to `node`, and it is not a privilege boundary, for the same reason as #108.
+The helper's socket answers any process running as the owner, and reads chat.db for it, read-only and nothing else: no other database, and attachments only by id from inside the Messages directory. That is narrower than granting Full Disk Access to `node`, and it is not a privilege boundary, for the same reason as #108. The same socket reads the owner's Contacts the same way.
+
+Contact names come from Contacts' own SQLite files under `~/Library/Application Support/AddressBook`, read under that same Full Disk Access grant rather than through Contacts.framework, which would ask for a second grant nobody is there to answer. That the grant reaches those files is documented by other tools that read them and has not been observed on the owner's Mac. Their schema is Apple's and undocumented, like chat.db's. The book is re-read every ten minutes, so a contact added since then has no name until the next read, and a book that cannot be read leaves every name null with a `contacts_warning` rather than failing the read.
 
 The server is allowed on timeout. `init` and `add messages` set `onTimeout: "allow"` on it alone so a nightly read works with nobody at the screen; the rest of the machine keeps `deny`. With nobody there, the dialog refuses nothing. The slug stays `admin`-only.
 
-**How you would know.** `get_control_status` reports `helper: {running, full_disk_access, chat_db}`, `request_control` refuses with `helper_unavailable` and shows no dialog while the grant is missing, and `strad-hostd messages` on the Mac says the same. A cursor past every message comes back with a `warning`: the database was rebuilt and numbering restarted.
+**How you would know.** `get_control_status` reports `helper: {running, full_disk_access, chat_db, contacts}`, `request_control` refuses with `helper_unavailable` and shows no dialog while the grant is missing, and `strad-hostd messages` on the Mac says the same. A cursor past every message comes back with a `warning`: the database was rebuilt and numbering restarted.
 
 **Undo:** an always-on Mac removes the freshness gap. Setting `"onTimeout": "deny"` on `capabilities.messages` puts the dialog back in charge. The grant is the owner's and stays.
 

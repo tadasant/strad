@@ -8,6 +8,7 @@
 // A runner's own ~/Library/Messages holds no one's history, so it is checked
 // only for what the helper says about it.
 import { spawn } from "node:child_process";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 
 const [binary, dbPath] = process.argv.slice(2);
@@ -18,9 +19,15 @@ if (!binary || !dbPath) {
   process.exit(2);
 }
 
-const child = spawn(binary, ["--stdio", "--db", dbPath], {
-  stdio: ["pipe", "pipe", "inherit"],
-});
+// fixture.swift writes a Contacts directory beside the chat.db.
+const contactsDir = join(dirname(dbPath), "AddressBook");
+const child = spawn(
+  binary,
+  ["--stdio", "--db", dbPath, "--contacts", contactsDir],
+  {
+    stdio: ["pipe", "pipe", "inherit"],
+  },
+);
 const lines = createInterface({ input: child.stdout });
 const pending = new Map();
 let seq = 0;
@@ -169,7 +176,8 @@ try {
     chats.map((c) => c.chat_id).join(",") ===
       "iMessage;+;chat111,iMessage;-;+15551234567" &&
       chats[0].is_group === true &&
-      chats[0].participants.join(",") === "+15551234567,grace@example.com",
+      chats[0].participants.map((p) => p.handle).join(",") ===
+        "+15551234567,grace@example.com",
     JSON.stringify(chats),
   );
   const page = await db.messages({ after: 0, limit: 10 });
@@ -200,6 +208,68 @@ try {
     "after_rowid 2 returns 3 and 4",
     after2.messages.map((m) => m.rowid).join(",") === "3,4",
   );
+
+  // Contacts: the helper finds the databases, the daemon's SQL runs on them.
+  const sources = await call("contacts_sources");
+  check(
+    "contacts_sources finds the top-level database and the account under Sources/",
+    sources.ok &&
+      sources.result.state === "readable" &&
+      sources.result.sources.join(",") ===
+        "main,0A1B2C3D-0000-4000-8000-00000000F1C7",
+    JSON.stringify(sources.result ?? sources.error),
+  );
+  const helloContacts = (await call("hello")).result?.contacts;
+  check(
+    "hello reports Contacts readable, and counts sources",
+    helloContacts?.state === "readable" && helloContacts?.sources === 2,
+    JSON.stringify(helloContacts),
+  );
+  for (const [name, source, sql] of [
+    ["a source id that walks out of Sources/", "../../Messages", "SELECT 1"],
+    ["a write to Contacts", "main", "DELETE FROM ZABCDRECORD"],
+    ["an ATTACH from Contacts", "main", "ATTACH DATABASE '/tmp/x.db' AS x"],
+  ]) {
+    const r = await call("query", { contacts_source: source, sql });
+    check(
+      `${name} is refused`,
+      !r.ok && ["not_found", "bad_sql"].includes(r.error.code),
+      JSON.stringify(r.error),
+    );
+  }
+  const { ContactsCache } = await import(
+    new URL("../build/messages/contacts.js", import.meta.url)
+  );
+  const cache = new ContactsCache({
+    sources: async () => {
+      const r = await call("contacts_sources");
+      if (!r.ok) throw new Error(r.error.message);
+      // The runner's locale is not the fixture's; pin it.
+      return { ...r.result, region: "US" };
+    },
+    query: async (source, sql, params) => {
+      const r = await call("query", {
+        contacts_source: source,
+        sql,
+        params,
+        max_rows: 5000,
+      });
+      if (!r.ok) throw new Error(`${r.error.code}: ${r.error.message}`);
+      return r.result;
+    },
+    ttlMs: 60_000,
+    retryMs: 60_000,
+  });
+  const { index, warning } = await cache.get();
+  check(
+    "the daemon's Contacts read runs on macOS SQLite, and names each handle",
+    warning === undefined &&
+      index.lookup("+15551234567") === "Alex Example" &&
+      index.lookup("grace@example.com") === "Grace" &&
+      index.lookup("+447700900456") === "Jordan Sample" &&
+      index.lookup("+15559876543") === null,
+    warning,
+  );
 } catch (err) {
   check("smoke ran to the end", false, err.message);
 } finally {
@@ -219,6 +289,11 @@ check(
   "--status on the real ~/Library/Messages reports a state, not a crash",
   ["denied", "missing", "readable"].includes(real.chat_db.state),
   JSON.stringify(real.chat_db),
+);
+check(
+  "--status on the real Contacts directory reports a state, not a crash",
+  ["denied", "missing", "readable", "error"].includes(real.contacts?.state),
+  JSON.stringify(real.contacts),
 );
 
 if (failed) {

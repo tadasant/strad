@@ -16,8 +16,9 @@ name: hostd-ax
 # `messages` (strad-hostd-messages) proves: the helper compiles and signs,
 # reads a fixture chat.db built by fixture.swift, decodes an attributedBody
 # NSArchiver wrote, refuses writes and ATTACH, converts a TIFF with sips,
-# refuses an attachment outside the database's directory — and runs the
-# daemon's own queries (hostd/src/messages/chatdb.ts, built) through it. A
+# refuses an attachment outside the database's directory, reads a fixture
+# Contacts directory — and runs the daemon's own queries
+# (hostd/src/messages/chatdb.ts and contacts.ts, built) through it. A
 # runner's ~/Library/Messages holds no real history and its grants are the
 # image's, so a real chat.db under a Full Disk Access grant the owner clicked is
 # exercised on the owner's Mac and nowhere else.

@@ -67,11 +67,24 @@ final class ChatDB {
 
     func query(sql: String, params: [Any], decode: Set<String>, maxRows: Int) throws -> [String: Any] {
         try requireReadable()
+        return try ReadOnlySQLite.query(path: path, sql: sql, params: params, decode: decode, maxRows: maxRows)
+    }
+}
+
+/// One statement against one SQLite file, under every guarantee `ChatDB`
+/// documents: read-only open, no ATTACH, one read-only statement. The file is
+/// chosen by the helper — chat.db, or a Contacts database `AddressBook` found
+/// itself — never by the daemon.
+enum ReadOnlySQLite {
+    static func query(
+        path: String, sql: String, params: [Any], decode: Set<String>, maxRows: Int,
+        unreadable: String = "chat_db_unreadable"
+    ) throws -> [String: Any] {
         var handle: OpaquePointer?
         guard sqlite3_open_v2(path, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db = handle else {
             let message = handle.map { String(cString: sqlite3_errmsg($0)) } ?? "out of memory"
             sqlite3_close(handle)
-            throw HelperError(code: "chat_db_unreadable", message: "cannot open \(path): \(message)")
+            throw HelperError(code: unreadable, message: "cannot open \(path): \(message)")
         }
         defer { sqlite3_close(db) }
         sqlite3_busy_timeout(db, 3000)
@@ -146,7 +159,7 @@ final class ChatDB {
         return ["columns": columns, "rows": rows, "truncated": truncated]
     }
 
-    private func value(_ stmt: OpaquePointer, _ i: Int32, decode: Bool) -> Any {
+    private static func value(_ stmt: OpaquePointer, _ i: Int32, decode: Bool) -> Any {
         switch sqlite3_column_type(stmt, i) {
         case SQLITE_INTEGER:
             return NSNumber(value: sqlite3_column_int64(stmt, i))

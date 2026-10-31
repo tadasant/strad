@@ -12,6 +12,8 @@ func usage() -> Never {
       strad-hostd-messages --listen <path>     serve JSON lines on a Unix socket (LaunchAgent mode)
       strad-hostd-messages --status            print whether chat.db is readable, as JSON, and exit
       strad-hostd-messages --db <path>         read this database instead of ~/Library/Messages/chat.db
+      strad-hostd-messages --contacts <dir>    read Contacts from this directory instead of
+                                               ~/Library/Application Support/AddressBook
 
     """
     FileHandle.standardError.write(text.data(using: .utf8)!)
@@ -22,6 +24,7 @@ let arguments = Array(CommandLine.arguments.dropFirst())
 var mode: Transport.Mode?
 var status = false
 var dbPath = ("~/Library/Messages/chat.db" as NSString).expandingTildeInPath
+var contactsRoot = ("~/Library/Application Support/AddressBook" as NSString).expandingTildeInPath
 var index = 0
 while index < arguments.count {
     switch arguments[index] {
@@ -35,6 +38,10 @@ while index < arguments.count {
         index += 1
         guard index < arguments.count else { usage() }
         dbPath = (arguments[index] as NSString).expandingTildeInPath
+    case "--contacts":
+        index += 1
+        guard index < arguments.count else { usage() }
+        contactsRoot = (arguments[index] as NSString).expandingTildeInPath
     case "--status":
         status = true
     case "--version":
@@ -46,7 +53,7 @@ while index < arguments.count {
     index += 1
 }
 
-let dispatcher = Dispatcher(db: ChatDB(path: dbPath))
+let dispatcher = Dispatcher(db: ChatDB(path: dbPath), contacts: AddressBook(root: contactsRoot))
 if status {
     let data = try! JSONSerialization.data(withJSONObject: dispatcher.hello(), options: [.sortedKeys])
     print(String(data: data, encoding: .utf8)!)

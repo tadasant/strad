@@ -415,8 +415,9 @@ The `messages` job builds and ad-hoc signs `strad-hostd-messages`, builds a
 fixture chat.db with `hostd/messages/fixture.swift`, and drives the helper over
 stdio with `hostd/messages/smoke.mjs`: an `attributedBody` NSArchiver wrote is
 decoded, writes and ATTACH are refused, a TIFF is converted by `sips`, an
-attachment outside the database's directory is refused, and the daemon's own
-queries run through it. A runner has no real Messages history and its grants
+attachment outside the database's directory is refused, a fixture Contacts
+directory is found and read (a source id outside it is refused), and the
+daemon's own queries, contact-name matching included, run through it. A runner has no real Messages history and its grants
 are the image's, so a real `~/Library/Messages` under a grant the owner clicked
 is read only on the owner's Mac; [limitation
 #115](/limitations/) says so.

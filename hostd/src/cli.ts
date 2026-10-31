@@ -229,7 +229,8 @@ async function main(argv: string[]): Promise<number> {
         const blocked = messagesBlocked(hello);
         console.log(
           `strad-hostd-messages ${hello.version} at ${hello.executable}
-  ${hello.chat_db.path}: ${blocked ? `NOT readable — ${blocked}` : "readable"}`,
+  ${hello.chat_db.path}: ${blocked ? `NOT readable — ${blocked}` : "readable"}
+  Contacts (for sender names): ${hello.contacts ? `${hello.contacts.state}, ${hello.contacts.sources} database(s)` : "not reported by this helper; rebuild it"}`,
         );
         await core.close();
         return blocked ? 1 : 0;
