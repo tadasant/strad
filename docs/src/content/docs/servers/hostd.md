@@ -273,8 +273,9 @@ supplying a country code the contact or the handle lacks; an email matches
 lowercased. No match leaves the name `null` and the handle as it was. The
 names come from Contacts' own files, read under the same Full Disk Access
 grant, so there is no second prompt; the book is re-read every ten minutes,
-and when it cannot be read every name is `null` and the result carries a
-`contacts_warning`. Attachments come back by `attachment_id`; HEIC, HEIF and TIFF
+and when it cannot be read the result carries a `contacts_warning`: names are
+`null` if the book has never been read, or the last read's if a re-read
+failed. A short code (fewer than seven digits) is never named. Attachments come back by `attachment_id`; HEIC, HEIF and TIFF
 photos, and any JPEG, PNG or WebP over 3.5 MB, are converted to a JPEG at most
 2048 pixels on a side on the Mac, and anything else comes back as a file with
 its MIME type. An attachment Messages in iCloud has not downloaded to this

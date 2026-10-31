@@ -39,10 +39,13 @@ describe("normalising a handle", () => {
     });
     expect(phoneKeys("1 (555) 123-4567", "US").e164).toBe("+15551234567");
     expect(phoneKeys("555.123.4567", "US").e164).toBe("+15551234567");
-    expect(phoneKeys("07700 900123", "GB")).toEqual({
-      e164: "+447700900123",
-      national: "7700900123",
+    expect(phoneKeys("07700 900123", "GB").e164).toBe("+447700900123");
+    // Valid in the Mac's region: no national fallback key.
+    expect(phoneKeys("(212) 555-0100", "US")).toEqual({
+      e164: "+12125550100",
     });
+    // Not a number in the Mac's region: the national digits are the fallback.
+    expect(phoneKeys("07700 900123", "US").national).toBe("7700900123");
   });
 
   it("keeps the country code a number carries, whatever the region", () => {
@@ -129,6 +132,17 @@ describe("matching a handle to a contact", () => {
     expect(index.lookup("")).toBeNull();
   });
 
+  it("does not give a foreign handle a valid domestic contact's name", () => {
+    // 212 555 0100 is a real-format New York number on a US Mac; the same
+    // ten digits after +44 are some other line.
+    const domestic = new ContactIndex(
+      [{ name: "Riley Placeholder", phones: ["(212) 555-0100"], emails: [] }],
+      "US",
+    );
+    expect(domestic.lookup("+12125550100")).toBe("Riley Placeholder");
+    expect(domestic.lookup("+442125550100")).toBeNull();
+  });
+
   it("does not guess between two people a national number could be", () => {
     const two = new ContactIndex(
       [
@@ -211,6 +225,7 @@ describe("reading the Contacts databases", () => {
     });
     const found = fake.contactsSources();
     expect(found.state).toBe("readable");
+    // Neither the empty directory nor "not an id" is a source.
     expect(found.sources).toEqual(["main", FIXTURE_SOURCE]);
     const { query } = sourceQuery(fake);
     const main = await readSource(query, "main");
@@ -228,7 +243,7 @@ describe("reading the Contacts databases", () => {
     const dir = mkdtempSync(join(tmpdir(), "hostd-contacts-"));
     const cards = Array.from({ length: 2500 }, (_, i) => ({
       first: `Person${i}`,
-      phones: [`+1555${String(1000000 + i).slice(1)}`],
+      phones: [`+1555${String(10000000 + i).slice(1)}`],
     }));
     writeAddressBook(
       join(dir, "AddressBook", "AddressBook-v22.abcddb"),
@@ -317,7 +332,7 @@ describe("the contacts cache", () => {
     t.fake.state.contactsDenied = true;
     t.advance(600_001);
     const r = await t.cache.get();
-    expect(r.warning).toMatch(/unavailable/);
+    expect(r.warning).toMatch(/could not be re-read.*earlier read/);
     expect(r.index.lookup("grace@example.com")).toBe("Grace");
   });
 

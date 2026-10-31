@@ -109,7 +109,7 @@ export function messagesCapability(
 
 **Returns:**
 {"chats":[{"chat_id":"iMessage;+;chat123456789012345678","name":"Wedding planning","identifier":"chat123456789012345678","service":"iMessage","is_group":true,"participants":[{"handle":"+15551234567","name":"Alex Example"},{"handle":"ada@example.com","name":null}],"last_rowid":48211,"last_message_at":"2026-10-08T19:02:11.000Z"}]}
-"name" is the group's name if it was given one, else null. Each participant's "handle" is their phone number or email as Messages holds it, and "name" is the name the owner's Contacts on this Mac give that number or email (matched on the number in E.164, or the email lowercased), or null when no contact matches. A "contacts_warning" field appears when Contacts could not be read; every name is then null, and the handles are unaffected. "last_rowid" is the ROWID of the chat's newest message, comparable with imessage_get_messages' cursor.
+"name" is the group's name if it was given one, else null. Each participant's "handle" is their phone number or email as Messages holds it, and "name" is the name the owner's Contacts on this Mac give that number or email (matched on the number in E.164, or the email lowercased), or null when no contact matches. A "contacts_warning" field appears when Contacts could not be read: names are then null if they have never been read, or from the last successful read (at most ten minutes old when it succeeded) if a re-read failed; the handles are unaffected. "last_rowid" is the ROWID of the chat's newest message, comparable with imessage_get_messages' cursor.
 
 **Use cases:**
 - Find the chat_id of a group by its name, or of a person by number or email (search; it does not search contact names — list without it and read the participants' names instead)
@@ -176,7 +176,7 @@ Reads only what is on this Mac. With Messages in iCloud, a Mac that was asleep c
 next_before_rowid is present when you read without a cursor or with before_rowid.
 
 - kind: "message" (text, attachments, or both), "reaction" (a tapback: "reaction":{"type":"love"|"like"|"dislike"|"laugh"|"emphasize"|"question"|"emoji"|"sticker"|"other","removed":false,"target_guid":"<guid of the message reacted to>"}), or "system" (a group renamed, someone added or left).
-- sender is the other party's phone number or email; null when from_me is true. sender_name is the name the owner's Contacts on this Mac give that sender (matched on the number in E.164, or the email lowercased), or null when no contact matches or from_me is true. A "contacts_warning" field appears when Contacts could not be read; sender_name is then null throughout, and sender is unaffected.
+- sender is the other party's phone number or email; null when from_me is true. sender_name is the name the owner's Contacts on this Mac give that sender (matched on the number in E.164, or the email lowercased), or null when no contact matches or from_me is true. A "contacts_warning" field appears when Contacts could not be read: names are then null if they have never been read, or from the last successful read (at most ten minutes old when it succeeded) if a re-read failed; sender is unaffected.
 - reply_to_guid is set on a reply in a thread; edited and unsent appear when true (as of this read).
 - chat_id is null only for a message Messages has not joined to a chat.
 - text is null for a message that is only an attachment. Fetch one with imessage_get_attachment and its attachment_id.

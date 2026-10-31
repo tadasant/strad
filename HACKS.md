@@ -6046,7 +6046,8 @@ that costs:
    through it. It is narrower than the alternative (Full Disk Access on
    `node`, which would hand every file the grant reaches to every Node script
    and to the shell slug): the connection is `SQLITE_OPEN_READONLY`, ATTACH is
-   denied so no other database is reachable, and attachments are read by id
+   denied so no database beyond chat.db and the Contacts files the helper
+   enumerates itself is reachable, and attachments are read by id
    from chat.db, never by a caller's path, and only under the database's own
    directory. As in #108, two processes of one macOS user cannot keep secrets
    from each other; it is not a privilege boundary. The same socket reads the
@@ -6066,8 +6067,8 @@ that costs:
    `text: null` on messages that have text.
 6. **Contact names come from Contacts' own files, under the same grant.**
    `sender_name` and each participant's `name` are matched from the
-   `AddressBook-v22.abcddb` files under `~/Library/Application
-Support/AddressBook` (the top-level one and each `Sources/<id>/`), read as
+   `AddressBook-v22.abcddb` files under
+   `~/Library/Application Support/AddressBook` (the top-level one and each `Sources/<id>/`), read as
    SQLite under the Full Disk Access the helper already holds, not through
    Contacts.framework, which asks for a separate Contacts grant a LaunchAgent
    cannot answer unattended. That Full Disk Access reaches those files is
@@ -6076,10 +6077,12 @@ Support/AddressBook` (the top-level one and each `Sources/<id>/`), read as
    (`ZABCDRECORD`, `ZABCDPHONENUMBER`, `ZABCDEMAILADDRESS`) is Apple's and
    undocumented, like chat.db's. Numbers match on E.164, with the Mac's
    region supplying a missing country code, and fall back to the national
-   number only when exactly one name claims it. The book is read once per ten
+   number only for a contact number that is not valid in the Mac's region and
+   that exactly one name claims. A short code is never named. The book is read once per ten
    minutes, so a contact added since then is unnamed until the next read. A
-   book that cannot be read leaves every name null and adds a
-   `contacts_warning`; it never fails the read of the messages.
+   book that cannot be read adds a `contacts_warning` and never fails the
+   read of the messages: names are null if it has never been read, and the
+   last read's if a re-read failed.
 
 **Why it cannot be designed out.** 1 and 2 are #101's: the box is a personal
 Mac. 3 and 6 are what reading a TCC-guarded file from a daemon costs on macOS.

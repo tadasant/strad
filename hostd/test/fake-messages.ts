@@ -147,7 +147,13 @@ export class FakeMessagesHelper {
     const dir = join(root, "Sources");
     if (existsSync(dir))
       for (const name of readdirSync(dir).sort())
-        if (existsSync(join(dir, name, ADDRESS_BOOK))) sources.push(name);
+        // AddressBook.isSourceID: an id can never walk out of Sources/.
+        if (
+          /^[A-Za-z0-9-]{1,64}$/.test(name) &&
+          name !== "main" &&
+          existsSync(join(dir, name, ADDRESS_BOOK))
+        )
+          sources.push(name);
     return {
       path: root,
       ...region,
@@ -614,7 +620,11 @@ export function buildAddressBook(dir: string): string {
     { first: "Alex", last: "Example", phones: ["+1 555-123-4567"] },
     { first: "Jordan", last: "Sample", phones: ["07700 900456"] },
   ]);
-  // A directory with no database in it is not a source.
+  // A directory with no database in it is not a source, and neither is one
+  // whose name is not an id.
   mkdirSync(join(root, "Sources", "EMPTY-SOURCE"), { recursive: true });
+  writeAddressBook(join(root, "Sources", "not an id", ADDRESS_BOOK), [
+    { first: "Never", last: "Read", phones: ["+15550009999"] },
+  ]);
   return root;
 }

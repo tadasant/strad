@@ -1,4 +1,7 @@
-import { parsePhoneNumberFromString } from "libphonenumber-js/min";
+import {
+  isSupportedCountry,
+  parsePhoneNumberFromString,
+} from "libphonenumber-js/min";
 
 import { records, type QueryResult } from "./chatdb.js";
 
@@ -12,7 +15,8 @@ import { records, type QueryResult } from "./chatdb.js";
  * `AddressBook-v22.abcddb`, and one per `Sources/<id>/`). The helper finds
  * them and reads them under the Full Disk Access it already holds
  * (`hostd/messages/Sources/strad-hostd-messages/Contacts.swift`); the SQL is
- * here, where `test/messages.test.ts` runs it against fixture databases.
+ * here, where `test/contacts.test.ts` and `test/messages.test.ts` run it
+ * against fixture databases.
  *
  * The whole book is read into one index and kept for `ttlMs`, so a page of
  * 200 messages is 200 map lookups, not 200 database opens.
@@ -57,9 +61,15 @@ export function normalizeEmail(raw: string): string | undefined {
  * country code when the number has none. It is the match.
  *
  * `national` is the number without any country code (`7700900123`), and is
- * set only when the input HAD no country code. It is the fallback for a
- * contact saved in another country's local form — `07700 900123` on a Mac set
- * to the US — whose E.164 under the Mac's region is wrong.
+ * set only when the input had no country code AND is not a valid number in
+ * the Mac's region. It is the fallback for a contact saved in another
+ * country's local form — `07700 900123` on a Mac set to the US — whose E.164
+ * under the Mac's region is wrong. A valid domestic number never gets one, so
+ * a foreign handle with the same digits is not given a domestic contact's
+ * name.
+ *
+ * Fewer than seven digits (a short code) gets neither key: those are matched
+ * by nobody.
  */
 export function phoneKeys(
   raw: string,
@@ -79,12 +89,14 @@ export function phoneKeys(
       : trimmed;
   const parsed = parsePhoneNumberFromString(
     text,
-    region ? { defaultCountry: region as never } : undefined,
+    region && isSupportedCountry(region)
+      ? { defaultCountry: region }
+      : undefined,
   );
   const out: { e164?: string; national?: string } = {};
   const possible = parsed?.isPossible() ? parsed : undefined;
   if (possible) out.e164 = possible.number;
-  if (!international) {
+  if (!international && !possible?.isValid()) {
     // A country code the parser found anyway (`1 555…` under US) still came
     // from the input; strip it via the parse when there is one.
     const national = possible?.nationalNumber ?? digits.replace(/^0+/, "");
@@ -129,10 +141,6 @@ export class ContactIndex {
         if (keys.national) add(this.national, keys.national);
       }
     }
-  }
-
-  get size(): number {
-    return this.emails.size + this.e164.size;
   }
 
   /** The name for a chat.db handle, or null when no contact has it. */
@@ -309,7 +317,10 @@ export class ContactsCache {
         ? `${failed.length} of ${found.sources.length} Contacts databases could not be read, so some names may be missing: ${failed[0]}`
         : undefined;
     } catch (err) {
-      this.warning = `contact names unavailable: ${(err as Error).message}`;
+      // A re-read that fails keeps the names the last one found, and says so.
+      this.warning = this.index
+        ? `Contacts could not be re-read, so names are from an earlier read and may be out of date: ${(err as Error).message}`
+        : `contact names unavailable: ${(err as Error).message}`;
     }
     // A partial read is retried as soon as a failed one.
     this.loadedAt = (this.opts.now ?? Date.now)();

@@ -526,7 +526,7 @@ works (BlueBubbles, imessage-exporter, the Messages MCP servers).
   and `query` runs one statement it is sent. The statements live in `src/messages/chatdb.ts`,
   where `test/messages.test.ts` runs them against a fixture database on Linux.
   What the helper guarantees is that nothing it runs writes or reaches beyond
-  this file: the connection is `SQLITE_OPEN_READONLY`, a statement SQLite does
+  chat.db and the Contacts databases it enumerates itself: the connection is `SQLITE_OPEN_READONLY`, a statement SQLite does
   not report read-only is refused, so is anything after the first statement,
   and ATTACH — which `sqlite3_stmt_readonly` calls read-only because it changes
   the connection, not a file — is denied by an authorizer and a limit of zero,
@@ -578,8 +578,10 @@ works (BlueBubbles, imessage-exporter, the Messages MCP servers).
   in E.164 with the Mac's region filling a missing country code, emails
   lowercased) and kept for ten minutes, so a page of 200 messages is 200 map
   lookups. A contact saved in another country's local form matches on its
-  national number when exactly one name claims it. An unreadable book means
-  null names and a `contacts_warning`, never a failed read.
+  national number when that number is not valid in the Mac's region and
+  exactly one name claims it. An unreadable book means a `contacts_warning`,
+  never a failed read: null names if it has never been read, the last read's
+  if a re-read failed.
 - **What it does not have.** A send tool: posting as the owner is a different grant, and would be a
   separate server and slug. Freshness on a sleeping Mac: see below.
 - **Consent.** The intended caller is a nightly sweep, which runs with nobody

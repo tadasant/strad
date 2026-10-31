@@ -81,7 +81,10 @@ final class Dispatcher {
         case "query":
             // A Contacts source, by the id `contacts_sources` returned; chat.db
             // otherwise.
-            if let source = args.raw["contacts_source"] as? String {
+            if let raw = args.raw["contacts_source"] {
+                guard let source = raw as? String else {
+                    throw HelperError(code: "bad_args", message: "contacts_source must be a string")
+                }
                 return try contacts.query(
                     source: source,
                     sql: args.requireString("sql"),
