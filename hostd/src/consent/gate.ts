@@ -30,9 +30,15 @@ export type DenyCode =
  *
  * Order matters and is the security argument: the kill switch is consulted
  * FIRST and again AFTER the dialog (the owner may have thrown it while the
- * dialog was up), a rejected capability goes quiet for a cooldown so a caller
- * cannot wear the owner down with dialogs, and every path that did not end in a
- * human saying yes — or an owner's standing `onTimeout: allow` — is a denial.
+ * dialog was up), and every path that did not end in a human saying yes — or an
+ * owner's standing `onTimeout: allow` — is a denial.
+ *
+ * A capability goes quiet for a cooldown only when the owner says so: by
+ * killing one of its grants (the status page, `strad-hostd kill`, the banner),
+ * or by answering its dialog with "Disallow and cool down". A plain Reject and
+ * an unanswered dialog start nothing, so a mis-click costs one request, not a
+ * minute of them. Neither does the kill switch: while it is thrown everything
+ * is refused anyway, and switching it back on is the owner saying yes.
  */
 export class ConsentGate {
   readonly grants: GrantStore;
@@ -65,6 +71,7 @@ export class ConsentGate {
       now: deps.now,
       onChange: deps.onChange,
       onEnd: (g, reason) => {
+        if (reason === "killed") this.coolDown(g.capability);
         deps.audit.record({
           kind:
             reason === "killed" ||
@@ -82,7 +89,11 @@ export class ConsentGate {
           `${g.server} no longer has control`,
           reason === "owner_input"
             ? `You pressed a key or clicked, so the grant ended after ${g.calls} call${g.calls === 1 ? "" : "s"}.`
-            : `Grant ${reason} after ${g.calls} call${g.calls === 1 ? "" : "s"}.`,
+            : `Grant ${reason} after ${g.calls} call${g.calls === 1 ? "" : "s"}.${
+                reason === "killed" && deps.config.consent.rejectCooldownSeconds
+                  ? ` ${g.server} is refused for ${deps.config.consent.rejectCooldownSeconds}s.`
+                  : ""
+              }`,
         );
       },
     });
@@ -90,6 +101,13 @@ export class ConsentGate {
 
   private now(): number {
     return (this.deps.now ?? Date.now)();
+  }
+
+  private coolDown(capability: CapabilityId): void {
+    this.cooldownUntil.set(
+      capability,
+      this.now() + this.deps.config.consent.rejectCooldownSeconds * 1000,
+    );
   }
 
   async request(input: {
@@ -125,14 +143,14 @@ export class ConsentGate {
     if (cooling > 0) {
       return deny(
         "cooldown",
-        `the owner rejected a request for this server moments ago; it accepts new requests in ${Math.ceil(cooling / 1000)}s. Do not retry in a loop — a rejection is an answer`,
+        `the owner ended this server's control, or refused it and asked for quiet, moments ago; it accepts new requests in ${Math.ceil(cooling / 1000)}s. Do not retry in a loop — tell your user`,
       );
     }
-    // ONE dialog on screen at a time, machine-wide. The cooldown below is only
-    // written after a rejection comes back, so without this a caller firing N
-    // requests at once gets N dialogs up before the first "no" can land — and
-    // wearing the owner down with dialogs is what the cooldown exists to stop.
-    // Checked and claimed with no `await` between, so it cannot be raced.
+    // ONE dialog on screen at a time, machine-wide, so a caller firing N
+    // requests at once cannot stack N dialogs: the rest are refused as busy,
+    // and "Disallow and cool down" on the one that is up holds off that
+    // server's later requests. Checked and claimed with no `await` between, so
+    // it cannot be raced.
     if (consent.mode !== "none" && this.pending.size > 0) {
       return deny(
         "dialog_busy",
@@ -179,13 +197,16 @@ export class ConsentGate {
         this.pending.delete(ticket);
       }
       if (answer === "rejected") {
-        this.cooldownUntil.set(
-          input.capability,
-          this.now() + consent.rejectCooldownSeconds * 1000,
-        );
         return deny(
           "rejected",
           `the person at ${config.machine} rejected the request`,
+        );
+      }
+      if (answer === "rejected_cooldown") {
+        this.coolDown(input.capability);
+        return deny(
+          "rejected",
+          `the person at ${config.machine} rejected the request and asked for no more from this server for ${consent.rejectCooldownSeconds}s`,
         );
       }
       if (answer === "unavailable") {

@@ -121,11 +121,18 @@ describe.skipIf(!chrome)(
         await new Promise((r) => setTimeout(r, 100));
       }
 
-      daemon = await startDaemon(testConfig({ browser: { userDataDir } }), {
-        stateDir: tmpState(),
-        prompter: new ScriptedPrompter("allowed"),
-        ephemeralPorts: true,
-      });
+      // No cooldown: the kill test asks again straight after its kill.
+      daemon = await startDaemon(
+        testConfig({
+          browser: { userDataDir },
+          consent: { rejectCooldownSeconds: 0 },
+        }),
+        {
+          stateDir: tmpState(),
+          prompter: new ScriptedPrompter("allowed"),
+          ephemeralPorts: true,
+        },
+      );
       client = await connect(daemon.mcpPort, "/browser/mcp", BROWSER_KEY);
       ({ grant_id: grantId } = resultJson<{ grant_id: string }>(
         await client.callTool({

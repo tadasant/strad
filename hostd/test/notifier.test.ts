@@ -51,7 +51,7 @@ describe("what the machine is told", () => {
     g.grants.end(d.grant.id, "killed");
     expect(notifier.sent[1]).toEqual([
       "shell-test-mbp no longer has control",
-      "Grant killed after 0 calls.",
+      "Grant killed after 0 calls. shell-test-mbp is refused for 60s.",
     ]);
   });
 

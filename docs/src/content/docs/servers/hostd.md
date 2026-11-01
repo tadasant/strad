@@ -238,10 +238,16 @@ Every server starts the same way:
 
 1. `request_control` with a `purpose` of at most two sentences. A dialog appears
    on the machine and the call blocks for up to ten seconds. Only a mouse
-   click on **Allow** or **Reject** answers it: no key does, so someone typing
-   in another app when it appears cannot decide it by accident.
+   click on **Allow**, **Reject** or **Disallow and cool down** answers it: no
+   key does, so someone typing in another app when it appears cannot decide it
+   by accident.
 2. Pass the returned `grant_id` to every other tool.
 3. `end_control` when done.
+
+A plain **Reject** refuses that one request and nothing more: the next
+`request_control` gets a fresh dialog. A server is held off, with no dialog, for
+`consent.rejectCooldownSeconds` (60) only when you kill one of its grants or
+answer **Disallow and cool down**; it is refused as `cooldown` until then.
 
 An unanswered dialog is a **denial** by default. To let requests through when
 nobody objects, set `"consent": { "onTimeout": "allow" }` in
@@ -337,6 +343,7 @@ so, its banner is red, and your first key or click ends the grant.
 | --- | --- |
 | What is in control right now | `http://127.0.0.1:7312`, or `strad-hostd status` |
 | Stop one grant and what it started | the grant's **Kill** button, or `strad-hostd kill <grant_id>` |
+| Keep a server from asking again for a minute | **Kill** its grant (any of the kill routes above, or the banner's), or answer its dialog with **Disallow and cool down** |
 | Turn everything off | **Disable everything**, `strad-hostd disable`, or `touch ~/.strad-hostd/DISABLED` |
 | Turn it back on | **Turn back on**, or `strad-hostd enable` |
 | Whether the Chrome extension is paired | the status page's header, `strad-hostd status`, or `get_control_status` |

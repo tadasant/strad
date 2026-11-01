@@ -71,6 +71,7 @@ export function collectState(deps: ControlDeps): ControlState {
       mode: config.consent.mode,
       windowSeconds: config.consent.windowSeconds,
       onTimeout: config.consent.onTimeout,
+      cooldownSeconds: config.consent.rejectCooldownSeconds,
     },
     servers: enabledCapabilities(config).map((id) => ({
       id,

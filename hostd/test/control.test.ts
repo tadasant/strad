@@ -57,10 +57,13 @@ const form = (fields: Record<string, string>) => ({
   body: new URLSearchParams(fields).toString(),
 });
 
-const grant = async (purpose: string) => {
+const grant = async (
+  purpose: string,
+  capability: "shell" | "browser" = "shell",
+) => {
   const d = await daemon.core.deps.gate.request({
-    capability: "shell",
-    server: "shell-test-mbp",
+    capability,
+    server: `${capability}-test-mbp`,
     purpose,
   });
   if (!d.ok) throw new Error(d.reason);
@@ -77,6 +80,9 @@ describe("the control page", () => {
     expect(page.body).toContain("Remote control is ON");
     expect(page.body).toContain("shell-test-mbp");
     expect(page.body).toContain(esc(g.id));
+    expect(page.body).toContain(
+      "Kill ends the grant and refuses that server's requests, with no dialog, for 60 seconds",
+    );
     expect(page.body).not.toContain("<script>");
     expect(page.body).toContain("&#60;script&#62;");
     expect(page.headers["content-security-policy"]).toContain(
@@ -123,8 +129,9 @@ describe("the control page", () => {
     daemon.core.deps.gate.grants.end(g.id, "ended");
   });
 
-  it("kills one grant, and its signal aborts", async () => {
-    const g = await grant("Hold a grant for the kill test.");
+  it("kills one grant, its signal aborts, and THAT server cools down", async () => {
+    // The browser server, so the shell tests below still get their grants.
+    const g = await grant("Hold a grant for the kill test.", "browser");
     const res = await request(
       "POST",
       "/kill",
@@ -133,6 +140,11 @@ describe("the control page", () => {
     expect(res.status).toBe(303);
     expect(g.signal.aborted).toBe(true);
     expect(daemon.core.deps.gate.grants.active()).toEqual([]);
+    await expect(
+      grant("Ask again straight after the kill.", "browser"),
+    ).rejects.toThrow(/ended this server's control/);
+    const other = await grant("Another server still asks.");
+    daemon.core.deps.gate.grants.end(other.id, "ended");
   });
 
   it("a hand-touched DISABLED file stops a RUNNING command within the enforce interval", async () => {
@@ -179,5 +191,19 @@ describe("the control page", () => {
         .status,
     ).toBe(303);
     expect(daemon.core.deps.killSwitch.isDisabled()).toBe(false);
+  });
+
+  it("Kill all cools down the server that held a grant (last: shell stays cold)", async () => {
+    const gate = daemon.core.deps.gate;
+    const a = await grant("Hold a shell grant for kill-all.");
+    // The browser is still cooling from the kill test; it is not asked again.
+    expect(gate.grants.active().map((g) => g.id)).toEqual([a.id]);
+    expect(
+      (await request("POST", "/kill-all", form({ token: daemon.controlToken })))
+        .status,
+    ).toBe(303);
+    await expect(grant("Ask again after kill-all.")).rejects.toThrow(
+      /ended this server's control/,
+    );
   });
 });

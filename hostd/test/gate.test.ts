@@ -66,13 +66,91 @@ describe("the consent gate", () => {
     expect(await ask(gate)).toMatchObject({ ok: false, code: "no_display" });
   });
 
-  it("goes quiet after a rejection, without showing another dialog", async () => {
+  it("starts NO cooldown on a plain Reject: the next request gets a fresh dialog", async () => {
     const prompter = new ScriptedPrompter("rejected");
-    const { gate, clock } = gateWith(prompter);
+    const { gate } = gateWith(prompter);
+    expect(await ask(gate)).toMatchObject({ ok: false, code: "rejected" });
+    prompter.answer = "allowed";
+    expect((await ask(gate)).ok).toBe(true);
+    expect(prompter.seen).toHaveLength(2);
+  });
+
+  it("starts no cooldown on an unanswered dialog either", async () => {
+    const prompter = new ScriptedPrompter("timeout");
+    const { gate } = gateWith(prompter);
+    expect(await ask(gate)).toMatchObject({ ok: false, code: "timeout" });
+    prompter.answer = "allowed";
+    expect((await ask(gate)).ok).toBe(true);
+    expect(prompter.seen).toHaveLength(2);
+  });
+
+  it("goes quiet after 'Disallow and cool down', without showing another dialog", async () => {
+    const prompter = new ScriptedPrompter("rejected_cooldown");
+    const { gate, clock, audit } = gateWith(prompter);
     expect(await ask(gate)).toMatchObject({ ok: false, code: "rejected" });
     prompter.answer = "allowed";
     expect(await ask(gate)).toMatchObject({ ok: false, code: "cooldown" });
     expect(prompter.seen).toHaveLength(1);
+    // Per capability: another server still asks.
+    expect(
+      (
+        await gate.request({
+          capability: "browser",
+          server: "browser-use-test-mbp-headless",
+          purpose: PURPOSE,
+        })
+      ).ok,
+    ).toBe(true);
+    clock.t += 61_000;
+    expect((await ask(gate)).ok).toBe(true);
+    expect(
+      audit
+        .tail()
+        .filter((e) => e.kind === "denied")
+        .map((e) => e.detail),
+    ).toEqual([
+      expect.stringMatching(/^cooldown: /),
+      expect.stringMatching(/^rejected: .*asked for no more/),
+    ]);
+  });
+
+  it("a kill-all cools down every server that held a grant", async () => {
+    const { gate } = gateWith(new ScriptedPrompter("allowed"));
+    const browser = () =>
+      gate.request({
+        capability: "browser",
+        server: "browser-use-test-mbp-headless",
+        purpose: PURPOSE,
+      });
+    expect((await ask(gate)).ok).toBe(true);
+    expect((await browser()).ok).toBe(true);
+    expect(gate.grants.endAll("killed")).toBe(2);
+    expect(await ask(gate)).toMatchObject({ code: "cooldown" });
+    expect(await browser()).toMatchObject({ code: "cooldown" });
+  });
+
+  it("goes quiet after the owner KILLS a grant, and not after any other ending", async () => {
+    const prompter = new ScriptedPrompter("allowed");
+    const { gate, clock } = gateWith(prompter);
+    for (const reason of [
+      "ended",
+      "expired",
+      "idle",
+      "owner_input",
+      "disabled",
+    ] as const) {
+      const d = await ask(gate);
+      if (!d.ok) throw new Error(d.reason);
+      gate.grants.end(d.grant.id, reason);
+      expect((await ask(gate)).ok, reason).toBe(true);
+      gate.grants.endAll("ended");
+    }
+    const d = await ask(gate);
+    if (!d.ok) throw new Error(d.reason);
+    const shown = prompter.seen.length;
+    gate.grants.end(d.grant.id, "killed");
+    expect(await ask(gate)).toMatchObject({ ok: false, code: "cooldown" });
+    expect(prompter.seen).toHaveLength(shown);
     clock.t += 61_000;
     expect((await ask(gate)).ok).toBe(true);
   });
@@ -156,11 +234,12 @@ describe("the consent gate", () => {
   });
 
   it("shows ONE dialog at a time, so concurrent requests cannot get around the cooldown", async () => {
-    // The cooldown is written only when a rejection comes back. Twenty requests
-    // fired together used to put four dialogs up before the first "no" landed.
+    // The cooldown is written only when the answer comes back. Without the
+    // one-dialog rule, twenty requests fired together put several dialogs up
+    // before the first "no" landed.
     const prompter = new ScriptedPrompter(async () => {
       await new Promise((r) => setTimeout(r, 50));
-      return "rejected";
+      return "rejected_cooldown";
     });
     const { gate } = gateWith(prompter);
     const results = await Promise.all(
@@ -170,7 +249,7 @@ describe("the consent gate", () => {
     const codes = results.map((r) => (r.ok ? "granted" : r.code));
     expect(codes.filter((c) => c === "rejected")).toHaveLength(1);
     expect(codes.filter((c) => c === "dialog_busy")).toHaveLength(19);
-    // And the one rejection still starts the cooldown for whoever asks next.
+    // And the one "cool down" holds off whoever asks next.
     expect(await ask(gate)).toMatchObject({ ok: false, code: "cooldown" });
     expect(prompter.seen).toHaveLength(1);
   });
