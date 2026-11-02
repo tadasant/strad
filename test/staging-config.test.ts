@@ -163,7 +163,17 @@ describe("staging config", () => {
     // The credentials of every upstream server staging gives a slug, unioned onto
     // the one box — and every one of them SECRET-typed, so App Platform encrypts
     // it at rest.
-    const credentials = bundle.envs.filter((e) => !e.key.startsWith("STRAD_"));
+    // NODE_OPTIONS is the one name here that is neither a credential nor
+    // STRAD_*: the heap ceiling, half of the 2 GB plan (#458). The liveness check
+    // is the other half of that fix.
+    expect(bundle.envs.find((e) => e.key === "NODE_OPTIONS")).toMatchObject({
+      value: "--max-old-space-size=1024",
+      type: "GENERAL",
+    });
+    expect(bundle.liveness_health_check?.http_path).toBe("/healthz");
+    const credentials = bundle.envs.filter(
+      (e) => !e.key.startsWith("STRAD_") && e.key !== "NODE_OPTIONS",
+    );
     expect(credentials.some((e) => e.key === "SLACK_BOT_TOKEN")).toBe(true);
     expect(credentials.some((e) => e.key === "OP_SERVICE_ACCOUNT_TOKEN")).toBe(
       true,

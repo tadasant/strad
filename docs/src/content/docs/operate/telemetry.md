@@ -75,12 +75,12 @@ Each process carries these resource attributes:
 
 ### Memory — the OOM predictor
 
-| Metric                                                                  | Why                                                            |
-| ----------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `strad.container.memory.limit`                                          | The **cgroup** limit — the only number the OOM killer consults |
-| `strad.container.memory.usage`                                          | cgroup usage, **including child processes** (i.e. Chromium)    |
-| `strad.container.memory.utilization`                                    | usage / limit, `0..1`. **This is the OOM predictor.**          |
-| `strad.process.memory.rss` / `.heap.used` / `.heap.total` / `.external` | Where the memory went                                          |
+| Metric                                                                                  | Why                                                                                                 |
+| --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `strad.container.memory.limit`                                                          | The **cgroup** limit — the only number the OOM killer consults                                      |
+| `strad.container.memory.usage`                                                          | cgroup usage, **including child processes** (i.e. Chromium)                                         |
+| `strad.container.memory.utilization`                                                    | usage / limit, `0..1`. **This is the OOM predictor.**                                               |
+| `strad.process.memory.rss` / `.heap.used` / `.heap.total` / `.heap.limit` / `.external` | Where the memory went. `.heap.limit` is the ceiling V8 enforces; `.heap.total` only grows toward it |
 
 Two of the bundle's tenants are **not** in the Node numbers and **are** in the
 cgroup one: the shared Chromium, and the `mcp-grafana` child the Grafana mount

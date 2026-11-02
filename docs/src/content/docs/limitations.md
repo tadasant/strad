@@ -4123,3 +4123,28 @@ highlight in the text. That is the limitation, not a failure.
 See `HACKS.md` #132.
 
 ---
+
+### 133. The bundle restarts itself when its event loop wedges
+
+A `strad-bundle` component restarts when its event loop has been saturated for
+about three minutes. The host's watchdog exits on its own, and a liveness check
+on `/healthz` restarts it if the loop is too blocked to run the watchdog. It
+also starts with a V8 heap of half its plan's memory, rather than whatever Node
+would pick.
+
+- **A restart drops in-flight calls** on every slug the component serves, and
+  takes about a minute.
+- **The heap size is a rule of thumb.** If Chromium and everything else outgrow
+  the other half, the kernel kills the container and it restarts.
+- **No leak was found behind the incident that caused this.** A heap that
+  climbs steadily toward its new ceiling is a leak this does not fix.
+- **Any other image gets no liveness check** unless `bundles[].liveness: true`,
+  because a check against an image with no `/healthz` restarts it in a loop.
+
+**How you would know.** `strad.process.uptime` resets on the bundle, and its
+log has a `[watchdog] ERROR event loop saturated for …` line, or App Platform
+shows a liveness restart.
+
+See `HACKS.md` #133.
+
+---

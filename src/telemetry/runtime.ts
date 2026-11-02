@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { getHeapStatistics } from "node:v8";
 import {
   monitorEventLoopDelay,
   performance,
@@ -112,6 +113,15 @@ export function startRuntimeMetrics(
       unit: "By",
     },
   );
+  // The ceiling V8 enforces. heap.total only grows toward it, so without this
+  // "used is close to total" cannot say whether there is headroom (#458).
+  const heapLimit = meter.createObservableGauge(
+    "strad.process.memory.heap.limit",
+    {
+      description: "V8 heap_size_limit: the ceiling V8 enforces",
+      unit: "By",
+    },
+  );
   const external = meter.createObservableGauge(
     "strad.process.memory.external",
     {
@@ -199,6 +209,7 @@ export function startRuntimeMetrics(
     rss,
     heapUsed,
     heapTotal,
+    heapLimit,
     external,
     containerLimit,
     containerUsage,
@@ -221,6 +232,7 @@ export function startRuntimeMetrics(
     o.observe(rss, mem.rss);
     o.observe(heapUsed, mem.heapUsed);
     o.observe(heapTotal, mem.heapTotal);
+    o.observe(heapLimit, getHeapStatistics().heap_size_limit);
     o.observe(external, mem.external);
 
     const usage = readCgroupMemoryUsage();

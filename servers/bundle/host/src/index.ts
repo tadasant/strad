@@ -104,6 +104,18 @@ import {
   type InstanceTree,
 } from "./param-route.js";
 import { loadFromTree, treeSdk, type TreeName } from "./trees.js";
+import {
+  WATCHDOG_DEFAULTS,
+  createWatchdog,
+  heapBootLine,
+  watchdogExitAfterMs,
+  type WatchdogState,
+} from "./watchdog.js";
+
+/** Two decimals, for a 0..1 figure in a log line or a health body. */
+function round(n: number): number {
+  return Math.round(n * 100) / 100;
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const VERSION = (
@@ -2194,6 +2206,18 @@ async function main(): Promise<void> {
   // Unref'd: an interval must never be what keeps a container alive.
   setInterval(() => void instances.sync(), instanceSyncSeconds(process.env) * 1000).unref();
 
+  // Started before the routes, so `/healthz` always has a state to report. The
+  // exit is late-bound to `shutdown`, defined further down.
+  let wedgedExit: (state: WatchdogState) => void = () => {};
+  const watchdog = createWatchdog({
+    saturation: WATCHDOG_DEFAULTS.saturation,
+    unhealthyAfterMs: WATCHDOG_DEFAULTS.unhealthyAfterMs,
+    exitAfterMs: watchdogExitAfterMs(process.env),
+    onWedged: (state) => wedgedExit(state),
+  });
+  watchdog.start(WATCHDOG_DEFAULTS.intervalMs);
+  log(heapBootLine());
+
   const app = express();
   app.disable("x-powered-by");
 
@@ -2211,11 +2235,22 @@ async function main(): Promise<void> {
   // token, and a 401 here is a component App Platform takes out of service — an
   // authorization fix that costs availability. It names slugs and paths and no
   // credential, which is what makes leaving it open affordable.
+  //
+  // 503 once the watchdog has seen the event loop saturated for a minute, so the
+  // rendered `liveness_health_check` restarts a wedged container. A probe that
+  // never gets an answer fails the same way. See `watchdog.ts`.
   app.get("/healthz", (_req, res) => {
-    res.status(200).json({
-      ok: true,
+    const loop = watchdog.state();
+    res.status(loop.unhealthy ? 503 : 200).json({
+      ok: !loop.unhealthy,
       component: "bundle",
       version: VERSION,
+      loop: {
+        utilization: round(loop.utilization),
+        saturatedSeconds: Math.round(loop.saturatedMs / 1000),
+        heapUsedMB: Math.round(loop.heapUsed / 2 ** 20),
+        heapLimitMB: Math.round(loop.heapLimit / 2 ** 20),
+      },
       chromium: { up: browserIsUp(), launches: browserLaunchCount() },
       servers: [
         ...[
@@ -2422,7 +2457,7 @@ async function main(): Promise<void> {
     logError("unhandledRejection", reason);
   });
 
-  const shutdown = (signal: string): void => {
+  const shutdown = (signal: string, code = 0): void => {
     log(`received ${signal}, closing mounts and Chromium, then exiting`);
     // A mount with `close` holds state worth saving — whatsapp flushes its
     // Signal state to GCS here. Bounded, because App Platform escalates a
@@ -2434,10 +2469,26 @@ async function main(): Promise<void> {
     ]);
     void bounded
       .then(() => closeSharedBrowser())
-      .finally(() => process.exit(0));
+      .finally(() => process.exit(code));
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+  // The exit half of the watchdog. Non-zero, so App Platform restarts the
+  // container: a fresh process serves every slug again in about a minute, where
+  // a thrashing one served none of them for as long as nobody looked. The
+  // close is the same bounded one SIGTERM gets, so whatsapp still flushes.
+  wedgedExit = (state) => {
+    logError(
+      "watchdog",
+      `event loop saturated for ${Math.round(state.saturatedMs / 1000)}s ` +
+        `(utilization ${round(state.utilization)}, heap ` +
+        `${Math.round(state.heapUsed / 2 ** 20)} of ` +
+        `${Math.round(state.heapLimit / 2 ** 20)} MB). Exiting so the ` +
+        `container restarts; see tadasant/strad#458.`,
+    );
+    shutdown("watchdog", 1);
+  };
 
   app.listen(PORT, "0.0.0.0", () => {
     log(

@@ -6774,3 +6774,48 @@ the Drive API, against the shapes its reference documents.
 then a re-vendor has to re-apply the row in the tree's README, and
 `images/bundle-google/test/docs-comments.test.ts` and the comment tests in
 `images/bundle-google/test/standalone.test.ts` fail if it does not.
+
+## 133. The bundle restarts itself when its event loop wedges, and its heap size is a rule of thumb
+
+**What.** On 2026-11-02 prod's bundle (tadasant/strad#458) ran with its V8 heap
+pinned at the ceiling, heap used 537 MB of a 548 MB heap total, while the
+garbage collector ran back to back and event-loop utilization sat at 1.0 for
+over an hour. The process stayed alive, so nothing restarted it, and 66 slugs
+were unreachable until a human did. Three changes:
+
+1. `servers/bundle/host/src/watchdog.ts` samples event-loop utilization every
+   5 seconds. After 60 seconds at or above 0.9, `/healthz` answers 503. After
+   180 seconds (`STRAD_BUNDLE_WATCHDOG_EXIT_SECONDS`) the host closes its mounts,
+   with the same 5-second bound SIGTERM gets, and exits 1 so App Platform
+   restarts the container.
+2. The renderer gives a `strad-bundle` component a `liveness_health_check` on
+   `/healthz` (period 10s, timeout 5s, 18 failures, 120s initial delay). This
+   catches what the watchdog cannot: a loop blocked by one synchronous call
+   never runs the watchdog's timer.
+3. The renderer starts a `strad-bundle` component with
+   `NODE_OPTIONS=--max-old-space-size=` half the plan's memory.
+
+**Why it is a hack.**
+
+- **The heap figure is a rule of thumb, not a measurement.** The other half of
+  the plan is left for Chromium (about 545 MB at peak), mcp-grafana and Node's
+  off-heap memory. If it is wrong, the kernel OOM-kills the container, and the
+  container restarts. That is the outcome we want instead of thrashing, but it
+  is still a restart.
+- **Why Node picked a 1 GiB-sized ceiling on a 2 GB plan is not established.**
+  Node 24 under a 1 GiB cgroup gets a 560 MB `heap_size_limit` and under 2 GiB
+  gets 1120 MB, measured with `docker run -m`. The 548 MB heap total in the
+  incident matches the first. The host logs the limit and the memory Node sized
+  it from at boot, and `strad.process.memory.heap.limit` exports it, so the next
+  look can settle it. The explicit flag makes the question moot for the bundle.
+- **No leak was found.** The heap had been sitting near 500 MB before the
+  growth, which is a large footprint for one process serving 31 mounts. With a
+  ceiling about 10 MB above it, normal variation was enough to tip it over. If
+  `heap.used` climbs steadily toward the new 1 GB ceiling, that is a leak this
+  change does not fix.
+- **A restart drops in-flight calls** on every slug the component serves. A
+  minute-long busy spell does not trigger it; three minutes of saturation does.
+
+**Undo.** If the bundle is split, or measured to need less, set
+`bundles[].liveness: false` and a server-level `NODE_OPTIONS`. Remove the
+watchdog only together with the liveness check, never instead of it.
