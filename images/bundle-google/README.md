@@ -83,7 +83,9 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
     land here; do not re-vendor over it. It adds attachments to
     `send_email` and `upsert_draft_email`, the sender's display name,
     plain-text reflow and the HTML part sent beside it, the sender-verification headers
-    `get_email_conversation` returns, and `delete_draft_email`. `vendor/gmail-shared/FORK.md` lists every delta
+    `get_email_conversation` returns, `delete_draft_email`, and attachments
+    `download_email_attachments` returns as embedded resources rather than
+    paths on the server's disk. `vendor/gmail-shared/FORK.md` lists every delta
     from upstream `0ed34de` and the tests that defend each one;
     `test/gmail-attachments.test.ts` is the main one. Its `README.md` is
     the how-to for running it without strad.

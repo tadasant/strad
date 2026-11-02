@@ -6843,7 +6843,7 @@ watchdog only together with the liveness check, never instead of it.
 bundle container and answered with the paths, so a remote caller got a path
 to a disk it cannot reach (2026-11-02, a ~1 MB PDF a session could not open).
 It now returns each attachment in the result as an MCP embedded resource, a
-base64 `blob` or decoded `text`, and writes nothing to disk
+base64 `blob`, or decoded `text` for small UTF-8 text, and writes nothing to disk
 (`images/bundle-google/vendor/gmail-shared/FORK.md` delta 6).
 
 **Why it is a hack.**
@@ -6854,11 +6854,18 @@ base64 `blob` or decoded `text`, and writes nothing to disk
   with `inline=true`, which puts the base64 in the text. The summary says so.
 - **The whole attachment rides one response.** Up to 25 MB decoded, about
   33 MB as base64, held in the bundle's memory and core's while it passes
-  through. Gmail's own 25 MB message ceiling keeps it from growing.
+  through. Gmail receives messages up to 50 MB, so a single attachment over
+  25 MB cannot be fetched in either mode.
+- **Small text attachments enter the model's context by default.** Text under
+  100 KB comes back as text, where `inline=true` used to be needed. It is
+  sender-written, the same as a message body from `get_email_conversation`.
 - **It is a fork delta.** A re-vendor of upstream's tool restores the `/tmp`
   default with no failing build; only
   `images/bundle-google/test/gmail-download-attachments.test.ts` notices.
 
-**Undo.** If strad grows a store the bundle can write to and every caller can
-read (the artifact store, through a flow-through grant), an attachment over a
-threshold could go there and come back as a signed URL instead.
+**Undo.** strad already has a link for getting bytes out of a mount: core's
+sealed, single-use `/mcp-download/<slug>/<token>`, which slack, whatsapp and
+liveoak use. It needs `STRAD_PUBLIC_URL` and a per-slug public-slug variable
+on the bundle, deploy-time config only, and has no 25 MB ceiling. Moving
+attachments over a threshold onto it would lift the cap and keep large blobs
+out of both processes' memory.

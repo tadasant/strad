@@ -319,18 +319,25 @@ steered callers away from it.
 **Here.**
 
 - The default (`inline=false`) answers with a text summary, then one MCP
-  embedded resource per attachment: `{ type: "resource", resource: { uri,
-  mimeType, blob } }` for a binary type, `text` in place of `blob` for
-  `text/*`, JSON and XML. The `uri` is `gmail-attachment://<email_id>/<filename>`,
-  both percent-encoded. It names the attachment and cannot be fetched.
+  embedded resource per attachment, `{ type: "resource", resource: { uri,
+  mimeType, blob } }`. A `text/*`, JSON or XML attachment carries `text` in
+  place of `blob` when it is valid UTF-8 and at most 100 KB. Any other text
+  attachment (a Latin-1 CSV, a large log) goes as a blob, so its bytes are
+  kept and it is saved to a file rather than poured into the model's context.
+- The `uri` is `gmail-attachment://<email_id>/<index>/<filename>`, each segment
+  percent-encoded, with `index` the attachment's position on the email so two
+  files with one name stay two resources. It names the attachment and cannot
+  be fetched.
 - `blob` is canonical padded standard base64. Gmail returns base64url, padded
   or not, and it is re-encoded through `Buffer` rather than character-swapped.
+  A missing MIME type is sent as `application/octet-stream`.
 - MCP clients that handle binary resources save each blob to a local file.
   Claude Code does, with an extension from the MIME type, and gives the model
   the path. That is how the bytes reach the caller's own disk.
 - `inline=true` is unchanged, for a client that ignores embedded resources.
-- The 25 MB cap applies to both modes, since both carry the bytes in the
-  result. Gmail's own ceiling for a whole message is the same 25 MB.
+- One call carries at most 25 MB, in both modes, since both carry the bytes
+  in the result. Gmail receives messages up to 50 MB, so a single attachment
+  over 25 MB cannot be fetched at all.
 - Nothing is written to the server's filesystem in either mode.
 
 What it costs is `HACKS.md` #134.
@@ -339,9 +346,10 @@ What it costs is `HACKS.md` #134.
 `Tool` result type admits a resource block).
 
 **Tests.** `images/bundle-google/test/gmail-download-attachments.test.ts`: a
-binary attachment as a blob that decodes to the exact bytes, a text attachment
-as a text resource, one resource per attachment, the URI encoding, no
-`/tmp` directory, `inline=true` unchanged, and the 25 MB refusal in the
-default mode. It has also run end to end: the built tree served over stdio to
+binary attachment as a blob that decodes to the exact bytes, padded and
+unpadded base64url, a text attachment as a text resource, non-UTF-8 and
+over-100-KB text as a blob, one resource per attachment and two URIs for two
+files with one name, the URI encoding, a missing MIME type, `inline=true`
+unchanged, and the 25 MB refusal in the default mode. It has also run end to end: the built tree served over stdio to
 an MCP SDK client returned the 989,829-byte PDF that prompted it, the same
 SHA-256 as the copy Gmail served.

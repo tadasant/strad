@@ -36,7 +36,9 @@ type ToolContent =
   | { type: string; text: string }
   | {
       type: 'resource';
-      resource: { uri: string; mimeType?: string; text: string } | { uri: string; mimeType?: string; blob: string };
+      resource:
+        | { uri: string; mimeType?: string; text: string }
+        | { uri: string; mimeType?: string; blob: string };
     };
 
 type ToolFactory = (server: Server, clientFactory: ClientFactory) => Tool;

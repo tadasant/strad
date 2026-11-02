@@ -5,11 +5,10 @@
  * file written to that container's `/tmp` is a file nobody can open. These
  * tests hold that the bytes travel in the result instead: by default as one
  * MCP embedded resource per attachment (a base64 `blob` for binary, `text` for
- * text types), with `inline=true` as one text block, and that the tool never
- * touches the server's filesystem.
+ * small UTF-8 text), with `inline=true` as one text block. The module imports
+ * no filesystem API, so nothing is written to the server's disk.
  */
 import { describe, it, expect, vi } from "vitest";
-import { existsSync } from "node:fs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   attachmentUri,
@@ -33,7 +32,7 @@ function base64url(buf: Buffer): string {
 }
 
 function mailbox(
-  parts: { filename: string; mimeType: string; bytes: Buffer }[],
+  parts: { filename: string; mimeType: string; bytes: Buffer; padded?: boolean }[],
 ): IGmailClient {
   return {
     getMessage: vi.fn(async () => ({
@@ -53,7 +52,10 @@ function mailbox(
     })),
     getAttachment: vi.fn(async (_id: string, attachmentId: string) => {
       const i = Number(attachmentId.slice("att-".length));
-      return { size: parts[i].bytes.length, data: base64url(parts[i].bytes) };
+      const data = base64url(parts[i].bytes);
+      // Gmail may pad base64url; the tool has to accept both forms.
+      const pad = parts[i].padded ? "=".repeat((4 - (data.length % 4)) % 4) : "";
+      return { size: parts[i].bytes.length, data: data + pad };
     }),
   } as unknown as IGmailClient;
 }
@@ -120,20 +122,71 @@ describe("download_email_attachments returns the bytes, not a server path", () =
       "resource",
     ]);
     expect(result.content.slice(1).map((b) => b.resource?.uri)).toEqual([
-      "gmail-attachment://1a00000000000001/Offer%20DRAFT%20%232.pdf",
-      "gmail-attachment://1a00000000000001/comps.csv",
+      "gmail-attachment://1a00000000000001/0/Offer%20DRAFT%20%232.pdf",
+      "gmail-attachment://1a00000000000001/1/comps.csv",
     ]);
   });
 
   it("keeps a filename with a slash in one URI path segment", () => {
-    expect(attachmentUri("m1", "../a/b.pdf")).toBe(
-      "gmail-attachment://m1/..%2Fa%2Fb.pdf",
+    expect(attachmentUri("m1", 0, "../a/b.pdf")).toBe(
+      "gmail-attachment://m1/0/..%2Fa%2Fb.pdf",
     );
   });
 
-  it("writes nothing to the server's /tmp", async () => {
-    await call(mailbox(TWO), { email_id: EMAIL_ID });
-    expect(existsSync(`/tmp/gmail-attachments-${EMAIL_ID}`)).toBe(false);
+  it("gives two attachments with one filename two URIs", async () => {
+    const twin = { filename: "scan.pdf", mimeType: "application/pdf" };
+    const result = await call(
+      mailbox([
+        { ...twin, bytes: Buffer.from("one") },
+        { ...twin, bytes: Buffer.from("two") },
+      ]),
+      { email_id: EMAIL_ID, filename: "scan.pdf" },
+    );
+    const uris = result.content.slice(1).map((b) => b.resource?.uri);
+    expect(uris).toEqual([
+      "gmail-attachment://1a00000000000001/0/scan.pdf",
+      "gmail-attachment://1a00000000000001/1/scan.pdf",
+    ]);
+  });
+
+  it("accepts padded base64url from Gmail", async () => {
+    const result = await call(
+      mailbox([{ ...TWO[0], padded: true }]),
+      { email_id: EMAIL_ID },
+    );
+    const blob = result.content[1].resource!.blob!;
+    expect(Buffer.from(blob, "base64").equals(PDF_BYTES)).toBe(true);
+  });
+
+  it("returns a text type that is not valid UTF-8 as a blob, bytes intact", async () => {
+    const latin1 = Buffer.from("caf\xe9,1\n", "latin1");
+    const result = await call(
+      mailbox([{ filename: "l1.csv", mimeType: "text/csv", bytes: latin1 }]),
+      { email_id: EMAIL_ID },
+    );
+    const res = result.content[1].resource!;
+    expect(res.text).toBeUndefined();
+    expect(Buffer.from(res.blob!, "base64").equals(latin1)).toBe(true);
+  });
+
+  it("returns a text attachment over 100 KB as a blob", async () => {
+    const big = Buffer.from("a,b\n".repeat(30_000));
+    const result = await call(
+      mailbox([{ filename: "big.csv", mimeType: "text/csv", bytes: big }]),
+      { email_id: EMAIL_ID },
+    );
+    const res = result.content[1].resource!;
+    expect(res.text).toBeUndefined();
+    expect(Buffer.from(res.blob!, "base64").equals(big)).toBe(true);
+  });
+
+  it("sends an attachment with no MIME type as application/octet-stream", async () => {
+    const result = await call(
+      mailbox([{ filename: "x.bin", mimeType: "", bytes: Buffer.from([1, 2]) }]),
+      { email_id: EMAIL_ID },
+    );
+    expect(result.content[0].text).toContain("x.bin (application/octet-stream");
+    expect(result.content[1].resource?.mimeType).toBe("application/octet-stream");
   });
 
   it("still returns everything as one text block with inline=true", async () => {
