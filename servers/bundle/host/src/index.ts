@@ -2214,8 +2214,13 @@ async function main(): Promise<void> {
     unhealthyAfterMs: WATCHDOG_DEFAULTS.unhealthyAfterMs,
     exitAfterMs: watchdogExitAfterMs(process.env),
     onWedged: (state) => wedgedExit(state),
+    onUnhealthy: (state) =>
+      logWarn(
+        `event loop saturated for ${Math.round(state.saturatedMs / 1000)}s ` +
+          `(utilization ${round(state.utilization)}); /healthz now answers 503`,
+      ),
   });
-  watchdog.start(WATCHDOG_DEFAULTS.intervalMs);
+  const stopWatchdog = watchdog.start(WATCHDOG_DEFAULTS.intervalMs);
   log(heapBootLine());
 
   const app = express();
@@ -2457,7 +2462,14 @@ async function main(): Promise<void> {
     logError("unhandledRejection", reason);
   });
 
+  // Once only. SIGTERM from a liveness restart and the watchdog's own exit tend
+  // to land together on a wedged loop, and a second pass would run every
+  // `close()` twice at once, whatsapp's GCS flush included.
+  let shuttingDown = false;
   const shutdown = (signal: string, code = 0): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    stopWatchdog();
     log(`received ${signal}, closing mounts and Chromium, then exiting`);
     // A mount with `close` holds state worth saving — whatsapp flushes its
     // Signal state to GCS here. Bounded, because App Platform escalates a
@@ -2487,6 +2499,10 @@ async function main(): Promise<void> {
         `${Math.round(state.heapLimit / 2 ** 20)} MB). Exiting so the ` +
         `container restarts; see tadasant/strad#458.`,
     );
+    // NOT unref'd, and outside the bounded close: Chromium's teardown is not
+    // bounded, a thrashing process runs it late, and no SIGKILL follows an
+    // exit nobody asked for. Whatever the close does, the process is gone in 15s.
+    setTimeout(() => process.exit(1), 15_000);
     shutdown("watchdog", 1);
   };
 

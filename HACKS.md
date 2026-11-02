@@ -6789,11 +6789,16 @@ were unreachable until a human did. Three changes:
    with the same 5-second bound SIGTERM gets, and exits 1 so App Platform
    restarts the container.
 2. The renderer gives a `strad-bundle` component a `liveness_health_check` on
-   `/healthz` (period 10s, timeout 5s, 18 failures, 120s initial delay). This
+   `/healthz` (period 10s, timeout 5s, 12 failures, 120s initial delay). This
    catches what the watchdog cannot: a loop blocked by one synchronous call
    never runs the watchdog's timer.
 3. The renderer starts a `strad-bundle` component with
    `NODE_OPTIONS=--max-old-space-size=` half the plan's memory.
+
+The incident's container memory read 2.50 GB, and cgroup usage cannot exceed
+the cgroup's `memory.max`, so the container really had more than 1 GiB. That
+is why a 1024 MB heap on the 2 GB plan is not expected to turn the thrash into
+repeated OOM kills.
 
 **Why it is a hack.**
 

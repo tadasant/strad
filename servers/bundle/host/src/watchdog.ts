@@ -58,6 +58,8 @@ export interface WatchdogOptions {
   /** Continuous saturation before `onWedged` fires. 0 disables the exit. */
   exitAfterMs: number;
   onWedged: (state: WatchdogState) => void;
+  /** Called once each time the loop crosses into unhealthy, so a near miss is in the log. */
+  onUnhealthy?: (state: WatchdogState) => void;
   sample?: () => LoopSample;
   now?: () => number;
 }
@@ -78,8 +80,11 @@ export interface WatchdogState {
 export function processSampler(): () => LoopSample {
   let last = performance.eventLoopUtilization();
   return () => {
-    const delta = performance.eventLoopUtilization(last);
-    last = performance.eventLoopUtilization();
+    // One reading, diffed against the last: two calls would drop the sliver
+    // between them from every interval.
+    const cur = performance.eventLoopUtilization();
+    const delta = performance.eventLoopUtilization(cur, last);
+    last = cur;
     const heap = getHeapStatistics();
     return {
       utilization: delta.utilization,
@@ -118,6 +123,7 @@ export function createWatchdog(opts: WatchdogOptions) {
     }
     const saturatedMs = saturatedSince === null ? 0 : at - saturatedSince;
     const wedged = opts.exitAfterMs > 0 && saturatedMs >= opts.exitAfterMs;
+    const wasUnhealthy = state.unhealthy;
     state = {
       utilization: s.utilization,
       heapUsed: s.heapUsed,
@@ -127,6 +133,7 @@ export function createWatchdog(opts: WatchdogOptions) {
       unhealthy: saturatedMs >= opts.unhealthyAfterMs,
       wedged,
     };
+    if (state.unhealthy && !wasUnhealthy) opts.onUnhealthy?.(state);
     if (wedged && !fired) {
       fired = true;
       opts.onWedged(state);

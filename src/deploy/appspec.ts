@@ -280,10 +280,10 @@ const STRAD_BUNDLE_REPOSITORY = "strad-bundle";
  * The liveness check a `strad-bundle` component gets (tadasant/strad#458).
  *
  * The host's `/healthz` answers 503 after a minute of a saturated event loop,
- * and a loop blocked outright never answers, which times the probe out. Either
- * way, 18 failures 10 seconds apart restart the container about three minutes
- * in. The host's own watchdog exits at three minutes too, so whichever fires
- * first restarts it. The 5-second timeout is generous on purpose: a loop that
+ * so 12 failures 10 seconds apart restart it about three minutes into the
+ * saturation, when the host's own watchdog exits too. A loop blocked outright
+ * never answers, so the probe times out from the start and the restart comes
+ * about two minutes in. The 5-second timeout is generous on purpose: a loop that
  * is merely busy for a moment must not cost 66 slugs a restart.
  *
  * `initial_delay_seconds` covers boot: thirty-one mounts load before `listen()`.
@@ -298,7 +298,7 @@ export const BUNDLE_LIVENESS_CHECK: NonNullable<
   initial_delay_seconds: 120,
   period_seconds: 10,
   timeout_seconds: 5,
-  failure_threshold: 18,
+  failure_threshold: 12,
 };
 
 /**
@@ -312,7 +312,9 @@ export const BUNDLE_LIVENESS_CHECK: NonNullable<
  * `--max-old-space-size` takes that guess away. The other half of the plan is
  * left for Chromium (about 545 MB at peak), mcp-grafana, and the process's
  * off-heap memory. If a heap this size still outgrows the container, the
- * kernel's OOM kill restarts it, which is better than thrashing.
+ * kernel's OOM kill restarts it, which is better than thrashing. Half is also
+ * the old space Node itself picks when it reads the plan's memory correctly,
+ * so on a plan Node already sizes right this changes nothing.
  */
 export function bundleHeapMiB(instanceSizeSlug: string): number | null {
   const m = /-(\d+(?:\.\d+)?)gb$/.exec(instanceSizeSlug);

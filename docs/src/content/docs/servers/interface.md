@@ -1025,14 +1025,17 @@ component down, and on 2026-11-02 that was 66 slugs for over an hour
 
 - **A `liveness_health_check` on `GET /healthz`, port 8080.** The host answers
   503 there once its event loop has been saturated for a minute, and a loop
-  that never gets to the probe times it out. After 18 failures 10 seconds apart,
-  about three minutes, App Platform restarts the container. The check starts
+  that never gets to the probe times it out. After 12 failures 10 seconds apart
+  App Platform restarts the container: about three minutes into a saturation,
+  or about two into a loop blocked outright. The check starts
   after 120 seconds, to leave room for boot.
 - **`NODE_OPTIONS=--max-old-space-size=<half the plan>`**: 1024 MB on
   `apps-s-1vcpu-2gb`. Otherwise Node sizes the V8 heap from whatever memory limit
   it reads off the cgroup, and the bundle in #458 got the ceiling Node picks for
   1 GiB on a 2 GB plan. A server on the bundle that sets `NODE_OPTIONS` in its
   own `env:` keeps its value. A plan name with no `-<n>gb` suffix gets no flag.
+  Half is also what Node picks for itself when it reads the plan's memory
+  correctly, so on `apps-s-1vcpu-1gb` and smaller the heap does not shrink.
 
 ```yaml
 bundles:

@@ -461,6 +461,13 @@ fast retry read. What crosses from the bundle is one bit per mount, matched onto
 the config's own slugs by path; the bundle's reason for it is upstream text and is
 dropped where it is parsed.
 
+The bundle's `/healthz` also answers for the process itself. Once its event loop
+has been saturated for a minute it answers 503, which core reads as the bundle
+`unreachable`. A `liveness_health_check` restarts the container on that 503 or on
+a probe that times out. The host's own watchdog exits after three minutes even
+without the check. See [what a strad-bundle component is rendered
+with](/servers/interface/#what-a-strad-bundle-component-is-rendered-with-so-it-recovers-on-its-own).
+
 Selection is re-checked at `tools/call` time too: `tools/list` filters by the
 current `?servers=`, but a client could call any tool name it saw on a prior
 request, so authorization is re-enforced on the action itself.

@@ -80,6 +80,31 @@ describe("bundle event-loop watchdog", () => {
     expect(wedged).toHaveLength(0);
   });
 
+  it("reports the crossing into unhealthy once per run, so a near miss is in the log", () => {
+    let t = 0;
+    let i = 0;
+    const seq = [busy, busy, busy, idle, busy, busy, busy];
+    const crossings: number[] = [];
+    const dog = createWatchdog({
+      saturation: 0.9,
+      unhealthyAfterMs: 60_000,
+      exitAfterMs: 0,
+      onWedged: () => {},
+      onUnhealthy: (s) => crossings.push(s.saturatedMs),
+      sample: () => seq[Math.min(i++, seq.length - 1)]!,
+      now: () => t,
+    });
+    const step = (ms: number) => ((t += ms), dog.tick());
+    step(5_000);
+    step(60_000); // crosses
+    step(5_000); // still unhealthy: no second report
+    step(5_000); // idle: resets
+    step(5_000);
+    step(60_000); // crosses again
+    step(5_000);
+    expect(crossings).toEqual([60_000, 60_000]);
+  });
+
   it("never exits a healthy process, however long it runs", () => {
     const { step, wedged } = harness([idle]);
     for (let i = 0; i < 1000; i++) expect(step(5_000).unhealthy).toBe(false);
