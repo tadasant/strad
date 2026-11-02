@@ -4158,3 +4158,22 @@ shows a liveness restart.
 See `HACKS.md` #133.
 
 ---
+
+### 134. gmail attachments come back as embedded resources
+
+`download_email_attachments` returns each attachment inside the tool result,
+as an MCP embedded resource: the bytes as base64 for a PDF or an image, the
+decoded text for a text type. It writes nothing to the server's disk, which no
+caller can reach anyway. Claude Code saves each binary resource to a local
+file and reports the path.
+
+- **A client that ignores embedded resources shows only the summary.** Call
+  again with `inline=true` and the content comes back as text, binary types as
+  a base64 code block.
+- **One call carries at most 25 MB**, the same ceiling Gmail puts on a whole
+  message. Use `filename` to fetch attachments one at a time.
+
+**How you would know.** The result's first block lists the attachments, and
+no local path follows it in the client.
+
+See `HACKS.md` #134.

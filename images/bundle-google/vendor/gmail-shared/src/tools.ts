@@ -23,17 +23,28 @@ interface Tool {
     required?: string[];
   };
   handler: (args: unknown) => Promise<{
-    content: Array<{ type: string; text: string }>;
+    content: ToolContent[];
     isError?: boolean;
   }>;
 }
+
+/**
+ * A result block: text, or an embedded resource carrying a file's bytes
+ * (`download_email_attachments`, FORK.md delta 6).
+ */
+type ToolContent =
+  | { type: string; text: string }
+  | {
+      type: 'resource';
+      resource: { uri: string; mimeType?: string; text: string } | { uri: string; mimeType?: string; blob: string };
+    };
 
 type ToolFactory = (server: Server, clientFactory: ClientFactory) => Tool;
 
 /**
  * Available tool groups for Gmail MCP server
  * - readonly: Read-only Gmail operations (list, get, search, download_attachments)
- *   Note: download_email_attachments writes to local /tmp/ but does not modify mailbox state
+ *   Note: download_email_attachments returns attachment bytes in the response and does not modify mailbox state
  * - readwrite: Read and write operations (includes readonly + modify, draft, delete draft)
  * - readwrite_external: External communication operations (includes readwrite + send_email)
  */
