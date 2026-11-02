@@ -25,7 +25,7 @@ const PDF_BYTES = Buffer.concat([
   Buffer.from("%PDF-1.5\r\n%"),
   Buffer.from([0x83, 0x92, 0xfa, 0xfe, 0xfb, 0xff, 0x00, 0x3e, 0x3f]),
 ]);
-const CSV_TEXT = "street,price\n490 Example Ave,1\n";
+const CSV_TEXT = "street,price\n1 Example St,1\n";
 
 /** Gmail returns attachment data base64url-encoded, unpadded. */
 function base64url(buf: Buffer): string {
