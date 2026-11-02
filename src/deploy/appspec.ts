@@ -257,6 +257,70 @@ export interface ServiceSpec {
     initial_delay_seconds?: number;
     period_seconds?: number;
   };
+  /** Failing it RESTARTS the component; `health_check` only takes it out of rotation. */
+  liveness_health_check?: {
+    http_path: string;
+    port: number;
+    initial_delay_seconds: number;
+    period_seconds: number;
+    timeout_seconds: number;
+    failure_threshold: number;
+  };
+}
+
+/**
+ * The repository this repo's bundle image is published under. Its host serves
+ * `/healthz` with the event-loop watchdog behind it, and it is Node, so both
+ * defaults below key on it. Matched by repository alone, not owner: a fork that
+ * publishes its own `strad-bundle` runs the same host.
+ */
+const STRAD_BUNDLE_REPOSITORY = "strad-bundle";
+
+/**
+ * The liveness check a `strad-bundle` component gets (tadasant/strad#458).
+ *
+ * The host's `/healthz` answers 503 after a minute of a saturated event loop,
+ * so 12 failures 10 seconds apart restart it about three minutes into the
+ * saturation, when the host's own watchdog exits too. A loop blocked outright
+ * never answers, so the probe times out from the start and the restart comes
+ * about two minutes in. The 5-second timeout is generous on purpose: a loop that
+ * is merely busy for a moment must not cost 66 slugs a restart.
+ *
+ * `initial_delay_seconds` covers boot: thirty-one mounts load before `listen()`.
+ * `port` is explicit because the component has `internal_ports` and no
+ * `http_port`, which is what the check would otherwise default to.
+ */
+export const BUNDLE_LIVENESS_CHECK: NonNullable<
+  ServiceSpec["liveness_health_check"]
+> = {
+  http_path: "/healthz",
+  port: 8080,
+  initial_delay_seconds: 120,
+  period_seconds: 10,
+  timeout_seconds: 5,
+  failure_threshold: 12,
+};
+
+/**
+ * The V8 old-space ceiling a `strad-bundle` component is started with: half the
+ * plan's memory, or null for a plan name this cannot read a size from.
+ *
+ * Left to itself, Node sizes the heap from whatever memory limit libuv reads off
+ * the cgroup, and the number prod's bundle got did not match its 2 GB plan: its
+ * heap total stopped at 548 MB, the ceiling Node picks for 1 GiB, and it then
+ * garbage-collected back to back for an hour (tadasant/strad#458). An explicit
+ * `--max-old-space-size` takes that guess away. The other half of the plan is
+ * left for Chromium (about 545 MB at peak), mcp-grafana, and the process's
+ * off-heap memory. If a heap this size still outgrows the container, the
+ * kernel's OOM kill restarts it, which is better than thrashing. Half is also
+ * the old space Node itself picks when it reads the plan's memory correctly,
+ * so on a plan Node already sizes right this changes nothing.
+ */
+export function bundleHeapMiB(instanceSizeSlug: string): number | null {
+  const m = /-(\d+(?:\.\d+)?)gb$/.exec(instanceSizeSlug);
+  if (!m) return null;
+  const gib = Number(m[1]);
+  return Number.isFinite(gib) && gib > 0 ? Math.floor((gib * 1024) / 2) : null;
 }
 
 const PORT = 8080;
@@ -1629,6 +1693,28 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
   ];
 
   /**
+   * `NODE_OPTIONS=--max-old-space-size=…` appended to a component's env, unless
+   * a server on it already set `NODE_OPTIONS`: an operator's explicit value
+   * wins over this default. See `bundleHeapMiB`.
+   */
+  const withHeapCeiling = (
+    envs: EnvVar[],
+    heapMiB: number | null,
+  ): EnvVar[] => {
+    if (heapMiB === null || envs.some((e) => e.key === "NODE_OPTIONS"))
+      return envs;
+    return [
+      ...envs,
+      {
+        key: "NODE_OPTIONS",
+        value: `--max-old-space-size=${heapMiB}`,
+        scope: "RUN_TIME",
+        type: "GENERAL",
+      },
+    ];
+  };
+
+  /**
    * A supplementary component's environment, in one place, so the boot keys can
    * be appended only where the component has not already claimed the name.
    */
@@ -1779,19 +1865,31 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       );
     }
 
+    const instanceSizeSlug =
+      declared?.instanceSizeSlug ??
+      // Chromium peaks around 545MB RSS. 1GB is the floor for a browser
+      // bundle; CPU, not RAM, is what actually binds (1 vCPU serialises it).
+      "apps-s-1vcpu-1gb";
+    const isStradBundle =
+      supplementary !== undefined &&
+      componentImage.repository === STRAD_BUNDLE_REPOSITORY;
+    const liveness = declared?.liveness ?? isStradBundle;
+
     services.push({
       name,
       image: componentImage, // a builtin bundle runs the strad image in bundle mode
-      instance_size_slug:
-        declared?.instanceSizeSlug ??
-        // Chromium peaks around 545MB RSS. 1GB is the floor for a browser
-        // bundle; CPU, not RAM, is what actually binds (1 vCPU serialises it).
-        "apps-s-1vcpu-1gb",
+      instance_size_slug: instanceSizeSlug,
       instance_count: instanceCount,
       // Internal-only: internal_ports, and NO http_port. Both is an API error.
       internal_ports: [PORT],
+      ...(liveness
+        ? { liveness_health_check: { ...BUNDLE_LIVENESS_CHECK } }
+        : {}),
       envs: supplementary
-        ? supplementaryEnvs(name, supplementary, componentImage)
+        ? withHeapCeiling(
+            supplementaryEnvs(name, supplementary, componentImage),
+            isStradBundle ? bundleHeapMiB(instanceSizeSlug) : null,
+          )
         : [
             coreUrlEnv,
             {

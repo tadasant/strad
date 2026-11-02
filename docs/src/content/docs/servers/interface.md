@@ -1015,6 +1015,47 @@ have been accepted by App Platform, and the fix is one line in this repo rather
 than in the config being edited. See [Known limitations](/limitations/) #75.
 :::
 
+### What a `strad-bundle` component is rendered with so it recovers on its own
+
+A bundle component that runs this repo's bundle image (repository
+`strad-bundle`, from any registry owner) gets two things nothing in the config
+asks for. Both exist because one wedged process holds every slug on the
+component down, and on 2026-11-02 that was 66 slugs for over an hour
+(tadasant/strad#458).
+
+- **A `liveness_health_check` on `GET /healthz`, port 8080.** The host answers
+  503 there once its event loop has been saturated for a minute, and a loop
+  that never gets to the probe times it out. After 12 failures 10 seconds apart
+  App Platform restarts the container: about three minutes into a saturation,
+  or about two into a loop blocked outright. The check starts
+  after 120 seconds, to leave room for boot.
+- **`NODE_OPTIONS=--max-old-space-size=<half the plan>`**: 1024 MB on
+  `apps-s-1vcpu-2gb`. Otherwise Node sizes the V8 heap from whatever memory limit
+  it reads off the cgroup, and the bundle in #458 got the ceiling Node picks for
+  1 GiB on a 2 GB plan. A server on the bundle that sets `NODE_OPTIONS` in its
+  own `env:` keeps its value. A plan name with no `-<n>gb` suffix gets no flag.
+  Half is also what Node picks for itself when it reads the plan's memory
+  correctly, so on `apps-s-1vcpu-1gb` and smaller the heap does not shrink.
+
+```yaml
+bundles:
+  - name: bundle
+    instanceSizeSlug: apps-s-1vcpu-2gb
+    liveness: false # default: true for a strad-bundle image, false for any other
+```
+
+`liveness:` overrides the default either way. Any other image is off by default
+because a liveness check against an image that has no `/healthz` restarts it in
+a loop. Turn it on only for an image whose `/healthz` answers 200 while it is
+serving. The heap flag keys on the image alone, because only that image is known
+to be Node.
+
+The host does not wait for the platform. Its watchdog exits non-zero after three
+minutes of saturation (`STRAD_BUNDLE_WATCHDOG_EXIT_SECONDS`, 0 to disable), so a
+deployment whose spec has no liveness check still restarts. What only the
+liveness check catches is a loop blocked by one synchronous call that never
+returns. A loop in that state runs no timers, so the watchdog never runs either.
+
 ## `gateway.secrets`
 
 Where `${NAME}` resolves from, and when. One block, one provider, per deployment.

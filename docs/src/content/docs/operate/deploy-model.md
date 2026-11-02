@@ -382,14 +382,22 @@ learn:
   `consoleEnv:` is pointedly **not** here — it lands on core alone. The blast
   radius of a compromised upstream image is bounded by what it was handed.
   (`parseImage` handles GHCR / DOCR / Docker Hub refs.)
+- **A component running the `strad-bundle` image also gets a liveness check and
+  a heap size.** `liveness_health_check` on `/healthz`, port 8080, which restarts
+  the container after about three minutes of failed probes, and
+  `NODE_OPTIONS=--max-old-space-size=` half the plan's memory. Both exist because
+  a bundle whose event loop wedged held 66 slugs down for over an hour
+  (tadasant/strad#458). Any other image gets neither unless `bundles[].liveness`
+  says so. See [what a strad-bundle component is rendered
+  with](/servers/interface/#what-a-strad-bundle-component-is-rendered-with-so-it-recovers-on-its-own).
 
 ## What strad's own config renders to
 
 `infra/strad.staging.yaml` produces exactly **three** components — `core`,
 `bundle` and `bundle-zimmer-secrets` — and `test/staging-config.test.ts` asserts
 that. `core` runs `ghcr.io/tadasant/strad` with `http_port: 8080`; `bundle` runs
-`ghcr.io/tadasant/strad-bundle` at `apps-s-1vcpu-2gb` with `internal_ports: [8080]`
-and no public route.
+`ghcr.io/tadasant/strad-bundle` at `apps-s-1vcpu-2gb` with `internal_ports: [8080]`,
+no public route, a liveness check on `/healthz` and a 1024 MB V8 heap.
 
 `bundle-zimmer-secrets` runs the **same** bundle image at the default
 `apps-s-1vcpu-1gb`, and it is the one component that is not there for capability.

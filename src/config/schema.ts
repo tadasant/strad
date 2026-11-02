@@ -1262,6 +1262,17 @@ const BundleConfig = z.object({
    */
   instanceSizeSlug: z.string().default("apps-s-1vcpu-1gb"),
   instanceCount: z.number().int().positive().default(1),
+  /**
+   * Render an App Platform `liveness_health_check` on `GET /healthz`, which
+   * RESTARTS the component after about three minutes of failed probes.
+   *
+   * Unset means "on for this repo's bundle image" (a repository named
+   * `strad-bundle`), whose host answers 503 once its event loop has been
+   * saturated for a minute (tadasant/strad#458). Any other image is off unless
+   * this says `true`: a liveness check against an image with no `/healthz`
+   * restarts it in a loop. `false` turns it off for a `strad-bundle` image.
+   */
+  liveness: z.boolean().optional(),
 });
 
 // ---------------------------------------------------------------------------

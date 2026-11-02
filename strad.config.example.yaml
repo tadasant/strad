@@ -240,6 +240,13 @@ bundles:
     # component. The schema itself takes any string, because it is also the boot
     # parse: see src/deploy/instance-size.ts.
     instanceSizeSlug: apps-s-1vcpu-2gb
+    # Restart this component when its /healthz fails for about three minutes.
+    # Defaults to true for this repo's `strad-bundle` image, whose host answers
+    # 503 once its event loop has been saturated for a minute, and to false for
+    # any other image, which may have no /healthz to answer. A strad-bundle
+    # component is also started with a V8 heap of half the plan's memory. See
+    # docs/servers/interface (tadasant/strad#458).
+    # liveness: true
 
 servers:
   # The roster editor, as an MCP server — the other half of the console at
