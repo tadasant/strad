@@ -47,6 +47,10 @@ export interface StoreProduct {
   basePrice?: number;
   currentProducer?: { name?: string } | null;
   hasVariableProducers?: boolean;
+  /** HTML. */
+  description?: string;
+  /** Per-day `{ status, quantity }`, keyed by ISO day. Read by `availability.ts`. */
+  availabilitiesByDay?: unknown;
 }
 
 /** Per-line totals, keyed by LINE-ITEM id (not product id). */

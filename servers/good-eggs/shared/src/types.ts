@@ -46,7 +46,24 @@ export interface GroceryDetails {
   unit?: string;
   description?: string;
   productDetails?: string;
+  /**
+   * Per-day availability, one entry per day the product record lists, e.g.
+   * `Mon 11/2: sold out`. Read from the product's own record; absent when the
+   * page carried none (the drawn "Available for Delivery" strip is the day
+   * picker and says nothing about the product, so it is never used).
+   */
   availability?: string[];
+  /** The basket's delivery day, e.g. `Mon 11/2`, when the payload names it. */
+  deliveryDay?: string;
+  /**
+   * Whether the product can be added for `deliveryDay`: `true` or `false` from
+   * the product's record, absent when the record does not say.
+   */
+  availableOnDeliveryDay?: boolean;
+  /** Good Eggs' status for the delivery day, e.g. `sold out`, `unavailable`. */
+  deliveryDayStatus?: string;
+  /** The first later day it is available, e.g. `Wed 11/4`. */
+  nextAvailableDay?: string;
   imageUrl?: string;
 }
 
@@ -72,6 +89,11 @@ export interface CartResult {
    * the caller must not infer either outcome from it.
    */
   verified?: boolean;
+  /**
+   * True when nothing was sent because Good Eggs lists the product as sold out
+   * or unavailable on the basket's delivery day. A retry cannot add it.
+   */
+  unavailable?: boolean;
 }
 
 // =============================================================================

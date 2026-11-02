@@ -60,6 +60,20 @@ interface FakeOptions {
   basketPage?: 'payload' | 'no-payload';
   /** Whether the product page's payload is signed in. */
   productPageSignedIn?: boolean;
+  /**
+   * The tomatoes' `availabilitiesByDay`. Defaults to available on the delivery
+   * day; `null` leaves the record out, the way an older payload would.
+   */
+  availability?: Record<string, { status: string; quantity: number }> | null;
+}
+
+/** The basket's delivery day in every fake payload. A Monday. */
+const DELIVERY_DAY = '2026-11-02';
+
+/** Every day the 2026-11-02 live records listed, at one status. */
+function everyDay(status: string, quantity = 0) {
+  const days = ['2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06', '2026-11-07'];
+  return Object.fromEntries(days.map((day) => [day, { status, quantity }]));
 }
 
 /**
@@ -83,9 +97,14 @@ class FakePage {
   }
 
   private storeData(signedIn: boolean) {
+    const products = structuredClone(PRODUCTS) as Record<string, Record<string, unknown>>;
+    const availability =
+      this.opts.availability === undefined ? everyDay('available', 40) : this.opts.availability;
+    if (availability) products[TOMATOES_ID].availabilitiesByDay = availability;
     return {
       user: signedIn ? { id: 'u1' } : null,
-      products: structuredClone(PRODUCTS),
+      currentFulfillmentDay: DELIVERY_DAY,
+      products,
       basket: {
         _id: 'b1',
         items: [...this.basket.entries()]
@@ -144,6 +163,12 @@ class FakePage {
       throw new Error('Execution context was destroyed');
     }
     if (this.opts.updateAnswer) return this.opts.updateAnswer;
+    // Measured 2026-11-02: for a product it will not sell on the basket's day,
+    // Good Eggs answers the update with a 2xx and leaves the line out.
+    const today = this.opts.availability?.[DELIVERY_DAY];
+    if (today && (today.status === 'soldout' || today.status === 'unavailable')) {
+      return { status: 200, body: acceptedBody(arg.productId, arg.quantity) };
+    }
     // The live endpoint SETS the line's total.
     this.basket.set(arg.productId, arg.quantity);
     return { status: 200, body: acceptedBody(arg.productId, arg.quantity) };
@@ -358,6 +383,154 @@ test('with no readable prior total anywhere, no add is attempted', async () => {
   assert.equal(page.clicks, 0);
   assert.equal(page.basket.get(TOMATOES_ID), 3);
   assert.match(result.message, /no add was attempted/);
+});
+
+// ---------------------------------------------------------------------------
+// A product Good Eggs will not sell on the basket's day (FORK.md #14)
+// ---------------------------------------------------------------------------
+//
+// The 2026-11-02 shop: six adds answered "Sent the add …, but it does not
+// appear in your cart afterward. The add did not take effect (a delivery day
+// may need to be selected, or the item may be unavailable)". Every one of the
+// six was `soldout` or `unavailable` on every listed day in its own payload
+// record, and the agent read "may" as "something went wrong" and substituted
+// in silence.
+
+test('a product sold out on the delivery day is refused before anything is sent', async () => {
+  const page = new FakePage({ availability: everyDay('soldout'), buttonRenders: true });
+  const result = await addOver(page);
+
+  assert.deepEqual(page.updates, [], 'sent an update Good Eggs would accept and drop');
+  assert.equal(page.clicks, 0);
+  assert.equal(result.success, false);
+  assert.equal(result.verified, true);
+  assert.equal(result.unavailable, true);
+  assert.equal(result.quantity, 0);
+  assert.match(
+    result.message,
+    /^Organic Dry-Farmed Early Girl Tomatoes is sold out for Mon 11\/2, your basket's delivery day/
+  );
+  assert.match(result.message, /Retrying will not add it/);
+  assert.match(result.message, /not available on any day Good Eggs lists \(through Sat 11\/7\)/);
+  assert.match(result.message, /Choose a substitute/);
+  assert.doesNotMatch(result.message, /may need to be selected/);
+});
+
+test('an unavailable product names the next day it can be had', async () => {
+  const availability = {
+    ...everyDay('unavailable'),
+    '2026-11-04': { status: 'available', quantity: 12 },
+  };
+  const page = new FakePage({ availability });
+  const result = await addOver(page);
+
+  assert.deepEqual(page.updates, []);
+  assert.equal(result.unavailable, true);
+  assert.match(result.message, /is unavailable for Mon 11\/2/);
+  assert.match(result.message, /next available on Wed 11\/4/);
+});
+
+test('without the pre-check, the same product reads as the vague failure', async () => {
+  // What production said on 2026-11-02: the update is accepted and dropped.
+  // With no availability record the add still goes out, and the re-read
+  // reports it. This pins that the fake reproduces the live behaviour, so the
+  // two tests above are testing the pre-check and not the fake.
+  const page = new FakePage({ availability: null });
+  page.opts.updateAnswer = { status: 200, body: acceptedBody(TOMATOES_ID, 1) };
+  const result = await addOver(page);
+
+  assert.equal(page.updates.length, 1);
+  assert.equal(result.success, false);
+  assert.equal(result.unavailable, undefined);
+  assert.match(result.message, /does not appear in your cart afterward/);
+});
+
+test('an available product is sent as before', async () => {
+  const page = new FakePage({ availability: everyDay('available', 3) });
+  const result = await addOver(page);
+
+  assert.equal(page.updates.length, 1);
+  assert.equal(result.success, true);
+  assert.equal(result.unavailable, undefined);
+});
+
+test('a record with no entry for the delivery day is unknown, and the add goes ahead', async () => {
+  const page = new FakePage({ availability: { '2026-11-23': { status: 'available', quantity: 5 } } });
+  const result = await addOver(page);
+
+  assert.equal(page.updates.length, 1);
+  assert.equal(result.success, true);
+});
+
+test('a line already in the cart is reported as met, even once the product sells out', async () => {
+  const page = new FakePage({ prior: 2, availability: everyDay('soldout') });
+  const result = await addOver(page, 1);
+
+  assert.deepEqual(page.updates, []);
+  assert.equal(result.success, true);
+  assert.match(result.message, /already in your cart at quantity 2/);
+});
+
+test('a line below the request on a sold-out product is refused, and keeps its quantity', async () => {
+  const page = new FakePage({ prior: 1, availability: everyDay('soldout') });
+  const result = await addOver(page, 3);
+
+  assert.deepEqual(page.updates, []);
+  assert.equal(page.basket.get(TOMATOES_ID), 1);
+  assert.equal(result.success, false);
+  assert.equal(result.quantity, 1);
+  assert.match(result.message, /is sold out for Mon 11\/2/);
+  // It IS in the cart, at 1; saying otherwise invites a substitute on top.
+  assert.match(result.message, /Your cart still holds 1, and no more can be added/);
+  assert.doesNotMatch(result.message, /it is not in your cart/);
+});
+
+test('a status nobody has measured is unknown, so the add goes ahead', async () => {
+  const page = new FakePage({ availability: everyDay('limited', 3) });
+  const result = await addOver(page);
+
+  assert.equal(page.updates.length, 1);
+  assert.equal(result.success, true);
+  assert.equal(result.unavailable, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// get_grocery_details, through the real client (FORK.md #14)
+// ---------------------------------------------------------------------------
+
+async function detailsOver(page: FakePage, url = TOMATOES_URL) {
+  const browser = {
+    newContext: async () => ({ newPage: async () => page, close: async () => {} }),
+  };
+  setSharedBrowserProvider(async () => browser as never);
+  try {
+    const client = new GoodEggsClient({
+      username: 'someone@example.com',
+      password: 'hunter2',
+      headless: true,
+      timeout: 30000,
+    });
+    await client.initialize();
+    page.loggedIn = true;
+    return await client.getGroceryDetails(url);
+  } finally {
+    setSharedBrowserProvider(null);
+  }
+}
+
+test('details come from the payload, through a URL whose id is in another case', async () => {
+  const page = new FakePage({ availability: everyDay('soldout') });
+  const details = await detailsOver(
+    page,
+    TOMATOES_URL.replace(TOMATOES_ID, TOMATOES_ID.toUpperCase())
+  );
+
+  assert.equal(details.name, 'Organic Dry-Farmed Early Girl Tomatoes');
+  assert.equal(details.brand, 'Blue House Farm');
+  assert.equal(details.price, '$5.99');
+  assert.equal(details.deliveryDay, 'Mon 11/2');
+  assert.equal(details.availableOnDeliveryDay, false);
+  assert.equal(details.deliveryDayStatus, 'sold out');
 });
 
 // ---------------------------------------------------------------------------

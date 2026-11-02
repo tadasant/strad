@@ -64,9 +64,14 @@ const GET_GROCERY_DETAILS_DESCRIPTION = `Get detailed information about a specif
 Provide the Good Eggs URL of the item (from search results or favorites).
 Returns comprehensive details including:
 - Full product name and brand
-- Current and original prices
+- Current and original prices, and the unit
 - Product description
-- Delivery availability dates
+- Whether it can be ordered for your basket's delivery day, and its status on
+  every day Good Eggs lists (available, sold out, unavailable)
+
+Use the delivery-day line to check stock before planning around a product: an
+item that is "sold out" or "unavailable" for the delivery day cannot be added
+to the cart for it, and add_to_cart will refuse it.
 
 For calories, macros or serving size use get_grocery_nutrition instead.
 
@@ -122,6 +127,11 @@ Possible outcomes: a confirmed add, a partial add (cart quantity below what was
 requested, e.g. Good Eggs caps a product's quantity per order), a genuine
 failure (the message says why, e.g. Good Eggs refused the product or a delivery
 day still needs to be selected), or an UNVERIFIED result.
+
+A product Good Eggs lists as sold out or unavailable for the basket's delivery
+day is refused before anything is sent, with a message naming the status and
+the next day it is available, if any. Retrying cannot add it: choose a
+substitute, and tell the user about the swap.
 
 An UNVERIFIED result means the basket could not be read back, so the outcome is
 unknown. Do not retry a blind add on one — read the cart first, or you will
@@ -437,20 +447,40 @@ export function createRegisterTools(
             `Price: ${details.price || 'N/A'}`,
           ];
 
+          if (details.unit) {
+            lines.push(`Unit: ${details.unit}`);
+          }
           if (details.originalPrice) {
             lines.push(`Original Price: ${details.originalPrice}`);
           }
           if (details.discount) {
             lines.push(`Discount: ${details.discount}`);
           }
+          if (details.deliveryDay && details.availableOnDeliveryDay !== undefined) {
+            lines.push(
+              details.availableOnDeliveryDay
+                ? `Your delivery day (${details.deliveryDay}): available.`
+                : `Your delivery day (${details.deliveryDay}): ` +
+                    `${(details.deliveryDayStatus ?? 'not available').toUpperCase()}. ` +
+                    `add_to_cart cannot add it for this day.` +
+                    (details.nextAvailableDay
+                      ? ` Next available: ${details.nextAvailableDay}.`
+                      : ' No later listed day has it either.')
+            );
+          } else {
+            lines.push(
+              `Availability for your delivery day: UNKNOWN (the page did not say). ` +
+                `add_to_cart will report what the basket shows.`
+            );
+          }
+          if (details.availability && details.availability.length > 0) {
+            lines.push(`Availability by day: ${details.availability.join(', ')}`);
+          }
           if (details.description) {
             lines.push(`\nDescription: ${details.description}`);
           }
           if (details.productDetails) {
             lines.push(`\nProduct Details: ${details.productDetails}`);
-          }
-          if (details.availability && details.availability.length > 0) {
-            lines.push(`\nAvailable for delivery: ${details.availability.join(', ')}`);
           }
           lines.push(`\nURL: ${details.url}`);
 

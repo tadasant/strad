@@ -99,3 +99,15 @@ export type {
 
 // Logging exports (re-exported for convenience)
 export { logServerStart, logError, logWarning, logDebug } from './logging.js';
+
+// Availability — whether a product can be had on the basket's day (see FORK.md #14)
+export {
+  productAvailabilityFromStoreData,
+  productAvailabilityFromHtml,
+  groceryDetailsFromStoreData,
+  unavailableAddMessage,
+  describeDay,
+  describeStatus,
+  type DayAvailability,
+  type ProductAvailability,
+} from './availability.js';
