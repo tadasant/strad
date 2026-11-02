@@ -17,6 +17,13 @@ import type { GroceryDetails } from './types.js';
  * every day for a product that can be had on none of them.
  */
 
+/**
+ * The statuses that mean Good Eggs will not sell the product that day, as
+ * measured. Any other status is treated as unknown rather than as a refusal,
+ * so a status nobody has seen yet sends the add and lets the basket decide.
+ */
+const NOT_FOR_SALE = new Set(['soldout', 'unavailable']);
+
 /** One day's entry in a product's `availabilitiesByDay`. */
 export interface DayAvailability {
   /** ISO day, e.g. `2026-11-02`. */
@@ -37,9 +44,10 @@ export interface ProductAvailability {
   /** The first listed day after the delivery day on which it is `available`. */
   nextAvailableDay?: string;
   /**
-   * Whether an add for the delivery day can land. `false` only on a definite
-   * entry for that day whose status is not `available`; `undefined` when the
-   * payload does not say, so the add goes ahead and the basket re-read decides.
+   * Whether an add for the delivery day can land: `true` on `available`,
+   * `false` on `soldout` or `unavailable`, and `undefined` otherwise (no entry,
+   * no delivery day, or a status not in that list), so the add goes ahead and
+   * the basket re-read decides.
    */
   addable?: boolean;
 }
@@ -70,10 +78,7 @@ export function productAvailabilityFromStoreData(
   storeData: GoodEggsStoreData,
   productId: string
 ): ProductAvailability | null {
-  const products = storeData.products ?? {};
-  const product =
-    products[productId] ??
-    Object.values(products).find((p) => p?.id?.toLowerCase() === productId.toLowerCase());
+  const product = findProduct(storeData, productId);
   if (!product) return null;
   const days = daysFromRecord((product as { availabilitiesByDay?: unknown }).availabilitiesByDay);
   if (days.length === 0) return null;
@@ -92,8 +97,22 @@ export function productAvailabilityFromStoreData(
     onDeliveryDay,
     days,
     nextAvailableDay,
-    addable: onDeliveryDay ? onDeliveryDay.status === 'available' : undefined,
+    addable:
+      onDeliveryDay?.status === 'available'
+        ? true
+        : onDeliveryDay && NOT_FOR_SALE.has(onDeliveryDay.status)
+          ? false
+          : undefined,
   };
+}
+
+/** The payload's record for a product, matched on its id in any case. */
+function findProduct(storeData: GoodEggsStoreData, productId: string) {
+  const products = storeData.products ?? {};
+  return (
+    products[productId] ??
+    Object.values(products).find((p) => p?.id?.toLowerCase() === productId.toLowerCase())
+  );
 }
 
 /** `productAvailabilityFromStoreData` over a rendered page. */
@@ -126,21 +145,29 @@ export function describeStatus(status: string): string {
  * The add_to_cart failure for a product Good Eggs will not sell on the basket's
  * day. It says what Good Eggs said, that retrying cannot help, and what can.
  */
-export function unavailableAddMessage(name: string, availability: ProductAvailability): string {
+export function unavailableAddMessage(
+  name: string,
+  availability: ProductAvailability,
+  inCart = 0
+): string {
   const day = availability.onDeliveryDay!;
   const status = describeStatus(day.status);
   const when = `${describeDay(day.day)}, your basket's delivery day`;
   const listed = availability.days.filter((d) => d.day >= day.day);
   const nowhere = listed.length > 0 && listed.every((d) => d.status !== 'available');
+  const held =
+    inCart > 0
+      ? `nothing was sent. Your cart still holds ${inCart}, and no more can be added for that day.`
+      : 'nothing was sent and it is not in your cart.';
   const next = availability.nextAvailableDay
     ? ` It is next available on ${describeDay(availability.nextAvailableDay)}, which only ` +
       `helps if the whole basket moves to that day.`
     : nowhere
-      ? ` It is ${status} on every day Good Eggs lists (through ` +
+      ? ` It is not available on any day Good Eggs lists (through ` +
         `${describeDay(listed[listed.length - 1].day)}).`
       : '';
   return (
-    `${name} is ${status} for ${when}, so nothing was sent and it is not in your cart. ` +
+    `${name} is ${status} for ${when}, so ${held} ` +
     `Retrying will not add it.${next} Choose a substitute and tell the user it was swapped.`
   );
 }
@@ -171,7 +198,7 @@ export function groceryDetailsFromStoreData(
   url: string,
   baseUrl: string
 ): GroceryDetails | null {
-  const product = storeData.products?.[productId];
+  const product = findProduct(storeData, productId);
   if (!product?.name) return null;
 
   const price = product.retailPrice;
@@ -186,12 +213,12 @@ export function groceryDetailsFromStoreData(
 
   const details: GroceryDetails = {
     url: productUrl,
-    name: product.name,
+    name: product.name.slice(0, 300),
     brand: product.currentProducer?.name || '',
     price: formatCents(price),
     ...(discounted ? { originalPrice: formatCents(base) } : {}),
     ...(product.retailUnits ? { unit: product.retailUnits } : {}),
-    ...(description ? { description: description.slice(0, 2_000) } : {}),
+    ...(description ? { description: description.slice(0, 1_000) } : {}),
     ...(product.photoUrl ? { imageUrl: product.photoUrl } : {}),
   };
 

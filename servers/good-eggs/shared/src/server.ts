@@ -973,11 +973,9 @@ export class GoodEggsClient implements IGoodEggsClient {
 
     // The payload first, the way the basket, the add and nutrition read it: the
     // product's own record, including whether it can be had on the basket's day.
-    // The DOM scrape it replaces read the name off the day picker ("Select a
-    // delivery day"), the brand off a container holding the whole page — every
-    // inline script included, 170-220K characters a call — and "availability"
-    // off the day picker too, which lists every day for a product sold out on
-    // all of them. FORK.md #14.
+    // The drawn page is not a substitute: its first heading is the day picker,
+    // its "brand" selector matches a container holding the whole document, and
+    // its availability strip is the day picker again. FORK.md #14.
     const productId = extractProductId(fullUrl).toLowerCase();
     const storeData = extractStoreData(await page.content());
     const fromPayload =
@@ -1118,7 +1116,7 @@ export class GoodEggsClient implements IGoodEggsClient {
         success: false,
         // Nothing was sent, so "not added" is certain without a re-read.
         verified: true,
-        message: unavailableAddMessage(name, availability),
+        message: unavailableAddMessage(name, availability, priorQuantity),
         itemName,
         ...(priorQuantityKnown ? { quantity: priorQuantity } : {}),
         unavailable: true,

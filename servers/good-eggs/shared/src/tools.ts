@@ -447,26 +447,20 @@ export function createRegisterTools(
             `Price: ${details.price || 'N/A'}`,
           ];
 
+          if (details.unit) {
+            lines.push(`Unit: ${details.unit}`);
+          }
           if (details.originalPrice) {
             lines.push(`Original Price: ${details.originalPrice}`);
           }
           if (details.discount) {
             lines.push(`Discount: ${details.discount}`);
           }
-          if (details.description) {
-            lines.push(`\nDescription: ${details.description}`);
-          }
-          if (details.productDetails) {
-            lines.push(`\nProduct Details: ${details.productDetails}`);
-          }
-          if (details.unit) {
-            lines.splice(3, 0, `Unit: ${details.unit}`);
-          }
           if (details.deliveryDay && details.availableOnDeliveryDay !== undefined) {
             lines.push(
               details.availableOnDeliveryDay
-                ? `\nYour delivery day (${details.deliveryDay}): available.`
-                : `\nYour delivery day (${details.deliveryDay}): ` +
+                ? `Your delivery day (${details.deliveryDay}): available.`
+                : `Your delivery day (${details.deliveryDay}): ` +
                     `${(details.deliveryDayStatus ?? 'not available').toUpperCase()}. ` +
                     `add_to_cart cannot add it for this day.` +
                     (details.nextAvailableDay
@@ -475,12 +469,18 @@ export function createRegisterTools(
             );
           } else {
             lines.push(
-              `\nAvailability for your delivery day: UNKNOWN (the page did not say). ` +
+              `Availability for your delivery day: UNKNOWN (the page did not say). ` +
                 `add_to_cart will report what the basket shows.`
             );
           }
           if (details.availability && details.availability.length > 0) {
             lines.push(`Availability by day: ${details.availability.join(', ')}`);
+          }
+          if (details.description) {
+            lines.push(`\nDescription: ${details.description}`);
+          }
+          if (details.productDetails) {
+            lines.push(`\nProduct Details: ${details.productDetails}`);
           }
           lines.push(`\nURL: ${details.url}`);
 

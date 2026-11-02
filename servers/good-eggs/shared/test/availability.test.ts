@@ -73,7 +73,6 @@ function liveStoreData(): GoodEggsStoreData {
         id: ONION_ID,
         name: 'Organic Yellow Onion',
         basePrice: 99,
-        promoPrice: 79,
         retailPrice: 79,
         retailUnits: '1 count',
         url: `/periandsons/organic-yellow-onion/${ONION_ID}`,
@@ -144,10 +143,17 @@ test('the refusal says what Good Eggs said, that a retry is useless, and what to
   assert.equal(
     unavailableAddMessage('Organic Large Yellow Onion', availability),
     "Organic Large Yellow Onion is unavailable for Mon 11/2, your basket's delivery day, so " +
-      'nothing was sent and it is not in your cart. Retrying will not add it. It is ' +
-      'unavailable on every day Good Eggs lists (through Tue 11/24). Choose a substitute and ' +
+      'nothing was sent and it is not in your cart. Retrying will not add it. It is not ' +
+      'available on any day Good Eggs lists (through Tue 11/24). Choose a substitute and ' +
       'tell the user it was swapped.'
   );
+});
+
+test('a status other than soldout or unavailable is unknown, not a refusal', () => {
+  const storeData = liveStoreData();
+  (storeData.products![ONION_ID] as { availabilitiesByDay?: unknown }).availabilitiesByDay =
+    days('limited', 2);
+  assert.equal(productAvailabilityFromStoreData(storeData, ONION_ID)?.addable, undefined);
 });
 
 test('details come from the product record, not from the drawn page', () => {
@@ -221,7 +227,7 @@ async function detailsText(productId: string, mutate?: (s: GoodEggsStoreData) =>
   return result.content[0].text;
 }
 
-test('get_grocery_details leads with the delivery-day verdict for a sold-out product', async () => {
+test('get_grocery_details puts the delivery-day verdict before the description', async () => {
   const text = await detailsText(EGGS_ID);
   assert.match(text, /^\*\*Organic Free Range Brown Eggs \(Large\)\*\*\nBrand: Judy's Family Farm\n/);
   assert.match(text, /Unit: 1 dozen/);
@@ -230,6 +236,7 @@ test('get_grocery_details leads with the delivery-day verdict for a sold-out pro
     /Your delivery day \(Mon 11\/2\): SOLD OUT\. add_to_cart cannot add it for this day\. No later listed day has it either\./
   );
   assert.match(text, /Availability by day: Mon 11\/2: sold out, Tue 11\/3: sold out/);
+  assert.ok(text.indexOf('Your delivery day') < text.indexOf('Description:'));
   // The 2026-11-02 answers were 170-220K characters, almost all of it the page.
   assert.ok(text.length < 2_000, `details ran to ${text.length} characters`);
 });

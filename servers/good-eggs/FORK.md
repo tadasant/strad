@@ -766,17 +766,19 @@ left), `soldout` and `unavailable`. The page's "Sorry, this product is sold
 out." / "… is unavailable." banner is drawn from the same record.
 `src/availability.ts` reads it:
 
-- **`add_to_cart`.** A product whose entry for the basket's day is anything but
-  `available` gets no update, no click, and a failure that names the status, the
-  day, and the next day it is available or that no listed day has it. It also
-  says that a retry cannot help and that the caller should substitute and say so.
-  The result carries `unavailable: true`. A line already at or above the request
-  is still "already in your cart". A missing record, a missing entry for the
-  day, or no `currentFulfillmentDay` is UNKNOWN, never unavailable, so the add
-  goes ahead and the basket re-read decides, as before.
+- **`add_to_cart`.** A product whose entry for the basket's day is `soldout` or
+  `unavailable` gets no update and no click. The failure names the status, the
+  day, and the next day it is available, or says that no listed day has it. It
+  says that a retry cannot help and that the caller should substitute and say
+  so. A line already in the cart below the request is named with its quantity,
+  so the caller knows it is still there. The client result carries
+  `unavailable: true`. The MCP answer is the text. A line already at or above
+  the request is still "already in your cart". A missing record, a missing entry
+  for the day, no `currentFulfillmentDay`, or a status other than those two is
+  UNKNOWN, never unavailable. The add goes ahead and the basket re-read decides.
 - **`get_grocery_details`.** Name, producer, price, original price, unit and
-  description come from the product record. Availability is a line for the
-  basket's day (`Your delivery day (Mon 11/2): SOLD OUT. add_to_cart cannot add
+  description (capped at 1,000 characters) come from the product record.
+  Availability is a line for the basket's day, placed before the description, (`Your delivery day (Mon 11/2): SOLD OUT. add_to_cart cannot add
   it for this day.`) plus the status for every listed day. Without a record the
   page scrape is the fallback, with every field capped at 1,000 characters and
   the day-picker "availability" left out. The answer says the delivery day's

@@ -4015,11 +4015,12 @@ button. Every add is checked against a fresh read of the basket.
 
 Good Eggs also answers that update with a 2xx for a product it will not sell on
 the basket's delivery day, then leaves the line out. So `add_to_cart` reads
-the product's `availabilitiesByDay` from the page payload first. Another
-undocumented field, read the same way as the basket. A product listed as sold
-out or unavailable for that day is refused with no request sent, by name, along
-with the next day it is available. When the record is missing, the add goes
-ahead and the basket re-read decides. `get_grocery_details` reports the same
+the product's `availabilitiesByDay` from the page payload first. That is
+another undocumented field, read the same way as the basket. A product listed
+as sold out or unavailable for that day is refused by name, with no request
+sent, along with the next day it is available. When the record is missing or
+carries a status nobody has measured, the add is sent and the basket re-read
+decides. `get_grocery_details` reports the same
 record.
 
 See `HACKS.md` #128 and `servers/good-eggs/FORK.md` #13 and #14.

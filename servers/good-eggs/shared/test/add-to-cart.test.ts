@@ -166,7 +166,7 @@ class FakePage {
     // Measured 2026-11-02: for a product it will not sell on the basket's day,
     // Good Eggs answers the update with a 2xx and leaves the line out.
     const today = this.opts.availability?.[DELIVERY_DAY];
-    if (today && today.status !== 'available') {
+    if (today && (today.status === 'soldout' || today.status === 'unavailable')) {
       return { status: 200, body: acceptedBody(arg.productId, arg.quantity) };
     }
     // The live endpoint SETS the line's total.
@@ -411,7 +411,7 @@ test('a product sold out on the delivery day is refused before anything is sent'
     /^Organic Dry-Farmed Early Girl Tomatoes is sold out for Mon 11\/2, your basket's delivery day/
   );
   assert.match(result.message, /Retrying will not add it/);
-  assert.match(result.message, /sold out on every day Good Eggs lists \(through Sat 11\/7\)/);
+  assert.match(result.message, /not available on any day Good Eggs lists \(through Sat 11\/7\)/);
   assert.match(result.message, /Choose a substitute/);
   assert.doesNotMatch(result.message, /may need to be selected/);
 });
@@ -480,6 +480,57 @@ test('a line below the request on a sold-out product is refused, and keeps its q
   assert.equal(result.success, false);
   assert.equal(result.quantity, 1);
   assert.match(result.message, /is sold out for Mon 11\/2/);
+  // It IS in the cart, at 1; saying otherwise invites a substitute on top.
+  assert.match(result.message, /Your cart still holds 1, and no more can be added/);
+  assert.doesNotMatch(result.message, /it is not in your cart/);
+});
+
+test('a status nobody has measured is unknown, so the add goes ahead', async () => {
+  const page = new FakePage({ availability: everyDay('limited', 3) });
+  const result = await addOver(page);
+
+  assert.equal(page.updates.length, 1);
+  assert.equal(result.success, true);
+  assert.equal(result.unavailable, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// get_grocery_details, through the real client (FORK.md #14)
+// ---------------------------------------------------------------------------
+
+async function detailsOver(page: FakePage, url = TOMATOES_URL) {
+  const browser = {
+    newContext: async () => ({ newPage: async () => page, close: async () => {} }),
+  };
+  setSharedBrowserProvider(async () => browser as never);
+  try {
+    const client = new GoodEggsClient({
+      username: 'someone@example.com',
+      password: 'hunter2',
+      headless: true,
+      timeout: 30000,
+    });
+    await client.initialize();
+    page.loggedIn = true;
+    return await client.getGroceryDetails(url);
+  } finally {
+    setSharedBrowserProvider(null);
+  }
+}
+
+test('details come from the payload, through a URL whose id is in another case', async () => {
+  const page = new FakePage({ availability: everyDay('soldout') });
+  const details = await detailsOver(
+    page,
+    TOMATOES_URL.replace(TOMATOES_ID, TOMATOES_ID.toUpperCase())
+  );
+
+  assert.equal(details.name, 'Organic Dry-Farmed Early Girl Tomatoes');
+  assert.equal(details.brand, 'Blue House Farm');
+  assert.equal(details.price, '$5.99');
+  assert.equal(details.deliveryDay, 'Mon 11/2');
+  assert.equal(details.availableOnDeliveryDay, false);
+  assert.equal(details.deliveryDayStatus, 'sold out');
 });
 
 // ---------------------------------------------------------------------------
