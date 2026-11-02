@@ -6616,6 +6616,17 @@ basket re-read reports what landed. Re-read the button's
 request from the browser's network panel and update `BASKET_UPDATE_PATH` and
 `parseBasketUpdateResponse()`.
 
+**The same update, for a product Good Eggs will not sell.** For a product sold
+out or unavailable on the basket's day, Good Eggs answers the update with a 2xx
+naming the product and then leaves the line out of the basket (measured
+2026-11-02, six times in one shop). So `add_to_cart` reads the product's
+`availabilitiesByDay` from the page payload first. A product listed as anything
+but `available` for `currentFulfillmentDay` gets no request and a failure that
+says which. A missing record means the add goes ahead as before.
+`servers/good-eggs/FORK.md` #14 has the evidence. If Good Eggs renames the field,
+the check reads as unknown and the old answer returns: "does not appear in your
+cart afterward".
+
 ---
 
 ## 129. google-docs reads every tab, a strad delta on a vendored tree

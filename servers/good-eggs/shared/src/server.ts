@@ -15,6 +15,11 @@ import {
   type PastOrdersStoreData,
 } from './pastOrders.js';
 import {
+  groceryDetailsFromStoreData,
+  productAvailabilityFromHtml,
+  unavailableAddMessage,
+} from './availability.js';
+import {
   getKitchenNutritionSource,
   groceryNutritionFromHtml,
   type GroceryNutrition,
@@ -33,6 +38,11 @@ const BASE_URL = 'https://www.goodeggs.com';
 // How long to wait (ms) for a dynamically-rendered control (add button, favorite
 // control) to appear before giving up. Capped against the configured timeout.
 const ELEMENT_WAIT_TIMEOUT_MS = 10_000;
+
+// Ceiling on any one field the details fallback scrapes off the drawn page. A
+// selector that lands on a page-wide container otherwise returns the whole
+// document's text, inline scripts included.
+const DOM_FIELD_CAP = 1_000;
 
 // A Good Eggs product id is a 24-character Mongo-style hex string. Removal
 // interpolates one into a CSS selector, so it is validated against this first.
@@ -952,57 +962,59 @@ export class GoodEggsClient implements IGoodEggsClient {
   async getGroceryDetails(groceryUrl: string): Promise<GroceryDetails> {
     const page = await this.ensureBrowser();
 
+    const fullUrl = groceryUrl.startsWith('http') ? groceryUrl : `${BASE_URL}${groceryUrl}`;
+
     // Check if we're already on the product page
     const currentUrl = page.url();
     if (!currentUrl.includes(groceryUrl) && !groceryUrl.includes(currentUrl)) {
-      // Navigate to the product page
       // Use domcontentloaded instead of networkidle - Good Eggs has persistent connections
-      const fullUrl = groceryUrl.startsWith('http') ? groceryUrl : `${BASE_URL}${groceryUrl}`;
       await page.goto(fullUrl, { waitUntil: 'domcontentloaded' });
     }
 
-    // Wait for React to render
+    // The payload first, the way the basket, the add and nutrition read it: the
+    // product's own record, including whether it can be had on the basket's day.
+    // The DOM scrape it replaces read the name off the day picker ("Select a
+    // delivery day"), the brand off a container holding the whole page — every
+    // inline script included, 170-220K characters a call — and "availability"
+    // off the day picker too, which lists every day for a product sold out on
+    // all of them. FORK.md #14.
+    const productId = extractProductId(fullUrl).toLowerCase();
+    const storeData = extractStoreData(await page.content());
+    const fromPayload =
+      storeData && PRODUCT_ID_PATTERN.test(productId)
+        ? groceryDetailsFromStoreData(storeData, productId, fullUrl, BASE_URL)
+        : null;
+    if (fromPayload) return fromPayload;
+
+    // No payload record for this product: fall back to the drawn page, with
+    // every field capped. Availability is left out, because the only strip the
+    // page draws is the day picker, which says nothing about this product.
     await page.waitForTimeout(3000);
-
-    // Extract product details
-    const details = await page.evaluate((url) => {
-      // Find the main product info
-      const nameEl = document.querySelector('h1, [class*="product-name"], [class*="title"]');
-      const brandEl = document.querySelector('[class*="brand"], [class*="producer"]');
-      const priceEl = document.querySelector('[class*="sale-price"], [class*="current-price"]');
-      const originalPriceEl = document.querySelector(
-        '[class*="original-price"], [class*="regular-price"], s'
-      );
-      const discountEl = document.querySelector('[class*="off"], [class*="discount"]');
-      const descriptionEl = document.querySelector(
-        '[class*="description"], [class*="details"] p, .product-description'
-      );
-      const productDetailsEl = document.querySelector('[class*="product-details"]');
-      const imgEl = document.querySelector('[class*="product"] img, main img');
-
-      // Get availability dates
-      const availabilityEls = document.querySelectorAll(
-        '[class*="availability"] span, [class*="delivery"] span'
-      );
-      const availability: string[] = [];
-      availabilityEls.forEach((el) => {
-        const text = el.textContent?.trim();
-        if (text) availability.push(text);
-      });
-
-      return {
-        url: url,
-        name: nameEl?.textContent?.trim() || 'Unknown',
-        brand: brandEl?.textContent?.trim() || '',
-        price: priceEl?.textContent?.trim() || '',
-        originalPrice: originalPriceEl?.textContent?.trim() || undefined,
-        discount: discountEl?.textContent?.trim() || undefined,
-        description: descriptionEl?.textContent?.trim() || undefined,
-        productDetails: productDetailsEl?.textContent?.trim() || undefined,
-        availability: availability.length > 0 ? availability : undefined,
-        imageUrl: (imgEl as HTMLImageElement)?.src || undefined,
-      };
-    }, groceryUrl);
+    const details = await page.evaluate(
+      ({ url, cap }) => {
+        const text = (el: Element | null): string | undefined => {
+          const value = el?.textContent?.replace(/\s+/g, ' ').trim();
+          return value ? value.slice(0, cap) : undefined;
+        };
+        const imgEl = document.querySelector('[class*="product"] img, main img');
+        return {
+          url,
+          name: text(document.querySelector('h1, [class*="product-name"]')) || 'Unknown',
+          brand: text(document.querySelector('[class*="brand"], [class*="producer"]')) || '',
+          price: text(document.querySelector('[class*="sale-price"], [class*="current-price"]')) || '',
+          originalPrice: text(
+            document.querySelector('[class*="original-price"], [class*="regular-price"], s')
+          ),
+          discount: text(document.querySelector('[class*="off"], [class*="discount"]')),
+          description: text(
+            document.querySelector('[class*="description"], [class*="details"] p, .product-description')
+          ),
+          productDetails: text(document.querySelector('[class*="product-details"]')),
+          imageUrl: (imgEl as HTMLImageElement)?.src || undefined,
+        };
+      },
+      { url: groceryUrl, cap: DOM_FIELD_CAP }
+    );
 
     return details;
   }
@@ -1088,6 +1100,30 @@ export class GoodEggsClient implements IGoodEggsClient {
         const nameEl = document.querySelector('h1, [class*="product-name"], [class*="title"]');
         return nameEl?.textContent?.trim() || 'Unknown item';
       }));
+
+    // Good Eggs answers the basket update for a product it will not sell on the
+    // basket's day with a 2xx, then leaves the line out of the basket. So a
+    // product the payload lists as sold out or unavailable for that day is not
+    // sent, and the result says which, rather than "did not take effect (a
+    // delivery day may need to be selected, or the item may be unavailable)"
+    // after the fact. That vaguer answer is what six adds got in the 2026-11-02
+    // shop. FORK.md #14.
+    const availability = PRODUCT_ID_PATTERN.test(productId)
+      ? productAvailabilityFromHtml(productHtml, productId)
+      : null;
+    const alreadyMet = priorQuantityKnown && priorQuantity >= quantity;
+    if (availability?.addable === false && !alreadyMet) {
+      const name = itemName && itemName !== 'Unknown item' ? itemName : 'This product';
+      return {
+        success: false,
+        // Nothing was sent, so "not added" is certain without a re-read.
+        verified: true,
+        message: unavailableAddMessage(name, availability),
+        itemName,
+        ...(priorQuantityKnown ? { quantity: priorQuantity } : {}),
+        unavailable: true,
+      };
+    }
 
     let addSent = false;
     let addFailure: string | undefined;

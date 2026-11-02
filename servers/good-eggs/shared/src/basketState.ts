@@ -47,6 +47,12 @@ export interface StoreProduct {
   basePrice?: number;
   currentProducer?: { name?: string } | null;
   hasVariableProducers?: boolean;
+  /** Promotional price in cents; `retailPrice` already reflects it when set. */
+  promoPrice?: number;
+  /** HTML. */
+  description?: string;
+  /** Per-day `{ status, quantity }`, keyed by ISO day. Read by `availability.ts`. */
+  availabilitiesByDay?: unknown;
 }
 
 /** Per-line totals, keyed by LINE-ITEM id (not product id). */

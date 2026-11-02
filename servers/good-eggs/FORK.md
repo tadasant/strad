@@ -737,6 +737,87 @@ through the fakes. The request is the one the site's own button sends from the
 same page and the same session, but it is still an undocumented endpoint.
 `HACKS.md` #128 records this.
 
+## 14. A product Good Eggs will not sell on the basket's day is refused by name, and details say so
+
+**Upstream (and this tree until this delta).** `add_to_cart` sent the basket
+update for any product id (delta 13), and `get_grocery_details` scraped the drawn
+page:
+
+- its name from `h1, [class*="title"]`, which is the day picker ("Select a
+  delivery day");
+- its brand from `[class*="brand"], [class*="producer"]`, which lands on a
+  container holding the whole page, so the "brand" was the site header plus
+  every inline script, payload included: 170-220K characters per call;
+- its "availability" from `[class*="availability"] span, [class*="delivery"] span`,
+  which is the day picker again. It lists every delivery day, for a product
+  sold out on all of them.
+
+**Here.** Every product record in the page's `storeData` carries
+`availabilitiesByDay`, and the payload names the basket's day in
+`currentFulfillmentDay`:
+
+```
+"currentFulfillmentDay":"2026-11-02"
+"availabilitiesByDay":{"2026-11-02":{"status":"soldout","quantity":0}, …}
+```
+
+Measured live on 2026-11-02, the statuses are `available` (with the units
+left), `soldout` and `unavailable`. The page's "Sorry, this product is sold
+out." / "… is unavailable." banner is drawn from the same record.
+`src/availability.ts` reads it:
+
+- **`add_to_cart`.** A product whose entry for the basket's day is anything but
+  `available` gets no update, no click, and a failure that names the status, the
+  day, and the next day it is available or that no listed day has it. It also
+  says that a retry cannot help and that the caller should substitute and say so.
+  The result carries `unavailable: true`. A line already at or above the request
+  is still "already in your cart". A missing record, a missing entry for the
+  day, or no `currentFulfillmentDay` is UNKNOWN, never unavailable, so the add
+  goes ahead and the basket re-read decides, as before.
+- **`get_grocery_details`.** Name, producer, price, original price, unit and
+  description come from the product record. Availability is a line for the
+  basket's day (`Your delivery day (Mon 11/2): SOLD OUT. add_to_cart cannot add
+  it for this day.`) plus the status for every listed day. Without a record the
+  page scrape is the fallback, with every field capped at 1,000 characters and
+  the day-picker "availability" left out. The answer says the delivery day's
+  availability is UNKNOWN instead.
+
+**Why.** In the 2026-11-02 weekly shop (Zimmer session 26683), six adds
+answered:
+
+> Failed to add to cart: Sent the add for Organic Large Yellow Onion, but it
+> does not appear in your cart afterward. The add did not take effect (a
+> delivery day may need to be selected, or the item may be unavailable).
+
+Two brussels sprouts listings, the unsalted pistachios, the large eggs, the
+large onion and a dried oregano got that answer. The update had been accepted
+with a 2xx naming the product each time, and the line never appeared. Read back
+the same afternoon, every one of the six was `unavailable` (the eggs:
+`soldout`) on every day its record listed. So the add path worked. What failed
+was the answer: "may need to be selected, or may be unavailable" told the caller
+neither which nor what to do, and the grocery agent substituted without telling
+anyone why.
+
+The stock check before the shop could not have caught it either. The details
+tool's "availability" was the day picker, which listed Mon 11/2 for every one of
+those products, and the agent had stopped calling the tool because each answer
+ran to about 200K characters.
+
+`shared/test/availability.test.ts` pins the read against two of those six
+records as served (eggs `soldout`, large onion `unavailable`) and an available
+control. It also covers the refusal message and the details tool's output,
+under 2,000 characters. `shared/test/add-to-cart.test.ts` pins that a sold-out
+or unavailable product sends nothing, that the next available day is named, and
+that a line already met stays met. It also covers that an unknown record still
+sends. Its fake reproduces the live accept-and-drop, so the pre-check is what
+those tests exercise.
+
+**What this delta does not cover.** A product `available` with fewer units left
+than requested is still sent. Good Eggs clamps it, and the basket re-read
+reports a partial add (delta 13). The record is an undocumented payload field,
+like the rest of `storeData`. `search_for_grocery` is unchanged and still
+returns the page's "Next available day for delivery" text inside the name.
+
 ## Deltas that predate this fork
 
 These were already in the tree when it was still a vendor copy, and are listed so
