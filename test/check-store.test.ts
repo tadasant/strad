@@ -418,6 +418,8 @@ describe("scripts/check-store.ts", () => {
     expect(result.stderr).toContain("::notice");
   });
 
+  // Three runs of the script in one test: 17.9s of the default 20s on a CI
+  // runner, so it gets the budget of three.
   it("prints no value, in any mode, including the ones it rendered", async () => {
     for (const args of [[], ["--mode", "report"], ["--resolve"]]) {
       const result = await check(args);
@@ -426,7 +428,7 @@ describe("scripts/check-store.ts", () => {
         expect(output).not.toContain(value);
       }
     }
-  });
+  }, 60_000);
 
   it("proves the round trip with --resolve", async () => {
     const result = await check(["--resolve", "--mode", "report"]);

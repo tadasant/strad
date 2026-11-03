@@ -296,3 +296,60 @@ traversal guard at every draft call, the exact requests (a `GET` and a
 tool lists in `images/bundle-google/test/gmail.test.ts` and
 `images/bundle-google/test/standalone.test.ts` hold the groups. It has run
 against stubs only. No draft was deleted to test it.
+
+---
+
+## 6. `download_email_attachments` returns the bytes, and writes nothing to disk
+
+**Upstream.** By default the tool writes every attachment to
+`/tmp/gmail-attachments-<email_id>/` on the machine the server runs on and
+answers with those paths. `inline=true` returns the content instead, as one
+text block: text types decoded, binary types as a base64 code block.
+
+**Why that is a defect here.** strad serves this tool from the bundle
+container, and no caller shares its disk. The path the tool answers with
+names a file only that container can open, so the default mode returned
+nothing usable, and left a copy of the mail on the container. A session asked
+for a draft purchase agreement PDF (about 1 MB) and reported that it "wouldn't
+download into my session", and a person had to send the file by hand.
+`inline=true` did carry the bytes, but as roughly 1.4 MB of base64 text, which
+a client has to spill to a file and decode, and the tool's own description
+steered callers away from it.
+
+**Here.**
+
+- The default (`inline=false`) answers with a text summary, then one MCP
+  embedded resource per attachment, `{ type: "resource", resource: { uri,
+  mimeType, blob } }`. A `text/*`, JSON or XML attachment carries `text` in
+  place of `blob` when it is valid UTF-8 and at most 100 KB. Any other text
+  attachment (a Latin-1 CSV, a large log) goes as a blob, so its bytes are
+  kept and it is saved to a file rather than poured into the model's context.
+- The `uri` is `gmail-attachment://<email_id>/<index>/<filename>`, each segment
+  percent-encoded, with `index` the attachment's position on the email so two
+  files with one name stay two resources. It names the attachment and cannot
+  be fetched.
+- `blob` is canonical padded standard base64. Gmail returns base64url, padded
+  or not, and it is re-encoded through `Buffer` rather than character-swapped.
+  A missing MIME type is sent as `application/octet-stream`.
+- MCP clients that handle binary resources save each blob to a local file.
+  Claude Code does, with an extension from the MIME type, and gives the model
+  the path. That is how the bytes reach the caller's own disk.
+- `inline=true` is unchanged, for a client that ignores embedded resources.
+- One call carries at most 25 MB, in both modes, since both carry the bytes
+  in the result. Gmail receives messages up to 50 MB, so a single attachment
+  over 25 MB cannot be fetched at all.
+- Nothing is written to the server's filesystem in either mode.
+
+What it costs is `HACKS.md` #134.
+
+**Files.** `src/tools/download-email-attachments.ts`, `src/tools.ts` (the
+`Tool` result type admits a resource block).
+
+**Tests.** `images/bundle-google/test/gmail-download-attachments.test.ts`: a
+binary attachment as a blob that decodes to the exact bytes, padded and
+unpadded base64url, a text attachment as a text resource, non-UTF-8 and
+over-100-KB text as a blob, one resource per attachment and two URIs for two
+files with one name, the URI encoding, a missing MIME type, `inline=true`
+unchanged, and the 25 MB refusal in the default mode. It has also run end to end: the built tree served over stdio to
+an MCP SDK client returned the 989,829-byte PDF that prompted it, the same
+SHA-256 as the copy Gmail served.

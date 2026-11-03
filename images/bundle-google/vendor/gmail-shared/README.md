@@ -30,9 +30,11 @@ entrypoint, which hands that same per-account layer to the shared runner.
 - `get_email_conversation` returns a message's headers and body, and a
   `## Sender Verification Headers` section with the headers that say whether
   the receiving server believed the `From:` line (`FORK.md` delta 4).
-- `download_email_attachments` saves attachments to `/tmp/` on the machine
-  the server runs on and returns the paths, or returns their content inline
-  with `inline=true`.
+- `download_email_attachments` returns attachments in the response, as MCP
+  embedded resources (a base64 `blob` for binary files, `text` for text
+  types), which a client such as Claude Code saves to a local file. With
+  `inline=true` it puts everything in one text block instead. It writes
+  nothing to the server's disk (`FORK.md` delta 6).
 - `change_email_conversation` marks a conversation read, unread or archived,
   and adds or removes labels.
 - `upsert_draft_email` creates or updates a draft, with attachments by HTTPS
