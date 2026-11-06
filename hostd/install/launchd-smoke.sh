@@ -34,7 +34,7 @@ render() {
 </plist>
 XML
 }
-pid() { launchctl print "$(launchd_target "$LABEL")" | awk '$1 == "pid" { print $3; exit }'; }
+pid() { launchd_pid "$LABEL"; }
 await_pid() {
   local waited=0
   until [ -n "$(pid)" ] && [ "$(pid)" != "${1:-}" ]; do
@@ -71,7 +71,11 @@ before="$(pid)"
 render "$DIR/$LABEL.plist" two
 launchd_install "$LABEL" "$PLIST" "$DIR"
 await_pid "$before"
-launchctl print "$(launchd_target "$LABEL")" | grep -q '# two'
+definition="$(launchctl print "$(launchd_target "$LABEL")")"
+case "$definition" in
+  *"# two"*) ;;
+  *) echo "launchd is still running the old definition"; exit 1 ;;
+esac
 grep -q '# two' "$PLIST"
 if launchd_loaded "$LABEL.reload"; then
   echo "the one-shot was left loaded"
@@ -80,9 +84,25 @@ fi
 
 echo "== bootout, then bootstrap straight away: what the wait is for"
 launchctl bootout "$(launchd_target "$LABEL")" || echo "bootout exit $?"
-launchd_loaded "$LABEL" && echo "still loaded the moment bootout returned" \
-  || echo "gone the moment bootout returned"
+if launchd_loaded "$LABEL"; then
+  echo "still loaded the moment bootout returned"
+else
+  echo "gone the moment bootout returned"
+fi
 launchctl bootstrap "$(launchd_domain)" "$PLIST" || echo "immediate bootstrap exit $?"
+launchd_disarm "$LABEL"
+
+echo "== a plist launchd refuses never reaches the service"
+render "$DIR/$LABEL.plist" three
+launchd_install "$LABEL" "$PLIST" "$DIR"
+await_pid
+before="$(pid)"
+echo "not a plist" >"$DIR/$LABEL.plist"
+if launchd_install "$LABEL" "$PLIST" "$DIR"; then
+  echo "a plist that does not lint was installed"
+  exit 1
+fi
+[ "$(pid)" = "$before" ]
 launchd_disarm "$LABEL"
 
 echo "== refused: the diagnostics"

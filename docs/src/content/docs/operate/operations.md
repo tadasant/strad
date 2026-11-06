@@ -416,7 +416,8 @@ The `launchd` job runs `hostd/test/install.test.ts` under the `/bin/bash` 3.2 a
 Mac has, and `hostd/install/launchd-smoke.sh` against the real launchd: all three
 restart paths through `hostd/install/launchd.sh`, the one-shot included, on a
 throwaway agent that takes three seconds to die. It prints what `bootout`
-followed at once by `bootstrap` does there, without asserting it. A runner is not
+followed at once by `bootstrap` does there, without asserting it; that was a `5`,
+with `bootout` having exited 0. A runner is not
 the owner's laptop, so what the daemon's real restart does is still shown only
 there.
 

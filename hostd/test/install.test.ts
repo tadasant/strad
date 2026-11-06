@@ -54,6 +54,7 @@ const killInstaller = () => {
   const pgid = Number(read(file("installer.pgid")));
   if (pgid) try { process.kill(-pgid, "SIGKILL"); } catch {}
 };
+const bumpPid = (l) => fs.writeFileSync(file("pid", l), String(Number(read(file("pid", l)) || 100) + 1));
 const finishTeardown = (l) => {
   fs.rmSync(file("teardown", l), { force: true });
   fs.rmSync(file("loaded", l), { force: true });
@@ -66,7 +67,7 @@ switch (args[0]) {
       console.error("Could not find service");
       process.exit(113);
     }
-    console.log(l + " = {\\n\\tstate = running\\n}");
+    console.log(l + " = {\\n\\tstate = running\\n\\tpid = " + (read(file("pid", l)) || "100") + "\\n}");
     break;
   }
   case "bootout": {
@@ -90,6 +91,7 @@ switch (args[0]) {
     }
     if (fs.existsSync(file("loaded", l))) process.exit(37);
     fs.writeFileSync(file("loaded", l), "");
+    bumpPid(l);
     const program = /<key>ProgramArguments<\\/key>\\s*<array>([\\s\\S]*?)<\\/array>/.exec(text)[1];
     const argv = [...program.matchAll(/<string>([^<]*)/g)].map((m) => m[1]);
     if (argv.includes("reload")) {
@@ -103,6 +105,7 @@ switch (args[0]) {
   case "kickstart":
     if (label(args[2]) === read(file("kill-installer-on"))) killInstaller();
     if (takeOne(file("kickstart-fail", label(args[2])))) process.exit(150);
+    bumpPid(label(args[2]));
     break;
   case "managername": console.log("Aqua"); break;
   case "print-disabled": console.log('\\t"' + read(file("disabled")) + '" => disabled'); break;
@@ -217,6 +220,7 @@ beforeEach(async () => {
     join(fake, "teardown"),
     join(fake, "bootstrap-fail"),
     join(fake, "kickstart-fail"),
+    join(fake, "pid"),
     join(here, "install"),
     join(here, "ax"),
     join(here, "messages"),
@@ -410,10 +414,12 @@ describe("a loaded service whose plist changed", () => {
       `bootout gui/${process.getuid!()}/${DAEMON}`,
     );
     expect(loaded(DAEMON)).toBe(true);
-    expect(output).toContain(`${DAEMON} was left loaded and untouched`);
+    expect(output).toContain(
+      `${DAEMON} was left loaded, running what it last started`,
+    );
     expect(output).toContain(`launchd diagnostics: ${DAEMON}.reload`);
     expect(output.slice(output.lastIndexOf("did not finish"))).toContain(
-      `${DAEMON} was not restarted`,
+      `${DAEMON} is not confirmed running the new build`,
     );
   });
 
@@ -424,19 +430,23 @@ describe("a loaded service whose plist changed", () => {
     const { signal, output } = await run(SIGN);
     expect(signal).toBe("SIGKILL");
     expect(output).not.toContain("Running. Status page");
-    expect(await until(() => loaded(DAEMON))).toBe(true);
+    const result = join(state, "reload", `${DAEMON}.result`);
     expect(
-      await until(() =>
-        readFileSync(plist(DAEMON), "utf8").endsWith("</plist>\n"),
+      await until(
+        () => existsSync(result) && readFileSync(result, "utf8") === "ok\n",
       ),
     ).toBe(true);
+    expect(loaded(DAEMON)).toBe(true);
+    expect(readFileSync(plist(DAEMON), "utf8").endsWith("</plist>\n")).toBe(
+      true,
+    );
   });
 
   it("keeps the one-shot's work when launchd re-runs it after a failure", async () => {
     changeDaemonPlist();
     const dir = join(state, "reload");
     write(join(dir, `${DAEMON}.plist`), readFileSync(plist(DAEMON), "utf8"));
-    writeFileSync(join(fake, "bootstrap-fail", DAEMON), "6");
+    writeFileSync(join(fake, "bootstrap-fail", DAEMON), "12");
     const once = () =>
       run(["reload", DAEMON, plist(DAEMON), dir], "install/launchd.sh");
     expect((await once()).code).toBe(1);
@@ -481,6 +491,7 @@ describe("the daemon restart", () => {
     const { code, output } = await run(SIGN);
     expect(code).toBe(1);
     expect(output).toContain("Rolling back to the previous build");
+    expect(mutating().filter((c) => c.endsWith(`/${DAEMON}`))).toHaveLength(2);
     expect(existsSync(join(state, "app/build/broken"))).toBe(false);
     expect(existsSync(join(state, "app.failed/build/broken"))).toBe(true);
     expect(output.slice(output.lastIndexOf("did not finish"))).toContain(
@@ -494,6 +505,134 @@ describe("the daemon restart", () => {
     const { code, output } = await run(SIGN);
     expect(code).toBe(1);
     expect(output).toContain("no previous build to roll back to");
+  });
+});
+
+describe("what must hold across runs", () => {
+  const change = (label: string) =>
+    writeFileSync(plist(label), readFileSync(plist(label), "utf8") + "\n");
+  const reloadDir = () => join(state, "reload");
+
+  it("stops before the swap when the new build cannot load", async () => {
+    writeFileSync(join(here, "build/cli.js"), "process.exit(3);\n");
+    write(join(state, "app/kept"), "");
+    const { code, output } = await run(SIGN);
+    expect(code).toBe(1);
+    expect(output).toContain("the new build does not load");
+    expect(existsSync(join(state, "app/kept"))).toBe(true);
+    expect(mutating()).toEqual([]);
+  });
+
+  it("never lets a build that did not serve replace the previous one", async () => {
+    // The run before this one was killed by its own restart.
+    rmSync(join(state, "app/.served"));
+    write(join(state, "app.previous/good"), "");
+    const { code } = await run(SIGN);
+    expect(code).toBe(0);
+    expect(existsSync(join(state, "app.previous/good"))).toBe(true);
+    expect(existsSync(join(state, "app/.served"))).toBe(true);
+  });
+
+  it("does not take the old daemon's answer for the new one", async () => {
+    // launchd never moves to a new pid: the only process answering is the old.
+    writeFileSync(
+      join(bin, "launchctl"),
+      readFileSync(join(bin, "launchctl"), "utf8").replace(
+        "bumpPid(label(args[2]));",
+        "",
+      ),
+    );
+    const { code, output } = await run(SIGN);
+    expect(code).toBe(1);
+    expect(output).toContain("the daemon is not answering");
+  });
+
+  it("refuses to unload a disabled service", async () => {
+    change(DAEMON);
+    writeFileSync(join(fake, "disabled"), DAEMON);
+    const { code, output } = await run(SIGN);
+    expect(code).toBe(1);
+    expect(output).toContain(`${DAEMON} is disabled`);
+    expect(mutating().filter((c) => c.startsWith("bootout"))).toEqual([]);
+    expect(loaded(DAEMON)).toBe(true);
+  });
+
+  it("refuses a plist that does not lint", async () => {
+    change(DAEMON);
+    writeFileSync(join(bin, "plutil"), `#!/bin/bash\nexit 1\n`);
+    chmodSync(join(bin, "plutil"), 0o755);
+    const { code, output } = await run(SIGN);
+    expect(code).toBe(1);
+    expect(output).toContain(`the rendered plist for ${DAEMON} does not lint`);
+    expect(mutating().filter((c) => c.startsWith("bootout"))).toEqual([]);
+  });
+
+  it("puts the old plist back when launchd refuses the new one", async () => {
+    const dir = reloadDir();
+    const before = readFileSync(plist(DAEMON), "utf8");
+    write(join(dir, `${DAEMON}.plist`), before + "<!-- new -->\n");
+    writeFileSync(join(fake, "bootstrap-fail", DAEMON), "6");
+    const { code } = await run(
+      ["reload", DAEMON, plist(DAEMON), dir],
+      "install/launchd.sh",
+    );
+    expect(code).toBe(0);
+    expect(readFileSync(join(dir, `${DAEMON}.result`), "utf8")).toBe(
+      "restored\n",
+    );
+    expect(readFileSync(plist(DAEMON), "utf8")).toBe(before);
+    expect(loaded(DAEMON)).toBe(true);
+  });
+
+  it("leaves a retrier behind when a service will not load", async () => {
+    rmSync(join(fake, "loaded", AX));
+    writeFileSync(join(fake, "bootstrap-fail", AX), "100");
+    const { output } = await run(SIGN);
+    expect(loaded(`${AX}.reload`)).toBe(true);
+    expect(output).toContain(`${AX} is not loaded; launchd keeps retrying`);
+  });
+
+  it("stops a retrying one-shot before rendering over it", async () => {
+    writeFileSync(join(fake, "loaded", `${AX}.reload`), "");
+    const { code } = await run(SIGN);
+    expect(code).toBe(0);
+    const m = mutating();
+    expect(m[0]).toBe(`bootout gui/${process.getuid!()}/${AX}.reload`);
+  });
+
+  it("runs one install at a time, and reclaims a dead run's lock", async () => {
+    write(join(state, "install.lock/pid"), String(process.pid));
+    const refused = await run(SIGN);
+    expect(refused.code).toBe(1);
+    expect(refused.output).toContain("another install is running");
+    writeFileSync(join(state, "install.lock/pid"), "4000000");
+    expect((await run(SIGN)).code).toBe(0);
+    expect(existsSync(join(state, "install.lock"))).toBe(false);
+  });
+
+  it("does not let a tunnel failure stop the daemon step", async () => {
+    writeFileSync(join(bin, "cloudflared"), `#!/bin/bash\nexit 1\n`);
+    chmodSync(join(bin, "cloudflared"), 0o755);
+    write(join(home, ".cloudflared/cert.pem"), "");
+    const { code, output } = await run([
+      ...SIGN,
+      "--hostname",
+      "h.example.com",
+    ]);
+    expect(code).toBe(1);
+    expect(mutating()).toContain(
+      `kickstart -k gui/${process.getuid!()}/${DAEMON}`,
+    );
+    expect(output.slice(output.lastIndexOf("did not finish"))).toContain(
+      "tunnel for h.example.com",
+    );
+  });
+
+  it("signs with no identity when it is given none", async () => {
+    expect((await run([])).code).toBe(0);
+    expect(
+      readFileSync(join(fake, "sign.log"), "utf8").trim().split("\n").slice(-2),
+    ).toEqual(["", `--identifier ${MESSAGES}`]);
   });
 });
 

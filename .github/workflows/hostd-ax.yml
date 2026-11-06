@@ -27,8 +27,9 @@ name: hostd-ax
 # `launchd` (hostd/install/launchd.sh) proves: the installer's decisions hold
 # under the /bin/bash 3.2 a Mac has rather than the bash 5 of the Linux box, and
 # the three restart paths work against a real launchd, one-shot included, on a
-# service that takes seconds to die. A runner is not the owner's laptop and it
-# proves nothing about a detached session there.
+# service that takes seconds to die. It also prints what a `bootstrap` straight
+# after `bootout` does: the `5` of strad#457. A runner is not the owner's laptop
+# and it proves nothing about a detached session there.
 
 on:
   pull_request:
@@ -41,11 +42,13 @@ on:
       - "hostd/package-lock.json"
       - "hostd/install/com.strad.hostd-ax.plist"
       - "hostd/install/com.strad.hostd-messages.plist"
+      - "hostd/install/com.strad.hostd.plist"
       - "hostd/install/com.strad.hostd-reload.plist"
       - "hostd/install/install.sh"
       - "hostd/install/launchd.sh"
       - "hostd/install/launchd-smoke.sh"
       - "hostd/install/sign-helper.sh"
+      - "hostd/install/uninstall.sh"
       - "hostd/test/install.test.ts"
       - ".github/workflows/hostd-ax.yml"
   push:
@@ -58,11 +61,13 @@ on:
       - "hostd/package-lock.json"
       - "hostd/install/com.strad.hostd-ax.plist"
       - "hostd/install/com.strad.hostd-messages.plist"
+      - "hostd/install/com.strad.hostd.plist"
       - "hostd/install/com.strad.hostd-reload.plist"
       - "hostd/install/install.sh"
       - "hostd/install/launchd.sh"
       - "hostd/install/launchd-smoke.sh"
       - "hostd/install/sign-helper.sh"
+      - "hostd/install/uninstall.sh"
       - "hostd/test/install.test.ts"
       - ".github/workflows/hostd-ax.yml"
 

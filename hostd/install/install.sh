@@ -40,7 +40,7 @@ while [ $# -gt 0 ]; do
     --no-agent) AGENT=0; shift ;;
     --no-helper) HELPER=0; shift ;;
     --sign-identity) SIGN_IDENTITY="$2"; shift 2 ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -66,6 +66,21 @@ failed() {
 # shellcheck source=install/launchd.sh
 . "$HERE/install/launchd.sh"
 
+# One run at a time. An unattended run outlives the grant that started it, so a
+# retry can arrive while it is still working. Reclaimed from a run that was killed.
+mkdir -p "$STATE"
+LOCK="$STATE/install.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  LOCK_PID="$(cat "$LOCK/pid" 2>/dev/null || true)"
+  if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+    die "another install is running (pid $LOCK_PID)"
+  fi
+  rm -rf "$LOCK"
+  mkdir "$LOCK"
+fi
+echo "$$" > "$LOCK/pid"
+trap 'rm -rf "$LOCK"' EXIT
+
 command -v node >/dev/null || die "node is not installed (need 22.4 or newer): brew install node"
 node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=4)?0:1)' \
   || die "node $(node -v) is too old; strad-hostd needs 22.4 or newer"
@@ -80,10 +95,18 @@ rm -rf "$APP.new"
 mkdir -p "$APP.new"
 cp -R "$HERE/build" "$HERE/extension" "$HERE/package.json" "$HERE/package-lock.json" "$APP.new/"
 (cd "$APP.new" && npm ci --omit=dev --no-audit --no-fund)
-# The build the daemon is running stays beside the new one until the next
-# install: it is what the daemon step rolls back to.
-rm -rf "$APP.previous"
-if [ -d "$APP" ]; then mv "$APP" "$APP.previous"; fi
+# A build that cannot even load stops here, with the installed one untouched.
+"$NODE" "$APP.new/build/cli.js" help >/dev/null || die "the new build does not load"
+# The previous build is what the daemon step rolls back to, so only a build that
+# is known to have served may replace it: $APP/.served, written by that step.
+if [ -d "$APP" ]; then
+  if [ -f "$APP/.served" ] || [ ! -d "$APP.previous" ]; then
+    rm -rf "$APP.previous"
+    mv "$APP" "$APP.previous"
+  else
+    rm -rf "$APP"
+  fi
+fi
 mv "$APP.new" "$APP"
 HOSTD=("$NODE" "$APP/build/cli.js")
 
@@ -128,6 +151,7 @@ install_ax() {
   AX="$STATE/bin/strad-hostd-ax"
   if [ "$AGENT" = 1 ]; then
     say "Installing the LaunchAgent $AX_LABEL"
+    launchd_disarm "$AX_LABEL.reload"
     sed -e "s|__HELPER__|$AX|g" -e "s|__HOME__|$HOME|g" -e "s|__STATE__|$STATE|g" \
       "$HERE/install/$AX_LABEL.plist" > "$RELOAD/$AX_LABEL.plist" || return 1
     launchd_install "$AX_LABEL" "$HOME/Library/LaunchAgents/$AX_LABEL.plist" "$RELOAD" || return 1
@@ -160,6 +184,7 @@ install_messages() {
   MESSAGES_HELPER="$STATE/bin/strad-hostd-messages"
   if [ "$AGENT" = 1 ]; then
     say "Installing the LaunchAgent $MESSAGES_LABEL"
+    launchd_disarm "$MESSAGES_LABEL.reload"
     sed -e "s|__HELPER__|$MESSAGES_HELPER|g" -e "s|__HOME__|$HOME|g" -e "s|__STATE__|$STATE|g" \
       "$HERE/install/$MESSAGES_LABEL.plist" > "$RELOAD/$MESSAGES_LABEL.plist" || return 1
     launchd_install "$MESSAGES_LABEL" "$HOME/Library/LaunchAgents/$MESSAGES_LABEL.plist" "$RELOAD" || return 1
@@ -181,23 +206,24 @@ if [ "$HELPER" = 1 ] && [ "$(uname)" = "Darwin" ]; then
   fi
 fi
 
-if [ -n "$HOSTNAME_ARG" ]; then
-  command -v cloudflared >/dev/null || die "cloudflared is not installed: brew install cloudflared"
+# A tunnel that cannot be set up is no reason to skip the daemon step either.
+install_tunnel() {
+  command -v cloudflared >/dev/null || { echo "cloudflared is not installed: brew install cloudflared"; return 1; }
   CLOUDFLARED="$(command -v cloudflared)"
-  [ -f "$HOME/.cloudflared/cert.pem" ] || { say "Log in to Cloudflare (a browser opens)"; cloudflared tunnel login; }
+  [ -f "$HOME/.cloudflared/cert.pem" ] || { say "Log in to Cloudflare (a browser opens)"; cloudflared tunnel login || return 1; }
 
   if ! cloudflared tunnel list --output json | node -e \
       'const n=process.argv[1];let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.exit((JSON.parse(s)||[]).some(t=>t.name===n)?0:1))' "$TUNNEL_NAME"; then
     say "Creating the named tunnel \"$TUNNEL_NAME\""
-    cloudflared tunnel create "$TUNNEL_NAME"
+    cloudflared tunnel create "$TUNNEL_NAME" || return 1
   fi
   TUNNEL_ID="$(cloudflared tunnel list --output json | node -e \
-    'const n=process.argv[1];let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).find(t=>t.name===n).id))' "$TUNNEL_NAME")"
+    'const n=process.argv[1];let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).find(t=>t.name===n).id))' "$TUNNEL_NAME")" || return 1
 
   # The ingress names the MCP port and NOTHING else. The control page listens on
   # another port, and this file is the reason no request from outside can reach it.
-  PORT="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).port ?? 7311)' "$STATE/config.json")"
-  cat > "$STATE/cloudflared.yml" <<YAML
+  PORT="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).port ?? 7311)' "$STATE/config.json")" || return 1
+  cat > "$STATE/cloudflared.yml" <<YAML || return 1
 tunnel: $TUNNEL_ID
 credentials-file: $HOME/.cloudflared/$TUNNEL_ID.json
 
@@ -206,7 +232,7 @@ ingress:
     service: http://127.0.0.1:$PORT
   - service: http_status:404
 YAML
-  chmod 600 "$STATE/cloudflared.yml"
+  chmod 600 "$STATE/cloudflared.yml" || return 1
 
   # `--config` is load-bearing. Without it cloudflared reads
   # ~/.cloudflared/config.yml, and when that file belongs to another tunnel
@@ -224,17 +250,25 @@ YAML
     const c = JSON.parse(fs.readFileSync(file, "utf8"));
     c.tunnel = { enabled: true, configPath, binary };
     fs.writeFileSync(file, JSON.stringify(c, null, 2) + "\n", { mode: 0o600 });
-  ' "$STATE/config.json" "$STATE/cloudflared.yml" "$CLOUDFLARED"
+  ' "$STATE/config.json" "$STATE/cloudflared.yml" "$CLOUDFLARED" || return 1
+}
+
+if [ -n "$HOSTNAME_ARG" ]; then
+  install_tunnel || failed "the tunnel for $HOSTNAME_ARG was not set up"
 fi
 
-# Is the daemon answering on its MCP port? Each look waits first, so that the
-# first one is not the old process answering on its way out.
+# Is a process other than $1 answering on the MCP port? The pid matters: the old
+# daemon keeps answering /healthz while it shuts down.
 daemon_serving() {
-  local port tries=0
+  local old="$1" port pid tries=0
   port="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).port ?? 7311)' "$STATE/config.json")"
   while [ "$tries" -lt 15 ]; do
     sleep 2
-    if curl -fsS -m 2 "http://127.0.0.1:$port/healthz" >/dev/null 2>&1; then return 0; fi
+    pid="$(launchd_pid "$LABEL")"
+    if [ -n "$pid" ] && [ "$pid" != "$old" ] \
+      && curl -fsS -m 2 "http://127.0.0.1:$port/healthz" >/dev/null 2>&1; then
+      return 0
+    fi
     tries=$((tries + 1))
   done
   return 1
@@ -245,17 +279,23 @@ daemon_serving() {
 # shell this script came from. By then the service is loaded, or in the hands of
 # the one-shot, so launchd brings the daemon back with or without this script.
 install_daemon() {
+  local old_pid
   say "Installing the LaunchAgent $LABEL"
+  launchd_disarm "$LABEL.reload"
+  old_pid="$(launchd_pid "$LABEL")"
   sed -e "s|__NODE__|$NODE|g" -e "s|__CLI__|$APP/build/cli.js|g" -e "s|__HOME__|$HOME|g" -e "s|__STATE__|$STATE|g" \
     "$HERE/install/$LABEL.plist" > "$RELOAD/$LABEL.plist" || {
       failed "$LABEL was not restarted: its plist could not be rendered"
       return 1
     }
   if ! launchd_install "$LABEL" "$HOME/Library/LaunchAgents/$LABEL.plist" "$RELOAD"; then
-    failed "$LABEL was not restarted; see the launchd output above"
+    failed "$LABEL is not confirmed running the new build; see the launchd output above"
     return 1
   fi
-  if daemon_serving; then return 0; fi
+  if daemon_serving "$old_pid"; then
+    touch "$APP/.served"
+    return 0
+  fi
 
   # Loaded and not serving: the new build fails at runtime, in a way loading it
   # for `add` above could not show, and launchd would restart it for ever.
@@ -271,8 +311,9 @@ install_daemon() {
     failed "$LABEL is not serving, and rolling back to the previous build failed"
     return 1
   fi
+  old_pid="$(launchd_pid "$LABEL")"
   launchctl kickstart -k "$(launchd_target "$LABEL")" 2>&1 || true
-  if daemon_serving; then
+  if daemon_serving "$old_pid"; then
     failed "$LABEL did not serve on the new build and was rolled back; that build is at $APP.failed"
   else
     failed "$LABEL is not serving on the new build or the rolled-back one"
