@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The one-shot that replaces a loaded LaunchAgent whose plist changed (see
+  launchd.sh). It lives in the state directory, not ~/Library/LaunchAgents, so
+  nothing loads it at login.
+
+  It runs under launchd so that it is no descendant of the daemon it restarts,
+  and the KeepAlive means launchd re-runs it until it exits 0: a daemon that did
+  not come back keeps being tried with no installer alive.
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key><string>__LABEL__</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/bin/bash</string>
+      <string>__SCRIPT__</string>
+      <string>reload</string>
+      <string>__TARGET__</string>
+      <string>__PLIST__</string>
+      <string>__DIR__</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key>
+    <dict>
+      <key>SuccessfulExit</key><false/>
+    </dict>
+    <key>ThrottleInterval</key><integer>30</integer>
+    <key>ProcessType</key><string>Interactive</string>
+    <key>StandardOutPath</key><string>__LOG__</string>
+    <key>StandardErrorPath</key><string>__LOG__</string>
+  </dict>
+</plist>

@@ -316,7 +316,7 @@ Linux. The Swift helper itself is built and smoke-tested over stdio on a
 GitHub macOS runner (`.github/workflows/hostd-ax.yml`), which holds no
 permission grants: reading a real tree, a real screenshot and the banner under
 a real grant run only on a Mac whose owner has granted them. The other macOS
-halves (the `osascript` dialog and its mouse-only buttons, the LaunchAgents, the installer's `cloudflared`
+halves (the `osascript` dialog and its mouse-only buttons, the real LaunchAgents, the installer's `cloudflared`
 branch, the signing script) are not exercised by any suite.
 
 The Messages server is tested against `test/fake-messages.ts`, which runs the

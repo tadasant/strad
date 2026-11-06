@@ -5356,7 +5356,10 @@ design defect, and this entry is the marker that rule asks for:
   (#115).
 - The Cloudflare Access application and its service token are made in
   Cloudflare's dashboard.
-- An upgrade is `git pull` and the install script again.
+- An upgrade is `git pull` and the install script again. It can run unattended
+  through a Mac-gated worker over the `shell-*` slug, which is still the box-access
+  route. `hostd/install/launchd.sh` is what keeps that from stranding the machine:
+  on an upgrade, nothing but a launchd-run one-shot unloads a service.
 
 **Why it cannot be designed out the usual way.** The rule exists because a
 container strad deploys can always be reached by a deploy. This box is a personal
@@ -5382,7 +5385,12 @@ secrets per slug are seeded at `/ui/secrets`. Whether the machine is up is on
   (and that its JXA `NSAlert` ignores every key, which only a Mac can show),
   the LaunchAgent, the installer's `cloudflared` branch, and Chrome 144's
   debugging toggle against a real default profile. The design page lists what was
-  run and what was reasoned about.
+  run and what was reasoned about. The installer's restart paths run against a
+  real launchd on a macOS runner, on a throwaway agent. The `5` that stopped the
+  first unattended run (#457) reproduces on that runner as a `bootstrap` into an
+  unfinished `bootout`. Nobody has shown that on the laptop, so the installer prints
+  what would prove it. The post-restart `/healthz` check and rollback run only if
+  the installer outlives the restart.
 
 **Undo.** A signed, notarized app with an auto-updater would take upgrades off
 the terminal and give TCC a stable identity to grant. It would not remove the

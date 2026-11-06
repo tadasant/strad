@@ -71,6 +71,59 @@ Re-run it to upgrade. It keeps the config, the keys and the tunnel, and adds any
 server the config predates. `./hostd/install/uninstall.sh` removes it, and
 `--purge` also deletes `~/.strad-hostd`.
 
+A re-run is built to finish with nobody at the Mac, over the shell the daemon
+serves, and to leave the machine reachable when it does not:
+
+| The service is…              | The installer…                                                                                                                                                                                                              |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| loaded, plist unchanged      | runs `launchctl kickstart -k`. Nothing is unloaded, so launchd restarts it even if the installer dies on that line. This is the ordinary upgrade.                                                                           |
+| not loaded                   | runs `launchctl bootstrap`, up to six times over 31 seconds.                                                                                                                                                                |
+| loaded, plist changed        | hands it to a one-shot LaunchAgent, `<label>.reload`, which unloads it, waits up to 30 seconds for it to be gone, and loads it again. launchd re-runs the one-shot every 30 seconds until that works, with or without the installer. |
+
+On an upgrade the one-shot is the only thing that unloads a service. It is not a
+descendant of the daemon. Before it is armed the new plist has to pass `plutil
+-lint` and the service must not be disabled, and its own bootstrap is a canary: if
+launchd refuses it, the service stays loaded, running what it last started. That
+is the old process, with the new build on disk, so the installer reports it. If
+launchd refuses the new plist after the unload, the old plist goes back and the
+service is loaded on that. `~/Library/Logs/<label>.reload.log` is its log.
+
+A bootstrap still refused after its six tries on a service that was not loaded
+arms the same one-shot, so launchd keeps trying with no installer alive. A re-run
+stops whatever one-shot it finds before it starts on that service.
+
+A helper that fails does not stop the daemon step. Each failure is printed where
+it happens, again before the daemon restarts (that restart can end the shell the
+installer came from), and again at the end, with a non-zero exit. A refused
+`launchctl` call prints its exit code, what `launchctl error` says about it, the
+process's launchd manager, the plist's mode and lint, the service's disabled
+state and `launchctl print` for the service.
+
+A build that cannot load stops the installer before it replaces the installed
+one. After restarting the daemon the installer waits up to 30 seconds for a new
+pid answering `/healthz` on the MCP port. If none does it rolls back to the
+previous build, kept at `~/.strad-hostd/app.previous`, leaves the failed one at
+`app.failed`, and exits non-zero. Only a build that has passed this check can
+become `app.previous`, so a run that never confirmed its build cannot push out the
+last one that worked. The check needs the installer alive: one killed by the
+restart leaves the daemon loaded but unchecked.
+
+One install runs at a time: a second exits with an error while the first is alive.
+
+An unattended installer should still run in its own session, logging to a file,
+so that it outlives the grant that started it and its exit code reaches the log.
+macOS has no `setsid` binary, so use perl:
+
+```bash
+( perl -MPOSIX -e 'POSIX::setsid() != -1 or die "setsid: $!"; exec @ARGV' \
+    /bin/bash -lc './hostd/install/install.sh; echo "EXIT $?"' \
+    > ~/.strad-hostd/install.log 2>&1 < /dev/null & ) ; sleep 3
+```
+
+Run from the daemon's shell without that, ending the grant kills it mid-run. The
+daemon's shutdown kills the process group of each command, and launchd kills the
+daemon's own group; a new session is in neither.
+
 :::caution[These steps happen on the machine, by hand]
 strad's rule is that operating a feature never needs a shell on a box. This one
 cannot meet it: the box is a personal laptop, and installing software on it,

@@ -15,12 +15,16 @@ AX_LABEL="com.strad.hostd-ax"
 MESSAGES_LABEL="com.strad.hostd-messages"
 
 if [ "$(uname)" = "Darwin" ]; then
+  # The one-shots first: one still retrying would load its service straight back.
+  for label in "$LABEL" "$AX_LABEL" "$MESSAGES_LABEL"; do
+    launchctl bootout "gui/$(id -u)/$label.reload" 2>/dev/null || true
+  done
   for label in "$LABEL" "$AX_LABEL" "$MESSAGES_LABEL"; do
     launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
     rm -f "$HOME/Library/LaunchAgents/$label.plist"
   done
 fi
-rm -rf "$STATE/app" "$STATE/bin" "$STATE/ax.sock" "$STATE/messages.sock"
+rm -rf "$STATE/app" "$STATE/app.new" "$STATE/app.previous" "$STATE/app.failed" "$STATE/reload" "$STATE/bin" "$STATE/ax.sock" "$STATE/messages.sock"
 if [ "${1:-}" = "--purge" ]; then
   # STATE comes from the environment. Only delete a directory that is
   # recognisably this daemon's, so a stray STRAD_HOSTD_HOME=$HOME cannot cost a
