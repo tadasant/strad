@@ -8,12 +8,51 @@
  * inside a paragraph and never at a table's start index, a range must lie in
  * the segment, new text takes its neighbour's paragraph style, list membership
  * and text style, and the closing newline of a paragraph carries its style and
- * heading id. Anything it does not model throws, so a new request type cannot
- * pass by being ignored.
+ * heading id, a bullet request removes leading tabs and shifts what follows, and
+ * a mask must name real fields. Anything it does not model throws, so a new
+ * request type cannot pass by being ignored.
  */
 import type { GoogleDoc, StructuralElement, Tab } from "google-docs-workspace-mcp-server-shared";
 
 type Json = Record<string, any>;
+
+// `documents` reference, read 2026-11-06.
+const TEXT_STYLE_FIELDS = new Set([
+  "bold",
+  "italic",
+  "underline",
+  "strikethrough",
+  "smallCaps",
+  "backgroundColor",
+  "foregroundColor",
+  "fontSize",
+  "weightedFontFamily",
+  "baselineOffset",
+  "link",
+]);
+const PARAGRAPH_STYLE_FIELDS = new Set([
+  "namedStyleType",
+  "alignment",
+  "lineSpacing",
+  "direction",
+  "spacingMode",
+  "spaceAbove",
+  "spaceBelow",
+  "borderBetween",
+  "borderTop",
+  "borderBottom",
+  "borderLeft",
+  "borderRight",
+  "indentFirstLine",
+  "indentStart",
+  "indentEnd",
+  "keepLinesTogether",
+  "keepWithNext",
+  "avoidWidowAndOrphan",
+  "shading",
+  "pageBreakBefore",
+]);
+const BULLET_PRESETS = new Set(["BULLET_DISC_CIRCLE_SQUARE", "NUMBERED_DECIMAL_ALPHA_ROMAN"]);
 
 function allTabs(tabs: Tab[]): Tab[] {
   return tabs.flatMap((t) => [t, ...allTabs(t.childTabs ?? [])]);
@@ -62,44 +101,63 @@ function insertText(content: StructuralElement[], index: number, text: string, s
     throw new Error(`400: The insertion index ${index} must be inside the bounds of a paragraph`);
   }
 
-  const offset = index - paragraph.startIndex;
-  const full = textOf(paragraph);
-  const merged = full.slice(0, offset) + text + full.slice(offset);
-  const parts = merged.split(/(?<=\n)/);
   const position = (content as Json[]).indexOf(paragraph);
   if (position === -1) throw new Error("the simulator does not insert newlines inside table cells");
+
+  // Runs carry their own style and suggestion ids. New text takes the style of
+  // the run it lands in, without the ids, which belong to the text they marked.
+  type Piece = { text: string; run: Json };
+  const pieces: Piece[] = [];
+  let placed = false;
+  for (const element of paragraph.paragraph.elements as Json[]) {
+    const run = element.textRun ?? {};
+    const held: string = run.content ?? "";
+    const at = index - element.startIndex;
+    if (!placed && at >= 0 && at < held.length) {
+      placed = true;
+      if (at > 0) pieces.push({ text: held.slice(0, at), run });
+      const { suggestedInsertionIds: _i, suggestedDeletionIds: _d, ...style } = run;
+      pieces.push({ text, run: style });
+      pieces.push({ text: held.slice(at), run });
+    } else {
+      pieces.push({ text: held, run });
+    }
+  }
 
   const start = paragraph.startIndex;
   shiftFrom(content, index + 1, text.length);
   const style = paragraph.paragraph.paragraphStyle ?? {};
+  const bullet = paragraph.paragraph.bullet;
+
   let cursor = start;
-  const replacement = parts.map((part, i) => {
-    const element = {
-      startIndex: cursor,
-      endIndex: cursor + part.length,
-      paragraph: {
-        // The new newlines copy the style; the old newline, which ends the last
-        // part, keeps it and the heading id it carries.
-        paragraphStyle:
-          i === parts.length - 1
-            ? { ...style }
-            : { ...style, ...(style.headingId ? { headingId: undefined } : {}) },
-        ...(paragraph.paragraph.bullet ? { bullet: { ...paragraph.paragraph.bullet } } : {}),
-        elements: [
-          {
-            startIndex: cursor,
-            endIndex: cursor + part.length,
-            textRun: {
-              content: part,
-              textStyle: { ...(paragraph.paragraph.elements[0]?.textRun?.textStyle ?? {}) },
-            },
-          },
-        ],
-      },
-    };
-    cursor += part.length;
-    return element;
-  });
+  const groups: Json[][] = [[]];
+  for (const { text: piece, run } of pieces) {
+    for (const part of piece.split(/(?<=\n)/)) {
+      if (part.length === 0) continue;
+      const { content: _c, ...rest } = run;
+      groups[groups.length - 1].push({
+        startIndex: cursor,
+        endIndex: cursor + part.length,
+        textRun: { ...structuredClone(rest), content: part },
+      });
+      cursor += part.length;
+      if (part.endsWith("\n")) groups.push([]);
+    }
+  }
+  groups.pop();
+
+  const { headingId: _id, ...copied } = style;
+  const replacement = groups.map((elements, i) => ({
+    startIndex: elements[0].startIndex,
+    endIndex: elements[elements.length - 1].endIndex,
+    paragraph: {
+      // The new newlines copy the style. The old one ends the last paragraph
+      // and keeps the id it carries.
+      paragraphStyle: i === groups.length - 1 ? { ...style } : { ...copied },
+      ...(bullet ? { bullet: { ...bullet } } : {}),
+      elements,
+    },
+  }));
   (content as Json[]).splice(position, 1, ...replacement);
 }
 
@@ -139,8 +197,10 @@ function runsIn(content: StructuralElement[], range: Json): Json[] {
   return hit;
 }
 
-function applyMask(target: Json, source: Json, fields: string): void {
+function applyMask(target: Json, source: Json, fields: string, known: Set<string>): void {
+  if (!fields) throw new Error("400: at least one field must be specified");
   for (const field of fields.split(",")) {
+    if (!known.has(field)) throw new Error(`400: unknown field ${field}`);
     if (source[field] === undefined) delete target[field];
     else target[field] = source[field];
   }
@@ -180,20 +240,32 @@ export function applyBatch(doc: GoogleDoc, requests: Json[], options: ApplyOptio
         break;
       case "updateParagraphStyle":
         for (const p of overlapping(content, body.range)) {
-          applyMask((p.paragraph.paragraphStyle ??= {}), body.paragraphStyle, body.fields);
+          applyMask(
+            (p.paragraph.paragraphStyle ??= {}),
+            body.paragraphStyle,
+            body.fields,
+            PARAGRAPH_STYLE_FIELDS,
+          );
         }
         break;
       case "updateTextStyle":
         for (const run of runsIn(content, body.range)) {
-          applyMask((run.textRun.textStyle ??= {}), body.textStyle, body.fields);
+          applyMask((run.textRun.textStyle ??= {}), body.textStyle, body.fields, TEXT_STYLE_FIELDS);
         }
         break;
       case "deleteParagraphBullets":
         for (const p of overlapping(content, body.range)) delete p.paragraph.bullet;
         break;
       case "createParagraphBullets":
+        if (!BULLET_PRESETS.has(body.bulletPreset)) throw new Error(`400: ${body.bulletPreset}`);
         for (const p of overlapping(content, body.range)) {
           p.paragraph.bullet = { listId: `sim.${body.bulletPreset}.${body.range.startIndex}` };
+          const first = p.paragraph.elements[0];
+          const tabs = first.textRun.content.match(/^\t+/)?.[0].length ?? 0;
+          if (tabs > 0) {
+            first.textRun.content = first.textRun.content.slice(tabs);
+            shiftFrom(content, first.startIndex + tabs, -tabs);
+          }
         }
         break;
       default:

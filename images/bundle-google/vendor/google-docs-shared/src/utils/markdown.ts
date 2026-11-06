@@ -10,6 +10,10 @@
  * What the dialect cannot express is REFUSED, by line. Writing `> quote` or a
  * table into a live document as literal punctuation is a worse answer than an
  * error, and a backslash in front of the character inserts it literally.
+ *
+ * Emphasis follows CommonMark's delimiter algorithm rather than a search for a
+ * closing mark, because model-written markdown nests it (`**bold *both***`), and
+ * a scan that does not nest writes the leftover stars into the document.
  */
 
 export type NamedStyle =
@@ -47,32 +51,66 @@ export interface ContentParagraph {
  * first, or every range computed after one would be off by what Google dropped.
  */
 // eslint-disable-next-line no-control-regex
-const STRIPPED_BY_DOCS = /[\u0000-\u0008\u000C-\u001F-]/g;
+const STRIPPED_BY_DOCS = /[\u0000-\u0008\u000C-\u001F\uE000-\uF8FF]/g;
 
 const ESCAPABLE = /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/;
 const LINKABLE = /^(https?:\/\/|mailto:)/i;
-const WORD_CHARACTER = /[\p{L}\p{N}]/u;
+const PUNCTUATION = /[\p{P}\p{S}]/u;
+const WHITESPACE = /\s/;
+const DIGIT = /[0-9]/;
+
+const TAB_WIDTH = 4;
+const NESTED_INDENT = 2;
 
 function refusedLine(line: string): string | undefined {
   if (/^\s*(```|~~~)/.test(line)) return 'a code fence';
   if (/^\s*>/.test(line)) return 'a block quote';
   if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) return 'a horizontal rule';
   if (/^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/.test(line)) return 'a table';
-  if (/^\s*!\[[^\]]*\]\([^)]*\)\s*$/.test(line)) return 'an image';
+  if (/^\s*\|(\s*:?-+:?\s*\|)+\s*$/.test(line)) return 'a table';
   return undefined;
+}
+
+function indentOf(whitespace: string): number {
+  return whitespace.replace(/\t/g, ' '.repeat(TAB_WIDTH)).length;
+}
+
+/**
+ * `createParagraphBullets` reads a leading tab as a nesting level, removes it
+ * and shifts everything after it. The block rules consume indentation, so one can
+ * only arrive from inside a code span or a link; it goes here, before any range
+ * is computed.
+ */
+function withoutLeadingTabs(text: string, spans: StyledSpan[]) {
+  const cut = text.length - text.replace(/^\t+/, '').length;
+  if (cut === 0) return { text, spans };
+  return {
+    text: text.slice(cut),
+    spans: spans
+      .map((s) => ({ ...s, start: Math.max(0, s.start - cut), end: s.end - cut }))
+      .filter((s) => s.end > s.start),
+  };
 }
 
 export function parseMarkdown(content: string): ContentParagraph[] {
   const lines = content.replace(/\r\n?/g, '\n').replace(STRIPPED_BY_DOCS, '').split('\n');
   const paragraphs: ContentParagraph[] = [];
   const refused: string[] = [];
+  let listIndent = 0;
 
   lines.forEach((line, i) => {
     if (line.trim().length === 0) return;
+    const number = i + 1;
+    const refuse = (what: string) => void refused.push(`line ${number} is ${what}`);
+    const inline = (source: string) => {
+      const parsed = parseInline(source);
+      if (parsed.image) refused.push(`line ${number} holds an image`);
+      return { text: parsed.text, spans: parsed.spans };
+    };
 
     const what = refusedLine(line);
     if (what) {
-      refused.push(`line ${i + 1} is ${what}`);
+      refuse(what);
       return;
     }
 
@@ -80,26 +118,39 @@ export function parseMarkdown(content: string): ContentParagraph[] {
     if (heading) {
       paragraphs.push({
         namedStyle: `HEADING_${heading[1].length}` as NamedStyle,
-        ...parseInline(heading[2]),
+        ...inline(heading[2]),
       });
       return;
     }
 
-    const item = line.match(/^(\s*)(?:([-*+])|\d+[.)])\s+(.+?)\s*$/);
-    if (item) {
-      if (item[1].length >= 2 && paragraphs[paragraphs.length - 1]?.list) {
-        refused.push(`line ${i + 1} is a nested list item`);
+    const previous = paragraphs[paragraphs.length - 1]?.list;
+    const item = line.match(/^(\s*)(?:([-*+])|(\d{1,9})[.)])\s+(.+?)\s*$/);
+    // A number starts a list only at 1: `2020. A good year` is a sentence, and
+    // Docs numbers its own lists, so any other first number would be rewritten.
+    const isItem = item && (item[2] || Number(item[3]) === 1 || previous === 'number');
+    if (item && isItem) {
+      const indent = indentOf(item[1]);
+      if (previous && indent >= listIndent + NESTED_INDENT) {
+        refuse('a nested list item');
         return;
       }
-      paragraphs.push({
-        namedStyle: 'NORMAL_TEXT',
-        list: item[2] ? 'bullet' : 'number',
-        ...parseInline(item[3]),
-      });
+      const inner = refusedLine(item[4]);
+      if (inner) {
+        refuse(inner);
+        return;
+      }
+      if (!previous) listIndent = indent;
+      const { text, spans } = inline(item[4]);
+      const flat = withoutLeadingTabs(text, spans);
+      if (flat.text.length === 0) {
+        refuse('an empty list item');
+        return;
+      }
+      paragraphs.push({ namedStyle: 'NORMAL_TEXT', list: item[2] ? 'bullet' : 'number', ...flat });
       return;
     }
 
-    paragraphs.push({ namedStyle: 'NORMAL_TEXT', ...parseInline(line.trim()) });
+    paragraphs.push({ namedStyle: 'NORMAL_TEXT', ...inline(line.trim()) });
   });
 
   if (refused.length > 0) {
@@ -116,30 +167,72 @@ export function parseMarkdown(content: string): ContentParagraph[] {
   return paragraphs;
 }
 
-function parseInline(source: string): { text: string; spans: StyledSpan[] } {
-  const out = { text: '', spans: [] as StyledSpan[] };
-  walkInline(source, {}, out);
-  return out;
+type InlineNode =
+  | { kind: 'text'; text: string }
+  | { kind: 'code'; text: string }
+  | { kind: 'link'; url: string; children: InlineNode[] }
+  | { kind: 'emphasis'; strong: boolean; children: InlineNode[] }
+  | Delimiter;
+
+interface Delimiter {
+  kind: 'delimiter';
+  char: string;
+  count: number;
+  original: number;
+  canOpen: boolean;
+  canClose: boolean;
 }
 
-function emit(out: { text: string; spans: StyledSpan[] }, text: string, style: InlineStyle): void {
-  if (text.length === 0) return;
-  const start = out.text.length;
-  out.text += text;
-  if (Object.keys(style).length > 0) out.spans.push({ start, end: out.text.length, style });
+/** Where a `[label](destination)` at `open` ends, with parentheses in it balanced. */
+function matchLink(source: string, open: number) {
+  let close = open + 1;
+  for (; close < source.length && source[close] !== ']'; close++) {
+    if (source[close] === '\\') close += 1;
+  }
+  if (close === open + 1 || source[close] !== ']' || source[close + 1] !== '(') return undefined;
+
+  let depth = 1;
+  let end = close + 2;
+  for (; end < source.length && depth > 0; end++) {
+    if (source[end] === '(') depth += 1;
+    else if (source[end] === ')') depth -= 1;
+    else if (WHITESPACE.test(source[end])) return undefined;
+  }
+  if (depth > 0) return undefined;
+  const url = source.slice(close + 2, end - 1);
+  if (url.length === 0) return undefined;
+  return { label: source.slice(open + 1, close), url, end };
 }
 
-function walkInline(
-  source: string,
-  style: InlineStyle,
-  out: { text: string; spans: StyledSpan[] }
-): void {
+function delimiterAt(source: string, start: number, end: number): Delimiter {
+  const char = source[start];
+  const before = source[start - 1] ?? ' ';
+  const after = source[end] ?? ' ';
+  const spaceBefore = WHITESPACE.test(before);
+  const spaceAfter = WHITESPACE.test(after);
+  const markBefore = PUNCTUATION.test(before);
+  const markAfter = PUNCTUATION.test(after);
+  const left = !spaceAfter && (!markAfter || spaceBefore || markBefore);
+  const right = !spaceBefore && (!markBefore || spaceAfter || markAfter);
+
+  // Arithmetic, not emphasis: `2*3*4` would lose its stars as `234`.
+  const betweenDigits = DIGIT.test(before) && DIGIT.test(after);
+  const canOpen = char === '_' ? left && (!right || markBefore) : left && !betweenDigits;
+  const canClose = char === '_' ? right && (!left || markAfter) : right && !betweenDigits;
+  const count = end - start;
+  return { kind: 'delimiter', char, count, original: count, canOpen, canClose };
+}
+
+function tokenize(source: string, found: { image: boolean }): InlineNode[] {
+  const nodes: InlineNode[] = [];
   let literal = '';
   const flush = () => {
-    emit(out, literal, style);
+    if (literal.length > 0) nodes.push({ kind: 'text', text: literal });
     literal = '';
   };
 
+  let lastBacktick = source.lastIndexOf('`');
+  const lastBracket = source.lastIndexOf(']');
   for (let i = 0; i < source.length; ) {
     const char = source[i];
 
@@ -149,48 +242,37 @@ function walkInline(
       continue;
     }
 
-    if (char === '`') {
+    if (char === '`' && i < lastBacktick) {
       const close = source.indexOf('`', i + 1);
       if (close > i + 1) {
         flush();
-        emit(out, source.slice(i + 1, close), { ...style, code: true });
+        nodes.push({ kind: 'code', text: source.slice(i + 1, close) });
         i = close + 1;
         continue;
       }
+      lastBacktick = close === i + 1 ? lastBacktick : -1;
     }
 
-    if (char === '[') {
-      const link = source.slice(i).match(/^\[([^\]]+)\]\(([^\s)]+)\)/);
-      if (link && LINKABLE.test(link[2])) {
+    if (char === '!' && source[i + 1] === '[' && i + 1 < lastBracket) {
+      if (matchLink(source, i + 1)) found.image = true;
+    }
+
+    if (char === '[' && i < lastBracket) {
+      const link = matchLink(source, i);
+      if (link && LINKABLE.test(link.url)) {
         flush();
-        walkInline(link[1], { ...style, link: link[2] }, out);
-        i += link[0].length;
+        nodes.push({ kind: 'link', url: link.url, children: inlineNodes(link.label, found) });
+        i = link.end;
         continue;
       }
     }
 
     if (char === '*' || char === '_') {
-      const run = source.slice(i).match(char === '*' ? /^\*+/ : /^_+/)![0];
-      const size = Math.min(run.length, 3);
-      const delimiter = char.repeat(size);
-      const close = closingDelimiter(source, i, delimiter);
-      if (close !== -1) {
-        flush();
-        const inner = source.slice(i + size, close);
-        walkInline(
-          inner,
-          {
-            ...style,
-            ...(size >= 2 ? { bold: true } : {}),
-            ...(size !== 2 ? { italic: true } : {}),
-          },
-          out
-        );
-        i = close + size;
-        continue;
-      }
-      literal += run;
-      i += run.length;
+      let end = i + 1;
+      while (source[end] === char) end += 1;
+      flush();
+      nodes.push(delimiterAt(source, i, end));
+      i = end;
       continue;
     }
 
@@ -198,45 +280,86 @@ function walkInline(
     i += 1;
   }
   flush();
+  return nodes;
 }
 
-/**
- * Where the emphasis opened at `open` closes, or -1 when it is not emphasis.
- * CommonMark's flanking rule is what keeps `2 * 3 * 4` and `a ** b` literal, and
- * `_` additionally needs a word boundary, so `snake_case_name` stays one word.
- */
-function closingDelimiter(source: string, open: number, delimiter: string): number {
-  const char = delimiter[0];
-  const size = delimiter.length;
-  const after = source[open + size];
-  if (after === undefined || /\s/.test(after)) return -1;
-  if (char === '_' && open > 0 && WORD_CHARACTER.test(source[open - 1])) return -1;
+/** CommonMark's "multiple of 3" rule, which stops `*foo**bar*` pairing the wrong marks. */
+function blockedByLengths(opener: Delimiter, closer: Delimiter): boolean {
+  if (!(opener.canClose || closer.canOpen)) return false;
+  const sum = opener.original + closer.original;
+  return sum % 3 === 0 && (opener.original % 3 !== 0 || closer.original % 3 !== 0);
+}
 
-  for (let j = open + size + 1; j < source.length; j++) {
-    if (source[j] === '\\') {
-      j += 1;
-      continue;
+/** Pairs closers with their nearest opener, wrapping what lies between. */
+function resolveEmphasis(nodes: InlineNode[]): InlineNode[] {
+  for (let c = 0; c < nodes.length; c++) {
+    const closer = nodes[c];
+    if (closer.kind !== 'delimiter' || !closer.canClose) continue;
+
+    while (closer.count > 0) {
+      let o = c - 1;
+      for (; o >= 0; o--) {
+        const node = nodes[o];
+        if (
+          node.kind === 'delimiter' &&
+          node.char === closer.char &&
+          node.canOpen &&
+          node.count > 0 &&
+          !blockedByLengths(node, closer)
+        ) {
+          break;
+        }
+      }
+      if (o < 0) break;
+
+      const opener = nodes[o] as Delimiter;
+      const strong = opener.count >= 2 && closer.count >= 2;
+      const used = strong ? 2 : 1;
+      opener.count -= used;
+      closer.count -= used;
+      nodes.splice(o + 1, c - o - 1, {
+        kind: 'emphasis',
+        strong,
+        children: nodes.slice(o + 1, c),
+      });
+      c = o + 2;
     }
-    if (source[j] !== char) continue;
-    const run = source.slice(j).match(char === '*' ? /^\*+/ : /^_+/)![0];
-    if (run.length < size) {
-      j += run.length - 1;
-      continue;
-    }
-    if (size === 1 && run.length === 2) {
-      j += 1;
-      continue;
-    }
-    if (/\s/.test(source[j - 1])) {
-      j += run.length - 1;
-      continue;
-    }
-    const next = source[j + size];
-    if (char === '_' && next !== undefined && WORD_CHARACTER.test(next)) {
-      j += run.length - 1;
-      continue;
-    }
-    return j;
   }
-  return -1;
+  return nodes;
+}
+
+function inlineNodes(source: string, found: { image: boolean }): InlineNode[] {
+  return resolveEmphasis(tokenize(source, found));
+}
+
+function emit(
+  out: { text: string; spans: StyledSpan[] },
+  text: string,
+  style: InlineStyle
+): void {
+  if (text.length === 0) return;
+  const start = out.text.length;
+  out.text += text;
+  if (Object.keys(style).length > 0) out.spans.push({ start, end: out.text.length, style });
+}
+
+function render(
+  nodes: InlineNode[],
+  style: InlineStyle,
+  out: { text: string; spans: StyledSpan[] }
+): void {
+  for (const node of nodes) {
+    if (node.kind === 'text') emit(out, node.text, style);
+    else if (node.kind === 'delimiter') emit(out, node.char.repeat(node.count), style);
+    else if (node.kind === 'code') emit(out, node.text, { ...style, code: true });
+    else if (node.kind === 'link') render(node.children, { ...style, link: node.url }, out);
+    else render(node.children, { ...style, ...(node.strong ? { bold: true } : { italic: true }) }, out);
+  }
+}
+
+function parseInline(source: string) {
+  const found = { image: false };
+  const out = { text: '', spans: [] as StyledSpan[] };
+  render(inlineNodes(source, found), {}, out);
+  return { ...out, image: found.image };
 }

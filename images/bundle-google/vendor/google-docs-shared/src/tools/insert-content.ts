@@ -30,7 +30,7 @@ const PARAM_DESCRIPTIONS = {
     'bullets, 1. numbered items (one level, no nesting), **bold**, *italic*, ***both***, `code` ' +
     'and [text](https://url). Tables, images, block quotes, code fences and horizontal rules are ' +
     'refused rather than written as punctuation. A backslash inserts a character literally ' +
-    '(\\\\*, \\\\#). Headings and paragraphs take the document\'s own named styles.',
+    '(\\*, \\#). Headings and paragraphs take the document\'s own named styles.',
   position:
     'Where the content goes. "before_heading": directly above the heading. "after_heading": ' +
     'directly under the heading, before the section\'s existing text. "end_of_section": after ' +
@@ -44,7 +44,8 @@ const PARAM_DESCRIPTIONS = {
     'The heading to anchor on, by id, e.g. "h.abc123". get_document_outline lists them. Use it ' +
     'instead of heading.',
   occurrence:
-    'Which match to use, from 1, when the heading text repeats. A repeat with no occurrence is ' +
+    'Which match to use, from 1, when the heading text repeats, counted across the tabs ' +
+    'searched. A repeat with no occurrence is ' +
     'refused, listing each match.',
   tab_id:
     'Search only this tab, e.g. "t.abc123". Without it every tab is searched, and a heading ' +
@@ -110,9 +111,11 @@ something the dialect cannot express.
   format="outline_with_indices" and update_document to edit a cell.
 - A section ends at the next heading of the same or a higher level, so an H2's
   section includes its H3s.
-- Directly above a table, Docs accepts text only inside the paragraph before
-  it, so after_heading on a heading followed by a table splits that heading's
+- Directly above a table, or past the last paragraph of a tab, Docs accepts
+  text only inside the paragraph before it. So after_heading on a heading
+  followed by a table, or on a tab's last paragraph, splits that heading's
   paragraph. The heading text and style stay; its heading_id may change.
+- A numbered list directly after an existing numbered list joins it.
 - To place text at an exact index, use insert_text. For tables and images, use
   update_document.`;
 
@@ -120,6 +123,7 @@ function anchorError(parsed: z.infer<typeof InsertContentSchema>): string | unde
   const anchors = (parsed.heading !== undefined ? 1 : 0) + (parsed.heading_id !== undefined ? 1 : 0);
   if (anchors === 2) return 'Pass heading or heading_id, not both.';
   if (parsed.position === 'end_of_tab') {
+    if (parsed.occurrence !== undefined) return 'occurrence needs a heading to count.';
     return anchors === 1 ? 'end_of_tab takes no heading; drop it or pick another position.' : undefined;
   }
   return anchors === 0 ? `${parsed.position} needs a heading or heading_id.` : undefined;

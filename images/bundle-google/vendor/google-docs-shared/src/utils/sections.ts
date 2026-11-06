@@ -33,6 +33,13 @@ function bare(text: string): string {
   return fold(text).replace(/^[^\p{L}\p{N}]+/u, '');
 }
 
+/** A prefix that ends on a word boundary: "Phase 1" is not "Phase 10 rollback". */
+function startsAtWord(text: string, prefix: string): boolean {
+  if (!text.startsWith(prefix)) return false;
+  const next = text.slice(prefix.length, prefix.length + 2);
+  return next.length === 0 || !/^[\p{L}\p{N}]/u.test(next);
+}
+
 export function tabHeadings(doc: GoogleDoc, tab: FlatTab): HeadingMatch[] {
   return extractHeadings(tabAsDocument(doc, tab)).map((h) => ({ ...h, tab }));
 }
@@ -70,9 +77,9 @@ export function resolveHeading(
     const wanted = selector.heading ?? '';
     const tiers: Array<(view: string) => boolean> = [
       (view) => fold(view) === fold(wanted),
-      (view) => fold(view).startsWith(fold(wanted)),
+      (view) => startsAtWord(fold(view), fold(wanted)),
       (view) => bare(view) === bare(wanted),
-      (view) => bare(view).startsWith(bare(wanted)),
+      (view) => startsAtWord(bare(view), bare(wanted)),
     ];
     matches = [];
     for (const tier of tiers) {

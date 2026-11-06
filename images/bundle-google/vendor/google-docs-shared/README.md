@@ -51,8 +51,9 @@ Fourteen, in three groups. Each group holds the one before it:
   does the index arithmetic. A heading it cannot find, or one that repeats with
   no `occurrence`, is refused with the candidates listed, and markdown it cannot
   express (tables, images, block quotes, code fences, rules, nested lists) is
-  refused by line. A heading anchor matches on case-folded text, exact before
-  prefix, with leading symbols ignored as a last resort. It takes
+  refused by line, and an image anywhere in a line with it. A heading anchor
+  matches on case-folded text, exact before a whole-word prefix, with leading
+  symbols ignored as a last resort. It takes
   `suggest=true`.
 - Both read **every tab** of a document, nested child tabs included. With
   more than one tab, `get_document_outline` gives each tab a section with its

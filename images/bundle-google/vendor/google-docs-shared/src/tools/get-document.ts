@@ -183,7 +183,9 @@ export function getDocumentTool(_server: Server, clientFactory: ClientFactory) {
 
         const byHeading = parsed.heading !== undefined || parsed.heading_id !== undefined;
         const byRange = parsed.start_index !== undefined || parsed.end_index !== undefined;
-        if (byHeading || byRange) return narrowed(doc, tabs, parsed, json);
+        if (byHeading || byRange || parsed.occurrence !== undefined) {
+          return narrowed(doc, tabs, parsed, json);
+        }
 
         if (parsed.format === 'outline_with_indices') {
           const shown = parsed.tab_id === undefined ? tabs : [requireTab(doc, parsed.tab_id)];
@@ -270,6 +272,9 @@ function narrowed(
   if (byHeading && (parsed.start_index !== undefined || parsed.end_index !== undefined)) {
     throw new Error('Pass a heading or an index range, not both.');
   }
+  if (!byHeading && parsed.occurrence !== undefined) {
+    throw new Error('occurrence needs a heading to count.');
+  }
   const { start_index: start, end_index: end } = parsed;
   if (start !== undefined && end !== undefined && end <= start) {
     throw new Error(`end_index ${end} must be greater than start_index ${start}.`);
@@ -293,6 +298,7 @@ function narrowed(
     }
     tab = searched[0];
     body = elementsInRange(tab.tab.documentTab?.body?.content ?? [], start, end);
+    if (body.length === 0) throw new Error(`No element overlaps that range in tab "${tab.path}".`);
   }
 
   const bounds = {

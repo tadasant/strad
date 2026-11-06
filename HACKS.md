@@ -6657,11 +6657,11 @@ Four things about it are not obvious:
    top-level `body`. A caller that read `body` off a multi-tab document was
    reading the first tab alone. With a `tab_id` it is that tab with its
    `body` at the top level and its `tabProperties` beside it.
-3. **Writes still default to the first tab.** `append_text` still fetches
-   without the flag, so its end index is the first tab's, which is where a
-   `batchUpdate` request with no `tabId` lands. `update_document`'s
-   description says how to target another tab. No write tool gained a
-   `tab_id`.
+3. **A write with no tab still goes to the first tab.** `append_text` with no
+   `tab_id` fetches without the flag, so its end index is the first tab's, which
+   is where a `batchUpdate` request with no `tabId` lands. `update_document`'s
+   description says how to target another tab, and the wrappers take a `tab_id`
+   (#136).
 4. **Export is not per tab.** Drive's `files.export` has no tab parameter, so
    `export_document` exports whatever Drive gives for the whole document, and
    its description points at `get_document` with `tab_id` for one tab. What
@@ -6960,23 +6960,27 @@ Nine things about it are not obvious:
 1. **Two insertion shapes, because Docs refuses one position.** Text cannot go at
    a table's start index. The normal shape is `text\n` at the start of the next
    paragraph, which leaves that paragraph's newline, style and heading id alone.
-   Where no paragraph follows, it is `\ntext` inside the closing newline of the
-   one before. That splits it, so a heading above a table may lose its heading id
-   to the new last paragraph.
+   Where no paragraph follows, above a table or at a tab's end, it is `\ntext`
+   inside the closing newline of the one before. That splits it, so a heading in
+   that place may lose its heading id to the new last paragraph.
+
 2. **New text takes its neighbour's look.** Docs styles inserted text from what
    surrounds it, so text above a heading starts out as that heading, and text
    above a list item starts out in the list. The batch takes bullets off, sets
    paragraph styles, resets the text style, and only then applies the content's
    own styling. The order matters.
 3. **`createParagraphBullets` removes leading tabs and can shift indexes**, which
-   is how Docs expresses nesting. The dialect refuses nested lists, so it has no
-   tabs to remove, and the request runs last regardless.
+   is how Docs expresses nesting. The dialect refuses nested lists, and the parser
+   drops a tab that arrives at the start of an item through a code span or link.
+   The requests also run last and bottom-up, so a shift cannot reach a range still
+   to come.
 4. **`insertText` strips control characters and the private use area** with no
    word to the caller. The parser removes them first, or every later range would
    be off by what Google dropped.
 5. **Ranges are computed in JavaScript string units**, which are the UTF-16 code
    units Docs indexes in. That is the whole reason emoji cannot throw them off.
-6. **A heading is matched on folded text, in tiers.** Exact, then prefix, then the
+6. **A heading is matched on folded text, in tiers.** A prefix must end on a word
+   boundary, so `Phase 1` is never `Phase 10`. Exact, then prefix, then the
    same two with leading symbols ignored, because a reader calls `🖼️ Agent Run
 Lifecycle` "Agent Run Lifecycle". U+FE0F is folded too. All three views of a
    heading with a pending suggestion count, as for `add_comment` (#135). A repeat
@@ -6986,9 +6990,10 @@ Lifecycle` "Agent Run Lifecycle". U+FE0F is folded too. All three views of a
    An H1 with no later H1 runs to the end of the tab.
 8. **The write names the revision it measured**, `targetRevisionId`, so Docs
    carries the indexes over a collaborator's edit. In suggest mode it goes with
-   `writeMode: SUGGEST`. Google's how-to documents `writeMode` alone and does not
-   say the two combine. If they do not, the failure is a loud 400. The race it
-   prevents would be silent, which is why it stays.
+   `writeMode: SUGGEST`. `WriteControl` puts `writeMode` outside the mutually
+   exclusive revision pair, so the reference allows both; no live call has
+   confirmed it.
+
 9. **`get_document` keeps the account's default suggestion view**, so a read-only
    slug reads as it always did. `insert_content` asks for `SUGGESTIONS_INLINE`
    itself, because #135 records it as the only mode whose indexes a `batchUpdate`

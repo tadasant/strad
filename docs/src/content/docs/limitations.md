@@ -4236,16 +4236,24 @@ needs an index for the common edit.
   found. A paragraph styled to look like a heading, in bold with no heading
   style, is not a heading to Docs; `insert_text` with `tab_id` and
   `format=outline_with_indices` reaches those, as plain text.
-- **Directly above a table, the heading's paragraph is split.** Docs takes no text
-  at a table's start, so `after_heading` on a heading followed by a table writes
-  inside the heading's closing newline. Its text and style stay, and its
-  `heading_id` may move, which would break a link to that heading.
+- **Directly above a table, or at a tab's end, the paragraph before is split.**
+  Docs takes no text at a table's start, so `after_heading` on a heading followed
+  by a table, or on a tab's last paragraph, writes inside the heading's closing
+  newline. Its text and style stay, and its `heading_id` may move, which would
+  break a link to that heading.
+- **A numbered list directly after an existing one joins it.** That is Docs' rule
+  for a matching list, and so the numbering continues. A number other than 1 only
+  continues a list being written; elsewhere it stays text, so `2020. A year` is a
+  sentence.
 - **A heading anchor can match more loosely than you typed.** It ignores case,
-  matches a prefix when nothing is exact, and last ignores leading symbols, so
+  matches a whole-word prefix when nothing is exact, and last ignores leading
+  symbols, so
   `Agent Run` finds `🖼️ Agent Run Lifecycle`. A repeat is refused, and the result
   always names the heading it used.
 - **`delete_section` and `replace_section` do not exist.** Read the range with
-  `get_document` and send `deleteContentRange` through `update_document`.
+  `get_document` and send `deleteContentRange` through `update_document`. For a
+  tab's last section use `endIndex - 1`, because Docs keeps a segment's final
+  newline.
 - **`format=outline_with_indices` uses the account's default suggestion view**,
   which is inline for anyone who can edit or comment. Only those indexes are good
   for a write. An account that can only view may be shown other ones.
@@ -4253,14 +4261,14 @@ needs an index for the common edit.
   reference. Nothing has run against a real document. The largest unknown is
   `suggest`: whether later requests in a batch see the text an earlier one
   suggested. Google does not say, and if they do not, the styles land on the wrong
-  text, as a suggestion a reviewer can reject. The tests use a local model of
-  a tab that strad wrote.
+  text, as a suggestion a reviewer can reject. The tests use a local model of a
+  tab that strad wrote.
 - **strad added it, not upstream.** Re-copying the server from upstream removes
   it unless the change is applied again, and a test fails if it is not.
 
 **How you would know.** New text in the right place with the wrong style means
-ranges were off, most likely in suggest mode. A `400` naming a `targetRevisionId`
-or a `writeControl` on a suggest-mode `insert_content` means Google will not take
-the two together.
+ranges were off, most likely in suggest mode. A `400` naming `writeControl` on a
+suggest-mode `insert_content` means Google will not take `writeMode` and
+`targetRevisionId` together, though its reference allows it.
 
 See `HACKS.md` #136.

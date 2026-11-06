@@ -145,8 +145,7 @@ test("new text does not keep its neighbour's look", async () => {
     position: "before_heading",
     content: "Plain.",
   });
-  const run = styledRuns(doc, "t.condensed").find(([t]) => t === "Plain.\n");
-  expect(run).toBeUndefined();
+  expect(styledRuns(doc, "t.condensed").filter(([t]) => t.startsWith("Plain."))).toEqual([]);
   const lines = readTab(doc, "t.condensed");
   expect(lines[around(lines, "Plain.")]).toBe("NORMAL_TEXT|Plain.");
 });
@@ -281,8 +280,8 @@ test("a section in the first tab is addressed the same way, with its tab named o
   }
   const bullets = batches[0].requests.filter((r) => r.createParagraphBullets);
   expect(bullets.map((r) => r.createParagraphBullets.bulletPreset)).toEqual([
-    "BULLET_DISC_CIRCLE_SQUARE",
     "NUMBERED_DECIMAL_ALPHA_ROMAN",
+    "BULLET_DISC_CIRCLE_SQUARE",
   ]);
   const lines = readTab(doc, "t.condensed");
   const at = around(lines, "Overview");
@@ -369,6 +368,24 @@ test("a repeat lists each match with its tab, and occurrence picks one", async (
   expect(readTab(doc, "t.condensed").some((l) => l.endsWith("|Second one."))).toBe(false);
 });
 
+test("a prefix stops at a word, so Phase 1 is never Phase 10", async () => {
+  const doc = reportDoc();
+  const content = doc.tabs![1].documentTab!.body!.content!;
+  const heading = content.find((e) => e.paragraph?.paragraphStyle?.headingId === "h.fopen")!;
+  const run = heading.paragraph!.elements![0].textRun!;
+  run.content = `Phase 10${run.content.slice("Phase 10".length)}`;
+  const { call, batches } = await connect(doc);
+  const refused = await call("insert_content", {
+    tab_id: "t.full",
+    heading: "Phase 1",
+    position: "after_heading",
+    content: "x",
+  });
+  expect(refused.isError).toBe(true);
+  expect(refused.text).toContain("matches no heading");
+  expect(batches).toHaveLength(0);
+});
+
 test("a heading with an emoji in front is found by its words, and a bare symbol is not a prefix", async () => {
   const { call } = await connect(reportDoc());
   const found = await call("get_document", {
@@ -396,7 +413,7 @@ test("an exact heading beats a prefix, and a prefix alone is enough", async () =
   expect(exact.text).toContain('HEADING_2 "Topic 1"');
   const prefix = await call("insert_content", {
     tab_id: "t.full",
-    heading: "open q",
+    heading: "open",
     position: "after_heading",
     content: "y",
   });
@@ -410,6 +427,11 @@ test.each([
   ["above\n\n---\n\nbelow", "a horizontal rule"],
   ["![alt](https://x.test/i.png)", "an image"],
   ["- top\n  - nested", "a nested list item"],
+  ["- top\n\t- nested", "a nested list item"],
+  ["- > quoted", "a block quote"],
+  ["|---|", "a table"],
+  ["see ![alt](https://x.test/i.png) here", "holds an image"],
+  ["- ![a](https://x.test/i.png)", "holds an image"],
 ])("markdown the dialect cannot express is refused by line: %j", async (content, what) => {
   const doc = reportDoc();
   const { call, batches, reads } = await connect(doc);
@@ -446,6 +468,159 @@ test("literal punctuation stays literal, and a backslash forces it", async () =>
     "NORMAL_TEXT|An [unsafe](javascript:alert) link stays text, and so does an *unclosed mark.",
   );
   expect(styledRuns(doc, "t.full").find(([t]) => t === "unsafe")).toBeUndefined();
+});
+
+test.each([
+  ["**bold with *italic***", [["bold with ", { bold: true }], ["italic", { bold: true, italic: true }]]],
+  ["*a **b***", [["a ", { italic: true }], ["b", { bold: true, italic: true }]]],
+  ["***both***", [["both", { bold: true, italic: true }]]],
+  ["*a `*` b*", [["a ", { italic: true }], [" b", { italic: true }]]],
+  ["*\\* foo*", [["* foo", { italic: true }]]],
+  ["_under_ and __strong__", [["under", { italic: true }], ["strong", { bold: true }]]],
+])("emphasis nests and leaves no stray marks: %s", async (content, expected) => {
+  const doc = reportDoc();
+  const { call } = await connect(doc);
+  await call("insert_content", {
+    tab_id: "t.full",
+    heading: "Overview",
+    position: "after_heading",
+    content,
+  });
+  const runs = styledRuns(doc, "t.full");
+  for (const [text, style] of expected as Array<[string, Record<string, boolean>]>) {
+    const run = runs.find(([t]) => t === text);
+    expect(run?.[0], `no run ${text}`).toBe(text);
+    for (const [key, value] of Object.entries(style)) expect(run?.[1][key]).toBe(value);
+  }
+});
+
+test("code and links shield what is inside them", async () => {
+  const doc = reportDoc();
+  const { call } = await connect(doc);
+  await call("insert_content", {
+    tab_id: "t.full",
+    heading: "Overview",
+    position: "after_heading",
+    content:
+      "**`**kwargs`** and [Foo](https://en.wikipedia.org/wiki/Foo_(bar)) and *[a*b](https://x.test)*",
+  });
+  expect(readTab(doc, "t.full")).toContain("NORMAL_TEXT|**kwargs and Foo and a*b");
+  const runs = styledRuns(doc, "t.full");
+  expect(runs.find(([t]) => t === "**kwargs")?.[1].bold).toBe(true);
+  expect(runs.find(([t]) => t === "Foo")?.[1].link).toEqual({
+    url: "https://en.wikipedia.org/wiki/Foo_(bar)",
+  });
+});
+
+test("a number is a list item only where a list could be, so a year stays in its sentence", async () => {
+  const doc = reportDoc();
+  const { call } = await connect(doc);
+  await call("insert_content", {
+    tab_id: "t.full",
+    heading: "Overview",
+    position: "after_heading",
+    content: "2020. A good year\n\n1. one\n2. two\n\nProse.\n\n3. three is a sentence here",
+  });
+  const lines = readTab(doc, "t.full");
+  const at = around(lines, "Overview");
+  expect(lines.slice(at + 1, at + 6)).toEqual([
+    "NORMAL_TEXT|2020. A good year",
+    "NORMAL_TEXT (list)|one",
+    "NORMAL_TEXT (list)|two",
+    "NORMAL_TEXT|Prose.",
+    "NORMAL_TEXT|3. three is a sentence here",
+  ]);
+});
+
+test("a tab inside a list item cannot shift the next list's range", async () => {
+  const doc = reportDoc();
+  const { call, batches } = await connect(doc);
+  await call("insert_content", {
+    tab_id: "t.full",
+    heading: "Overview",
+    position: "after_heading",
+    content: "- `\tcode`\n\nmid\n\n- b",
+  });
+  expect(batches[0].requests[0].insertText.text).toBe("code\nmid\nb\n");
+  const lines = readTab(doc, "t.full");
+  const at = around(lines, "Overview");
+  expect(lines.slice(at + 1, at + 4)).toEqual([
+    "NORMAL_TEXT (list)|code",
+    "NORMAL_TEXT|mid",
+    "NORMAL_TEXT (list)|b",
+  ]);
+  assertWellFormed(doc);
+});
+
+test("bullet requests run bottom-up, so a shift cannot reach a range still to come", async () => {
+  const { call, batches } = await connect(reportDoc());
+  await call("insert_content", {
+    tab_id: "t.full",
+    heading: "Overview",
+    position: "after_heading",
+    content: "- a\n\nmid\n\n- b",
+  });
+  const starts = batches[0].requests
+    .filter((r) => r.createParagraphBullets)
+    .map((r) => r.createParagraphBullets.range.startIndex);
+  expect(starts).toHaveLength(2);
+  expect(starts[0]).toBeGreaterThan(starts[1]);
+});
+
+test("a heading's page break does not spread to the paragraphs written above it", async () => {
+  const doc = reportDoc();
+  const heading = doc.tabs![1].documentTab!.body!.content!.find(
+    (e) => e.paragraph?.paragraphStyle?.headingId === "h.fopen",
+  )!;
+  Object.assign(heading.paragraph!.paragraphStyle!, {
+    pageBreakBefore: true,
+    keepWithNext: true,
+    shading: { backgroundColor: {} },
+  });
+  const { call } = await connect(doc);
+  await call("insert_content", {
+    tab_id: "t.full",
+    heading_id: "h.fopen",
+    position: "before_heading",
+    content: "One.\n\nTwo.",
+  });
+  const content = doc.tabs![1].documentTab!.body!.content! as Array<Record<string, any>>;
+  const at = content.findIndex((e) => e.paragraph?.paragraphStyle?.headingId === "h.fopen");
+  for (const e of content.slice(at - 2, at)) {
+    expect(e.paragraph.paragraphStyle.pageBreakBefore).toBeUndefined();
+    expect(e.paragraph.paragraphStyle.keepWithNext).toBeUndefined();
+    expect(e.paragraph.paragraphStyle.shading).toBeUndefined();
+  }
+  expect(content[at].paragraph.paragraphStyle.pageBreakBefore).toBe(true);
+});
+
+test("a parameter that would do nothing is refused, and a range past the tab is not a success", async () => {
+  const { call } = await connect(reportDoc());
+  const noHeading = await call("get_document", { tab_id: "t.full", occurrence: 2 });
+  expect(noHeading.isError).toBe(true);
+  expect(noHeading.text).toContain("occurrence needs a heading");
+  const endOfTab = await call("insert_content", {
+    tab_id: "t.full",
+    position: "end_of_tab",
+    occurrence: 2,
+    content: "x",
+  });
+  expect(endOfTab.isError).toBe(true);
+  const past = await call("get_document", { tab_id: "t.full", start_index: 900000 });
+  expect(past.isError).toBe(true);
+  expect(past.text).toContain("No element overlaps");
+});
+
+test("the markdown parser stays quick on a long line of open marks", async () => {
+  const { call } = await connect(reportDoc());
+  const started = Date.now();
+  await call("insert_content", {
+    tab_id: "t.full",
+    heading: "Overview",
+    position: "after_heading",
+    content: `${"*a ".repeat(20_000)}\n${"[".repeat(60_000)}`,
+  });
+  expect(Date.now() - started).toBeLessThan(5_000);
 });
 
 test("characters Docs would strip are removed first, so a later range stays true", async () => {
@@ -603,12 +778,6 @@ test("a section read is a fraction of the document, and reaches a heading the ra
     skip_tables: true,
   });
 
-  process.stderr.write(
-    `#463 bytes: every tab json ${bytes(everyTab.text)}; one tab json ${bytes(whole.text)}; ` +
-      `section json, no styles ${bytes(section.text)}; outline ${bytes(lines.text)}; ` +
-      `outline, no tables ${bytes(noTables.text)}\n`,
-  );
-
   expect(bytes(whole.text)).toBeGreaterThan(50 * bytes(noTables.text));
   expect(bytes(section.text)).toBeLessThan(bytes(whole.text) / 5);
   expect(JSON.parse(section.text).section.heading).toBe("🖼️ Agent Run Lifecycle");
@@ -651,7 +820,9 @@ test("the index a preview shows is the index of the paragraph", async () => {
   const doc = reportDoc();
   const { call } = await connect(doc);
   const { text } = await call("get_document", { tab_id: "t.full", format: "outline_with_indices" });
-  for (const [, start, end, content] of text.matchAll(/^(\d+)-(\d+) \w+(?: heading_id=\S+)? "(.*)"$/gm)) {
+  const shown = [...text.matchAll(/^(\d+)-(\d+) \w+(?: heading_id=\S+)? "(.*)"$/gm)];
+  expect(shown.length).toBeGreaterThan(20);
+  for (const [, start, end, content] of shown) {
     const element = doc.tabs![1].documentTab!.body!.content!.find(
       (e) => e.startIndex === Number(start) && e.endIndex === Number(end),
     );
@@ -761,11 +932,11 @@ test("insert_content is a write tool: readonly does not list it", async () => {
   expect(await names(["readwrite"])).toContain("insert_content");
 });
 
-test("a seeded sweep of anchors and content leaves every tab well-formed and every word in place", async () => {
+test("a seeded sweep of anchors and content puts every line where it was asked, styled as written", async () => {
   let seed = 463;
   const next = (n: number) => {
-    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-    return seed % n;
+    seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff;
+    return (seed >>> 16) % n;
   };
   const anchors = [
     "Overview",
@@ -776,32 +947,46 @@ test("a seeded sweep of anchors and content leaves every tab well-formed and eve
     "Open questions",
   ];
   const positions = ["before_heading", "after_heading", "end_of_section"];
-  const pieces = [
-    "### H 🖼️",
-    "plain → text",
-    "**b** and *i* — 😀",
-    "- bullet 👩‍💻",
-    "1. number",
-    "[l](https://x.test) `code`",
+  const pieces: Array<[string, string, string?, string?]> = [
+    ["### H 🖼️", "HEADING_3|H 🖼️"],
+    ["plain → text", "NORMAL_TEXT|plain → text"],
+    ["**b** and *i* — 😀", "NORMAL_TEXT|b and i — 😀", "b", "bold"],
+    ["- bullet 👩‍💻", "NORMAL_TEXT (list)|bullet 👩‍💻"],
+    ["1. number", "NORMAL_TEXT (list)|number"],
+    ["[l](https://x.test) `code`", "NORMAL_TEXT|l code", "code", "weightedFontFamily"],
   ];
-  let inserted = 0;
   const doc = reportDoc();
   const { call } = await connect(doc);
+  const seen = new Set<string>();
   for (let i = 0; i < 300; i++) {
     const marker = `m${i}`;
-    const body = Array.from({ length: 1 + next(4) }, () => pieces[next(pieces.length)]);
+    const chosen = Array.from({ length: 1 + next(4) }, () => pieces[next(pieces.length)]);
+    const tab = next(2) ? "t.full" : "t.condensed";
+    const heading = anchors[next(anchors.length)];
+    const position = positions[next(positions.length)];
+    seen.add(`${tab}/${heading}/${position}`);
+    for (const piece of chosen) seen.add(piece[0]);
+
     const { isError, text } = await call("insert_content", {
-      tab_id: next(2) ? "t.full" : "t.condensed",
-      heading: anchors[next(anchors.length)],
-      position: positions[next(positions.length)],
+      tab_id: tab,
+      heading,
+      position,
       occurrence: 1,
-      content: [marker, ...body].join("\n"),
+      content: [marker, ...chosen.map((p) => p[0])].join("\n"),
     });
     expect(isError, text).toBe(false);
     assertWellFormed(doc);
-    inserted += 1;
-    const all = [...readTab(doc, "t.full"), ...readTab(doc, "t.condensed")];
-    expect(all.filter((l) => l === `NORMAL_TEXT|${marker}`)).toHaveLength(1);
+
+    const lines = readTab(doc, tab);
+    const at = lines.indexOf(`NORMAL_TEXT|${marker}`);
+    expect(at, marker).toBeGreaterThanOrEqual(0);
+    expect(lines.slice(at + 1, at + 1 + chosen.length)).toEqual(chosen.map((p) => p[1]));
+    expect(lines.filter((l) => l === `NORMAL_TEXT|${marker}`)).toHaveLength(1);
+    const runs = styledRuns(doc, tab);
+    for (const [, , run, key] of chosen) {
+      if (run) expect(runs.some(([t, style]) => t === run && style[key!] !== undefined)).toBe(true);
+    }
   }
-  expect(inserted).toBe(300);
+  // Every anchor, position and tab, and every piece, was really reached.
+  expect(seen.size).toBeGreaterThanOrEqual(36 + pieces.length);
 });

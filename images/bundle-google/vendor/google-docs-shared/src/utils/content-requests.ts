@@ -28,7 +28,9 @@ const TEXT_STYLE_FIELDS =
   'fontSize,weightedFontFamily,baselineOffset,link';
 
 const PARAGRAPH_STYLE_FIELDS =
-  'namedStyleType,alignment,indentStart,indentEnd,indentFirstLine,spaceAbove,spaceBelow,lineSpacing';
+  'namedStyleType,alignment,indentStart,indentEnd,indentFirstLine,spaceAbove,spaceBelow,' +
+  'lineSpacing,keepLinesTogether,keepWithNext,avoidWidowAndOrphan,pageBreakBefore,shading,' +
+  'borderBetween,borderTop,borderBottom,borderLeft,borderRight';
 
 const BULLET_PRESETS = {
   bullet: 'BULLET_DISC_CIRCLE_SQUARE',
@@ -113,8 +115,9 @@ function textStyleOf(style: InlineStyle): { textStyle: Record<string, unknown>; 
  * The order is load-bearing. New text takes its neighbour's look, a heading's or
  * a list's, so bullets come off first, then paragraph and text styles are reset,
  * and only then is the content's own styling applied. `createParagraphBullets`
- * runs last. It removes leading tabs and may shift indexes, and the dialect
- * refuses nesting so that it has none to remove.
+ * runs last and bottom-up. Docs says it removes leading tabs and may shift
+ * indexes; the parser leaves none to remove, and bottom-up holds regardless,
+ * because a shift can only reach text below the range being bulleted.
  */
 export function contentRequests(
   paragraphs: ContentParagraph[],
@@ -166,7 +169,13 @@ export function contentRequests(
 
   requests.push({
     updateTextStyle: {
-      range: { startIndex: first, endIndex: last.end, ...inTab },
+      // In `before`, the closing newline is new text too, and a bullet glyph
+      // takes its look from it. In `after` it is the neighbour's and may end the tab.
+      range: {
+        startIndex: first,
+        endIndex: last.end + (point.side === 'before' ? 1 : 0),
+        ...inTab,
+      },
       textStyle: {},
       fields: TEXT_STYLE_FIELDS,
     },
@@ -183,13 +192,15 @@ export function contentRequests(
     }
   }
 
-  // Adjacent items of one kind are one list; a new request would start another.
+  // Adjacent items of one kind go in one request. A list directly after an
+  // existing one with the same preset joins it; that is Docs' rule, not this code's.
+  const bullets: DocsBatchUpdateRequest[] = [];
   for (let i = 0; i < placed.length; ) {
     const kind = placed[i].paragraph.list;
     let j = i;
     while (j + 1 < placed.length && placed[j + 1].paragraph.list === kind) j += 1;
     if (kind) {
-      requests.push({
+      bullets.unshift({
         createParagraphBullets: {
           range: { startIndex: placed[i].start, endIndex: placed[j].end, ...inTab },
           bulletPreset: BULLET_PRESETS[kind],
@@ -198,6 +209,7 @@ export function contentRequests(
     }
     i = j + 1;
   }
+  requests.push(...bullets);
 
   return requests;
 }
