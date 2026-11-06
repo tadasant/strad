@@ -6870,21 +6870,20 @@ out of both processes' memory.
 
 ## 135. google-docs suggests edits and anchors comments, and neither has met Google
 
-**What.** Google made comments and suggestions in the Docs API generally
-available on 2026-09-30, with a rollout of up to 15 days. Two more strad deltas
-on `images/bundle-google/vendor/google-docs-shared` use them. No tool name was
-added, so no `tools.allow:` list changed.
+**What.** Comments and suggestions in the Docs API are generally available as
+of 2026-09-30. Two strad deltas on
+`images/bundle-google/vendor/google-docs-shared` use them. They add no tool
+name, so no `tools.allow:` list changes.
 
 1. **`suggest: true`** on `append_text`, `insert_text`, `replace_text` and
    `update_document` sends `writeControl: { writeMode: "SUGGEST" }`. Omitted, the
-   request carries no `writeControl` and is the direct edit it always was.
-2. **`add_comment`'s `quoted_text`** was a quote stored on an unattached Drive
-   comment. It is now the passage the comment attaches to. The tool reads the
-   document with `SUGGESTIONS_INLINE`, finds the passage in the body of each tab
-   and sends `insertComment` with that range. Without `quoted_text`, the
-   comment is still a Drive comment on the whole document.
+   request carries no `writeControl` and is a direct edit.
+2. **`add_comment`'s `quoted_text`** is the passage the comment attaches to.
+   The tool reads the document with `SUGGESTIONS_INLINE`, finds the passage in
+   the body of each tab and sends `insertComment` with that range. Without
+   `quoted_text`, the comment is a Drive comment on the whole document.
 
-Six things about them are not obvious:
+Seven things about them are not obvious:
 
 1. **A 200 can carry a failure.** Google says a batch can commit its text
    changes while the comment or suggestion fails to save, and reports that as
@@ -6892,27 +6891,38 @@ Six things about them are not obvious:
    into an error for every caller, because a retry could apply the edit twice.
    What the document holds after such a failure, in suggest mode, is the thing
    nobody has measured. It might be the edit as a direct change.
-2. **A suggest-mode result that names no suggestion is labelled `UNCONFIRMED`.**
-   It is not an error, since the request succeeded, but the caller asked that
-   nothing change directly and that answer cannot promise it.
+2. **A suggest-mode result is labelled `UNCONFIRMED` when it names no suggestion
+   and `commentUpdateState` is not `ALL_SAVED`.** It is not an error, since the
+   request succeeded, but the caller asked that nothing change directly and
+   that answer cannot promise it. `ALL_SAVED` with no ids counts as saved. A
+   batch whose entries name a suggestion for some requests only gets a `Check`
+   line, so one id does not vouch for its siblings.
 3. **`quoted_text` that is missing or repeated is refused, not guessed.** A
    comment on the wrong passage is worse than none. The search covers table
    cells, but only the body, because headers, footers and footnotes are other
-   segments. For those, `update_document` takes a raw `insertComment`. Its
+   segments, and not a table of contents, whose text is generated from the
+   headings. For those, `update_document` takes a raw `insertComment`. Its
    `assigneeEmailAddress` is reachable the same way.
 4. **Inline text holds both sides of a suggestion.** A passage a person reads
    straight across a pending replacement is in no single run, so the search
-   retries with pending deletions left out and then with pending insertions
-   left out. The indexes stay those of the inline document, which are the only
-   ones a `batchUpdate` can use.
+   also runs with pending deletions left out and with pending insertions left
+   out. Matches from all three count, so a repeat in any of them is refused.
+   The indexes stay those of the inline document, which are the only ones a
+   `batchUpdate` can use.
 5. **The comment's range is measured on one revision and sent against it.**
    `targetRevisionId` makes Docs merge a collaborator's edit from between the
-   read and the write, so that edit cannot leave the range on shifted text.
+   read and the write. Docs gives a `revisionId` only to an account with edit
+   access, so a comment-only account sends none and an edit in that window can
+   shift its range.
 6. **Tabs work as they do for direct edits.** A request with no `tabId` goes
    to the first tab and `replace_text` reaches every tab, in suggest mode too.
-   `append_text` and `insert_text` still take no `tab_id`; `update_document`
-   with `suggest` is how to suggest in another tab. An anchored comment always
-   carries its tab's id on the range.
+   `append_text` and `insert_text` take no `tab_id`; `update_document` with
+   `suggest` is how to suggest in another tab. An anchored comment carries its
+   tab's id on the range.
+7. **`suggest` refuses requests on threads.** `acceptSuggestion`,
+   `insertComment` and the like are not edits to propose, and Google does not
+   say what `SUGGEST` does to them. That refusal is strad's rule. The other
+   refusals are Google's.
 
 **Unverified against Google.** From the reference, read 2026-11-06: the
 `writeControl` and `insertComment` shapes, `Range.tabId`, the refused requests,
@@ -6920,7 +6930,7 @@ Six things about them are not obvious:
 Not seen on a live document: whether a `replaceAllText` makes one suggestion or
 many and what `occurrencesChanged` then says; whether it matches text inside a
 pending suggestion; whether `suggestionResponses` is populated the way the code
-reads it; whether Drive's `comments.list` shows an `insertComment` comment with
+reads it; whether a comment-only account can call `batchUpdate` at all; whether Drive's `comments.list` shows an `insertComment` comment with
 its quote; and whether `insertComment`'s `commentId` is an ID Drive's
 `replies.create` accepts, which `reply_to_comment` depends on. The tests fake
 both APIs.

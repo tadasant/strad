@@ -61,7 +61,8 @@ indices. replaceAllText applies to every tab unless its tabsCriteria narrows it.
 deleteHeader, deleteNamedRange, deleteTab, updateDocumentTabProperties and
 updateTableColumnProperties as suggestions, and updateDocumentStyle changes to
 documentFormat, useEvenPageHeaderFooter or useFirstPageHeaderFooter. Send those
-without suggest.
+without suggest. Requests on comment or suggestion threads (insertComment,
+acceptSuggestion and the like) are not edits and are refused with suggest too.
 
 **Comments:** add_comment anchors to a passage of a tab's body. For a range
 add_comment cannot name, such as text in a footnote, or to assign a comment,
@@ -117,7 +118,7 @@ export function updateDocumentTool(_server: Server, clientFactory: ClientFactory
         output += `**Document ID:** ${response.documentId}\n`;
         output += `**Requests applied:** ${parsed.requests.length}\n`;
         output += `**Replies returned:** ${repliesCount}\n`;
-        if (parsed.suggest) output += renderSuggestionResult(response);
+        if (parsed.suggest) output += renderSuggestionResult(response, requests.length);
         output += '\n';
         output += `## Raw Response\n\n\`\`\`json\n${JSON.stringify(response, null, 2)}\n\`\`\``;
 

@@ -31,7 +31,7 @@ export async function batchUpdate(
     throw new Error(
       `Batch update document ${documentId}: Google could not save the comment or suggestion ` +
         '(commentUpdateState: ALL_FAILED_UNKNOWN_REASON), and its text changes may still have ' +
-        'been committed. Read the document with get_document before retrying.'
+        'been committed. Read the document (get_document, list_comments) before retrying.'
     );
   }
 

@@ -19,7 +19,11 @@ interface Run {
 
 const CONTEXT_CHARS = 30;
 
-/** Every text run of a body, in document order, table cells and contents tables included. */
+/**
+ * Every text run of a body, in document order, table cells included. A table of
+ * contents is left out: Docs generates its text from the headings, so searching
+ * it would call every heading a repeat, and a refresh rewrites what it anchors.
+ */
 function collectRuns(elements: StructuralElement[], out: Run[] = []): Run[] {
   for (const element of elements) {
     if (element.paragraph) {
@@ -39,9 +43,6 @@ function collectRuns(elements: StructuralElement[], out: Run[] = []): Run[] {
       for (const row of table.tableRows ?? []) {
         for (const cell of row.tableCells ?? []) collectRuns(cell.content ?? [], out);
       }
-    } else if (element.tableOfContents) {
-      const toc = element.tableOfContents as { content?: StructuralElement[] };
-      collectRuns(toc.content ?? [], out);
     }
   }
   return out;
@@ -58,7 +59,7 @@ function matchesInRuns(tab: FlatTab, runs: Run[], passage: string): PassageMatch
   for (
     let at = text.indexOf(passage);
     at !== -1;
-    at = text.indexOf(passage, at + passage.length)
+    at = text.indexOf(passage, at + 1)
   ) {
     const end = at + passage.length;
     matches.push({
@@ -77,30 +78,31 @@ function matchesInRuns(tab: FlatTab, runs: Run[], passage: string): PassageMatch
  * indexes a `batchUpdate` can use.
  *
  * Inline text holds BOTH sides of a pending suggestion, so a passage a person
- * would read straight across a suggestion is in neither run on its own. Each
- * view is tried until one matches: the text as stored, then as if every
- * suggestion were accepted, then as if every one were rejected. Indexes stay
- * those of the inline document, which is what the runs were read with.
+ * would read straight across a suggestion is in neither run on its own. All
+ * three views count: the text as stored, as if every suggestion were accepted,
+ * and as if every one were rejected. A range found in more than one is one
+ * match, and a passage found twice across them is a repeat, not a first hit.
+ * Indexes stay those of the inline document, which the runs were read with.
  */
 export function findPassage(
   doc: GoogleDoc,
   passage: string,
   tabs: FlatTab[] = flattenTabs(doc)
 ): PassageMatch[] {
-  const bodies = tabs.map((tab) => ({
-    tab,
-    runs: collectRuns(tab.tab.documentTab?.body?.content ?? []),
-  }));
   const views: Array<(run: Run) => boolean> = [
     () => true,
     (run) => !run.suggestedDeletion,
     (run) => !run.suggestedInsertion,
   ];
-  for (const inView of views) {
-    const matches = bodies.flatMap(({ tab, runs }) =>
-      matchesInRuns(tab, runs.filter(inView), passage)
-    );
-    if (matches.length > 0) return matches;
-  }
-  return [];
+  return tabs.flatMap((tab) => {
+    const runs = collectRuns(tab.tab.documentTab?.body?.content ?? []);
+    const byRange = new Map<string, PassageMatch>();
+    for (const inView of views) {
+      for (const match of matchesInRuns(tab, runs.filter(inView), passage)) {
+        const range = `${match.startIndex}-${match.endIndex}`;
+        if (!byRange.has(range)) byRange.set(range, match);
+      }
+    }
+    return [...byRange.values()].sort((a, b) => a.startIndex - b.startIndex);
+  });
 }

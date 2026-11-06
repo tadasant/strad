@@ -21,6 +21,23 @@ const UNSUPPORTED_IN_SUGGEST_MODE = [
   'updateTableColumnProperties',
 ] as const;
 
+/**
+ * Requests that act on comment and suggestion threads, not on the document's
+ * text. There is nothing in them to propose, and Google does not say what
+ * `SUGGEST` does to one; an `acceptSuggestion` reported as "pending review"
+ * would be a direct change described as the opposite. strad's rule, not Docs'.
+ */
+const THREAD_REQUESTS = [
+  'insertComment',
+  'addCommentReply',
+  'updateCommentPost',
+  'deleteComment',
+  'deleteCommentReply',
+  'acceptSuggestion',
+  'rejectSuggestion',
+  'deleteSuggestion',
+] as const;
+
 /** The `updateDocumentStyle` fields Docs will not take as a suggestion. */
 const UNSUPPORTED_DOCUMENT_STYLE_FIELDS = [
   'documentFormat',
@@ -37,7 +54,8 @@ function unsupportedStyleFields(request: DocsBatchUpdateRequest): string[] {
     typeof update.fields === 'string' ? update.fields.split(',').map((f) => f.trim()) : [];
   return UNSUPPORTED_DOCUMENT_STYLE_FIELDS.filter(
     (name) =>
-      fields.includes(name) || (fields.includes('*') && update.documentStyle?.[name] !== undefined)
+      fields.some((f) => f === name || f.startsWith(`${name}.`)) ||
+      (fields.includes('*') && update.documentStyle?.[name] !== undefined)
   );
 }
 
@@ -49,7 +67,7 @@ function unsupportedStyleFields(request: DocsBatchUpdateRequest): string[] {
 export function assertSuggestable(requests: DocsBatchUpdateRequest[]): void {
   const refused: string[] = [];
   requests.forEach((request, i) => {
-    for (const name of UNSUPPORTED_IN_SUGGEST_MODE) {
+    for (const name of [...UNSUPPORTED_IN_SUGGEST_MODE, ...THREAD_REQUESTS]) {
       if (name in request) refused.push(`requests[${i}].${name}`);
     }
     for (const field of unsupportedStyleFields(request)) {
@@ -76,8 +94,13 @@ export function suggestionIds(response: DocsBatchUpdateResponse): string[] {
  * The lines a suggest-mode result carries. A response that names no suggestion
  * and does not say `ALL_SAVED` is not a success to report: the caller asked
  * that nothing change directly, and this answer cannot say that nothing did.
+ * `suggestionResponses` maps 1:1 with the requests, so a request whose entry
+ * names none is called out rather than covered by a sibling's id.
  */
-export function renderSuggestionResult(response: DocsBatchUpdateResponse): string {
+export function renderSuggestionResult(
+  response: DocsBatchUpdateResponse,
+  requestCount = 1
+): string {
   const ids = suggestionIds(response);
   if (ids.length === 0 && response.commentUpdateState !== 'ALL_SAVED') {
     return (
@@ -88,5 +111,11 @@ export function renderSuggestionResult(response: DocsBatchUpdateResponse): strin
   }
   let output = "**Applied as:** suggestion, pending review. It takes effect once accepted.\n";
   if (ids.length > 0) output += `**Suggestion IDs:** ${ids.join(', ')}\n`;
+  const named = (response.suggestionResponses ?? []).filter(
+    (r) => suggestionIds({ documentId: '', suggestionResponses: [r] }).length > 0
+  ).length;
+  if (ids.length > 0 && named < requestCount) {
+    output += `**Check:** only ${named} of ${requestCount} requests name a suggestion. Read the document to see what the others did.\n`;
+  }
   return output;
 }

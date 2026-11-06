@@ -4191,10 +4191,10 @@ See `HACKS.md` #134.
 - **`update_document` refuses what Docs cannot suggest**, by name and before
   calling Google: tab and named-range changes, deleting a header or footer,
   table column properties, and three document style fields. Send those without
-  `suggest`.
-- **A comment only attaches to text in the body.** Headers, footers and
-  footnotes are not searched; send `insertComment` through `update_document`
-  for those. `quoted_text` that is not found, or that repeats with no
+  `suggest`. Requests on comment and suggestion threads are refused too.
+- **A comment only attaches to text in the body.** Headers, footers, footnotes
+  and a table of contents are not searched; send `insertComment` through
+  `update_document` for those. `quoted_text` that is not found, or that repeats with no
   `occurrence`, is refused and creates nothing.
 - **`suggest` follows the tab rules of direct edits.** Only `update_document`
   can suggest in a tab other than the first, and `replace_text` reaches every
@@ -4204,13 +4204,14 @@ See `HACKS.md` #134.
 - **The live behaviour is unverified.** The request shapes come from Google's
   reference. Not yet seen on a real document: how `replace_text` splits into
   suggestions and what count it reports, how `list_comments` shows an anchored
-  comment, and whether `reply_to_comment` accepts an anchored comment's ID. The
-  tests fake both APIs.
+  comment, whether `reply_to_comment` accepts an anchored comment's ID, and
+  whether a comment-only account can write this way at all. The tests fake both
+  APIs.
 - **strad added it, not upstream.** Re-copying the server from upstream removes
   it unless the change is applied again, and a test fails if it is not.
 
-**How you would know.** A result labelled `UNCONFIRMED` means Google named no
-suggestion for an edit that asked for one. An edit with `suggest` that shows
-in the document with no suggestion marking is the failure to report.
+**How you would know.** A result labelled `UNCONFIRMED` means Google neither
+named a suggestion nor said it saved one. An edit with `suggest` that shows in
+the document with no suggestion marking is the failure to report.
 
 See `HACKS.md` #135.

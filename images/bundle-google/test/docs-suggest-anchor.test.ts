@@ -270,6 +270,50 @@ test.each([
   expect(fake.batches).toEqual([]);
 });
 
+test.each([
+  ["acceptSuggestion", { suggestionId: "suggest.a" }],
+  ["rejectSuggestion", { suggestionId: "suggest.a" }],
+  ["deleteSuggestion", { suggestionId: "suggest.a" }],
+  ["insertComment", { content: "Hm", range: { startIndex: 1, endIndex: 2 } }],
+  ["deleteComment", { commentId: "c" }],
+])("update_document refuses %s with suggest: a thread is not an edit to propose", async (request, payload) => {
+  const fake = fakeClient(ONE_TAB);
+  const { text, isError } = await call(fake.client, "update_document", {
+    document_id: DOC_ID,
+    suggest: true,
+    requests: [{ [request]: payload }],
+  });
+  expect(isError).toBe(true);
+  expect(text).toContain(`requests[0].${request}`);
+  expect(fake.batches).toEqual([]);
+});
+
+test("a sub-field of a refused document style field is refused too", async () => {
+  const fake = fakeClient(ONE_TAB);
+  const { text, isError } = await call(fake.client, "update_document", {
+    document_id: DOC_ID,
+    suggest: true,
+    requests: [
+      { updateDocumentStyle: { fields: "documentFormat.documentMode", documentStyle: {} } },
+    ],
+  });
+  expect(isError).toBe(true);
+  expect(text).toContain("updateDocumentStyle (documentFormat)");
+});
+
+test("one request's suggestion does not vouch for its siblings", async () => {
+  const fake = fakeClient(ONE_TAB, {
+    commentUpdateState: "ALL_SAVED",
+    suggestionResponses: [{ createdSuggestionIds: ["suggest.a"] }, {}],
+  });
+  const { text } = await call(fake.client, "update_document", {
+    document_id: DOC_ID,
+    suggest: true,
+    requests: [{ insertText: {} }, { updateTextStyle: {} }],
+  });
+  expect(text).toContain("only 1 of 2 requests name a suggestion");
+});
+
 test("a document style Docs can suggest passes, and the refusals bind only suggest mode", async () => {
   const fake = fakeClient(ONE_TAB, SAVED_SUGGESTION);
   const style = {
@@ -526,6 +570,113 @@ test("a passage read straight across a pending suggestion is found, in inline in
   ]);
 });
 
+test("a repeat that exists only with a suggestion accepted is still a repeat", async () => {
+  const doc = docWith({
+    id: "t.0",
+    title: "Main",
+    paragraphs: [
+      [
+        { text: "the " },
+        { text: "old", deletion: true },
+        { text: "new", insertion: true },
+        { text: " plan and the new plan\n" },
+      ],
+    ],
+  });
+  const fake = fakeClient(doc, SAVED_COMMENT);
+  const refused = await call(fake.client, "add_comment", {
+    document_id: DOC_ID,
+    content: "Which?",
+    quoted_text: "the new plan",
+  });
+  expect(refused.isError).toBe(true);
+  expect(refused.text).toContain("appears 2 times");
+  expect(fake.batches).toEqual([]);
+});
+
+test("the same range found in two views is one match, not a repeat", async () => {
+  const doc = docWith({
+    id: "t.0",
+    title: "Main",
+    paragraphs: [[{ text: "Before " }, { text: "x", insertion: true }, { text: " the plan.\n" }]],
+  });
+  const fake = fakeClient(doc, SAVED_COMMENT);
+  const { isError } = await call(fake.client, "add_comment", {
+    document_id: DOC_ID,
+    content: "Hm",
+    quoted_text: "the plan",
+  });
+  expect(isError).toBe(false);
+});
+
+test("a table of contents is not searched, so a heading is not its own repeat", async () => {
+  const toc = {
+    startIndex: 1,
+    endIndex: 9,
+    tableOfContents: {
+      content: [
+        {
+          paragraph: {
+            elements: [{ startIndex: 1, endIndex: 9, textRun: { content: "Results\n" } }],
+          },
+        },
+      ],
+    },
+  };
+  const heading = {
+    startIndex: 9,
+    endIndex: 17,
+    paragraph: { elements: [{ startIndex: 9, endIndex: 17, textRun: { content: "Results\n" } }] },
+  };
+  const fake = fakeClient(
+    {
+      documentId: DOC_ID,
+      revisionId: "rev-1",
+      tabs: [
+        {
+          tabProperties: { tabId: "t.0", title: "Main" },
+          documentTab: { body: { content: [toc, heading] } },
+        },
+      ],
+    },
+    SAVED_COMMENT,
+  );
+  const { isError } = await call(fake.client, "add_comment", {
+    document_id: DOC_ID,
+    content: "Hm",
+    quoted_text: "Results",
+  });
+  expect(isError).toBe(false);
+  expect(fake.batches[0].requests).toEqual([
+    { insertComment: { content: "Hm", range: { startIndex: 9, endIndex: 16, tabId: "t.0" } } },
+  ]);
+});
+
+test("a passage overlapping itself counts every match", async () => {
+  const fake = fakeClient(
+    docWith({ id: "t.0", title: "Main", paragraphs: [[{ text: "ababa\n" }]] }),
+    SAVED_COMMENT,
+  );
+  const { text, isError } = await call(fake.client, "add_comment", {
+    document_id: DOC_ID,
+    content: "Hm",
+    quoted_text: "aba",
+  });
+  expect(isError).toBe(true);
+  expect(text).toContain("appears 2 times");
+});
+
+test("with no revisionId, as for an account without edit access, no writeControl is sent", async () => {
+  const { revisionId: _revisionId, ...noRevision } = ONE_TAB;
+  const fake = fakeClient(noRevision as GoogleDoc, SAVED_COMMENT);
+  await call(fake.client, "add_comment", {
+    document_id: DOC_ID,
+    content: "Hm",
+    quoted_text: "grew 12%",
+  });
+  expect(fake.batches[0].writeControl).toBeUndefined();
+});
+
 test("add_comment refuses a stray locator, and an anchored comment past Docs' limit", async () => {
   const fake = fakeClient(ONE_TAB, SAVED_COMMENT);
   const stray = await call(fake.client, "add_comment", {
@@ -629,6 +780,7 @@ test.each([
   expect(text).toContain("ALL_FAILED_UNKNOWN_REASON");
   expect(text).toContain("may still have been committed");
   expect(text).toContain("before retrying");
+  expect(text).toContain("list_comments");
 });
 
 test("a direct edit's ALL_FAILED_UNKNOWN_REASON is reported too", async () => {
