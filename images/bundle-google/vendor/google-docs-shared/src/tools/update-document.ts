@@ -35,8 +35,10 @@ const TOOL_DESCRIPTION = `Apply low-level Google Docs batchUpdate requests to a 
 
 This is the most powerful but also the most error-prone tool — it accepts the
 raw Docs API request union directly. Use it for operations the convenience
-tools (append_text, insert_text, replace_text) don't cover: styling, lists,
-tables, deletions, paragraph formatting, etc.
+tools (insert_content, append_text, insert_text, replace_text) don't cover:
+tables, images, deletions, styling existing text, etc. To add headings,
+paragraphs or lists under a heading, use insert_content, which does the index
+math.
 
 **Parameters:**
 - document_id: Document ID or full Docs URL (required)
@@ -48,14 +50,14 @@ tables, deletions, paragraph formatting, etc.
 - suggest: Make every request in the array a suggestion rather than a direct
   change (optional, default false)
 
-**Tip:** Call get_document with format="json" first if you need exact
-startIndex / endIndex values to target specific ranges.
+**Tip:** Call get_document with format="outline_with_indices" (and a heading,
+to read one section) for exact startIndex / endIndex values.
 
 **Tabs:** In a document with several tabs, a request edits the FIRST tab
 unless its location or range carries a "tabId" (e.g.
 { "location": { "index": 1, "tabId": "t.abc123" } }). get_document_outline
-lists the tab ids; get_document with tab_id and format="json" gives that tab's
-indices. replaceAllText applies to every tab unless its tabsCriteria narrows it.
+lists the tab ids; get_document with tab_id and format="outline_with_indices"
+gives that tab's indices. replaceAllText applies to every tab unless its tabsCriteria narrows it.
 
 **Suggest mode:** Docs refuses addDocumentTab, createNamedRange, deleteFooter,
 deleteHeader, deleteNamedRange, deleteTab, updateDocumentTabProperties and

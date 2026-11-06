@@ -36,8 +36,8 @@ globalThis.fetch = async (input, init) => {
  * `documents.batchUpdate`, for the suggest-mode and anchored-comment tests
  * (`HACKS.md` #135). It answers as the reference documents: a
  * suggestion per request under `writeMode: SUGGEST`, `commentUpdateState`, and
- * a comment thread for `insertComment`. A range outside the addressed tab's
- * body is the 400 Google gives one.
+ * a comment thread for `insertComment`. A range or an insertion outside the
+ * addressed tab's body is the 400 Google gives one.
  */
 const getFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
@@ -47,7 +47,15 @@ globalThis.fetch = async (input, init) => {
   const suggest = writeControl?.writeMode === "SUGGEST";
   const replies = [];
   for (const request of requests) {
-    if (request.replaceAllText) {
+    if (request.insertText) {
+      const { index, tabId } = request.insertText.location;
+      if (passageAt({ startIndex: index, endIndex: index, tabId }) === undefined) {
+        return new Response(JSON.stringify({ error: { code: 400, message: "Invalid location" } }), {
+          status: 400,
+        });
+      }
+      replies.push({});
+    } else if (request.replaceAllText) {
       replies.push({ replaceAllText: { occurrencesChanged: 1 } });
     } else if (request.insertComment) {
       const { content, range } = request.insertComment;

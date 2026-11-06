@@ -293,7 +293,7 @@ describe("staging config", () => {
     "gmail-ro": 5,
     "gmail-rw": 8,
     "google-docs-ro": 4,
-    "google-docs-rw": 12,
+    "google-docs-rw": 13,
     "google-calendar-ro": 4,
     "onepassword-ro": 5,
     "telegram-ro": 5,

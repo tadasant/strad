@@ -6875,8 +6875,8 @@ of 2026-09-30. Two strad deltas on
 `images/bundle-google/vendor/google-docs-shared` use them. They add no tool
 name, so no `tools.allow:` list changes.
 
-1. **`suggest: true`** on `append_text`, `insert_text`, `replace_text` and
-   `update_document` sends `writeControl: { writeMode: "SUGGEST" }`. Omitted, the
+1. **`suggest: true`** on `insert_content`, `append_text`, `insert_text`,
+   `replace_text` and `update_document` sends `writeControl: { writeMode: "SUGGEST" }`. Omitted, the
    request carries no `writeControl` and is a direct edit.
 2. **`add_comment`'s `quoted_text`** is the passage the comment attaches to.
    The tool reads the document with `SUGGESTIONS_INLINE`, finds the passage in
@@ -6915,10 +6915,9 @@ Seven things about them are not obvious:
    access, so a comment-only account sends none and an edit in that window can
    shift its range.
 6. **Tabs work as they do for direct edits.** A request with no `tabId` goes
-   to the first tab and `replace_text` reaches every tab, in suggest mode too.
-   `append_text` and `insert_text` take no `tab_id`; `update_document` with
-   `suggest` is how to suggest in another tab. An anchored comment carries its
-   tab's id on the range.
+   to the first tab and `replace_text` reaches every tab unless `tab_id` narrows
+   it, in suggest mode too. `append_text`, `insert_text` and `insert_content`
+   take a `tab_id` (#136). An anchored comment carries its tab's id on the range.
 7. **`suggest` refuses requests on threads.** `acceptSuggestion`,
    `insertComment` and the like are not edits to propose, and Google does not
    say what `SUGGEST` does to them. That refusal is strad's rule. The other
@@ -6938,3 +6937,83 @@ both APIs.
 **Undo.** If upstream gains these, re-vendor and drop the delta. Until then a
 re-vendor has to re-apply the row in the tree's README, and
 `images/bundle-google/test/docs-suggest-anchor.test.ts` fails if it does not.
+
+## 136. google-docs edits by heading, and that has not met Google
+
+**What.** `images/bundle-google/vendor/google-docs-shared` gains one tool,
+`insert_content`, and `tab_id` on `append_text`, `insert_text` and `replace_text`.
+`get_document` gains `heading`, `heading_id`, `occurrence`, `start_index`,
+`end_index`, `include_styles`, `skip_tables` and `format=outline_with_indices`.
+`get_document_outline` lines gain the start index and heading id. Issue #463 is
+why: an agent told to add one H3 section to the second tab of a document gave up,
+because `format=json` was truncated before it reached the heading and every index
+had to be counted by hand.
+
+**A new tool, not parameters on `insert_text`.** Its required inputs differ, an
+anchor and a position rather than an index, and its input is markdown rather than
+literal text. An `insert_text` that did both would need a mode that JSON Schema
+cannot show as "exactly one of". The cost is a `tools.allow:` line on every `-rw`
+slug.
+
+Nine things about it are not obvious:
+
+1. **Two insertion shapes, because Docs refuses one position.** Text cannot go at
+   a table's start index. The normal shape is `text\n` at the start of the next
+   paragraph, which leaves that paragraph's newline, style and heading id alone.
+   Where no paragraph follows, it is `\ntext` inside the closing newline of the
+   one before. That splits it, so a heading above a table may lose its heading id
+   to the new last paragraph.
+2. **New text takes its neighbour's look.** Docs styles inserted text from what
+   surrounds it, so text above a heading starts out as that heading, and text
+   above a list item starts out in the list. The batch takes bullets off, sets
+   paragraph styles, resets the text style, and only then applies the content's
+   own styling. The order matters.
+3. **`createParagraphBullets` removes leading tabs and can shift indexes**, which
+   is how Docs expresses nesting. The dialect refuses nested lists, so it has no
+   tabs to remove, and the request runs last regardless.
+4. **`insertText` strips control characters and the private use area** with no
+   word to the caller. The parser removes them first, or every later range would
+   be off by what Google dropped.
+5. **Ranges are computed in JavaScript string units**, which are the UTF-16 code
+   units Docs indexes in. That is the whole reason emoji cannot throw them off.
+6. **A heading is matched on folded text, in tiers.** Exact, then prefix, then the
+   same two with leading symbols ignored, because a reader calls `🖼️ Agent Run
+Lifecycle` "Agent Run Lifecycle". U+FE0F is folded too. All three views of a
+   heading with a pending suggestion count, as for `add_comment` (#135). A repeat
+   is refused with each match listed, and a tab is never guessed.
+7. **A section ends at the next heading of the same or a higher level**, so an
+   H2's section holds its H3s, and TITLE and SUBTITLE count as the highest level.
+   An H1 with no later H1 runs to the end of the tab.
+8. **The write names the revision it measured**, `targetRevisionId`, so Docs
+   carries the indexes over a collaborator's edit. In suggest mode it goes with
+   `writeMode: SUGGEST`. Google's how-to documents `writeMode` alone and does not
+   say the two combine. If they do not, the failure is a loud 400. The race it
+   prevents would be silent, which is why it stays.
+9. **`get_document` keeps the account's default suggestion view**, so a read-only
+   slug reads as it always did. `insert_content` asks for `SUGGESTIONS_INLINE`
+   itself, because #135 records it as the only mode whose indexes a `batchUpdate`
+   can use. Indexes read through `format=outline_with_indices` are only good for
+   a write if the account's default is inline, which #135 records for anyone
+   beyond view access.
+
+**Left out on purpose.** `delete_section` and `replace_section`, the issue's
+nice-to-have. They delete live text on an anchor that has never met Google, and
+`deleteContentRange` through `update_document` does the job with the range a
+section read returns. A marker-paragraph proposal mode, because `suggest` (#135)
+is a real suggestion. An `index` anchor on `insert_content`: `insert_text` with
+`tab_id` reaches a non-heading paragraph, as plain text.
+
+**Unverified against Google.** From the reference, read 2026-11-06: text cannot
+go at a table's start index, the stripped characters, the bullet behaviour, an
+unset field in the mask resets it, the `tabsCriteria` shape. Not seen on a live
+document: anything `insert_content` does. Most of all, whether later requests in
+a `SUGGEST` batch see the indexes of text an earlier one suggested. The how-to says
+style suggestions do not offset indexes and says nothing about insertions within
+one batch. Also: what a style reset on suggested text produces, how many suggestions
+one call makes, and whether a heading above a table keeps its id. The tests apply
+requests to `images/bundle-google/test/fixtures/docs-simulator.ts`, a model
+strad wrote from the same reference, so it can share a misreading with the code.
+
+**Undo.** If upstream gains these, re-vendor and drop the delta. Until then a
+re-vendor has to re-apply the row in the tree's README, and
+`images/bundle-google/test/docs-anchored-edits.test.ts` fails if it does not.

@@ -38,6 +38,7 @@ const DOCS_WRITE_TOOLS = [
   "append_text",
   "create_document",
   "delete_document",
+  "insert_content",
   "insert_text",
   "replace_text",
   "reply_to_comment",
@@ -567,6 +568,79 @@ describe("google-docs standalone", () => {
     expect(refused.isError).toBe(true);
     expect(JSON.stringify(refused.content)).toContain("requests[0].deleteTab");
   }
+
+  // Anchored edits (`HACKS.md` #136). The stub refuses an insert outside a
+  // paragraph of the tab it names, so a wrong tab or index fails here too.
+  async function editsByHeading(client: Client): Promise<void> {
+    const lines = await client.callTool({
+      name: "get_document",
+      arguments: {
+        document_id: TABBED_ID,
+        tab_id: "t.itin",
+        heading: "Day 1",
+        format: "outline_with_indices",
+      },
+    });
+    expect(lines.isError).toBeFalsy();
+    expect(JSON.stringify(lines.content)).toMatch(/1-7 HEADING_2 .*Day 1/);
+
+    const inserted = await client.callTool({
+      name: "insert_content",
+      arguments: {
+        document_id: TABBED_ID,
+        heading: "Day 1",
+        position: "end_of_section",
+        content: "### Evening 🖼️\n\n**Dinner** at eight.",
+        suggest: true,
+      },
+    });
+    expect(inserted.isError).toBeFalsy();
+    const text = JSON.stringify(inserted.content);
+    expect(text).toContain("# Content Suggested");
+    expect(text).toContain("t.itin");
+    expect(text).toContain("**Applied as:** suggestion");
+
+    for (const [name, args] of [
+      ["insert_text", { index: 2, text: "x" }],
+      ["append_text", { text: " Bring a coat." }],
+      ["replace_text", { find: "Lisbon", replace: "Porto" }],
+    ] as const) {
+      const result = await client.callTool({
+        name,
+        arguments: { document_id: TABBED_ID, tab_id: "t.food", ...args },
+      });
+      expect(result.isError, name).toBeFalsy();
+      expect(JSON.stringify(result.content), name).toContain("t.food");
+    }
+
+    const offTab = await client.callTool({
+      name: "insert_text",
+      arguments: { document_id: TABBED_ID, tab_id: "t.food", index: 9000, text: "x" },
+    });
+    expect(offTab.isError).toBe(true);
+  }
+
+  it("edits by heading over stdio", async () => {
+    const transport = new StdioClientTransport({ command: process.execPath, args: [DOCS], env: tabsEnv(), stderr: "pipe" });
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(transport);
+    try {
+      await editsByHeading(client);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("edits by heading over Streamable HTTP", async () => {
+    const { url } = await startHttp([], tabsEnv(), DOCS);
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(url));
+    try {
+      await editsByHeading(client);
+    } finally {
+      await client.close();
+    }
+  });
 
   it("makes edits as suggestions over stdio", async () => {
     const transport = new StdioClientTransport({ command: process.execPath, args: [DOCS], env: tabsEnv(), stderr: "pipe" });

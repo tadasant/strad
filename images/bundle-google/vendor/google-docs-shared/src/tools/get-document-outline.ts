@@ -2,7 +2,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
 import { parseDocumentId } from '../utils/parse-document-id.js';
-import { extractHeadings, type HeadingEntry } from '../utils/extract-text.js';
+import { extractHeadings, type HeadingEntry, type HeadingPlace } from '../utils/extract-text.js';
 import { findTab, flattenTabs, tabAsDocument, unknownTabError } from '../utils/tabs.js';
 import { logError } from '../logging.js';
 
@@ -20,13 +20,16 @@ export const GetDocumentOutlineSchema = z.object({
 
 const TOOL_DESCRIPTION = `List the headings in a Google Doc as a navigable outline.
 
+Each heading carries its start index and, when Docs has given it one, its
+heading_id, which insert_content and get_document take as an anchor.
+
 Returns the title plus every TITLE/SUBTITLE/HEADING_1..HEADING_6 paragraph in
 document order. Useful for quickly understanding a document's structure
 without fetching the full body.
 
 **Tabs:** A document with several tabs gets one section per tab, nested
 child tabs included, each headed by the tab's path and its tab_id — the id
-get_document and update_document take to address that tab. A single-tab
+get_document, insert_content and the edit tools take to address that tab. A single-tab
 document's outline has no tab sections.
 
 **Parameters:**
@@ -106,13 +109,14 @@ export function getDocumentOutlineTool(_server: Server, clientFactory: ClientFac
   };
 }
 
-function renderHeadings(headings: HeadingEntry[], what: 'document' | 'tab'): string {
+function renderHeadings(headings: Array<HeadingEntry & HeadingPlace>, what: 'document' | 'tab'): string {
   if (headings.length === 0) return `_No headings found in this ${what}._\n`;
   let output = '';
   for (const h of headings) {
     const indent = h.level === 0 ? '' : '  '.repeat(Math.max(0, h.level - 1));
     const prefix = h.level === 0 ? `[${h.styleType}]` : `H${h.level}`;
-    output += `${indent}- ${prefix}: ${h.text}\n`;
+    const id = h.headingId ? `, heading_id: ${h.headingId}` : '';
+    output += `${indent}- ${prefix}: ${h.text} (index ${h.startIndex}${id})\n`;
   }
   return output;
 }

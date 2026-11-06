@@ -191,8 +191,8 @@ test("get_document_outline lists every tab with its id and headings", async () =
   const fake = fakeClient(TABBED_DOC, LEGACY_FIRST_TAB);
   const { text } = await call(fake.client, "get_document_outline", { document_id: DOCUMENT_ID });
   expect(fake.calls).toEqual([{ includeTabsContent: true }]);
-  expect(text).toContain("## Tab: Overview\n\n**Tab ID:** t.0\n\n- H1: Overview\n");
-  expect(text).toContain("## Tab: Itinerary\n\n**Tab ID:** t.itin\n\n  - H2: Day 1\n");
+  expect(text).toContain("## Tab: Overview\n\n**Tab ID:** t.0\n\n- H1: Overview (index 1)\n");
+  expect(text).toContain("## Tab: Itinerary\n\n**Tab ID:** t.itin\n\n  - H2: Day 1 (index 1)\n");
   expect(text).toContain("## Tab: Itinerary / Restaurants\n\n**Tab ID:** t.food\n\n_No headings found in this tab._\n");
 
   const one = await call(fake.client, "get_document_outline", { document_id: DOCUMENT_ID, tab_id: "t.itin" });

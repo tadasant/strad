@@ -1,6 +1,6 @@
 import type { DocsBatchUpdateRequest, DocsBatchUpdateResponse } from '../types.js';
 
-/** The `suggest` parameter, worded once for the four tools that take it. */
+/** The `suggest` parameter, worded once for the tools that take it. */
 export const SUGGEST_PARAM_DESCRIPTION =
   'When true, the edit is made as a suggestion for a human to accept or reject in the Docs ' +
   'editor, not as a direct change. Defaults to false (a direct edit). A pending suggestion ' +

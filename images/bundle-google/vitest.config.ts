@@ -12,8 +12,8 @@ import { defineConfig } from "vitest/config";
 // so a test written inside one of them is a merge conflict on the next
 // re-vendor. The calendar and docs copies carry strad deltas, and their tests
 // are in `test/` for that reason: `test/calendar-auth-mode.test.ts`,
-// `test/docs-tabs.test.ts`, `test/docs-comments.test.ts` and
-// `test/docs-suggest-anchor.test.ts`.
+// `test/docs-tabs.test.ts`, `test/docs-comments.test.ts`,
+// `test/docs-suggest-anchor.test.ts` and `test/docs-anchored-edits.test.ts`.
 // `vendor/gmail-shared` is a fork (its `FORK.md`), and its tests still live
 // here rather than in it: the tree's tsconfig compiles everything under its
 // `src/` into the image.
@@ -31,7 +31,7 @@ import { defineConfig } from "vitest/config";
 //     `test/gmail-download-attachments.test.ts`), and the calendar copy's
 //     one delta (`test/calendar-auth-mode.test.ts`), and the docs copy's
 //     deltas (`test/docs-tabs.test.ts`, `test/docs-comments.test.ts`,
-//     `test/docs-suggest-anchor.test.ts`).
+//     `test/docs-suggest-anchor.test.ts`, `test/docs-anchored-edits.test.ts`).
 //
 // The sheets and drive suites live outside each package's `include: ["src/**/*"]`, so
 // `npm run build` emits exactly the `build/` it emitted before; this image's own
