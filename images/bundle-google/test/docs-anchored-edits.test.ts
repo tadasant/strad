@@ -21,7 +21,13 @@ import type {
 } from "google-docs-workspace-mcp-server-shared";
 
 import { createMCPServer } from "../src/docs.js";
-import { applyBatch, assertWellFormed, readTab, styledRuns } from "./fixtures/docs-simulator.js";
+import {
+  acceptSuggestion,
+  applyBatch,
+  assertWellFormed,
+  readTab,
+  styledRuns,
+} from "./fixtures/docs-simulator.js";
 import { REPORT_DOC_ID as DOC_ID, reportDoc } from "./fixtures/multi-tab-doc.js";
 
 type Batch = {
@@ -44,12 +50,12 @@ function simulatedClient(doc: GoogleDoc) {
     ): Promise<DocsBatchUpdateResponse> => {
       batches.push({ requests, writeControl });
       const suggest = writeControl?.writeMode === "SUGGEST";
-      applyBatch(doc, requests, { suggest });
+      const named = applyBatch(doc, requests, { suggest });
       return {
         documentId: DOC_ID,
         commentUpdateState: suggest ? "ALL_SAVED" : "NO_UPDATES_REQUESTED",
         ...(suggest
-          ? { suggestionResponses: requests.map(() => ({ createdSuggestionIds: ["suggest.1"] })) }
+          ? { suggestionResponses: named.map((ids) => ({ createdSuggestionIds: ids })) }
           : {}),
       };
     },
@@ -189,6 +195,32 @@ test("after_heading on a heading followed by a table does not write at the table
     "TABLE",
   ]);
   assertWellFormed(doc);
+});
+
+test("a direct edit above a table leaves the heading its id", async () => {
+  const doc = reportDoc();
+  const { call } = await connect(doc);
+  await call("insert_content", {
+    tab_id: "t.condensed",
+    heading_id: "h.clifecycle",
+    position: "after_heading",
+    content: "Above the table.",
+  });
+  const again = await call("insert_content", {
+    tab_id: "t.condensed",
+    heading_id: "h.clifecycle",
+    position: "before_heading",
+    content: "Found by id.",
+  });
+  expect(again.isError, again.text).toBe(false);
+  const lines = readTab(doc, "t.condensed");
+  const at = around(lines, "🖼️ Agent Run Lifecycle");
+  expect(lines.slice(at - 1, at + 3)).toEqual([
+    "NORMAL_TEXT|Found by id.",
+    "HEADING_2|🖼️ Agent Run Lifecycle",
+    "NORMAL_TEXT|Above the table.",
+    "TABLE",
+  ]);
 });
 
 test("end_of_section stops at the next peer, and an H2's section holds its H3s", async () => {
@@ -651,6 +683,218 @@ test("suggest makes every request a suggestion, against the revision it measured
   expect(batches[0].writeControl).toEqual({ writeMode: "SUGGEST", targetRevisionId: "rev-42" });
   expect(text).toContain("# Content Suggested");
   expect(text).toContain("**Applied as:** suggestion, pending review");
+});
+
+/**
+ * The `\ntext` batch on a heading directly above a table, built by hand so the
+ * model is pinned to Google's results rather than to `contentRequests`. Live, the
+ * ids and the in-order accept were seen at both sizes, reverse order in one run.
+ */
+function suggestAboveTable(paragraphs: string[]) {
+  const doc = reportDoc();
+  const content = doc.tabs![0].documentTab!.body!.content! as Array<Record<string, any>>;
+  const heading = content.find((e) => e.paragraph?.paragraphStyle?.headingId === "h.clifecycle")!;
+  const at = heading.endIndex - 1;
+  const text = paragraphs.join("\n");
+  let start = at + 1;
+  const resets = paragraphs.map((p) => {
+    const range = { startIndex: start, endIndex: start + p.length, tabId: "t.condensed" };
+    start += p.length + 1;
+    return {
+      updateParagraphStyle: {
+        range,
+        paragraphStyle: { namedStyleType: "NORMAL_TEXT" },
+        fields: "namedStyleType",
+      },
+    };
+  });
+  const named = applyBatch(
+    doc,
+    [{ insertText: { location: { index: at, tabId: "t.condensed" }, text: `\n${text}` } }, ...resets],
+    { suggest: true },
+  );
+  const held = (doc.tabs![0].documentTab!.body!.content! as Array<Record<string, any>>).filter(
+    (e) => e.paragraph?.paragraphStyle?.headingId === "h.clifecycle",
+  );
+  return { doc, ids: [...new Set(named.flat())], held };
+}
+
+test.each([
+  [["One."], 2],
+  [["One.", "Two."], 3],
+])("the model keeps what a live heading above a table did: %j", (paragraphs, count) => {
+  const pending = suggestAboveTable(paragraphs);
+  expect(pending.ids).toHaveLength(count);
+  expect(pending.held).toHaveLength(2);
+
+  for (const id of pending.ids) acceptSuggestion(pending.doc, id);
+  const lastLine = `|${paragraphs[paragraphs.length - 1]}`;
+  expect(readTab(pending.doc, "t.condensed")).toContain(`HEADING_2${lastLine}`);
+  const inOrder = pending.doc.tabs![0].documentTab!.body!.content!.filter(
+    (e) => e.paragraph?.paragraphStyle?.headingId === "h.clifecycle",
+  );
+  expect(inOrder).toHaveLength(1);
+
+  const reversed = suggestAboveTable(paragraphs);
+  for (const id of [...reversed.ids].reverse()) acceptSuggestion(reversed.doc, id);
+  expect(readTab(reversed.doc, "t.condensed")).toContain(`NORMAL_TEXT${lastLine}`);
+});
+
+function paragraphStyles(doc: GoogleDoc) {
+  const content = doc.tabs![1].documentTab!.body!.content! as Array<Record<string, any>>;
+  return content.flatMap((e) => (e.paragraph ? [e.paragraph.paragraphStyle] : []));
+}
+
+function withLastParagraph(style: Record<string, unknown>, bullet = false): GoogleDoc {
+  const doc = reportDoc();
+  doc.tabs!.pop();
+  const content = doc.tabs![0].documentTab!.body!.content! as Array<Record<string, any>>;
+  const last = content[content.length - 1];
+  last.paragraph.paragraphStyle = style;
+  if (bullet) last.paragraph.bullet = { listId: "l" };
+  return doc;
+}
+
+test("suggest above a table is refused by name, with a way forward, and nothing is written", async () => {
+  for (const content of ["Above the table.", "## Note\n\nAbove the table.", "## Note", "- item"]) {
+    const doc = reportDoc();
+    const before = structuredClone(doc);
+    const { call, batches } = await connect(doc);
+    const { isError, text } = await call("insert_content", {
+      tab_id: "t.condensed",
+      heading: "Agent Run Lifecycle",
+      position: "after_heading",
+      content,
+      suggest: true,
+    });
+    expect(isError, text).toBe(true);
+    expect(text).toContain("cannot be made a suggestion here");
+    expect(text).toContain("HEADING_2 paragraph");
+    expect(text).toContain('position "before_heading"');
+    expect(text).toContain('position "end_of_section"');
+    expect(text).toContain("if a direct edit is acceptable, drop suggest");
+    expect(text).toContain("Nothing was changed.");
+    expect(batches).toHaveLength(0);
+    expect(doc).toEqual(before);
+  }
+});
+
+test("what the refusal above a table offers works as a suggestion", async () => {
+  for (const position of ["before_heading", "end_of_section"]) {
+    const doc = reportDoc();
+    const { call } = await connect(doc);
+    const { isError, text } = await call("insert_content", {
+      tab_id: "t.condensed",
+      heading: "Agent Run Lifecycle",
+      position,
+      content: "Above the table.",
+      suggest: true,
+    });
+    expect(isError, text).toBe(false);
+    expect(text).toContain("**Applied as:** suggestion");
+  }
+});
+
+test("after_heading on a heading that ends the tab is refused under suggest", async () => {
+  const doc = withLastParagraph({ namedStyleType: "HEADING_2", headingId: "h.end" });
+  const { call, batches } = await connect(doc);
+  const { isError, text } = await call("insert_content", {
+    heading_id: "h.end",
+    position: "after_heading",
+    content: "x",
+    suggest: true,
+  });
+  expect(isError, text).toBe(true);
+  expect(text).toContain("This is the end of the tab");
+  expect(batches).toHaveLength(0);
+});
+
+test.each([
+  ["a title", withLastParagraph({ namedStyleType: "TITLE" }), "x", 'position "before_heading"'],
+  ["a heading", withLastParagraph({ namedStyleType: "HEADING_2", headingId: "h.end" }), "x", 'position "before_heading"'],
+  ["a list item", withLastParagraph({ namedStyleType: "NORMAL_TEXT" }, true), "x", "drop suggest"],
+  ["a plain line, with content ending in a heading", withLastParagraph({ namedStyleType: "NORMAL_TEXT" }), "x\n\n## Y", "end the content with a plain paragraph"],
+  ["a plain line, with content ending in a list", withLastParagraph({ namedStyleType: "NORMAL_TEXT" }), "- x", "end the content with a plain paragraph"],
+])("suggest at a tab's end on %s is refused", async (_, doc, content, instead) => {
+  const { call, batches } = await connect(doc);
+  const { isError, text } = await call("insert_content", { position: "end_of_tab", content, suggest: true });
+  expect(isError, text).toBe(true);
+  expect(text).toContain("This is the end of the tab");
+  expect(text).toContain(instead);
+  expect(batches).toHaveLength(0);
+
+  const direct = await call("insert_content", { position: "end_of_tab", content });
+  expect(direct.isError, direct.text).toBe(false);
+  expect(batches).toHaveLength(1);
+});
+
+test("suggest at a tab's end on a plain line goes through, and leaves the old newline alone", async () => {
+  const doc = withLastParagraph({ namedStyleType: "NORMAL_TEXT" });
+  const { call, batches } = await connect(doc);
+  const { isError, text } = await call("insert_content", {
+    position: "end_of_tab",
+    content: "### Handoffs\n\nLast words.",
+    suggest: true,
+  });
+  expect(isError, text).toBe(false);
+  const [{ insertText }, ...rest] = batches[0].requests;
+  expect(insertText.text.startsWith("\n")).toBe(true);
+  const oldNewline = insertText.location.index + insertText.text.length;
+  const resets = rest.flatMap((r) => (r.updateParagraphStyle ? [r.updateParagraphStyle.range] : []));
+  expect(resets).toHaveLength(1);
+  expect(resets[0].endIndex).toBeLessThan(oldNewline);
+  expect(readTab(doc, "t.condensed").slice(-2)).toEqual(["HEADING_3|Handoffs", "NORMAL_TEXT|Last words."]);
+});
+
+test("a suggestion accepted in either order reads as the direct edit would, and strands no heading", async () => {
+  const anchors = ["Overview", "Topic 1", "Topic 8", "Agent Run Lifecycle", "Open questions"];
+  const positions = ["before_heading", "after_heading", "end_of_section"];
+  const contents = ["One.", "### Sub\n\nOne.\n\nTwo.", "- a\n- b", "### Ends in a heading"];
+  let written = 0;
+  let refused = 0;
+  for (const heading of anchors) {
+    for (const position of positions) {
+      for (const content of contents) {
+        const orders = (ids: string[]) => [ids, [...ids].reverse()];
+        const args = { tab_id: "t.full", heading, position, content, occurrence: 1 };
+        const direct = reportDoc();
+        await (await connect(direct)).call("insert_content", args);
+        const styles: string[] = [];
+        for (const pick of [0, 1]) {
+          const doc = reportDoc();
+          const { call, batches } = await connect(doc);
+          const { isError, text } = await call("insert_content", { ...args, suggest: true });
+          if (isError) {
+            expect(text).toContain("cannot be made a suggestion here");
+            expect(batches).toHaveLength(0);
+            refused += 1;
+            continue;
+          }
+          const ids = text.match(/\*\*Suggestion IDs:\*\* (.+)/)![1].split(", ");
+          for (const id of orders(ids)[pick]) acceptSuggestion(doc, id);
+          assertWellFormed(doc);
+          expect(readTab(doc, "t.full")).toEqual(readTab(direct, "t.full"));
+          styles.push(JSON.stringify(paragraphStyles(doc)));
+          written += 1;
+        }
+        if (styles.length === 2) expect(styles[0]).toBe(styles[1]);
+      }
+    }
+  }
+  expect(written).toBeGreaterThan(0);
+  expect(refused).toBeGreaterThan(0);
+});
+
+test("a suggestion above a heading is one id, however many paragraphs it holds", async () => {
+  const { call } = await connect(reportDoc());
+  const { text } = await call("insert_content", {
+    tab_id: "t.full",
+    heading: "Open questions",
+    position: "before_heading",
+    content: SECTION,
+    suggest: true,
+  });
+  expect(text.match(/\*\*Suggestion IDs:\*\* (.+)/)![1].split(", ")).toHaveLength(1);
 });
 
 test("without suggest the batch is a direct edit, still pinned to the revision", async () => {
