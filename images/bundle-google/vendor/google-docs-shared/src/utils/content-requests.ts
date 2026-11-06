@@ -15,12 +15,15 @@ export type ContentPosition = 'before_heading' | 'after_heading' | 'end_of_secti
  * `after`: just inside `neighbour`'s closing newline, as "\ntext". Docs refuses
  * text at a table's start index, so this is the only shape that reaches the gap
  * above a table, and the only one past the last paragraph of a tab. The last
- * inserted paragraph ends on `neighbour`'s old newline.
+ * inserted paragraph ends on `neighbour`'s old newline, which is why
+ * `suggestRefusal` exists.
  */
 export interface InsertionPoint {
   index: number;
   side: 'before' | 'after';
   neighbour: Paragraph;
+  /** On the `after` side, what stopped the `before` shape being used. */
+  blockedBy?: 'non-paragraph' | 'tab-end';
 }
 
 const TEXT_STYLE_FIELDS =
@@ -43,8 +46,13 @@ function before(element: StructuralElement): InsertionPoint {
   return { index: element.startIndex as number, side: 'before', neighbour: element.paragraph! };
 }
 
-function after(element: StructuralElement): InsertionPoint {
-  return { index: (element.endIndex as number) - 1, side: 'after', neighbour: element.paragraph! };
+function after(element: StructuralElement, blockedBy: InsertionPoint['blockedBy']): InsertionPoint {
+  return {
+    index: (element.endIndex as number) - 1,
+    side: 'after',
+    neighbour: element.paragraph!,
+    blockedBy,
+  };
 }
 
 function isEmptyParagraph(element: StructuralElement): boolean {
@@ -60,7 +68,7 @@ function endOfTab(tab: FlatTab): InsertionPoint {
   }
   // An empty last paragraph is the blank line a document ends on. Writing above
   // it fills the document; writing after it would leave a gap.
-  return isEmptyParagraph(last) ? before(last) : after(last);
+  return isEmptyParagraph(last) ? before(last) : after(last, 'tab-end');
 }
 
 export function insertionPoint(
@@ -78,11 +86,58 @@ export function insertionPoint(
 
   if (position === 'after_heading') {
     const next = content[heading.contentIndex + 1];
-    return next?.paragraph ? before(next) : after(element);
+    if (next?.paragraph) return before(next);
+    return after(element, next ? 'non-paragraph' : 'tab-end');
   }
 
   const peer = nextPeerHeading(doc, heading);
   return peer ? before(content[peer.contentIndex]) : endOfTab(tab);
+}
+
+/**
+ * Why `paragraphs` cannot be SUGGESTED at `point`, or undefined if they can.
+ *
+ * In the `after` shape the last paragraph ends on `neighbour`'s old newline, and
+ * under `writeMode: SUGGEST` that newline is existing text: it keeps its style
+ * and heading id, and any change to them is a separate suggestion competing with
+ * the insertion. Seen live on a heading above a table: accepting the ids in the
+ * order Google returns them left a real heading under a new id, reverse order
+ * gave `NORMAL_TEXT`, and while pending two paragraphs answered to one
+ * `heading_id`. No other request shape reaches this gap: `"\ntext\n"` strands an
+ * empty heading on the old newline, and Docs keeps a newline in front of a table.
+ *
+ * So the shape is only safe when nothing has to change on that newline, which
+ * means a plain paragraph ending on a plain paragraph's newline.
+ */
+export function suggestRefusal(
+  paragraphs: ContentParagraph[],
+  point: InsertionPoint
+): string | undefined {
+  if (point.side === 'before') return undefined;
+  const last = paragraphs[paragraphs.length - 1];
+  const style = point.neighbour.paragraphStyle?.namedStyleType ?? 'NORMAL_TEXT';
+  const neighbourIsPlain = style === 'NORMAL_TEXT' && !point.neighbour.bullet;
+  if (neighbourIsPlain && last.namedStyle === 'NORMAL_TEXT' && !last.list) return undefined;
+
+  const place =
+    point.blockedBy === 'tab-end'
+      ? 'This is the end of the tab'
+      : 'Docs takes no text at the start of the table or other element that follows';
+  const held = point.neighbour.bullet ? `${style} list item` : `${style} paragraph`;
+  const instead = ['drop suggest to write it directly, which is safe here'];
+  if (neighbourIsPlain) {
+    instead.unshift('end the content with a plain paragraph');
+  } else if (point.blockedBy !== 'tab-end') {
+    instead.unshift('use position "end_of_section" to suggest it after what follows the heading');
+  } else if (!point.neighbour.bullet) {
+    instead.unshift('use position "before_heading" to suggest it above that paragraph');
+  }
+  return (
+    `This content cannot be made a suggestion here. ${place}, so its last paragraph would ` +
+    `have to end on the closing newline of the ${held} before it. A suggestion cannot ` +
+    `restyle that newline cleanly, and accepting could leave a stray heading or list item. ` +
+    `Instead, ${instead.join(', or ')}.`
+  );
 }
 
 function textStyleOf(style: InlineStyle): { textStyle: Record<string, unknown>; fields: string } {

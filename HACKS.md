@@ -6875,7 +6875,8 @@ of 2026-09-30. Two strad deltas on
 `images/bundle-google/vendor/google-docs-shared` use them. They add no tool
 name, so no `tools.allow:` list changes.
 
-1. **`suggest: true`** on `insert_content`, `append_text`, `insert_text`,
+1. **`suggest: true`** on `insert_content` (refused in one position, #136),
+   `append_text`, `insert_text`,
    `replace_text` and `update_document` sends `writeControl: { writeMode: "SUGGEST" }`. Omitted, the
    request carries no `writeControl` and is a direct edit.
 2. **`add_comment`'s `quoted_text`** is the passage the comment attaches to.
@@ -6945,7 +6946,7 @@ suggest-mode reach across tabs.
 re-vendor has to re-apply the row in the tree's README, and
 `images/bundle-google/test/docs-suggest-anchor.test.ts` fails if it does not.
 
-## 136. google-docs edits by heading, and that has not met Google
+## 136. google-docs edits by heading, and suggest cannot reach one position
 
 **What.** `images/bundle-google/vendor/google-docs-shared` gains one tool,
 `insert_content`, and `tab_id` on `append_text`, `insert_text` and `replace_text`.
@@ -6962,14 +6963,15 @@ literal text. An `insert_text` that did both would need a mode that JSON Schema
 cannot show as "exactly one of". The cost is a `tools.allow:` line on every `-rw`
 slug.
 
-Nine things about it are not obvious:
+Ten things about it are not obvious:
 
 1. **Two insertion shapes, because Docs refuses one position.** Text cannot go at
    a table's start index. The normal shape is `text\n` at the start of the next
    paragraph, which leaves that paragraph's newline, style and heading id alone.
    Where no paragraph follows, above a table or at a tab's end, it is `\ntext`
-   inside the closing newline of the one before. That splits it, so a heading in
-   that place may lose its heading id to the new last paragraph.
+   inside the closing newline of the one before. That splits it. A heading in that
+   place keeps its heading id: live, direct and as a suggestion, pending, accepted
+   and rejected. Item 10 is what the split costs under `suggest`.
 
 2. **New text takes its neighbour's look.** Docs styles inserted text from what
    surrounds it, so text above a heading starts out as that heading, and text
@@ -7007,6 +7009,24 @@ Lifecycle` "Agent Run Lifecycle". U+FE0F is folded too. All three views of a
    can use. Indexes read through `format=outline_with_indices` are only good for
    a write if the account's default is inline, which #135 records for anyone
    beyond view access.
+10. **`suggest` is refused where content ends on an existing newline it would have
+    to restyle.** In the `\ntext` shape the last paragraph ends on the neighbour's
+    newline, and under `SUGGEST` that newline is existing text. It keeps its style
+    and id, and the paragraph reset becomes a separate suggestion competing with
+    the insertion. Live, on a heading above a table: while pending that paragraph
+    read `HEADING_2` under the heading's own id, so `heading_id` lookups matched two
+    headings. Accepting the ids in the order the tool returned them left a real
+    `HEADING_2` under a new id, in both runs (one paragraph and two). Reverse order
+    gave `NORMAL_TEXT`. Rejecting all restored the document. No other shape reaches
+    the gap: `\ntext\n` leaves an empty heading on the old newline, Docs will not
+    delete a newline in front of a table, and a direct write of a spacer paragraph
+    first is a live edit that a rejecting reviewer cannot undo. So `suggestRefusal`
+    in `content-requests.ts` refuses, after the read that shows the shape and before
+    any write, unless the neighbour and the content's last paragraph are both plain:
+    `NORMAL_TEXT` and not a list item. The live failure covers a heading neighbour.
+    A tab's last paragraph when it is a heading takes the same code path and was not
+    run under `suggest`. A list item, or content ending in a heading or list on a
+    plain line, is refused from the same reasoning and was not run live either.
 
 **Left out on purpose.** `delete_section` and `replace_section`, the issue's
 nice-to-have. They delete live text on an anchor that has never met Google, and
@@ -7015,16 +7035,24 @@ section read returns. A marker-paragraph proposal mode, because `suggest` (#135)
 is a real suggestion. An `index` anchor on `insert_content`: `insert_text` with
 `tab_id` reaches a non-heading paragraph, as plain text.
 
-**Unverified against Google.** From the reference, read 2026-11-06: text cannot
-go at a table's start index, the stripped characters, the bullet behaviour, an
-unset field in the mask resets it, the `tabsCriteria` shape. Not seen on a live
-document: anything `insert_content` does. Most of all, whether later requests in
-a `SUGGEST` batch see the indexes of text an earlier one suggested. The how-to says
-style suggestions do not offset indexes and says nothing about insertions within
-one batch. Also: what a style reset on suggested text produces, how many suggestions
-one call makes, and whether a heading above a table keeps its id. The tests apply
-requests to `images/bundle-google/test/fixtures/docs-simulator.ts`, a model
-strad wrote from the same reference, so it can share a misreading with the code.
+**Seen on real Google** (rollout of #463, `0.4.155`, on a scratch document). The
+issue's edit landed correctly, in one call, with the other tab unchanged. Later
+requests in a `SUGGEST` batch see the text an earlier one suggested: every proposed
+style sat on the right run. No suggest call drew a 400 with `targetRevisionId`,
+though the outgoing request was not captured. A heading above a table kept its id.
+Suggestion counts differ by shape: one id for content above a heading, across five
+paragraphs including a list, and on a heading above a table one id per paragraph
+plus one, two for one and three for two, which is the shape item 10 refuses.
+
+**Not seen on a live document.** The Docs editor's Accept all on the refused shape.
+`suggest` on a tab's last paragraph, on any neighbour, so the count there and whether
+a plain neighbour with direct styling, a centred line say, keeps it. The stable
+facts from the reference, read 2026-11-06, are the table start index, the stripped
+characters, the bullet behaviour, that an unset field in the mask resets it, and the
+`tabsCriteria` shape. The tests apply requests to
+`images/bundle-google/test/fixtures/docs-simulator.ts`, a model strad wrote. Its
+split and suggestion rules follow the live results above, and beyond those cases it
+is an assumption. Written from the reference alone, it missed item 10.
 
 **Undo.** If upstream gains these, re-vendor and drop the delta. Until then a
 re-vendor has to re-apply the row in the tree's README, and

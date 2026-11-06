@@ -8,6 +8,7 @@ import {
   contentRequests,
   insertedLength,
   insertionPoint,
+  suggestRefusal,
   type ContentPosition,
 } from '../utils/content-requests.js';
 import { findTab, flattenTabs, renderTabList, unknownTabError } from '../utils/tabs.js';
@@ -51,7 +52,10 @@ const PARAM_DESCRIPTIONS = {
     'Search only this tab, e.g. "t.abc123". Without it every tab is searched, and a heading ' +
     'found in two tabs is refused rather than guessed. Required for "end_of_tab" in a document ' +
     'with several tabs. get_document_outline lists the tab ids.',
-  suggest: SUGGEST_PARAM_DESCRIPTION,
+  suggest:
+    `${SUGGEST_PARAM_DESCRIPTION} Refused directly above a table or at a tab's end when the ` +
+    'paragraph before is a heading or list item, or when the content would end in one there. ' +
+    'One call can return several suggestion IDs; a reviewer has to resolve all of them.',
 } as const;
 
 export const InsertContentSchema = z.object({
@@ -103,8 +107,9 @@ paragraphs it became. Example:
 - Add to the end of one tab with position="end_of_tab"
 
 **Refusals:** Nothing is sent when the heading is not found, when it repeats
-with no occurrence (each match is listed with its tab), or when content holds
-something the dialect cannot express.
+with no occurrence (each match is listed with its tab), when content holds
+something the dialect cannot express, or when suggest=true meets the shape
+described under Notes.
 
 **Notes:**
 - Headings inside table cells are not anchors. Use get_document with
@@ -112,9 +117,15 @@ something the dialect cannot express.
 - A section ends at the next heading of the same or a higher level, so an H2's
   section includes its H3s.
 - Directly above a table, or past the last paragraph of a tab, Docs accepts
-  text only inside the paragraph before it. So after_heading on a heading
-  followed by a table, or on a tab's last paragraph, splits that heading's
-  paragraph. The heading text and style stay; its heading_id may change.
+  text only inside the paragraph before it, and the content's last paragraph
+  ends on that paragraph's own newline. As a direct edit the heading keeps its
+  text, style and heading_id. With suggest=true that newline cannot be restyled
+  cleanly, so the call is refused, with the alternatives named, unless both that
+  paragraph and the content's last paragraph are plain text. So after_heading on
+  a heading directly above a table cannot be a suggestion.
+- The number of suggestion IDs differs by position. Content suggested above a
+  heading returned one, across five paragraphs. At a tab's end the count has not
+  been measured, so use the IDs the result lists.
 - A numbered list directly after an existing numbered list joins it.
 - To place text at an exact index, use insert_text. For tables and images, use
   update_document.`;
@@ -187,6 +198,10 @@ export function insertContentTool(_server: Server, clientFactory: ClientFactory)
 
         const tab = heading?.tab ?? tabs[0];
         const point = insertionPoint(doc, position, tab, heading);
+        if (parsed.suggest) {
+          const refusal = suggestRefusal(paragraphs, point);
+          if (refusal) throw new Error(`${refusal} ${NOTHING_CHANGED}`);
+        }
         const requests = contentRequests(paragraphs, point, tab.tabId || undefined);
         if (parsed.suggest) assertSuggestable(requests);
 

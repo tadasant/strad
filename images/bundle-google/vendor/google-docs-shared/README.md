@@ -21,7 +21,7 @@ standalone entrypoint, which hands that same layer to the shared runner.
 | ----- | ----- | ----------- |
 | Every tab is read, not only the first: `documents.get` is asked for `includeTabsContent=true`, and `get_document` and `get_document_outline` take a `tab_id` (`HACKS.md` #129) | `src/utils/tabs.ts`, `src/types.ts` (`Tab`), `src/google-docs-client/lib/get-document.ts`, `src/server.ts` (`getDocument`'s options), `src/tools/get-document.ts`, `src/tools/get-document-outline.ts`, the tab notes in `src/tools/update-document.ts`, `src/tools/append-text.ts`, `src/tools/insert-text.ts` and `src/tools/export-document.ts` | `../../test/docs-tabs.test.ts`, `../../test/standalone.test.ts` |
 | Comments can be written: `add_comment` (Drive `comments.create`) and `reply_to_comment` (Drive `replies.create`, which also resolves and reopens), both in `readwrite` (`HACKS.md` #132) | `src/tools/add-comment.ts`, `src/tools/reply-to-comment.ts`, `src/google-docs-client/lib/drive-comments.ts` (`createComment`, `createReply`), `src/server.ts` (the two client methods), `src/tools.ts` (registration) | `../../test/docs-comments.test.ts`, `../../test/standalone.test.ts` |
-| Edits go by heading, in any tab, and reads narrow to a section: a new `insert_content` tool with markdown input, `tab_id` on `append_text`, `insert_text` and `replace_text`, `heading`, `heading_id`, a range, `include_styles`, `skip_tables` and `format=outline_with_indices` on `get_document`, and indexes and heading ids in `get_document_outline` (`HACKS.md` #136) | `src/tools/insert-content.ts`, `src/utils/markdown.ts`, `src/utils/content-requests.ts`, `src/utils/sections.ts`, `src/utils/document-view.ts`, `src/utils/extract-text.ts` (`HeadingPlace`), `src/tools.ts` (registration), `src/tools/get-document.ts`, `src/tools/get-document-outline.ts`, `src/tools/append-text.ts`, `src/tools/insert-text.ts`, `src/tools/replace-text.ts`, the pointers in `src/tools/update-document.ts` | `../../test/docs-anchored-edits.test.ts`, `../../test/standalone.test.ts` |
+| Edits go by heading, in any tab, and reads narrow to a section: a new `insert_content` tool with markdown input, `tab_id` on `append_text`, `insert_text` and `replace_text`, `heading`, `heading_id`, a range, `include_styles`, `skip_tables` and `format=outline_with_indices` on `get_document`, and indexes and heading ids in `get_document_outline`; `insert_content` refuses `suggest` where content would end on an existing newline it has to restyle (`HACKS.md` #136) | `src/tools/insert-content.ts`, `src/utils/markdown.ts`, `src/utils/content-requests.ts`, `src/utils/sections.ts`, `src/utils/document-view.ts`, `src/utils/extract-text.ts` (`HeadingPlace`), `src/tools.ts` (registration), `src/tools/get-document.ts`, `src/tools/get-document-outline.ts`, `src/tools/append-text.ts`, `src/tools/insert-text.ts`, `src/tools/replace-text.ts`, the pointers in `src/tools/update-document.ts` | `../../test/docs-anchored-edits.test.ts`, `../../test/standalone.test.ts` |
 | Edits can be suggestions, and comments attach to a passage: `suggest` on `append_text`, `insert_text`, `replace_text` and `update_document` (`writeControl.writeMode: SUGGEST`), `add_comment`'s `quoted_text` becomes a Docs `insertComment`, and `commentUpdateState` failures are errors (`HACKS.md` #135) | `src/utils/suggest.ts`, `src/utils/find-passage.ts`, `src/google-docs-client/lib/batch-update.ts`, `src/google-docs-client/lib/get-document.ts` (`suggestionsViewMode`), `src/server.ts` (`batchUpdate`'s `writeControl`), `src/types.ts`, `src/tools/add-comment.ts`, `src/tools/append-text.ts`, `src/tools/insert-text.ts`, `src/tools/replace-text.ts`, `src/tools/update-document.ts`, the suggestions note in `src/tools/get-document.ts` | `../../test/docs-suggest-anchor.test.ts`, `../../test/standalone.test.ts` |
 
 ## Tools
@@ -72,7 +72,11 @@ Fourteen, in three groups. Each group holds the one before it:
   `update_document` take `suggest=true`, which proposes the edit as a suggestion for a human to accept
   or reject in the Docs editor. The tab rules above are the same in suggest
   mode. `update_document` refuses, by name and before calling Google, the
-  requests Docs cannot suggest. A pending suggestion occupies indexes, and
+  requests Docs cannot suggest. `insert_content` refuses a suggestion directly
+  above a table or at a tab's end when the paragraph before is a heading or list
+  item, or the content would end in one there, because accepting it can leave a
+  stray heading; the refusal names what to do instead. One suggest call can
+  return several suggestion IDs. A pending suggestion occupies indexes, and
   `get_document`'s text shows both sides of one, unmarked.
 - `export_document` exports through Drive: `markdown`, `html` and `txt` come
   back as text, `pdf`, `docx`, `odt`, `rtf` and `epub` as base64.
@@ -323,7 +327,8 @@ From `images/bundle-google`, `npm test` runs:
   filters and the wrappers' `tab_id`, against `test/fixtures/docs-simulator.ts`,
   a model of a Docs tab that applies what a tool sent, on the two-tab document
   in `test/fixtures/multi-tab-doc.ts`. It asserts what the document holds
-  afterwards, around tables, lists, emoji and pending suggestions.
+  afterwards, around tables, lists, emoji and pending suggestions, and that
+  accepting a suggestion in either order leaves the same document.
 - `test/standalone.test.ts` — both transports against the built entrypoint,
   with no credentials set: all fourteen tools, each of the three groups,
   `share_document` only in `readwrite_external`, comma-separated groups, a tool

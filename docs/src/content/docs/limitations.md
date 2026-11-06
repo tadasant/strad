@@ -4181,8 +4181,9 @@ See `HACKS.md` #134.
 
 ### 135. google-docs suggestions and anchored comments have not met Google
 
-`suggest: true` on `insert_content`, `append_text`, `insert_text`,
-`replace_text` and `update_document` makes an edit a suggestion for a human to review.
+`suggest: true` on `insert_content` (refused in one position, #136), `append_text`,
+`insert_text`, `replace_text` and `update_document` makes an edit a suggestion for a
+human to review.
 `add_comment`'s `quoted_text` attaches a comment to that passage.
 
 - **A failed save can still change the document.** Google says a batch can
@@ -4228,7 +4229,7 @@ See `HACKS.md` #135.
 
 ---
 
-### 136. google-docs edits by heading, and that has not met Google
+### 136. google-docs edits by heading, and suggest cannot reach one position
 
 `insert_content` writes markdown above, under or at the end of a heading's
 section, in any tab, and `get_document` can read one section. An agent no longer
@@ -4248,8 +4249,23 @@ needs an index for the common edit.
 - **Directly above a table, or at a tab's end, the paragraph before is split.**
   Docs takes no text at a table's start, so `after_heading` on a heading followed
   by a table, or on a tab's last paragraph, writes inside the heading's closing
-  newline. Its text and style stay, and its `heading_id` may move, which would
-  break a link to that heading.
+  newline. Its text, style and `heading_id` stay, so a link to it keeps working.
+- **`suggest` is refused there unless everything involved is plain text.** In that
+  shape the content's last paragraph ends on the existing paragraph's own newline,
+  and a suggestion cannot restyle that newline cleanly. On a real document, a
+  reviewer accepting the suggestions in the order the tool returned them was left
+  with a stray heading under a new id. So `after_heading` on a heading directly
+  above a table cannot be a suggestion. The same goes for a tab's end when the last
+  paragraph is a heading or list item, or the content would end in one. The refusal
+  names what to do instead, such as `end_of_section`, `before_heading` or a direct
+  write.
+  Only the heading above a table failed live. The other refused cases share its
+  shape and were not run.
+- **One suggest call can make several suggestions, and the number depends on the
+  shape.** Content above a heading made one, across five paragraphs. The refused
+  shape made one per paragraph plus one. A tab's end, the one remaining shape that
+  ends on an existing newline, has not been measured, so read the IDs the tool
+  returns rather than assuming one.
 - **A numbered list directly after an existing one joins it.** That is Docs' rule
   for a matching list, and so the numbering continues. A number other than 1 only
   continues a list being written; elsewhere it stays text, so `2020. A year` is a
@@ -4266,18 +4282,17 @@ needs an index for the common edit.
 - **`format=outline_with_indices` uses the account's default suggestion view**,
   which is inline for anyone who can edit or comment. Only those indexes are good
   for a write. An account that can only view may be shown other ones.
-- **The live behaviour is unverified.** The request shapes come from Google's
-  reference. Nothing has run against a real document. The largest unknown is
-  `suggest`: whether later requests in a batch see the text an earlier one
-  suggested. Google does not say, and if they do not, the styles land on the wrong
-  text, as a suggestion a reviewer can reject. The tests use a local model of a
-  tab that strad wrote.
+- **The tests use a local model of a tab that strad wrote.** It follows what the
+  live run showed for a split paragraph and a suggested style. Beyond those
+  cases it is an assumption. Written from Google's reference alone, it missed the
+  stray heading above.
 - **strad added it, not upstream.** Re-copying the server from upstream removes
   it unless the change is applied again, and a test fails if it is not.
 
 **How you would know.** New text in the right place with the wrong style means
-ranges were off, most likely in suggest mode. A `400` naming `writeControl` on a
-suggest-mode `insert_content` means Google will not take `writeMode` and
-`targetRevisionId` together, though its reference allows it.
+ranges were off. A `heading_id` refused as matching two headings means a suggested
+paragraph is sitting on that heading's newline, most likely one written before the
+refusal existed; resolve the suggestions, or use `heading`. A paragraph at a tab's
+end that keeps the wrong look after accepting is the unmeasured case above.
 
 See `HACKS.md` #136.

@@ -7,10 +7,17 @@
  * It holds to Google's reference where that decides an outcome: text goes
  * inside a paragraph and never at a table's start index, a range must lie in
  * the segment, new text takes its neighbour's paragraph style, list membership
- * and text style, and the closing newline of a paragraph carries its style and
- * heading id, a bullet request removes leading tabs and shifts what follows, and
- * a mask must name real fields. Anything it does not model throws, so a new
+ * and text style, a bullet request removes leading tabs and shifts what follows,
+ * and a mask must name real fields. Anything it does not model throws, so a new
  * request type cannot pass by being ignored.
+ *
+ * Splitting a paragraph and suggesting a style on existing text follow what a
+ * live document did (issue #465's rollout results), not the reference, which
+ * predicted neither: a split paragraph's id stays with the text it was on, and
+ * under SUGGEST the old newline keeps its style and id beside a rival style
+ * suggestion, so the order a reviewer accepts in decides what is left. What it
+ * does beyond those live cases is an assumption, and a bullet change on an
+ * existing newline under SUGGEST, never seen, throws.
  */
 import type { GoogleDoc, StructuralElement, Tab } from "google-docs-workspace-mcp-server-shared";
 
@@ -92,7 +99,18 @@ function textOf(paragraph: Json): string {
   return paragraph.paragraph.elements.map((e: Json) => e.textRun?.content ?? "").join("");
 }
 
-function insertText(content: StructuralElement[], index: number, text: string, segmentEnd: number) {
+function closesOnSuggestedNewline(paragraph: Json): boolean {
+  const elements = paragraph.paragraph.elements;
+  return (elements[elements.length - 1].textRun?.suggestedInsertionIds ?? []).length > 0;
+}
+
+function insertText(
+  content: StructuralElement[],
+  index: number,
+  text: string,
+  segmentEnd: number,
+  suggest: boolean,
+) {
   if (index >= segmentEnd) throw new Error(`400: index ${index} is past the segment end`);
   const paragraph = paragraphsOf(content).find(
     (p) => p.startIndex <= index && index < p.endIndex,
@@ -147,13 +165,16 @@ function insertText(content: StructuralElement[], index: number, text: string, s
   groups.pop();
 
   const { headingId: _id, ...copied } = style;
+  const holder = index === start ? groups.length - 1 : 0;
   const replacement = groups.map((elements, i) => ({
     startIndex: elements[0].startIndex,
     endIndex: elements[elements.length - 1].endIndex,
     paragraph: {
-      // The new newlines copy the style. The old one ends the last paragraph
-      // and keeps the id it carries.
-      paragraphStyle: i === groups.length - 1 ? { ...style } : { ...copied },
+      // New newlines copy the style. The id stays with the paragraph's own text.
+      // Under SUGGEST the old newline is not edited at all, so while pending it
+      // reads as it did, id included, and two paragraphs answer to one id.
+      paragraphStyle:
+        i === holder || (suggest && i === groups.length - 1) ? { ...style } : { ...copied },
       ...(bullet ? { bullet: { ...bullet } } : {}),
       elements,
     },
@@ -210,8 +231,21 @@ export interface ApplyOptions {
   suggest?: boolean;
 }
 
-/** Applies a batch to `doc` in place, the way `documents.batchUpdate` would. */
-export function applyBatch(doc: GoogleDoc, requests: Json[], options: ApplyOptions = {}): void {
+let minted = 0;
+const mint = () => `suggest.sim.${++minted}`;
+
+/**
+ * Applies a batch to `doc` in place, the way `documents.batchUpdate` would, and
+ * returns the suggestion ids each request names, in request order.
+ */
+export function applyBatch(doc: GoogleDoc, requests: Json[], options: ApplyOptions = {}): string[][] {
+  const suggest = options.suggest === true;
+  const named: string[][] = [];
+  // The one suggestion this batch's text went in as, and whether that text split
+  // an existing paragraph. A reset folds into the insertion's id except after a
+  // split: live, a split batch returned one id per paragraph plus the insertion's.
+  let insertion: string | undefined;
+  let split = false;
   const tabs = allTabs(doc.tabs ?? []);
   const contentOf = (tabId?: string) => {
     const tab = tabId ? tabs.find((t) => t.tabProperties?.tabId === tabId) : tabs[0];
@@ -228,37 +262,57 @@ export function applyBatch(doc: GoogleDoc, requests: Json[], options: ApplyOptio
     if (body.range && body.range.endIndex > segmentEnd(content)) {
       throw new Error(`400: ${name} range ends past the segment`);
     }
+    const ids = new Set<string>();
     switch (name) {
       case "insertText":
-        insertText(content, body.location.index, body.text, segmentEnd(content));
-        if (options.suggest) {
+        insertText(content, body.location.index, body.text, segmentEnd(content), suggest);
+        if (suggest) {
+          insertion = mint();
+          split = body.text.startsWith("\n");
+          ids.add(insertion);
           const end = body.location.index + body.text.length;
           for (const run of runsIn(content, { startIndex: body.location.index, endIndex: end })) {
-            run.textRun.suggestedInsertionIds = ["suggest.sim"];
+            run.textRun.suggestedInsertionIds = [insertion];
           }
         }
         break;
       case "updateParagraphStyle":
         for (const p of overlapping(content, body.range)) {
-          applyMask(
-            (p.paragraph.paragraphStyle ??= {}),
-            body.paragraphStyle,
-            body.fields,
-            PARAGRAPH_STYLE_FIELDS,
-          );
+          const proposed = { ...p.paragraph.paragraphStyle };
+          applyMask(proposed, body.paragraphStyle, body.fields, PARAGRAPH_STYLE_FIELDS);
+          const { headingId: _proposedId, ...change } = proposed;
+          const { headingId: _heldId, ...held } = p.paragraph.paragraphStyle ?? {};
+          const changes = JSON.stringify(change) !== JSON.stringify(held);
+          if (suggest && !closesOnSuggestedNewline(p)) {
+            // The newline is existing text, so the change cannot join the insertion.
+            if (changes) {
+              const id = mint();
+              (p.paragraph.suggestedParagraphStyleChanges ??= {})[id] = { paragraphStyle: change };
+              ids.add(id);
+            }
+            continue;
+          }
+          p.paragraph.paragraphStyle = proposed;
+          if (suggest) ids.add(split && changes ? mint() : insertion!);
         }
         break;
       case "updateTextStyle":
         for (const run of runsIn(content, body.range)) {
           applyMask((run.textRun.textStyle ??= {}), body.textStyle, body.fields, TEXT_STYLE_FIELDS);
         }
+        if (suggest) ids.add(insertion!);
         break;
       case "deleteParagraphBullets":
-        for (const p of overlapping(content, body.range)) delete p.paragraph.bullet;
+        for (const p of overlapping(content, body.range)) {
+          assertBulletModelled(p, suggest);
+          delete p.paragraph.bullet;
+        }
+        if (suggest) ids.add(insertion!);
         break;
       case "createParagraphBullets":
         if (!BULLET_PRESETS.has(body.bulletPreset)) throw new Error(`400: ${body.bulletPreset}`);
         for (const p of overlapping(content, body.range)) {
+          assertBulletModelled(p, suggest);
           p.paragraph.bullet = { listId: `sim.${body.bulletPreset}.${body.range.startIndex}` };
           const first = p.paragraph.elements[0];
           const tabs = first.textRun.content.match(/^\t+/)?.[0].length ?? 0;
@@ -267,9 +321,50 @@ export function applyBatch(doc: GoogleDoc, requests: Json[], options: ApplyOptio
             shiftFrom(content, first.startIndex + tabs, -tabs);
           }
         }
+        if (suggest) ids.add(insertion!);
         break;
       default:
         throw new Error(`the simulator does not model ${name}`);
+    }
+    named.push([...ids]);
+  }
+  return named;
+}
+
+function assertBulletModelled(paragraph: Json, suggest: boolean): void {
+  if (suggest && !closesOnSuggestedNewline(paragraph)) {
+    throw new Error("the simulator does not model a suggested bullet change on existing text");
+  }
+}
+
+/**
+ * Accepts one suggestion, the way the reviewer's click does. Accepting the
+ * insertion first commits the paragraph on the old newline as it reads, a real
+ * heading under a new id, and the rival style change goes with it. Accepting the
+ * rival first takes the style it proposed.
+ */
+export function acceptSuggestion(doc: GoogleDoc, id: string): void {
+  for (const tab of allTabs(doc.tabs ?? [])) {
+    for (const element of tab.documentTab!.body!.content! as Json[]) {
+      const paragraph = element.paragraph;
+      if (!paragraph) continue;
+      const changes = paragraph.suggestedParagraphStyleChanges;
+      if (changes?.[id]) {
+        paragraph.paragraphStyle = changes[id].paragraphStyle;
+        delete changes[id];
+      }
+      let accepted = false;
+      for (const { textRun } of paragraph.elements) {
+        if (!textRun?.suggestedInsertionIds?.includes(id)) continue;
+        accepted = true;
+        textRun.suggestedInsertionIds = textRun.suggestedInsertionIds.filter((s: string) => s !== id);
+        if (textRun.suggestedInsertionIds.length === 0) delete textRun.suggestedInsertionIds;
+      }
+      if (changes && Object.keys(changes).length === 0) delete paragraph.suggestedParagraphStyleChanges;
+      if (accepted && paragraph.suggestedParagraphStyleChanges) {
+        delete paragraph.suggestedParagraphStyleChanges;
+        if (paragraph.paragraphStyle.headingId) paragraph.paragraphStyle.headingId = `h.${mint()}`;
+      }
     }
   }
 }
