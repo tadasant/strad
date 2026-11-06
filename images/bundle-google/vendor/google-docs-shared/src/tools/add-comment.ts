@@ -20,7 +20,9 @@ const PARAM_DESCRIPTIONS = {
   quoted_text:
     'The passage of the document to attach the comment to, copied exactly, case and punctuation ' +
     'included. It is highlighted in the document and the comment sits beside it. Omit it for a ' +
-    'comment on the document as a whole. Example: "Revenue grew 12% in Q2."',
+    'comment on the document as a whole. Across a pending replacement, the anchor is right but ' +
+    'the quote shown back here and by list_comments holds both sides of it. ' +
+    'Example: "Revenue grew 12% in Q2."',
   occurrence:
     'Which match of quoted_text to attach to, counting from 1 in document order, when it appears ' +
     'more than once. Omit it for a passage that appears once; a repeated one is refused with its ' +

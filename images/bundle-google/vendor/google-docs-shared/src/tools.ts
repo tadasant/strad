@@ -7,6 +7,7 @@ import { deleteDocumentTool } from './tools/delete-document.js';
 import { createDocumentTool } from './tools/create-document.js';
 import { appendTextTool } from './tools/append-text.js';
 import { insertTextTool } from './tools/insert-text.js';
+import { insertContentTool } from './tools/insert-content.js';
 import { replaceTextTool } from './tools/replace-text.js';
 import { getDocumentOutlineTool } from './tools/get-document-outline.js';
 import { exportDocumentTool } from './tools/export-document.js';
@@ -73,6 +74,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   { factory: deleteDocumentTool, groups: ['readwrite', 'readwrite_external'] },
   { factory: appendTextTool, groups: ['readwrite', 'readwrite_external'] },
   { factory: insertTextTool, groups: ['readwrite', 'readwrite_external'] },
+  { factory: insertContentTool, groups: ['readwrite', 'readwrite_external'] },
   { factory: replaceTextTool, groups: ['readwrite', 'readwrite_external'] },
   { factory: addCommentTool, groups: ['readwrite', 'readwrite_external'] },
   { factory: replyToCommentTool, groups: ['readwrite', 'readwrite_external'] },

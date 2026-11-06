@@ -4040,9 +4040,10 @@ every link. The upstream server it is copied from reads only the first tab.
 - **`format=json` on a multi-tab document has no top-level `body`.** The
   content is under `tabs[].documentTab.body`. Pass `tab_id` to get one tab
   with its `body` at the top level. A single-tab document is unchanged.
-- **Writes go to the first tab** unless an `update_document` request names a
-  `tabId`. `append_text` and `insert_text` take none. `replace_text` replaces
-  in every tab.
+- **A write with no tab goes to the first tab.** `append_text` and `insert_text`
+  take a `tab_id`, and an `update_document` request can name a `tabId`.
+  `replace_text` replaces in every tab unless `tab_id` narrows it. `insert_content`
+  searches every tab and refuses a heading it finds in two.
 - **`export_document` cannot export one tab.** Drive's export has no option
   for it, and what it does with a multi-tab document has not been measured.
 - **No tabbed read has reached Google from CI.** The tests fake the Docs API.
@@ -4180,8 +4181,8 @@ See `HACKS.md` #134.
 
 ### 135. google-docs suggestions and anchored comments have not met Google
 
-`suggest: true` on `append_text`, `insert_text`, `replace_text` and
-`update_document` makes an edit a suggestion for a human to review.
+`suggest: true` on `insert_content`, `append_text`, `insert_text`,
+`replace_text` and `update_document` makes an edit a suggestion for a human to review.
 `add_comment`'s `quoted_text` attaches a comment to that passage.
 
 - **A failed save can still change the document.** Google says a batch can
@@ -4191,20 +4192,29 @@ See `HACKS.md` #134.
 - **`update_document` refuses what Docs cannot suggest**, by name and before
   calling Google: tab and named-range changes, deleting a header or footer,
   table column properties, and three document style fields. Send those without
-  `suggest`. Requests on comment and suggestion threads are refused too.
+  `suggest`. strad also refuses requests on comment and suggestion threads, as its
+  own rule, because they are not edits to propose.
 - **A comment only attaches to text in the body.** Headers, footers, footnotes
   and a table of contents are not searched; send `insertComment` through
   `update_document` for those. `quoted_text` that is not found, or that repeats with no
   `occurrence`, is refused and creates nothing.
-- **`suggest` follows the tab rules of direct edits.** Only `update_document`
-  can suggest in a tab other than the first, and `replace_text` reaches every
-  tab.
+- **`suggest` follows the tab rules of direct edits.** A write with no tab goes
+  to the first tab, and `replace_text` reaches every tab unless `tab_id` narrows
+  it.
 - **`get_document`'s text shows both sides of a pending suggestion**, unmarked.
   `format=json` carries the suggestion ids.
-- **The live behaviour is unverified.** The request shapes come from Google's
-  reference. Not yet seen on a real document: how `replace_text` splits into
-  suggestions and what count it reports, how `list_comments` shows an anchored
-  comment, whether `reply_to_comment` accepts an anchored comment's ID, and
+- **`replace_text` with `suggest` can overwrite a pending suggestion.** It matches
+  text inside a pending insertion and rewrites that suggestion under the same id,
+  so what it proposed is gone. Text in a pending deletion does not match. This was
+  seen on one account's own suggestions. Whether it does the same to another
+  author's suggestion is untested.
+- **A quote across a pending replacement shows both sides.** `add_comment`'s
+  "Anchored to" and `list_comments` read `papayabanana` for a passage typed as
+  either word. The anchor itself is right.
+- **The live behaviour is only partly seen.** The request shapes come from Google's
+  reference, and #462 ran against real Google on 0.4.154 with nothing failing. Suggest
+  mode's reach across tabs has not been tried live. Not yet seen on a real document:
+  how `replace_text` splits into suggestions and what count it reports, whether `reply_to_comment` accepts an anchored comment's ID, and
   whether a comment-only account can write this way at all. The tests fake both
   APIs.
 - **strad added it, not upstream.** Re-copying the server from upstream removes
@@ -4215,3 +4225,59 @@ named a suggestion nor said it saved one. An edit with `suggest` that shows in
 the document with no suggestion marking is the failure to report.
 
 See `HACKS.md` #135.
+
+---
+
+### 136. google-docs edits by heading, and that has not met Google
+
+`insert_content` writes markdown above, under or at the end of a heading's
+section, in any tab, and `get_document` can read one section. An agent no longer
+needs an index for the common edit.
+
+- **The dialect is small.** Headings, paragraphs, one level of bullets or numbers,
+  bold, italic, code and links. Tables, images, block quotes, code fences, rules
+  and nested lists are refused by line, not written as punctuation. They go
+  through `update_document`.
+- **Every non-blank line is a paragraph, and no blank paragraph is written.**
+  Spacing comes from the document's own named styles, so a document that relies
+  on empty lines between paragraphs will read tighter around new text.
+- **Only top-level headings are anchors.** A heading inside a table cell is not
+  found. A paragraph styled to look like a heading, in bold with no heading
+  style, is not a heading to Docs; `insert_text` with `tab_id` and
+  `format=outline_with_indices` reaches those, as plain text.
+- **Directly above a table, or at a tab's end, the paragraph before is split.**
+  Docs takes no text at a table's start, so `after_heading` on a heading followed
+  by a table, or on a tab's last paragraph, writes inside the heading's closing
+  newline. Its text and style stay, and its `heading_id` may move, which would
+  break a link to that heading.
+- **A numbered list directly after an existing one joins it.** That is Docs' rule
+  for a matching list, and so the numbering continues. A number other than 1 only
+  continues a list being written; elsewhere it stays text, so `2020. A year` is a
+  sentence.
+- **A heading anchor can match more loosely than you typed.** It ignores case,
+  matches a whole-word prefix when nothing is exact, and last ignores leading
+  symbols, so
+  `Agent Run` finds `🖼️ Agent Run Lifecycle`. A repeat is refused, and the result
+  always names the heading it used.
+- **`delete_section` and `replace_section` do not exist.** Read the range with
+  `get_document` and send `deleteContentRange` through `update_document`. For a
+  tab's last section use `endIndex - 1`, because Docs keeps a segment's final
+  newline.
+- **`format=outline_with_indices` uses the account's default suggestion view**,
+  which is inline for anyone who can edit or comment. Only those indexes are good
+  for a write. An account that can only view may be shown other ones.
+- **The live behaviour is unverified.** The request shapes come from Google's
+  reference. Nothing has run against a real document. The largest unknown is
+  `suggest`: whether later requests in a batch see the text an earlier one
+  suggested. Google does not say, and if they do not, the styles land on the wrong
+  text, as a suggestion a reviewer can reject. The tests use a local model of a
+  tab that strad wrote.
+- **strad added it, not upstream.** Re-copying the server from upstream removes
+  it unless the change is applied again, and a test fails if it is not.
+
+**How you would know.** New text in the right place with the wrong style means
+ranges were off, most likely in suggest mode. A `400` naming `writeControl` on a
+suggest-mode `insert_content` means Google will not take `writeMode` and
+`targetRevisionId` together, though its reference allows it.
+
+See `HACKS.md` #136.

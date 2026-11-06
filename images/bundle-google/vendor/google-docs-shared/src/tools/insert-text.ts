@@ -10,9 +10,13 @@ const PARAM_DESCRIPTIONS = {
   document_id: 'The Google Docs document ID, or the full document URL. Both forms are accepted.',
   index:
     'The 1-based document index where the text should be inserted. Use ' +
-    'get_document with format="json" to discover precise indices. Index 1 ' +
-    'inserts at the very beginning of the document body.',
+    'get_document with format="outline_with_indices" to discover precise indices. ' +
+    'Index 1 inserts at the very beginning of the tab. To place text by heading, ' +
+    'use insert_content instead.',
   text: 'The plain text to insert at the given index.',
+  tab_id:
+    'The tab to insert into, e.g. "t.abc123"; get_document_outline lists them. Omitted, the ' +
+    'index is in the first tab.',
   suggest: SUGGEST_PARAM_DESCRIPTION,
 } as const;
 
@@ -20,6 +24,7 @@ export const InsertTextSchema = z.object({
   document_id: z.string().min(1).describe(PARAM_DESCRIPTIONS.document_id),
   index: z.number().int().min(1).describe(PARAM_DESCRIPTIONS.index),
   text: z.string().min(1).describe(PARAM_DESCRIPTIONS.text),
+  tab_id: z.string().min(1).optional().describe(PARAM_DESCRIPTIONS.tab_id),
   suggest: z.boolean().optional().describe(PARAM_DESCRIPTIONS.suggest),
 });
 
@@ -32,17 +37,17 @@ Issues a single batchUpdate with one insertText request at the given location.
 - document_id: Document ID or full Docs URL (required)
 - index: Document index to insert at (required, min 1)
 - text: Text to insert (required)
+- tab_id: The tab to insert into (optional, default the first tab)
 - suggest: Make the edit a suggestion rather than a direct change (optional,
   default false)
 
 **Notes:**
 - The Docs API uses 1-based indices over the document body.
-- In a document with several tabs, the index is in the FIRST tab. To insert
-  into another tab, use update_document with that tab's "tabId" in the location.
-- Use get_document with format="json" to find the index of a specific
-  paragraph or text run.
-- For more complex edits (deletions, replacements with formatting), use
-  update_document directly.`;
+- Indices are per tab. Without tab_id the index is in the FIRST tab.
+- Use get_document with format="outline_with_indices" to find the index of a
+  specific paragraph.
+- To place text by heading, or with headings and formatting, use insert_content.
+- For deletions and other edits, use update_document directly.`;
 
 export function insertTextTool(_server: Server, clientFactory: ClientFactory) {
   return {
@@ -64,6 +69,10 @@ export function insertTextTool(_server: Server, clientFactory: ClientFactory) {
           type: 'string',
           description: PARAM_DESCRIPTIONS.text,
         },
+        tab_id: {
+          type: 'string',
+          description: PARAM_DESCRIPTIONS.tab_id,
+        },
         suggest: {
           type: 'boolean',
           description: PARAM_DESCRIPTIONS.suggest,
@@ -80,7 +89,10 @@ export function insertTextTool(_server: Server, clientFactory: ClientFactory) {
         const requests: DocsBatchUpdateRequest[] = [
           {
             insertText: {
-              location: { index: parsed.index },
+              location: {
+                index: parsed.index,
+                ...(parsed.tab_id ? { tabId: parsed.tab_id } : {}),
+              },
               text: parsed.text,
             },
           },
@@ -93,6 +105,7 @@ export function insertTextTool(_server: Server, clientFactory: ClientFactory) {
 
         let output = parsed.suggest ? `# Insertion Suggested\n\n` : `# Text Inserted\n\n`;
         output += `**Document ID:** ${documentId}\n`;
+        if (parsed.tab_id) output += `**Tab ID:** ${parsed.tab_id}\n`;
         output += `**Inserted at index:** ${parsed.index}\n`;
         output += `**Characters:** ${parsed.text.length}\n`;
         if (parsed.suggest) output += renderSuggestionResult(response);

@@ -14,6 +14,9 @@ const PARAM_DESCRIPTIONS = {
     'replaceAllText request directly.',
   replace: 'The replacement text. Pass an empty string to delete all matches.',
   match_case: 'When true, the search is case-sensitive. Defaults to false (case-insensitive).',
+  tab_id:
+    'Replace only in this tab, e.g. "t.abc123"; get_document_outline lists them. Omitted, every ' +
+    'tab is searched.',
   suggest: SUGGEST_PARAM_DESCRIPTION,
 } as const;
 
@@ -22,6 +25,7 @@ export const ReplaceTextSchema = z.object({
   find: z.string().min(1).describe(PARAM_DESCRIPTIONS.find),
   replace: z.string().describe(PARAM_DESCRIPTIONS.replace),
   match_case: z.boolean().optional().describe(PARAM_DESCRIPTIONS.match_case),
+  tab_id: z.string().min(1).optional().describe(PARAM_DESCRIPTIONS.tab_id),
   suggest: z.boolean().optional().describe(PARAM_DESCRIPTIONS.suggest),
 });
 
@@ -29,13 +33,14 @@ const TOOL_DESCRIPTION = `Find-and-replace all occurrences of a string in a Goog
 
 Convenience wrapper around update_document's replaceAllText request.
 Replaces every literal occurrence of \`find\` with \`replace\` across the
-document body, in every tab.
+document body, in every tab unless tab_id narrows it.
 
 **Parameters:**
 - document_id: Document ID or full Docs URL (required)
 - find: Literal string to search for (required)
 - replace: Replacement string (required, may be empty to delete matches)
 - match_case: Whether the search is case-sensitive (optional, default false)
+- tab_id: Replace only in this tab (optional, default every tab)
 - suggest: Make every replacement a suggestion rather than a direct change
   (optional, default false)
 
@@ -44,9 +49,11 @@ The number of replacements made (from the Docs API response).
 
 **Notes:**
 - This is literal-text replacement only — no regex, no partial-token matching.
-- With suggest=true this still reaches every occurrence in every tab. To
-  suggest in one tab, use update_document with replaceAllText's tabsCriteria
-  and suggest=true.
+- With suggest=true this reaches every occurrence in every tab too. Pass
+  tab_id to suggest in one tab.
+- With suggest=true it matches text inside a pending insertion and rewrites that
+  suggestion in place, under the same suggestion ID, so the text it proposed is
+  gone. Text in a pending deletion does not match.
 - For more flexible search/replace, use update_document directly.`;
 
 export function replaceTextTool(_server: Server, clientFactory: ClientFactory) {
@@ -72,6 +79,10 @@ export function replaceTextTool(_server: Server, clientFactory: ClientFactory) {
           type: 'boolean',
           description: PARAM_DESCRIPTIONS.match_case,
         },
+        tab_id: {
+          type: 'string',
+          description: PARAM_DESCRIPTIONS.tab_id,
+        },
         suggest: {
           type: 'boolean',
           description: PARAM_DESCRIPTIONS.suggest,
@@ -93,6 +104,7 @@ export function replaceTextTool(_server: Server, clientFactory: ClientFactory) {
                 matchCase: parsed.match_case ?? false,
               },
               replaceText: parsed.replace,
+              ...(parsed.tab_id ? { tabsCriteria: { tabIds: [parsed.tab_id] } } : {}),
             },
           },
         ];
@@ -107,8 +119,11 @@ export function replaceTextTool(_server: Server, clientFactory: ClientFactory) {
           | undefined;
         const occurrences = reply?.replaceAllText?.occurrencesChanged ?? 0;
 
-        let output = parsed.suggest ? `# Replacement Suggested\n\n` : `# Replacement Complete\n\n`;
+        const suggestedHeading =
+          occurrences === 0 ? 'No Occurrences Matched' : 'Replacement Suggested';
+        let output = `# ${parsed.suggest ? suggestedHeading : 'Replacement Complete'}\n\n`;
         output += `**Document ID:** ${documentId}\n`;
+        if (parsed.tab_id) output += `**Tab ID:** ${parsed.tab_id}\n`;
         output += `**Find:** ${JSON.stringify(parsed.find)}\n`;
         output += `**Replace:** ${JSON.stringify(parsed.replace)}\n`;
         output += `**Match case:** ${parsed.match_case ?? false}\n`;
