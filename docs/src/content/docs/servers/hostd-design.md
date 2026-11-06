@@ -113,6 +113,22 @@ generates a key per server, creates the named tunnel and its DNS route, writes a
 bootstraps the LaunchAgent. Re-running it upgrades the code and keeps the config,
 the keys and the tunnel.
 
+**A re-run must not be able to strand the machine.** The daemon serves the shell
+an unattended installer arrives through, so the original `bootout` then
+`bootstrap` was a window in which losing the script lost the machine, and the
+first unattended run failed in that shape on the helper's agent
+([#457](https://github.com/tadasant/strad/issues/457)):
+`Bootstrap failed: 5: Input/output error`. The cause was never proven.
+`bootout` returning before teardown finishes fits it, and launchd's 5 covers most
+refusals. Running from a detached session is the weaker candidate: `setsid`
+changes the POSIX session and neither the Mach bootstrap port nor the audit
+session, both inherited from a daemon already in `gui/<uid>`, and the domain is
+named explicitly. So `install/launchd.sh` is built for either answer: an unchanged
+plist is `kickstart -k` and never unloads, the one unload belongs to a one-shot
+launchd itself runs, and a refusal prints what tells the causes apart, including
+`launchctl managername`. [The install section](/servers/hostd/#install) has the
+paths.
+
 ## Consent
 
 ### "A connection" does not exist, so a grant does
@@ -763,6 +779,7 @@ runs the daemon's own queries through it on macOS's SQLite.
 **Reasoned about, not run:** everything that needs a person at a Mac. The
 `osascript` dialog and whether it comes to the front when launched from a
 LaunchAgent, both LaunchAgents, the installer's `cloudflared` branch, the
+installer restarting the real daemon under the shell it arrived through, the
 Chrome 144 toggle and its prompt on a real default profile, the extension in
 Google Chrome rather than Chromium — the unpacked install and its options
 page, whether developer mode keeps it installed across Chrome updates, and,

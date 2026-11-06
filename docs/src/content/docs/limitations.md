@@ -3226,6 +3226,8 @@ An unanswered consent dialog is a denial by default, so with nobody at the lapto
 
 The macOS halves have not run anywhere but a bare CI runner: the `osascript` dialog (including the claim that no key answers it, which only a Mac can show), the LaunchAgents, the installer's `cloudflared` branch, and Chrome 144's debugging toggle against a real default profile. The two computer-use servers add steps of their own; see #108. The Chrome extension adds one more, and the trade-off that goes with it; see #112. The Messages server adds a Full Disk Access grant and needs the Mac awake; see #115.
 
+An upgrade can run unattended over the shell slug, and that route is still box access. [The installer](/servers/hostd/#install) only ever unloads a service through a one-shot launchd runs itself, so a failure there leaves the machine reachable or retrying, and the cause of the `5` that stopped the first unattended run ([#457](https://github.com/tadasant/strad/issues/457)) is still unproven: a refusal now prints what would prove it. Its restart paths run against a real launchd on a macOS runner, on a throwaway agent, and against the real daemon only on the owner's Mac. The `/healthz` check and rollback after a restart need the installer to outlive that restart; if it does not, a new build that crashes at runtime is left crash-looping under launchd.
+
 **How you would know.** `troubleshoot_host` reports `offline` when the daemon, the tunnel or the laptop is down, and also when the owner has switched remote control off. `http://127.0.0.1:7312` on the machine says which.
 
 **Undo:** a signed app with an auto-updater would take upgrades off the terminal. The first install, the permission clicks and the Cloudflare login stay manual.

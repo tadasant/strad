@@ -16,6 +16,11 @@
 # Full Disk Access) when `swift` is available, signs each with a stable
 # identity (install/sign-helper.sh), installs them to $STATE/bin and runs each
 # as its own LaunchAgent. --no-helper skips all of that.
+#
+# Safe to run with nobody at the machine, over the shell the daemon itself
+# serves. A helper that fails does not stop the daemon step: every failure is
+# named at the end and the exit is non-zero. install/launchd.sh is how a service
+# is restarted without a window in which losing this script loses the machine.
 set -euo pipefail
 
 MACHINE="this machine"
@@ -35,7 +40,7 @@ while [ $# -gt 0 ]; do
     --no-agent) AGENT=0; shift ;;
     --no-helper) HELPER=0; shift ;;
     --sign-identity) SIGN_IDENTITY="$2"; shift 2 ;;
-    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -46,9 +51,20 @@ APP="$STATE/app"
 LABEL="com.strad.hostd"
 AX_LABEL="com.strad.hostd-ax"
 MESSAGES_LABEL="com.strad.hostd-messages"
+RELOAD="$STATE/reload"
+FAILED=""
 
 say() { printf '\n==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+# A step that failed and must not stop the steps after it. Named again at the end.
+failed() {
+  printf 'error: %s\n' "$*" >&2
+  FAILED="$FAILED  - $*
+"
+}
+
+# shellcheck source=install/launchd.sh
+. "$HERE/install/launchd.sh"
 
 command -v node >/dev/null || die "node is not installed (need 22.4 or newer): brew install node"
 node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=4)?0:1)' \
@@ -64,7 +80,11 @@ rm -rf "$APP.new"
 mkdir -p "$APP.new"
 cp -R "$HERE/build" "$HERE/extension" "$HERE/package.json" "$HERE/package-lock.json" "$APP.new/"
 (cd "$APP.new" && npm ci --omit=dev --no-audit --no-fund)
-rm -rf "$APP" && mv "$APP.new" "$APP"
+# The build the daemon is running stays beside the new one until the next
+# install: it is what the daemon step rolls back to.
+rm -rf "$APP.previous"
+if [ -d "$APP" ]; then mv "$APP" "$APP.previous"; fi
+mv "$APP.new" "$APP"
 HOSTD=("$NODE" "$APP/build/cli.js")
 
 if [ ! -f "$STATE/config.json" ]; then
@@ -90,63 +110,72 @@ fi
 # the clone can go away. Without `swift`, the two computer-use servers are
 # served but refuse every request with "helper not running", and the shell and
 # browser servers are unaffected.
+#
+# Both helpers run as `install_x || failed …`, which switches `set -e` off inside
+# them, so every step that can fail says `|| return 1` itself. A helper is never
+# a reason to skip the daemon step.
+install_ax() {
+  say "Building strad-hostd-ax"
+  (cd "$HERE/ax" && swift build -c release 2>&1 | tail -3) || return 1
+  AX_BUILT="$HERE/ax/.build/release/strad-hostd-ax"
+  [ -x "$AX_BUILT" ] || { echo "the helper did not build; see the output above"; return 1; }
+  if [ -n "$SIGN_IDENTITY" ]; then
+    "$HERE/install/sign-helper.sh" "$AX_BUILT" --identity "$SIGN_IDENTITY" || return 1
+  else
+    "$HERE/install/sign-helper.sh" "$AX_BUILT" || return 1
+  fi
+  { cp "$AX_BUILT" "$STATE/bin/strad-hostd-ax.new" && mv -f "$STATE/bin/strad-hostd-ax.new" "$STATE/bin/strad-hostd-ax"; } || return 1
+  AX="$STATE/bin/strad-hostd-ax"
+  if [ "$AGENT" = 1 ]; then
+    say "Installing the LaunchAgent $AX_LABEL"
+    sed -e "s|__HELPER__|$AX|g" -e "s|__HOME__|$HOME|g" -e "s|__STATE__|$STATE|g" \
+      "$HERE/install/$AX_LABEL.plist" > "$RELOAD/$AX_LABEL.plist" || return 1
+    launchd_install "$AX_LABEL" "$HOME/Library/LaunchAgents/$AX_LABEL.plist" "$RELOAD" || return 1
+    # From here on the daemon reaches the helper over the agent's socket and
+    # never spawns one of its own (see native.mode in src/config.ts).
+    node -e '
+      const fs = require("fs"), file = process.argv[1];
+      const c = JSON.parse(fs.readFileSync(file, "utf8"));
+      c.native = { ...(c.native ?? {}), mode: "socket" };
+      fs.writeFileSync(file, JSON.stringify(c, null, 2) + "\n", { mode: 0o600 });
+    ' "$STATE/config.json" || return 1
+  fi
+  say "Helper permissions (both must be granted in System Settings › Privacy & Security):"
+  "$AX" --status || true
+}
+
+# strad-hostd-messages: the same build, sign and LaunchAgent, under its own
+# identifier, so the Full Disk Access it is granted is its alone.
+install_messages() {
+  say "Building strad-hostd-messages"
+  (cd "$HERE/messages" && swift build -c release 2>&1 | tail -3) || return 1
+  MESSAGES_BUILT="$HERE/messages/.build/release/strad-hostd-messages"
+  [ -x "$MESSAGES_BUILT" ] || { echo "strad-hostd-messages did not build; see the output above"; return 1; }
+  if [ -n "$SIGN_IDENTITY" ]; then
+    "$HERE/install/sign-helper.sh" "$MESSAGES_BUILT" --identity "$SIGN_IDENTITY" --identifier "$MESSAGES_LABEL" || return 1
+  else
+    "$HERE/install/sign-helper.sh" "$MESSAGES_BUILT" --identifier "$MESSAGES_LABEL" || return 1
+  fi
+  { cp "$MESSAGES_BUILT" "$STATE/bin/strad-hostd-messages.new" && mv -f "$STATE/bin/strad-hostd-messages.new" "$STATE/bin/strad-hostd-messages"; } || return 1
+  MESSAGES_HELPER="$STATE/bin/strad-hostd-messages"
+  if [ "$AGENT" = 1 ]; then
+    say "Installing the LaunchAgent $MESSAGES_LABEL"
+    sed -e "s|__HELPER__|$MESSAGES_HELPER|g" -e "s|__HOME__|$HOME|g" -e "s|__STATE__|$STATE|g" \
+      "$HERE/install/$MESSAGES_LABEL.plist" > "$RELOAD/$MESSAGES_LABEL.plist" || return 1
+    launchd_install "$MESSAGES_LABEL" "$HOME/Library/LaunchAgents/$MESSAGES_LABEL.plist" "$RELOAD" || return 1
+  fi
+  say "Messages helper (Full Disk Access is granted by hand: \`strad-hostd messages --grant\`):"
+  "$MESSAGES_HELPER" --status || true
+}
+
+if [ "$(uname)" = "Darwin" ]; then
+  mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs" "$STATE/bin" "$RELOAD"
+fi
+
 if [ "$HELPER" = 1 ] && [ "$(uname)" = "Darwin" ]; then
   if command -v swift >/dev/null && swift build --help >/dev/null 2>&1; then
-    say "Building strad-hostd-ax"
-    (cd "$HERE/ax" && swift build -c release 2>&1 | tail -3)
-    AX_BUILT="$HERE/ax/.build/release/strad-hostd-ax"
-    [ -x "$AX_BUILT" ] || die "the helper did not build; see the output above"
-    if [ -n "$SIGN_IDENTITY" ]; then
-      "$HERE/install/sign-helper.sh" "$AX_BUILT" --identity "$SIGN_IDENTITY"
-    else
-      "$HERE/install/sign-helper.sh" "$AX_BUILT"
-    fi
-    mkdir -p "$STATE/bin"
-    cp "$AX_BUILT" "$STATE/bin/strad-hostd-ax.new" && mv -f "$STATE/bin/strad-hostd-ax.new" "$STATE/bin/strad-hostd-ax"
-    AX="$STATE/bin/strad-hostd-ax"
-    if [ "$AGENT" = 1 ]; then
-      say "Installing the LaunchAgent $AX_LABEL"
-      AX_PLIST="$HOME/Library/LaunchAgents/$AX_LABEL.plist"
-      mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
-      sed -e "s|__HELPER__|$AX|g" -e "s|__HOME__|$HOME|g" -e "s|__STATE__|$STATE|g" \
-        "$HERE/install/$AX_LABEL.plist" > "$AX_PLIST"
-      launchctl bootout "gui/$(id -u)/$AX_LABEL" 2>/dev/null || true
-      launchctl bootstrap "gui/$(id -u)" "$AX_PLIST"
-      # From here on the daemon reaches the helper over the agent's socket and
-      # never spawns one of its own (see native.mode in src/config.ts).
-      node -e '
-        const fs = require("fs"), file = process.argv[1];
-        const c = JSON.parse(fs.readFileSync(file, "utf8"));
-        c.native = { ...(c.native ?? {}), mode: "socket" };
-        fs.writeFileSync(file, JSON.stringify(c, null, 2) + "\n", { mode: 0o600 });
-      ' "$STATE/config.json"
-    fi
-    say "Helper permissions (both must be granted in System Settings › Privacy & Security):"
-    "$AX" --status || true
-
-    # strad-hostd-messages: the same build, sign and LaunchAgent, under its
-    # own identifier, so the Full Disk Access it is granted is its alone.
-    say "Building strad-hostd-messages"
-    (cd "$HERE/messages" && swift build -c release 2>&1 | tail -3)
-    MESSAGES_BUILT="$HERE/messages/.build/release/strad-hostd-messages"
-    [ -x "$MESSAGES_BUILT" ] || die "strad-hostd-messages did not build; see the output above"
-    if [ -n "$SIGN_IDENTITY" ]; then
-      "$HERE/install/sign-helper.sh" "$MESSAGES_BUILT" --identity "$SIGN_IDENTITY" --identifier "$MESSAGES_LABEL"
-    else
-      "$HERE/install/sign-helper.sh" "$MESSAGES_BUILT" --identifier "$MESSAGES_LABEL"
-    fi
-    cp "$MESSAGES_BUILT" "$STATE/bin/strad-hostd-messages.new" && mv -f "$STATE/bin/strad-hostd-messages.new" "$STATE/bin/strad-hostd-messages"
-    MESSAGES_HELPER="$STATE/bin/strad-hostd-messages"
-    if [ "$AGENT" = 1 ]; then
-      say "Installing the LaunchAgent $MESSAGES_LABEL"
-      MESSAGES_PLIST="$HOME/Library/LaunchAgents/$MESSAGES_LABEL.plist"
-      sed -e "s|__HELPER__|$MESSAGES_HELPER|g" -e "s|__HOME__|$HOME|g" -e "s|__STATE__|$STATE|g" \
-        "$HERE/install/$MESSAGES_LABEL.plist" > "$MESSAGES_PLIST"
-      launchctl bootout "gui/$(id -u)/$MESSAGES_LABEL" 2>/dev/null || true
-      launchctl bootstrap "gui/$(id -u)" "$MESSAGES_PLIST"
-    fi
-    say "Messages helper (Full Disk Access is granted by hand: \`strad-hostd messages --grant\`):"
-    "$MESSAGES_HELPER" --status || true
+    install_ax || failed "$AX_LABEL was not installed; the computer-use servers and the banner need it"
+    install_messages || failed "$MESSAGES_LABEL was not installed; the messages server needs it"
   else
     say "swift is not available: skipping strad-hostd-ax and strad-hostd-messages (xcode-select --install, then re-run; the computer-use and messages servers need them)"
   fi
@@ -198,16 +227,67 @@ YAML
   ' "$STATE/config.json" "$STATE/cloudflared.yml" "$CLOUDFLARED"
 fi
 
-if [ "$AGENT" = 1 ] && [ "$(uname)" = "Darwin" ]; then
+# Is the daemon answering on its MCP port? Each look waits first, so that the
+# first one is not the old process answering on its way out.
+daemon_serving() {
+  local port tries=0
+  port="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).port ?? 7311)' "$STATE/config.json")"
+  while [ "$tries" -lt 15 ]; do
+    sleep 2
+    if curl -fsS -m 2 "http://127.0.0.1:$port/healthz" >/dev/null 2>&1; then return 0; fi
+    tries=$((tries + 1))
+  done
+  return 1
+}
+
+# The last thing that can take this machine off the network, so it runs last and
+# everything worth reporting is said before it starts: this restart can end the
+# shell this script came from. By then the service is loaded, or in the hands of
+# the one-shot, so launchd brings the daemon back with or without this script.
+install_daemon() {
   say "Installing the LaunchAgent $LABEL"
-  PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-  mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
   sed -e "s|__NODE__|$NODE|g" -e "s|__CLI__|$APP/build/cli.js|g" -e "s|__HOME__|$HOME|g" -e "s|__STATE__|$STATE|g" \
-    "$HERE/install/$LABEL.plist" > "$PLIST"
-  launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-  launchctl bootstrap "gui/$(id -u)" "$PLIST"
-  CONTROL_PORT="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).controlPort ?? 7312)' "$STATE/config.json")"
-  say "Running. Status page: http://127.0.0.1:$CONTROL_PORT"
+    "$HERE/install/$LABEL.plist" > "$RELOAD/$LABEL.plist" || {
+      failed "$LABEL was not restarted: its plist could not be rendered"
+      return 1
+    }
+  if ! launchd_install "$LABEL" "$HOME/Library/LaunchAgents/$LABEL.plist" "$RELOAD"; then
+    failed "$LABEL was not restarted; see the launchd output above"
+    return 1
+  fi
+  if daemon_serving; then return 0; fi
+
+  # Loaded and not serving: the new build fails at runtime, in a way loading it
+  # for `add` above could not show, and launchd would restart it for ever.
+  echo "the daemon is not answering; its log ends:"
+  tail -n 20 "$HOME/Library/Logs/$LABEL.err.log" 2>&1 || true
+  if [ ! -d "$APP.previous" ]; then
+    failed "$LABEL is not serving, and there is no previous build to roll back to"
+    return 1
+  fi
+  say "Rolling back to the previous build"
+  rm -rf "$APP.failed"
+  if ! { mv "$APP" "$APP.failed" && mv "$APP.previous" "$APP"; }; then
+    failed "$LABEL is not serving, and rolling back to the previous build failed"
+    return 1
+  fi
+  launchctl kickstart -k "$(launchd_target "$LABEL")" 2>&1 || true
+  if daemon_serving; then
+    failed "$LABEL did not serve on the new build and was rolled back; that build is at $APP.failed"
+  else
+    failed "$LABEL is not serving on the new build or the rolled-back one"
+  fi
+  return 1
+}
+
+if [ "$AGENT" = 1 ] && [ "$(uname)" = "Darwin" ]; then
+  if [ -n "$FAILED" ]; then
+    printf '\nFailed so far:\n%s' "$FAILED"
+  fi
+  if install_daemon; then
+    CONTROL_PORT="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).controlPort ?? 7312)' "$STATE/config.json")"
+    say "Running. Status page: http://127.0.0.1:$CONTROL_PORT"
+  fi
 else
   say "Installed. Start it with: $NODE $APP/build/cli.js serve"
 fi
@@ -221,3 +301,8 @@ cat <<TXT
   Check the Messages helper: $NODE $APP/build/cli.js messages   (--grant opens Full Disk Access)
   Install the Chrome extension (unattended browser use): $NODE $APP/build/cli.js extension
 TXT
+
+if [ -n "$FAILED" ]; then
+  printf '\nThe install did not finish cleanly:\n%s' "$FAILED" >&2
+  exit 1
+fi

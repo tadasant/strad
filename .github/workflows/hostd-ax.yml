@@ -4,7 +4,8 @@ name: hostd-ax
 # other job in this repository runs on Linux. This is the one workflow on a
 # GitHub-hosted macOS runner, and it is billed by the minute on a private
 # repository, so it is kept to what needs a Mac and runs only when a helper,
-# the daemon code a helper's smoke test imports, or this file changes.
+# the daemon code a helper's smoke test imports, the installer's launchd path, or
+# this file changes.
 #
 # `helper` (strad-hostd-ax) proves: the helper compiles, signs, speaks its
 # protocol over stdio, answers `hello`, lists apps and displays, and refuses
@@ -22,6 +23,12 @@ name: hostd-ax
 # runner's ~/Library/Messages holds no real history and its grants are the
 # image's, so a real chat.db under a Full Disk Access grant the owner clicked is
 # exercised on the owner's Mac and nowhere else.
+#
+# `launchd` (hostd/install/launchd.sh) proves: the installer's decisions hold
+# under the /bin/bash 3.2 a Mac has rather than the bash 5 of the Linux box, and
+# the three restart paths work against a real launchd, one-shot included, on a
+# service that takes seconds to die. A runner is not the owner's laptop and it
+# proves nothing about a detached session there.
 
 on:
   pull_request:
@@ -34,7 +41,12 @@ on:
       - "hostd/package-lock.json"
       - "hostd/install/com.strad.hostd-ax.plist"
       - "hostd/install/com.strad.hostd-messages.plist"
+      - "hostd/install/com.strad.hostd-reload.plist"
+      - "hostd/install/install.sh"
+      - "hostd/install/launchd.sh"
+      - "hostd/install/launchd-smoke.sh"
       - "hostd/install/sign-helper.sh"
+      - "hostd/test/install.test.ts"
       - ".github/workflows/hostd-ax.yml"
   push:
     branches: [main]
@@ -46,7 +58,12 @@ on:
       - "hostd/package-lock.json"
       - "hostd/install/com.strad.hostd-ax.plist"
       - "hostd/install/com.strad.hostd-messages.plist"
+      - "hostd/install/com.strad.hostd-reload.plist"
+      - "hostd/install/install.sh"
+      - "hostd/install/launchd.sh"
+      - "hostd/install/launchd-smoke.sh"
       - "hostd/install/sign-helper.sh"
+      - "hostd/test/install.test.ts"
       - ".github/workflows/hostd-ax.yml"
 
 permissions:
@@ -118,3 +135,29 @@ jobs:
         run: node smoke.mjs .build/release/strad-hostd-messages "$RUNNER_TEMP/messages-fixture/chat.db"
       - name: LaunchAgent plist is well-formed
         run: plutil -lint hostd/install/com.strad.hostd-messages.plist
+
+  launchd:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install dependencies
+        working-directory: hostd
+        run: npm ci
+      - name: The installer's plists are well-formed, and its scripts parse under /bin/bash
+        working-directory: hostd/install
+        run: |
+          plutil -lint com.strad.hostd-reload.plist
+          /bin/bash --version | head -1
+          /bin/bash -n install.sh
+          /bin/bash -n launchd.sh
+          /bin/bash -n launchd-smoke.sh
+          /bin/bash -n uninstall.sh
+      - name: The installer's decisions, under the bash a Mac has
+        working-directory: hostd
+        run: PATH="/bin:$PATH" npx vitest run --config vitest.config.ts test/install.test.ts
+      - name: launchd.sh against the real launchd
+        run: /bin/bash hostd/install/launchd-smoke.sh

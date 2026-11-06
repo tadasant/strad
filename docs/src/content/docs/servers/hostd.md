@@ -71,6 +71,39 @@ Re-run it to upgrade. It keeps the config, the keys and the tunnel, and adds any
 server the config predates. `./hostd/install/uninstall.sh` removes it, and
 `--purge` also deletes `~/.strad-hostd`.
 
+A re-run is built to finish with nobody at the Mac, over the shell the daemon
+serves, and to leave the machine reachable when it does not:
+
+| The service is…              | The installer…                                                                                                                                                                                                              |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| loaded, plist unchanged      | runs `launchctl kickstart -k`. Nothing is unloaded, so launchd restarts it even if the installer dies on that line. This is the ordinary upgrade.                                                                           |
+| not loaded                   | runs `launchctl bootstrap`, up to six times over 31 seconds.                                                                                                                                                                |
+| loaded, plist changed        | hands it to a one-shot LaunchAgent, `<label>.reload`, which unloads it, waits up to 30 seconds for it to be gone, and loads it again. launchd re-runs the one-shot every 30 seconds until that works, with or without the installer. |
+
+The one-shot is the only thing that unloads a service. It is not a descendant of
+the daemon, and its own bootstrap is the canary: if launchd refuses it, nothing
+has been touched and the service keeps running. `~/Library/Logs/<label>.reload.log`
+is its log.
+
+A helper that fails does not stop the daemon step. Each failure is printed where
+it happens, again before the daemon restarts (that restart can end the shell the
+installer came from), and again at the end, with a non-zero exit. A refused
+`launchctl` call prints its exit code, what `launchctl error` says about it, the
+process's launchd manager, the plist's mode and lint, the service's disabled
+state and `launchctl print` for the service.
+
+After restarting the daemon the installer asks `/healthz` on the MCP port for 30
+seconds. If nothing answers it rolls back to the previous build, kept at
+`~/.strad-hostd/app.previous`, leaves the failed one at `app.failed`, and exits
+non-zero. That check needs the installer alive: one killed by the restart leaves
+the daemon loaded but unchecked.
+
+An unattended installer should still run in its own session, logging to a file,
+so that it outlives the grant that started it and its exit code reaches the log.
+Run from the daemon's shell without that, ending the grant kills it mid-run. The
+daemon's shutdown kills the process group of each command, and launchd kills the
+daemon's own group; a new session is in neither.
+
 :::caution[These steps happen on the machine, by hand]
 strad's rule is that operating a feature never needs a shell on a box. This one
 cannot meet it: the box is a personal laptop, and installing software on it,

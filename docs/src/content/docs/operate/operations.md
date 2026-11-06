@@ -216,9 +216,10 @@ of which, `servers`, is a twenty-two-leg matrix over the server trees:
   The browser suite drives a real Chromium, and with `CI` set a missing browser
   fails the suite rather than skipping it. The two computer-use servers run
   against a stand-in for the native helper that speaks its protocol in-process.
-  The macOS halves — the `osascript` dialog, the LaunchAgents, the installer's
-  `cloudflared` branch, the signing script — run nowhere in CI; the helper
-  itself has its own workflow, below.
+  `test/install.test.ts` runs the installer against a stand-in for `launchctl`.
+  The macOS halves — the `osascript` dialog, the real LaunchAgents, the
+  installer's `cloudflared` branch, the signing script — run nowhere in this job;
+  the helper and the installer's launchd path have their own workflow, below.
 - **`bundle_image`** — builds `servers/bundle/Dockerfile`, **boots the container**,
   and runs `scripts/smoke.mjs` against every mount of the running image, asserting
   the full-capability tool count for each (slack 14, tailscale 15, monarch-money 24,
@@ -397,11 +398,11 @@ strad-hostd's two native helpers — `strad-hostd-ax` behind the computer-use
 servers, `strad-hostd-messages` behind the Messages server — are Swift and
 build only on a Mac. Everything else in this repository runs on the
 self-hosted Linux runner, so this is the one workflow on GitHub-hosted
-`macos-15` runners, two jobs, and on a private repository those minutes are
+`macos-15` runners, three jobs, and on a private repository those minutes are
 billed. It is path-filtered to `hostd/ax/**`, `hostd/messages/**`, the
 daemon's `hostd/src/messages/**` (the Messages smoke test runs its queries),
-both helpers' LaunchAgent plists, the signing script and itself, and runs on a
-PR and on `main`.
+both helpers' LaunchAgent plists, the signing script, the installer's launchd
+path and itself, and runs on a PR and on `main`.
 
 It proves the helper compiles, ad-hoc signs, speaks its JSON-lines protocol over
 stdio (`hostd/ax/smoke.mjs`), answers `hello`, lists apps and displays, and
@@ -410,6 +411,14 @@ Accessibility or Screen Recording grant. It also lints both LaunchAgent plists.
 A runner has nobody to click a grant, so reading a real Accessibility tree, a
 real screenshot and the banner under a real grant are exercised on the owner's
 Mac and nowhere else; [limitation #108](/limitations/) says so.
+
+The `launchd` job runs `hostd/test/install.test.ts` under the `/bin/bash` 3.2 a
+Mac has, and `hostd/install/launchd-smoke.sh` against the real launchd: all three
+restart paths through `hostd/install/launchd.sh`, the one-shot included, on a
+throwaway agent that takes three seconds to die. It prints what `bootout`
+followed at once by `bootstrap` does there, without asserting it. A runner is not
+the owner's laptop, so what the daemon's real restart does is still shown only
+there.
 
 The `messages` job builds and ad-hoc signs `strad-hostd-messages`, builds a
 fixture chat.db with `hostd/messages/fixture.swift`, and drives the helper over
