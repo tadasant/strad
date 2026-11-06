@@ -6868,15 +6868,15 @@ on the bundle, deploy-time config only, and has no 25 MB ceiling. Moving
 attachments over a threshold onto it would lift the cap and keep large blobs
 out of both processes' memory.
 
-## 135. google-docs suggests edits and anchors comments, and neither has met Google
+## 135. google-docs suggests edits and anchors comments, and only part of that is seen live
 
 **What.** Comments and suggestions in the Docs API are generally available as
 of 2026-09-30. Two strad deltas on
 `images/bundle-google/vendor/google-docs-shared` use them. They add no tool
 name, so no `tools.allow:` list changes.
 
-1. **`suggest: true`** on `insert_content` (refused in one position, #136),
-   `append_text`, `insert_text`,
+1. **`suggest: true`** on `insert_content` (with refusals, #136), `append_text`,
+   `insert_text`,
    `replace_text` and `update_document` sends `writeControl: { writeMode: "SUGGEST" }`. Omitted, the
    request carries no `writeControl` and is a direct edit.
 2. **`add_comment`'s `quoted_text`** is the passage the comment attaches to.
@@ -6928,8 +6928,7 @@ Seven things about them are not obvious:
 `writeControl` and `insertComment` shapes, `Range.tabId`, the refused requests,
 `commentUpdateState`, that `documents.batchUpdate` accepts the `documents` scope.
 Not seen on a live document: whether a `replaceAllText` makes one suggestion or
-many and what `occurrencesChanged` then says; whether `suggestionResponses` is populated the way the code
-reads it; whether a comment-only account can call `batchUpdate` at all; and whether `insertComment`'s `commentId` is an ID Drive's
+many and what `occurrencesChanged` then says; whether a comment-only account can call `batchUpdate` at all; and whether `insertComment`'s `commentId` is an ID Drive's
 `replies.create` accepts, which `reply_to_comment` depends on. The tests fake
 both APIs.
 
@@ -6939,14 +6938,17 @@ a pending insertion and rewrites that suggestion: banana to mango, then mango to
 papaya, returned the same suggestion id and mango was gone. Text in a pending
 deletion does not match. A quote across a pending replacement reads both sides,
 `papayabanana`, in `add_comment`'s "Anchored to" and in `list_comments`, and the
-anchor is right. Not tried: that overwrite on another author's suggestion, and
-suggest-mode reach across tabs.
+anchor is right. Not tried: that overwrite on another author's suggestion.
+
+**Seen live, on 0.4.155 (the rollout of #463).** `suggest` with `tab_id` on
+`insert_text`, `append_text` and `replace_text`, and `update_document` by `tabId`,
+each stayed in its tab, and `suggestionResponses` carried the ids the tools returned.
 
 **Undo.** If upstream gains these, re-vendor and drop the delta. Until then a
 re-vendor has to re-apply the row in the tree's README, and
 `images/bundle-google/test/docs-suggest-anchor.test.ts` fails if it does not.
 
-## 136. google-docs edits by heading, and suggest cannot reach one position
+## 136. google-docs edits by heading, and `insert_content` cannot suggest everywhere
 
 **What.** `images/bundle-google/vendor/google-docs-shared` gains one tool,
 `insert_content`, and `tab_id` on `append_text`, `insert_text` and `replace_text`.
@@ -6969,9 +6971,10 @@ Ten things about it are not obvious:
    a table's start index. The normal shape is `text\n` at the start of the next
    paragraph, which leaves that paragraph's newline, style and heading id alone.
    Where no paragraph follows, above a table or at a tab's end, it is `\ntext`
-   inside the closing newline of the one before. That splits it. A heading in that
-   place keeps its heading id: live, direct and as a suggestion, pending, accepted
-   and rejected. Item 10 is what the split costs under `suggest`.
+   inside the closing newline of the one before. That splits it. A heading above a
+   table keeps its heading id: live, direct and as a suggestion, pending, accepted
+   and rejected. At a tab's end the id was not checked. Item 10 is what the split
+   costs under `suggest`.
 
 2. **New text takes its neighbour's look.** Docs styles inserted text from what
    surrounds it, so text above a heading starts out as that heading, and text
@@ -7016,14 +7019,18 @@ Lifecycle` "Agent Run Lifecycle". U+FE0F is folded too. All three views of a
     the insertion. Live, on a heading above a table: while pending that paragraph
     read `HEADING_2` under the heading's own id, so `heading_id` lookups matched two
     headings. Accepting the ids in the order the tool returned them left a real
-    `HEADING_2` under a new id, in both runs (one paragraph and two). Reverse order
-    gave `NORMAL_TEXT`. Rejecting all restored the document. No other shape reaches
-    the gap: `\ntext\n` leaves an empty heading on the old newline, Docs will not
-    delete a newline in front of a table, and a direct write of a spacer paragraph
-    first is a live edit that a rejecting reviewer cannot undo. So `suggestRefusal`
-    in `content-requests.ts` refuses, after the read that shows the shape and before
-    any write, unless the neighbour and the content's last paragraph are both plain:
-    `NORMAL_TEXT` and not a list item. The live failure covers a heading neighbour.
+    `HEADING_2` under a new id, in both runs (one paragraph and two). Reverse order,
+    in one run, gave `NORMAL_TEXT`. Rejecting all restored the document. By Google's
+    reference, and not run live, no other shape reaches the gap: `\ntext\n` would
+    leave an empty heading on the old newline, and the newline in front of a table
+    cannot be deleted. A direct write of a spacer paragraph first is a live edit that
+    a rejecting reviewer cannot undo. So `suggestRefusal` in `content-requests.ts`
+    refuses, after the read that shows the shape and before any write, unless the
+    neighbour and the content's last paragraph are both plain: `NORMAL_TEXT` and not
+    a list item. In the allowed case `contentRequests` sends no paragraph reset to
+    the old newline, so no rival suggestion exists there, and the last paragraph
+    keeps whatever direct formatting that newline has. The live failure covers a
+    heading neighbour.
     A tab's last paragraph when it is a heading takes the same code path and was not
     run under `suggest`. A list item, or content ending in a heading or list on a
     plain line, is refused from the same reasoning and was not run live either.
@@ -7045,8 +7052,8 @@ paragraphs including a list, and on a heading above a table one id per paragraph
 plus one, two for one and three for two, which is the shape item 10 refuses.
 
 **Not seen on a live document.** The Docs editor's Accept all on the refused shape.
-`suggest` on a tab's last paragraph, on any neighbour, so the count there and whether
-a plain neighbour with direct styling, a centred line say, keeps it. The stable
+`suggest` on a tab's last paragraph, on any neighbour, so the count there. Whether a
+heading at a tab's end keeps its id. The stable
 facts from the reference, read 2026-11-06, are the table start index, the stripped
 characters, the bullet behaviour, that an unset field in the mask resets it, and the
 `tabsCriteria` shape. The tests apply requests to

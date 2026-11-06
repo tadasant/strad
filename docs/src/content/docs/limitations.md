@@ -4179,9 +4179,9 @@ See `HACKS.md` #134.
 
 ---
 
-### 135. google-docs suggestions and anchored comments have not met Google
+### 135. google-docs suggestions and anchored comments are partly seen live
 
-`suggest: true` on `insert_content` (refused in one position, #136), `append_text`,
+`suggest: true` on `insert_content` (with refusals, #136), `append_text`,
 `insert_text`, `replace_text` and `update_document` makes an edit a suggestion for a
 human to review.
 `add_comment`'s `quoted_text` attaches a comment to that passage.
@@ -4213,8 +4213,9 @@ human to review.
   "Anchored to" and `list_comments` read `papayabanana` for a passage typed as
   either word. The anchor itself is right.
 - **The live behaviour is only partly seen.** The request shapes come from Google's
-  reference, and #462 ran against real Google on 0.4.154 with nothing failing. Suggest
-  mode's reach across tabs has not been tried live. Not yet seen on a real document:
+  reference. #462 ran against real Google on 0.4.154 with nothing failing, and on
+  0.4.155 suggestions with `tab_id` each stayed in their tab. Not yet seen on a real
+  document:
   how `replace_text` splits into suggestions and what count it reports, whether `reply_to_comment` accepts an anchored comment's ID, and
   whether a comment-only account can write this way at all. The tests fake both
   APIs.
@@ -4229,7 +4230,7 @@ See `HACKS.md` #135.
 
 ---
 
-### 136. google-docs edits by heading, and suggest cannot reach one position
+### 136. google-docs edits by heading, and `insert_content` cannot suggest everywhere
 
 `insert_content` writes markdown above, under or at the end of a heading's
 section, in any tab, and `get_document` can read one section. An agent no longer
@@ -4249,7 +4250,8 @@ needs an index for the common edit.
 - **Directly above a table, or at a tab's end, the paragraph before is split.**
   Docs takes no text at a table's start, so `after_heading` on a heading followed
   by a table, or on a tab's last paragraph, writes inside the heading's closing
-  newline. Its text, style and `heading_id` stay, so a link to it keeps working.
+  newline. Above a table its text, style and `heading_id` stay. At a tab's end the
+  `heading_id` was not checked.
 - **`suggest` is refused there unless everything involved is plain text.** In that
   shape the content's last paragraph ends on the existing paragraph's own newline,
   and a suggestion cannot restyle that newline cleanly. On a real document, a
@@ -4260,7 +4262,9 @@ needs an index for the common edit.
   names what to do instead, such as `end_of_section`, `before_heading` or a direct
   write.
   Only the heading above a table failed live. The other refused cases share its
-  shape and were not run.
+  shape and were not run. An allowed suggestion at a tab's end keeps any direct
+  formatting of the line it follows, a centred line for example, on its last
+  paragraph, and that case has not been run either.
 - **One suggest call can make several suggestions, and the number depends on the
   shape.** Content above a heading made one, across five paragraphs. The refused
   shape made one per paragraph plus one. A tab's end, the one remaining shape that

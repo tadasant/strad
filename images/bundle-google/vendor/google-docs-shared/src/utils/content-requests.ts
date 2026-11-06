@@ -103,11 +103,13 @@ export function insertionPoint(
  * the insertion. Seen live on a heading above a table: accepting the ids in the
  * order Google returns them left a real heading under a new id, reverse order
  * gave `NORMAL_TEXT`, and while pending two paragraphs answered to one
- * `heading_id`. No other request shape reaches this gap: `"\ntext\n"` strands an
- * empty heading on the old newline, and Docs keeps a newline in front of a table.
+ * `heading_id`. By Google's reference no other request shape reaches this gap:
+ * `"\ntext\n"` would strand an empty heading on the old newline, and the newline
+ * in front of a table cannot be deleted.
  *
  * So the shape is only safe when nothing has to change on that newline, which
- * means a plain paragraph ending on a plain paragraph's newline.
+ * means a plain paragraph ending on a plain paragraph's newline. `contentRequests`
+ * sends no reset to it, so no rival suggestion exists there.
  */
 export function suggestRefusal(
   paragraphs: ContentParagraph[],
@@ -124,18 +126,22 @@ export function suggestRefusal(
       ? 'This is the end of the tab'
       : 'Docs takes no text at the start of the table or other element that follows';
   const held = point.neighbour.bullet ? `${style} list item` : `${style} paragraph`;
-  const instead = ['drop suggest to write it directly, which is safe here'];
+  const instead = ['if a direct edit is acceptable, drop suggest'];
   if (neighbourIsPlain) {
     instead.unshift('end the content with a plain paragraph');
   } else if (point.blockedBy !== 'tab-end') {
-    instead.unshift('use position "end_of_section" to suggest it after what follows the heading');
+    instead.unshift(
+      'use position "before_heading" to suggest it above the heading',
+      'use position "end_of_section" to suggest it after what follows the heading'
+    );
   } else if (!point.neighbour.bullet) {
     instead.unshift('use position "before_heading" to suggest it above that paragraph');
   }
   return (
     `This content cannot be made a suggestion here. ${place}, so its last paragraph would ` +
     `have to end on the closing newline of the ${held} before it. A suggestion cannot ` +
-    `restyle that newline cleanly, and accepting could leave a stray heading or list item. ` +
+    `restyle that newline cleanly, and accepting could leave a paragraph with the wrong ` +
+    `style, such as a stray heading. ` +
     `Instead, ${instead.join(', or ')}.`
   );
 }
@@ -177,7 +183,8 @@ function textStyleOf(style: InlineStyle): { textStyle: Record<string, unknown>; 
 export function contentRequests(
   paragraphs: ContentParagraph[],
   point: InsertionPoint,
-  tabId?: string
+  tabId?: string,
+  suggest = false
 ): DocsBatchUpdateRequest[] {
   const inTab = tabId ? { tabId } : {};
   const text = paragraphs.map((p) => p.text).join('\n');
@@ -212,7 +219,10 @@ export function contentRequests(
     });
   }
 
-  for (const { paragraph, start, end } of placed) {
+  // A suggested `after` shape has passed `suggestRefusal`: the last paragraph is
+  // plain and its newline is existing text, where a reset would only be a rival.
+  const resets = suggest && point.side === 'after' ? placed.slice(0, -1) : placed;
+  for (const { paragraph, start, end } of resets) {
     requests.push({
       updateParagraphStyle: {
         range: { startIndex: start, endIndex: end, ...inTab },

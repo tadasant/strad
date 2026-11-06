@@ -53,9 +53,9 @@ const PARAM_DESCRIPTIONS = {
     'found in two tabs is refused rather than guessed. Required for "end_of_tab" in a document ' +
     'with several tabs. get_document_outline lists the tab ids.',
   suggest:
-    `${SUGGEST_PARAM_DESCRIPTION} Refused directly above a table or at a tab's end when the ` +
-    'paragraph before is a heading or list item, or when the content would end in one there. ' +
-    'One call can return several suggestion IDs; a reviewer has to resolve all of them.',
+    `${SUGGEST_PARAM_DESCRIPTION} Where Docs takes text only inside the paragraph before, ` +
+    'directly above a table or at the end of a tab with no closing blank line, this is ' +
+    'refused unless that paragraph and the last paragraph of the content are both plain text.',
 } as const;
 
 export const InsertContentSchema = z.object({
@@ -118,14 +118,14 @@ described under Notes.
   section includes its H3s.
 - Directly above a table, or past the last paragraph of a tab, Docs accepts
   text only inside the paragraph before it, and the content's last paragraph
-  ends on that paragraph's own newline. As a direct edit the heading keeps its
-  text, style and heading_id. With suggest=true that newline cannot be restyled
-  cleanly, so the call is refused, with the alternatives named, unless both that
-  paragraph and the content's last paragraph are plain text. So after_heading on
-  a heading directly above a table cannot be a suggestion.
-- The number of suggestion IDs differs by position. Content suggested above a
-  heading returned one, across five paragraphs. At a tab's end the count has not
-  been measured, so use the IDs the result lists.
+  ends on that paragraph's own newline. A heading above a table keeps its text,
+  style and heading_id. With suggest=true that newline cannot be restyled cleanly,
+  so the call is refused, with the alternatives named, unless both that paragraph
+  and the content's last paragraph are plain text. So after_heading on a heading
+  directly above a table cannot be a suggestion. An allowed one at a tab's end
+  keeps any direct formatting of the line it follows on its last paragraph.
+- One call can make several suggestions, and the number differs by position, so
+  use the IDs the result lists.
 - A numbered list directly after an existing numbered list joins it.
 - To place text at an exact index, use insert_text. For tables and images, use
   update_document.`;
@@ -202,7 +202,12 @@ export function insertContentTool(_server: Server, clientFactory: ClientFactory)
           const refusal = suggestRefusal(paragraphs, point);
           if (refusal) throw new Error(`${refusal} ${NOTHING_CHANGED}`);
         }
-        const requests = contentRequests(paragraphs, point, tab.tabId || undefined);
+        const requests = contentRequests(
+          paragraphs,
+          point,
+          tab.tabId || undefined,
+          parsed.suggest === true
+        );
         if (parsed.suggest) assertSuggestable(requests);
 
         // Measured on this revision; Docs carries the indexes over any edit a

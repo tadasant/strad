@@ -686,9 +686,9 @@ test("suggest makes every request a suggestion, against the revision it measured
 });
 
 /**
- * What the batch `insert_content` sent before the refusal does, on a heading
- * directly above a table. These replay the live results, so the model is pinned
- * to what Google did rather than to what strad's code now sends.
+ * The `\ntext` batch on a heading directly above a table, built by hand so the
+ * model is pinned to Google's results rather than to `contentRequests`. Live, the
+ * ids and the in-order accept were seen at both sizes, reverse order in one run.
  */
 function suggestAboveTable(paragraphs: string[]) {
   const doc = reportDoc();
@@ -740,6 +740,11 @@ test.each([
   expect(readTab(reversed.doc, "t.condensed")).toContain(`NORMAL_TEXT${lastLine}`);
 });
 
+function paragraphStyles(doc: GoogleDoc) {
+  const content = doc.tabs![1].documentTab!.body!.content! as Array<Record<string, any>>;
+  return content.flatMap((e) => (e.paragraph ? [e.paragraph.paragraphStyle] : []));
+}
+
 function withLastParagraph(style: Record<string, unknown>, bullet = false): GoogleDoc {
   const doc = reportDoc();
   doc.tabs!.pop();
@@ -765,15 +770,47 @@ test("suggest above a table is refused by name, with a way forward, and nothing 
     expect(isError, text).toBe(true);
     expect(text).toContain("cannot be made a suggestion here");
     expect(text).toContain("HEADING_2 paragraph");
+    expect(text).toContain('position "before_heading"');
     expect(text).toContain('position "end_of_section"');
-    expect(text).toContain("drop suggest");
+    expect(text).toContain("if a direct edit is acceptable, drop suggest");
     expect(text).toContain("Nothing was changed.");
     expect(batches).toHaveLength(0);
     expect(doc).toEqual(before);
   }
 });
 
+test("what the refusal above a table offers works as a suggestion", async () => {
+  for (const position of ["before_heading", "end_of_section"]) {
+    const doc = reportDoc();
+    const { call } = await connect(doc);
+    const { isError, text } = await call("insert_content", {
+      tab_id: "t.condensed",
+      heading: "Agent Run Lifecycle",
+      position,
+      content: "Above the table.",
+      suggest: true,
+    });
+    expect(isError, text).toBe(false);
+    expect(text).toContain("**Applied as:** suggestion");
+  }
+});
+
+test("after_heading on a heading that ends the tab is refused under suggest", async () => {
+  const doc = withLastParagraph({ namedStyleType: "HEADING_2", headingId: "h.end" });
+  const { call, batches } = await connect(doc);
+  const { isError, text } = await call("insert_content", {
+    heading_id: "h.end",
+    position: "after_heading",
+    content: "x",
+    suggest: true,
+  });
+  expect(isError, text).toBe(true);
+  expect(text).toContain("This is the end of the tab");
+  expect(batches).toHaveLength(0);
+});
+
 test.each([
+  ["a title", withLastParagraph({ namedStyleType: "TITLE" }), "x", 'position "before_heading"'],
   ["a heading", withLastParagraph({ namedStyleType: "HEADING_2", headingId: "h.end" }), "x", 'position "before_heading"'],
   ["a list item", withLastParagraph({ namedStyleType: "NORMAL_TEXT" }, true), "x", "drop suggest"],
   ["a plain line, with content ending in a heading", withLastParagraph({ namedStyleType: "NORMAL_TEXT" }), "x\n\n## Y", "end the content with a plain paragraph"],
@@ -791,7 +828,7 @@ test.each([
   expect(batches).toHaveLength(1);
 });
 
-test("suggest at a tab's end on a plain line still goes through, as one suggestion", async () => {
+test("suggest at a tab's end on a plain line goes through, and leaves the old newline alone", async () => {
   const doc = withLastParagraph({ namedStyleType: "NORMAL_TEXT" });
   const { call, batches } = await connect(doc);
   const { isError, text } = await call("insert_content", {
@@ -800,11 +837,16 @@ test("suggest at a tab's end on a plain line still goes through, as one suggesti
     suggest: true,
   });
   expect(isError, text).toBe(false);
-  expect(batches[0].requests[0].insertText.text.startsWith("\n")).toBe(true);
+  const [{ insertText }, ...rest] = batches[0].requests;
+  expect(insertText.text.startsWith("\n")).toBe(true);
+  const oldNewline = insertText.location.index + insertText.text.length;
+  const resets = rest.flatMap((r) => (r.updateParagraphStyle ? [r.updateParagraphStyle.range] : []));
+  expect(resets).toHaveLength(1);
+  expect(resets[0].endIndex).toBeLessThan(oldNewline);
   expect(readTab(doc, "t.condensed").slice(-2)).toEqual(["HEADING_3|Handoffs", "NORMAL_TEXT|Last words."]);
 });
 
-test("whatever suggest accepts, in either order, the document reads the same and strands no heading", async () => {
+test("a suggestion accepted in either order reads as the direct edit would, and strands no heading", async () => {
   const anchors = ["Overview", "Topic 1", "Topic 8", "Agent Run Lifecycle", "Open questions"];
   const positions = ["before_heading", "after_heading", "end_of_section"];
   const contents = ["One.", "### Sub\n\nOne.\n\nTwo.", "- a\n- b", "### Ends in a heading"];
@@ -814,12 +856,14 @@ test("whatever suggest accepts, in either order, the document reads the same and
     for (const position of positions) {
       for (const content of contents) {
         const orders = (ids: string[]) => [ids, [...ids].reverse()];
-        const reads: string[][] = [];
+        const args = { tab_id: "t.full", heading, position, content, occurrence: 1 };
+        const direct = reportDoc();
+        await (await connect(direct)).call("insert_content", args);
+        const styles: string[] = [];
         for (const pick of [0, 1]) {
           const doc = reportDoc();
           const { call, batches } = await connect(doc);
-          const args = { tab_id: "t.full", heading, position, content, suggest: true, occurrence: 1 };
-          const { isError, text } = await call("insert_content", args);
+          const { isError, text } = await call("insert_content", { ...args, suggest: true });
           if (isError) {
             expect(text).toContain("cannot be made a suggestion here");
             expect(batches).toHaveLength(0);
@@ -829,10 +873,11 @@ test("whatever suggest accepts, in either order, the document reads the same and
           const ids = text.match(/\*\*Suggestion IDs:\*\* (.+)/)![1].split(", ");
           for (const id of orders(ids)[pick]) acceptSuggestion(doc, id);
           assertWellFormed(doc);
-          reads.push(readTab(doc, "t.full"));
+          expect(readTab(doc, "t.full")).toEqual(readTab(direct, "t.full"));
+          styles.push(JSON.stringify(paragraphStyles(doc)));
           written += 1;
         }
-        if (reads.length === 2) expect(reads[0]).toEqual(reads[1]);
+        if (styles.length === 2) expect(styles[0]).toBe(styles[1]);
       }
     }
   }

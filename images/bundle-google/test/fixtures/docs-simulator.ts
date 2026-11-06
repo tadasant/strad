@@ -16,8 +16,9 @@
  * predicted neither: a split paragraph's id stays with the text it was on, and
  * under SUGGEST the old newline keeps its style and id beside a rival style
  * suggestion, so the order a reviewer accepts in decides what is left. What it
- * does beyond those live cases is an assumption, and a bullet change on an
- * existing newline under SUGGEST, never seen, throws.
+ * does beyond those live cases is an assumption, including that every split
+ * mints one id per paragraph on any neighbour. A bullet change on an existing
+ * newline under SUGGEST, never seen, throws.
  */
 import type { GoogleDoc, StructuralElement, Tab } from "google-docs-workspace-mcp-server-shared";
 
@@ -246,6 +247,10 @@ export function applyBatch(doc: GoogleDoc, requests: Json[], options: ApplyOptio
   // split: live, a split batch returned one id per paragraph plus the insertion's.
   let insertion: string | undefined;
   let split = false;
+  const foldInto = () => {
+    if (!insertion) throw new Error("the simulator does not model a suggest batch with no text");
+    return insertion;
+  };
   const tabs = allTabs(doc.tabs ?? []);
   const contentOf = (tabId?: string) => {
     const tab = tabId ? tabs.find((t) => t.tabProperties?.tabId === tabId) : tabs[0];
@@ -280,34 +285,30 @@ export function applyBatch(doc: GoogleDoc, requests: Json[], options: ApplyOptio
         for (const p of overlapping(content, body.range)) {
           const proposed = { ...p.paragraph.paragraphStyle };
           applyMask(proposed, body.paragraphStyle, body.fields, PARAGRAPH_STYLE_FIELDS);
-          const { headingId: _proposedId, ...change } = proposed;
-          const { headingId: _heldId, ...held } = p.paragraph.paragraphStyle ?? {};
-          const changes = JSON.stringify(change) !== JSON.stringify(held);
           if (suggest && !closesOnSuggestedNewline(p)) {
             // The newline is existing text, so the change cannot join the insertion.
-            if (changes) {
-              const id = mint();
-              (p.paragraph.suggestedParagraphStyleChanges ??= {})[id] = { paragraphStyle: change };
-              ids.add(id);
-            }
+            const { headingId: _id, ...change } = proposed;
+            const id = mint();
+            (p.paragraph.suggestedParagraphStyleChanges ??= {})[id] = { paragraphStyle: change };
+            ids.add(id);
             continue;
           }
           p.paragraph.paragraphStyle = proposed;
-          if (suggest) ids.add(split && changes ? mint() : insertion!);
+          if (suggest) ids.add(split ? mint() : foldInto());
         }
         break;
       case "updateTextStyle":
         for (const run of runsIn(content, body.range)) {
           applyMask((run.textRun.textStyle ??= {}), body.textStyle, body.fields, TEXT_STYLE_FIELDS);
         }
-        if (suggest) ids.add(insertion!);
+        if (suggest) ids.add(foldInto());
         break;
       case "deleteParagraphBullets":
         for (const p of overlapping(content, body.range)) {
           assertBulletModelled(p, suggest);
           delete p.paragraph.bullet;
         }
-        if (suggest) ids.add(insertion!);
+        if (suggest) ids.add(foldInto());
         break;
       case "createParagraphBullets":
         if (!BULLET_PRESETS.has(body.bulletPreset)) throw new Error(`400: ${body.bulletPreset}`);
@@ -321,7 +322,7 @@ export function applyBatch(doc: GoogleDoc, requests: Json[], options: ApplyOptio
             shiftFrom(content, first.startIndex + tabs, -tabs);
           }
         }
-        if (suggest) ids.add(insertion!);
+        if (suggest) ids.add(foldInto());
         break;
       default:
         throw new Error(`the simulator does not model ${name}`);
