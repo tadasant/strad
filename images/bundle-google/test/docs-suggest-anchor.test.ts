@@ -791,3 +791,42 @@ test("a direct edit's ALL_FAILED_UNKNOWN_REASON is reported too", async () => {
   });
   expect(isError).toBe(true);
 });
+
+test("a refusal says whose rule it is: Google's for an edit, this server's for a thread", async () => {
+  const { client, batches } = fakeClient(ONE_TAB);
+  const google = await call(client, "update_document", {
+    document_id: DOC_ID,
+    suggest: true,
+    requests: [{ deleteTab: { tabId: "t.0" } }],
+  });
+  expect(google.isError).toBe(true);
+  expect(google.text).toContain("Google Docs does not support these in suggest mode: requests[0].deleteTab");
+  expect(google.text).not.toContain("This server");
+
+  const ours = await call(client, "update_document", {
+    document_id: DOC_ID,
+    suggest: true,
+    requests: [{ acceptSuggestion: { suggestionId: "s" } }, { insertComment: { content: "x" } }],
+  });
+  expect(ours.isError).toBe(true);
+  expect(ours.text).toContain("This server does not send requests on comment or suggestion threads");
+  expect(ours.text).toContain("requests[0].acceptSuggestion, requests[1].insertComment");
+  expect(ours.text).not.toContain("Google Docs");
+  expect(batches).toHaveLength(0);
+});
+
+test("replace_text with suggest and no match does not claim a suggestion", async () => {
+  const { client } = fakeClient(ONE_TAB, {
+    commentUpdateState: "NO_UPDATES_REQUESTED",
+    replies: [{ replaceAllText: {} }],
+  });
+  const { text } = await call(client, "replace_text", {
+    document_id: DOC_ID,
+    find: "x",
+    replace: "y",
+    suggest: true,
+  });
+  expect(text).toContain("# No Occurrences Matched");
+  expect(text).not.toContain("Replacement Suggested");
+  expect(text).toContain("nothing to suggest");
+});

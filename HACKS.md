@@ -6927,12 +6927,19 @@ Seven things about them are not obvious:
 `writeControl` and `insertComment` shapes, `Range.tabId`, the refused requests,
 `commentUpdateState`, that `documents.batchUpdate` accepts the `documents` scope.
 Not seen on a live document: whether a `replaceAllText` makes one suggestion or
-many and what `occurrencesChanged` then says; whether it matches text inside a
-pending suggestion; whether `suggestionResponses` is populated the way the code
-reads it; whether a comment-only account can call `batchUpdate` at all; whether Drive's `comments.list` shows an `insertComment` comment with
-its quote; and whether `insertComment`'s `commentId` is an ID Drive's
+many and what `occurrencesChanged` then says; whether `suggestionResponses` is populated the way the code
+reads it; whether a comment-only account can call `batchUpdate` at all; and whether `insertComment`'s `commentId` is an ID Drive's
 `replies.create` accepts, which `reply_to_comment` depends on. The tests fake
 both APIs.
+
+**Seen live, on 0.4.154 (session 27002).** All of it on one account's own
+suggestions, and nothing failed. `replace_text` under `suggest` matches text inside
+a pending insertion and rewrites that suggestion: banana to mango, then mango to
+papaya, returned the same suggestion id and mango was gone. Text in a pending
+deletion does not match. A quote across a pending replacement reads both sides,
+`papayabanana`, in `add_comment`'s "Anchored to" and in `list_comments`, and the
+anchor is right. Not tried: that overwrite on another author's suggestion, and
+suggest-mode reach across tabs.
 
 **Undo.** If upstream gains these, re-vendor and drop the delta. Until then a
 re-vendor has to re-apply the row in the tree's README, and

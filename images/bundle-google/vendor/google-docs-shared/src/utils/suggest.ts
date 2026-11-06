@@ -65,19 +65,34 @@ function unsupportedStyleFields(request: DocsBatchUpdateRequest): string[] {
  * request here is what lets the caller split it rather than decode a 400.
  */
 export function assertSuggestable(requests: DocsBatchUpdateRequest[]): void {
-  const refused: string[] = [];
+  const byGoogle: string[] = [];
+  const byThisServer: string[] = [];
   requests.forEach((request, i) => {
-    for (const name of [...UNSUPPORTED_IN_SUGGEST_MODE, ...THREAD_REQUESTS]) {
-      if (name in request) refused.push(`requests[${i}].${name}`);
+    for (const name of UNSUPPORTED_IN_SUGGEST_MODE) {
+      if (name in request) byGoogle.push(`requests[${i}].${name}`);
     }
     for (const field of unsupportedStyleFields(request)) {
-      refused.push(`requests[${i}].updateDocumentStyle (${field})`);
+      byGoogle.push(`requests[${i}].updateDocumentStyle (${field})`);
+    }
+    for (const name of THREAD_REQUESTS) {
+      if (name in request) byThisServer.push(`requests[${i}].${name}`);
     }
   });
-  if (refused.length === 0) return;
+  if (byGoogle.length === 0 && byThisServer.length === 0) return;
+
+  const reasons: string[] = [];
+  if (byGoogle.length > 0) {
+    reasons.push(`Google Docs does not support these in suggest mode: ${byGoogle.join(', ')}.`);
+  }
+  if (byThisServer.length > 0) {
+    reasons.push(
+      `This server does not send requests on comment or suggestion threads with suggest, ` +
+        `because they are not edits to propose: ${byThisServer.join(', ')}.`
+    );
+  }
   throw new Error(
-    `Google Docs cannot make these a suggestion: ${refused.join(', ')}. Nothing was changed. ` +
-      'Remove them from this request, or send them separately without suggest as direct edits.'
+    `${reasons.join(' ')} Nothing was changed. ` +
+      'Remove them from this request, or send them separately without suggest.'
   );
 }
 

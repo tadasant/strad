@@ -51,6 +51,9 @@ The number of replacements made (from the Docs API response).
 - This is literal-text replacement only — no regex, no partial-token matching.
 - With suggest=true this reaches every occurrence in every tab too. Pass
   tab_id to suggest in one tab.
+- With suggest=true it matches text inside a pending insertion and rewrites that
+  suggestion in place, under the same suggestion ID, so the text it proposed is
+  gone. Text in a pending deletion does not match.
 - For more flexible search/replace, use update_document directly.`;
 
 export function replaceTextTool(_server: Server, clientFactory: ClientFactory) {
@@ -116,7 +119,9 @@ export function replaceTextTool(_server: Server, clientFactory: ClientFactory) {
           | undefined;
         const occurrences = reply?.replaceAllText?.occurrencesChanged ?? 0;
 
-        let output = parsed.suggest ? `# Replacement Suggested\n\n` : `# Replacement Complete\n\n`;
+        const suggestedHeading =
+          occurrences === 0 ? 'No Occurrences Matched' : 'Replacement Suggested';
+        let output = `# ${parsed.suggest ? suggestedHeading : 'Replacement Complete'}\n\n`;
         output += `**Document ID:** ${documentId}\n`;
         if (parsed.tab_id) output += `**Tab ID:** ${parsed.tab_id}\n`;
         output += `**Find:** ${JSON.stringify(parsed.find)}\n`;

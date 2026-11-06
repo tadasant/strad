@@ -4192,7 +4192,8 @@ See `HACKS.md` #134.
 - **`update_document` refuses what Docs cannot suggest**, by name and before
   calling Google: tab and named-range changes, deleting a header or footer,
   table column properties, and three document style fields. Send those without
-  `suggest`. Requests on comment and suggestion threads are refused too.
+  `suggest`. strad also refuses requests on comment and suggestion threads, as its
+  own rule, because they are not edits to propose.
 - **A comment only attaches to text in the body.** Headers, footers, footnotes
   and a table of contents are not searched; send `insertComment` through
   `update_document` for those. `quoted_text` that is not found, or that repeats with no
@@ -4202,10 +4203,18 @@ See `HACKS.md` #134.
   it.
 - **`get_document`'s text shows both sides of a pending suggestion**, unmarked.
   `format=json` carries the suggestion ids.
-- **The live behaviour is unverified.** The request shapes come from Google's
-  reference. Not yet seen on a real document: how `replace_text` splits into
-  suggestions and what count it reports, how `list_comments` shows an anchored
-  comment, whether `reply_to_comment` accepts an anchored comment's ID, and
+- **`replace_text` with `suggest` can overwrite a pending suggestion.** It matches
+  text inside a pending insertion and rewrites that suggestion under the same id,
+  so what it proposed is gone. Text in a pending deletion does not match. This was
+  seen on one account's own suggestions. Whether it does the same to another
+  author's suggestion is untested.
+- **A quote across a pending replacement shows both sides.** `add_comment`'s
+  "Anchored to" and `list_comments` read `papayabanana` for a passage typed as
+  either word. The anchor itself is right.
+- **The live behaviour is only partly seen.** The request shapes come from Google's
+  reference, and #462 ran against real Google on 0.4.154 with nothing failing. Suggest
+  mode's reach across tabs has not been tried live. Not yet seen on a real document:
+  how `replace_text` splits into suggestions and what count it reports, whether `reply_to_comment` accepts an anchored comment's ID, and
   whether a comment-only account can write this way at all. The tests fake both
   APIs.
 - **strad added it, not upstream.** Re-copying the server from upstream removes
