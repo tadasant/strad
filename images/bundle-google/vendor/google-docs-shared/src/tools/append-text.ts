@@ -4,6 +4,7 @@ import type { ClientFactory } from '../server.js';
 import type { DocsBatchUpdateRequest } from '../types.js';
 import { parseDocumentId } from '../utils/parse-document-id.js';
 import { getEndOfBodyIndex } from '../utils/extract-text.js';
+import { renderSuggestionResult, SUGGEST_PARAM_DESCRIPTION } from '../utils/suggest.js';
 import { logError } from '../logging.js';
 
 const PARAM_DESCRIPTIONS = {
@@ -11,22 +12,27 @@ const PARAM_DESCRIPTIONS = {
   text:
     'The plain text to append to the end of the document. Newlines are preserved. ' +
     'For most cases, prefix with "\\n" if you want a paragraph break before the new content.',
+  suggest: SUGGEST_PARAM_DESCRIPTION,
 } as const;
 
 export const AppendTextSchema = z.object({
   document_id: z.string().min(1).describe(PARAM_DESCRIPTIONS.document_id),
   text: z.string().min(1).describe(PARAM_DESCRIPTIONS.text),
+  suggest: z.boolean().optional().describe(PARAM_DESCRIPTIONS.suggest),
 });
 
 const TOOL_DESCRIPTION = `Append plain text to the end of a Google Doc.
 
 Convenience wrapper around update_document. Looks up the current end-of-body
 index, then issues an insertText request that adds the provided text just
-before the trailing newline.
+before the trailing newline. With suggest=true the text is proposed as a
+suggestion for a human to accept, instead of being written directly.
 
 **Parameters:**
 - document_id: Document ID or full Docs URL (required)
 - text: Plain text to append (required)
+- suggest: Make the edit a suggestion rather than a direct change (optional,
+  default false)
 
 **Notes:**
 - In a document with several tabs, this appends to the FIRST tab. To append
@@ -50,6 +56,10 @@ export function appendTextTool(_server: Server, clientFactory: ClientFactory) {
           type: 'string',
           description: PARAM_DESCRIPTIONS.text,
         },
+        suggest: {
+          type: 'boolean',
+          description: PARAM_DESCRIPTIONS.suggest,
+        },
       },
       required: ['document_id', 'text'],
     },
@@ -59,7 +69,9 @@ export function appendTextTool(_server: Server, clientFactory: ClientFactory) {
         const documentId = parseDocumentId(parsed.document_id);
         const client = clientFactory();
 
-        const doc = await client.getDocument(documentId);
+        const doc = await client.getDocument(documentId, {
+          suggestionsViewMode: 'SUGGESTIONS_INLINE',
+        });
         const insertIndex = getEndOfBodyIndex(doc);
 
         const requests: DocsBatchUpdateRequest[] = [
@@ -70,12 +82,17 @@ export function appendTextTool(_server: Server, clientFactory: ClientFactory) {
             },
           },
         ];
-        await client.batchUpdate(documentId, requests);
+        const response = await client.batchUpdate(
+          documentId,
+          requests,
+          parsed.suggest ? { writeMode: 'SUGGEST' } : undefined
+        );
 
-        let output = `# Text Appended\n\n`;
+        let output = parsed.suggest ? `# Appended Text Suggested\n\n` : `# Text Appended\n\n`;
         output += `**Document ID:** ${documentId}\n`;
         output += `**Inserted at index:** ${insertIndex}\n`;
         output += `**Characters:** ${parsed.text.length}\n`;
+        if (parsed.suggest) output += renderSuggestionResult(response);
 
         return {
           content: [

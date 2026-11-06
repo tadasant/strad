@@ -12,7 +12,20 @@ const para = (text, namedStyleType = "NORMAL_TEXT") => ({
   },
 });
 
-const body = (...content) => ({ content });
+/** Numbers a body the way Docs does: UTF-16 code units from 1, paragraph and run alike. */
+const body = (...content) => {
+  let index = 1;
+  for (const element of content) {
+    element.startIndex = index;
+    for (const run of element.paragraph.elements) {
+      run.startIndex = index;
+      index += run.textRun.content.length;
+      run.endIndex = index;
+    }
+    element.endIndex = index;
+  }
+  return { content };
+};
 
 export const DOCUMENT_ID = "1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
 

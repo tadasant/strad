@@ -53,6 +53,12 @@ tab is read, not only the first.
 - tab_id: just that tab, shaped like a single-tab document; format=json puts
   the tab's body at the top level, with its "tabProperties".
 
+**Pending suggestions:** for an account that can edit or comment, the body
+holds them inline, so text proposed for deletion and text proposed for
+insertion both appear, unmarked, side by side. format=json marks them with
+suggestedDeletionIds and suggestedInsertionIds, and its indices are the ones
+to use for edits.
+
 **Returns:**
 For format=text:
 - Document title and ID

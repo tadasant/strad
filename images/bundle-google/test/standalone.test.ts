@@ -507,12 +507,24 @@ describe("google-docs standalone", () => {
   async function writesComments(client: Client): Promise<void> {
     const added = await client.callTool({
       name: "add_comment",
-      arguments: { document_id: TABBED_ID, content: "Is this the right date?", quoted_text: "Fly to Lisbon." },
+      arguments: { document_id: TABBED_ID, content: "Is this the right date?" },
     });
     expect(added.isError).toBeFalsy();
     const addedText = JSON.stringify(added.content);
     expect(addedText).toContain(`**Comment ID:** comment-on-${TABBED_ID}`);
-    expect(addedText).toContain("(not anchored)");
+    expect(addedText).toContain("on the document as a whole");
+
+    // The stub answers with the text the range really covers in the tab it
+    // names, so this fails if the server measures the wrong tab or the wrong indexes.
+    const anchored = await client.callTool({
+      name: "add_comment",
+      arguments: { document_id: TABBED_ID, content: "Is this the right date?", quoted_text: "to Lisbon" },
+    });
+    expect(anchored.isError).toBeFalsy();
+    const anchoredText = JSON.stringify(anchored.content);
+    expect(anchoredText).toContain("**Comment ID:** docs-comment-");
+    expect(anchoredText).toContain('**Anchored to:** \\"to Lisbon\\"');
+    expect(anchoredText).toContain('tab \\"Itinerary\\" (t.itin)');
 
     const replied = await client.callTool({
       name: "reply_to_comment",
@@ -523,6 +535,60 @@ describe("google-docs standalone", () => {
     expect(repliedText).toContain("**Reply ID:** reply-to-AAAAc1");
     expect(repliedText).toContain("**Thread:** resolved");
   }
+
+  // Suggest mode (`HACKS.md` #135): each text tool, against the preload's
+  // `batchUpdate`, which answers a SUGGEST write with suggestion ids and a
+  // direct one with none.
+  async function writesSuggestions(client: Client): Promise<void> {
+    for (const [name, args] of [
+      ["append_text", { text: "Pack sunscreen." }],
+      ["insert_text", { index: 1, text: "Draft. " }],
+      ["replace_text", { find: "Lisbon", replace: "Porto" }],
+      ["update_document", { requests: [{ insertText: { location: { index: 1 }, text: "Hi" } }] }],
+    ] as const) {
+      const suggested = await client.callTool({
+        name,
+        arguments: { document_id: TABBED_ID, ...args, suggest: true },
+      });
+      expect(suggested.isError, name).toBeFalsy();
+      const text = JSON.stringify(suggested.content);
+      expect(text, name).toContain("**Applied as:** suggestion");
+      expect(text, name).toContain("suggest.stub0");
+
+      const direct = await client.callTool({ name, arguments: { document_id: TABBED_ID, ...args } });
+      expect(direct.isError, name).toBeFalsy();
+      expect(JSON.stringify(direct.content), name).not.toContain("Applied as");
+    }
+
+    const refused = await client.callTool({
+      name: "update_document",
+      arguments: { document_id: TABBED_ID, suggest: true, requests: [{ deleteTab: { tabId: "t.food" } }] },
+    });
+    expect(refused.isError).toBe(true);
+    expect(JSON.stringify(refused.content)).toContain("requests[0].deleteTab");
+  }
+
+  it("makes edits as suggestions over stdio", async () => {
+    const transport = new StdioClientTransport({ command: process.execPath, args: [DOCS], env: tabsEnv(), stderr: "pipe" });
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(transport);
+    try {
+      await writesSuggestions(client);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("makes edits as suggestions over Streamable HTTP", async () => {
+    const { url } = await startHttp([], tabsEnv(), DOCS);
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(url));
+    try {
+      await writesSuggestions(client);
+    } finally {
+      await client.close();
+    }
+  });
 
   it("adds and replies to comments over stdio", async () => {
     const transport = new StdioClientTransport({ command: process.execPath, args: [DOCS], env: tabsEnv(), stderr: "pipe" });

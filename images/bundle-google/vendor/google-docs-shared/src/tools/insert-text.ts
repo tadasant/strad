@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
 import type { DocsBatchUpdateRequest } from '../types.js';
 import { parseDocumentId } from '../utils/parse-document-id.js';
+import { renderSuggestionResult, SUGGEST_PARAM_DESCRIPTION } from '../utils/suggest.js';
 import { logError } from '../logging.js';
 
 const PARAM_DESCRIPTIONS = {
@@ -12,12 +13,14 @@ const PARAM_DESCRIPTIONS = {
     'get_document with format="json" to discover precise indices. Index 1 ' +
     'inserts at the very beginning of the document body.',
   text: 'The plain text to insert at the given index.',
+  suggest: SUGGEST_PARAM_DESCRIPTION,
 } as const;
 
 export const InsertTextSchema = z.object({
   document_id: z.string().min(1).describe(PARAM_DESCRIPTIONS.document_id),
   index: z.number().int().min(1).describe(PARAM_DESCRIPTIONS.index),
   text: z.string().min(1).describe(PARAM_DESCRIPTIONS.text),
+  suggest: z.boolean().optional().describe(PARAM_DESCRIPTIONS.suggest),
 });
 
 const TOOL_DESCRIPTION = `Insert plain text at a specific index in a Google Doc.
@@ -29,6 +32,8 @@ Issues a single batchUpdate with one insertText request at the given location.
 - document_id: Document ID or full Docs URL (required)
 - index: Document index to insert at (required, min 1)
 - text: Text to insert (required)
+- suggest: Make the edit a suggestion rather than a direct change (optional,
+  default false)
 
 **Notes:**
 - The Docs API uses 1-based indices over the document body.
@@ -59,6 +64,10 @@ export function insertTextTool(_server: Server, clientFactory: ClientFactory) {
           type: 'string',
           description: PARAM_DESCRIPTIONS.text,
         },
+        suggest: {
+          type: 'boolean',
+          description: PARAM_DESCRIPTIONS.suggest,
+        },
       },
       required: ['document_id', 'index', 'text'],
     },
@@ -76,12 +85,17 @@ export function insertTextTool(_server: Server, clientFactory: ClientFactory) {
             },
           },
         ];
-        await client.batchUpdate(documentId, requests);
+        const response = await client.batchUpdate(
+          documentId,
+          requests,
+          parsed.suggest ? { writeMode: 'SUGGEST' } : undefined
+        );
 
-        let output = `# Text Inserted\n\n`;
+        let output = parsed.suggest ? `# Insertion Suggested\n\n` : `# Text Inserted\n\n`;
         output += `**Document ID:** ${documentId}\n`;
         output += `**Inserted at index:** ${parsed.index}\n`;
         output += `**Characters:** ${parsed.text.length}\n`;
+        if (parsed.suggest) output += renderSuggestionResult(response);
 
         return {
           content: [

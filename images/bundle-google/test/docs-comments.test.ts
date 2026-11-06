@@ -1,7 +1,9 @@
 /**
  * google-docs WRITES comments, a strad delta on the vendored tree
  * (`vendor/google-docs-shared/README.md`, `HACKS.md` #132): `add_comment` and
- * `reply_to_comment`, over Drive's `comments.create` and `replies.create`.
+ * `reply_to_comment`, over Drive's `comments.create` and `replies.create`, and
+ * the Docs API's `insertComment` when a comment names the passage it is about
+ * (`HACKS.md` #135).
  *
  * The server is built through strad's own `src/docs.ts` layer, the one both
  * the bundle and the standalone entrypoint mount. The first tests fake the
@@ -27,15 +29,12 @@ function fakeClient() {
   const client = {
     async createComment(...args: unknown[]) {
       calls.push({ method: "createComment", args });
-      const options = args[1] as { content: string; quotedText?: string };
+      const options = args[1] as { content: string };
       return {
         id: "AAAAcomment1",
         author: { displayName: "Tadas" },
         content: options.content,
         createdTime: "2026-10-30T12:00:00.000Z",
-        ...(options.quotedText
-          ? { quotedFileContent: { mimeType: "text/plain", value: options.quotedText } }
-          : {}),
       };
     },
     async createReply(...args: unknown[]) {
@@ -90,22 +89,18 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("add_comment creates a comment and returns the ID reply_to_comment takes", async () => {
+test("add_comment without a passage stays a Drive comment on the whole document", async () => {
   const { client, calls } = fakeClient();
   const { text, isError } = await call(() => client, "add_comment", {
     document_id: `https://docs.google.com/document/d/${DOC_ID}/edit?tab=t.0`,
     content: "Should this say Q3?",
-    quoted_text: "Revenue grew 12% in Q2.",
   });
   expect(isError).toBe(false);
   expect(calls).toEqual([
-    {
-      method: "createComment",
-      args: [DOC_ID, { content: "Should this say Q3?", quotedText: "Revenue grew 12% in Q2." }],
-    },
+    { method: "createComment", args: [DOC_ID, { content: "Should this say Q3?" }] },
   ]);
   expect(text).toContain("**Comment ID:** AAAAcomment1");
-  expect(text).toContain('"Revenue grew 12% in Q2." (not anchored)');
+  expect(text).toContain("on the document as a whole");
 });
 
 test("add_comment refuses empty text without calling Drive", async () => {
@@ -119,16 +114,6 @@ test("add_comment refuses empty text without calling Drive", async () => {
   expect(calls).toEqual([]);
 });
 
-test("add_comment's description does not promise an anchor", async () => {
-  const mcp = await connect(() => fakeClient().client);
-  try {
-    const { tools } = await mcp.listTools();
-    const description = tools.find((t) => t.name === "add_comment")?.description ?? "";
-    expect(description).toContain("not attached to a passage of text");
-  } finally {
-    await mcp.close();
-  }
-});
 
 test.each([
   [{ content: "Fixed." }, { content: "Fixed.", action: undefined }, undefined],
@@ -245,7 +230,7 @@ test("the real client POSTs comments.create and replies.create with a fields mas
     GOOGLE_DOCS_OAUTH_CLIENT_SECRET: "comments-secret",
     GOOGLE_DOCS_OAUTH_REFRESH_TOKEN: "comments-refresh",
   });
-  await client.createComment(DOC_ID, { content: "Hi", quotedText: "Quote" });
+  await client.createComment(DOC_ID, { content: "Hi" });
   await client.createReply(DOC_ID, "c1", { action: "resolve" });
   await client.createComment(DOC_ID, { content: "No quote" });
   await client.createReply(DOC_ID, "c1", { content: "Back open.", action: "reopen" });
@@ -259,11 +244,7 @@ test("the real client POSTs comments.create and replies.create with a fields mas
   expect(requests[2].body).toEqual({ content: "No quote" });
   expect(requests[3].body).toEqual({ content: "Back open.", action: "reopen" });
   expect(requests.every((r) => r.url.searchParams.get("fields")?.includes("id"))).toBe(true);
-  expect(requests[0].body).toEqual({
-    content: "Hi",
-    quotedFileContent: { mimeType: "text/plain", value: "Quote" },
-  });
-  // No `anchor`: Docs does not honour one sent through the API.
-  expect(requests[0].body).not.toHaveProperty("anchor");
+  // No `anchor`: Docs ignores one sent to Drive, and `insertComment` is the anchor.
+  expect(requests[0].body).toEqual({ content: "Hi" });
   expect(requests[1].body).toEqual({ action: "resolve" });
 });

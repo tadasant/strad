@@ -5,6 +5,7 @@ import type {
   GoogleDoc,
   DocsBatchUpdateRequest,
   DocsBatchUpdateResponse,
+  DocsWriteControl,
   DriveFile,
   DrivePermission,
   DriveComment,
@@ -22,7 +23,8 @@ import type { GetDocumentOptions } from './google-docs-client/lib/get-document.j
 /**
  * OAuth scopes required by this server.
  *
- * - `documents`: full read/write of Google Docs content (required for get + batchUpdate).
+ * - `documents`: full read/write of Google Docs content (required for get + batchUpdate,
+ *   which also carries anchored comments and suggest-mode edits).
  * - `drive`: full read/write access to the authenticated/impersonated user's Drive files,
  *   including files created outside this app. Required so the server can export and read
  *   comments (`comments.list`, `comments.create`, `replies.create`) on arbitrary existing docs — which the narrower `drive.file`
@@ -48,7 +50,8 @@ export interface IGoogleDocsClient {
   getDocument(documentId: string, options?: GetDocumentOptions): Promise<GoogleDoc>;
   batchUpdate(
     documentId: string,
-    requests: DocsBatchUpdateRequest[]
+    requests: DocsBatchUpdateRequest[],
+    writeControl?: DocsWriteControl
   ): Promise<DocsBatchUpdateResponse>;
   createDocument(options?: { title?: string }): Promise<GoogleDoc>;
   trashDocument(documentId: string): Promise<DriveFile>;
@@ -133,11 +136,12 @@ abstract class BaseGoogleDocsClient implements IGoogleDocsClient {
 
   async batchUpdate(
     documentId: string,
-    requests: DocsBatchUpdateRequest[]
+    requests: DocsBatchUpdateRequest[],
+    writeControl?: DocsWriteControl
   ): Promise<DocsBatchUpdateResponse> {
     const headers = await this.getHeaders();
     const { batchUpdate } = await import('./google-docs-client/lib/batch-update.js');
-    return batchUpdate(headers, documentId, requests);
+    return batchUpdate(headers, documentId, requests, writeControl);
   }
 
   async createDocument(options?: { title?: string }): Promise<GoogleDoc> {

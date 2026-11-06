@@ -107,17 +107,12 @@ export async function listComments(
 export interface CreateCommentOptions {
   /** The comment's text. */
   content: string;
-  /**
-   * Document text the comment is about. Drive stores it as `quotedFileContent`,
-   * the comment's quoted text, but the comment is NOT attached
-   * to that text: Docs does not honour an API-supplied anchor, so an API
-   * comment is unanchored whatever is sent.
-   */
-  quotedText?: string;
 }
 
 /**
- * Create a comment on a Drive file (`comments.create`).
+ * Create a comment on a Drive file (`comments.create`). It attaches to no text:
+ * Docs ignores a Drive `anchor`, and an anchored comment is the Docs API's
+ * `insertComment`, which `add_comment` sends through `batchUpdate`.
  *
  * The `drive` scope covers it; `drive.file` would only for files this app
  * created or opened.
@@ -127,10 +122,7 @@ export async function createComment(
   fileId: string,
   options: CreateCommentOptions
 ): Promise<DriveComment> {
-  const body: Record<string, unknown> = { content: options.content };
-  if (options.quotedText) {
-    body.quotedFileContent = { mimeType: 'text/plain', value: options.quotedText };
-  }
+  const body = { content: options.content };
   const params = new URLSearchParams({ fields: CREATED_COMMENT_FIELDS });
 
   const response = await fetch(

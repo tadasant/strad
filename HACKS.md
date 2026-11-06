@@ -6750,7 +6750,7 @@ and stops advertising the extension. Removing the feature is deleting
 `src/gateway/events.ts`, its hooks in `mcpServer.ts`, `router.ts` and the HTTP
 adapter, and `fork/slack/src/events/`.
 
-## 132. google-docs adds and answers comments, unanchored, a strad delta on a vendored tree
+## 132. google-docs adds and answers comments, a strad delta on a vendored tree
 
 **What.** `add_comment` and `reply_to_comment` are strad's additions to
 `images/bundle-google/vendor/google-docs-shared`, a PATCHED VENDOR (#129). They
@@ -6761,13 +6761,11 @@ author Docs shows.
 
 Three things about them are not obvious:
 
-1. **A comment cannot be attached to text.** Drive's `anchor` field is the only
-   way to attach a comment to a range, and Google Docs does not honour an
-   anchor supplied through the API: the comment shows in the comments panel
-   and highlights nothing. `add_comment` sends no anchor. Its optional
-   `quoted_text` becomes `quotedFileContent`, the comment's quoted text, and
-   the tool description says it is a quote and not an anchor. How the Docs
-   editor renders that quote on an unanchored comment has not been seen.
+1. **Drive cannot attach a comment to text.** Google Docs does not honour an
+   `anchor` sent to Drive's `comments.create`, so a comment made there shows in
+   the comments panel and highlights nothing. `add_comment` sends no anchor,
+   and uses this path only for a comment on the document as a whole. A comment
+   on a passage is the Docs API's `insertComment`, #135.
 2. **Resolving is a reply.** Drive has no "resolve" call. A reply carrying
    `action: resolve` (or `reopen`) is how the editor does it, so
    `reply_to_comment` takes `resolve: true | false` and may be sent with no
@@ -6869,3 +6867,64 @@ liveoak use. It needs `STRAD_PUBLIC_URL` and a per-slug public-slug variable
 on the bundle, deploy-time config only, and has no 25 MB ceiling. Moving
 attachments over a threshold onto it would lift the cap and keep large blobs
 out of both processes' memory.
+
+## 135. google-docs suggests edits and anchors comments, and neither has met Google
+
+**What.** Google made comments and suggestions in the Docs API generally
+available on 2026-09-30, with a rollout of up to 15 days. Two more strad deltas
+on `images/bundle-google/vendor/google-docs-shared` use them. No tool name was
+added, so no `tools.allow:` list changed.
+
+1. **`suggest: true`** on `append_text`, `insert_text`, `replace_text` and
+   `update_document` sends `writeControl: { writeMode: "SUGGEST" }`. Omitted, the
+   request carries no `writeControl` and is the direct edit it always was.
+2. **`add_comment`'s `quoted_text`** was a quote stored on an unattached Drive
+   comment. It is now the passage the comment attaches to. The tool reads the
+   document with `SUGGESTIONS_INLINE`, finds the passage in the body of each tab
+   and sends `insertComment` with that range. Without `quoted_text`, the
+   comment is still a Drive comment on the whole document.
+
+Six things about them are not obvious:
+
+1. **A 200 can carry a failure.** Google says a batch can commit its text
+   changes while the comment or suggestion fails to save, and reports that as
+   `commentUpdateState: ALL_FAILED_UNKNOWN_REASON`. `batchUpdate` turns that
+   into an error for every caller, because a retry could apply the edit twice.
+   What the document holds after such a failure, in suggest mode, is the thing
+   nobody has measured. It might be the edit as a direct change.
+2. **A suggest-mode result that names no suggestion is labelled `UNCONFIRMED`.**
+   It is not an error, since the request succeeded, but the caller asked that
+   nothing change directly and that answer cannot promise it.
+3. **`quoted_text` that is missing or repeated is refused, not guessed.** A
+   comment on the wrong passage is worse than none. The search covers table
+   cells, but only the body, because headers, footers and footnotes are other
+   segments. For those, `update_document` takes a raw `insertComment`. Its
+   `assigneeEmailAddress` is reachable the same way.
+4. **Inline text holds both sides of a suggestion.** A passage a person reads
+   straight across a pending replacement is in no single run, so the search
+   retries with pending deletions left out and then with pending insertions
+   left out. The indexes stay those of the inline document, which are the only
+   ones a `batchUpdate` can use.
+5. **The comment's range is measured on one revision and sent against it.**
+   `targetRevisionId` makes Docs merge a collaborator's edit from between the
+   read and the write, so that edit cannot leave the range on shifted text.
+6. **Tabs work as they do for direct edits.** A request with no `tabId` goes
+   to the first tab and `replace_text` reaches every tab, in suggest mode too.
+   `append_text` and `insert_text` still take no `tab_id`; `update_document`
+   with `suggest` is how to suggest in another tab. An anchored comment always
+   carries its tab's id on the range.
+
+**Unverified against Google.** From the reference, read 2026-11-06: the
+`writeControl` and `insertComment` shapes, `Range.tabId`, the refused requests,
+`commentUpdateState`, that `documents.batchUpdate` accepts the `documents` scope.
+Not seen on a live document: whether a `replaceAllText` makes one suggestion or
+many and what `occurrencesChanged` then says; whether it matches text inside a
+pending suggestion; whether `suggestionResponses` is populated the way the code
+reads it; whether Drive's `comments.list` shows an `insertComment` comment with
+its quote; and whether `insertComment`'s `commentId` is an ID Drive's
+`replies.create` accepts, which `reply_to_comment` depends on. The tests fake
+both APIs.
+
+**Undo.** If upstream gains these, re-vendor and drop the delta. Until then a
+re-vendor has to re-apply the row in the tree's README, and
+`images/bundle-google/test/docs-suggest-anchor.test.ts` fails if it does not.
