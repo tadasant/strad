@@ -26,7 +26,7 @@ import { createDefaultClient, createMCPServer } from "../src/docs.js";
 // A plain .mjs fixture, shared with the standalone preload `./fixtures/docs-api-stub.mjs`.
 import { DOCUMENT_ID, LEGACY_FIRST_TAB, TABBED_DOC } from "./fixtures/tabbed-doc.mjs";
 
-type GetOptions = { includeTabsContent?: boolean } | undefined;
+type GetOptions = { includeTabsContent?: boolean; suggestionsViewMode?: string } | undefined;
 
 /** A client whose `documents.get` behaves like the API's, recording what it was asked. */
 function fakeClient(doc: GoogleDoc, legacy: GoogleDoc) {
@@ -209,7 +209,7 @@ test("append_text still targets the first tab, where batchUpdate's default lands
   const { isError } = await call(fake.client, "append_text", { document_id: DOCUMENT_ID, text: "x" });
   expect(isError).toBe(false);
   // The legacy (first-tab) shape, so the end index is the first tab's.
-  expect(fake.calls).toEqual([undefined]);
+  expect(fake.calls).toEqual([{ suggestionsViewMode: "SUGGESTIONS_INLINE" }]);
 });
 
 const realFetch = globalThis.fetch;

@@ -4109,16 +4109,11 @@ See `HACKS.md` #131.
 
 ---
 
-### 132. google-docs comments cannot be attached to text
+### 132. google-docs comments can notify people, with no gate in strad
 
-`add_comment` and `reply_to_comment` write comments to a Google Doc through
-Drive's comments API, as the slug's account. They are on the read-write tiers
-only.
+`add_comment` and `reply_to_comment` write comments to a Google Doc as the
+slug's account. They are on the read-write tiers only.
 
-- **A comment highlights nothing.** Google Docs ignores a text anchor sent
-  through the API, so an API comment sits in the comments panel unattached.
-  `quoted_text` is stored as its quoted text, which is the closest the API
-  gets.
 - **Google may notify people.** A comment or reply can notify people who
   already have access to the document, per their own Docs settings, with no
   gate in strad. Neither tool grants anyone access.
@@ -4127,8 +4122,8 @@ only.
   not.
 - **No comment has reached Google from CI.** The tests fake the Drive API.
 
-**How you would know.** A comment you added appears in the panel with no
-highlight in the text. That is the limitation, not a failure.
+**How you would know.** Someone with access to the document mentions a
+notification about a comment an agent wrote.
 
 See `HACKS.md` #132.
 
@@ -4180,3 +4175,43 @@ file and reports the path.
 no local path follows it in the client.
 
 See `HACKS.md` #134.
+
+---
+
+### 135. google-docs suggestions and anchored comments have not met Google
+
+`suggest: true` on `append_text`, `insert_text`, `replace_text` and
+`update_document` makes an edit a suggestion for a human to review.
+`add_comment`'s `quoted_text` attaches a comment to that passage.
+
+- **A failed save can still change the document.** Google says a batch can
+  commit its text while the comment or suggestion fails to save. strad reports
+  that as an error and says to read the document before retrying. What a failed
+  suggestion leaves behind has not been measured, and it might be a direct edit.
+- **`update_document` refuses what Docs cannot suggest**, by name and before
+  calling Google: tab and named-range changes, deleting a header or footer,
+  table column properties, and three document style fields. Send those without
+  `suggest`. Requests on comment and suggestion threads are refused too.
+- **A comment only attaches to text in the body.** Headers, footers, footnotes
+  and a table of contents are not searched; send `insertComment` through
+  `update_document` for those. `quoted_text` that is not found, or that repeats with no
+  `occurrence`, is refused and creates nothing.
+- **`suggest` follows the tab rules of direct edits.** Only `update_document`
+  can suggest in a tab other than the first, and `replace_text` reaches every
+  tab.
+- **`get_document`'s text shows both sides of a pending suggestion**, unmarked.
+  `format=json` carries the suggestion ids.
+- **The live behaviour is unverified.** The request shapes come from Google's
+  reference. Not yet seen on a real document: how `replace_text` splits into
+  suggestions and what count it reports, how `list_comments` shows an anchored
+  comment, whether `reply_to_comment` accepts an anchored comment's ID, and
+  whether a comment-only account can write this way at all. The tests fake both
+  APIs.
+- **strad added it, not upstream.** Re-copying the server from upstream removes
+  it unless the change is applied again, and a test fails if it is not.
+
+**How you would know.** A result labelled `UNCONFIRMED` means Google neither
+named a suggestion nor said it saved one. An edit with `suggest` that shows in
+the document with no suggestion marking is the failure to report.
+
+See `HACKS.md` #135.

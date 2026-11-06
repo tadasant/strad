@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
 import type { DocsBatchUpdateRequest } from '../types.js';
 import { parseDocumentId } from '../utils/parse-document-id.js';
+import { renderSuggestionResult, SUGGEST_PARAM_DESCRIPTION } from '../utils/suggest.js';
 import { logError } from '../logging.js';
 
 const PARAM_DESCRIPTIONS = {
@@ -13,6 +14,7 @@ const PARAM_DESCRIPTIONS = {
     'replaceAllText request directly.',
   replace: 'The replacement text. Pass an empty string to delete all matches.',
   match_case: 'When true, the search is case-sensitive. Defaults to false (case-insensitive).',
+  suggest: SUGGEST_PARAM_DESCRIPTION,
 } as const;
 
 export const ReplaceTextSchema = z.object({
@@ -20,25 +22,31 @@ export const ReplaceTextSchema = z.object({
   find: z.string().min(1).describe(PARAM_DESCRIPTIONS.find),
   replace: z.string().describe(PARAM_DESCRIPTIONS.replace),
   match_case: z.boolean().optional().describe(PARAM_DESCRIPTIONS.match_case),
+  suggest: z.boolean().optional().describe(PARAM_DESCRIPTIONS.suggest),
 });
 
 const TOOL_DESCRIPTION = `Find-and-replace all occurrences of a string in a Google Doc.
 
 Convenience wrapper around update_document's replaceAllText request.
 Replaces every literal occurrence of \`find\` with \`replace\` across the
-document body.
+document body, in every tab.
 
 **Parameters:**
 - document_id: Document ID or full Docs URL (required)
 - find: Literal string to search for (required)
 - replace: Replacement string (required, may be empty to delete matches)
 - match_case: Whether the search is case-sensitive (optional, default false)
+- suggest: Make every replacement a suggestion rather than a direct change
+  (optional, default false)
 
 **Returns:**
 The number of replacements made (from the Docs API response).
 
 **Notes:**
 - This is literal-text replacement only — no regex, no partial-token matching.
+- With suggest=true this still reaches every occurrence in every tab. To
+  suggest in one tab, use update_document with replaceAllText's tabsCriteria
+  and suggest=true.
 - For more flexible search/replace, use update_document directly.`;
 
 export function replaceTextTool(_server: Server, clientFactory: ClientFactory) {
@@ -64,6 +72,10 @@ export function replaceTextTool(_server: Server, clientFactory: ClientFactory) {
           type: 'boolean',
           description: PARAM_DESCRIPTIONS.match_case,
         },
+        suggest: {
+          type: 'boolean',
+          description: PARAM_DESCRIPTIONS.suggest,
+        },
       },
       required: ['document_id', 'find', 'replace'],
     },
@@ -84,19 +96,31 @@ export function replaceTextTool(_server: Server, clientFactory: ClientFactory) {
             },
           },
         ];
-        const response = await client.batchUpdate(documentId, requests);
+        const response = await client.batchUpdate(
+          documentId,
+          requests,
+          parsed.suggest ? { writeMode: 'SUGGEST' } : undefined
+        );
 
         const reply = response.replies?.[0] as
           | { replaceAllText?: { occurrencesChanged?: number } }
           | undefined;
         const occurrences = reply?.replaceAllText?.occurrencesChanged ?? 0;
 
-        let output = `# Replacement Complete\n\n`;
+        let output = parsed.suggest ? `# Replacement Suggested\n\n` : `# Replacement Complete\n\n`;
         output += `**Document ID:** ${documentId}\n`;
         output += `**Find:** ${JSON.stringify(parsed.find)}\n`;
         output += `**Replace:** ${JSON.stringify(parsed.replace)}\n`;
         output += `**Match case:** ${parsed.match_case ?? false}\n`;
-        output += `**Occurrences replaced:** ${occurrences}\n`;
+        output += `**Occurrences ${parsed.suggest ? 'matched' : 'replaced'}:** ${occurrences}\n`;
+        if (parsed.suggest) {
+          // Nothing matched and nothing was asked of Google is an answer, not an unconfirmed edit.
+          const nothingMatched =
+            occurrences === 0 && response.commentUpdateState === 'NO_UPDATES_REQUESTED';
+          output += nothingMatched
+            ? '**Applied as:** nothing to suggest; no occurrence matched.\n'
+            : renderSuggestionResult(response);
+        }
 
         return {
           content: [

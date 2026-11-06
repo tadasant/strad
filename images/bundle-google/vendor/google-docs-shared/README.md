@@ -21,6 +21,7 @@ standalone entrypoint, which hands that same layer to the shared runner.
 | ----- | ----- | ----------- |
 | Every tab is read, not only the first: `documents.get` is asked for `includeTabsContent=true`, and `get_document` and `get_document_outline` take a `tab_id` (`HACKS.md` #129) | `src/utils/tabs.ts`, `src/types.ts` (`Tab`), `src/google-docs-client/lib/get-document.ts`, `src/server.ts` (`getDocument`'s options), `src/tools/get-document.ts`, `src/tools/get-document-outline.ts`, the tab notes in `src/tools/update-document.ts`, `src/tools/append-text.ts`, `src/tools/insert-text.ts` and `src/tools/export-document.ts` | `../../test/docs-tabs.test.ts`, `../../test/standalone.test.ts` |
 | Comments can be written: `add_comment` (Drive `comments.create`) and `reply_to_comment` (Drive `replies.create`, which also resolves and reopens), both in `readwrite` (`HACKS.md` #132) | `src/tools/add-comment.ts`, `src/tools/reply-to-comment.ts`, `src/google-docs-client/lib/drive-comments.ts` (`createComment`, `createReply`), `src/server.ts` (the two client methods), `src/tools.ts` (registration) | `../../test/docs-comments.test.ts`, `../../test/standalone.test.ts` |
+| Edits can be suggestions, and comments attach to a passage: `suggest` on `append_text`, `insert_text`, `replace_text` and `update_document` (`writeControl.writeMode: SUGGEST`), `add_comment`'s `quoted_text` becomes a Docs `insertComment`, and `commentUpdateState` failures are errors (`HACKS.md` #135) | `src/utils/suggest.ts`, `src/utils/find-passage.ts`, `src/google-docs-client/lib/batch-update.ts`, `src/google-docs-client/lib/get-document.ts` (`suggestionsViewMode`), `src/server.ts` (`batchUpdate`'s `writeControl`), `src/types.ts`, `src/tools/add-comment.ts`, `src/tools/append-text.ts`, `src/tools/insert-text.ts`, `src/tools/replace-text.ts`, `src/tools/update-document.ts`, the suggestions note in `src/tools/get-document.ts` | `../../test/docs-suggest-anchor.test.ts`, `../../test/standalone.test.ts` |
 
 ## Tools
 
@@ -47,16 +48,25 @@ Thirteen, in three groups. Each group holds the one before it:
   edit the first tab unless a request's location carries a `tabId`. Only
   `update_document` takes raw requests, so it is the one that can target
   another tab. `replace_text` replaces in every tab.
+- `append_text`, `insert_text`, `replace_text` and `update_document` take
+  `suggest=true`, which proposes the edit as a suggestion for a human to accept
+  or reject in the Docs editor. The tab rules above are the same in suggest
+  mode. `update_document` refuses, by name and before calling Google, the
+  requests Docs cannot suggest. A pending suggestion occupies indexes, and
+  `get_document`'s text shows both sides of one, unmarked.
 - `export_document` exports through Drive: `markdown`, `html` and `txt` come
   back as text, `pdf`, `docx`, `odt`, `rtf` and `epub` as base64.
 - `list_comments` lists comments with their quoted text, replies and resolved
   state, and each comment's ID.
-- `add_comment` starts a comment thread, and `reply_to_comment` replies to one
-  by that ID; `resolve=true` resolves the thread and `resolve=false` reopens
-  it. Docs does not honour a text anchor sent through the API, so a new
-  comment highlights nothing. Its optional `quoted_text` is stored as the
-  comment's quoted text. Google may notify people with access to the
-  document, as it does for a comment made in the editor.
+- `add_comment` starts a comment thread. With `quoted_text` it attaches the
+  comment to that passage, which it finds in the body of any tab (`tab_id`
+  narrows it, `occurrence` picks one of several matches) and sends as a Docs
+  `insertComment`. Text it cannot find, or a repeat with no `occurrence`, is
+  refused and nothing is created. Without `quoted_text` the comment is on the
+  document as a whole, through Drive. `reply_to_comment` replies to a thread
+  by its ID; `resolve=true` resolves the thread and `resolve=false` reopens
+  it. Google may notify people with access to the document, as it does for a
+  comment made in the editor.
 - `update_document` takes raw Docs `batchUpdate` requests: styling, tables,
   lists, deletions. `append_text`, `insert_text` and `replace_text` are
   wrappers over it for the common cases.
@@ -286,10 +296,15 @@ From `images/bundle-google`, `npm test` runs:
 - `test/docs-comments.test.ts` — `add_comment` and `reply_to_comment` through
   the same layer, against a fake client: what each sends to Drive, the
   resolve and reopen mapping, and that neither is listed in `readonly`.
+- `test/docs-suggest-anchor.test.ts` — suggest mode and anchored comments: the
+  `writeControl` and `insertComment` bodies, the refusals, `commentUpdateState`
+  failures, and the index arithmetic across tabs, tables and pending suggestions.
 - `test/standalone.test.ts` — both transports against the built entrypoint,
   with no credentials set: all thirteen tools, each of the three groups,
   `share_document` only in `readwrite_external`, comma-separated groups, a tool
   call that fails naming the missing variables in each mode, and exit 2 on an
-  unknown group or a half-set OAuth trio beside a service account.
+  unknown group or a half-set OAuth trio beside a service account. With a fake
+  Google preloaded, it also makes suggestions and adds anchored comments
+  end to end.
 
 Nothing in CI calls Google.
