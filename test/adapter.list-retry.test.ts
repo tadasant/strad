@@ -9,7 +9,17 @@ import { parseConfig } from "../src/config/load.ts";
 import { buildGatewayServer, listToolsFor } from "../src/gateway/mcpServer.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { compileToolPolicies } from "../src/gateway/toolPolicy.ts";
-import { resetEventThrottle } from "../src/telemetry/events.ts";
+import { logs, SeverityNumber } from "@opentelemetry/api-logs";
+import {
+  InMemoryLogRecordExporter,
+  LoggerProvider,
+  SimpleLogRecordProcessor,
+} from "@opentelemetry/sdk-logs";
+import {
+  disableEventExport,
+  enableEventExport,
+  resetEventThrottle,
+} from "../src/telemetry/events.ts";
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
@@ -278,9 +288,14 @@ describe("a sustained failure still pages", () => {
     expect(stub.seen("tools/list")).toBe(3);
     const failed = faults().filter((l) => l.includes("mcp.list_tools_failed"));
     expect(failed).toHaveLength(1);
-    // Two absorbed attempts at Info, then the one ERROR record.
+    // Two absorbed attempts at Info, then the one ERROR record, which says
+    // the budget was spent rather than never entered.
     expect(retries().map((r) => r.attempt)).toEqual([1, 2]);
     expect(faults().filter((l) => l.includes("mcp.list_retry"))).toEqual([]);
+    expect(JSON.parse(failed[0]!)).toMatchObject({
+      attempts: 3,
+      retry: "budget",
+    });
   });
 
   it("a NAMED listing of a slug that stays down still fails, once, after the budget", async () => {
@@ -322,9 +337,14 @@ describe("a real answer is not retried", () => {
 
       expect(await listTools(registry)).toEqual([]);
       expect(stub.seen("tools/list")).toBe(1);
-      expect(
-        faults().filter((l) => l.includes("mcp.list_tools_failed")),
-      ).toHaveLength(1);
+      const failed = faults().filter((l) =>
+        l.includes("mcp.list_tools_failed"),
+      );
+      expect(failed).toHaveLength(1);
+      expect(JSON.parse(failed[0]!)).toMatchObject({
+        attempts: 1,
+        retry: "not_transient",
+      });
       expect(retries()).toEqual([]);
     });
   }
@@ -403,5 +423,58 @@ describe("what counts as transient", () => {
     ],
   ])("%s -> %s", (_label, err, transient) => {
     expect(isTransientListFailure(err)).toBe(transient);
+  });
+});
+
+describe("what the exporter ships", () => {
+  it("a retried-then-failed listing exports Info retries and one ERROR _failed with its counts, and no upstream text", async () => {
+    const exporter = new InMemoryLogRecordExporter();
+    const provider = new LoggerProvider({
+      processors: [new SimpleLogRecordProcessor({ exporter })],
+    });
+    logs.disable();
+    logs.setGlobalLoggerProvider(provider);
+    enableEventExport("strad-test", "0.0.0");
+    try {
+      const { stub, registry } = await setup();
+      stub.fail("tools/list", 503, 100);
+      expect(await listTools(registry)).toEqual([]);
+
+      const records = exporter.getFinishedLogRecords();
+      const retry = records.filter((r) => r.body === "mcp.list_retry");
+      // Throttled per slug: the second retry inside the same minute is
+      // stdout-only, which is why the counts ride on `_failed`.
+      expect(retry).toHaveLength(1);
+      expect(retry[0]!.severityNumber).toBe(SeverityNumber.INFO);
+      expect(Object.keys(retry[0]!.attributes).sort()).toEqual(
+        [
+          "attempt",
+          "delay_ms",
+          "error.kind",
+          "listing",
+          "slug",
+          "strad.evt",
+        ].sort(),
+      );
+      expect(retry[0]!.attributes).toMatchObject({
+        slug: "apify",
+        listing: "tools",
+        attempt: 1,
+      });
+
+      const failed = records.filter((r) => r.body === "mcp.list_tools_failed");
+      expect(failed).toHaveLength(1);
+      expect(failed[0]!.severityNumber).toBe(SeverityNumber.ERROR);
+      expect(failed[0]!.attributes).toMatchObject({
+        slug: "apify",
+        attempts: 3,
+        retry: "budget",
+      });
+      expect(JSON.stringify(records)).not.toMatch(/upstream says no/);
+    } finally {
+      disableEventExport();
+      await provider.shutdown().catch(() => {});
+      logs.disable();
+    }
   });
 });

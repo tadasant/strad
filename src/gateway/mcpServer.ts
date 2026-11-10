@@ -24,6 +24,7 @@ import {
 import { ServerUnconfiguredError } from "./unconfigured.ts";
 import { withDeadline } from "../util/deadline.ts";
 import {
+  listRetryOutcome,
   LocalHostUnavailableError,
   LocalMachineOfflineError,
 } from "./adapters/http.ts";
@@ -655,6 +656,11 @@ export async function listToolsFor(
                 evt: "mcp.list_tools_failed",
                 slug,
                 explicit: Boolean(explicit),
+                // How many tries the adapter's transient retry made and why it
+                // stopped — a spent budget and a never-retried kind page the
+                // same and mean different things (#468). Absent for an adapter
+                // kind with no retry.
+                ...listRetryOutcome(err),
                 // Stays on stdout in full; the exporter substitutes `error.kind`.
                 error: errorText(err),
               },
@@ -804,6 +810,7 @@ async function listResourcesFor(
             : {
                 evt: "mcp.list_resources_failed",
                 slug,
+                ...listRetryOutcome(err),
                 error: errorText(err),
               },
         );

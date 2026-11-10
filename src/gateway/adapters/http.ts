@@ -29,12 +29,12 @@ import { GATEWAY_UPSTREAM_CAPABILITIES } from "../clientCapabilities.ts";
 import {
   elapsedSeconds,
   errorKind,
+  event,
   instruments,
   tracer,
   type ErrorKind,
   type SelfClassifyingError,
 } from "../../telemetry/index.ts";
-import { event } from "../../telemetry/events.ts";
 import { remedyText, type HostState, type LocalHost } from "../troubleshoot.ts";
 import {
   elicitationMeta,
@@ -793,10 +793,11 @@ export class HttpServerAdapter implements ServerAdapter {
    * exactly as before, one budget later.
    *
    * Each attempt the budget absorbs is an `mcp.list_retry` record at Info —
-   * not a fault, and nothing pages on it. It is what says, after the fact,
-   * whether a `_failed` that did page came at the end of a spent budget or
-   * from a kind this never retries, and how often a slug's listings are being
-   * rescued at all (#468). `listing` is which of the three listings it was.
+   * not a fault, and nothing pages on it — which says how often a slug's
+   * listings are being rescued at all (#468). What a `_failed` that DID page
+   * needs is on the `_failed` record itself, because the retry records are
+   * throttled per slug: the error that escapes carries how many attempts it
+   * took and why the loop stopped (`listRetryOutcome`).
    *
    * Listings only. A listing reads, so repeating one cannot do anything twice;
    * a `tools/call` can, and a `5xx` says nothing about whether the tool ran.
@@ -814,17 +815,26 @@ export class HttpServerAdapter implements ServerAdapter {
       try {
         return await run();
       } catch (err) {
-        if (this.closed || !isTransientListFailure(err)) throw err;
+        const stop = (retry: ListRetryStop): unknown => {
+          if (typeof err === "object" && err !== null) {
+            LIST_RETRY_OUTCOMES.set(err, { attempts: attempt + 1, retry });
+          }
+          return err;
+        };
+        if (this.closed) throw stop("closed");
+        if (!isTransientListFailure(err)) throw stop("not_transient");
         // The wall clock, not just the sleeps: a `504` can take as long as the
         // proxy that emitted it was willing to wait, and three of those in a row
         // is a listing the client has already given up on.
-        if (Date.now() - startedAt >= LIST_RETRY_DEADLINE_MS) throw err;
+        if (Date.now() - startedAt >= LIST_RETRY_DEADLINE_MS) {
+          throw stop("deadline");
+        }
         const delay = retryDelayMs({
           attempt,
           spentMs,
           budget: LIST_RETRY_BUDGET,
         });
-        if (delay === undefined) throw err;
+        if (delay === undefined) throw stop("budget");
         event({
           evt: "mcp.list_retry",
           slug: this.slug,
@@ -839,7 +849,7 @@ export class HttpServerAdapter implements ServerAdapter {
         await sleep(delay);
         // A reload can close this adapter mid-backoff, and a retry after that
         // would handshake with an upstream nobody is listening to.
-        if (this.closed) throw err;
+        if (this.closed) throw stop("closed");
       }
     }
   }
@@ -1340,6 +1350,34 @@ function fingerprintOf(endpoint: HttpEndpoint): string {
   return createHash("sha256")
     .update(JSON.stringify([endpoint.url, headers]))
     .digest("hex");
+}
+
+/**
+ * Why a listing's retry loop let its error escape. A closed set, exported on
+ * the `_failed` records: `budget` is a transient failure that outlasted every
+ * try, `deadline` one that outlasted the wall clock, `not_transient` a failure
+ * that was never retried, and `closed` an adapter torn down under it.
+ */
+export type ListRetryStop = "budget" | "deadline" | "not_transient" | "closed";
+
+/**
+ * The escaping error -> what the loop did with it. Weak, and keyed on the error
+ * object, because an adapter's `listTools()` signature is shared with every
+ * other kind and has nowhere else to say it. Read once, synchronously, by the
+ * catch that emits `_failed`.
+ */
+const LIST_RETRY_OUTCOMES = new WeakMap<
+  object,
+  { attempts: number; retry: ListRetryStop }
+>();
+
+/** What the listing retry did before `err` escaped, or undefined if it never ran. */
+export function listRetryOutcome(
+  err: unknown,
+): { attempts: number; retry: ListRetryStop } | undefined {
+  return typeof err === "object" && err !== null
+    ? LIST_RETRY_OUTCOMES.get(err)
+    : undefined;
 }
 
 /**

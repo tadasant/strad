@@ -74,9 +74,16 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
   Object.freeze({
     /** Boot. The roster proves which build is running and what it mounted. */
     "strad.listening": ["port", "mode", "bundle", "env", "servers", "tokens"],
-    /** THE line this whole change exists for. `error` is excluded; see above. */
-    "mcp.list_tools_failed": ["slug", "explicit"],
-    "mcp.list_resources_failed": ["slug"],
+    /**
+     * THE line this whole change exists for. `error` is excluded; see above.
+     *
+     * `attempts` and `retry` come from the HTTP adapter's listing retry
+     * (`listRetryOutcome` in gateway/adapters/http.ts): a count strad made,
+     * and one of four words this repo wrote (`budget`, `deadline`,
+     * `not_transient`, `closed`). Absent for an adapter kind with no retry.
+     */
+    "mcp.list_tools_failed": ["slug", "explicit", "attempts", "retry"],
+    "mcp.list_resources_failed": ["slug", "attempts", "retry"],
     /**
      * One transient listing failure the adapter's retry budget absorbed, at
      * Info (gateway/adapters/http.ts). NOT a fault: a slug that is still
@@ -89,6 +96,10 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      * words this repo wrote (`tools`, `resources`, `events`). `attempt` and
      * `delay_ms` are numbers strad computed from its own budget. `error` is
      * not shipped; it becomes `error.kind`, as on the `_failed` records.
+     *
+     * Throttled per slug like the `_failed` records, so the exported stream
+     * holds at most one of these a minute per slug; the counts on `_failed`
+     * are what answer "was this one retried".
      */
     "mcp.list_retry": ["slug", "listing", "attempt", "delay_ms"],
     /**
