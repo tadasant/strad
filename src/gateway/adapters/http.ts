@@ -34,6 +34,7 @@ import {
   type ErrorKind,
   type SelfClassifyingError,
 } from "../../telemetry/index.ts";
+import { event } from "../../telemetry/events.ts";
 import { remedyText, type HostState, type LocalHost } from "../troubleshoot.ts";
 import {
   elicitationMeta,
@@ -789,8 +790,13 @@ export class HttpServerAdapter implements ServerAdapter {
    * the listing a moment later would have answered. So a transient failure gets
    * a short, bounded second look, and only an exhausted budget reaches the
    * caller, which still emits `_failed` at ERROR: a sustained outage pages
-   * exactly as before, one budget later. Intermediate attempts log nothing;
-   * each is already a failed hop in the upstream error counter and its span.
+   * exactly as before, one budget later.
+   *
+   * Each attempt the budget absorbs is an `mcp.list_retry` record at Info —
+   * not a fault, and nothing pages on it. It is what says, after the fact,
+   * whether a `_failed` that did page came at the end of a spent budget or
+   * from a kind this never retries, and how often a slug's listings are being
+   * rescued at all (#468). `listing` is which of the three listings it was.
    *
    * Listings only. A listing reads, so repeating one cannot do anything twice;
    * a `tools/call` can, and a `5xx` says nothing about whether the tool ran.
@@ -798,7 +804,10 @@ export class HttpServerAdapter implements ServerAdapter {
    * Outside `authorized()`, so a `401` on a minted credential keeps its own
    * single retry and never spends this budget.
    */
-  private async transient<T>(run: () => Promise<T>): Promise<T> {
+  private async transient<T>(
+    listing: "tools" | "resources" | "events",
+    run: () => Promise<T>,
+  ): Promise<T> {
     const startedAt = Date.now();
     let spentMs = 0;
     for (let attempt = 0; ; attempt++) {
@@ -816,6 +825,16 @@ export class HttpServerAdapter implements ServerAdapter {
           budget: LIST_RETRY_BUDGET,
         });
         if (delay === undefined) throw err;
+        event({
+          evt: "mcp.list_retry",
+          slug: this.slug,
+          listing,
+          // 1-based: the attempt that just failed.
+          attempt: attempt + 1,
+          delay_ms: delay,
+          // Stays on stdout in full; the exporter substitutes `error.kind`.
+          error: errorText(err),
+        });
         spentMs += delay;
         await sleep(delay);
         // A reload can close this adapter mid-backoff, and a retry after that
@@ -826,7 +845,7 @@ export class HttpServerAdapter implements ServerAdapter {
   }
 
   async listTools(): Promise<Tool[]> {
-    return this.transient(() => this.listToolsOnce());
+    return this.transient("tools", () => this.listToolsOnce());
   }
 
   private async listToolsOnce(): Promise<Tool[]> {
@@ -961,7 +980,7 @@ export class HttpServerAdapter implements ServerAdapter {
    * answer has to come from the handshake or from the code on the wire.
    */
   async listResources(): Promise<Resource[]> {
-    return this.transient(() =>
+    return this.transient("resources", () =>
       this.authorized(() => this.listResourcesOnce()),
     );
   }
@@ -1050,7 +1069,7 @@ export class HttpServerAdapter implements ServerAdapter {
    */
   async listEvents(): Promise<EventDescriptor[]> {
     if (this.kind === "local-tunnel") return [];
-    return this.transient(() =>
+    return this.transient("events", () =>
       this.authorized(async () => {
         const conn = await this.leased();
         if (!this.advertisesEvents(conn)) {
@@ -1368,6 +1387,10 @@ const LIST_RETRY_DEADLINE_MS = 5_000;
  *   one of those. A "fetch failed" around anything else — DNS, TLS, a connect
  *   timeout — is not.
  *
+ * - A resolver that answered "try again" (`EAI_AGAIN`): a temporary DNS
+ *   failure, which on App Platform is an internal component name blinking
+ *   while its service is replaced. `ENOTFOUND` is a verdict, not a blip.
+ *
  * NOT a timeout: a listing that already spent its whole deadline once would
  * spend it again. NOT a `LocalHostUnavailableError`: a machine that is off is a
  * verdict the listing reports on at once, with its own remedy, and it does not
@@ -1375,11 +1398,12 @@ const LIST_RETRY_DEADLINE_MS = 5_000;
  * credential that has not been seeded.
  */
 /**
- * A socket that went away under a request, or a port nobody was listening on
- * for a moment — an upstream restarting behind its edge.
+ * A socket that went away under a request, a port nobody was listening on for
+ * a moment, or a resolver that said to ask again — an upstream restarting
+ * behind its edge.
  */
 const SOCKET_DROPPED =
-  /ECONNRESET|ECONNREFUSED|EPIPE|socket hang up|other side closed|UND_ERR_SOCKET/i;
+  /ECONNRESET|ECONNREFUSED|EPIPE|socket hang up|other side closed|UND_ERR_SOCKET|EAI_AGAIN/i;
 
 export function isTransientListFailure(err: unknown): boolean {
   if (err instanceof LocalHostUnavailableError) return false;

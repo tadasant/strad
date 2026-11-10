@@ -143,6 +143,8 @@ async function setup(kind?: string): Promise<{
   stub: Stub;
   registry: Registry;
   faults: () => string[];
+  /** The Info-level `mcp.list_retry` records, parsed. */
+  retries: () => Array<Record<string, unknown>>;
 }> {
   const stub = await startStub();
   const config = CONFIG(stub.url, kind);
@@ -166,6 +168,11 @@ async function setup(kind?: string): Promise<{
     stub,
     registry,
     faults: () => stderr.mock.calls.map((c) => String(c[0])),
+    retries: () =>
+      stdout.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes('"mcp.list_retry"'))
+        .map((l) => JSON.parse(l) as Record<string, unknown>),
   };
 }
 
@@ -206,21 +213,33 @@ async function listResources(registry: Registry): Promise<string[]> {
 
 describe("a listing rides out a transient upstream failure", () => {
   it("tools/list: a 503 then success lists the tools and pages nobody", async () => {
-    const { stub, registry, faults } = await setup();
+    const { stub, registry, faults, retries } = await setup();
     stub.fail("tools/list", 503, 1);
 
     expect(await listTools(registry)).toEqual(["apify__ping"]);
     expect(stub.seen("tools/list")).toBe(2);
     expect(faults().filter((l) => l.includes("_failed"))).toEqual([]);
+    // The absorbed attempt is on the record, at Info (stdout, not stderr).
+    expect(retries()).toEqual([
+      expect.objectContaining({
+        evt: "mcp.list_retry",
+        slug: "apify",
+        listing: "tools",
+        attempt: 1,
+      }),
+    ]);
   });
 
   it("resources/list: a 502 then success lists the resources and pages nobody", async () => {
-    const { stub, registry, faults } = await setup();
+    const { stub, registry, faults, retries } = await setup();
     stub.fail("resources/list", 502, 1);
 
     expect(await listResources(registry)).toEqual(["ui://stub/app.html"]);
     expect(stub.seen("resources/list")).toBe(2);
     expect(faults().filter((l) => l.includes("_failed"))).toEqual([]);
+    expect(retries()).toEqual([
+      expect.objectContaining({ listing: "resources", attempt: 1 }),
+    ]);
   });
 
   it("a 429 is transient too", async () => {
@@ -251,7 +270,7 @@ describe("a listing rides out a transient upstream failure", () => {
 
 describe("a sustained failure still pages", () => {
   it("tools/list: a persistent 503 emits mcp.list_tools_failed after 3 attempts", async () => {
-    const { stub, registry, faults } = await setup();
+    const { stub, registry, faults, retries } = await setup();
     stub.fail("tools/list", 503, 100);
 
     // An unnamed listing drops the slug rather than failing the request.
@@ -259,6 +278,27 @@ describe("a sustained failure still pages", () => {
     expect(stub.seen("tools/list")).toBe(3);
     const failed = faults().filter((l) => l.includes("mcp.list_tools_failed"));
     expect(failed).toHaveLength(1);
+    // Two absorbed attempts at Info, then the one ERROR record.
+    expect(retries().map((r) => r.attempt)).toEqual([1, 2]);
+    expect(faults().filter((l) => l.includes("mcp.list_retry"))).toEqual([]);
+  });
+
+  it("a NAMED listing of a slug that stays down still fails, once, after the budget", async () => {
+    // The page this rule must keep: a client asked for this slug by name, and
+    // it is down for longer than a blip.
+    const { stub, registry, faults, retries } = await setup();
+    stub.fail("tools/list", 503, 100);
+
+    await expect(
+      listToolsFor(["apify"], registry, NO_POLICIES(), () => {}, {
+        onUnlistable: () => {},
+      }),
+    ).rejects.toThrow(/could not be listed/);
+    expect(stub.seen("tools/list")).toBe(3);
+    expect(
+      faults().filter((l) => l.includes("mcp.list_tools_failed")),
+    ).toHaveLength(1);
+    expect(retries()).toHaveLength(2);
   });
 
   it("resources/list: a persistent 503 emits mcp.list_resources_failed after 3 attempts", async () => {
@@ -277,7 +317,7 @@ describe("a sustained failure still pages", () => {
 describe("a real answer is not retried", () => {
   for (const status of [400, 403, 404, 501]) {
     it(`a ${status} fails on the first attempt`, async () => {
-      const { stub, registry, faults } = await setup();
+      const { stub, registry, faults, retries } = await setup();
       stub.fail("tools/list", status, 100);
 
       expect(await listTools(registry)).toEqual([]);
@@ -285,6 +325,7 @@ describe("a real answer is not retried", () => {
       expect(
         faults().filter((l) => l.includes("mcp.list_tools_failed")),
       ).toHaveLength(1);
+      expect(retries()).toEqual([]);
     });
   }
 
@@ -341,6 +382,7 @@ describe("what counts as transient", () => {
     ["501", up(new StreamableHTTPError(501, "x")), false],
     ["-32601", up(new McpError(ErrorCode.MethodNotFound, "x")), false],
     ["SDK timeout", up(new McpError(ErrorCode.RequestTimeout, "x")), false],
+    ["DNS try-again", up(fetchFailed("EAI_AGAIN")), true],
     ["DNS", up(fetchFailed("ENOTFOUND")), false],
     ["bad certificate", up(fetchFailed("CERT_HAS_EXPIRED")), false],
     ["connect timeout", up(fetchFailed("UND_ERR_CONNECT_TIMEOUT")), false],
