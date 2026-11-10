@@ -347,19 +347,23 @@ so the retry cannot run a tool twice.
 
 ### A listing gets a second look; a tool call does not
 
-`tools/list` and `resources/list` retry a **transient** upstream failure: a
+`tools/list`, `resources/list` and `events/list` retry a **transient** upstream failure: a
 `429` or `500`/`502`/`503`/`504`, a connection that closed under the request, or
-a socket reset or refused connect. Three tries, with jittered exponential
+a socket reset or refused connect, or a resolver answering `EAI_AGAIN` ("try
+again"). Three tries, with jittered exponential
 backoff from 250ms — under a second of sleep in all — and no new try once 5s
 have gone, which keeps a retry inside the 10s deadline the reachability probe
-puts around a listing. Each try is still bounded by `timeoutMs`. Intermediate failures log
-nothing beyond the per-hop error counter and span; `mcp.list_tools_failed` and
-`mcp.list_resources_failed` fire at ERROR only once the budget is spent. One bad
+puts around a listing. Each try is still bounded by `timeoutMs`. Each failure
+the budget absorbs is an `mcp.list_retry` record at Info, which pages nobody;
+`mcp.list_tools_failed` and `mcp.list_resources_failed` fire at ERROR only once
+the budget is spent, and carry `attempts` and `retry` — `budget`, `deadline`,
+`not_transient` or `closed` — so a page says whether the failure outlasted the
+retry or was never eligible for one. One bad
 second at a hosted server's edge therefore does not page, and an upstream that
 is still failing a moment later still does.
 
 Everything else fails on the first answer: any other `4xx`, `-32601`, a
-timeout, a DNS or TLS failure, a slug waiting on an unseeded credential, and a `local-tunnel` machine
+timeout, a name that does not resolve (`ENOTFOUND`) or a TLS failure, a slug waiting on an unseeded credential, and a `local-tunnel` machine
 that is off. A `401` on a minted credential keeps its own single retry above.
 `tools/call` is never retried, because a `5xx` does not say whether the tool
 ran. Each listing retries on its own, so an upstream answering `429` to every
