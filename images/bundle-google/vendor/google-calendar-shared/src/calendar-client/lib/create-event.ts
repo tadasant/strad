@@ -6,9 +6,12 @@ export async function createEvent(
   headers: Record<string, string>,
   calendarId: string,
   event: Partial<CalendarEvent>,
-  options?: { supportsAttachments?: boolean }
+  options?: { sendUpdates?: 'all' | 'externalOnly' | 'none'; supportsAttachments?: boolean }
 ): Promise<CalendarEvent> {
   const params = new URLSearchParams();
+  if (options?.sendUpdates) {
+    params.set('sendUpdates', options.sendUpdates);
+  }
   if (options?.supportsAttachments) {
     params.set('supportsAttachments', 'true');
   }

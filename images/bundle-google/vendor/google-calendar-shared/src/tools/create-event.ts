@@ -42,6 +42,15 @@ export const CreateEventSchema = z.object({
     .optional()
     .describe('Time zone for end time (e.g., "America/New_York"). Optional.'),
   attendees: z.array(z.string()).optional().describe('List of attendee email addresses.'),
+  send_updates: z
+    .enum(['all', 'externalOnly', 'none'])
+    .optional()
+    .describe(
+      'Whether to email invitations about the new event. "all" sends them to all attendees, "externalOnly" to attendees who do not use Google Calendar only, and "none" creates the event without emailing invites to attendees. ' +
+        'Google warns that with "none", attendees outside Google Calendar may never receive the event. ' +
+        'Omitted, Google applies its own default, which it documents as not notifying, though it says some emails might still be sent. ' +
+        'Pass "all" to be sure attendees are invited, or "none" to ask explicitly for no emails.'
+    ),
   attachments: z
     .array(
       z.object({
@@ -64,6 +73,7 @@ export function createEventTool(server: Server, clientFactory: ClientFactory) {
       'Creates a new event in Google Calendar. ' +
       'Supports both timed events (using start_datetime/end_datetime) and all-day events (using start_date/end_date). ' +
       'Can include title, description, location, and attendees. ' +
+      'Set send_updates to "all" to email invites to attendees, or to "none" to create the event without emailing invites to attendees. ' +
       'Returns the created event details including the event ID and link.',
     inputSchema: {
       type: 'object' as const,
@@ -112,6 +122,11 @@ export function createEventTool(server: Server, clientFactory: ClientFactory) {
           type: 'array',
           items: { type: 'string' },
           description: CreateEventSchema.shape.attendees.description,
+        },
+        send_updates: {
+          type: 'string',
+          enum: ['all', 'externalOnly', 'none'],
+          description: CreateEventSchema.shape.send_updates.description,
         },
         attachments: {
           type: 'array',
@@ -191,13 +206,25 @@ export function createEventTool(server: Server, clientFactory: ClientFactory) {
           }));
         }
 
-        // Determine if we need supportsAttachments parameter
+        // Query parameters: supportsAttachments when there are attachments, and
+        // sendUpdates only when the caller chose one, so an omitted value keeps
+        // Google's own default.
         const hasAttachments = parsed.attachments && parsed.attachments.length > 0;
+        const options: {
+          sendUpdates?: 'all' | 'externalOnly' | 'none';
+          supportsAttachments?: boolean;
+        } = {};
+        if (hasAttachments) {
+          options.supportsAttachments = true;
+        }
+        if (parsed.send_updates) {
+          options.sendUpdates = parsed.send_updates;
+        }
         const [result, accountEmail] = await Promise.all([
           client.createEvent(
             parsed.calendar_id,
             event,
-            hasAttachments ? { supportsAttachments: true } : undefined
+            Object.keys(options).length > 0 ? options : undefined
           ),
           client.getAccountEmail(),
         ]);
@@ -251,6 +278,11 @@ export function createEventTool(server: Server, clientFactory: ClientFactory) {
           for (const attachment of result.attachments) {
             output += `  - ${attachment.title || attachment.fileUrl}\n`;
           }
+        }
+
+        // Notifications, when the caller chose a setting
+        if (parsed.send_updates) {
+          output += `**Notifications:** ${parsed.send_updates === 'all' ? 'Sent to all attendees' : parsed.send_updates === 'externalOnly' ? 'Sent to external attendees only' : 'None requested'}\n`;
         }
 
         // Link — `?eid=&authuser=<email>` form so multi-account readers don't 404.
