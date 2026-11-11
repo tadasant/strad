@@ -50,6 +50,8 @@ import type {
   EventDescriptor,
   PollEventsParams,
   PollEventsResult,
+  WebhookSubscribeParams,
+  WebhookUnsubscribeParams,
   ServerAdapter,
 } from "./types.ts";
 import { EVENTS_EXTENSION } from "../events.ts";
@@ -1135,6 +1137,47 @@ export class HttpServerAdapter implements ServerAdapter {
           name: this.strip(e.name),
         })),
       };
+    });
+  }
+
+  /**
+   * Webhook mode. Forwarded like a poll, whether or not the upstream
+   * advertised the extension, so an upstream that is not configured says why.
+   * The answer is relayed as the upstream gave it: `id`, `refreshBefore`,
+   * `cursor`, `truncated`, `deliveryStatus` carry no event names.
+   */
+  async subscribeEvents(
+    params: WebhookSubscribeParams,
+  ): Promise<Record<string, unknown>> {
+    return this.forwardEvents("events/subscribe", "subscribe_events", params);
+  }
+
+  async unsubscribeEvents(params: WebhookUnsubscribeParams): Promise<void> {
+    await this.forwardEvents(
+      "events/unsubscribe",
+      "unsubscribe_events",
+      params,
+    );
+  }
+
+  private async forwardEvents(
+    method: "events/subscribe" | "events/unsubscribe",
+    span: string,
+    params: WebhookSubscribeParams | WebhookUnsubscribeParams,
+  ): Promise<Record<string, unknown>> {
+    if (this.kind === "local-tunnel") {
+      throw new McpError(ErrorCode.MethodNotFound, method);
+    }
+    return this.authorized(async () => {
+      const conn = await this.leased();
+      const res = await this.lease(conn, span, (client) =>
+        client.request(
+          { method, params: { ...params, name: this.restore(params.name) } },
+          ResultSchema.passthrough(),
+          { timeout: this.opts.timeoutMs },
+        ),
+      );
+      return res as Record<string, unknown>;
     });
   }
 

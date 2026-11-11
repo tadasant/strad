@@ -578,7 +578,7 @@ describe('events over MCP', () => {
       inputSchema: { properties: Record<string, unknown> };
     }[];
     expect(descriptor!.name).toBe('message_posted');
-    expect(descriptor!.delivery).toEqual(['poll']);
+    expect(descriptor!.delivery).toEqual(['poll', 'webhook']);
     expect(Object.keys(descriptor!.inputSchema.properties).sort()).toEqual([
       'addressed_to_bot',
       'channel_ids',

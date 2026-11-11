@@ -46,6 +46,12 @@ import {
 import { toMessagePosted, type BotIdentity, type RawSlackMessage } from './normalize.js';
 import { SlackApi, SlackApiError, type FetchLike } from './slack-api.js';
 import { EventsStore, LEASE_CHECK_MS, SupersededError } from './store.js';
+import {
+  WebhookDelivery,
+  type SubscribeInput,
+  type SubscribeResult,
+} from './webhook/delivery.js';
+import { HttpsWebhookTransport, type WebhookTransport } from './webhook/transport.js';
 
 /** The structural slice of a WebSocket this uses. Node 22's global `WebSocket` satisfies it. */
 export interface WebSocketLike {
@@ -135,7 +141,12 @@ export interface IngestDeps {
   clock?: () => number;
   /** Tests only: no timers, every periodic step driven by hand. */
   manualTimers?: boolean;
+  /** Where webhook POSTs go. Tests substitute a recording receiver. */
+  webhookTransport?: WebhookTransport;
 }
+
+/** How often the lease holder looks for webhook deliveries that are due. */
+export const WEBHOOK_TICK_MS = 1_000;
 
 export const MESSAGE_POSTED = 'message_posted';
 
@@ -148,6 +159,8 @@ export class SlackEventsIngest {
   private readonly buffer: EventBuffer | null;
   private readonly api: SlackApi | null;
   private readonly wsFactory: WebSocketFactory | null;
+  private readonly webhooks: WebhookDelivery | null;
+  private booted = false;
   private readonly manual: boolean;
   private bot: BotIdentity | null = null;
   private ws: WebSocketLike | null = null;
@@ -216,6 +229,7 @@ export class SlackEventsIngest {
       this.buffer = null;
       this.api = null;
       this.wsFactory = null;
+      this.webhooks = null;
       return;
     }
     const blobs =
@@ -229,6 +243,23 @@ export class SlackEventsIngest {
       });
     this.store = new EventsStore(blobs, config.encryptionKey, config.prefix, this.clock);
     this.buffer = new EventBuffer(config.retentionDays * 86_400_000, this.clock);
+    const buffer = this.buffer;
+    this.webhooks = new WebhookDelivery({
+      store: this.store,
+      source: {
+        head: () => buffer.head,
+        evictedThrough: () => buffer.evictedThroughSeq,
+        eventsAfter: (after, args, limit) => buffer.eventsAfter(after, args, limit),
+      },
+      transport: deps.webhookTransport ?? new HttpsWebhookTransport(),
+      parseArgs: parseMessagePostedArgs,
+      access: config.webhookAccess,
+      clock: this.clock,
+      warn: (message) => logWarning('slack-events', message),
+    });
+    if (config.webhookAccessProblem) {
+      logWarning('slack-events', `webhook Access headers are off: ${config.webhookAccessProblem}`);
+    }
     this.api = new SlackApi(config.botToken, config.appToken, {
       fetch: deps.fetch,
       baseUrl: deps.slackBaseUrl,
@@ -269,6 +300,7 @@ export class SlackEventsIngest {
       this.flushedRevision = buffer.revision;
       await store.claimLease();
       this.bootFailure = null;
+      this.booted = true;
     } catch (err) {
       // The buffer could not be read. Serving from an empty one would hand
       // every client "nothing happened"; the state and the error say otherwise,
@@ -290,7 +322,8 @@ export class SlackEventsIngest {
     if (!this.manual) {
       this.timers.push(
         setInterval(() => void this.leaseTick(), LEASE_CHECK_MS),
-        setInterval(() => void this.liveTick(), LIVE_HEARTBEAT_MS)
+        setInterval(() => void this.liveTick(), LIVE_HEARTBEAT_MS),
+        setInterval(() => void this.webhookTick(), WEBHOOK_TICK_MS)
       );
       for (const t of this.timers) t.unref?.();
       void this.connectLoop();
@@ -680,10 +713,60 @@ export class SlackEventsIngest {
     this.ws = null;
     try {
       await this.flush();
+      await this.webhooks?.flush();
     } catch (err) {
       logError('slack-events close', err);
     }
     if (this.state !== 'not_configured' && this.state !== 'config_error') this.state = 'stopped';
+  }
+
+  // --- webhook delivery --------------------------------------------------------
+
+  /** Delivers what is due, when this process holds the lease. Exposed for tests. */
+  async webhookTick(): Promise<void> {
+    if (!this.webhooks || this.stopped) return;
+    const owner = this.booted && !this.store!.superseded;
+    await this.webhooks.tick(owner);
+  }
+
+  /** Tests: wait for every webhook POST in flight. */
+  async webhooksSettled(): Promise<void> {
+    await this.webhooks?.settle();
+  }
+
+  async subscribe(input: Omit<SubscribeInput, 'parsedArguments'>): Promise<SubscribeResult> {
+    const webhooks = await this.servedWebhooks();
+    return webhooks.subscribe({
+      ...input,
+      parsedArguments: parseMessagePostedArgs(input.arguments),
+    });
+  }
+
+  async unsubscribe(input: {
+    principal: string;
+    name: string;
+    url: string;
+    arguments: Record<string, unknown>;
+  }): Promise<void> {
+    const webhooks = await this.servedWebhooks();
+    await webhooks.unsubscribe(input);
+  }
+
+  /** The delivery engine, once the buffer it reads is loaded. */
+  private async servedWebhooks(): Promise<WebhookDelivery> {
+    if (!this.config || !this.webhooks) {
+      throw new EventsNotServed(this.configProblem ?? 'Slack events are not configured.');
+    }
+    try {
+      await this.start();
+    } catch (err) {
+      throw new EventsNotServed(
+        `The Slack events buffer could not be loaded from GCS (${errText(err)}). ` +
+          'This is retried automatically; slack_events_status shows the state.'
+      );
+    }
+    await this.refreshIfSuperseded();
+    return this.webhooks;
   }
 
   // --- what events/poll and the status tool see ----------------------------------
@@ -802,6 +885,11 @@ export class SlackEventsIngest {
         owner: lease.owner,
         superseded: lease.superseded,
       },
+      // Delivered by the lease holder only; another process lists none.
+      webhook_subscriptions: this.webhooks?.status() ?? [],
+      // Which callback hosts get strad's edge token. The hosts, never the token.
+      webhook_access_hosts: this.config.webhookAccess?.hosts ?? [],
+      webhook_access_problem: this.config.webhookAccessProblem,
     };
   }
 

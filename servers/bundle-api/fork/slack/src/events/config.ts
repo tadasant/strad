@@ -38,6 +38,15 @@ export const EVENTS_ENV = {
   prefix: 'SLACK_EVENTS_STATE_PREFIX',
   /** Optional. Days an event is kept. Default 7. */
   retentionDays: 'SLACK_EVENTS_RETENTION_DAYS',
+  /**
+   * Optional. Comma-separated hostnames whose webhook deliveries carry the
+   * Cloudflare Access service token below. Exact match; every other callback
+   * host gets no such header.
+   */
+  webhookAccessHosts: 'SLACK_EVENTS_WEBHOOK_ACCESS_HOSTS',
+  /** Optional, with the hosts. strad's Access service token for those hosts. */
+  webhookAccessClientId: 'SLACK_EVENTS_WEBHOOK_CF_ACCESS_CLIENT_ID',
+  webhookAccessClientSecret: 'SLACK_EVENTS_WEBHOOK_CF_ACCESS_CLIENT_SECRET',
 } as const;
 
 /** Without these, there is no ingest at all. Declaration order is report order. */
@@ -67,6 +76,19 @@ export interface EventsConfig {
   /** No leading or trailing slash. */
   prefix: string;
   retentionDays: number;
+  /** Extra headers for deliveries to these hosts, and to no other. Null: none. */
+  webhookAccess: WebhookAccess | null;
+  /**
+   * Why `webhookAccess` is null when its variables are only partly set. Not a
+   * config error: polling, and webhooks to every other host, still work.
+   */
+  webhookAccessProblem: string | null;
+}
+
+export interface WebhookAccess {
+  /** Lowercase hostnames, no port. */
+  hosts: string[];
+  headers: Record<string, string>;
 }
 
 export class EventsConfigError extends Error {
@@ -136,6 +158,13 @@ export function loadEventsConfig(env: NodeJS.ProcessEnv = process.env): EventsCo
     namespacePrefix(env, { variable: EVENTS_ENV.prefix, root: STATE_ROOT })
   );
   const store = asConfigError(() => readStateStoreEnv(env));
+  let webhookAccess: WebhookAccess | null = null;
+  let webhookAccessProblem: string | null = null;
+  try {
+    webhookAccess = readWebhookAccess(env);
+  } catch (err) {
+    webhookAccessProblem = err instanceof Error ? err.message : String(err);
+  }
   return {
     appToken,
     botToken: read(env, EVENTS_ENV.botToken)!,
@@ -145,6 +174,48 @@ export function loadEventsConfig(env: NodeJS.ProcessEnv = process.env): EventsCo
     privateKey: store.privateKey,
     prefix,
     retentionDays,
+    webhookAccess,
+    webhookAccessProblem,
+  };
+}
+
+/**
+ * The Cloudflare Access service token for the callback hosts that sit behind
+ * Access (Zimmer's does). Read from strad's own configuration, never from a
+ * subscribe request, and attached only to a request whose host is on the list:
+ * a subscriber picks its URL, so a token sent to any URL is a token handed to
+ * whoever subscribes. All three variables or none.
+ */
+export function readWebhookAccess(env: NodeJS.ProcessEnv): WebhookAccess | null {
+  const hosts = read(env, EVENTS_ENV.webhookAccessHosts);
+  const id = read(env, EVENTS_ENV.webhookAccessClientId);
+  const secret = read(env, EVENTS_ENV.webhookAccessClientSecret);
+  if (hosts === undefined && id === undefined && secret === undefined) return null;
+  const missing = ([
+    hosts === undefined ? EVENTS_ENV.webhookAccessHosts : null,
+    id === undefined ? EVENTS_ENV.webhookAccessClientId : null,
+    secret === undefined ? EVENTS_ENV.webhookAccessClientSecret : null,
+  ] as (string | null)[]).filter((n): n is string => n !== null);
+  if (missing.length > 0) {
+    throw new EventsConfigError(
+      `Webhook Access headers need all three variables; ${missing.join(', ')} ` +
+        `${missing.length === 1 ? 'is' : 'are'} not set.`
+    );
+  }
+  const list = hosts!
+    .split(',')
+    .map((h) => h.trim().toLowerCase())
+    .filter((h) => h !== '');
+  for (const h of list) {
+    if (!/^[a-z0-9.-]+$/.test(h) || h.startsWith('.') || h.includes('..')) {
+      throw new EventsConfigError(
+        `${EVENTS_ENV.webhookAccessHosts} must be bare hostnames, comma-separated; "${h}" is not one.`
+      );
+    }
+  }
+  return {
+    hosts: list,
+    headers: { 'CF-Access-Client-Id': id!, 'CF-Access-Client-Secret': secret! },
   };
 }
 

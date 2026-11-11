@@ -4081,12 +4081,14 @@ See `HACKS.md` #130.
 
 ---
 
-### 131. MCP Events follows a draft, in poll mode only
+### 131. MCP Events follows a draft, with poll and webhook delivery
 
 strad's [MCP Events](/servers/events/) support is built from draft SEP-3415,
 pinned in `docs/mcp-events-spec-pin.md`. The draft can still change, and so can
-its error codes. Only `events/list` and `events/poll` exist. There is no push,
-no webhook, no `list_changed` notification and no `server/discover`.
+its error codes. `events/list`, `events/poll`, `events/subscribe` and
+`events/unsubscribe` exist; webhook delivery has its own entry, #140. There is
+no push (`events/stream`), no `list_changed` notification and no
+`server/discover`.
 
 The Slack `message_posted` feed has met fakes only. No real Socket Mode
 connection has run in CI, and it stays off until `SLACK_APP_TOKEN`,
@@ -4402,3 +4404,39 @@ not up, and `UNREACHABLE` naming the tailnet policy when the host could not be
 reached.
 
 See `HACKS.md` #139.
+
+---
+
+### 140. Webhook delivery POSTs to a URL a caller chose, and has met only a fake receiver
+
+With [webhook delivery](/servers/events/#webhook-delivery), the Slack mount
+sends HTTP requests to a URL whoever subscribed picked. It is guarded: `https`
+only, no private, loopback or reserved address (checked on every attempt, and
+connected to directly), no redirects, a challenge the endpoint must answer
+before anything is delivered, and only a caller entitled to the slug can
+subscribe. It has met a recording fake and a loopback server in tests, not a
+real receiver.
+
+- **An edge credential goes to configured hosts.** Zimmer's receiver is behind
+  Cloudflare Access, so the hosts named in `SLACK_EVENTS_WEBHOOK_ACCESS_HOSTS`
+  get strad's Access service token on every request. A wrong entry in that list
+  sends the token to the wrong host.
+- **Revoking a caller does not stop its deliveries at once.** It can no longer
+  refresh, and its subscription delivers until its grant runs out, at most 24
+  hours.
+- **A receiver that is down is suspended, not abandoned**, after five failed
+  attempts over about 15 minutes. Its next refresh resumes delivery from where
+  it stopped, as long as the buffer still holds the events (7 days by default).
+  Past that it gets a `gap` envelope.
+- **A restart can deliver an event twice**, under a new `webhook-id` and the same
+  `eventId`.
+- **Verification is challenge-echo only.** No allowlist, no
+  `/.well-known/mcp-webhook-receiver.json`.
+
+**How you would know.** `slack_events_status` on the lease holder lists each
+subscription: active or suspended, the last delivery and the last error, as one
+of the draft's categories (`connection_refused`, `timeout`, `tls_error`,
+`http_4xx`, `http_5xx`). A subscribe that fails verification answers `-32027`
+with the reason.
+
+See `HACKS.md` #140.

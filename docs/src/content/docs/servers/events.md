@@ -1,13 +1,14 @@
 ---
 title: MCP Events (draft)
-description: How strad serves MCP Events in poll mode — events/list and events/poll through core, slug-prefixed and entitled like tools — and the Slack message_posted event behind slack-zimmer.
+description: How strad serves MCP Events — events/list, events/poll and webhook delivery through core, slug-prefixed and entitled like tools — and the Slack message_posted event behind slack-zimmer.
 ---
 
 A trigger that fires when something happens needs a feed of things that
 happened. MCP Events is that feed, as an MCP extension: a server lists event
-types, and a client polls each one with a cursor. strad serves it in **poll mode
-only**, and it has one event source today: Slack's `message_posted`, behind
-`slack-zimmer`.
+types, and a client either polls each one with a cursor or subscribes a webhook
+that the server POSTs to. strad serves **poll** and **webhook** delivery, not
+push (`events/stream`), and it has one event source today: Slack's
+`message_posted`, behind `slack-zimmer`.
 
 :::caution
 MCP Events is a **draft** (SEP-3415). It is in no released MCP specification,
@@ -39,6 +40,11 @@ Three things, all on the ordinary `/mcp` endpoint:
   forwards the poll to that slug's upstream, and prefixes the names in the
   answer. A `null` cursor means "from now": no events, and a cursor to poll from
   next time.
+- **`events/subscribe`** and **`events/unsubscribe`** are webhook mode; see
+  [Webhook delivery](#webhook-delivery). Core strips the prefix and forwards
+  them with a `_meta` of its own: `strad/principal`, the authenticated caller,
+  and `strad/name`, the prefixed name. Whatever `_meta` the client sent is
+  dropped, so no caller can subscribe as someone else.
 
 Core holds no event state. The cursor belongs to the upstream and is opaque to
 core, so a poll is one stateless round trip, like every other `/mcp` request.
@@ -48,7 +54,7 @@ accepted. Core does not check them yet.
 
 ## Who may poll what
 
-A poll is allowed for a slug the request **selected**. That is the same set a
+A poll, a subscribe or an unsubscribe is allowed for a slug the request **selected**. That is the same set a
 tool call is checked against: the slugs the token is entitled to, narrowed by
 `?servers=`. Anything else is Forbidden, `-32024`. That covers a slug the token
 cannot reach, one it did not select, and one that does not exist. The refusal
@@ -62,7 +68,10 @@ entitled to the slug.
 | --------------------- | -------- | ------------------------------------------------------------------ |
 | InvalidParams         | `-32602` | the name is not `<slug>__<event>`; a bad argument; a foreign cursor |
 | NotFound (`event`)    | `-32023` | the slug serves no such event type, or is not configured for events |
-| Forbidden             | `-32024` | the slug is not selected for this request                          |
+| Forbidden             | `-32024` | the slug is not selected for this request; a subscribe with no principal |
+| ResourceExhausted     | `-32025` | the subscription cap (100), or too many verifications to one host  |
+| Unsupported           | `-32026` | `events/subscribe` with a `delivery.mode` other than `webhook`     |
+| CallbackEndpointError | `-32027` | the webhook endpoint failed verification; `data.reason` says how   |
 
 An upstream's own refusal reaches the caller with its code and its message. That
 matters for the one refusal every deployment sees first: a Slack mount without
@@ -159,13 +168,124 @@ so this second backfill picks them up.
 A first-ever boot backfills nothing. "From now" is the only honest start for a
 buffer that has never been live.
 
+### Webhook delivery
+
+`message_posted` lists `delivery: ["poll", "webhook"]`. A client that would
+rather be told than ask subscribes a URL, and the Slack mount POSTs each event
+to it. Polling keeps working beside it, from the same buffer and in the same
+cursor space, so a client can do both and use poll to catch up.
+
+**Subscribe.** `events/subscribe` with
+`{name, arguments, delivery: {mode: "webhook", url, secret}, cursor, maxAgeMs?, ttlMs?}`
+answers `{id, refreshBefore, cursor, truncated}`, and on a refresh adds
+`deliveryStatus` `{active, lastDeliveryAt, lastError, failedSince?}`.
+
+- **The key** is `(principal, url, name, arguments)`, the principal being the
+  one core authenticated. Calling `events/subscribe` again with the same key
+  refreshes it. `id` is `sub_` plus 32 hex characters of a SHA-256 over the key:
+  stable across refreshes and restarts, and not accepted as input anywhere.
+- **The URL** must be `https`, carry no credentials, and not name a loopback,
+  private or reserved address. Otherwise `-32602`.
+- **The secret** is the client's: `whsec_` and the base64 of 24 to 64 random
+  bytes. strad never generates one, never logs one and never returns one. A new
+  secret on a refresh replaces the old one, and both sign for ten minutes.
+- **The TTL.** `ttlMs` is a suggestion. The grant is 1 hour when it is omitted,
+  at least 1 minute, and at most 24 hours. `ttlMs: null` asks for no expiry and
+  gets 24 hours: strad does not grant no-expiry.
+- **The cursor.** `null` starts from now. Any cursor `events/poll` handed out
+  starts after it. One older than what the buffer still holds starts at the
+  oldest event held, and the answer says `truncated: true`. `maxAgeMs` skips
+  events older than that, and says `truncated` if it skipped any.
+- **`events/unsubscribe`** `{name, arguments, delivery: {url}}` removes the
+  subscription with that key. None: NotFound, `data.kind: "subscription"`.
+
+**Verification.** Before the first delivery to a URL, strad POSTs a signed
+`{"type":"verification","challenge":"<nonce>"}` while `events/subscribe` waits.
+The endpoint proves it wants deliveries by answering `2xx` with
+`{"challenge":"<nonce>"}`; strad compares in constant time. Anything else fails
+the subscribe with `-32027` CallbackEndpointError: `data.reason` is
+`challenge_failed` when the endpoint answered without the nonce (a redirect to a
+login page, a login page, a `401`), or `connection_refused`, `timeout` or
+`tls_error` when it did not answer. A verified `(principal, url)` stays verified
+while subscribed, up to a day after its last subscribe. At most five
+verifications per host per minute, then `-32025`. Challenge-echo is the only
+method built: no allowlist, no `/.well-known/mcp-webhook-receiver.json`.
+
+**Delivery.** One POST per event:
+
+```
+POST <url>
+content-type: application/json
+webhook-id: msg_<random>
+webhook-timestamp: <unix seconds>
+webhook-signature: v1,<base64 HMAC-SHA256(secret, id + "." + timestamp + "." + body)>
+x-mcp-subscription-id: sub_<32 hex>
+
+{"eventId":"slack:C…:17…","name":"slack-zimmer__message_posted","timestamp":"…","data":{…},"cursor":"v1.…"}
+```
+
+- **Signing** is [Standard Webhooks](https://github.com/standard-webhooks/standard-webhooks/blob/main/spec/standard-webhooks.md),
+  checked in the tests against the specification's own test vector.
+- **`eventId`** is the same as on the poll path, so a receiver that dedupes on
+  it fires once whichever path an event arrived by.
+- **`cursor`** is the watermark: every event at or before it was acknowledged
+  or given up. It never runs ahead of an unacknowledged event, so it is always
+  safe to persist and to poll from.
+- **Retries.** Five attempts: at once, then after 30 seconds, 2½, 7½ and 14½
+  minutes. The `webhook-id` stays the same and the timestamp and signature are
+  new each time. `2xx` is accepted. `410` and `413` are not retried. Anything
+  else is, `429` included. A request is given 10 seconds.
+- **Order.** At most ten events are in flight per subscription, oldest first,
+  so arrival order is close to buffer order but not guaranteed.
+- **Sustained failure suspends, it does not discard.** An event whose five
+  attempts all fail is given up only if the endpoint has answered since that
+  event's first attempt with a `2xx`, `410` or `413`: the endpoint is up and
+  refuses this one. If
+  it has not answered at all, the subscription is suspended
+  (`deliveryStatus.active: false`). Nothing is given up and the watermark holds.
+  The next refresh reactivates it, and delivery resumes from the watermark, out
+  of the buffer, for as long as the buffer keeps the events (7 days by default).
+  A refresh reactivates whichever container it lands on: it records its time,
+  and a suspension older than the last refresh does not stand.
+- **`lastError`** is cleared by the next answer from the endpoint, a `2xx` or a
+  deliberate `410` or `413`, so a healthy subscription refreshes with
+  `lastError: null`.
+- **A gap.** If the buffer evicted events the subscription had not been sent,
+  strad POSTs a signed `{"type":"gap","cursor":"<fresh>"}` first, and carries on
+  from the oldest event it still holds.
+- **SSRF.** The host is resolved again on every attempt, every address it
+  resolves to must be globally routable, and the connection is made to the
+  address that was checked, with the hostname kept for TLS and `Host`. Every
+  IPv4-mapped or IPv4-compatible IPv6 address is refused, in any spelling, and
+  an IP-literal URL is held to the same rule.
+  Redirects are never followed. A refused address is reported as
+  `connection_refused`, never with the far end's own words.
+- **Edge credentials.** A receiver behind an access gateway (Zimmer's sits
+  behind Cloudflare Access) needs strad's credential on each request. The
+  hosts in `SLACK_EVENTS_WEBHOOK_ACCESS_HOSTS` get `CF-Access-Client-Id` and
+  `CF-Access-Client-Secret` from `SLACK_EVENTS_WEBHOOK_CF_ACCESS_CLIENT_ID` and
+  `_SECRET`, on the challenge and on every delivery. An exact hostname match
+  over `https`, nothing else: a subscriber chooses its URL, and a token sent to
+  any URL would be handed to whoever subscribes. Since no redirect is followed,
+  the headers cannot travel on to another host.
+
+**Where subscriptions live.** In `webhooks.bin`, sealed under the ingest's key
+in its folder of the [state store](/operate/state-store/), beside the buffer.
+Any container may write it, because a subscribe can land on one that does not
+hold the lease. Only the lease holder delivers, and it re-reads the registry
+every 15 seconds. A restarted container resumes delivering from the persisted
+watermark with no resubscribe. Expired subscriptions are dropped.
+
 ### `slack_events_status`
 
 A read-only tool, listed on every Slack slug. It reports the state
 (`not_configured`, `connecting`, `connected`, `reconnecting`, `superseded`, …),
 when the socket opened, the last backfill and how much it recovered, the buffer's
-size and age, the last GCS write, and the lease. When events are not configured
-it names the missing variables. It never shows their values.
+size and age, the last GCS write, and the lease. On the lease holder it lists
+the webhook subscriptions: id, name, the callback's host (never its path or
+secret), active or suspended, the last delivery and error, and the cursor. It
+names the hosts that get edge credentials, never the credential. When events
+are not configured it names the missing variables. It never shows their values.
 
 ### Turning it on
 
@@ -182,7 +302,12 @@ The ingest needs six variables on the component serving the slug:
 
 `SLACK_EVENTS_STATE_PREFIX` (default `slack-events`, and always `slack-events`
 or a folder under it) and `SLACK_EVENTS_RETENTION_DAYS` (default 7, at most 30)
-are optional.
+are optional. So are the three webhook edge-credential variables:
+`SLACK_EVENTS_WEBHOOK_ACCESS_HOSTS` (plain config, comma-separated bare
+hostnames) and `SLACK_EVENTS_WEBHOOK_CF_ACCESS_CLIENT_ID` / `_SECRET` (secret,
+the slug's own namespace). All three or none: a partial set turns the headers
+off, says why on `slack_events_status`, and leaves polling and every other
+webhook untouched.
 
 **How they reach the container.** The first three are the slug's own. Use
 `params: true` on the slug, with the `gcp-parameter-store` provider: the slug's

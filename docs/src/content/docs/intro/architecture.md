@@ -244,16 +244,20 @@ and without that cap a closed laptop costs a full minute per request — the run
 budget stays at `timeoutMs`, because driving a real desktop is legitimately
 slow. See [the kind's section](/servers/interface/#2-local-tunnel).
 
-### Events: a feed polled through the same door
+### Events: a feed polled, or pushed, through the same door
 
-An adapter may also serve **MCP Events** (draft SEP-3415, poll mode):
-optional `supportsEvents`, `listEvents` and `pollEvents`. The HTTP adapter reads
+An adapter may also serve **MCP Events** (draft SEP-3415, poll and webhook
+modes): optional `supportsEvents`, `listEvents`, `pollEvents`,
+`subscribeEvents` and `unsubscribeEvents`. The HTTP adapter reads
 the first from the upstream's handshake and gates `listEvents` on it, the way it
 gates resources. On `initialize`, the router asks every selected slug and
 advertises `io.modelcontextprotocol/events` if any of them serves events. Event
 names are slug-prefixed like tools, and a poll is checked against the same
 selection a tool call is. Core holds no event state; the cursor is the
-upstream's. See [MCP Events](/servers/events/).
+upstream's. For a webhook subscribe, core adds the one thing only it knows —
+the authenticated principal, in a `_meta` it builds itself — and the upstream
+holds the subscription and POSTs the deliveries; core is not on that path.
+See [MCP Events](/servers/events/).
 
 ### The raw data plane: files that do not fit in a tool result
 

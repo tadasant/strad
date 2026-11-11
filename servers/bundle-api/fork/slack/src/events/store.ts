@@ -1,8 +1,10 @@
 /**
  * What the events ingest persists, and who is allowed to write it.
  *
- *   {prefix}/buffer.bin   the ring buffer (buffer.ts's BufferDoc). Sealed.
- *   {prefix}/lease.json   which process owns the socket. Plain.
+ *   {prefix}/buffer.bin     the ring buffer (buffer.ts's BufferDoc). Sealed.
+ *   {prefix}/webhooks.bin   webhook subscriptions, their secrets and their
+ *                           verification (webhook/registry.ts). Sealed.
+ *   {prefix}/lease.json     which process owns the socket. Plain.
  *
  * `{prefix}` is this ingest's folder in strad's shared state bucket
  * (`state-store.ts`), always `slack-events` or a folder under it, and the
@@ -102,6 +104,27 @@ export class EventsStore {
    */
   async reclaimIfStale(staleAfterMs: number): Promise<boolean> {
     return this.leaseHolder.reclaimIfStale(staleAfterMs);
+  }
+
+  /**
+   * A sealed JSON document beside the buffer, with the generation a
+   * conditional write needs. Unlike the buffer, any process may write one: a
+   * subscribe can land on a container that is not the lease holder.
+   */
+  async readDoc<T>(suffix: string): Promise<{ doc: T | null; generation: string | null }> {
+    const name = this.name(suffix);
+    const blob = await this.blobs.read(name);
+    if (!blob) return { doc: null, generation: null };
+    return {
+      doc: JSON.parse(open(this.key, name, blob.data, FORMAT).toString('utf8')) as T,
+      generation: blob.generation,
+    };
+  }
+
+  /** Conditional on `ifGeneration` (`null`: must not exist). Throws PreconditionFailed on a race. */
+  async writeDoc(suffix: string, doc: unknown, ifGeneration: string | null): Promise<string> {
+    const name = this.name(suffix);
+    return this.blobs.write(name, seal(this.key, name, Buffer.from(JSON.stringify(doc)), FORMAT), ifGeneration);
   }
 
   async readBuffer(): Promise<BufferDoc | null> {
