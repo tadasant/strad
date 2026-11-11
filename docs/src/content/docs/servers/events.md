@@ -263,7 +263,7 @@ x-mcp-subscription-id: sub_<32 hex>
 - **Edge credentials.** A receiver behind an access gateway (Zimmer's sits
   behind Cloudflare Access) needs strad's credential on each request. The
   hosts in `SLACK_EVENTS_WEBHOOK_ACCESS_HOSTS` get `CF-Access-Client-Id` and
-  `CF-Access-Client-Secret` from `SLACK_EVENTS_WEBHOOK_CF_ACCESS_CLIENT_ID` and
+  `CF-Access-Client-Secret` from `ZIMMER_APPROVAL_CF_ACCESS_CLIENT_ID` and
   `_SECRET`, on the challenge and on every delivery. An exact hostname match
   over `https`, nothing else: a subscriber chooses its URL, and a token sent to
   any URL would be handed to whoever subscribes. Since no redirect is followed,
@@ -304,8 +304,11 @@ The ingest needs six variables on the component serving the slug:
 or a folder under it) and `SLACK_EVENTS_RETENTION_DAYS` (default 7, at most 30)
 are optional. So are the three webhook edge-credential variables:
 `SLACK_EVENTS_WEBHOOK_ACCESS_HOSTS` (plain config, comma-separated bare
-hostnames) and `SLACK_EVENTS_WEBHOOK_CF_ACCESS_CLIENT_ID` / `_SECRET` (secret,
-the slug's own namespace). All three or none: a partial set turns the headers
+hostnames) and `ZIMMER_APPROVAL_CF_ACCESS_CLIENT_ID` / `_SECRET` (secret,
+the slug's own namespace). The two token names are the ones a deployment that
+already sends strad's confirmation calls through Zimmer's edge seeds per slug
+(`confirmationHeaders:` on the gmail slugs): one token, one meaning — strad
+calling Zimmer behind Access — under one pair of names. All three or none: a partial set turns the headers
 off, says why on `slack_events_status`, and leaves polling and every other
 webhook untouched.
 

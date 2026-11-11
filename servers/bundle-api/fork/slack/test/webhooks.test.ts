@@ -831,21 +831,21 @@ describe('edge credentials', () => {
     expect(
       readWebhookAccess({
         SLACK_EVENTS_WEBHOOK_ACCESS_HOSTS: 'Zimmer.Tadasant.com, other.example.com',
-        SLACK_EVENTS_WEBHOOK_CF_ACCESS_CLIENT_ID: 'id',
-        SLACK_EVENTS_WEBHOOK_CF_ACCESS_CLIENT_SECRET: 'sec',
+        ZIMMER_APPROVAL_CF_ACCESS_CLIENT_ID: 'id',
+        ZIMMER_APPROVAL_CF_ACCESS_CLIENT_SECRET: 'sec',
       })
     ).toEqual({
       hosts: ['zimmer.tadasant.com', 'other.example.com'],
       headers: { 'CF-Access-Client-Id': 'id', 'CF-Access-Client-Secret': 'sec' },
     });
     expect(() => readWebhookAccess({ SLACK_EVENTS_WEBHOOK_ACCESS_HOSTS: 'zimmer.tadasant.com' })).toThrow(
-      /SLACK_EVENTS_WEBHOOK_CF_ACCESS_CLIENT_ID, SLACK_EVENTS_WEBHOOK_CF_ACCESS_CLIENT_SECRET/
+      /ZIMMER_APPROVAL_CF_ACCESS_CLIENT_ID, ZIMMER_APPROVAL_CF_ACCESS_CLIENT_SECRET/
     );
     expect(() =>
       readWebhookAccess({
         SLACK_EVENTS_WEBHOOK_ACCESS_HOSTS: 'https://zimmer.tadasant.com/',
-        SLACK_EVENTS_WEBHOOK_CF_ACCESS_CLIENT_ID: 'id',
-        SLACK_EVENTS_WEBHOOK_CF_ACCESS_CLIENT_SECRET: 'sec',
+        ZIMMER_APPROVAL_CF_ACCESS_CLIENT_ID: 'id',
+        ZIMMER_APPROVAL_CF_ACCESS_CLIENT_SECRET: 'sec',
       })
     ).toThrow(/bare hostnames/);
   });

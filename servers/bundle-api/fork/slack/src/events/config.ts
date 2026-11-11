@@ -44,9 +44,13 @@ export const EVENTS_ENV = {
    * host gets no such header.
    */
   webhookAccessHosts: 'SLACK_EVENTS_WEBHOOK_ACCESS_HOSTS',
-  /** Optional, with the hosts. strad's Access service token for those hosts. */
-  webhookAccessClientId: 'SLACK_EVENTS_WEBHOOK_CF_ACCESS_CLIENT_ID',
-  webhookAccessClientSecret: 'SLACK_EVENTS_WEBHOOK_CF_ACCESS_CLIENT_SECRET',
+  /**
+   * Optional, with the hosts. strad's Access service token for those hosts —
+   * the same token, under the same names, a deployment already seeds per slug
+   * for strad's confirmation calls to Zimmer (`confirmationHeaders:`).
+   */
+  webhookAccessClientId: 'ZIMMER_APPROVAL_CF_ACCESS_CLIENT_ID',
+  webhookAccessClientSecret: 'ZIMMER_APPROVAL_CF_ACCESS_CLIENT_SECRET',
 } as const;
 
 /** Without these, there is no ingest at all. Declaration order is report order. */
