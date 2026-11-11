@@ -42,7 +42,7 @@ export interface ICalendarClient {
   createEvent(
     calendarId: string,
     event: Partial<CalendarEvent>,
-    options?: { supportsAttachments?: boolean }
+    options?: { sendUpdates?: 'all' | 'externalOnly' | 'none'; supportsAttachments?: boolean }
   ): Promise<CalendarEvent>;
 
   /**
@@ -183,7 +183,7 @@ export class ServiceAccountCalendarClient implements ICalendarClient {
   async createEvent(
     calendarId: string,
     event: Partial<CalendarEvent>,
-    options?: { supportsAttachments?: boolean }
+    options?: { sendUpdates?: 'all' | 'externalOnly' | 'none'; supportsAttachments?: boolean }
   ): Promise<CalendarEvent> {
     const headers = await this.getHeaders();
     const { createEvent } = await import('./calendar-client/lib/create-event.js');
@@ -442,7 +442,7 @@ export class OAuthCalendarClient implements ICalendarClient {
   async createEvent(
     calendarId: string,
     event: Partial<CalendarEvent>,
-    options?: { supportsAttachments?: boolean }
+    options?: { sendUpdates?: 'all' | 'externalOnly' | 'none'; supportsAttachments?: boolean }
   ): Promise<CalendarEvent> {
     const { createEvent } = await import('./calendar-client/lib/create-event.js');
     return this.withAuth((h) => createEvent(this.baseUrl, h, calendarId, event, options));
