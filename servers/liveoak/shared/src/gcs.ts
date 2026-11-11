@@ -2,7 +2,8 @@
  * Where the remembered-device state lives between processes: one GCS object,
  * because strad has no database and App Platform has no persistent disk.
  *
- * DELIBERATELY SMALLER THAN THE WHATSAPP SERVER'S `blob-store.ts`. That one
+ * DELIBERATELY SMALLER THAN strad's shared state store (`src/state/store.ts`,
+ * vendored into the WhatsApp server as `state-store.ts`). That one
  * carries generations and a lease because a Signal session is rewritten on
  * nearly every message by a long-lived socket, and two containers briefly
  * holding it during a deploy can corrupt it. This object is written once per
@@ -10,7 +11,7 @@
  * lost race here is "the newest enrolment wins", which is the right answer.
  *
  * Node's own `fetch`, no client library — the same reason as the WhatsApp
- * server (`servers/whatsapp/shared/src/blob-store.ts`): node-fetch 2 failed
+ * server (`servers/whatsapp/shared/src/state-store.ts`): node-fetch 2 failed
  * every token POST on prod.
  */
 import { createSign } from "node:crypto";

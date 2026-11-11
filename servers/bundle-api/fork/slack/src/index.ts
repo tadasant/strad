@@ -44,4 +44,4 @@ export type {
 // MCP Events (draft SEP-3415, poll mode). See src/events/protocol.ts.
 export { SlackEventsIngest, type IngestDeps, type WebSocketLike } from './events/ingest.js';
 export { EVENTS_EXTENSION, MESSAGE_POSTED_DESCRIPTOR } from './events/protocol.js';
-export { MemoryBlobStore } from './events/blob-store.js';
+export { MemoryBlobStore } from './events/state-store.js';

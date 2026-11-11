@@ -215,6 +215,27 @@ export const VENDORED = [
 `,
     targets: ["images/bundle-google/vendor/mcp-elicitation/src"],
   },
+  {
+    // strad's state store: the GCS client, the seal, the lease and the
+    // environment rules, for every server that keeps state across a restart in
+    // the ONE shared bucket. Each consumer is its own npm tree built from its
+    // own Docker context, so each holds a copy. A drift is two servers
+    // disagreeing about the bucket they share — which folder is whose, which
+    // variable names it, what a lease means — and the first symptom of that is
+    // one server's state appearing to be gone. It is one file, and it imports
+    // only `node:crypto`, so a copy needs nothing beside it.
+    id: "statestore",
+    source: "src/state/store.ts",
+    label: "the shared state store",
+    banner: `// GENERATED — DO NOT EDIT.
+// Vendored from src/state/store.ts by \`npm run statestore:sync\`.
+// Edit the source, run the sync, and commit both. CI fails if these drift.
+`,
+    targets: [
+      "servers/whatsapp/shared/src/state-store.ts",
+      "servers/bundle-api/fork/slack/src/events/state-store.ts",
+    ],
+  },
 ];
 
 /**

@@ -282,17 +282,18 @@ on a cron with its own copy of the bot token. This fork serves the feed as
 behind `events/list` and `events/poll`. strad core prefixes and entitles it.
 See strad's `servers/events` page.
 
-Inert unless `SLACK_APP_TOKEN` and the `SLACK_EVENTS_*` variables are set: no
+Inert unless `SLACK_APP_TOKEN`, `SLACK_EVENTS_STATE_ENCRYPTION_KEY` and strad's
+shared state store (`STRAD_STATE_GCS_*`) are set: no
 socket, no GCS, no Slack call, no event types listed, no extension advertised.
 No existing tool changed.
 
 | File | Change |
 | --- | --- |
-| `src/events/config.ts` | **New.** The six required variables, and the error that names whichever are missing. |
+| `src/events/config.ts` | **New.** The six required variables — three of them the shared state store's — the `slack-events/` folder rule, and the error that names whichever are missing. |
 | `src/events/normalize.ts` | **New.** One Slack message to one `message_posted` payload, or nothing: the bot's own posts, non-posting subtypes, hidden events and group DMs are dropped. Event id `slack:<channel_id>:<ts>`. |
 | `src/events/buffer.ts` | **New.** The ring buffer, the subscription arguments, and the cursor (a clock-based sequence, so it survives a deploy). |
-| `src/events/store.ts`, `crypto.ts` | **New.** The sealed buffer object and the lease in GCS, after the WhatsApp bridge's `store.ts`. |
-| `src/events/blob-store.ts` | **New.** A copy of `servers/whatsapp/shared/src/blob-store.ts`, the GCS JSON API on Node's `fetch`. |
+| `src/events/store.ts` | **New.** The sealed buffer object (magic `SLE1`, this ingest's own key) and its heartbeating lease, in this ingest's folder of the shared bucket. |
+| `src/events/state-store.ts` | **Generated.** strad's state store, vendored from `src/state/store.ts` in strad by `npm run statestore:sync`: the GCS JSON API on Node's `fetch`, the seal, the lease. Edit the source, never this copy. |
 | `src/events/slack-api.ts` | **New.** `auth.test`, `apps.connections.open`, `users.conversations`, `conversations.history`, `conversations.replies`. |
 | `src/events/ingest.ts` | **New.** The Socket Mode client: ack every envelope first, buffer second, backfill on every hello, stand down when the lease is lost. |
 | `src/events/protocol.ts` | **New.** `events/list`, `events/poll`, and the extension, advertised only when configured. |

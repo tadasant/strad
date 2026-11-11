@@ -52,14 +52,14 @@ does not use it.
   the `bundle_image` CI job is where it runs. An allow list is exhaustive, so a
   typo'd or renamed entry narrows a slug's surface by one and errors nowhere.
   Anything CI cannot enumerate is skipped WITH A REASON, never failed.
-- EIGHT seams are VENDORED across an npm-tree boundary — eleven files, since one
+- NINE seams are VENDORED across an npm-tree boundary — twelve files, since one
   of them is a library that spans four — and ONE manifest owns all of them: the
   `VENDORED` array in `scripts/sync-vendored.mjs`. Edit the
   source, never the copy; run the sync and commit both halves.
   `npm run vendor:sync` writes every copy, `-- --check` fails if any has drifted,
   `-- --only <id>` does one seam, and `test/vendored.sync.test.ts` runs the check
   over the whole manifest in CI. The per-seam aliases below are thin wrappers on
-  `--only <id>`; adding a ninth seam is one entry in the manifest, not a ninth
+  `--only <id>`; adding a tenth seam is one entry in the manifest, not a tenth
   copy of the script. An entry is one `source` file copied to each of its
   `targets`, unless it declares `files:` — then `source` and every target are
   DIRECTORIES and each name in `files` crosses between them, so a library that
@@ -144,6 +144,17 @@ does not use it.
     fifth module added and hand-copied is the one drift byte-identity cannot see.
     The trees' `package.json`, `tsconfig.json` and markdown are identical too and
     stay out of the seam — none of them can carry a `//` banner.
+  - `npm run statestore:sync` (`--only statestore`) re-vendors
+    `src/state/store.ts` — strad's STATE STORE: the GCS client, the AES-256-GCM
+    seal, the single-writer lease, and the rules for the ONE shared bucket
+    (`STRAD_STATE_GCS_*`, a folder per consumer under its own root, a key per
+    consumer) — into `servers/whatsapp/shared/src/state-store.ts` and
+    `servers/bundle-api/fork/slack/src/events/state-store.ts`. Core does not run
+    it; it lives under `src/` so the root `tsc`, ESLint and Vitest cover the one
+    copy that is edited. A drift is two servers disagreeing about the bucket they
+    share — whose folder is whose, what a lease means — and its first symptom is
+    one server's state appearing to be gone. A new stateful server is a third
+    target, not a fourth GCS client (`HACKS.md` #138).
 - `npm run dev` starts the gateway on `:8080` against `strad.config.yaml` — the
   stock config, which has zero servers and a console nobody can enter.
 - `npm run dev:agent` (`scripts/agent-dev.sh`) is the one to reach for instead:
@@ -215,6 +226,7 @@ not a confession.
 | `src/ui/nav.ts` — a console destination added, removed, relabelled or reordered                                   | `auth/overview.md`, the doors in `src/ui/landing.ts`, `operate/runtime-config.md`, `operate/operations.md`                                                                           |
 | `src/ui/roster-page.ts` — the roster, a badge, the grouping, an editor control                                    | `operate/secrets.md`, `operate/runtime-config.md`, `operate/operations.md`, `auth/overview.md`                                                                                       |
 | `src/ui/landing.ts` — what the splash at `/` carries, and what it withholds                                       | `operate/operations.md`, `auth/overview.md`, and the absences `test/landing.test.ts` asserts                                                                                         |
+| `src/state/store.ts` — the shared state store: a variable, the folder rule, the seal, the lease                   | `operate/state-store.md`, `servers/whatsapp.md`, `servers/events.md`, `limitations.md`, and `npm run statestore:sync`                                                                |
 | `servers/remote-filesystem/**` — a tool, the link model, the sensitivity model                                    | `servers/artifact-store.md`, `limitations.md`                                                                                                                                        |
 | `hostd/**` — a tool, the consent gate, the kill switch, the banner, the helper, the install                       | `servers/hostd.md`, `servers/hostd-design.md`, `hostd/README.md`, `limitations.md`, and `operate/operations.md` if `hostd-ax.yml` moves with it                                      |
 | `servers/telegram/**` — a tool, the credential model, the read/write split                                        | `servers/telegram.md`, `limitations.md`                                                                                                                                              |

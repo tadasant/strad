@@ -5729,7 +5729,7 @@ requirement. What that costs:
   caller's transcript. It is not enough to act as the device: that needs the
   Signal keys, which never leave the sealed state. The bridge never logs it.
 - **State in a bucket, not a database.** The Signal state and the buffer are
-  sealed objects under `WHATSAPP_GCS_PREFIX` (the prefix is part of each
+  sealed objects under `WHATSAPP_STATE_PREFIX` (the prefix is part of each
   object's AAD, so moving them is as breaking as a new key), written on a 2 s
   debounce and on SIGTERM. A crash loses up to that window: the same
   retry-receipt recovery for keys, and messages RECEIVED in it are missing
@@ -5743,7 +5743,8 @@ requirement. What that costs:
   out of three, inside each of four outer tries, on every call. The same
   library, in the same image, works from the `bundle` component and from
   anywhere it was tried by hand, and what leaves the listener there was never
-  found: there is no shell on that box, by design. So `GcsBlobStore` signs its
+  found: there is no shell on that box, by design. So `GcsBlobStore` (part of
+  strad's shared state store, #138) signs its
   own service-account JWT (RS256, `node:crypto`), trades it at
   `oauth2.googleapis.com/token`, and makes five JSON-API requests (metadata,
   pinned download, multipart upload with `ifGenerationMatch`, delete, paged
@@ -6721,7 +6722,8 @@ headers are accepted and not checked. Results carry no `resultType`.
 
 The one event source is Slack's `message_posted`
 (`servers/bundle-api/fork/slack/src/events/`): one Socket Mode socket, a sealed
-7-day ring buffer in GCS and a lease, the WhatsApp bridge's pattern. The socket,
+7-day ring buffer and a lease in strad's shared state store (#138), beside the
+WhatsApp bridge's. The socket,
 the envelope ack, the backfill and GCS have met fakes only. Nothing in CI has
 held a real Socket Mode connection, and no deployment has seeded
 `SLACK_APP_TOKEN` yet.
@@ -6743,10 +6745,11 @@ public ingress.
   connection's backfill recovers what Slack still returns.
 - A superseded process answers polls from the owner's persisted buffer, which
   lags the owner's memory by up to one flush (a couple of seconds).
-- Making the GCS bucket and the service account that writes it is a one-off
-  step by hand in GCP, outside any deploy, as it is for the WhatsApp bridge.
-  Seeding the six variables is done through the console and a deploy. The
-  bucket is the one step an agent cannot do without project IAM.
+- The GCS bucket and its service account are the shared state store's (#138),
+  made by hand in GCP once per deployment, outside any deploy. A deployment
+  whose WhatsApp bridge already has one has it. Seeding the six variables is
+  done through the console and a deploy. The bucket is the one step an agent
+  cannot do without project IAM.
 - The single-instance rule is enforced by the lease, not by the renderer.
   `SINGLE_SOCKET_PATHS` names `/whatsapp` and not `/slack`, because the shared
   bundle serves `/slack` with no app token and must stay free to scale.
@@ -7122,3 +7125,55 @@ host. 3 wants a dedicated egress IP or a tunnel. 4 wants a
 pty mode that does not merge stderr. 5 wants a host that refuses rather than swallows connections while it is down, or
 a shorter `SSH_TIMEOUT` for that slug. 6 and 7 are the design. 8 wants a
 write-side rule in the store, or the pin moved into checked-in config.
+
+## 138. strad's state store is one bucket and one service account, and the WhatsApp bridge still reads its old names
+
+**What.** Every server that keeps state across a restart keeps it in one GCS
+bucket, through one service account: `STRAD_STATE_GCS_BUCKET`,
+`STRAD_STATE_GCS_CLIENT_EMAIL`, `STRAD_STATE_GCS_PRIVATE_KEY`, seeded once at
+`/strad/{env}/gateway/static/`. The code is `src/state/store.ts`, vendored into
+`servers/whatsapp/shared/src/state-store.ts` and
+`servers/bundle-api/fork/slack/src/events/state-store.ts` by
+`npm run statestore:sync`. It replaced the WhatsApp bridge's `blob-store.ts` and
+`crypto.ts` and the Slack ingest's copy of both. Each consumer keeps its own
+folder, which must sit under its own root (`whatsapp/`, `slack-events/`), its
+own key (`WHATSAPP_STATE_ENCRYPTION_KEY`, `SLACK_EVENTS_STATE_ENCRYPTION_KEY`)
+and its own four-byte magic (`WAS1`, `SLE1`).
+
+**Why.** The bucket, the service account and the hand-written GCS client were
+built once for WhatsApp (#109) and then copied for Slack events (#131). A third
+stateful feature would have been a third copy and a third bucket to make by
+hand. One store is one setup step per deployment, and one client to keep
+honest.
+
+**What it costs.**
+
+- **Less isolation between consumers.** Every container holding the storage key
+  can read, overwrite and delete every consumer's objects. It cannot open them;
+  that needs the consumer's key, which is never shared. It can destroy them, or
+  put an older sealed copy back under the same name (the seal binds the name,
+  not the version). For WhatsApp that is a Signal session that stops
+  decrypting. A service account per consumer, or one service account with an IAM
+  condition per prefix, would prevent it, and needs a credential per consumer.
+  The folder rule is enforced in code at boot, not by IAM.
+- **The WhatsApp bridge reads two sets of names.** Production holds
+  `WHATSAPP_GCS_BUCKET`, `WHATSAPP_GCS_CLIENT_EMAIL` and `WHATSAPP_GCS_PRIVATE_KEY`
+  under two slugs' namespaces, and `WHATSAPP_GCS_PREFIX` as a literal. Each is
+  read when its successor (`STRAD_STATE_GCS_*`, `WHATSAPP_STATE_PREFIX`) is
+  unset. A legacy and a current name that name two buckets, or two folders,
+  stop the bridge with both names in the error rather than choosing one: the
+  wrong choice looks like an unpaired bridge, and re-pairing it strands the real
+  state. The email and key are read as a pair, both shared or both legacy, so a
+  half-done cutover is a named missing variable rather than `invalid_grant`. That fallback is code to delete once no deployment holds the old names.
+- **The bucket is still made by hand,** once per deployment, with the service
+  account and its `roles/storage.objectAdmin` binding. It is the one step that
+  needs project IAM. `docs/operate/state-store` has the `gcloud`.
+- **Moving the state to another bucket is a manual copy** with the bridge
+  stopped. The seal does not depend on the bucket, so copies open, but nothing
+  in strad does the copy.
+
+**Undo.** A database, if strad ever has one. Short of that, a service account
+per consumer: the module already takes the bucket and credential per
+`GcsBlobStore`, so only the environment rules would change. The legacy names go
+once `whatsapp-zimmer` and `whatsapp-tadas` are on `STRAD_STATE_GCS_*`: delete
+`LEGACY_ENV` in `servers/whatsapp/shared/src/config.ts`.

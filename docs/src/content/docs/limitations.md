@@ -3401,7 +3401,7 @@ A linked device is one socket, so the component that holds it runs one instance 
 
 The device cannot be named: it pairs as Baileys' `Browsers.macOS("Chrome")` preset and the phone lists it as Chrome on Mac OS, because the phone refuses a pairing code whose OS it does not recognise, and the OS slot is the only place a name could go.
 
-State is written to GCS on a two-second debounce and on shutdown, so a crash loses up to that window. The bucket is reached through a hand-written GCS client on Node's built-in `fetch`, not `@google-cloud/storage`: that library's node-fetch 2 transport reported every token request from prod's `bundle-whatsapp-tadas` as `Premature close`, and what caused it on that container was never found. A GCS call that loses its connection, the token fetch included, is tried up to four times with no new try after 15 seconds; past that the tool answers `transient; retry` rather than the transport's error. Nothing in CI talks to real GCS: the client is tested against a fake JSON API. There is no history API: a gap WhatsApp does not replay on reconnect is a gap in `whatsapp_get_messages`. The phone has to come online about every 14 days or WhatsApp logs the device out. A new `WHATSAPP_STATE_ENCRYPTION_KEY` makes the stored state unreadable; there is no rotation path.
+State is written to GCS on a two-second debounce and on shutdown, so a crash loses up to that window. The bucket is strad's shared [state store](/operate/state-store/) (#138), reached through a hand-written GCS client on Node's built-in `fetch`, not `@google-cloud/storage`: that library's node-fetch 2 transport reported every token request from prod's `bundle-whatsapp-tadas` as `Premature close`, and what caused it on that container was never found. A GCS call that loses its connection, the token fetch included, is tried up to four times with no new try after 15 seconds; past that the tool answers `transient; retry` rather than the transport's error. Nothing in CI talks to real GCS: the client is tested against a fake JSON API. There is no history API: a gap WhatsApp does not replay on reconnect is a gap in `whatsapp_get_messages`. The phone has to come online about every 14 days or WhatsApp logs the device out. A new `WHATSAPP_STATE_ENCRYPTION_KEY` makes the stored state unreadable; there is no rotation path.
 
 **How you would know.** `whatsapp_status` reports `connected`, `paired` and `last_disconnect_reason` — `logged_out`, `connection_replaced`, `replaced_by_another_instance`, `state_unreadable`. Zimmer treats only `connected && paired` as healthy.
 
@@ -4089,8 +4089,9 @@ its error codes. Only `events/list` and `events/poll` exist. There is no push,
 no webhook, no `list_changed` notification and no `server/discover`.
 
 The Slack `message_posted` feed has met fakes only. No real Socket Mode
-connection has run in CI, and it stays off until `SLACK_APP_TOKEN` and the
-`SLACK_EVENTS_*` variables are seeded.
+connection has run in CI, and it stays off until `SLACK_APP_TOKEN`,
+`SLACK_EVENTS_STATE_ENCRYPTION_KEY` and the shared
+[state store](/operate/state-store/) variables are seeded.
 
 - **Backfill has a horizon.** After a gap, a thread reply is recovered only if
   its parent is less than 48 hours older than the gap. Each read stops at 10
@@ -4344,3 +4345,34 @@ refused or unreachable port.
 mode for the timeout case. The rest is the design.
 
 See `HACKS.md` #137.
+
+---
+
+### 138. Every stateful server shares one bucket and one storage credential
+
+strad's [state store](/operate/state-store/) is one GCS bucket and one service
+account for the whole deployment. The [WhatsApp](/servers/whatsapp/) bridge and
+the [Slack events](/servers/events/) ingest each keep their own folder in it and
+their own encryption key.
+
+- **A container that holds the storage key can damage another server's state.**
+  It cannot read it, because each server's key is its own. It can delete it, or
+  put back an older sealed copy. For WhatsApp that means re-pairing. Separate
+  service accounts would stop this; strad uses one.
+- **The folder rule is a boot check, not IAM.** A server refuses a folder
+  outside its own root, but the credential itself reaches the whole bucket.
+- **The WhatsApp bridge still reads `WHATSAPP_GCS_*`** when the shared names are
+  unset, so an existing deployment keeps its state with nothing re-seeded. If an
+  old and a new name point at two different buckets or folders, the bridge
+  refuses to start and names both.
+- **The bucket and its service account are made by hand** in GCP, once per
+  deployment.
+- **Moving the state to another bucket is a manual copy**, with the bridge
+  stopped.
+
+**How you would know.** `whatsapp_status` reports a configuration error that
+names `STRAD_STATE_GCS_BUCKET` and `WHATSAPP_GCS_BUCKET`, or a prefix variable
+and "outside this server's folder". `slack_events_status` reports
+`config_error` the same way.
+
+See `HACKS.md` #138.

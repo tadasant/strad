@@ -2,7 +2,9 @@ export { createMCPServer, type CreateMCPServerOptions } from "./server.js";
 
 export {
   ENV,
+  LEGACY_ENV,
   REQUIRED_ENV_NAMES,
+  STATE_ROOT,
   ConfigError,
   loadConfig,
   missingCredentials,
@@ -32,10 +34,12 @@ export {
   isTransientTransportError,
   MemoryBlobStore,
   PreconditionFailed,
+  STATE_STORE_ENV,
+  TokenFetchFailed,
   TransientStoreError,
   type BlobStore,
   type TransportRetry,
-} from "./blob-store.js";
+} from "./state-store.js";
 
 export { MessageBuffer, type ChatMeta } from "./buffer.js";
 export { open, seal, SealError } from "./crypto.js";

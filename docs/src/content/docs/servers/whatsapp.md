@@ -101,20 +101,32 @@ Two consequences, both honest limits:
 ## Setup
 
 strad has no database and App Platform has no persistent disk, so the bridge's
-state lives in **GCS**. Four variables are required; seed them in strad's console
-(`/ui/secrets`) for the `whatsapp-zimmer` slug. None of them is ever returned by
-a tool or handed to an agent.
+state lives in strad's [state store](/operate/state-store/): one GCS bucket
+shared by every stateful server, in a folder of the bridge's own, under a key of
+its own. None of these is ever returned by a tool or handed to an agent.
 
-| Variable                        | Kind   | What it is                                                                  |
-| ------------------------------- | ------ | --------------------------------------------------------------------------- |
-| `WHATSAPP_STATE_ENCRYPTION_KEY` | secret | 32 random bytes, base64 or hex: `openssl rand -base64 32`                   |
-| `WHATSAPP_GCS_BUCKET`           | config | A **private** bucket                                                        |
-| `WHATSAPP_GCS_CLIENT_EMAIL`     | config | A service account with `roles/storage.objectAdmin` on that bucket, and no more |
-| `WHATSAPP_GCS_PRIVATE_KEY`      | secret | That service account's private key (PEM; `\n`-escaped is fine)              |
-| `WHATSAPP_GCS_PREFIX`           | config | Optional. The folder inside the bucket. Default `whatsapp`                  |
-| `WHATSAPP_BUFFER_MAX_MESSAGES`  | config | Optional. Default 1000                                                      |
-| `WHATSAPP_BUFFER_MAX_AGE_DAYS`  | config | Optional. Default 30                                                        |
-| `WHATSAPP_PUBLIC_SLUG`          | config | Optional. The gateway slug attachment links are addressed to (below)        |
+| Variable                        | Kind   | What it is                                                                   |
+| ------------------------------- | ------ | ---------------------------------------------------------------------------- |
+| `WHATSAPP_STATE_ENCRYPTION_KEY` | secret | 32 random bytes, base64 or hex: `openssl rand -base64 32`. This bridge's own |
+| `STRAD_STATE_GCS_BUCKET`        | config | The shared state bucket. Deployment-wide                                     |
+| `STRAD_STATE_GCS_CLIENT_EMAIL`  | config | Its service account. Deployment-wide                                         |
+| `STRAD_STATE_GCS_PRIVATE_KEY`   | secret | That service account's private key. Deployment-wide                          |
+| `WHATSAPP_STATE_PREFIX`         | config | Optional. The folder: `whatsapp` or one under it. Default `whatsapp`         |
+| `WHATSAPP_BUFFER_MAX_MESSAGES`  | config | Optional. Default 1000                                                       |
+| `WHATSAPP_BUFFER_MAX_AGE_DAYS`  | config | Optional. Default 30                                                         |
+| `WHATSAPP_PUBLIC_SLUG`          | config | Optional. The gateway slug attachment links are addressed to (below)         |
+
+Seed the key under the slug (`/strad/{env}/mcp/whatsapp-zimmer/static/`). The
+three `STRAD_STATE_GCS_*` are seeded once for the deployment and referenced from
+the slug's `env:`; [State store](/operate/state-store/) has the setup.
+
+A deployment set up before the bucket was shared holds `WHATSAPP_GCS_BUCKET`,
+`WHATSAPP_GCS_CLIENT_EMAIL`, `WHATSAPP_GCS_PRIVATE_KEY` and
+`WHATSAPP_GCS_PREFIX`. The bridge still reads each of them when its successor is
+unset, so it keeps the same bucket and folder with nothing re-seeded. A legacy
+and a current name that name two different buckets, or two different folders,
+are refused at boot rather than resolved. The move onto the shared names is
+[three ordered steps](/operate/state-store/#an-existing-whatsapp-deployment).
 
 Under the prefix the server writes:
 
@@ -244,7 +256,7 @@ state — a session that silently stops decrypting. So:
 - **SIGTERM flushes.** The bundle host closes the mount on shutdown, which writes
   any pending state before exit.
 - **A dropped connection to GCS is retried.** The bridge reaches the bucket
-  through its own small GCS JSON-API client on Node's built-in `fetch`, with a
+  through the state store's small GCS JSON-API client on Node's built-in `fetch`, with a
   service-account token it signs itself. It does not use `@google-cloud/storage`,
   whose node-fetch 2 transport failed every token request on prod (see
   [Limitations](/limitations/) #109). Every bucket call, and the token fetch it

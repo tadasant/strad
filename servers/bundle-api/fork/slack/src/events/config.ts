@@ -8,24 +8,34 @@
  * the mount lists no event types, advertises no events extension, and the
  * existing tools behave exactly as they did before this existed.
  *
+ * WHERE THE BUFFER LIVES is strad's shared state store (`state-store.ts`): the
+ * deployment's one bucket and service account, `STRAD_STATE_GCS_*`. What is
+ * this ingest's own is its folder in that bucket (`slack-events`, or a folder
+ * under it) and its own key. The key is never shared with another consumer:
+ * with one bucket credential, a consumer's key is all that keeps its objects
+ * from every other container that holds the credential.
+ *
  * Nothing here is ever logged, echoed or returned by a tool except the NAMES of
  * the variables that are missing.
  */
+import {
+  missingStateStoreEnv,
+  namespacePrefix,
+  parseStateKey,
+  readStateStoreEnv,
+  STATE_STORE_ENV,
+  StateStoreConfigError,
+} from './state-store.js';
 
 export const EVENTS_ENV = {
   /** The Slack app-level token (`xapp-…`), scope `connections:write`. Opens Socket Mode. */
   appToken: 'SLACK_APP_TOKEN',
   /** The bot token every other tool already uses. Backfill and `auth.test` run on it. */
   botToken: 'SLACK_BOT_TOKEN',
-  /** 32 random bytes, base64 or hex. Seals the buffer and the lease's neighbours. */
-  encryptionKey: 'SLACK_EVENTS_ENCRYPTION_KEY',
-  /** The bucket the sealed ring buffer and the lease live in. */
-  bucket: 'SLACK_EVENTS_GCS_BUCKET',
-  /** A service account that can read, write and delete objects in it. */
-  clientEmail: 'SLACK_EVENTS_GCS_CLIENT_EMAIL',
-  privateKey: 'SLACK_EVENTS_GCS_PRIVATE_KEY',
-  /** Optional. Object prefix inside the bucket. Default `slack-events`. */
-  prefix: 'SLACK_EVENTS_GCS_PREFIX',
+  /** 32 random bytes, base64 or hex. Seals the buffer. This ingest's own. */
+  encryptionKey: 'SLACK_EVENTS_STATE_ENCRYPTION_KEY',
+  /** Optional. This ingest's folder in the shared state bucket. Default `slack-events`. */
+  prefix: 'SLACK_EVENTS_STATE_PREFIX',
   /** Optional. Days an event is kept. Default 7. */
   retentionDays: 'SLACK_EVENTS_RETENTION_DAYS',
 } as const;
@@ -35,12 +45,14 @@ export const REQUIRED_EVENTS_ENV = [
   EVENTS_ENV.appToken,
   EVENTS_ENV.botToken,
   EVENTS_ENV.encryptionKey,
-  EVENTS_ENV.bucket,
-  EVENTS_ENV.clientEmail,
-  EVENTS_ENV.privateKey,
+  STATE_STORE_ENV.bucket,
+  STATE_STORE_ENV.clientEmail,
+  STATE_STORE_ENV.privateKey,
 ] as const;
 
-export const DEFAULT_PREFIX = 'slack-events';
+/** This ingest's top-level folder in the shared bucket, and the default prefix. */
+export const STATE_ROOT = 'slack-events';
+export const DEFAULT_PREFIX = STATE_ROOT;
 export const DEFAULT_RETENTION_DAYS = 7;
 const MAX_RETENTION_DAYS = 30;
 
@@ -71,7 +83,20 @@ const read = (env: NodeJS.ProcessEnv, name: string): string | undefined => {
 
 /** The required variables this environment is missing, in declaration order. */
 export function missingEventsEnv(env: NodeJS.ProcessEnv = process.env): string[] {
-  return REQUIRED_EVENTS_ENV.filter((name) => read(env, name) === undefined);
+  const own = [EVENTS_ENV.appToken, EVENTS_ENV.botToken, EVENTS_ENV.encryptionKey].filter(
+    (name) => read(env, name) === undefined
+  );
+  return [...own, ...missingStateStoreEnv(env)];
+}
+
+/** The shared module's refusal, as this ingest's own error type. */
+function asConfigError<T>(f: () => T): T {
+  try {
+    return f();
+  } catch (err) {
+    if (err instanceof StateStoreConfigError) throw new EventsConfigError(err.message);
+    throw err;
+  }
 }
 
 /**
@@ -79,20 +104,7 @@ export function missingEventsEnv(env: NodeJS.ProcessEnv = process.env): string[]
  * decode to exactly 32 bytes is refused — and the value is never quoted.
  */
 export function parseEncryptionKey(raw: string): Buffer {
-  const value = raw.trim();
-  let key: Buffer | undefined;
-  if (/^[0-9a-fA-F]{64}$/.test(value)) {
-    key = Buffer.from(value, 'hex');
-  } else if (/^[A-Za-z0-9+/_-]{42,44}={0,2}$/.test(value)) {
-    key = Buffer.from(value.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
-  }
-  if (!key || key.length !== 32) {
-    throw new EventsConfigError(
-      `${EVENTS_ENV.encryptionKey} must be exactly 32 bytes, as base64 (44 characters, ` +
-        '`openssl rand -base64 32`) or hex (64 characters). The value set is neither.'
-    );
-  }
-  return key;
+  return asConfigError(() => parseStateKey(raw, EVENTS_ENV.encryptionKey));
 }
 
 export function loadEventsConfig(env: NodeJS.ProcessEnv = process.env): EventsConfig {
@@ -120,16 +132,18 @@ export function loadEventsConfig(env: NodeJS.ProcessEnv = process.env): EventsCo
     }
     retentionDays = parsed;
   }
-  const prefix = (read(env, EVENTS_ENV.prefix) ?? DEFAULT_PREFIX).replace(/^\/+|\/+$/g, '');
+  const prefix = asConfigError(() =>
+    namespacePrefix(env, { variable: EVENTS_ENV.prefix, root: STATE_ROOT })
+  );
+  const store = asConfigError(() => readStateStoreEnv(env));
   return {
     appToken,
     botToken: read(env, EVENTS_ENV.botToken)!,
     encryptionKey: parseEncryptionKey(read(env, EVENTS_ENV.encryptionKey)!),
-    bucket: read(env, EVENTS_ENV.bucket)!,
-    clientEmail: read(env, EVENTS_ENV.clientEmail)!,
-    // A PEM pasted into a single-line secret field arrives with literal `\n`s.
-    privateKey: read(env, EVENTS_ENV.privateKey)!.replace(/\\n/g, '\n'),
-    prefix: prefix || DEFAULT_PREFIX,
+    bucket: store.bucket,
+    clientEmail: store.clientEmail,
+    privateKey: store.privateKey,
+    prefix,
     retentionDays,
   };
 }
@@ -139,8 +153,9 @@ export function notConfiguredMessage(missing: readonly string[]): string {
     `Slack events are not configured on this deployment: ${missing.join(', ')} ` +
     `${missing.length === 1 ? 'is' : 'are'} not set. ${EVENTS_ENV.appToken} is the Slack ` +
     `app-level token (\`xapp-…\`, scope \`connections:write\`) that opens Socket Mode; the ` +
-    `${EVENTS_ENV.encryptionKey} and SLACK_EVENTS_GCS_* variables are where the 7-day ` +
-    `event buffer is kept. Seed them in strad's console (/ui/secrets) for this slug. ` +
+    `${EVENTS_ENV.encryptionKey} seals the 7-day event buffer, which is kept in strad's ` +
+    `shared state store (${STATE_STORE_ENV.bucket}, ${STATE_STORE_ENV.clientEmail}, ` +
+    `${STATE_STORE_ENV.privateKey}). Seed them in strad's console (/ui/secrets). ` +
     `Every other Slack tool works without them.`
   );
 }

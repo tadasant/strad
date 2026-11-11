@@ -17,20 +17,29 @@ import {
 import { mediaMessageOf } from "../src/normalize.js";
 
 const KEY_B64 = randomBytes(32).toString("base64");
+const PEM = "-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----";
 const FULL = {
+  WHATSAPP_STATE_ENCRYPTION_KEY: KEY_B64,
+  STRAD_STATE_GCS_BUCKET: "bucket",
+  STRAD_STATE_GCS_CLIENT_EMAIL: "sa@example.iam.gserviceaccount.com",
+  STRAD_STATE_GCS_PRIVATE_KEY: PEM,
+};
+/** What production holds today: the names from before the bucket was shared. */
+const LEGACY = {
   WHATSAPP_STATE_ENCRYPTION_KEY: KEY_B64,
   WHATSAPP_GCS_BUCKET: "bucket",
   WHATSAPP_GCS_CLIENT_EMAIL: "sa@example.iam.gserviceaccount.com",
-  WHATSAPP_GCS_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----",
+  WHATSAPP_GCS_PRIVATE_KEY: PEM,
+  WHATSAPP_GCS_PREFIX: "whatsapp/prod",
 };
 
 describe("config", () => {
   test("names every missing variable, and loads a full set", () => {
     assert.deepEqual(missingCredentials({}), [
       "WHATSAPP_STATE_ENCRYPTION_KEY",
-      "WHATSAPP_GCS_BUCKET",
-      "WHATSAPP_GCS_CLIENT_EMAIL",
-      "WHATSAPP_GCS_PRIVATE_KEY",
+      "STRAD_STATE_GCS_BUCKET",
+      "STRAD_STATE_GCS_CLIENT_EMAIL",
+      "STRAD_STATE_GCS_PRIVATE_KEY",
     ]);
     const cfg = loadConfig(FULL);
     assert.equal(cfg.encryptionKey.length, 32);
@@ -57,9 +66,65 @@ describe("config", () => {
     });
   });
 
-  test("refuses the bucket root as a prefix: logout deletes under it", () => {
-    assert.throws(() => loadConfig({ ...FULL, WHATSAPP_GCS_PREFIX: "/" }), /folder/);
-    assert.equal(loadConfig({ ...FULL, WHATSAPP_GCS_PREFIX: "/zimmer/wa/" }).prefix, "zimmer/wa");
+  test("refuses a prefix outside whatsapp/: the bucket is shared, and logout deletes under it", () => {
+    for (const outside of ["/", "zimmer/wa", "slack-events", "whatsapp-other", "whatsappx/prod"]) {
+      assert.throws(
+        () => loadConfig({ ...FULL, WHATSAPP_STATE_PREFIX: outside }),
+        (err: Error) => err instanceof ConfigError && /outside this server's folder/.test(err.message),
+        outside,
+      );
+    }
+    assert.equal(loadConfig({ ...FULL, WHATSAPP_STATE_PREFIX: "/whatsapp/prod/" }).prefix, "whatsapp/prod");
+    assert.equal(loadConfig({ ...FULL, WHATSAPP_STATE_PREFIX: "whatsapp" }).prefix, "whatsapp");
+  });
+
+  test("production's legacy names still load, to the same bucket, folder and identity", () => {
+    assert.deepEqual(missingCredentials(LEGACY), []);
+    const cfg = loadConfig(LEGACY);
+    assert.equal(cfg.bucket, "bucket");
+    assert.equal(cfg.clientEmail, "sa@example.iam.gserviceaccount.com");
+    assert.match(cfg.privateKey, /\nabc\n/);
+    assert.equal(cfg.prefix, "whatsapp/prod");
+    assert.equal(cfg.privateKeyVariable, "WHATSAPP_GCS_PRIVATE_KEY");
+  });
+
+  test("the shared names win over the legacy ones for the credential, mixed sets load", () => {
+    const cfg = loadConfig({
+      ...LEGACY,
+      STRAD_STATE_GCS_BUCKET: "bucket",
+      STRAD_STATE_GCS_CLIENT_EMAIL: "rotated@example.iam.gserviceaccount.com",
+      STRAD_STATE_GCS_PRIVATE_KEY: PEM.replace("abc", "new"),
+      WHATSAPP_STATE_PREFIX: "whatsapp/prod",
+    });
+    assert.equal(cfg.clientEmail, "rotated@example.iam.gserviceaccount.com");
+    assert.match(cfg.privateKey, /\nnew\n/);
+    assert.equal(cfg.privateKeyVariable, "STRAD_STATE_GCS_PRIVATE_KEY");
+    // Only the bucket shared, the rest legacy: still a whole configuration.
+    const { WHATSAPP_GCS_BUCKET: _b, ...rest } = LEGACY;
+    assert.equal(loadConfig({ ...rest, STRAD_STATE_GCS_BUCKET: "bucket" }).bucket, "bucket");
+  });
+
+  test("the email and key are a pair: half a cutover is refused, never mixed into a bad JWT", () => {
+    const halfway = { ...LEGACY, STRAD_STATE_GCS_CLIENT_EMAIL: "new@example.iam.gserviceaccount.com" };
+    assert.deepEqual(missingCredentials(halfway), ["STRAD_STATE_GCS_PRIVATE_KEY"]);
+    assert.throws(() => loadConfig(halfway), /STRAD_STATE_GCS_PRIVATE_KEY/);
+    const keyOnly = { ...LEGACY, STRAD_STATE_GCS_PRIVATE_KEY: PEM };
+    assert.deepEqual(missingCredentials(keyOnly), ["STRAD_STATE_GCS_CLIENT_EMAIL"]);
+  });
+
+  test("two names that disagree about WHERE the state is are refused, never resolved", () => {
+    assert.throws(
+      () => loadConfig({ ...LEGACY, STRAD_STATE_GCS_BUCKET: "strad-state-prod" }),
+      (err: Error) =>
+        err instanceof ConfigError &&
+        /STRAD_STATE_GCS_BUCKET is "strad-state-prod" but WHATSAPP_GCS_BUCKET is "bucket"/.test(err.message),
+    );
+    assert.throws(
+      () => loadConfig({ ...LEGACY, WHATSAPP_STATE_PREFIX: "whatsapp/prod-tadas" }),
+      (err: Error) => err instanceof ConfigError && /two folders/.test(err.message),
+    );
+    // The same folder spelled with slashes is the same folder.
+    assert.equal(loadConfig({ ...LEGACY, WHATSAPP_STATE_PREFIX: "/whatsapp/prod/" }).prefix, "whatsapp/prod");
   });
 });
 
@@ -321,4 +386,45 @@ test("a media message keeps its download descriptor; the descriptor rebuilds a B
     new Map(),
   );
   assert.ok(text.kind === "message" && !("media" in text.message));
+});
+
+describe("state written before the bucket was shared", () => {
+  // The live bucket holds objects sealed by the previous crypto.ts and a lease
+  // written by the previous store.ts. Nothing in their layout may have moved.
+  test("an object sealed in the old layout (WAS1 | iv | tag | body, name as AAD) still opens", async () => {
+    const { createCipheriv } = await import("node:crypto");
+    const key = randomBytes(32);
+    const iv = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", key, iv);
+    cipher.setAAD(Buffer.from("whatsapp/prod/auth.bin", "utf8"));
+    const body = Buffer.concat([cipher.update(Buffer.from('{"creds":1}')), cipher.final()]);
+    const old = Buffer.concat([Buffer.from("WAS1"), iv, cipher.getAuthTag(), body]);
+    assert.equal(open(key, "whatsapp/prod/auth.bin", old).toString(), '{"creds":1}');
+    // And what this writes, the old reader would have parsed the same way.
+    const fresh = seal(key, "whatsapp/prod/auth.bin", Buffer.from("x"));
+    assert.equal(fresh.subarray(0, 4).toString(), "WAS1");
+    assert.equal(fresh.length, 4 + 12 + 16 + 1);
+  });
+
+  test("a lease in the old shape ({owner, claimed_at}) still names its owner", async () => {
+    const { MemoryBlobStore, StateStore } = await import("../src/index.js");
+    const blobs = new MemoryBlobStore();
+    await blobs.write(
+      "whatsapp/prod/lease.json",
+      Buffer.from(JSON.stringify({ owner: "the-old-process", claimed_at: 1 })),
+    );
+    const store = new StateStore(blobs, randomBytes(32), "whatsapp/prod");
+    assert.equal(await store.checkLease(true), false);
+    assert.equal(store.superseded, true);
+    // A superseded bridge that starts again does not take the account back.
+    await assert.rejects(store.claimLease(), /Another process has taken over/);
+    const lease = JSON.parse(blobs.objects.get("whatsapp/prod/lease.json")!.data.toString());
+    assert.equal(lease.owner, "the-old-process");
+    // The bridge's lease is read-only on a check: no heartbeat write.
+    const mine = new StateStore(blobs, randomBytes(32), "whatsapp/prod");
+    await mine.claimLease();
+    const writes = blobs.writes;
+    assert.equal(await mine.checkLease(true), true);
+    assert.equal(blobs.writes, writes);
+  });
 });

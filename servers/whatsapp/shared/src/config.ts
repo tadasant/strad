@@ -14,17 +14,23 @@
  * ever logged, echoed in an error, or returned by a tool.
  */
 import type { DownloadLinkConfig } from "./download-link.js";
+import {
+  missingStateStoreEnv,
+  namespacePrefix,
+  parseStateKey,
+  readStateStoreEnv,
+  STATE_STORE_ENV,
+  StateStoreConfigError,
+} from "./state-store.js";
 
 export const ENV = {
   /** 32 random bytes, base64 or hex. Seals every object this server writes. */
   encryptionKey: "WHATSAPP_STATE_ENCRYPTION_KEY",
-  /** The bucket the sealed state and message buffer live in. */
-  bucket: "WHATSAPP_GCS_BUCKET",
-  /** A service account that can read, write and delete objects in it. */
-  clientEmail: "WHATSAPP_GCS_CLIENT_EMAIL",
-  privateKey: "WHATSAPP_GCS_PRIVATE_KEY",
-  /** Optional. Object prefix inside the bucket. Default `whatsapp`. */
-  prefix: "WHATSAPP_GCS_PREFIX",
+  /**
+   * Optional. This account's folder in the shared state bucket: `whatsapp`, or
+   * a folder under it (`whatsapp/prod`). Default `whatsapp`.
+   */
+  prefix: "WHATSAPP_STATE_PREFIX",
   /** Optional. Messages kept per chat. Default 1000. */
   bufferMaxMessages: "WHATSAPP_BUFFER_MAX_MESSAGES",
   /** Optional. Days a message is kept. Default 30. */
@@ -38,19 +44,42 @@ export const ENV = {
   publicSlug: "WHATSAPP_PUBLIC_SLUG",
 } as const;
 
+/**
+ * This server's own names for the bucket, the identity and the folder, which a
+ * deployment may hold instead of the shared ones — production holds
+ * `WHATSAPP_GCS_*` in two slugs' namespaces and `WHATSAPP_GCS_PREFIX` as a
+ * literal on four slugs. Each is read when its successor is unset, so such a
+ * deployment keeps working with nothing re-seeded. Two that disagree about
+ * WHERE the state is (bucket, folder) are refused, never resolved, and the
+ * email and key are read as a pair: see `readStateStoreEnv`.
+ */
+export const LEGACY_ENV = {
+  bucket: "WHATSAPP_GCS_BUCKET",
+  clientEmail: "WHATSAPP_GCS_CLIENT_EMAIL",
+  privateKey: "WHATSAPP_GCS_PRIVATE_KEY",
+  prefix: "WHATSAPP_GCS_PREFIX",
+} as const;
+
+/** This server's top-level folder in the shared bucket. */
+export const STATE_ROOT = "whatsapp";
+
 /** Rendered onto every bundle component by strad's renderer. */
 const STRAD_PUBLIC_URL = "STRAD_PUBLIC_URL";
 const STRAD_INTERNAL_TOKEN = "STRAD_INTERNAL_TOKEN";
 
-/** The variables without which this server cannot hold a login at all. */
+/**
+ * The variables without which this server cannot hold a login at all, by the
+ * names to set today. A legacy `WHATSAPP_GCS_*` name stands in for its shared
+ * successor.
+ */
 export const REQUIRED_ENV_NAMES = [
   ENV.encryptionKey,
-  ENV.bucket,
-  ENV.clientEmail,
-  ENV.privateKey,
+  STATE_STORE_ENV.bucket,
+  STATE_STORE_ENV.clientEmail,
+  STATE_STORE_ENV.privateKey,
 ] as const;
 
-export const DEFAULT_PREFIX = "whatsapp";
+export const DEFAULT_PREFIX = STATE_ROOT;
 export const DEFAULT_BUFFER_MAX_MESSAGES = 1000;
 export const DEFAULT_BUFFER_MAX_AGE_DAYS = 30;
 
@@ -60,6 +89,8 @@ export interface WhatsAppConfig {
   bucket: string;
   clientEmail: string;
   privateKey: string;
+  /** Which variable the private key was read from, for the error naming it. */
+  privateKeyVariable?: string;
   /** No leading or trailing slash. */
   prefix: string;
   bufferMaxMessages: number;
@@ -77,11 +108,12 @@ export class ConfigError extends Error {
 }
 
 const HOW_TO_SET_THEM =
-  `Set them in strad's console (/ui/secrets) for this server: ` +
-  `${ENV.encryptionKey} is 32 random bytes (\`openssl rand -base64 32\`), ` +
-  `${ENV.bucket} a private GCS bucket, and ${ENV.clientEmail} / ` +
-  `${ENV.privateKey} a service account holding roles/storage.objectAdmin on ` +
-  `that bucket. See servers/whatsapp/README.md.`;
+  `Set them in strad's console (/ui/secrets): ${ENV.encryptionKey} for this ` +
+  `server, 32 random bytes (\`openssl rand -base64 32\`); and strad's shared ` +
+  `state store, ${STATE_STORE_ENV.bucket} a private GCS bucket and ` +
+  `${STATE_STORE_ENV.clientEmail} / ${STATE_STORE_ENV.privateKey} a service ` +
+  `account holding roles/storage.objectAdmin on it. See ` +
+  `servers/whatsapp/README.md.`;
 
 const read = (env: NodeJS.ProcessEnv, name: string): string | undefined => {
   const value = env[name];
@@ -92,31 +124,25 @@ const read = (env: NodeJS.ProcessEnv, name: string): string | undefined => {
 export function missingCredentials(
   env: NodeJS.ProcessEnv = process.env,
 ): string[] {
-  return REQUIRED_ENV_NAMES.filter((name) => read(env, name) === undefined);
+  return [
+    ...(read(env, ENV.encryptionKey) === undefined ? [ENV.encryptionKey] : []),
+    ...missingStateStoreEnv(env, LEGACY_ENV),
+  ];
 }
 
-/**
- * The key, from base64 (standard or url-safe) or hex. Anything that does not
- * decode to exactly 32 bytes is refused: a short key would still "work", and
- * AES-256 with 16 bytes of key is not AES-256.
- */
+/** The key, from base64 (standard or url-safe) or hex: exactly 32 bytes. */
 export function parseEncryptionKey(raw: string): Buffer {
-  const value = raw.trim();
-  let key: Buffer | undefined;
-  if (/^[0-9a-fA-F]{64}$/.test(value)) {
-    key = Buffer.from(value, "hex");
-  } else if (/^[A-Za-z0-9+/_-]{42,44}={0,2}$/.test(value)) {
-    key = Buffer.from(value.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+  return asConfigError(() => parseStateKey(raw, ENV.encryptionKey));
+}
+
+/** The shared module's refusal, as this server's own error type. */
+function asConfigError<T>(f: () => T): T {
+  try {
+    return f();
+  } catch (err) {
+    if (err instanceof StateStoreConfigError) throw new ConfigError(err.message);
+    throw err;
   }
-  if (!key || key.length !== 32) {
-    // The value is NEVER quoted: it is the key.
-    throw new ConfigError(
-      `${ENV.encryptionKey} must be exactly 32 bytes, as base64 (44 characters, ` +
-        `\`openssl rand -base64 32\`) or hex (64 characters). The value set is ` +
-        `neither.`,
-    );
-  }
-  return key;
 }
 
 function positiveInt(
@@ -148,23 +174,21 @@ export function loadConfig(
     );
   }
 
-  const prefix = (read(env, ENV.prefix) ?? DEFAULT_PREFIX).replace(
-    /^\/+|\/+$/g,
-    "",
+  const prefix = asConfigError(() =>
+    namespacePrefix(env, {
+      variable: ENV.prefix,
+      legacyVariable: LEGACY_ENV.prefix,
+      root: STATE_ROOT,
+    }),
   );
-  if (prefix === "") {
-    throw new ConfigError(
-      `${ENV.prefix} must name a folder, not the bucket root: logout deletes ` +
-        `everything under it.`,
-    );
-  }
+  const store = asConfigError(() => readStateStoreEnv(env, LEGACY_ENV));
 
   return {
     encryptionKey: parseEncryptionKey(read(env, ENV.encryptionKey)!),
-    bucket: read(env, ENV.bucket)!,
-    clientEmail: read(env, ENV.clientEmail)!,
-    // App Platform env vars carry a PEM with escaped newlines.
-    privateKey: read(env, ENV.privateKey)!.replace(/\\n/g, "\n"),
+    bucket: store.bucket,
+    clientEmail: store.clientEmail,
+    privateKey: store.privateKey,
+    privateKeyVariable: store.privateKeyVariable,
     prefix,
     bufferMaxMessages: positiveInt(
       env,

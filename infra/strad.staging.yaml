@@ -1205,15 +1205,17 @@ servers:
   # way is against WhatsApp's ToS, and the account can be banned for it.
   #
   # NO CREDENTIAL FOR WHATSAPP ITSELF. The login is minted by `whatsapp_pair`
-  # (a pairing code a human types into the phone) and lives in GCS under
-  # WHATSAPP_GCS_PREFIX, sealed with AES-256-GCM under
-  # WHATSAPP_STATE_ENCRYPTION_KEY. What is seeded here is only where that state
-  # lives and the key it is sealed with.
+  # (a pairing code a human types into the phone) and lives in strad's shared
+  # state bucket under WHATSAPP_STATE_PREFIX, sealed with AES-256-GCM under
+  # WHATSAPP_STATE_ENCRYPTION_KEY. What is seeded here is only the key it is
+  # sealed with, and — deployment-wide, shared with every stateful server —
+  # where the state store is: STRAD_STATE_GCS_BUCKET, _CLIENT_EMAIL and
+  # _PRIVATE_KEY at /strad/staging/gateway/static/.
   #
-  # DISABLED UNTIL SEEDED, like telegram below: seed WHATSAPP_STATE_ENCRYPTION_KEY,
-  # WHATSAPP_GCS_BUCKET, WHATSAPP_GCS_CLIENT_EMAIL and WHATSAPP_GCS_PRIVATE_KEY in
-  # the store (/ui/secrets), delete `enabled: false`, deploy, then call
-  # whatsapp_pair from the console playground. docs/servers/whatsapp has the rest.
+  # DISABLED UNTIL SEEDED, like telegram below: seed WHATSAPP_STATE_ENCRYPTION_KEY
+  # and the three STRAD_STATE_GCS_* in the store (/ui/secrets), delete
+  # `enabled: false`, deploy, then call whatsapp_pair from the console
+  # playground. docs/servers/whatsapp has the rest.
   #
   # ITS OWN BUNDLE, `bundle-whatsapp` above, at one instance. See its comment.
   - slug: whatsapp-zimmer
@@ -1227,12 +1229,12 @@ servers:
     enabled: false
     env:
       WHATSAPP_STATE_ENCRYPTION_KEY: "${WHATSAPP_STATE_ENCRYPTION_KEY}"
-      WHATSAPP_GCS_BUCKET: "${WHATSAPP_GCS_BUCKET}"
-      WHATSAPP_GCS_CLIENT_EMAIL: "${WHATSAPP_GCS_CLIENT_EMAIL}"
-      WHATSAPP_GCS_PRIVATE_KEY: "${WHATSAPP_GCS_PRIVATE_KEY}"
-      # Plain config. Staging's own folder, so it can never share a login with
-      # production even if both point at one bucket.
-      WHATSAPP_GCS_PREFIX: whatsapp/staging
+      STRAD_STATE_GCS_BUCKET: "${STRAD_STATE_GCS_BUCKET}"
+      STRAD_STATE_GCS_CLIENT_EMAIL: "${STRAD_STATE_GCS_CLIENT_EMAIL}"
+      STRAD_STATE_GCS_PRIVATE_KEY: "${STRAD_STATE_GCS_PRIVATE_KEY}"
+      # Plain config. Staging's own folder under `whatsapp/`, so it can never
+      # share a login with production even if both point at one bucket.
+      WHATSAPP_STATE_PREFIX: whatsapp/staging
       # The slug whatsapp_get_attachment's download links are addressed to. Not
       # derivable: every WhatsApp slug is `path: /whatsapp`.
       WHATSAPP_PUBLIC_SLUG: whatsapp-zimmer
