@@ -6,34 +6,32 @@
  *   {prefix}/chats/{hash}.bin  one chat's buffered messages. Sealed.
  *   {prefix}/lease.json        which process owns the account. Plain.
  *
- * Every sealed object is AES-256-GCM under WHATSAPP_STATE_ENCRYPTION_KEY with
- * its own name as AAD (crypto.ts). A chat's object name is a hash of its JID,
- * so the bucket listing does not disclose who the account talks to.
+ * `{prefix}` is this account's folder in strad's shared state bucket
+ * (`state-store.ts`), always `whatsapp` or a folder under it. Every sealed
+ * object is AES-256-GCM under WHATSAPP_STATE_ENCRYPTION_KEY — this server's
+ * own key, never another consumer's — with its own name as AAD (crypto.ts). A
+ * chat's object name is a hash of its JID, so the bucket listing does not
+ * disclose who the account talks to.
  *
  * ONE WRITER. A linked device is one identity, and two sockets on it kick each
  * other — but before WhatsApp notices, both would be writing the same Signal
  * state, and interleaved ratchet state is a session that silently stops
- * decrypting. An App Platform deploy makes that overlap routine: the new
- * container starts before the old one stops. So:
- *
- *   - a process CLAIMS the lease when it starts, which makes the newest
- *     process the owner;
- *   - the auth object is written conditionally on the generation this process
- *     last saw; a conflict means another process wrote it, and the lease says
- *     which of the two should stop;
- *   - the lease is re-read before a flush (at most every LEASE_CHECK_MS), so an
- *     old process that is not writing auth still learns it has been replaced.
+ * decrypting. The shared `Lease` is the rule (newest process wins; the auth
+ * object is written conditionally on the generation this process last saw).
+ * It runs WITHOUT a heartbeat here, and the bridge never reclaims a lost
+ * lease: a superseded bridge stays down rather than risk a second socket on
+ * the same device.
  *
  * A process that loses the lease is SUPERSEDED: it stops writing anything and
  * the bridge closes its socket.
  */
-import { createHash, randomUUID } from "node:crypto";
-import { PreconditionFailed, type BlobStore } from "./blob-store.js";
+import { createHash } from "node:crypto";
+import { Lease, PreconditionFailed, type BlobStore } from "./state-store.js";
 import { open, seal } from "./crypto.js";
 import type { ChatMeta } from "./buffer.js";
 import type { StoredMessage } from "./normalize.js";
 
-export const LEASE_CHECK_MS = 30_000;
+export { LEASE_CHECK_MS } from "./state-store.js";
 
 export interface IndexDoc {
   version: 1;
@@ -60,17 +58,28 @@ export class SupersededError extends Error {
 }
 
 export class StateStore {
-  readonly instanceId = randomUUID();
   private authGeneration: string | null | undefined;
-  private lastLeaseCheck = 0;
-  superseded = false;
+  private readonly lease: Lease;
 
   constructor(
     private readonly blobs: BlobStore,
     private readonly key: Buffer,
     private readonly prefix: string,
-    private readonly clock: () => number = Date.now,
-  ) {}
+    clock: () => number = Date.now,
+  ) {
+    this.lease = new Lease(blobs, this.name("lease.json"), {
+      clock,
+      heartbeat: false,
+    });
+  }
+
+  get instanceId(): string {
+    return this.lease.instanceId;
+  }
+
+  get superseded(): boolean {
+    return this.lease.superseded;
+  }
 
   private name(suffix: string): string {
     return `${this.prefix}/${suffix}`;
@@ -84,34 +93,12 @@ export class StateStore {
   // --- the lease -------------------------------------------------------------
 
   async claimLease(): Promise<void> {
-    await this.blobs.write(
-      this.name("lease.json"),
-      Buffer.from(
-        JSON.stringify({ owner: this.instanceId, claimed_at: this.clock() }),
-      ),
-    );
-    this.lastLeaseCheck = this.clock();
+    await this.lease.claim();
   }
 
   /** True when this process still owns the account. Sets `superseded` if not. */
   async checkLease(force = false): Promise<boolean> {
-    if (this.superseded) return false;
-    if (!force && this.clock() - this.lastLeaseCheck < LEASE_CHECK_MS) return true;
-    this.lastLeaseCheck = this.clock();
-    const lease = await this.blobs.read(this.name("lease.json"));
-    let owner: string | undefined;
-    try {
-      owner = lease ? (JSON.parse(lease.data.toString("utf8")).owner as string) : undefined;
-    } catch {
-      owner = undefined;
-    }
-    // A missing or unreadable lease is nobody else's: take it back.
-    if (owner === undefined) {
-      await this.claimLease();
-      return true;
-    }
-    if (owner !== this.instanceId) this.superseded = true;
-    return !this.superseded;
+    return this.lease.check(force);
   }
 
   private assertOwner(): void {

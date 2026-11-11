@@ -12,6 +12,7 @@ import {
   StateStore,
   TransientStoreError,
 } from "../src/index.js";
+import { logWarning } from "../src/logging.js";
 
 /**
  * `GcsBlobStore` — Node's own `fetch`, nothing in between — against a local
@@ -234,6 +235,8 @@ const store = (extra: Partial<ConstructorParameters<typeof GcsBlobStore>[0]> = {
     apiEndpoint: endpoint,
     tokenUrl: `${endpoint}/token`,
     retry: FAST,
+    // What the bridge passes (src/server.ts): a retry is logged.
+    warn: logWarning,
     ...extra,
   });
 
@@ -380,7 +383,11 @@ test("a private key that does not parse says which variable, and never echoes it
   const bad = "-----BEGIN PRIVATE KEY-----\nnot-a-key-at-all\n-----END PRIVATE KEY-----";
   const err = await store({ privateKey: bad }).read("wa12/x").catch((e: unknown) => e);
   assert.ok(err instanceof Error);
-  assert.match(err.message, /WHATSAPP_GCS_PRIVATE_KEY is not a usable PEM private key/);
+  assert.match(err.message, /STRAD_STATE_GCS_PRIVATE_KEY is not a usable PEM private key/);
+  const legacy = await store({ privateKey: bad, privateKeyVariable: "WHATSAPP_GCS_PRIVATE_KEY" })
+    .read("wa12/x")
+    .catch((e: unknown) => e);
+  assert.match((legacy as Error).message, /WHATSAPP_GCS_PRIVATE_KEY is not a usable PEM private key/);
   assert.doesNotMatch(err.message, /not-a-key-at-all/);
 });
 

@@ -25,7 +25,7 @@
  * and a log line; the other Slack tools never depend on any of it.
  */
 import { logError, logWarning } from '../logging.js';
-import { GcsBlobStore, type BlobStore } from './blob-store.js';
+import { GcsBlobStore, type BlobStore } from './state-store.js';
 import {
   DEFAULT_MAX_EVENTS,
   EventBuffer,
@@ -224,6 +224,8 @@ export class SlackEventsIngest {
         bucket: config.bucket,
         clientEmail: config.clientEmail,
         privateKey: config.privateKey,
+        who: 'the Slack events ingest',
+        warn: (message) => logWarning('slack-events', message),
       });
     this.store = new EventsStore(blobs, config.encryptionKey, config.prefix, this.clock);
     this.buffer = new EventBuffer(config.retentionDays * 86_400_000, this.clock);

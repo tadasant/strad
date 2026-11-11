@@ -36,9 +36,15 @@ names against the built image.
 
 ## Environment
 
-Required: `WHATSAPP_STATE_ENCRYPTION_KEY` (32 bytes, base64 or hex),
-`WHATSAPP_GCS_BUCKET`, `WHATSAPP_GCS_CLIENT_EMAIL`, `WHATSAPP_GCS_PRIVATE_KEY`.
-Optional: `WHATSAPP_GCS_PREFIX` (default `whatsapp`),
+Required: `WHATSAPP_STATE_ENCRYPTION_KEY` (32 bytes, base64 or hex), this
+server's own; and strad's shared state store, `STRAD_STATE_GCS_BUCKET`,
+`STRAD_STATE_GCS_CLIENT_EMAIL`, `STRAD_STATE_GCS_PRIVATE_KEY` (strad's
+`docs/operate/state-store`). The legacy `WHATSAPP_GCS_BUCKET`,
+`WHATSAPP_GCS_CLIENT_EMAIL`, `WHATSAPP_GCS_PRIVATE_KEY` and `WHATSAPP_GCS_PREFIX`
+are read when their successors are unset; two names that disagree about the
+bucket or the folder are refused (`HACKS.md` #138).
+Optional: `WHATSAPP_STATE_PREFIX` (default `whatsapp`; must be `whatsapp` or a
+folder under it),
 `WHATSAPP_BUFFER_MAX_MESSAGES` (1000), `WHATSAPP_BUFFER_MAX_AGE_DAYS` (30),
 `WHATSAPP_PUBLIC_SLUG` — the gateway slug attachment download links are
 addressed to. Unset (or outside strad, with no `STRAD_PUBLIC_URL` /
@@ -65,8 +71,8 @@ every bundle container except the one this slug is bundled onto.
 | `src/download-link.ts`| the sealed single-use download token                                         |
 | `src/buffer.ts`   | per-chat buffer, caps, the `after`/`has_more` read, sticky `sent_by_bridge`      |
 | `src/store.ts`    | what is persisted where, the lease, conditional auth writes                       |
-| `src/crypto.ts`   | AES-256-GCM with the object name as AAD                                           |
-| `src/blob-store.ts`| GCS (and the in-memory double the tests use)                                    |
+| `src/crypto.ts`   | this server's seal format (`WAS1`, its key) over the shared AES-256-GCM          |
+| `src/state-store.ts`| GENERATED from strad's `src/state/store.ts` (`npm run statestore:sync`): GCS, the in-memory double, the seal, the lease. Never edit the copy |
 | `src/pacing.ts`   | human-paced sending                                                               |
 
 ## One instance

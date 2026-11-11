@@ -7,7 +7,7 @@ import {
   isTransientTransportError,
   TokenFetchFailed,
   TransientStoreError,
-} from "../blob-store.js";
+} from "../state-store.js";
 import { BridgeError, type WhatsAppBridge } from "../bridge.js";
 import { ConfigError } from "../config.js";
 import { SealError } from "../crypto.js";

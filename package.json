@@ -34,7 +34,8 @@
     "paramroute:sync": "node scripts/sync-vendored.mjs --only paramroute",
     "envprefix:sync": "node scripts/sync-vendored.mjs --only envprefix",
     "writerules:sync": "node scripts/sync-vendored.mjs --only writerules",
-    "elicitation:sync": "node scripts/sync-vendored.mjs --only elicitation"
+    "elicitation:sync": "node scripts/sync-vendored.mjs --only elicitation",
+    "statestore:sync": "node scripts/sync-vendored.mjs --only statestore"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",

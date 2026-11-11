@@ -36,7 +36,7 @@ import {
   tooBigReason,
   type AttachmentMeta,
 } from "./attachment.js";
-import type { BlobStore } from "./blob-store.js";
+import type { BlobStore } from "./state-store.js";
 import { MessageBuffer, type ChatMeta } from "./buffer.js";
 import type { WhatsAppConfig } from "./config.js";
 import { SealError } from "./crypto.js";

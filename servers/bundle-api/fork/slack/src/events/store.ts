@@ -4,28 +4,46 @@
  *   {prefix}/buffer.bin   the ring buffer (buffer.ts's BufferDoc). Sealed.
  *   {prefix}/lease.json   which process owns the socket. Plain.
  *
- * The pattern is the WhatsApp bridge's (servers/whatsapp/shared/src/store.ts),
- * for the same reason: an App Platform deploy starts the new container before
- * it stops the old one. Slack Socket Mode allows up to ten connections per app
- * and spreads events ACROSS them, so two live sockets are not a duplicate — they
- * are two halves of the event stream, each buffered by a different process.
+ * `{prefix}` is this ingest's folder in strad's shared state bucket
+ * (`state-store.ts`), always `slack-events` or a folder under it, and the
+ * buffer is sealed under SLACK_EVENTS_STATE_ENCRYPTION_KEY — this ingest's own
+ * key — with magic `SLE1`, so no other consumer's object opens as this one's.
+ *
+ * ONE WRITER, by the shared `Lease`, WITH a heartbeat: an App Platform deploy
+ * starts the new container before it stops the old one, and Slack Socket Mode
+ * spreads events ACROSS up to ten connections per app, so two live sockets are
+ * not a duplicate — they are two halves of the event stream, each buffered by
+ * a different process.
  *
  *   - a process CLAIMS the lease when it starts, so the newest one owns it;
  *   - the buffer is written conditionally on the generation this process last
  *     saw; a conflict means another process wrote it, and the lease decides
  *     whether to merge and retry (ours) or stop (theirs);
- *   - the lease is re-read every LEASE_CHECK_MS, so an old process that has
- *     nothing to write still learns it has been replaced and closes its socket;
- *   - the owner refreshes a heartbeat in the lease on each check, and a
- *     superseded process takes the lease back once that heartbeat is stale, so
- *     a newer container that dies does not leave the feed down until a restart.
+ *   - a superseded process takes the lease back once the owner's heartbeat is
+ *     stale, so a newer container that dies does not leave the feed down
+ *     until a restart.
  */
-import { randomUUID } from 'node:crypto';
-import { PreconditionFailed, type BlobStore } from './blob-store.js';
-import { open, seal } from './crypto.js';
+import {
+  Lease,
+  open,
+  PreconditionFailed,
+  seal,
+  type BlobStore,
+  type LeaseView,
+  type SealFormat,
+} from './state-store.js';
 import type { BufferDoc } from './buffer.js';
 
-export const LEASE_CHECK_MS = 30_000;
+export { LEASE_CHECK_MS, type LeaseView } from './state-store.js';
+
+const FORMAT: SealFormat = {
+  magic: 'SLE1',
+  what: 'a sealed Slack events object',
+  keyVariable: 'SLACK_EVENTS_STATE_ENCRYPTION_KEY',
+  recovery:
+    'Restore the previous key, or delete the object: the next boot starts an empty buffer ' +
+    'and backfills nothing older than its first connection.',
+};
 
 export class SupersededError extends Error {
   constructor() {
@@ -38,130 +56,52 @@ export class SupersededError extends Error {
   }
 }
 
-export interface LeaseView {
-  instanceId: string;
-  owner: string | null;
-  superseded: boolean;
-}
-
 export class EventsStore {
-  readonly instanceId = randomUUID();
   private bufferGeneration: string | null | undefined;
-  private lastLeaseCheck = 0;
-  private leaseOwner: string | null = null;
-  superseded = false;
+  private readonly leaseHolder: Lease;
 
   constructor(
     private readonly blobs: BlobStore,
     private readonly key: Buffer,
     private readonly prefix: string,
-    private readonly clock: () => number = Date.now
-  ) {}
+    clock: () => number = Date.now
+  ) {
+    this.leaseHolder = new Lease(blobs, this.name('lease.json'), { clock });
+  }
 
   private name(suffix: string): string {
     return `${this.prefix}/${suffix}`;
   }
 
-  get lease(): LeaseView {
-    return { instanceId: this.instanceId, owner: this.leaseOwner, superseded: this.superseded };
+  get instanceId(): string {
+    return this.leaseHolder.instanceId;
   }
 
-  private leaseBody(): Buffer {
-    return Buffer.from(
-      JSON.stringify({ owner: this.instanceId, heartbeat_at: this.clock() })
-    );
+  get superseded(): boolean {
+    return this.leaseHolder.superseded;
+  }
+
+  get lease(): LeaseView {
+    return this.leaseHolder.view;
   }
 
   /** Unconditional: the newest process takes the socket, whoever held it. */
   async claimLease(): Promise<void> {
-    await this.blobs.write(this.name('lease.json'), this.leaseBody());
-    this.leaseOwner = this.instanceId;
-    this.superseded = false;
-    this.lastLeaseCheck = this.clock();
+    await this.leaseHolder.claim();
   }
 
-  private async readLease(): Promise<{
-    owner?: string;
-    heartbeatAt?: number;
-    generation: string | null;
-  }> {
-    const lease = await this.blobs.read(this.name('lease.json'));
-    if (!lease) return { generation: null };
-    try {
-      const body = JSON.parse(lease.data.toString('utf8')) as {
-        owner?: unknown;
-        heartbeat_at?: unknown;
-        claimed_at?: unknown;
-      };
-      const at = typeof body.heartbeat_at === 'number' ? body.heartbeat_at : body.claimed_at;
-      return {
-        owner: typeof body.owner === 'string' ? body.owner : undefined,
-        heartbeatAt: typeof at === 'number' ? at : undefined,
-        generation: lease.generation,
-      };
-    } catch {
-      return { generation: lease.generation };
-    }
-  }
-
-  /**
-   * True while this process still owns the socket. Sets `superseded` if not.
-   *
-   * The owner refreshes `heartbeat_at` on every check, CONDITIONALLY on the
-   * generation it just read: an unconditional refresh racing a newer process's
-   * claim would take the lease back from it. A lost race is a lost lease.
-   */
+  /** True while this process still owns the socket. Sets `superseded` if not. */
   async checkLease(force = false): Promise<boolean> {
-    if (this.superseded) return false;
-    if (!force && this.clock() - this.lastLeaseCheck < LEASE_CHECK_MS) return true;
-    this.lastLeaseCheck = this.clock();
-    const lease = await this.readLease();
-    // A missing or unreadable lease is nobody else's: take it back.
-    if (lease.owner === undefined) {
-      await this.claimLease();
-      return true;
-    }
-    this.leaseOwner = lease.owner;
-    if (lease.owner !== this.instanceId) {
-      this.superseded = true;
-      return false;
-    }
-    try {
-      await this.blobs.write(this.name('lease.json'), this.leaseBody(), lease.generation);
-    } catch (err) {
-      if (!(err instanceof PreconditionFailed)) throw err;
-      const now = await this.readLease();
-      this.leaseOwner = now.owner ?? null;
-      if (now.owner !== this.instanceId) this.superseded = true;
-    }
-    return !this.superseded;
+    return this.leaseHolder.check(force);
   }
 
   /**
    * A superseded process takes the lease back when its owner has stopped
    * heartbeating — the newer container that claimed it crashed, or its deploy
-   * was rolled back — so the survivor recovers with no restart by hand. The
-   * write is conditional on the stale lease it read, so two survivors cannot
-   * both win. True when this process owns the lease again.
+   * was rolled back — so the survivor recovers with no restart by hand.
    */
   async reclaimIfStale(staleAfterMs: number): Promise<boolean> {
-    if (!this.superseded) return true;
-    const lease = await this.readLease();
-    const stale =
-      lease.owner === undefined ||
-      lease.heartbeatAt === undefined ||
-      this.clock() - lease.heartbeatAt > staleAfterMs;
-    if (!stale) return false;
-    try {
-      await this.blobs.write(this.name('lease.json'), this.leaseBody(), lease.generation);
-    } catch (err) {
-      if (err instanceof PreconditionFailed) return false;
-      throw err;
-    }
-    this.leaseOwner = this.instanceId;
-    this.superseded = false;
-    this.lastLeaseCheck = this.clock();
-    return true;
+    return this.leaseHolder.reclaimIfStale(staleAfterMs);
   }
 
   async readBuffer(): Promise<BufferDoc | null> {
@@ -169,7 +109,7 @@ export class EventsStore {
     const blob = await this.blobs.read(name);
     this.bufferGeneration = blob ? blob.generation : null;
     if (!blob) return null;
-    return JSON.parse(open(this.key, name, blob.data).toString('utf8')) as BufferDoc;
+    return JSON.parse(open(this.key, name, blob.data, FORMAT).toString('utf8')) as BufferDoc;
   }
 
   /**
@@ -181,7 +121,7 @@ export class EventsStore {
   async writeBuffer(doc: BufferDoc, merge: (theirs: BufferDoc) => BufferDoc): Promise<void> {
     if (this.superseded) throw new SupersededError();
     const name = this.name('buffer.bin');
-    const sealed = (d: BufferDoc) => seal(this.key, name, Buffer.from(JSON.stringify(d)));
+    const sealed = (d: BufferDoc) => seal(this.key, name, Buffer.from(JSON.stringify(d)), FORMAT);
     try {
       this.bufferGeneration = await this.blobs.write(name, sealed(doc), this.bufferGeneration);
     } catch (err) {

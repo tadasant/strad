@@ -110,11 +110,14 @@ a trigger.
 
 ### The buffer
 
-Events are kept for 7 days in one sealed object in GCS, beside a lease object.
-This copies the [WhatsApp](/servers/whatsapp/) bridge.
+Events are kept for 7 days in one sealed object, beside a lease object, in
+strad's [state store](/operate/state-store/): the bucket the
+[WhatsApp](/servers/whatsapp/) bridge also uses, in a `slack-events/` folder of
+the ingest's own.
 
-- **Sealed.** AES-256-GCM under `SLACK_EVENTS_ENCRYPTION_KEY`, with the object's
-  name as authenticated data. The bucket holds no readable message text.
+- **Sealed.** AES-256-GCM under `SLACK_EVENTS_STATE_ENCRYPTION_KEY`, the
+  ingest's own key, with the object's name as authenticated data. The bucket
+  holds no readable message text.
 - **One writer.** A process claims the lease when it starts, so the newest one
   owns it. A process that finds the lease is someone else's closes its socket and
   stops writing. This matters more for Slack than for WhatsApp. Slack spreads one
@@ -168,30 +171,35 @@ it names the missing variables. It never shows their values.
 
 The ingest needs six variables on the component serving the slug:
 
-| Variable                         | What                                                                  |
-| -------------------------------- | --------------------------------------------------------------------- |
-| `SLACK_APP_TOKEN`                | the Slack app-level token, `xapp-…`, scope `connections:write`        |
-| `SLACK_BOT_TOKEN`                | the bot token the tools already use                                   |
-| `SLACK_EVENTS_ENCRYPTION_KEY`    | 32 random bytes, base64 or hex (`openssl rand -base64 32`)            |
-| `SLACK_EVENTS_GCS_BUCKET`        | a private bucket                                                      |
-| `SLACK_EVENTS_GCS_CLIENT_EMAIL`  | a service account with `roles/storage.objectAdmin` on that bucket     |
-| `SLACK_EVENTS_GCS_PRIVATE_KEY`   | its key's `private_key`                                               |
+| Variable                            | What                                                           |
+| ----------------------------------- | -------------------------------------------------------------- |
+| `SLACK_APP_TOKEN`                   | the Slack app-level token, `xapp-…`, scope `connections:write` |
+| `SLACK_BOT_TOKEN`                   | the bot token the tools already use                            |
+| `SLACK_EVENTS_STATE_ENCRYPTION_KEY` | 32 random bytes, base64 or hex (`openssl rand -base64 32`)     |
+| `STRAD_STATE_GCS_BUCKET`            | the shared [state store](/operate/state-store/) bucket         |
+| `STRAD_STATE_GCS_CLIENT_EMAIL`      | its service account                                            |
+| `STRAD_STATE_GCS_PRIVATE_KEY`       | that service account's `private_key`                           |
 
-`SLACK_EVENTS_GCS_PREFIX` (default `slack-events`) and
-`SLACK_EVENTS_RETENTION_DAYS` (default 7, at most 30) are optional.
+`SLACK_EVENTS_STATE_PREFIX` (default `slack-events`, and always `slack-events`
+or a folder under it) and `SLACK_EVENTS_RETENTION_DAYS` (default 7, at most 30)
+are optional.
 
-**How they reach the container.** Use `params: true` on the slug, with the
-`gcp-parameter-store` provider. The slug's whole namespace lands on its
-component, so seeding `/strad/prod/mcp/slack-zimmer/static/SLACK_APP_TOKEN` and
-its siblings in the console is the whole step, followed by a deploy. Do **not**
-add them to the slug's `env:` map behind `mayBeUnseeded:` before they are
-seeded. That marks the whole slug `unconfigured` until they land, which takes
-the existing Slack tools down with it. Under the `env` provider, add them to
-`env:` only once all six are seeded.
+**How they reach the container.** The first three are the slug's own. Use
+`params: true` on the slug, with the `gcp-parameter-store` provider: the slug's
+whole namespace lands on its component, so seeding
+`/strad/prod/mcp/slack-zimmer/static/SLACK_APP_TOKEN` and
+`.../SLACK_EVENTS_STATE_ENCRYPTION_KEY` in the console is the step. The three
+`STRAD_STATE_GCS_*` are the deployment's, seeded once at
+`/strad/prod/gateway/static/` and shared with the WhatsApp bridge. They reach
+this slug only if its `env:` names them, as `"${STRAD_STATE_GCS_BUCKET}"` and
+so on. Add those three references only once all three are seeded; a deploy
+picks up the rest. Do **not** put any of the six behind `mayBeUnseeded:` before
+they are seeded. That marks the whole slug `unconfigured` until they land,
+which takes the existing Slack tools down with it.
 
-The bucket and its service account are made in GCP by hand, once, the same way
-as the [WhatsApp](/servers/whatsapp/) bridge's. See
-[Limitations #131](/limitations/).
+The bucket and its service account are made in GCP by hand, once per
+deployment, and are the same ones the WhatsApp bridge uses. See
+[State store](/operate/state-store/) and [Limitations #131](/limitations/).
 
 Until all six are present the mount is inert. It opens no socket, makes no
 Slack or GCS call, lists no event types and does not advertise the extension.

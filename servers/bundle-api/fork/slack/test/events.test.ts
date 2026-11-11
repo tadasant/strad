@@ -21,7 +21,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { ResultSchema } from '@modelcontextprotocol/sdk/types.js';
 
-import { MemoryBlobStore } from '../src/events/blob-store.js';
+import { MemoryBlobStore } from '../src/events/state-store.js';
 import {
   EventBuffer,
   decodeCursor,
@@ -41,10 +41,10 @@ const ts = (ms: number, n = 0) => `${Math.floor(ms / 1000)}.${String(n).padStart
 const ENV = {
   SLACK_APP_TOKEN: 'xapp-1-test',
   SLACK_BOT_TOKEN: 'xoxb-test',
-  SLACK_EVENTS_ENCRYPTION_KEY: KEY,
-  SLACK_EVENTS_GCS_BUCKET: 'bucket',
-  SLACK_EVENTS_GCS_CLIENT_EMAIL: 'sa@example.iam.gserviceaccount.com',
-  SLACK_EVENTS_GCS_PRIVATE_KEY: 'unused-by-the-memory-store',
+  SLACK_EVENTS_STATE_ENCRYPTION_KEY: KEY,
+  STRAD_STATE_GCS_BUCKET: 'bucket',
+  STRAD_STATE_GCS_CLIENT_EMAIL: 'sa@example.iam.gserviceaccount.com',
+  STRAD_STATE_GCS_PRIVATE_KEY: 'unused-by-the-memory-store',
 };
 
 // =============================================================================

@@ -678,9 +678,9 @@ test("unconfigured: tools list, every call names the missing variables", async (
   assert.equal(res.isError, true);
   for (const name of [
     "WHATSAPP_STATE_ENCRYPTION_KEY",
-    "WHATSAPP_GCS_BUCKET",
-    "WHATSAPP_GCS_CLIENT_EMAIL",
-    "WHATSAPP_GCS_PRIVATE_KEY",
+    "STRAD_STATE_GCS_BUCKET",
+    "STRAD_STATE_GCS_CLIENT_EMAIL",
+    "STRAD_STATE_GCS_PRIVATE_KEY",
   ]) {
     assert.match(res.text, new RegExp(name));
   }

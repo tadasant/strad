@@ -147,6 +147,7 @@ export default defineConfig({
               slug: "operate/runtime-config-plan",
             },
             { label: "Secrets IAM", slug: "operate/secrets-iam" },
+            { label: "State store", slug: "operate/state-store" },
             { label: "Operations & CI", slug: "operate/operations" },
             { label: "Telemetry", slug: "operate/telemetry" },
             { label: "DNS & domains", slug: "operate/dns" },

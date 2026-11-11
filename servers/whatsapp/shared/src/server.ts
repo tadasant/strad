@@ -1,5 +1,5 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { GcsBlobStore, type BlobStore } from "./blob-store.js";
+import { GcsBlobStore, type BlobStore } from "./state-store.js";
 import { WhatsAppBridge, type BridgeOptions, type DownloadOutcome } from "./bridge.js";
 import {
   downloadLinkConfig,
@@ -68,6 +68,9 @@ export function createMCPServer(options: CreateMCPServerOptions) {
             bucket: config.bucket,
             clientEmail: config.clientEmail,
             privateKey: config.privateKey,
+            who: "this bridge",
+            privateKeyVariable: config.privateKeyVariable,
+            warn: logWarning,
           }),
         socketFactory: options.socketFactory ?? createBaileysSocket,
         ...options.bridgeOptions,
