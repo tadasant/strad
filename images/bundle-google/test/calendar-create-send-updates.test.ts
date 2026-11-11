@@ -1,37 +1,51 @@
 /**
  * `create_calendar_event` takes `send_updates`, a strad delta on the vendored
  * tree (`vendor/google-calendar-shared/README.md`). Upstream threads
- * `sendUpdates` through update and delete but not create, so a caller had no
- * way to ask Google not to email invites when it creates an event.
+ * `sendUpdates` through update and delete but not create, so on create a
+ * caller can neither ask for invites to be emailed nor ask explicitly for none.
  *
  * The tool is driven over a real MCP client, through the OAuth client and the
  * real `createEvent` request builder; only `fetch` and the token are stubbed.
- * If a re-vendor drops the delta, the `none` and `externalOnly` tests fail.
+ * If a re-vendor drops the delta, every test but the omitted one fails.
  */
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { OAuth2Client } from "google-auth-library";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import { createDefaultClient, createMCPServer } from "google-calendar-workspace-mcp-server-shared";
+import {
+  createDefaultClient,
+  createMCPServer,
+} from "google-calendar-workspace-mcp-server-shared";
 
 const realFetch = globalThis.fetch;
 let inserts: URL[] = [];
+let methods: string[] = [];
 let n = 0;
 
 beforeEach(() => {
   inserts = [];
-  vi.spyOn(OAuth2Client.prototype, "getAccessToken").mockResolvedValue({ token: "tok", res: null } as never);
+  methods = [];
+  vi.spyOn(OAuth2Client.prototype, "getAccessToken").mockResolvedValue({
+    token: "tok",
+    res: null,
+  } as never);
   globalThis.fetch = (async (url: string, init: RequestInit = {}) => {
     const u = new URL(String(url));
     if (u.pathname.endsWith("/calendars/primary")) {
-      return new Response(JSON.stringify({ id: "me@gmail.com" }), { status: 200 });
+      return new Response(JSON.stringify({ id: "me@gmail.com" }), {
+        status: 200,
+      });
     }
-    expect(init.method).toBe("POST");
+    methods.push(String(init.method));
     inserts.push(u);
     const event = JSON.parse(String(init.body));
     return new Response(
-      JSON.stringify({ ...event, id: "evt1", htmlLink: "https://www.google.com/calendar/event?eid=abc" }),
+      JSON.stringify({
+        ...event,
+        id: "evt1",
+        htmlLink: "https://www.google.com/calendar/event?eid=abc",
+      }),
       { status: 200 },
     );
   }) as typeof fetch;
@@ -77,21 +91,42 @@ async function create(args: Record<string, unknown>) {
 test("the tool advertises send_updates, and says none creates without emailing invites", async () => {
   const { tools } = await create({});
   const tool = tools.find((t) => t.name === "create_calendar_event")!;
-  const prop = (tool.inputSchema.properties as Record<string, { enum?: string[]; description?: string }>).send_updates;
+  const prop = (
+    tool.inputSchema.properties as Record<
+      string,
+      { enum?: string[]; description?: string }
+    >
+  ).send_updates;
   expect(prop.enum).toEqual(["all", "externalOnly", "none"]);
-  expect(prop.description).toMatch(/"none" creates the event without emailing invites to attendees/);
-  expect(tool.description).toMatch(/send_updates to "none" to create the event without emailing invites/);
+  expect(prop.description).toMatch(
+    /"none" creates the event without emailing invites to attendees/,
+  );
+  expect(prop.description).toMatch(
+    /Pass "all" to be sure attendees are invited/,
+  );
+  expect(tool.description).toMatch(
+    /"none" to create the event without emailing invites/,
+  );
   expect(tool.inputSchema.required).toEqual(["summary"]);
 });
 
-test('send_updates "none" reaches events.insert as sendUpdates=none', async () => {
-  const { result } = await create({ send_updates: "none" });
-  expect(result.isError).toBeFalsy();
-  expect(inserts).toHaveLength(1);
-  expect(inserts[0].pathname).toBe("/calendar/v3/calendars/primary/events");
-  expect(inserts[0].searchParams.get("sendUpdates")).toBe("none");
-  expect(JSON.stringify(result.content)).toContain("**Notifications:** No notifications sent");
-});
+test.each([
+  ["all", "Sent to all attendees"],
+  ["externalOnly", "Sent to external attendees only"],
+  ["none", "None requested"],
+])(
+  "send_updates %j reaches events.insert as sendUpdates, and the result says so",
+  async (value, line) => {
+    const { result } = await create({ send_updates: value });
+    expect(result.isError).toBeFalsy();
+    expect(methods).toEqual(["POST"]);
+    expect(inserts[0].pathname).toBe("/calendar/v3/calendars/primary/events");
+    expect(inserts[0].searchParams.get("sendUpdates")).toBe(value);
+    expect(JSON.stringify(result.content)).toContain(
+      `**Notifications:** ${line}`,
+    );
+  },
+);
 
 test("send_updates sits beside supportsAttachments on the same request", async () => {
   const { result } = await create({

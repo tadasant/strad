@@ -17,7 +17,7 @@ standalone entrypoint is strad's too, and lives outside the tree in
 | Delta | Where | Defended by |
 | ----- | ----- | ----------- |
 | A personal OAuth mode, chosen by `GOOGLE_CALENDAR_AUTH_MODE=oauth`, beside the default service account (`HACKS.md` #125) | `src/server.ts` (`parseAuthMode`, `OAuthCalendarClient`, `createDefaultClient`), `src/index.ts` (exports) | `../../test/calendar-auth-mode.test.ts`, `../../test/standalone.test.ts` |
-| `create_calendar_event` takes `send_updates` (`all` \| `externalOnly` \| `none`) and passes it to `events.insert` as `sendUpdates`, the way update and delete already do. `none` creates the event without emailing invites. Omitted, nothing is sent and Google's default stands | `src/tools/create-event.ts`, `src/calendar-client/lib/create-event.ts`, `src/server.ts` (the `createEvent` options) | `../../test/calendar-create-send-updates.test.ts` |
+| `create_calendar_event` takes `send_updates` (`all` \| `externalOnly` \| `none`) and passes it to `events.insert` as `sendUpdates`, the way update and delete already do. `none` creates the event without emailing invites. Omitted, the request carries no `sendUpdates` and Google's default stands | `src/tools/create-event.ts`, `src/calendar-client/lib/create-event.ts`, `src/server.ts` (the `createEvent` options) | `../../test/calendar-create-send-updates.test.ts` |
 
 ## Tools
 
@@ -29,10 +29,11 @@ Seven, in two groups:
 | `readwrite` | the four above, plus `create_calendar_event`, `update_calendar_event`, `delete_calendar_event` |
 
 `create_calendar_event`, `update_calendar_event` and `delete_calendar_event`
-all take `send_updates`. On create, `"none"` makes the event without emailing
-invites to its attendees. Left out, the request carries no `sendUpdates` and
-Google decides; its documented default is not to notify, though it says some
-emails might still go out.
+all take `send_updates`. On create, `"all"` emails invites to the attendees
+and `"none"` makes the event without emailing them. Google warns that with
+`"none"`, attendees outside Google Calendar may never receive the event. Left
+out, the request carries no `sendUpdates` and Google decides; its documented
+default is not to notify, though it says some emails might still go out.
 
 All seven are served unless you set `GOOGLE_CALENDAR_ENABLED_TOOLGROUPS`. The
 standalone entrypoint refuses to start on a group it does not recognise
