@@ -799,9 +799,13 @@ describe('two processes', () => {
 });
 
 describe('edge credentials', () => {
-  const access = { hosts: ['zimmer.tadasant.com'], headers: { 'CF-Access-Client-Id': 'id.access', 'CF-Access-Client-Secret': 's3cret' } };
+  const PREFIX = { host: 'zimmer.tadasant.com', path: '/webhooks/mcp_events/' };
+  const access = {
+    prefixes: [PREFIX],
+    headers: { 'CF-Access-Client-Id': 'id.access', 'CF-Access-Client-Secret': 's3cret' },
+  };
 
-  it('go to a configured host, on the challenge and on deliveries, and to no other host', async () => {
+  it('go to a URL under a configured prefix, on the challenge and on deliveries, and nowhere else', async () => {
     const w = world({ access });
     await w.delivery.subscribe(w.input());
     w.buffer.add(message(1));
@@ -810,44 +814,73 @@ describe('edge credentials', () => {
       expect(r.headers['CF-Access-Client-Id']).toBe('id.access');
       expect(r.headers['CF-Access-Client-Secret']).toBe('s3cret');
     }
+    // The same host, another path: no token on any request.
+    const elsewhere = world({ access });
+    await elsewhere.delivery.subscribe(elsewhere.input({ url: 'https://zimmer.tadasant.com/api/v1/anything' }));
+    elsewhere.buffer.add(message(1));
+    await elsewhere.tick();
+    expect(elsewhere.receiver.received.length).toBeGreaterThan(1);
+    for (const r of elsewhere.receiver.received) expect(JSON.stringify(r.headers)).not.toContain('s3cret');
     const other = world({ access });
-    await other.delivery.subscribe(other.input({ url: 'https://attacker.example.com/hook' }));
-    other.buffer.add(message(1));
-    await other.tick();
-    expect(other.receiver.received.length).toBeGreaterThan(1);
-    for (const r of other.receiver.received) {
-      expect(JSON.stringify(r.headers)).not.toContain('s3cret');
+    await other.delivery.subscribe(other.input({ url: 'https://attacker.example.com/webhooks/mcp_events/x' }));
+    for (const r of other.receiver.received) expect(JSON.stringify(r.headers)).not.toContain('s3cret');
+
+    const yes = { 'CF-Access-Client-Id': 'id.access' };
+    expect(accessHeadersFor(access, URL_A)).toMatchObject(yes);
+    expect(accessHeadersFor(access, 'https://zimmer.tadasant.com:443/webhooks/mcp_events/t')).toMatchObject(yes);
+    expect(accessHeadersFor(access, 'https://ZIMMER.tadasant.com/webhooks/mcp_events/t')).toMatchObject(yes);
+    for (const no of [
+      'https://zimmer.tadasant.com/',
+      'https://zimmer.tadasant.com/webhooks/mcp_events',
+      'https://zimmer.tadasant.com/webhooks/mcp_eventsX/t',
+      'https://zimmer.tadasant.com/sessions/1',
+      // Climbing out of the prefix by dot segments, plain and percent-encoded.
+      'https://zimmer.tadasant.com/webhooks/mcp_events/../../api/v1/x',
+      'https://zimmer.tadasant.com/webhooks/mcp_events/%2e%2e/%2e%2e/api/v1/x',
+      'https://zimmer.tadasant.com.attacker.example/webhooks/mcp_events/t',
+      'https://sub.zimmer.tadasant.com/webhooks/mcp_events/t',
+      'http://zimmer.tadasant.com/webhooks/mcp_events/t',
+      'https://zimmer.tadasant.com:8443/webhooks/mcp_events/t',
+    ]) {
+      expect(accessHeadersFor(access, no), no).toEqual({});
     }
-    expect(accessHeadersFor(access, 'https://zimmer.tadasant.com.attacker.example/x')).toEqual({});
-    expect(accessHeadersFor(access, 'https://sub.zimmer.tadasant.com/x')).toEqual({});
-    expect(accessHeadersFor(access, 'http://zimmer.tadasant.com/x')).toEqual({});
-    expect(accessHeadersFor(access, 'https://zimmer.tadasant.com:8443/x')).toEqual({});
-    expect(accessHeadersFor(access, 'https://zimmer.tadasant.com:443/x')).toMatchObject({ 'CF-Access-Client-Id': 'id.access' });
-    expect(accessHeadersFor(access, 'https://ZIMMER.tadasant.com/x')).toMatchObject({ 'CF-Access-Client-Id': 'id.access' });
   });
 
-  it('come from strad configuration, all three variables or none', () => {
+  it('come from strad configuration as URL prefixes with a path, all three variables or none', () => {
+    const token = {
+      ZIMMER_APPROVAL_CF_ACCESS_CLIENT_ID: 'id',
+      ZIMMER_APPROVAL_CF_ACCESS_CLIENT_SECRET: 'sec',
+    };
     expect(readWebhookAccess({})).toBeNull();
     expect(
       readWebhookAccess({
-        SLACK_EVENTS_WEBHOOK_ACCESS_HOSTS: 'Zimmer.Tadasant.com, other.example.com',
-        ZIMMER_APPROVAL_CF_ACCESS_CLIENT_ID: 'id',
-        ZIMMER_APPROVAL_CF_ACCESS_CLIENT_SECRET: 'sec',
+        ...token,
+        SLACK_EVENTS_WEBHOOK_ACCESS_PREFIXES:
+          'https://zimmer.tadasant.com/webhooks/mcp_events/, https://other.example.com/hooks/',
       })
     ).toEqual({
-      hosts: ['zimmer.tadasant.com', 'other.example.com'],
+      prefixes: [PREFIX, { host: 'other.example.com', path: '/hooks/' }],
       headers: { 'CF-Access-Client-Id': 'id', 'CF-Access-Client-Secret': 'sec' },
     });
-    expect(() => readWebhookAccess({ SLACK_EVENTS_WEBHOOK_ACCESS_HOSTS: 'zimmer.tadasant.com' })).toThrow(
-      /ZIMMER_APPROVAL_CF_ACCESS_CLIENT_ID, ZIMMER_APPROVAL_CF_ACCESS_CLIENT_SECRET/
-    );
     expect(() =>
-      readWebhookAccess({
-        SLACK_EVENTS_WEBHOOK_ACCESS_HOSTS: 'https://zimmer.tadasant.com/',
-        ZIMMER_APPROVAL_CF_ACCESS_CLIENT_ID: 'id',
-        ZIMMER_APPROVAL_CF_ACCESS_CLIENT_SECRET: 'sec',
-      })
-    ).toThrow(/bare hostnames/);
+      readWebhookAccess({ SLACK_EVENTS_WEBHOOK_ACCESS_PREFIXES: 'https://zimmer.tadasant.com/webhooks/mcp_events/' })
+    ).toThrow(/ZIMMER_APPROVAL_CF_ACCESS_CLIENT_ID, ZIMMER_APPROVAL_CF_ACCESS_CLIENT_SECRET/);
+    // A whole host is not a prefix; nor is http, a path without its trailing
+    // slash, a non-default port, a query, or a path with dot segments.
+    for (const bad of [
+      'zimmer.tadasant.com',
+      'https://zimmer.tadasant.com/',
+      'https://zimmer.tadasant.com',
+      'http://zimmer.tadasant.com/webhooks/mcp_events/',
+      'https://zimmer.tadasant.com/webhooks/mcp_events',
+      'https://zimmer.tadasant.com:8443/webhooks/mcp_events/',
+      'https://zimmer.tadasant.com/webhooks/?x=1',
+      'https://zimmer.tadasant.com/webhooks/../api/',
+    ]) {
+      expect(() => readWebhookAccess({ ...token, SLACK_EVENTS_WEBHOOK_ACCESS_PREFIXES: bad }), bad).toThrow(
+        /URL prefixes with a path/
+      );
+    }
   });
 });
 

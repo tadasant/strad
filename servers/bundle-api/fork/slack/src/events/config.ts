@@ -39,13 +39,14 @@ export const EVENTS_ENV = {
   /** Optional. Days an event is kept. Default 7. */
   retentionDays: 'SLACK_EVENTS_RETENTION_DAYS',
   /**
-   * Optional. Comma-separated hostnames whose webhook deliveries carry the
-   * Cloudflare Access service token below. Exact match; every other callback
-   * host gets no such header.
+   * Optional. Comma-separated URL prefixes — `https://zimmer.tadasant.com/webhooks/mcp_events/`
+   * — whose webhook requests carry the Cloudflare Access service token below.
+   * A host AND a path: the token goes only to a callback URL under one of
+   * them, never elsewhere on the same host.
    */
-  webhookAccessHosts: 'SLACK_EVENTS_WEBHOOK_ACCESS_HOSTS',
+  webhookAccessPrefixes: 'SLACK_EVENTS_WEBHOOK_ACCESS_PREFIXES',
   /**
-   * Optional, with the hosts. strad's Access service token for those hosts —
+   * Optional, with the prefixes. strad's Access service token for them —
    * the same token, under the same names, a deployment already seeds per slug
    * for strad's confirmation calls to Zimmer (`confirmationHeaders:`).
    */
@@ -80,7 +81,7 @@ export interface EventsConfig {
   /** No leading or trailing slash. */
   prefix: string;
   retentionDays: number;
-  /** Extra headers for deliveries to these hosts, and to no other. Null: none. */
+  /** Extra headers for requests under these URL prefixes, and no other. Null: none. */
   webhookAccess: WebhookAccess | null;
   /**
    * Why `webhookAccess` is null when its variables are only partly set. Not a
@@ -90,8 +91,8 @@ export interface EventsConfig {
 }
 
 export interface WebhookAccess {
-  /** Lowercase hostnames, no port. */
-  hosts: string[];
+  /** Lowercase hostname (default https port only) and a path ending in `/`. */
+  prefixes: { host: string; path: string }[];
   headers: Record<string, string>;
 }
 
@@ -184,19 +185,21 @@ export function loadEventsConfig(env: NodeJS.ProcessEnv = process.env): EventsCo
 }
 
 /**
- * The Cloudflare Access service token for the callback hosts that sit behind
- * Access (Zimmer's does). Read from strad's own configuration, never from a
- * subscribe request, and attached only to a request whose host is on the list:
- * a subscriber picks its URL, so a token sent to any URL is a token handed to
- * whoever subscribes. All three variables or none.
+ * The Cloudflare Access service token for the callback URLs that sit behind
+ * Access (Zimmer's receiver does). Read from strad's own configuration, never
+ * from a subscribe request, and attached only to a request whose URL is under
+ * a configured prefix — a host AND a path. A subscriber picks its URL, so a
+ * token sent to any URL is a token handed to whoever subscribes; a token sent
+ * to any PATH on the host lets a subscriber present it to whatever else that
+ * host's edge admits it to. All three variables or none.
  */
 export function readWebhookAccess(env: NodeJS.ProcessEnv): WebhookAccess | null {
-  const hosts = read(env, EVENTS_ENV.webhookAccessHosts);
+  const prefixes = read(env, EVENTS_ENV.webhookAccessPrefixes);
   const id = read(env, EVENTS_ENV.webhookAccessClientId);
   const secret = read(env, EVENTS_ENV.webhookAccessClientSecret);
-  if (hosts === undefined && id === undefined && secret === undefined) return null;
+  if (prefixes === undefined && id === undefined && secret === undefined) return null;
   const missing = ([
-    hosts === undefined ? EVENTS_ENV.webhookAccessHosts : null,
+    prefixes === undefined ? EVENTS_ENV.webhookAccessPrefixes : null,
     id === undefined ? EVENTS_ENV.webhookAccessClientId : null,
     secret === undefined ? EVENTS_ENV.webhookAccessClientSecret : null,
   ] as (string | null)[]).filter((n): n is string => n !== null);
@@ -206,19 +209,38 @@ export function readWebhookAccess(env: NodeJS.ProcessEnv): WebhookAccess | null 
         `${missing.length === 1 ? 'is' : 'are'} not set.`
     );
   }
-  const list = hosts!
+  const list = prefixes!
     .split(',')
-    .map((h) => h.trim().toLowerCase())
-    .filter((h) => h !== '');
-  for (const h of list) {
-    if (!/^[a-z0-9.-]+$/.test(h) || h.startsWith('.') || h.includes('..')) {
-      throw new EventsConfigError(
-        `${EVENTS_ENV.webhookAccessHosts} must be bare hostnames, comma-separated; "${h}" is not one.`
-      );
-    }
-  }
+    .map((p) => p.trim())
+    .filter((p) => p !== '')
+    .map((raw) => {
+      let url: URL | undefined;
+      try {
+        url = new URL(raw);
+      } catch {
+        url = undefined;
+      }
+      const ok =
+        url !== undefined &&
+        url.protocol === 'https:' &&
+        (url.port === '' || url.port === '443') &&
+        !url.username &&
+        !url.password &&
+        !url.search &&
+        !url.hash &&
+        url.pathname.length > 1 &&
+        url.pathname.endsWith('/') &&
+        url.href === raw.replace(/:443\//, '/');
+      if (!ok) {
+        throw new EventsConfigError(
+          `${EVENTS_ENV.webhookAccessPrefixes} must be https URL prefixes with a path ending in "/", ` +
+            `comma-separated (https://zimmer.tadasant.com/webhooks/mcp_events/); "${raw}" is not one.`
+        );
+      }
+      return { host: url!.hostname.toLowerCase(), path: url!.pathname };
+    });
   return {
-    hosts: list,
+    prefixes: list,
     headers: { 'CF-Access-Client-Id': id!, 'CF-Access-Client-Secret': secret! },
   };
 }

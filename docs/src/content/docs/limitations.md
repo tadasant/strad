@@ -4417,10 +4417,12 @@ before anything is delivered, and only a caller entitled to the slug can
 subscribe. It has met a recording fake and a loopback server in tests, not a
 real receiver.
 
-- **An edge credential goes to configured hosts.** Zimmer's receiver is behind
-  Cloudflare Access, so the hosts named in `SLACK_EVENTS_WEBHOOK_ACCESS_HOSTS`
-  get strad's Access service token on every request. A wrong entry in that list
-  sends the token to the wrong host.
+- **An edge credential goes to configured URL prefixes.** Zimmer's receiver is
+  behind Cloudflare Access, so a callback URL under a prefix in
+  `SLACK_EVENTS_WEBHOOK_ACCESS_PREFIXES` — a host and a path, such as
+  `https://zimmer.tadasant.com/webhooks/mcp_events/` — gets strad's Access
+  service token on every request. Any other path on the same host does not. A
+  wrong prefix sends the token to that prefix.
 - **Revoking a caller does not stop its deliveries at once.** It can no longer
   refresh, and its subscription delivers until its grant runs out, at most 24
   hours.

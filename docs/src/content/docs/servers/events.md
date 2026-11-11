@@ -261,13 +261,18 @@ x-mcp-subscription-id: sub_<32 hex>
   Redirects are never followed. A refused address is reported as
   `connection_refused`, never with the far end's own words.
 - **Edge credentials.** A receiver behind an access gateway (Zimmer's sits
-  behind Cloudflare Access) needs strad's credential on each request. The
-  hosts in `SLACK_EVENTS_WEBHOOK_ACCESS_HOSTS` get `CF-Access-Client-Id` and
-  `CF-Access-Client-Secret` from `ZIMMER_APPROVAL_CF_ACCESS_CLIENT_ID` and
-  `_SECRET`, on the challenge and on every delivery. An exact hostname match
-  over `https`, nothing else: a subscriber chooses its URL, and a token sent to
-  any URL would be handed to whoever subscribes. Since no redirect is followed,
-  the headers cannot travel on to another host.
+  behind Cloudflare Access) needs strad's credential on each request. A
+  callback URL under a prefix in `SLACK_EVENTS_WEBHOOK_ACCESS_PREFIXES` gets
+  `CF-Access-Client-Id` and `CF-Access-Client-Secret` from
+  `ZIMMER_APPROVAL_CF_ACCESS_CLIENT_ID` and `_SECRET`, on the challenge and on
+  every delivery. A prefix is a host AND a path —
+  `https://zimmer.tadasant.com/webhooks/mcp_events/` — over `https` on the
+  default port; a whole host is refused. A subscriber chooses its URL, so a
+  token sent to any URL would be handed to whoever subscribes, and a token sent
+  to any path on a host could be presented to whatever else that host's edge
+  admits it to. Dot segments are resolved before the match, so a path cannot
+  climb out of the prefix, and since no redirect is followed the headers cannot
+  travel on.
 
 **Where subscriptions live.** In `webhooks.bin`, sealed under the ingest's key
 in its folder of the [state store](/operate/state-store/), beside the buffer.
@@ -284,7 +289,7 @@ when the socket opened, the last backfill and how much it recovered, the buffer'
 size and age, the last GCS write, and the lease. On the lease holder it lists
 the webhook subscriptions: id, name, the callback's host (never its path or
 secret), active or suspended, the last delivery and error, and the cursor. It
-names the hosts that get edge credentials, never the credential. When events
+names the URL prefixes that get edge credentials, never the credential. When events
 are not configured it names the missing variables. It never shows their values.
 
 ### Turning it on
@@ -303,8 +308,8 @@ The ingest needs six variables on the component serving the slug:
 `SLACK_EVENTS_STATE_PREFIX` (default `slack-events`, and always `slack-events`
 or a folder under it) and `SLACK_EVENTS_RETENTION_DAYS` (default 7, at most 30)
 are optional. So are the three webhook edge-credential variables:
-`SLACK_EVENTS_WEBHOOK_ACCESS_HOSTS` (plain config, comma-separated bare
-hostnames) and `ZIMMER_APPROVAL_CF_ACCESS_CLIENT_ID` / `_SECRET` (secret,
+`SLACK_EVENTS_WEBHOOK_ACCESS_PREFIXES` (plain config, comma-separated `https`
+URL prefixes with a path ending in `/`) and `ZIMMER_APPROVAL_CF_ACCESS_CLIENT_ID` / `_SECRET` (secret,
 the slug's own namespace). The two token names are the ones a deployment that
 already sends strad's confirmation calls through Zimmer's edge seeds per slug
 (`confirmationHeaders:` on the gmail slugs): one token, one meaning — strad

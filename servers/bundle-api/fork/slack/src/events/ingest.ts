@@ -887,8 +887,9 @@ export class SlackEventsIngest {
       },
       // Delivered by the lease holder only; another process lists none.
       webhook_subscriptions: this.webhooks?.status() ?? [],
-      // Which callback hosts get strad's edge token. The hosts, never the token.
-      webhook_access_hosts: this.config.webhookAccess?.hosts ?? [],
+      // Which callback URL prefixes get strad's edge token. Never the token.
+      webhook_access_prefixes:
+        this.config.webhookAccess?.prefixes.map((p) => `https://${p.host}${p.path}`) ?? [],
       webhook_access_problem: this.config.webhookAccessProblem,
     };
   }

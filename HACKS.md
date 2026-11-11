@@ -7266,10 +7266,16 @@ tadasant/zimmer#1484. Polling stays as Zimmer's catch-up path.
   the draft's categories, never the far end's words. Only a principal entitled
   to the slug can subscribe at all.
 - **An edge credential is sent on purpose.** Zimmer's receiver sits behind
-  Cloudflare Access, which wants a service token on every request, so the hosts
-  in `SLACK_EVENTS_WEBHOOK_ACCESS_HOSTS` get `CF-Access-Client-Id` and
-  `CF-Access-Client-Secret`. Exact hostname, `https`, from strad's config only,
-  never from a subscribe. A wrong hosts list is a token sent to that host.
+  Cloudflare Access, which wants a service token on every request, so URLs
+  under a prefix in `SLACK_EVENTS_WEBHOOK_ACCESS_PREFIXES`
+  (`https://zimmer.tadasant.com/webhooks/mcp_events/`) get `CF-Access-Client-Id`
+  and `CF-Access-Client-Secret`: a host AND a path, `https`, the default port,
+  from strad's config only, never from a subscribe. A whole host is refused as a
+  prefix, because a subscriber picks the path, and a token sent to any path on
+  the host could be presented to whatever else that host's edge admits it to.
+  The merge gate held this credential path for Tadas (H2) at the host-wide
+  scope; the path scope is the narrowing it named. A wrong prefix is still a
+  token sent to that prefix.
 - **Delivery has met only a fake receiver.** The tests drive the real HTTPS
   transport against a loopback server and everything else against a recording
   fake, and check signatures with the specification's own test vector. Zimmer's

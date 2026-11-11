@@ -66,7 +66,7 @@ change both.
   refresh reactivates, and delivery resumes from the watermark.
 - **Secret rotation.** The previous secret also signs for 10 minutes.
 - **Edge credentials.** Extra headers (a Cloudflare Access service token) on
-  requests to configured hosts only. Standard Webhooks allows extra headers.
+  requests under configured URL prefixes (host and path) only. Standard Webhooks allows extra headers.
 
 ## Not built from the webhook section
 

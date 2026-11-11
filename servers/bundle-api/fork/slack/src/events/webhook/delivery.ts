@@ -167,14 +167,15 @@ interface Live {
 }
 
 /**
- * Headers for one callback host's edge, from strad's configuration: a
- * Cloudflare Access service token for Zimmer's. Attached only when the URL's
- * host is exactly one on the list, over https — never to a host a subscriber
- * chose — and since no redirect is followed, they cannot be carried on to
- * another one. Outside the HMAC, which covers the body and nothing else.
+ * Headers for a callback's edge, from strad's configuration: a Cloudflare
+ * Access service token for Zimmer's receiver. Attached only when the URL is
+ * under a configured prefix — exactly that host, over https on the default
+ * port, and a path under the prefix's path — never to a URL a subscriber
+ * steered elsewhere, on that host or any other. No redirect is followed, so
+ * they cannot be carried on. Outside the HMAC, which covers the body only.
  */
 export function accessHeadersFor(
-  access: { hosts: readonly string[]; headers: Record<string, string> } | null,
+  access: AccessConfig | null,
   url: string
 ): Record<string, string> {
   if (!access) return {};
@@ -186,7 +187,16 @@ export function accessHeadersFor(
   }
   // The default port only: `zimmer.tadasant.com:8443` is not the edge the token is for.
   if (target.protocol !== 'https:' || (target.port !== '' && target.port !== '443')) return {};
-  return access.hosts.includes(target.hostname.toLowerCase()) ? { ...access.headers } : {};
+  // `URL` has already resolved `.` and `..` segments (and their %2e forms), so
+  // a path cannot climb out of the prefix by spelling.
+  const host = target.hostname.toLowerCase();
+  const inside = access.prefixes.some((p) => p.host === host && target.pathname.startsWith(p.path));
+  return inside ? { ...access.headers } : {};
+}
+
+export interface AccessConfig {
+  prefixes: readonly { host: string; path: string }[];
+  headers: Record<string, string>;
 }
 
 export interface WebhookDeliveryDeps {
@@ -194,8 +204,8 @@ export interface WebhookDeliveryDeps {
   source: DeliverySource;
   transport: WebhookTransport;
   parseArgs: (raw: unknown) => MessagePostedArgs;
-  /** Edge credentials for configured hosts; see {@link accessHeadersFor}. */
-  access?: { hosts: readonly string[]; headers: Record<string, string> } | null;
+  /** Edge credentials for configured URL prefixes; see {@link accessHeadersFor}. */
+  access?: AccessConfig | null;
   clock?: () => number;
   warn?: (message: string) => void;
 }
