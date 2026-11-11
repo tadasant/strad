@@ -63,10 +63,10 @@ export const STATE_STORE_ENV = {
 } as const;
 
 /**
- * Names a consumer read before the store was shared, read when the shared name
- * is unset. The WhatsApp bridge's `WHATSAPP_GCS_*` are the case: production
- * holds them under two slugs' namespaces, and a fallback is what lets the shared
- * names arrive without a coordinated re-seed.
+ * A consumer's own older names for the same three things, read when the shared
+ * names are unset. The WhatsApp bridge's `WHATSAPP_GCS_*` are the case: a
+ * deployment that holds them keeps working with nothing re-seeded, and moves to
+ * the shared names when it chooses to.
  */
 export interface LegacyStoreNames {
   bucket?: string;
@@ -79,6 +79,8 @@ export interface StateStoreLocation {
   clientEmail: string;
   /** Real newlines: the `\n`-escaped form is unescaped here. */
   privateKey: string;
+  /** The variable the key was read from, for an error that has to name it. */
+  privateKeyVariable: string;
 }
 
 export class StateStoreConfigError extends Error {
@@ -96,7 +98,29 @@ const readVar = (env: Env, name: string | undefined): string | undefined => {
   return value !== undefined && value.trim() !== "" ? value.trim() : undefined;
 };
 
-const FIELDS = ["bucket", "clientEmail", "privateKey"] as const;
+/**
+ * Where the service account's email and key come from: BOTH from the shared
+ * names, or BOTH from the legacy ones, never one of each. An email from one
+ * set and a key from the other is a JWT Google refuses (`invalid_grant`) — the
+ * half-done cutover this exists to make loud instead. Either shared name being
+ * set selects the shared pair.
+ */
+function identityNames(
+  env: Env,
+  legacy: LegacyStoreNames,
+): { clientEmail: string; privateKey: string } {
+  const shared =
+    readVar(env, STATE_STORE_ENV.clientEmail) !== undefined ||
+    readVar(env, STATE_STORE_ENV.privateKey) !== undefined ||
+    legacy.clientEmail === undefined ||
+    legacy.privateKey === undefined;
+  return shared
+    ? {
+        clientEmail: STATE_STORE_ENV.clientEmail,
+        privateKey: STATE_STORE_ENV.privateKey,
+      }
+    : { clientEmail: legacy.clientEmail!, privateKey: legacy.privateKey! };
+}
 
 /**
  * The shared variables this environment lacks, by their SHARED names, in
@@ -106,22 +130,32 @@ export function missingStateStoreEnv(
   env: Env,
   legacy: LegacyStoreNames = {},
 ): string[] {
-  return FIELDS.filter(
-    (field) =>
-      readVar(env, STATE_STORE_ENV[field]) === undefined &&
-      readVar(env, legacy[field]) === undefined,
-  ).map((field) => STATE_STORE_ENV[field]);
+  const identity = identityNames(env, legacy);
+  const missing: string[] = [];
+  if (
+    readVar(env, STATE_STORE_ENV.bucket) === undefined &&
+    readVar(env, legacy.bucket) === undefined
+  ) {
+    missing.push(STATE_STORE_ENV.bucket);
+  }
+  for (const field of ["clientEmail", "privateKey"] as const) {
+    if (readVar(env, identity[field]) === undefined) {
+      missing.push(STATE_STORE_ENV[field]);
+    }
+  }
+  return missing;
 }
 
 /**
  * The bucket and the identity that reaches it.
  *
- * The shared name wins over a legacy one, EXCEPT for the bucket: two different
- * buckets set under the two names is refused rather than resolved. Booting
+ * The shared bucket name wins over a legacy one, except that two DIFFERENT
+ * buckets under the two names are refused rather than resolved. Booting
  * against the other bucket would find no state there and look exactly like a
  * server nobody has set up — and for WhatsApp, a human re-pairing it would
- * strand the real state in the bucket that was not chosen. A credential
- * disagreement is not refused: it is the shape of a key rotation.
+ * strand the real state in the bucket that was not chosen. The identity is a
+ * pair (see `identityNames`); a different identity under the shared names is
+ * not refused, because that is what a key rotation looks like.
  */
 export function readStateStoreEnv(
   env: Env,
@@ -145,13 +179,13 @@ export function readStateStoreEnv(
         `then remove ${legacy.bucket}.`,
     );
   }
-  const pick = (field: (typeof FIELDS)[number]): string =>
-    (readVar(env, STATE_STORE_ENV[field]) ?? readVar(env, legacy[field]))!;
+  const identity = identityNames(env, legacy);
   return {
-    bucket: pick("bucket"),
-    clientEmail: pick("clientEmail"),
+    bucket: (shared ?? old)!,
+    clientEmail: readVar(env, identity.clientEmail)!,
     // A PEM pasted into a single-line secret field arrives with literal `\n`s.
-    privateKey: pick("privateKey").replace(/\\n/g, "\n"),
+    privateKey: readVar(env, identity.privateKey)!.replace(/\\n/g, "\n"),
+    privateKeyVariable: identity.privateKey,
   };
 }
 

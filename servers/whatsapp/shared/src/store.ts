@@ -92,7 +92,13 @@ export class StateStore {
 
   // --- the lease -------------------------------------------------------------
 
+  /**
+   * Refused once superseded: a bridge that lost the account to a newer
+   * process must not take it back by starting again (a retried start after a
+   * failed one), or two sockets would share one linked device.
+   */
   async claimLease(): Promise<void> {
+    if (this.lease.superseded) throw new SupersededError();
     await this.lease.claim();
   }
 

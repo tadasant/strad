@@ -8,10 +8,10 @@ has to remember something across a restart keeps it in **one GCS bucket**: the
 state store. There is one bucket and one service account for a deployment.
 Each server gets its own folder and its own encryption key.
 
-| Consumer                                | Folder (must sit under)                           | Its own key                         | Folder variable             |
-| --------------------------------------- | ------------------------------------------------- | ----------------------------------- | --------------------------- |
-| [WhatsApp](/servers/whatsapp/) bridge   | `whatsapp/` (`whatsapp/prod`, `whatsapp/staging`) | `WHATSAPP_STATE_ENCRYPTION_KEY`     | `WHATSAPP_STATE_PREFIX`     |
-| [Slack events](/servers/events/) ingest | `slack-events/`                                   | `SLACK_EVENTS_STATE_ENCRYPTION_KEY` | `SLACK_EVENTS_STATE_PREFIX` |
+| Consumer                                | Folder: the root, or one under it                | Its own key                         | Folder variable             |
+| --------------------------------------- | ------------------------------------------------ | ----------------------------------- | --------------------------- |
+| [WhatsApp](/servers/whatsapp/) bridge   | `whatsapp` (`whatsapp/prod`, `whatsapp/staging`) | `WHATSAPP_STATE_ENCRYPTION_KEY`     | `WHATSAPP_STATE_PREFIX`     |
+| [Slack events](/servers/events/) ingest | `slack-events`                                   | `SLACK_EVENTS_STATE_ENCRYPTION_KEY` | `SLACK_EVENTS_STATE_PREFIX` |
 
 The code is one module, `src/state/store.ts`: the GCS client, the seal, the
 single-writer lease and the rules on this page. Each consumer is its own npm
@@ -119,18 +119,27 @@ Two names that disagree about **where** the state is are refused, not resolved.
 bridge with an error naming both variables. Picking either one would boot
 against a place that may not hold the state. The bridge would look unpaired, and
 re-pairing it would strand the real state in the other place. A disagreement
-about the credential is not refused: the shared name wins, because that is what
-a key rotation looks like.
+about the credential is not refused, because that is what a key rotation looks
+like. The service account's email and key are read as a **pair**: if either
+shared name is set, both come from the shared names, and the one that is not
+set is reported missing. An email from one set and a key from the other would
+only get `invalid_grant` from Google.
 
 To move onto the shared names, in order:
 
 1. Seed the three `STRAD_STATE_GCS_*` at `/strad/{env}/gateway/static/` with the
    **same** bucket the bridge uses, and its service account.
-2. Add the three `${STRAD_STATE_GCS_*}` references to the WhatsApp slug's
-   `env:`, rename `WHATSAPP_GCS_PREFIX` to `WHATSAPP_STATE_PREFIX` with the same
-   value, and deploy. `whatsapp_status` should still read
-   `connected: true, paired: true`.
-3. Delete the four legacy parameters from the slug's namespace, and deploy again.
+2. Add the three `${STRAD_STATE_GCS_*}` references to the `env:` of each
+   WhatsApp slug that carries the credentials, rename the `WHATSAPP_GCS_PREFIX`
+   literal to `WHATSAPP_STATE_PREFIX` with the same value on every WhatsApp
+   slug, and deploy. `whatsapp_status` should still read
+   `connected: true, paired: true`. The email and key are read as a pair, so
+   adding one shared name without the other stops the bridge and names the
+   missing one.
+3. Remove any `${WHATSAPP_GCS_*}` references from those `env:` maps, then delete
+   the three `WHATSAPP_GCS_BUCKET`, `_CLIENT_EMAIL` and `_PRIVATE_KEY`
+   parameters from each slug's namespace, and deploy again. In that order: a
+   `${REF}` to a deleted parameter fails the render.
 
 To move the state to **another** bucket, stop the bridge first: disable the
 slug and deploy. Copy every object under its folder to the same names in the

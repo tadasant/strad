@@ -45,12 +45,13 @@ export const ENV = {
 } as const;
 
 /**
- * The names this server read before its bucket became strad's shared state
- * store. Production still holds them — `WHATSAPP_GCS_*` in two slugs'
- * namespaces, `WHATSAPP_GCS_PREFIX` as a literal on four slugs — so each is
- * read when its successor is unset, and a deployment that never touches them
- * keeps working with no re-seed. Two that disagree about WHERE the state is
- * (bucket, folder) are refused, never resolved: see `readStateStoreEnv`.
+ * This server's own names for the bucket, the identity and the folder, which a
+ * deployment may hold instead of the shared ones — production holds
+ * `WHATSAPP_GCS_*` in two slugs' namespaces and `WHATSAPP_GCS_PREFIX` as a
+ * literal on four slugs. Each is read when its successor is unset, so such a
+ * deployment keeps working with nothing re-seeded. Two that disagree about
+ * WHERE the state is (bucket, folder) are refused, never resolved, and the
+ * email and key are read as a pair: see `readStateStoreEnv`.
  */
 export const LEGACY_ENV = {
   bucket: "WHATSAPP_GCS_BUCKET",
@@ -187,10 +188,7 @@ export function loadConfig(
     bucket: store.bucket,
     clientEmail: store.clientEmail,
     privateKey: store.privateKey,
-    privateKeyVariable:
-      read(env, STATE_STORE_ENV.privateKey) !== undefined
-        ? STATE_STORE_ENV.privateKey
-        : LEGACY_ENV.privateKey,
+    privateKeyVariable: store.privateKeyVariable,
     prefix,
     bufferMaxMessages: positiveInt(
       env,

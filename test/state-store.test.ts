@@ -47,7 +47,7 @@ describe("where the store is", () => {
     expect(() => readStateStoreEnv({})).toThrow(StateStoreConfigError);
   });
 
-  it("falls back to a consumer's legacy names, field by field", () => {
+  it("falls back to a consumer's legacy names: the bucket alone, the identity as a pair", () => {
     const env = {
       OLD_BUCKET: "old",
       OLD_EMAIL: "old@example.iam.gserviceaccount.com",
@@ -55,12 +55,43 @@ describe("where the store is", () => {
     };
     expect(missingStateStoreEnv(env, LEGACY)).toEqual([]);
     expect(readStateStoreEnv(env, LEGACY).bucket).toBe("old");
+    // The shared bucket name with the legacy identity is a whole configuration.
+    const { OLD_BUCKET: _bucket, ...identityOnly } = env;
     const mixed = readStateStoreEnv(
-      { ...env, STRAD_STATE_GCS_CLIENT_EMAIL: "new@example.com" },
+      { ...identityOnly, STRAD_STATE_GCS_BUCKET: "shared" },
       LEGACY,
     );
-    expect(mixed.clientEmail).toBe("new@example.com");
-    expect(mixed.bucket).toBe("old");
+    expect(mixed.bucket).toBe("shared");
+    expect(mixed.clientEmail).toBe("old@example.iam.gserviceaccount.com");
+  });
+
+  it("reads the email and key as a pair, never one from each set", () => {
+    const env = {
+      OLD_BUCKET: "old",
+      OLD_EMAIL: "old@example.iam.gserviceaccount.com",
+      OLD_KEY: PEM,
+    };
+    const both = readStateStoreEnv(
+      {
+        ...env,
+        STRAD_STATE_GCS_CLIENT_EMAIL: "new@example.com",
+        STRAD_STATE_GCS_PRIVATE_KEY: PEM.replace("abc", "new"),
+      },
+      LEGACY,
+    );
+    expect(both.clientEmail).toBe("new@example.com");
+    expect(both.privateKey).toContain("\nnew\n");
+    expect(both.privateKeyVariable).toBe("STRAD_STATE_GCS_PRIVATE_KEY");
+    expect(readStateStoreEnv(env, LEGACY).privateKeyVariable).toBe("OLD_KEY");
+    // Half a cutover: one shared name set selects the shared pair, and the
+    // other half is reported missing rather than borrowed from the legacy set.
+    const half = { ...env, STRAD_STATE_GCS_CLIENT_EMAIL: "new@example.com" };
+    expect(missingStateStoreEnv(half, LEGACY)).toEqual([
+      "STRAD_STATE_GCS_PRIVATE_KEY",
+    ]);
+    expect(() => readStateStoreEnv(half, LEGACY)).toThrow(
+      /STRAD_STATE_GCS_PRIVATE_KEY is not set/,
+    );
   });
 
   it("refuses two buckets rather than choosing one", () => {

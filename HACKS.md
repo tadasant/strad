@@ -5743,7 +5743,7 @@ requirement. What that costs:
   out of three, inside each of four outer tries, on every call. The same
   library, in the same image, works from the `bundle` component and from
   anywhere it was tried by hand, and what leaves the listener there was never
-  found: there is no shell on that box, by design. So `GcsBlobStore` (in
+  found: there is no shell on that box, by design. So `GcsBlobStore` (part of
   strad's shared state store, #138) signs its
   own service-account JWT (RS256, `node:crypto`), trades it at
   `oauth2.googleapis.com/token`, and makes five JSON-API requests (metadata,
@@ -7163,7 +7163,8 @@ honest.
   unset. A legacy and a current name that name two buckets, or two folders,
   stop the bridge with both names in the error rather than choosing one: the
   wrong choice looks like an unpaired bridge, and re-pairing it strands the real
-  state. That fallback is code to delete once no deployment holds the old names.
+  state. The email and key are read as a pair, both shared or both legacy, so a
+  half-done cutover is a named missing variable rather than `invalid_grant`. That fallback is code to delete once no deployment holds the old names.
 - **The bucket is still made by hand,** once per deployment, with the service
   account and its `roles/storage.objectAdmin` binding. It is the one step that
   needs project IAM. `docs/operate/state-store` has the `gcloud`.

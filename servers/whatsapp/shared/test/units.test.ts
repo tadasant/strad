@@ -104,6 +104,14 @@ describe("config", () => {
     assert.equal(loadConfig({ ...rest, STRAD_STATE_GCS_BUCKET: "bucket" }).bucket, "bucket");
   });
 
+  test("the email and key are a pair: half a cutover is refused, never mixed into a bad JWT", () => {
+    const halfway = { ...LEGACY, STRAD_STATE_GCS_CLIENT_EMAIL: "new@example.iam.gserviceaccount.com" };
+    assert.deepEqual(missingCredentials(halfway), ["STRAD_STATE_GCS_PRIVATE_KEY"]);
+    assert.throws(() => loadConfig(halfway), /STRAD_STATE_GCS_PRIVATE_KEY/);
+    const keyOnly = { ...LEGACY, STRAD_STATE_GCS_PRIVATE_KEY: PEM };
+    assert.deepEqual(missingCredentials(keyOnly), ["STRAD_STATE_GCS_CLIENT_EMAIL"]);
+  });
+
   test("two names that disagree about WHERE the state is are refused, never resolved", () => {
     assert.throws(
       () => loadConfig({ ...LEGACY, STRAD_STATE_GCS_BUCKET: "strad-state-prod" }),
@@ -408,6 +416,10 @@ describe("state written before the bucket was shared", () => {
     const store = new StateStore(blobs, randomBytes(32), "whatsapp/prod");
     assert.equal(await store.checkLease(true), false);
     assert.equal(store.superseded, true);
+    // A superseded bridge that starts again does not take the account back.
+    await assert.rejects(store.claimLease(), /Another process has taken over/);
+    const lease = JSON.parse(blobs.objects.get("whatsapp/prod/lease.json")!.data.toString());
+    assert.equal(lease.owner, "the-old-process");
     // The bridge's lease is read-only on a check: no heartbeat write.
     const mine = new StateStore(blobs, randomBytes(32), "whatsapp/prod");
     await mine.claimLease();
