@@ -504,6 +504,30 @@ describe('delivery', () => {
     expect(w.receiver.deliveries).toHaveLength(3);
   });
 
+  it('reports an ongoing failure while still active, and clears it once a delivery is accepted', async () => {
+    const w = world();
+    await w.delivery.subscribe(w.input());
+    w.receiver.answer = () => ({ status: 503, body: '' });
+    w.buffer.add(message(1));
+    await w.tick();
+    const failing = await w.delivery.subscribe(w.input());
+    expect(failing.deliveryStatus).toEqual({
+      active: true,
+      lastDeliveryAt: null,
+      lastError: 'http_5xx',
+      failedSince: new Date(T0).toISOString(),
+    });
+    w.receiver.answer = () => ({ status: 200, body: '' });
+    w.advance(RETRY_DELAYS_MS[0]);
+    await w.tick();
+    const healthy = await w.delivery.subscribe(w.input());
+    expect(healthy.deliveryStatus).toEqual({
+      active: true,
+      lastDeliveryAt: new Date(T0 + RETRY_DELAYS_MS[0]).toISOString(),
+      lastError: null,
+    });
+  });
+
   it('does not retry 410 or 413', async () => {
     for (const status of [410, 413]) {
       const w = world();
