@@ -273,6 +273,9 @@ checked-in slug on that component. The client and the reconciler are in
 - `telegram`, `google-sheets`, `grafana` — **add and use, no restart.** Each
   already builds from an injected environment, so an instance is a second copy in
   the same process, and a rotation rebuilds it on the next sync.
+- `ssh` — an instance tree, so a credential rotation is picked up on the next
+  sync with no restart, but **never added at runtime**: an SSH slug comes from
+  the checked-in config, so its roles cannot be moved by a roster write.
 - `remote-filesystem-tmp-public` — per-slug by environment, and **not** an
   instance tree yet: its upload and download routes key on the mount path, and
   its variable names carry the second slug rule strad#153 is about.

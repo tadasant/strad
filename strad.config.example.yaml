@@ -1216,6 +1216,40 @@ servers:
       GOODEGGS_EMAIL: "${GOODEGGS_EMAIL}"
       GOODEGGS_PASSWORD: "${GOODEGGS_PASSWORD}"
 
+  # SSH: BREAK-GLASS SHELL ON ONE HOST PER SLUG. Each host is a store-served
+  # instance credentialed from its own namespace — seed SSH_HOST, SSH_USERNAME,
+  # SSH_PRIVATE_KEY, SSH_HOST_KEY (the pinned host key; there is no trust on
+  # first use) and optionally SSH_PORT under /strad/{env}/mcp/<slug>/static/.
+  # Commented out because an instance needs `provider: gcp-parameter-store`.
+  #
+  # ADMIN ONLY. `entitlements:` is the whole boundary on a shell, which is why an
+  # SSH slug can only come from this file — the runtime roster refuses to create
+  # one. NEVER entitle a host that agent sessions run ON to a role those
+  # sessions hold: for strad's own deployment that is `ssh-tadasant-zimmer-prod`,
+  # root on the Zimmer production host, and it stays `[admin]`. docs: servers/ssh.
+  #
+  # - slug: ssh-tadasant-zimmer-prod
+  #   kind: supplementary-image
+  #   title: Zimmer production host (SSH, root)
+  #   description: >-
+  #     DANGER - PRODUCTION SSH. Root on the Zimmer production host. Human
+  #     break-glass only; never granted to Zimmer sessions, which run on it.
+  #   image: ghcr.io/tadasant/strad-bundle:latest
+  #   bundle: bundle
+  #   path: /_instance/ssh/ssh-tadasant-zimmer-prod
+  #   params: true
+  #   entitlements: [admin]
+  #   # Core gives up on a call after `timeoutMs` (default 120 s) and the SSH
+  #   # session is closed with it; this lets a command run to its own
+  #   # 15-minute ceiling.
+  #   timeoutMs: 960000
+  #
+  # A read-only tier of a host is the same instance tree under another slug,
+  # seeded separately, with the write and execute tools withheld:
+  #
+  #   tools:
+  #     allow: [ssh_connection_info, ssh_check_connection, ssh_list_directory, ssh_download]
+
   # A server that ships as its OWN image is the same entry with a different
   # `image`, and it needs its own bundle, because one component runs one image:
   #

@@ -221,6 +221,7 @@ not a confession.
 | `servers/bill-spend/**` — a tool, the write's body shapes, the read-back rule                                     | `servers/bill-spend.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                      |
 | `servers/aws-device-farm/**` — a tool, the driving wire, the cost model                                           | `servers/aws-device-farm.md`, `servers/aws-device-farm-setup.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                             |
 | `servers/liveoak/**` — a tool, the login or device flow, what the bank's API is sent                              | `servers/liveoak.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                         |
+| `servers/ssh/**` — a tool, the host-key pin, what an SSH slug may be entitled to                                  | `servers/ssh.md`, `limitations.md`, `strad.config.example.yaml`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                |
 | `servers/image-tools/**` — a tool, the URL guard, a bound in `limits.ts`, the alignment                           | `servers/image-tools.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                     |
 | `servers/nutrition-facts/**` — a tool, a pinned source, the matching or range rules, the FatSecret budget         | `servers/nutrition-facts.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                 |
 | `servers/{airtable,flightaware,digitalocean}/**` — a tool, a tier, what a result may carry                        | `servers/airtable.md`, `servers/flightaware.md`, `servers/digitalocean.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                   |
@@ -269,8 +270,8 @@ numbers describe "how many servers," and they count different things:
 | The number | What it counts                                                                                     |
 | ---------- | -------------------------------------------------------------------------------------------------- |
 | **3**      | App Platform components: `core`, `bundle`, `bundle-zimmer-secrets`                                 |
-| **22**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
-| **31**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
+| **23**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
+| **32**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
 | **41**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included)         |
 | **44**     | total server slugs in staging (41 + `echo` builtin + `deepwiki` remote-http + `anki` local-tunnel) |
 
@@ -337,8 +338,8 @@ slop behind when you fix a stale fact.
   "did I typo a key" is answered here, by `scripts/check-config.ts`.
 - `src/deploy/appspec.ts` — turns the config into a DigitalOcean App Platform spec.
   The server list decides the container topology.
-- `servers/bundle/` — one image, 31 mounted MCP servers, one shared Chromium,
-  assembled from TWENTY-TWO independently-built dependency trees.
+- `servers/bundle/` — one image, 32 mounted MCP servers, one shared Chromium,
+  assembled from TWENTY-THREE independently-built dependency trees.
 - `servers/remote-filesystem/` — strad's own artifact store, behind the
   `remote-filesystem-tmp-public` slug. `is_sensitive` picks the KIND of link;
   GCS's 7-day V4 ceiling is why the 14-day default is signed with V2.
@@ -406,6 +407,14 @@ slop behind when you fix a stale fact.
   cached for 23 hours under a 4,500-a-day budget, and every credential is
   optional: unconfigured, it answers locally and says FatSecret is
   `unavailable`. `HACKS.md` #122.
+- `servers/ssh/` — strad's own SSH server: break-glass `ssh_execute` and SFTP
+  on ONE host per slug, each a store-served instance at `/_instance/ssh/{slug}`
+  reading the private key and a PINNED host key from its own namespace. No
+  trust on first use: a slug with no pin never connects, and a host presenting
+  any other key is refused before the key signs anything. An SSH slug cannot be
+  created at runtime (`assertCreatable`), so its roles only ever come from
+  checked-in config — and `ssh-tadasant-zimmer-prod` stays `[admin]`, because
+  Zimmer sessions run on that host. `HACKS.md` #137.
 - `servers/bill-spend/` — strad's own BILL Spend & Expense server, behind
   `bill-spend-ro` and `bill-spend-rw`. Re-codes card transactions to the right
   chart-of-accounts value, which BILL carries as CUSTOM-FIELD VALUES rather than

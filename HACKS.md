@@ -392,7 +392,7 @@ one (hack #4).
 **✅ RESOLVED.** Core presents the internal token to every `supplementary-image`
 component, and the `strad-bundle` host refuses a mount request without it.
 
-**What.** The `strad-bundle` container — thirty-one mounts, and every upstream
+**What.** The `strad-bundle` container — thirty-two mounts, and every upstream
 credential behind them — serves every mount unauthenticated. Its only protection
 is the network boundary: an internal-only App Platform component
 (`internal_ports: [8080]`, no public route), reachable by core over the private
@@ -791,8 +791,8 @@ toggle plumbing.
 
 ## 24. Twenty-eight servers share one process, and one Chromium
 
-The collapsed bundle is one container running thirty-one MCP servers and one
-headless Chromium. An OOM there is a thirty-one-server outage; it used to be a
+The collapsed bundle is one container running thirty-two MCP servers and one
+headless Chromium. An OOM there is a thirty-two-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -2638,7 +2638,7 @@ both `infra/strad.staging.yaml` and `strad.config.example.yaml` — plus the cou
 in `servers/bundle/scripts/smoke.mjs`, `test/staging-config.test.ts` and
 `.github/workflows/ci.yml`.
 
-## 56. Per-slug box names are emitted for every server; eleven of twenty trees can read one
+## 56. Per-slug box names are emitted for every server; twelve of twenty-three trees can read one
 
 **What.** Every enabled `supplementary-image` server's resolved `env:` is emitted
 onto its bundle TWICE: under the bare name it always had, and under
@@ -2694,7 +2694,7 @@ DigitalOcean both times.
 
 - **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
   `grafana`, `bill-spend`, `aws-device-farm`, `whatsapp`, `liveoak`, `airtable`,
-  `flightaware` and `digitalocean` read an injected env.** The other nine trees
+  `flightaware`, `digitalocean` and `ssh` read an injected env.** The other eleven trees
   are vendored upstream code reading `process.env`, often lazily at call time
   (`onepassword` builds its client per call off `OP_SERVICE_ACCOUNT_TOKEN`). A single process cannot overlay `process.env`
   per-request without a race, so each tree needs its own seam and gets it when it
@@ -3737,7 +3737,7 @@ behaviour, which is the pre-change one.
 a listed parameter current in a supplementary container's `process.env` without a
 redeploy. What it cannot do is make the MCP server inside that container LOOK at
 the new value. That is a property of the upstream, and this image runs
-thirty-one of them, most written by other people.
+thirty-two of them, most written by other people.
 
 The split is real and it is not subtle:
 
@@ -5414,7 +5414,7 @@ Workspace documents and cannot touch an uploaded binary. `files.copy` with
 file in the owner's Drive every time an agent reads a spreadsheet — a write, in a
 read tier. The npm packages that read xlsx are large, and the popular one has
 been unmaintained on npm since 0.18.5 with a live prototype-pollution advisory;
-this process holds three Google accounts' refresh tokens beside thirty other
+this process holds three Google accounts' refresh tokens beside thirty-one other
 MCP servers.
 
 **What it costs, and what a caller is told.** Every Office-backed result carries
@@ -7072,3 +7072,53 @@ is an assumption. Written from the reference alone, it missed item 10.
 **Undo.** If upstream gains these, re-vendor and drop the delta. Until then a
 re-vendor has to re-apply the row in the tree's README, and
 `images/bundle-google/test/docs-anchored-edits.test.ts` fails if it does not.
+
+## 137. The SSH server is a shell on production hosts, and nothing here has reached one
+
+**What.** `servers/ssh/` serves `ssh_connection_info`, `ssh_check_connection`,
+`ssh_list_directory`, `ssh_download`, `ssh_upload` and `ssh_execute` against one
+host per slug, as a
+store-served instance at `/_instance/ssh/{slug}` (`docs/servers/ssh.md`). The
+private key and the pinned host key are parameters in the slug's own namespace.
+It replaces five catalog entries that ran `npx ssh-agent-mcp-server`.
+
+1. **It is box access, and the invariant says products run without it.** These
+   tools exist for diagnosis and emergencies. Every routine step they get used
+   for is a defect to move onto a deploy, a job, an API or a workflow, and the
+   tool descriptions say so to the agent reading them.
+2. **Untested against the real hosts.** CI drives the real `ssh2` client against
+   ssh2's own server half on loopback. That proves the protocol, the pin and the
+   SFTP paths, not the five hosts' sshd settings, their accounts or their
+   firewalls.
+3. **App Platform's egress address is not fixed.** A host that allowlists SSH
+   sources refuses this container until its egress is on the list; the error
+   says "unreachable" or "no handshake" and names the allowlist as a cause.
+4. **A timed-out command may keep running.** No pty is allocated, so closing the
+   channel does not end the remote process; a `KILL` signal request is sent and
+   older sshd ignores it.
+5. **A down host costs each call up to `SSH_TIMEOUT`** (default 15 s). By
+   design it never fails the MCP connection: `initialize` and `tools/list` open
+   no socket, a call that cannot reach the host returns `UNREACHABLE` with what
+   to do, and `ssh_check_connection` is the retry. What remains is the wait: a
+   powered-off droplet swallows the SYN, so the call cannot tell "down" from
+   "slow" until the timeout.
+6. **A rebuilt host is an outage for its slug until a human re-pins it.** That
+   is the point of strict checking, and the refusal names both fingerprints.
+7. **Entitlements are the whole boundary.** `assertCreatable` refuses an SSH
+   instance at runtime, and the host serves SSH only as instances (the
+   conventional `/ssh` is handed no environment, and nothing is discovered from
+   it), so the roles on one only ever come from the checked-in config.
+   `ssh-tadasant-zimmer-prod` must be entitled to `admin` only, never to a role
+   a Zimmer session holds: sessions run on that host.
+8. **The namespace writer picks the host.** `SSH_HOST` and `SSH_HOST_KEY` are
+   both parameters, so anything that can write `/strad/{env}/mcp/ssh-*/static/`
+   can re-point a slug at a machine it controls. Nothing enforces that only a
+   human writes them; the `secrets` server's writable namespaces must exclude
+   them.
+
+**Undo.** 1 is undone host by host, by building whatever each incident needed
+the shell for. 2 lapses with the first `ssh_check_connection` against each
+host. 3 wants a dedicated egress IP or a tunnel. 4 wants a
+pty mode that does not merge stderr. 5 wants a host that refuses rather than swallows connections while it is down, or
+a shorter `SSH_TIMEOUT` for that slug. 6 and 7 are the design. 8 wants a
+write-side rule in the store, or the pin moved into checked-in config.

@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# bundle — THE strad supplementary image. Thirty-one MCP servers, one container.
+# bundle — THE strad supplementary image. Thirty-two MCP servers, one container.
 #
 # BUILD CONTEXT IS THE REPO ROOT (not servers/bundle/), because this image is
-# assembled from twenty-two existing projects that live in different places:
+# assembled from twenty-three existing projects that live in different places:
 #
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
 #                           gcs, google-flights
@@ -22,6 +22,8 @@
 #                                                  the session's Appium endpoint)
 #   servers/liveoak         liveoak                (LiveOak Bank statements,
 #                                                  read-only; Cognito + Apiture)
+#   servers/ssh             ssh                    (break-glass shell + SFTP, one
+#                                                  pinned host per slug)
 #   servers/airtable        airtable               (bases, tables, records)
 #   servers/flightaware     flightaware            (AeroAPI v4, read-only)
 #   servers/digitalocean    digitalocean           (droplets, apps, databases)
@@ -36,7 +38,7 @@
 #
 # Each is built in its OWN stage with its OWN lockfile and its OWN node_modules,
 # exactly as its standalone image builds it, and copied into /app/trees/<name>.
-# Nothing is merged. That is on purpose: merging twenty-two dependency trees is how you
+# Nothing is merged. That is on purpose: merging twenty-three dependency trees is how you
 # discover in production that two of them wanted different Playwright versions.
 # The host (servers/bundle/host) imports across them by path — Node resolves each
 # package's own imports from its own tree — and owns the one thing that MUST be
@@ -182,6 +184,19 @@ COPY servers/liveoak/package.json servers/liveoak/package-lock.json ./
 COPY servers/liveoak/shared/package.json ./shared/
 RUN npm ci --no-audit --no-fund
 COPY servers/liveoak/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
+# ---- ssh ----------------------------------------------------------------------
+# strad's own SSH server: command execution and SFTP on one host per slug, with
+# the private key and the pinned host key read from the slug's own namespace.
+# Its dependencies are the MCP SDK and ssh2 (pure JS; its optional native
+# cpu-features addon is a speed-up, and a build without a compiler skips it).
+FROM ${PW} AS build-ssh
+WORKDIR /src
+COPY servers/ssh/package.json servers/ssh/package-lock.json ./
+COPY servers/ssh/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/ssh/shared ./shared
 RUN npm run build && npm prune --omit=dev
 
 # ---- airtable / flightaware / digitalocean -----------------------------------
@@ -379,7 +394,7 @@ RUN npm run build && npm prune --omit=dev
 FROM ${PW}
 
 LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
-LABEL org.opencontainers.image.description="strad's single supplementary image — 31 MCP servers (API, Google, X.com, Telegram, WhatsApp, web fetching, Grafana, banking, Airtable, FlightAware, DigitalOcean, image diff/tracing, nutrition facts, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
+LABEL org.opencontainers.image.description="strad's single supplementary image — 32 MCP servers (API, Google, X.com, Telegram, WhatsApp, web fetching, Grafana, banking, Airtable, FlightAware, DigitalOcean, image diff/tracing, nutrition facts, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
 LABEL org.opencontainers.image.licenses="MIT"
 
 # --- 1Password CLI (op), pinned ----------------------------------------------
@@ -411,7 +426,7 @@ RUN set -eux; \
 ENV NODE_ENV=production
 WORKDIR /app
 
-# The twenty-two trees, each with the node_modules it was built against.
+# The twenty-three trees, each with the node_modules it was built against.
 COPY --from=build-api /src /app/trees/bundle-api
 COPY --from=build-google /src /app/trees/bundle-google
 COPY --from=build-op /src /app/trees/onepassword
@@ -426,6 +441,7 @@ COPY --from=build-whatsapp /src /app/trees/whatsapp
 COPY --from=build-bill-spend /src /app/trees/bill-spend
 COPY --from=build-aws-device-farm /src /app/trees/aws-device-farm
 COPY --from=build-liveoak /src /app/trees/liveoak
+COPY --from=build-ssh /src /app/trees/ssh
 COPY --from=build-airtable /src /app/trees/airtable
 COPY --from=build-flightaware /src /app/trees/flightaware
 COPY --from=build-digitalocean /src /app/trees/digitalocean

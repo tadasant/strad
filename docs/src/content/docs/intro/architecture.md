@@ -28,7 +28,7 @@ flowchart TB
             BI["core builtins<br/>(in-process)"]
         end
         subgraph priv["Private network (VPC)"]
-            BU["bundle (internal-only)<br/>ghcr.io/tadasant/strad-bundle<br/>31 MCP servers · 1 shared Chromium<br/>apps-s-1vcpu-2gb"]
+            BU["bundle (internal-only)<br/>ghcr.io/tadasant/strad-bundle<br/>32 MCP servers · 1 shared Chromium<br/>apps-s-1vcpu-2gb"]
         end
     end
 
@@ -70,8 +70,8 @@ for servers on it. Every non-core component gets `STRAD_CORE_URL` for it.
 
 A bundle runs **one image**, and any number of servers may share it, each on its
 own `path`. strad's own deployment has one main bundle: a
-`ghcr.io/tadasant/strad-bundle` container that mounts thirty-one MCP servers in
-one Node process, assembled from twenty-two independently-built dependency trees.
+`ghcr.io/tadasant/strad-bundle` container that mounts thirty-two MCP servers in
+one Node process, assembled from twenty-three independently-built dependency trees.
 The staging config maps thirty-nine of its forty-one `supplementary-image`
 entries onto twenty-seven paths, because capability variants of one upstream are two
 entries pointing at the same path. Twenty-six of those are baked mounts;
@@ -120,8 +120,8 @@ and runs its tool calls as the signed-in human, through the same builder.
 
 A **store-served instance** is the same per-slug mount with nothing on the
 container. A server on `path: /_instance/{tree}/{slug}` is listed to its bundle
-by core (`GET /_strad/instances`), and the host builds a telegram, google-sheets
-or grafana instance from that slug's own namespace, which it reads through core
+by core (`GET /_strad/instances`), and the host builds a telegram, google-sheets,
+grafana or [ssh](/servers/ssh/) instance from that slug's own namespace, which it reads through core
 (`GET /_strad/instances/{slug}`) rather than from its environment. It re-syncs on
 `STRAD_INSTANCE_SYNC_SECONDS` (default 60, floor 15) and on the first request for
 an instance it does not hold yet, so a slug a runtime write creates is served on
@@ -143,7 +143,7 @@ Three numbers, three different things:
 | Number | What it counts                                                                               |
 | ------ | -------------------------------------------------------------------------------------------- |
 | **3**  | App Platform components (`core`, `bundle`, `bundle-zimmer-secrets`)                          |
-| **31** | MCP servers mounted inside the bundle image                                                  |
+| **32** | MCP servers mounted inside the bundle image                                                  |
 | **44** | server slugs in `infra/strad.staging.yaml` (41 supplementary + `echo` + `deepwiki` + `anki`) |
 
 ### The two modes
@@ -644,7 +644,7 @@ The server list drives how containers are grouped:
   per slug from [its own variables](/operate/secrets/#what-a-servers-variables-are-called-on-the-box).
 - **A browser bundle needs real headroom.** Chromium costs ~1.06s per launch and
   peaks ~545MB RSS, and CPU rather than RAM is what binds it, because 1 vCPU
-  serialises rendering. strad's own deployment puts everything (31 mounted servers,
+  serialises rendering. strad's own deployment puts everything (32 mounted servers,
   one shared Chromium, the `op` CLI) in one `apps-s-1vcpu-2gb` component: the
   measured working set is ~760MB with two browser servers logging in at once.
   Several Chromiums in one component is the thing to avoid — share one browser and
@@ -660,8 +660,8 @@ The server list drives how containers are grouped:
 
 <aside class="starlight-aside starlight-aside--caution">
 
-**One process, one core, thirty-one servers is an accepted risk, not a proven
-design.** A crash in the bundle host takes all thirty-one down together, and the
+**One process, one core, thirty-two servers is an accepted risk, not a proven
+design.** A crash in the bundle host takes all thirty-two down together, and the
 single vCPU is shared with Chromium. If it turns out to be starved, the next move
 is a dedicated CPU (`apps-d-1vcpu-2gb`), not more RAM — the binding constraint is
 compute. This is what the [telemetry](/operate/telemetry/) exists to answer. See

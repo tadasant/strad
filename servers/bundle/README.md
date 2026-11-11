@@ -1,12 +1,12 @@
 # bundle — THE strad supplementary image
 
-Thirty-one MCP servers. One container. One Chromium. One `op` binary. One
+Thirty-two MCP servers. One container. One Chromium. One `op` binary. One
 `mcp-grafana` binary.
 
 ```
 /slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-filesystem-tmp-public
-/x-twitter /telegram /whatsapp /bill-spend /aws-device-farm /liveoak /image-diff /svg-tracer
-/nutrition-facts
+/x-twitter /telegram /whatsapp /bill-spend /aws-device-farm /liveoak /ssh /image-diff
+/svg-tracer /nutrition-facts
 /pulse-subregistry
 /strad-fetch /grafana
 /google-flights /gmail /google-calendar /google-docs /google-sheets
@@ -14,9 +14,12 @@ Thirty-one MCP servers. One container. One Chromium. One `op` binary. One
 /good-eggs /fetchpet /pointsyeah
 ```
 
-Thirty-one is the floor, not a constant: four of those mounts (`/telegram`,
+Thirty-two is the floor, not a constant: four of those mounts (`/telegram`,
 `/remote-filesystem-tmp-public`, `/google-sheets`, `/grafana`) are re-mounted once
-more per slug the container holds a separate credential for. `/google-sheets` is
+more per slug the container holds a separate credential for, and four trees
+(telegram, google-sheets, grafana, ssh) also serve store-served instances at
+`/_instance/{tree}/{slug}` — the ONLY way an SSH host is served; `/ssh` itself
+never holds a credential. `/google-sheets` is
 the one a real deployment uses that way — an OAuth refresh token is one Google
 account, so six `google-sheets-*` slugs over three accounts are three more mounts.
 `/grafana` is the same shape for the same reason: a Grafana service-account token
@@ -52,10 +55,10 @@ its environment at boot. A stale one would not just be ignored — it would stri
 write tools from the read-**write** slugs too, and the failure would look like an
 upstream bug.
 
-## How twenty-two projects become one image
+## How twenty-three projects become one image
 
 `Dockerfile`'s build context is the **repo root**, because the servers live in
-twenty-two different places:
+twenty-three different places:
 
 | tree | source | servers |
 | --- | --- | --- |
@@ -73,6 +76,7 @@ twenty-two different places:
 | `bill-spend` | `servers/bill-spend` | bill-spend (BILL Spend & Expense transaction coding) |
 | `aws-device-farm` | `servers/aws-device-farm` | aws-device-farm (a real iPhone, driven over the session's Appium endpoint) |
 | `liveoak` | `servers/liveoak` | liveoak (LiveOak Bank statements, read-only, as a remembered Cognito device) |
+| `ssh` | `servers/ssh` | ssh (break-glass shell and SFTP, one pinned host per slug, as store-served instances only) |
 | `airtable` | `servers/airtable` | airtable (bases, tables, records and comments) |
 | `flightaware` | `servers/flightaware` | flightaware (FlightAware AeroAPI v4 flight and airport data, read-only) |
 | `digitalocean` | `servers/digitalocean` | digitalocean (droplets, App Platform apps, managed databases) |
@@ -84,7 +88,7 @@ twenty-two different places:
 
 Each is built **in its own stage, with its own lockfile and its own
 `node_modules`**, exactly as its standalone image builds it, and lands at
-`/app/trees/<name>`. Nothing is merged. Merging twenty-two dependency trees is how
+`/app/trees/<name>`. Nothing is merged. Merging twenty-three dependency trees is how
 you find out in production that two of them wanted different Playwright versions.
 
 `host/` imports across the trees **by path** (`src/trees.ts`). Node resolves each
@@ -170,12 +174,12 @@ could perform one. See [`servers/secrets/README.md`](../secrets/README.md).
 
 ## Blast radius, honestly
 
-Thirty-one servers share a process. A crash is a thirty-one-server outage. Everything
+Thirty-two servers share a process. A crash is a thirty-two-server outage. Everything
 that *can* be made survivable is:
 
 - a browser server whose **login fails** is marked `degraded` in `/healthz`; the
   container keeps serving. (The standalone images `process.exit(1)` here — correct
-  when the process *is* the server, catastrophic when it is thirty others too.)
+  when the process *is* the server, catastrophic when it is thirty-one others too.)
   For fetchpet the mark is a report on the last attempt: the next tool call retries
   the login and a success clears it, so a form that changed and was fixed does not
   cost a redeploy. good-eggs still holds its first failure until the container

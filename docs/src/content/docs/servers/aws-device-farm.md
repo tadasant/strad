@@ -214,7 +214,7 @@ Five variables; three are required.
 
 **The AWS default credential chain is never consulted.** The SDK would read
 `AWS_ACCESS_KEY_ID` straight out of the process environment, and this server
-shares a process with thirty others — a stray AWS variable that arrived for
+shares a process with thirty-one others — a stray AWS variable that arrived for
 some other reason must not become the identity that spends device minutes.
 
 **The region is a closed set of one.** Device Farm's device cloud is served from

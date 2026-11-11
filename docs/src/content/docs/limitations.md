@@ -610,9 +610,9 @@ nothing warns beforehand. Publishing the OAuth app removes the expiry.
 
 ### 24. Twenty-eight servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts thirty-one MCP servers,
+The `bundle` component runs one Node process that mounts thirty-two MCP servers,
 launches one shared Chromium and supervises one `mcp-grafana` child process, on
-`apps-s-1vcpu-2gb`. A crash in the host takes all thirty-one down together, and
+`apps-s-1vcpu-2gb`. A crash in the host takes all thirty-two down together, and
 Chromium contends with every other server for the single vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -1003,7 +1003,7 @@ a store-wide read.
 keeps a listed parameter current in a supplementary container's environment
 without a redeploy. It cannot make the MCP server inside that container **look**
 at the new value — that is a property of the upstream, and the bundle image runs
-thirty-one of them, most written by other people.
+thirty-two of them, most written by other people.
 
 `strad-fetch` builds its scraping clients inside a factory the host invokes per
 request, so a rotated key is used by the next tool call; that is the case the
@@ -2191,7 +2191,7 @@ ever rebuilt with a rootless or hand-installed docker, where buildx lives in
 
 **Serialising the workflows was the alternative.** A `concurrency:` group would
 have ended it too, at the cost of every push taking the sum of its builds rather
-than the longest — the bundle alone is twenty-two dependency trees. Isolation costs a
+than the longest — the bundle alone is twenty-three dependency trees. Isolation costs a
 `mkdir`.
 
 ### 49. The Telegram MTProto library is archived upstream
@@ -2291,7 +2291,7 @@ for the telegram pair, `BILL_SPEND_API_TOKEN` for the bill-spend pair,
 then delete that entry's `enabled:` line and add each seeded name to
 `PROVISIONED_STATICS` in `test/staging-config.test.ts`.
 
-### 56. Per-slug variable names are emitted for every server; only eleven of the twenty trees can read one
+### 56. Per-slug variable names are emitted for every server; only twelve of the twenty-three trees can read one
 
 Every supplementary server's `env:` lands on its bundle twice — under the bare
 name and under `<SLUG>__<NAME>` — with no condition attached, so what a server's
@@ -2308,7 +2308,7 @@ whatever the variables are called.
 
 **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
 `grafana`, `bill-spend`, `aws-device-farm`, `whatsapp`, `liveoak`, `airtable`,
-`flightaware` and `digitalocean` read an injected environment.** The other nine
+`flightaware`, `digitalocean` and `ssh` read an injected environment.** The other eleven
 trees in the bundle image are vendored upstream code that reads `process.env` directly,
 often lazily at call time, so they see the bare names only. `bill-spend` reads
 the injected view for one mount rather than one per slug: one BILL token is one
@@ -2588,7 +2588,7 @@ leak. Nothing in the cache is a credential; it is public pages someone fetched.
 
 **What the fork DID bound is the memory.** Upstream's store grows for the life of
 the process, which is fine for a subprocess the OS reclaims and an out-of-memory
-kill in a container that hosts thirty-one mounts. The cache is LRU-bounded on both
+kill in a container that hosts thirty-two mounts. The cache is LRU-bounded on both
 entry count and bytes, and the filesystem backend is gone (App Platform gives the
 container no persistent volume, so it was memory with extra steps).
 
@@ -3186,8 +3186,8 @@ component only, and the env route serves a slug only when its `bundle:` is the
 caller's. Any other component gets the same `403` as a slug that is not an
 instance.
 
-**Three trees, one account per slug.** `telegram`, `google-sheets` and `grafana`
-only. `remote-filesystem-tmp-public` is not one yet, and gmail, calendar, docs and
+**Four trees, one account per slug.** `telegram`, `google-sheets`, `grafana` and
+`ssh` only. `remote-filesystem-tmp-public` is not one yet, and gmail, calendar, docs and
 every tree that reads its environment once cannot be. An instance path names its
 own slug, so a `-ro` / `-rw` pair over one account is two instances seeded twice.
 
@@ -4302,3 +4302,45 @@ refusal existed; resolve the suggestions, or use `heading`. A paragraph at a tab
 end that keeps the wrong look after accepting is the unmeasured case above.
 
 See `HACKS.md` #136.
+
+---
+
+### 137. The SSH server is a shell on production hosts, and nothing here has reached one
+
+The [SSH](/servers/ssh/) server runs commands and moves files on one host per
+slug, with the key and a pinned host key in the slug's own namespace. What it
+costs:
+
+- **It is box access.** strad's own invariant is that products run without it.
+  These tools are for diagnosis and emergencies, and each routine use is a
+  missing API, deploy step or workflow.
+- **No real host has been reached.** CI runs the real `ssh2` client against a
+  real SSH server on loopback. The five hosts' sshd settings, accounts and
+  firewalls are proven by the first `ssh_check_connection` after their
+  parameters are seeded.
+- **The egress address moves.** App Platform does not give the bundle a fixed
+  source address, so a host that allowlists SSH sources will refuse it.
+- **A timed-out command may keep running.** No pty is allocated; a `KILL` is
+  requested and older sshd ignores the request.
+- **A down host costs each call up to `SSH_TIMEOUT`** (15 s by default). It
+  never fails the MCP connection — nothing connects until a tool is called — but
+  a powered-off droplet usually swallows the connection rather than refusing it,
+  so each call waits that long before it can say `UNREACHABLE`.
+- **A rebuilt host stays refused until it is re-pinned.** That is strict
+  checking working, and the error names both fingerprints.
+- **An SSH slug cannot be added at runtime**, from either door. Who may reach a
+  shell is decided in the checked-in config, where no runtime write can move it.
+- **Whoever writes the slug's namespace picks the host.** `SSH_HOST` and
+  `SSH_HOST_KEY` are both parameters, so a writer of
+  `/strad/{env}/mcp/ssh-*/static/` can re-point a slug at its own machine.
+  Nothing enforces that only a human seeds them; keep those paths out of every
+  namespace the `secrets` server can write.
+
+**How you would know.** Every refusal is a tool error that names its cause: a
+missing parameter, a host-key mismatch with both fingerprints, a rejected key, a
+refused or unreachable port.
+
+**Undo:** a fixed egress address or a tunnel for the firewall case, and a pty
+mode for the timeout case. The rest is the design.
+
+See `HACKS.md` #137.
