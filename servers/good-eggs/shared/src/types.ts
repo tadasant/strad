@@ -32,6 +32,8 @@ export interface CartItem {
    * makes it the join key `remove_from_cart` matches on.
    */
   productId?: string;
+  /** Whether the line is a Subscribe & Save line. A basket update sends it back. */
+  subscribed?: boolean;
 }
 
 export interface GroceryDetails {
@@ -44,7 +46,24 @@ export interface GroceryDetails {
   unit?: string;
   description?: string;
   productDetails?: string;
+  /**
+   * Per-day availability, one entry per day the product record lists, e.g.
+   * `Mon 11/2: sold out`. Read from the product's own record; absent when the
+   * page carried none (the drawn "Available for Delivery" strip is the day
+   * picker and says nothing about the product, so it is never used).
+   */
   availability?: string[];
+  /** The basket's delivery day, e.g. `Mon 11/2`, when the payload names it. */
+  deliveryDay?: string;
+  /**
+   * Whether the product can be added for `deliveryDay`: `true` or `false` from
+   * the product's record, absent when the record does not say.
+   */
+  availableOnDeliveryDay?: boolean;
+  /** Good Eggs' status for the delivery day, e.g. `sold out`, `unavailable`. */
+  deliveryDayStatus?: string;
+  /** The first later day it is available, e.g. `Wed 11/4`. */
+  nextAvailableDay?: string;
   imageUrl?: string;
 }
 
@@ -70,6 +89,11 @@ export interface CartResult {
    * the caller must not infer either outcome from it.
    */
   verified?: boolean;
+  /**
+   * True when nothing was sent because Good Eggs lists the product as sold out
+   * or unavailable on the basket's delivery day. A retry cannot add it.
+   */
+  unavailable?: boolean;
 }
 
 // =============================================================================
@@ -95,6 +119,12 @@ export const GetGroceryDetailsSchema = z.object({
   ),
 });
 
+export const GetGroceryNutritionSchema = z.object({
+  grocery_url: goodEggsUrlSchema.describe(
+    'The Good Eggs product URL to get nutrition and photo URLs for'
+  ),
+});
+
 export const AddToCartSchema = z.object({
   grocery_url: goodEggsUrlSchema.describe('The Good Eggs URL of the grocery item to add to cart'),
   quantity: z
@@ -104,7 +134,7 @@ export const AddToCartSchema = z.object({
     .max(99, 'Quantity cannot exceed 99')
     .optional()
     .default(1)
-    .describe('Quantity to add (minimum 1, maximum 99, default: 1)'),
+    .describe('How many of this item the cart should hold (minimum 1, maximum 99, default: 1)'),
 });
 
 export const GetPastOrderGroceriesSchema = z.object({

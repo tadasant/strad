@@ -18,6 +18,7 @@ import {
 import {
   SearchGrocerySchema,
   GetGroceryDetailsSchema,
+  GetGroceryNutritionSchema,
   AddToCartSchema,
   GetPastOrderGroceriesSchema,
   AddFavoriteSchema,
@@ -63,30 +64,78 @@ const GET_GROCERY_DETAILS_DESCRIPTION = `Get detailed information about a specif
 Provide the Good Eggs URL of the item (from search results or favorites).
 Returns comprehensive details including:
 - Full product name and brand
-- Current and original prices
+- Current and original prices, and the unit
 - Product description
-- Delivery availability dates
+- Whether it can be ordered for your basket's delivery day, and its status on
+  every day Good Eggs lists (available, sold out, unavailable)
+
+Use the delivery-day line to check stock before planning around a product: an
+item that is "sold out" or "unavailable" for the delivery day cannot be added
+to the cart for it, and add_to_cart will refuse it.
+
+For calories, macros or serving size use get_grocery_nutrition instead.
 
 **Tip:** This tool checks if you're already on the product page to minimize navigation.`;
+
+const GET_GROCERY_NUTRITION_DESCRIPTION = `Get nutrition facts and product photo URLs for one Good Eggs product.
+
+Good Eggs publishes structured nutrition ONLY for products made by its own
+kitchen (producer "goodeggskitchen"), in help-center tables that lag the
+catalog. Every other product has photos and no nutrition data. So the result
+always carries an explicit nutrition.status, plus photo URLs (never image bytes)
+that you can download without a session — e.g. to read a label from them.
+
+nutrition.status:
+- found — facts from Good Eggs Kitchen's table. sizeMatches: false means the
+  row is for another package size; per-serving values hold, servingsPerPackage may not.
+- ambiguous — several rows share the name; all are in candidates, pick by size.
+- not_in_kitchen_tables — a kitchen product with no row in the tables.
+- not_published — not a kitchen product; Good Eggs has no nutrition for it.
+  Read the label from the images if one shows it, or look up producer + name +
+  retailUnits in a nutrition database.
+- unknown — the tables could not be read right now. NOT the same as absent; retry.
+
+A nutrient is a number when the table prints one, the printed text when it
+does not ("less than 1"), and null when the cell is blank or the column absent.
+
+Example (abridged):
+{"name":"Black Beans","producer":"Good Eggs Kitchen","retailUnits":"10 oz",
+ "nutrition":{"status":"found","sizeMatches":true,"facts":{"servingsPerPackage":2.5,
+ "servingSize":"113 gr","calories":130,"totalFatG":0.5,"totalCarbohydrateG":23,
+ "proteinG":8,...},"matchedRow":{"recipeName":"Black Beans - 10 oz","source":{...}}},
+ "images":[{"url":"https://images.goodeggs.com/cdn-cgi/image/width=2000,.../<id>.jpg",
+ "originalUrl":"https://images.goodeggs.com/<id>.jpg","alt":"..."}],"imagesNote":"..."}
+
+Use it to: total the macros of a basket; compare protein per dollar; check
+serving size before planning portions; fetch a product photo to read its label.
+
+An error means the product page could not be read — nutrition and images are
+UNKNOWN, not absent.`;
 
 const ADD_TO_CART_DESCRIPTION = `Add a grocery item to your shopping cart.
 
 Provide:
 - grocery_url: The Good Eggs URL of the item to add
-- quantity: Number of items to add (default: 1)
+- quantity: How many of this item the cart should hold (default: 1). An item
+  already in the cart at that quantity or more is left as it is; this tool never
+  lowers a quantity.
 
 Returns confirmation of the item added and the resulting cart quantity. After
-attempting the add, the basket is re-read to verify the item actually landed, so
-the result reflects the true basket state rather than just whether a button was
-clicked. Possible outcomes: a confirmed add, a partial add (cart quantity below
-what was requested), a genuine failure (e.g. a delivery day still needs to be
-selected), or an UNVERIFIED result.
+the add, the basket is re-read to verify the item actually landed, so the result
+reflects the true basket state rather than what the add request answered.
+Possible outcomes: a confirmed add, a partial add (cart quantity below what was
+requested, e.g. Good Eggs caps a product's quantity per order), a genuine
+failure (the message says why, e.g. Good Eggs refused the product or a delivery
+day still needs to be selected), or an UNVERIFIED result.
+
+A product Good Eggs lists as sold out or unavailable for the basket's delivery
+day is refused before anything is sent, with a message naming the status and
+the next day it is available, if any. Retrying cannot add it: choose a
+substitute, and tell the user about the swap.
 
 An UNVERIFIED result means the basket could not be read back, so the outcome is
 unknown. Do not retry a blind add on one — read the cart first, or you will
-create duplicates.
-
-**Tip:** This tool checks if you're already on the product page to minimize navigation.`;
+create duplicates.`;
 
 // The sweep checks exactly these two pages (`searchFreebieGroceries` in
 // server.ts, and `test/freebie-scope.test.ts` pins that it visits no others).
@@ -398,20 +447,40 @@ export function createRegisterTools(
             `Price: ${details.price || 'N/A'}`,
           ];
 
+          if (details.unit) {
+            lines.push(`Unit: ${details.unit}`);
+          }
           if (details.originalPrice) {
             lines.push(`Original Price: ${details.originalPrice}`);
           }
           if (details.discount) {
             lines.push(`Discount: ${details.discount}`);
           }
+          if (details.deliveryDay && details.availableOnDeliveryDay !== undefined) {
+            lines.push(
+              details.availableOnDeliveryDay
+                ? `Your delivery day (${details.deliveryDay}): available.`
+                : `Your delivery day (${details.deliveryDay}): ` +
+                    `${(details.deliveryDayStatus ?? 'not available').toUpperCase()}. ` +
+                    `add_to_cart cannot add it for this day.` +
+                    (details.nextAvailableDay
+                      ? ` Next available: ${details.nextAvailableDay}.`
+                      : ' No later listed day has it either.')
+            );
+          } else {
+            lines.push(
+              `Availability for your delivery day: UNKNOWN (the page did not say). ` +
+                `add_to_cart will report what the basket shows.`
+            );
+          }
+          if (details.availability && details.availability.length > 0) {
+            lines.push(`Availability by day: ${details.availability.join(', ')}`);
+          }
           if (details.description) {
             lines.push(`\nDescription: ${details.description}`);
           }
           if (details.productDetails) {
             lines.push(`\nProduct Details: ${details.productDetails}`);
-          }
-          if (details.availability && details.availability.length > 0) {
-            lines.push(`\nAvailable for delivery: ${details.availability.join(', ')}`);
           }
           lines.push(`\nURL: ${details.url}`);
 
@@ -437,6 +506,43 @@ export function createRegisterTools(
       },
     },
     {
+      name: 'get_grocery_nutrition',
+      description: GET_GROCERY_NUTRITION_DESCRIPTION,
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          grocery_url: {
+            type: 'string',
+            description:
+              'The Good Eggs product URL (from search results, favorites, the cart or a past order)',
+          },
+        },
+        required: ['grocery_url'],
+      },
+      handler: async (args: unknown) => {
+        try {
+          const validated = GetGroceryNutritionSchema.parse(args);
+          const goodEggsClient = await getClient();
+          const nutrition = await goodEggsClient.getGroceryNutrition(validated.grocery_url);
+          return {
+            content: [{ type: 'text', text: JSON.stringify(nutrition, null, 2) }],
+          };
+        } catch (error) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  'Could not read this product, so its nutrition and images are UNKNOWN, ' +
+                  `not absent: ${error instanceof Error ? error.message : String(error)}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      },
+    },
+    {
       name: 'add_to_cart',
       description: ADD_TO_CART_DESCRIPTION,
       inputSchema: {
@@ -448,7 +554,8 @@ export function createRegisterTools(
           },
           quantity: {
             type: 'number',
-            description: 'Quantity to add (default: 1)',
+            description:
+              'How many of this item the cart should hold (default: 1). Never lowers a quantity.',
           },
         },
         required: ['grocery_url'],

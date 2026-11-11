@@ -10,6 +10,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   encodeQuotedPrintable,
+  plainTextToHtml,
   reflowPlainText,
 } from "../vendor/gmail-shared/src/gmail-client/lib/body-text.js";
 import { buildMimeMessage } from "../vendor/gmail-shared/src/gmail-client/lib/mime-utils.js";
@@ -33,6 +34,30 @@ function decodeQuotedPrintable(wire: string): string {
 
 function bodyOf(message: string): string {
   return message.slice(message.indexOf("\r\n\r\n") + 4);
+}
+
+/** The two alternatives of a message's body, still as they are on the wire. */
+function wireParts(message: string): { plain: string; html: string } {
+  expect(message).toMatch(/Content-Type: multipart\/alternative;\r\n boundary="/);
+  const boundary = message.match(/boundary="([^"]+)"/)![1];
+  const parts = bodyOf(message)
+    .split(`--${boundary}`)
+    .slice(1, -1)
+    .map((p) => p.replace(/^\r\n/, "").replace(/\r\n$/, ""));
+  expect(parts).toHaveLength(2);
+  expect(parts[0]).toMatch(
+    /^Content-Type: text\/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n/,
+  );
+  expect(parts[1]).toMatch(
+    /^Content-Type: text\/html; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n/,
+  );
+  return { plain: bodyOf(parts[0]), html: bodyOf(parts[1]) };
+}
+
+/** The two alternatives of a message's body, as the recipient's client reads them. */
+function partsOf(message: string): { plain: string; html: string } {
+  const { plain, html } = wireParts(message);
+  return { plain: decodeQuotedPrintable(plain), html: decodeQuotedPrintable(html) };
 }
 
 /** A paragraph as an agent hard-wraps it, at 72 columns. */
@@ -262,16 +287,22 @@ describe("buildMimeMessage body parts", () => {
       subject: "Line breaks",
       plaintextBody: WRAPPED,
     });
-    expect(message).toContain(
-      "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n",
-    );
-    const wire = bodyOf(message);
+    const wire = wireParts(message).plain;
     for (const line of wire.split("\r\n")) {
       expect(line.length).toBeLessThanOrEqual(76);
     }
     // Two paragraphs and the blank line between them: three hard lines.
     expect(wire.split(/(?<!=)\r\n/)).toHaveLength(3);
     expect(decodeQuotedPrintable(wire)).toBe(REFLOWED);
+  });
+
+  it("sends an HTML rendering of a plain-text-only body beside it", () => {
+    const message = buildMimeMessage("me@example.com", {
+      to: "you@example.com",
+      subject: "Line breaks",
+      plaintextBody: WRAPPED,
+    });
+    expect(partsOf(message).html).toBe(plainTextToHtml(REFLOWED));
   });
 
   it("does not hard-break a long paragraph", () => {
@@ -283,9 +314,20 @@ describe("buildMimeMessage body parts", () => {
       subject: "Long",
       plaintextBody: paragraph,
     });
-    const wire = bodyOf(message);
-    expect(wire.split(/(?<!=)\r\n/)).toHaveLength(1);
-    expect(decodeQuotedPrintable(wire)).toBe(paragraph);
+    const { plain, html } = wireParts(message);
+    expect(plain.split(/(?<!=)\r\n/)).toHaveLength(1);
+    expect(decodeQuotedPrintable(plain)).toBe(paragraph);
+    expect(decodeQuotedPrintable(html)).toBe(`<div dir="auto">${paragraph}</div>`);
+  });
+
+  it("keeps every header line within 78 characters", () => {
+    const message = buildMimeMessage("me@example.com", {
+      to: "you@example.com",
+      subject: "s",
+      plaintextBody: "Hello",
+    });
+    const headers = message.slice(0, message.indexOf("\r\n\r\n")).split("\r\n");
+    expect(Math.max(...headers.map((l) => l.length))).toBeLessThanOrEqual(78);
   });
 
   it("encodes both alternatives and reflows only the plain text", () => {
@@ -318,7 +360,115 @@ describe("buildMimeMessage body parts", () => {
       subject: "s",
       plaintextBody: "\n\r\nHello",
     });
-    expect(bodyOf(message)).toBe("Hello");
+    expect(partsOf(message)).toEqual({ plain: "Hello", html: '<div dir="auto">Hello</div>' });
+  });
+
+  it("sends an html_body alone as a single text/html part", () => {
+    const message = buildMimeMessage("me@example.com", {
+      to: "you@example.com",
+      subject: "s",
+      htmlBody: "<p>Hi</p>",
+    });
+    expect(message).not.toContain("multipart/alternative");
+    expect(message).toContain(
+      "Content-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n<p>Hi</p>",
+    );
+  });
+});
+
+describe("plainTextToHtml", () => {
+  it("escapes markup and keeps every line break as a <br>", () => {
+    expect(plainTextToHtml("a < b && \"c\" > 'd'\n\n<script>")).toBe(
+      '<div dir="auto">a &lt; b &amp;&amp; &quot;c&quot; &gt; &#39;d&#39;<br>\n<br>\n&lt;script&gt;</div>',
+    );
+  });
+
+  it("links bare URLs and leaves sentence punctuation outside the link", () => {
+    expect(
+      plainTextToHtml("See https://x.test/a?b=1&c=2. Or (https://x.test/wiki/A_(b)), then stop."),
+    ).toBe(
+      '<div dir="auto">See <a href="https://x.test/a?b=1&amp;c=2">https://x.test/a?b=1&amp;c=2</a>. ' +
+        'Or (<a href="https://x.test/wiki/A_(b)">https://x.test/wiki/A_(b)</a>), then stop.</div>',
+    );
+  });
+
+  it("leaves markdown emphasis and unopened brackets outside the link", () => {
+    expect(plainTextToHtml("**https://x.test/b** [docs](https://x.test/c) [https://x.test/d]")).toBe(
+      '<div dir="auto">**<a href="https://x.test/b">https://x.test/b</a>** ' +
+        '[docs](<a href="https://x.test/c">https://x.test/c</a>) ' +
+        '[<a href="https://x.test/d">https://x.test/d</a>]</div>',
+    );
+  });
+
+  it("links an upper-case scheme, and never a bare scheme", () => {
+    expect(plainTextToHtml("HTTPS://X.test/a and http://. too")).toBe(
+      '<div dir="auto"><a href="HTTPS://X.test/a">HTTPS://X.test/a</a> and http://. too</div>',
+    );
+  });
+
+  it("keeps runs of spaces and tabs inside a line, so columns stay aligned", () => {
+    expect(plainTextToHtml("| a    | b |\n\tx  y")).toBe(
+      '<div dir="auto">| a&nbsp;&nbsp;&nbsp; | b |<br>\n&nbsp;&nbsp;&nbsp;&nbsp;x&nbsp; y</div>',
+    );
+  });
+
+  it("keeps the indent of an indented line", () => {
+    expect(plainTextToHtml("code:\n    x = 1")).toBe(
+      '<div dir="auto">code:<br>\n&nbsp;&nbsp;&nbsp;&nbsp;x = 1</div>',
+    );
+  });
+});
+
+/**
+ * The reply that reached Tadas on 2026-10-16 with a break every ~70 columns,
+ * as an agent hard-wraps it. Its Sent copy held each paragraph on one line —
+ * the reflow had worked — and Gmail still drew the breaks, because it lays a
+ * text/plain-only message out at its own ~70 columns. The HTML alternative is
+ * what Gmail renders instead.
+ */
+describe("regression: the 2026-10-16 reply", () => {
+  const SENT = [
+    "Loud and clear. Your email reached zimmer@tadasant.com, passed sender",
+    "verification (DKIM pass via the tadasant.com Workspace key, sent",
+    "directly rather than via a group), and the inbound-email trigger",
+    "picked it up in this session:",
+    "https://zimmer.tadasant.com/sessions/25069",
+    "",
+    "Nothing else to do here, so I'm archiving the session. Send a real",
+    "request any time.",
+    "",
+    "— Zimmer",
+  ].join("\n");
+
+  const message = buildMimeMessage("zimmer@tadasant.com", {
+    to: "tadas@tadasant.com",
+    subject: "Re: Hello world",
+    plaintextBody: SENT,
+  });
+
+  it("reflows the plain text to what the Sent copy held", () => {
+    expect(partsOf(message).plain).toBe(
+      [
+        "Loud and clear. Your email reached zimmer@tadasant.com, passed sender verification (DKIM pass via the tadasant.com Workspace key, sent directly rather than via a group), and the inbound-email trigger picked it up in this session:",
+        "https://zimmer.tadasant.com/sessions/25069",
+        "",
+        "Nothing else to do here, so I'm archiving the session. Send a real request any time.",
+        "",
+        "— Zimmer",
+      ].join("\n"),
+    );
+  });
+
+  it("sends an HTML part with no break inside a paragraph", () => {
+    expect(partsOf(message).html).toBe(
+      '<div dir="auto">' +
+        "Loud and clear. Your email reached zimmer@tadasant.com, passed sender verification (DKIM pass via the tadasant.com Workspace key, sent directly rather than via a group), and the inbound-email trigger picked it up in this session:<br>\n" +
+        '<a href="https://zimmer.tadasant.com/sessions/25069">https://zimmer.tadasant.com/sessions/25069</a><br>\n' +
+        "<br>\n" +
+        "Nothing else to do here, so I&#39;m archiving the session. Send a real request any time.<br>\n" +
+        "<br>\n" +
+        "— Zimmer</div>",
+    );
   });
 });
 
@@ -356,13 +506,13 @@ describe("the request Gmail receives", () => {
     const raw = await rawSentBy((base) =>
       sendMessage(base, {}, "me@example.com", options),
     );
-    expect(decodeQuotedPrintable(bodyOf(raw))).toBe(REFLOWED);
+    expect(partsOf(raw).plain).toBe(REFLOWED);
   });
 
   it("createDraft saves the reflowed body", async () => {
     const raw = await rawSentBy((base) =>
       createDraft(base, {}, "me@example.com", options),
     );
-    expect(decodeQuotedPrintable(bodyOf(raw))).toBe(REFLOWED);
+    expect(partsOf(raw).plain).toBe(REFLOWED);
   });
 });

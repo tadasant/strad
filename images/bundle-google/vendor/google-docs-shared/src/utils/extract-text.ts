@@ -49,6 +49,21 @@ export interface HeadingEntry {
   text: string;
 }
 
+/** Where a heading sits, and the ways of reading it. */
+export interface HeadingPlace {
+  /** Position among the body's top-level elements. */
+  contentIndex: number;
+  startIndex: number;
+  endIndex: number;
+  headingId?: string;
+  /**
+   * The heading as stored and with pending suggestions accepted or rejected.
+   * Inline text holds both sides of a suggestion, so an edited heading a person
+   * reads one way is stored as another.
+   */
+  views: string[];
+}
+
 const HEADING_LEVELS: Record<string, number> = {
   TITLE: 0,
   SUBTITLE: 0,
@@ -60,9 +75,9 @@ const HEADING_LEVELS: Record<string, number> = {
   HEADING_6: 6,
 };
 
-export function extractHeadings(doc: GoogleDoc): HeadingEntry[] {
-  const headings: HeadingEntry[] = [];
-  for (const element of doc.body?.content ?? []) {
+export function extractHeadings(doc: GoogleDoc): Array<HeadingEntry & HeadingPlace> {
+  const headings: Array<HeadingEntry & HeadingPlace> = [];
+  for (const [contentIndex, element] of (doc.body?.content ?? []).entries()) {
     const para = element.paragraph;
     if (!para) continue;
     const styleType = para.paragraphStyle?.namedStyleType;
@@ -75,10 +90,28 @@ export function extractHeadings(doc: GoogleDoc): HeadingEntry[] {
     text = text.replace(/\n+$/, '').trim();
     if (text.length === 0) continue;
 
+    const runs = (para.elements ?? []).flatMap((pe) => (pe.textRun ? [pe.textRun] : []));
+    const view = (keep: (run: (typeof runs)[number]) => boolean) =>
+      runs
+        .filter(keep)
+        .map((run) => run.content)
+        .join('')
+        .trim();
+
+    const headingId = para.paragraphStyle?.headingId;
     headings.push({
       level: HEADING_LEVELS[styleType],
       styleType,
       text,
+      contentIndex,
+      startIndex: element.startIndex as number,
+      endIndex: element.endIndex as number,
+      ...(typeof headingId === 'string' ? { headingId } : {}),
+      views: [
+        text,
+        view((run) => !run.suggestedDeletionIds?.length),
+        view((run) => !run.suggestedInsertionIds?.length),
+      ],
     });
   }
   return headings;

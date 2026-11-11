@@ -5,10 +5,10 @@ and `google-sheets` MCP servers packaged into **one** container and served over
 Streamable HTTP, each on its own path.
 
 ```
-/gmail             -> gmail-workspace-mcp-server        (8 tools)
+/gmail             -> gmail-workspace-mcp-server        (9 tools)
 /google-calendar   -> google-calendar-workspace-mcp-server (7 tools)
-/google-docs       -> google-docs-workspace-mcp-server   (11 tools)
-/google-sheets     -> google-sheets-workspace-mcp-server  (10 tools)
+/google-docs       -> google-docs-workspace-mcp-server   (14 tools)
+/google-sheets     -> google-sheets-workspace-mcp-server  (11 tools)
 ```
 
 All four are **pure Google API** servers — no browser, no subprocess — so they
@@ -53,21 +53,49 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   messages has to keep matching; two tests there hold it to that.
   `test/confirm.test.ts` is its suite. See
   `docs/src/content/docs/servers/confirmations.md`.
+- `src/standalone/` — **one server, without strad.** `serve.ts` runs a
+  single factory over stdio or over Streamable HTTP at `/mcp` on a localhost
+  port (`--transport`, `--port`/`PORT`, `--host`), and each file beside it is
+  one server's entrypoint, built to `dist/standalone/<server>.js`. It reuses
+  the factory this image mounts, so a standalone server is the bundled one.
+  `gmail.ts`, `google-calendar.ts`, `google-docs.ts` and `google-drive.ts`
+  are the four. Their how-tos are `vendor/gmail-shared/README.md`,
+  `vendor/google-calendar-shared/README.md`,
+  `vendor/google-docs-shared/README.md` and
+  `vendor/google-drive-shared/README.md`, and `test/standalone.test.ts`
+  runs both transports for each. `gmail.ts` and `google-docs.ts` go through
+  `src/gmail.ts` and `src/docs.ts`, the layers `/gmail` and `/google-docs`
+  mount, not the vendored factories. `gmail.ts` serves `readonly` and
+  `readwrite` by default and refuses `readwrite_external` at startup:
+  `send_email`'s confirmation channel comes from strad core, and a standalone
+  process has no core to trust it from. Adding a server is one more
+  entrypoint, a README in its tree, and a test case.
 - `vendor/` — the upstream `shared/` factories, plus `@pulsemcp/mcp-elicitation`.
   Wired as npm workspaces.
-  - `vendor/google-calendar-shared/`, `vendor/google-docs-shared/` — vendored
-    verbatim from
-    `github.com/pulsemcp/mcp-servers/experimental/{google-calendar,google-docs}`.
+  - `vendor/google-docs-shared/` — vendored verbatim from
+    `github.com/pulsemcp/mcp-servers/experimental/google-docs`.
+  - `vendor/google-calendar-shared/` — a **patched vendor** of
+    `experimental/google-calendar`: upstream `0ed34de` plus one delta, the
+    `GOOGLE_CALENDAR_AUTH_MODE=oauth` mode in `src/server.ts`. Its README's
+    delta table lists it and `test/calendar-auth-mode.test.ts` defends it. A
+    re-vendor has to re-apply it.
   - `vendor/gmail-shared/` — **a fork**, not a copy. strad owns it and changes
     land here; do not re-vendor over it. It adds attachments to
     `send_email` and `upsert_draft_email`, the sender's display name,
-    plain-text reflow, and the sender-verification headers
-    `get_email_conversation` returns. `vendor/gmail-shared/FORK.md` lists every delta
+    plain-text reflow and the HTML part sent beside it, the sender-verification headers
+    `get_email_conversation` returns, `delete_draft_email`, and attachments
+    `download_email_attachments` returns as embedded resources rather than
+    paths on the server's disk. `vendor/gmail-shared/FORK.md` lists every delta
     from upstream `0ed34de` and the tests that defend each one;
-    `test/gmail-attachments.test.ts` is the main one.
+    `test/gmail-attachments.test.ts` is the main one. Its `README.md` is
+    the how-to for running it without strad.
   - The only other edits to vendored code are one dependency line (gmail's
     elicitation dep → the vendored workspace) and a `types` field so the
-    entrypoint typechecks.
+    entrypoint typechecks. `vendor/google-calendar-shared/README.md` and
+    `vendor/google-docs-shared/README.md` are strad's, beside the copied `src/`
+    rather than in it. Each of them, `vendor/gmail-shared/README.md` and
+    `vendor/google-drive-shared/README.md` is the how-to for running that
+    server without strad.
 - `vendor/mcp-elicitation/src/` — **generated. Do not edit it here.** The same
   library is also in `servers/onepassword/elicitation`, both copies are built
   into one bundle image, and that copy is the source: `npm run elicitation:sync`
@@ -77,6 +105,15 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   own server, written here, following the same shape as its neighbours so this
   entrypoint and the collapsed bundle host can load all four identically. It has
   unit tests (`npm test`), which the others do not.
+- `vendor/google-drive-shared/` — strad's own Google Drive server, written here
+  in google-sheets' shape: one Google account per OAuth refresh token, read
+  out of an injected env. Three tiers: three read tools on `drive.readonly`,
+  two create-only tools on `drive.file` (`readwrite`), and five that rename,
+  move, copy, trash and restore an existing file on the full `drive` scope
+  (`full`). No tool rewrites a file's content. **Neither this image's `src/index.ts`
+  nor the collapsed bundle mounts it.** It runs only through
+  `src/standalone/google-drive.ts`, and its README is the how-to.
+  `vendor/google-drive-shared/test/` is its suite. See `HACKS.md` #124.
 - `scripts/smoke.mjs` — connects a real MCP client to all four paths and lists
   tools; the credential-free boot test used by CI and `npm run smoke`.
 
@@ -131,14 +168,22 @@ can drop everything that is not the OAuth app pair; see
 
 | Purpose | Variables |
 | --- | --- |
-| **Service account (domain-wide delegation)** — the ONLY mode; no OAuth path | `GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL`, `GCAL_SERVICE_ACCOUNT_PRIVATE_KEY`, `GCAL_IMPERSONATE_EMAIL` |
+| **Mode selector** | `GOOGLE_CALENDAR_AUTH_MODE` = `service_account` (default) \| `oauth`. Anything else fails every call, and the standalone entrypoint refuses to start |
+| **Service account (domain-wide delegation)** — `service_account` mode | `GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL`, `GCAL_SERVICE_ACCOUNT_PRIVATE_KEY`, `GCAL_IMPERSONATE_EMAIL` |
+| **OAuth2 (one account's refresh token)** — `oauth` mode | `GOOGLE_CALENDAR_OAUTH_CLIENT_ID`, `GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET`, `GOOGLE_CALENDAR_OAUTH_REFRESH_TOKEN` |
 | **Capability toggle** | `GOOGLE_CALENDAR_ENABLED_TOOLGROUPS` = `readonly` \| `readwrite` (default: all) |
+
+The mode is named, not inferred from which variables are set, unlike gmail and
+google-docs. A deployment with no `GOOGLE_CALENDAR_AUTH_MODE` keeps the service
+account, whatever OAuth variables are present. An `oauth` deployment missing a
+variable fails naming it, and never falls back to a service account. The OAuth
+mode is a strad delta on the vendored tree (`HACKS.md` #125).
 
 > The upstream stdio server reads a bare `ENABLED_TOOLGROUPS`. This bundle passes
 > `GOOGLE_CALENDAR_ENABLED_TOOLGROUPS` through explicitly so the toggle is
 > namespaced like the others and never collides with a sibling in the container.
 
-Scope: `https://www.googleapis.com/auth/calendar`.
+Scope, in either mode: `https://www.googleapis.com/auth/calendar`.
 
 ### google-docs (`/google-docs`)
 
@@ -183,6 +228,12 @@ token without the scope serves native spreadsheets exactly as before and fails a
 Office file with a message naming the scope. The scope is read-only but BROAD: it
 reaches every file in the account's Drive. No write tool ever uses it. See
 `HACKS.md` #102.
+
+**Optionally `https://www.googleapis.com/auth/drive`**, and only for
+`share_spreadsheet` — a Drive `permissions.create`, the one Drive write this
+server makes. It is full Drive read and write, so it belongs on an
+`-rw-external` slug; strad's gateway keeps the tool off `-ro` and `-rw` slugs by
+their `tools: allow:` lists. A token without it fails the share naming the scope.
 
 A refresh token is ONE Google account, which is why this server reads an injected
 env rather than `process.env`: the collapsed bundle mounts it once per strad slug,

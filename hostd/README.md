@@ -89,15 +89,25 @@ No config file is needed. Then, from the client:
 
 ### `--no-consent`
 
-Without the flag, `request_control` puts a dialog on the screen and waits five
+Without the flag, `request_control` puts a dialog on the screen and waits ten
 seconds, and an unanswered dialog is a denial. That is the right default for a
 server reached over a network. Run locally, the person who started the process is
 at the keyboard and their MCP client already asks about each tool call, so the
 flag drops the second dialog. The `serve` command refuses to run without the
 dialog; the flag exists for stdio only.
 
-The dialog uses `osascript` on macOS and `zenity` on Linux. With neither, every
-request is denied as `no_display`, so use `--no-consent` there.
+The dialog uses `osascript` on macOS and `zenity` on Linux. On macOS only a
+mouse click answers it: Return, Escape, Space and Tab do nothing, so typing
+that lands on it is swallowed rather than taken as a decision. `zenity` keeps
+its own keys (Return rejects). With neither, every request is denied as
+`no_display`, so use `--no-consent` there.
+
+The dialog has three buttons: **Allow**, **Reject**, and **Disallow and cool
+down**. Reject refuses one request and the next gets a fresh dialog, as does an
+unanswered one. A server is refused as `cooldown`, with no dialog, for
+`consent.rejectCooldownSeconds` only after you kill one of its grants (status
+page, `strad-hostd kill`, the banner) or pick Disallow and cool down. The kill
+switch starts none: it refuses everything until you turn it back on.
 
 ### The browser server
 
@@ -247,6 +257,10 @@ the other helper). `node build/cli.js messages` says whether it can read the
 database, and `--grant` opens the list. It opens the database read-only and
 refuses any statement that is not; it never sends, and reading marks nothing
 as read. `imessage_get_messages` pages by `after_rowid`, an exact cursor.
+Senders and chat participants come with the name your Contacts give them
+(`sender_name`, a participant's `name`), read from Contacts' own files under
+`~/Library/Application Support/AddressBook` with the same Full Disk Access, so
+there is no Contacts prompt; `null` when no contact matches.
 
 ### The shell server
 
@@ -263,20 +277,21 @@ except a command that moved itself into a new session (`setsid`).
 error. `src/config.ts` is the schema and documents each field. The ones that
 matter:
 
-| Field                                                      | Default             |                                                                    |
-| ---------------------------------------------------------- | ------------------- | ------------------------------------------------------------------ |
-| `consent.onTimeout`                                        | `"deny"`            | what an unanswered dialog means. `"allow"` makes it a veto window  |
-| `consent.windowSeconds`                                    | `5`                 | how long the dialog stays up (3 is the minimum)                    |
-| `capabilities.<server>.clientKeys`                         | `{}`                | named extra keys for that server; `strad-hostd key add` writes it  |
-| `consent.grantMinutes` / `maxGrantMinutes` / `idleMinutes` | `30` / `120` / `10` | grant lifetime                                                     |
-| `shell.defaultCwd`                                         | `$HOME`             |                                                                    |
-| `native.mode`                                              | `"auto"`            | `socket` (the LaunchAgent, never a child), `stdio`, or `auto`      |
-| `native.binary` / `native.socketPath`                      | see `src/config.ts` | where `strad-hostd-ax` is, or where its LaunchAgent listens        |
-| `capabilities.<server>.onTimeout`                          | unset               | that server's own `consent.onTimeout`; `add messages` sets `allow` |
-| `messages.binary` / `messages.socketPath`                  | see `src/config.ts` | where `strad-hostd-messages` is, or where its LaunchAgent listens  |
-| `messages.maxAttachmentBytes`                              | `10485760`          | largest attachment returned, after conversion                      |
-| `computer.maxScreenshotWidth`                              | `1280`              | widest image `take_screenshot` returns                             |
-| `port` / `controlPort`                                     | `7311` / `7312`     | daemon mode only, both on `127.0.0.1`                              |
+| Field                                                      | Default             |                                                                        |
+| ---------------------------------------------------------- | ------------------- | ---------------------------------------------------------------------- |
+| `consent.onTimeout`                                        | `"deny"`            | what an unanswered dialog means. `"allow"` makes it a veto window      |
+| `consent.windowSeconds`                                    | `10`                | how long the dialog stays up (3 is the minimum)                        |
+| `consent.rejectCooldownSeconds`                            | `60`                | how long a server is held off after a Kill or "Disallow and cool down" |
+| `capabilities.<server>.clientKeys`                         | `{}`                | named extra keys for that server; `strad-hostd key add` writes it      |
+| `consent.grantMinutes` / `maxGrantMinutes` / `idleMinutes` | `30` / `120` / `10` | grant lifetime                                                         |
+| `shell.defaultCwd`                                         | `$HOME`             |                                                                        |
+| `native.mode`                                              | `"auto"`            | `socket` (the LaunchAgent, never a child), `stdio`, or `auto`          |
+| `native.binary` / `native.socketPath`                      | see `src/config.ts` | where `strad-hostd-ax` is, or where its LaunchAgent listens            |
+| `capabilities.<server>.onTimeout`                          | unset               | that server's own `consent.onTimeout`; `add messages` sets `allow`     |
+| `messages.binary` / `messages.socketPath`                  | see `src/config.ts` | where `strad-hostd-messages` is, or where its LaunchAgent listens      |
+| `messages.maxAttachmentBytes`                              | `10485760`          | largest attachment returned, after conversion                          |
+| `computer.maxScreenshotWidth`                              | `1280`              | widest image `take_screenshot` returns                                 |
+| `port` / `controlPort`                                     | `7311` / `7312`     | daemon mode only, both on `127.0.0.1`                                  |
 
 `STRAD_HOSTD_HOME` moves the state directory.
 
@@ -301,12 +316,14 @@ Linux. The Swift helper itself is built and smoke-tested over stdio on a
 GitHub macOS runner (`.github/workflows/hostd-ax.yml`), which holds no
 permission grants: reading a real tree, a real screenshot and the banner under
 a real grant run only on a Mac whose owner has granted them. The other macOS
-halves (the `osascript` dialog, the LaunchAgents, the installer's `cloudflared`
+halves (the `osascript` dialog and its mouse-only buttons, the real LaunchAgents, the installer's `cloudflared`
 branch, the signing script) are not exercised by any suite.
 
 The Messages server is tested against `test/fake-messages.ts`, which runs the
 daemon's own SQL with `node:sqlite` against a fixture chat.db. The same
 workflow builds `strad-hostd-messages`, reads a fixture database made by
 `messages/fixture.swift` (with an `attributedBody` NSArchiver wrote), and runs
-the daemon's queries through it (`messages/smoke.mjs`). Reading the real
-database under a real Full Disk Access grant runs only on the owner's Mac.
+the daemon's queries through it (`messages/smoke.mjs`), including its
+Contacts read against a fixture AddressBook directory. Reading the real
+database and the real Contacts under a real Full Disk Access grant runs only on
+the owner's Mac.

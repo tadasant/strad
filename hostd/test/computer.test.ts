@@ -193,7 +193,7 @@ describe("the headless computer-use server, through a real MCP client", () => {
     await client.close();
   });
 
-  it("shows NO dialog when the helper is not trusted: the owner cannot fix that in five seconds", async () => {
+  it("shows NO dialog when the helper is not trusted: the owner cannot fix that in ten seconds", async () => {
     fake.state.accessibility = false;
     const shown = prompter.seen.length;
     const client = await connect(
@@ -465,6 +465,14 @@ describe("the banner", () => {
     fake.emit({ event: "kill", grant_id: shell.grantId });
     await new Promise((r) => setTimeout(r, 30));
     expect(fake.state.banner?.grants.map((g) => g.id)).toEqual([fg.grantId]);
+    // A banner Kill is a kill: that server cools down.
+    expect(
+      await daemon.core.deps.gate.request({
+        capability: "shell",
+        server: "shell-test-mbp",
+        purpose: "Ask again after the banner kill.",
+      }),
+    ).toMatchObject({ ok: false, code: "cooldown" });
     // And Disable everything.
     fake.emit({ event: "disable" });
     await new Promise((r) => setTimeout(r, 30));

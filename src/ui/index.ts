@@ -29,6 +29,7 @@ import {
   type Capabilities,
   type ParameterListing,
   type ParameterMeta,
+  type ParameterResolver,
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
 import { DeadlineError } from "../util/deadline.ts";
@@ -210,6 +211,12 @@ export interface ConsoleUiOptions {
    * `resolverFromEnv(env)`; explicit `null` disables the diagnosis.
    */
   diagnosticStore?: Pick<ParameterStore, "list" | "resolveDetailed"> | null;
+  /**
+   * The gateway's resolver, for the one read the console's own credential may
+   * not make: the token roster `/tokens` rewrites. See src/auth/token-admin.ts.
+   * Absent under the `env` provider, where `/tokens` offers no forms anyway.
+   */
+  resolver?: Pick<ParameterResolver, "renderPath" | "projectId"> | null;
   /** Session sealers, so the gate can verify a Google login (src/auth/session.ts). */
   sessions?: ConsoleSessions | null;
   /** Whether Google sign-in can complete end to end. See resolveConsoleAuth(). */
@@ -344,6 +351,7 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     secrets: opts.secrets,
     env: opts.env,
     secretProvider: opts.secretProvider,
+    reader: opts.resolver,
     parametersStore: opts.parametersStore,
   });
 
@@ -781,6 +789,16 @@ async function describeClientGrant(
 }
 
 /**
+ * A value as the console's textareas submit it, as the store should hold it.
+ * See the comment where handleSecretAction reads `body.value`.
+ */
+export function formValue(raw: string): string {
+  const lf = raw.replace(/\r\n?/g, "\n");
+  const body = lf.replace(/\n+$/, "");
+  return body.includes("\n") ? lf : body;
+}
+
+/**
  * Write ONE new parameter — the single form and every line of a bulk add go
  * through here, so the two cannot drift on what a create does.
  *
@@ -1087,7 +1105,17 @@ async function handleSecretAction(
 
   // A value is read into a local and never leaves this function except toward
   // the parameter store, or into the one-shot reveal panel.
-  const value = typeof body.value === "string" ? body.value : "";
+  //
+  // The value fields are textareas, so a pasted PEM keeps its line breaks — and
+  // a browser submits every line break in a textarea as CRLF. A key stored with
+  // `\r\n` is one some parsers reject, so a line break is stored as `\n`,
+  // whichever form it arrived in: the same rule `parseBulkCsv` applies to a
+  // quoted value. A ONE-LINE value loses a trailing line break, as it did in
+  // the password input this field replaced: Enter in a textarea adds one, a
+  // terminal copy often ends in one, and a token stored as `tok\n` fails
+  // upstream with nothing on the page to show why. A multi-line value is kept
+  // exactly — a PEM's final newline included. Nothing else is trimmed.
+  const value = typeof body.value === "string" ? formValue(body.value) : "";
   const note = typeof body.note === "string" ? body.note.trim() : "";
   // A parameter is a SECRET one when the create form's checkbox is ticked.
   const secret = body.secret === "on" || body.secret === "true";

@@ -70,6 +70,7 @@ function foundationZip(): Uint8Array {
     "FoodData_Central_foundation/food.csv": csv(FOOD_HEADER, [
       [1001, "foundation_food", "Apples, raw, with skin", 9, "2024-04-18"],
       [1002, "foundation_food", "Oil, olive, extra virgin", 4, "2023-10-26"],
+      [1004, "foundation_food", "Cheese, ricotta, whole milk", 1, "2019-04-01"],
       // A lab sample: excluded. Its description has a doubled quote and a newline.
       [1003, "sub_sample_food", 'Apples, "Gala" sample\n', 9, "8/16/2023"],
     ]),
@@ -79,12 +80,17 @@ function foundationZip(): Uint8Array {
       // No energy id at all, fat only as NLEA 1085: Atwater from the macros.
       ...fn(1002, [[1003, 0], [1005, 0], [1085, 100], [1258, 14]]),
       ...fn(1003, [[1008, 999]]),
+      ...fn(1004, [[1008, 158], [1003, 7.81], [1005, 6.86], [1004, 11.0]]),
     ]),
     "FoodData_Central_foundation/food_portion.csv": csv(PORTION_HEADER, [
       [1, 1001, 1, 1, 1043, "", "", 200, "", "", ""],
       [2, 1002, 1, 1, 1001, "", "", 13.5, "", "", ""],
       // Rows with no food and no unit exist in the real file.
       [3, "", 1, 1, "", "", "", 50, "", "", ""],
+      // USDA's own numbers: a quarter cup written "0.2", beside 1 cup = 258 g.
+      [4, 1004, 1, "0.2", 1000, "", "", 64.6, "", "", ""],
+      [5, 1004, 3, "0.5", 1000, "", "", 129, "", "", ""],
+      [6, 1004, 3, "1.0", 1000, "", "", 258, "", "", ""],
     ]),
     "FoodData_Central_foundation/measure_unit.csv": UNITS_CSV,
     "FoodData_Central_foundation/nutrient.csv": NUTRIENT_CSV,
@@ -106,16 +112,19 @@ function srZip(): Uint8Array {
       [2001, "sr_legacy_food", "Rice, white, long-grain, regular, enriched, cooked", 20, "2019-04-01"],
       [2002, "sr_legacy_food", "Chicken, broilers or fryers, breast, meat only, cooked, roasted", 5, "2019-04-01"],
       [2003, "sr_legacy_food", "Yogurt, Greek, plain, nonfat", 1, "2019-04-01"],
+      [2004, "sr_legacy_food", "Butter, without salt", 1, "2019-04-01"],
     ]),
     "sr/food_nutrient.csv": csv(FN_HEADER, [
       ...fn(2001, [[1008, 130], [1003, 2.69], [1005, 28.17], [1004, 0.28], [1079, 0.4], [2000, 0.05], [1258, 0.077], [1093, 1]]),
       ...fn(2002, [[1008, 165], [1003, 31.02], [1005, 0], [1004, 3.57], [1258, 1.01], [1093, 74]]),
       ...fn(2003, [[1008, 59], [1003, 10.19], [1005, 3.6], [1004, 0.39], [2000, 3.24], [1093, 36]]),
+      ...fn(2004, [[1008, 717], [1003, 0.85], [1005, 0.06], [1004, 81.11], [1258, 51.37], [1093, 11]]),
     ]),
     "sr/food_portion.csv": csv(PORTION_HEADER, [
       [10, 2001, 1, 1, 9999, "", "cup", 158, "", "", ""],
       [11, 2002, 1, 0.5, 9999, "", "breast, bone and skin removed", 86, "", "", ""],
       [12, 2003, 1, 1, 9999, "", "container (6 oz)", 170, "", "", ""],
+      [13, 2004, 1, 1, 9999, "", "tbsp", 14.2, "", "", ""],
     ]),
     "sr/measure_unit.csv": UNITS_CSV,
     "sr/nutrient.csv": NUTRIENT_CSV,
@@ -132,6 +141,8 @@ function fnddsZip(): Uint8Array {
       [3003, "survey_fndds_food", "Big Mac (McDonalds)", 3702, "2022-10-28"],
       [3004, "survey_fndds_food", "Rice, white, cooked, no added fat", 4802, "2022-10-28"],
       [3005, "survey_fndds_food", "Burrito, chicken, cheese", 3502, "2022-10-28"],
+      [3006, "survey_fndds_food", "Pretzels, soft, ready-to-eat, unsalted, buttered", 5402, "2022-10-28"],
+      [3007, "survey_fndds_food", "Pretzels, soft, ready-to-eat, unsalted, no butter", 5402, "2022-10-28"],
     ]),
     "survey/food_nutrient.csv": csv(FN_HEADER, [
       ...fn(3001, [[208, 154], [203, 7.2], [205, 21.4], [204, 4.6], [291, 1.4], [269, 4.3], [606, 0.8], [307, 400]]),
@@ -139,6 +150,8 @@ function fnddsZip(): Uint8Array {
       ...fn(3003, [[208, 257], [203, 11.8], [205, 20.1], [204, 14.6], [291, 1.6], [269, 3.9], [606, 4.2], [307, 455]]),
       ...fn(3004, [[208, 130], [203, 2.7], [205, 28.6], [204, 0.3], [291, 0.4], [269, 0.1], [606, 0.1], [307, 1]]),
       ...fn(3005, [[208, 244], [203, 13.1], [205, 24.1], [204, 10.3], [291, 2.1], [269, 1.4], [606, 4.4], [307, 545]]),
+      ...fn(3006, [[208, 350], [203, 8.2], [205, 66], [204, 5.6], [307, 250]]),
+      ...fn(3007, [[208, 338], [203, 8.2], [205, 69], [204, 3.1], [307, 240]]),
     ]),
     "survey/food_portion.csv": csv(PORTION_HEADER, [
       [20, 3001, 1, "", 9999, "1 cup", "10205", 200, "", "", ""],
@@ -148,6 +161,7 @@ function fnddsZip(): Uint8Array {
       [24, 3003, 1, "", 9999, "Quantity not specified", "90000", 205, "", "", ""],
       [25, 3004, 1, "", 9999, "1 cup", "10205", 158, "", "", ""],
       [26, 3005, 1, "", 9999, "Quantity not specified", "90000", 220, "", "", ""],
+      [27, 3006, 1, "", 9999, "1 cup, nuggets", "10205", 147, "", "", ""],
     ]),
     "survey/measure_unit.csv": UNITS_CSV,
     "survey/nutrient.csv": NUTRIENT_CSV,
@@ -158,6 +172,7 @@ function fnddsZip(): Uint8Array {
         [3702, "Burgers"],
         [4802, "Rice"],
         [3502, "Burritos and tacos"],
+        [5402, "Pretzels/snack mix"],
       ],
     ),
   });
@@ -181,6 +196,7 @@ export const MENUSTAT_CSV = [
   `181,2018,McDonald's,"French Fries, Large","French Fries, Large, Sides",Appetizers & Sides,150,g,,510,24,3.5,400,66,7,0,6`,
   `182,2018,McDonald's,"French Fries, Small","French Fries, Small, Sides",Appetizers & Sides,71,g,,230,11,1.5,180,29,2,0,3`,
   `183,2017,McDonald's,McRib,"McRib, Burgers",Burgers,,,,480,22,8,840,44,22,11,3`,
+  `184,2018,McDonald's,Cheeseburger,"Cheeseburger, Burgers",Burgers,,,,300,13,6,720,33,15,7,2`,
   `300,2018,Chick-Fil-A,Chick Fil a Chicken Sandwich,"Chicken Sandwich, Entrees",Sandwiches,183,g,,440,19,4,1350,41,28,6,1`,
   `400,2018,Starbucks,"Caffe Latte w/ 2% Milk, Grande","Caffe Latte, Espresso",Beverages,16,fl oz,,190,7,4.5,170,19,13,17,0`,
   `500,2018,Chipotle,Chicken,"Chicken, Proteins",Entrees,4,oz,,180,7,3,310,0,32,0,0`,

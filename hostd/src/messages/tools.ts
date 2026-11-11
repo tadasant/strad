@@ -5,6 +5,7 @@ import type { Config } from "../config.js";
 import { defineTool, json, type Capability } from "../mcp/tool.js";
 import type { HelperClient } from "../native/client.js";
 import { ChatDb, type QueryResult } from "./chatdb.js";
+import { ContactsCache, type ContactsSources } from "./contacts.js";
 
 /** What `strad-hostd-messages` answers to `hello`. */
 export interface MessagesHello {
@@ -16,6 +17,8 @@ export interface MessagesHello {
     state: "readable" | "denied" | "missing" | "error";
     error?: string;
   };
+  /** Whether the Contacts databases read, and how many there are; never a name. */
+  contacts?: { state: string; sources: number };
   full_disk_access: boolean;
 }
 
@@ -35,6 +38,10 @@ const DEFAULT_CHATS = 30;
 const MAX_CHATS = 200;
 /** The helper's own ceiling on one query's rows. */
 const MAX_QUERY_ROWS = 5000;
+/** How long one read of the owner's Contacts serves names. */
+const CONTACTS_TTL_MS = 10 * 60_000;
+/** How soon a Contacts read that failed is tried again. */
+const CONTACTS_RETRY_MS = 60_000;
 
 /** Image types a model reads as an image. Anything else comes back as a file. */
 const IMAGE_TYPES = new Set([
@@ -72,11 +79,9 @@ export function messagesCapability(
   config: Config,
   helper: HelperClient,
 ): Capability {
-  const db = new ChatDb(async (sql, params, decode) => {
+  const query = async (args: Record<string, unknown>) => {
     const result = await helper.call<QueryResult>("query", {
-      sql,
-      params,
-      ...(decode ? { decode } : {}),
+      ...args,
       max_rows: MAX_QUERY_ROWS,
     });
     // Every query here is bounded well under this; one that is not would
@@ -86,6 +91,16 @@ export function messagesCapability(
         `a query returned more than ${MAX_QUERY_ROWS} rows; ask for fewer`,
       );
     return result;
+  };
+  const db = new ChatDb((sql, params, decode) =>
+    query({ sql, params, ...(decode ? { decode } : {}) }),
+  );
+  const contacts = new ContactsCache({
+    sources: () => helper.call<ContactsSources>("contacts_sources", {}),
+    query: (source, sql, params) =>
+      query({ contacts_source: source, sql, params }),
+    ttlMs: CONTACTS_TTL_MS,
+    retryMs: CONTACTS_RETRY_MS,
   });
 
   const listChats = defineTool({
@@ -93,11 +108,11 @@ export function messagesCapability(
     description: `List the owner's Messages conversations (iMessage, SMS and RCS), the most recently active first. Use it to find a chat_id for imessage_get_messages, or to see who has written lately.
 
 **Returns:**
-{"chats":[{"chat_id":"iMessage;+;chat123456789012345678","name":"Wedding planning","identifier":"chat123456789012345678","service":"iMessage","is_group":true,"participants":["+15551234567","grace@example.com"],"last_rowid":48211,"last_message_at":"2026-10-08T19:02:11.000Z"}]}
-"name" is the group's name if it was given one, else null. Participants are phone numbers and email addresses: the Messages database holds no contact names. "last_rowid" is the ROWID of the chat's newest message, comparable with imessage_get_messages' cursor.
+{"chats":[{"chat_id":"iMessage;+;chat123456789012345678","name":"Wedding planning","identifier":"chat123456789012345678","service":"iMessage","is_group":true,"participants":[{"handle":"+15551234567","name":"Alex Example"},{"handle":"ada@example.com","name":null}],"last_rowid":48211,"last_message_at":"2026-10-08T19:02:11.000Z"}]}
+"name" is the group's name if it was given one, else null. Each participant's "handle" is their phone number or email as Messages holds it, and "name" is the name the owner's Contacts on this Mac give that number or email (matched on the number in E.164, or the email lowercased), or null when no contact matches. A "contacts_warning" field appears when Contacts could not be read: names are then null if they have never been read, or from the last successful read (at most ten minutes old when it succeeded) if a re-read failed; the handles are unaffected. "last_rowid" is the ROWID of the chat's newest message, comparable with imessage_get_messages' cursor.
 
 **Use cases:**
-- Find the chat_id of a person or a group by name, number or email (search)
+- Find the chat_id of a group by its name, or of a person by number or email (search; it does not search contact names — list without it and read the participants' names instead)
 - See which conversations have new messages since a ROWID you stored
 - Orient before reading: who has written recently, and in which chats
 
@@ -129,13 +144,23 @@ Reads only what is on this Mac. With Messages in iCloud, a Mac that was asleep c
     },
     summarize: (a) =>
       `imessage_list_chats${a.search ? ` search=${JSON.stringify(a.search)}` : ""}`,
-    handler: async (a) =>
-      json({
-        chats: await db.chats({
-          limit: a.limit ?? DEFAULT_CHATS,
-          search: a.search,
-        }),
-      }),
+    handler: async (a) => {
+      const chats = await db.chats({
+        limit: a.limit ?? DEFAULT_CHATS,
+        search: a.search,
+      });
+      // Contacts are read only for a page with someone in it to name.
+      const { index, warning } = chats.some((c) => c.participants.length)
+        ? await contacts.get()
+        : { index: undefined, warning: undefined };
+      for (const c of chats)
+        for (const p of c.participants)
+          p.name = index?.lookup(p.handle) ?? null;
+      return json({
+        chats,
+        ...(warning ? { contacts_warning: warning } : {}),
+      });
+    },
   });
 
   const getMessages = defineTool({
@@ -147,11 +172,11 @@ Reads only what is on this Mac. With Messages in iCloud, a Mac that was asleep c
 **Without a cursor, and paging back.** With no after_rowid you get the newest \`limit\` messages, earliest first, with next_after_rowid to sweep forward from — and here has_more means OLDER messages exist. Pass next_before_rowid as before_rowid to read further back: you get the \`limit\` messages just before it, has_more again meaning older ones exist. after_rowid and before_rowid cannot be combined.
 
 **Returns:**
-{"messages":[{"rowid":48211,"guid":"5D0C…","chat_id":"iMessage;+;chat123456789012345678","chat_name":"Wedding planning","sent_at":"2026-10-08T19:02:11.000Z","from_me":false,"sender":"+15551234567","service":"iMessage","kind":"message","text":"Can we move the tasting to Friday?","attachments":[{"attachment_id":9120,"file_name":"IMG_0412.HEIC","mime_type":"image/heic","size_bytes":1840211}]}],"has_more":false,"next_after_rowid":48211,"next_before_rowid":48211}
+{"messages":[{"rowid":48211,"guid":"5D0C…","chat_id":"iMessage;+;chat123456789012345678","chat_name":"Wedding planning","sent_at":"2026-10-08T19:02:11.000Z","from_me":false,"sender":"+15551234567","sender_name":"Alex Example","service":"iMessage","kind":"message","text":"Can we move the tasting to Friday?","attachments":[{"attachment_id":9120,"file_name":"IMG_0412.HEIC","mime_type":"image/heic","size_bytes":1840211}]}],"has_more":false,"next_after_rowid":48211,"next_before_rowid":48211}
 next_before_rowid is present when you read without a cursor or with before_rowid.
 
 - kind: "message" (text, attachments, or both), "reaction" (a tapback: "reaction":{"type":"love"|"like"|"dislike"|"laugh"|"emphasize"|"question"|"emoji"|"sticker"|"other","removed":false,"target_guid":"<guid of the message reacted to>"}), or "system" (a group renamed, someone added or left).
-- sender is the other party's phone number or email; null when from_me is true. There are no contact names.
+- sender is the other party's phone number or email; null when from_me is true. sender_name is the name the owner's Contacts on this Mac give that sender (matched on the number in E.164, or the email lowercased), or null when no contact matches or from_me is true. A "contacts_warning" field appears when Contacts could not be read: names are then null if they have never been read, or from the last successful read (at most ten minutes old when it succeeded) if a re-read failed; sender is unaffected.
 - reply_to_guid is set on a reply in a thread; edited and unsent appear when true (as of this read).
 - chat_id is null only for a message Messages has not joined to a chat.
 - text is null for a message that is only an attachment. Fetch one with imessage_get_attachment and its attachment_id.
@@ -214,6 +239,10 @@ This Mac's copy is only as fresh as the Mac: asleep, it receives nothing until i
         before: a.before_rowid,
         limit: a.limit ?? DEFAULT_MESSAGES,
       });
+      const { index, warning } = messages.some((m) => m.sender)
+        ? await contacts.get()
+        : { index: undefined, warning: undefined };
+      for (const m of messages) m.sender_name = index?.lookup(m.sender) ?? null;
       const newestRow = messages.at(-1)?.rowid;
       const forward = a.after_rowid !== undefined;
       const newest =
@@ -222,6 +251,7 @@ This Mac's copy is only as fresh as the Mac: asleep, it receives nothing until i
           : undefined;
       return json({
         messages,
+        ...(warning ? { contacts_warning: warning } : {}),
         has_more: hasMore,
         next_after_rowid: forward
           ? (newestRow ?? a.after_rowid!)
@@ -337,6 +367,7 @@ This Mac's copy is only as fresh as the Mac: asleep, it receives nothing until i
             running: true,
             full_disk_access: h.full_disk_access,
             chat_db: h.chat_db.state,
+            ...(h.contacts ? { contacts: h.contacts.state } : {}),
           },
         };
       } catch {

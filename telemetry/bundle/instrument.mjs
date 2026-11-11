@@ -41,6 +41,7 @@ import {
   PerformanceObserver,
 } from "node:perf_hooks";
 import { randomUUID } from "node:crypto";
+import { getHeapStatistics } from "node:v8";
 
 import {
   diag,
@@ -189,6 +190,14 @@ function startRuntimeMetrics() {
     "strad.process.memory.heap.total",
     { description: "V8 heap allocated", unit: "By" },
   );
+  // The ceiling, not the allocation. heap.total grows toward it lazily, so
+  // "used is close to total" reads the same whether the process has a gigabyte
+  // of headroom or none. tadasant/strad#458 was the second case: a heap pinned
+  // at a limit nobody could see, garbage-collecting back to back for an hour.
+  const heapLimit = meter.createObservableGauge(
+    "strad.process.memory.heap.limit",
+    { description: "V8 heap_size_limit: the ceiling V8 enforces", unit: "By" },
+  );
   const external = meter.createObservableGauge(
     "strad.process.memory.external",
     {
@@ -266,6 +275,7 @@ function startRuntimeMetrics() {
     rss,
     heapUsed,
     heapTotal,
+    heapLimit,
     external,
     containerLimit,
     containerUsage,
@@ -286,6 +296,7 @@ function startRuntimeMetrics() {
     o.observe(rss, mem.rss);
     o.observe(heapUsed, mem.heapUsed);
     o.observe(heapTotal, mem.heapTotal);
+    o.observe(heapLimit, getHeapStatistics().heap_size_limit);
     o.observe(external, mem.external);
 
     const usage = readCgroupMemoryUsage();

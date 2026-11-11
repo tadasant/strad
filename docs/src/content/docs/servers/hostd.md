@@ -71,6 +71,59 @@ Re-run it to upgrade. It keeps the config, the keys and the tunnel, and adds any
 server the config predates. `./hostd/install/uninstall.sh` removes it, and
 `--purge` also deletes `~/.strad-hostd`.
 
+A re-run is built to finish with nobody at the Mac, over the shell the daemon
+serves, and to leave the machine reachable when it does not:
+
+| The service is…              | The installer…                                                                                                                                                                                                              |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| loaded, plist unchanged      | runs `launchctl kickstart -k`. Nothing is unloaded, so launchd restarts it even if the installer dies on that line. This is the ordinary upgrade.                                                                           |
+| not loaded                   | runs `launchctl bootstrap`, up to six times over 31 seconds.                                                                                                                                                                |
+| loaded, plist changed        | hands it to a one-shot LaunchAgent, `<label>.reload`, which unloads it, waits up to 30 seconds for it to be gone, and loads it again. launchd re-runs the one-shot every 30 seconds until that works, with or without the installer. |
+
+On an upgrade the one-shot is the only thing that unloads a service. It is not a
+descendant of the daemon. Before it is armed the new plist has to pass `plutil
+-lint` and the service must not be disabled, and its own bootstrap is a canary: if
+launchd refuses it, the service stays loaded, running what it last started. That
+is the old process, with the new build on disk, so the installer reports it. If
+launchd refuses the new plist after the unload, the old plist goes back and the
+service is loaded on that. `~/Library/Logs/<label>.reload.log` is its log.
+
+A bootstrap still refused after its six tries on a service that was not loaded
+arms the same one-shot, so launchd keeps trying with no installer alive. A re-run
+stops whatever one-shot it finds before it starts on that service.
+
+A helper that fails does not stop the daemon step. Each failure is printed where
+it happens, again before the daemon restarts (that restart can end the shell the
+installer came from), and again at the end, with a non-zero exit. A refused
+`launchctl` call prints its exit code, what `launchctl error` says about it, the
+process's launchd manager, the plist's mode and lint, the service's disabled
+state and `launchctl print` for the service.
+
+A build that cannot load stops the installer before it replaces the installed
+one. After restarting the daemon the installer waits up to 30 seconds for a new
+pid answering `/healthz` on the MCP port. If none does it rolls back to the
+previous build, kept at `~/.strad-hostd/app.previous`, leaves the failed one at
+`app.failed`, and exits non-zero. Only a build that has passed this check can
+become `app.previous`, so a run that never confirmed its build cannot push out the
+last one that worked. The check needs the installer alive: one killed by the
+restart leaves the daemon loaded but unchecked.
+
+One install runs at a time: a second exits with an error while the first is alive.
+
+An unattended installer should still run in its own session, logging to a file,
+so that it outlives the grant that started it and its exit code reaches the log.
+macOS has no `setsid` binary, so use perl:
+
+```bash
+( perl -MPOSIX -e 'POSIX::setsid() != -1 or die "setsid: $!"; exec @ARGV' \
+    /bin/bash -lc './hostd/install/install.sh; echo "EXIT $?"' \
+    > ~/.strad-hostd/install.log 2>&1 < /dev/null & ) ; sleep 3
+```
+
+Run from the daemon's shell without that, ending the grant kills it mid-run. The
+daemon's shutdown kills the process group of each command, and launchd kills the
+daemon's own group; a new session is in neither.
+
 :::caution[These steps happen on the machine, by hand]
 strad's rule is that operating a feature never needs a shell on a box. This one
 cannot meet it: the box is a personal laptop, and installing software on it,
@@ -113,7 +166,7 @@ strad-hostd helper
 The second line reports what the helper holds. Until Accessibility is granted,
 `request_control` on either computer-use server refuses with
 `helper_unavailable` and shows no dialog: nothing the person at the screen can
-click in five seconds would fix it.
+click in ten seconds would fix it.
 
 macOS 15 asks again, roughly monthly, whether the helper may keep recording the
 screen. Every capture that does not go through the system's own picker gets
@@ -237,9 +290,17 @@ Keep these slugs `admin`-only unless you have read
 Every server starts the same way:
 
 1. `request_control` with a `purpose` of at most two sentences. A dialog appears
-   on the machine and the call blocks for up to five seconds.
+   on the machine and the call blocks for up to ten seconds. Only a mouse
+   click on **Allow**, **Reject** or **Disallow and cool down** answers it: no
+   key does, so someone typing in another app when it appears cannot decide it
+   by accident.
 2. Pass the returned `grant_id` to every other tool.
 3. `end_control` when done.
+
+A plain **Reject** refuses that one request and nothing more: the next
+`request_control` gets a fresh dialog. A server is held off, with no dialog, for
+`consent.rejectCooldownSeconds` (60) only when you kill one of its grants or
+answer **Disallow and cool down**; it is refused as `cooldown` until then.
 
 An unanswered dialog is a **denial** by default. To let requests through when
 nobody objects, set `"consent": { "onTimeout": "allow" }` in
@@ -264,8 +325,16 @@ from there. A cursor past every rowid the database has ever handed out comes
 back with a `warning`, because it means the database was rebuilt and its
 numbering restarted.
 
-Senders are phone numbers and email addresses: the Messages database holds no
-contact names. Attachments come back by `attachment_id`; HEIC, HEIF and TIFF
+Senders are phone numbers and email addresses, and each comes with the name
+your Contacts on the Mac give it: `sender_name` on a message, `name` on each
+of a chat's `participants`. A number matches on E.164, with the Mac's region
+supplying a country code the contact or the handle lacks; an email matches
+lowercased. No match leaves the name `null` and the handle as it was. The
+names come from Contacts' own files, read under the same Full Disk Access
+grant, so there is no second prompt; the book is re-read every ten minutes,
+and when it cannot be read the result carries a `contacts_warning`: names are
+`null` if the book has never been read, or the last read's if a re-read
+failed. A short code (fewer than seven digits) is never named. Attachments come back by `attachment_id`; HEIC, HEIF and TIFF
 photos, and any JPEG, PNG or WebP over 3.5 MB, are converted to a JPEG at most
 2048 pixels on a side on the Mac, and anything else comes back as a file with
 its MIME type. An attachment Messages in iCloud has not downloaded to this
@@ -327,6 +396,7 @@ so, its banner is red, and your first key or click ends the grant.
 | --- | --- |
 | What is in control right now | `http://127.0.0.1:7312`, or `strad-hostd status` |
 | Stop one grant and what it started | the grant's **Kill** button, or `strad-hostd kill <grant_id>` |
+| Keep a server from asking again for a minute | **Kill** its grant (any of the kill routes above, or the banner's), or answer its dialog with **Disallow and cool down** |
 | Turn everything off | **Disable everything**, `strad-hostd disable`, or `touch ~/.strad-hostd/DISABLED` |
 | Turn it back on | **Turn back on**, or `strad-hostd enable` |
 | Whether the Chrome extension is paired | the status page's header, `strad-hostd status`, or `get_control_status` |

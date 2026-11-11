@@ -1,12 +1,21 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { writeFile, mkdir } from 'fs/promises';
-import { join, basename, extname } from 'path';
 import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
 import type { EmailPart } from '../types.js';
 
-/** Maximum total size (in bytes) for inline attachments (25 MB) */
-const MAX_INLINE_SIZE = 25 * 1024 * 1024;
+/**
+ * Maximum total size (in bytes) returned in one call, in either mode (25 MB).
+ * Both modes carry the bytes in the result, which passes through the bundle's
+ * memory and core's. Gmail accepts received messages up to 50 MB, so a single
+ * attachment can exceed it.
+ */
+const MAX_TOTAL_SIZE = 25 * 1024 * 1024;
+
+/**
+ * A text attachment larger than this goes back as a blob, which the client
+ * saves to a file, rather than as text that lands in the model's context.
+ */
+const MAX_TEXT_RESOURCE_SIZE = 100 * 1024;
 
 const PARAM_DESCRIPTIONS = {
   email_id:
@@ -16,8 +25,8 @@ const PARAM_DESCRIPTIONS = {
     'Optional filename to download a specific attachment. ' +
     'If omitted, all attachments on the email are downloaded.',
   inline:
-    'When true, return attachment content directly in the response (text-based files as text, binary as base64). ' +
-    'When false (default), save attachments to /tmp/ and return file paths.',
+    'When true, return attachment content inside the text of the response (text-based files as text, binary as a base64 code block). ' +
+    'When false (default), return each attachment as an MCP embedded resource, which clients such as Claude Code save to a local file.',
 } as const;
 
 export const DownloadEmailAttachmentsSchema = z.object({
@@ -28,18 +37,20 @@ export const DownloadEmailAttachmentsSchema = z.object({
 
 const TOOL_DESCRIPTION = `Download attachment content from a specific email.
 
-By default, saves all attachments to /tmp/ and returns the file paths. Use the inline parameter to return content directly in the response instead.
+The bytes come back in the response itself. Nothing is written to the disk of the machine this server runs on, which is not the caller's machine.
 
 **Parameters:**
 - email_id: The unique identifier of the email (required)
 - filename: Download only the attachment matching this filename (optional)
-- inline: If true, return content in the response instead of saving to files (optional, default: false)
+- inline: If true, return content inside the response text instead of as embedded resources (optional, default: false)
 
 **Default behavior (inline=false):**
-Saves attachments as files to /tmp/ and returns the full file paths. Best for binary files or large attachments where you need to process the file afterward.
+Returns a summary followed by one MCP embedded resource per attachment: binary files (PDF, images, etc.) as a base64 blob with their MIME type, text-based files (text/*, JSON, XML) as text when they are valid UTF-8 and at most 100 KB, otherwise as a blob. MCP clients that handle binary resources, Claude Code among them, save each blob to a local file and report its path. Best for PDFs and other binary files.
 
 **Inline behavior (inline=true):**
-Returns content directly. Text-based attachments (text/*, JSON, XML) are decoded to text. Binary attachments (PDF, images, etc.) are returned as base64. Total size is capped at 25 MB.
+Returns everything as one text block. Text-based attachments are decoded to text; binary attachments appear as a base64 code block. Use it only with a client that ignores embedded resources: a 1 MB PDF is about 1.4 MB of base64 text.
+
+Total size is capped at 25 MB per call in both modes. Use filename to fetch attachments one at a time; a single attachment over 25 MB cannot be fetched.
 
 **Use cases:**
 - Download invoices, receipts, or documents attached to emails
@@ -50,6 +61,8 @@ Returns content directly. Text-based attachments (text/*, JSON, XML) are decoded
 **Note:** Use get_email_conversation first to see attachment metadata (filenames, sizes, types) before downloading.`;
 
 interface AttachmentInfo {
+  /** Position among the email's attachments, 0-based. */
+  index: number;
   filename: string;
   mimeType: string;
   size: number;
@@ -59,10 +72,10 @@ interface AttachmentInfo {
 /**
  * Recursively extracts attachment info (including attachmentId) from email parts
  */
-function getAttachmentInfos(parts: EmailPart[] | undefined): AttachmentInfo[] {
+function getAttachmentInfos(parts: EmailPart[] | undefined): Omit<AttachmentInfo, 'index'>[] {
   if (!parts) return [];
 
-  const attachments: AttachmentInfo[] = [];
+  const attachments: Omit<AttachmentInfo, 'index'>[] = [];
 
   for (const part of parts) {
     if (part.filename && part.body?.attachmentId) {
@@ -82,10 +95,11 @@ function getAttachmentInfos(parts: EmailPart[] | undefined): AttachmentInfo[] {
 }
 
 /**
- * Converts base64url to standard base64
+ * Converts Gmail's base64url (padded or not) to canonical, padded standard
+ * base64, the encoding an MCP resource `blob` is defined in.
  */
 function base64UrlToBase64(data: string): string {
-  return data.replace(/-/g, '+').replace(/_/g, '/');
+  return Buffer.from(data, 'base64url').toString('base64');
 }
 
 /**
@@ -137,73 +151,63 @@ function buildInlineResponse(results: DownloadedAttachment[]) {
 }
 
 /**
- * Sanitizes a filename to prevent path traversal attacks.
- * Strips directory components and falls back to 'attachment' if empty.
+ * The URI an attachment's embedded resource carries. It names the attachment;
+ * it is not fetchable. `index` is the attachment's position on the email, so
+ * two attachments with one filename get two URIs. Each segment is
+ * percent-encoded so a name with `/`, `#` or spaces stays one path segment.
  */
-function sanitizeFilename(filename: string): string {
-  return basename(filename) || 'attachment';
+export function attachmentUri(emailId: string, index: number, filename: string): string {
+  return `gmail-attachment://${encodeURIComponent(emailId)}/${index}/${encodeURIComponent(filename)}`;
 }
 
 /**
- * Returns a unique filename, appending (1), (2), etc. if the name already exists.
+ * Decodes bytes as UTF-8, or returns null if they are not valid UTF-8 (a
+ * Latin-1 CSV, a UTF-16 text file), so the caller can keep the exact bytes.
  */
-function deduplicateFilename(name: string, usedNames: Set<string>): string {
-  if (!usedNames.has(name)) {
-    usedNames.add(name);
-    return name;
+function decodeUtf8Strict(bytes: Buffer): string | null {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return null;
   }
-  const ext = extname(name);
-  const base = name.slice(0, name.length - ext.length);
-  let counter = 1;
-  let candidate: string;
-  do {
-    candidate = `${base} (${counter})${ext}`;
-    counter++;
-  } while (usedNames.has(candidate));
-  usedNames.add(candidate);
-  return candidate;
 }
 
 /**
- * Saves attachments to /tmp/ and returns file paths
+ * Builds the default response: a text summary, then one embedded resource per
+ * attachment. A remote caller shares no filesystem with this server, so the
+ * bytes travel in the result and the client decides where they land.
  */
-async function buildFileResponse(results: DownloadedAttachment[], emailId: string) {
-  const safeEmailId = emailId.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const dir = join('/tmp', `gmail-attachments-${safeEmailId}`);
-  await mkdir(dir, { recursive: true });
-
-  const savedFiles: { filename: string; path: string; mimeType: string; size: number }[] = [];
-  const usedNames = new Set<string>();
-
-  for (const result of results) {
-    const base64Data = base64UrlToBase64(result.data);
-    const buffer = Buffer.from(base64Data, 'base64');
-    const safeName = deduplicateFilename(sanitizeFilename(result.filename), usedNames);
-    const filePath = join(dir, safeName);
-    await writeFile(filePath, buffer);
-    savedFiles.push({
-      filename: result.filename,
-      path: filePath,
-      mimeType: result.mimeType,
-      size: buffer.length,
-    });
-  }
-
-  const outputParts: string[] = [];
-
-  const summaryLines = savedFiles.map((f, i) => {
-    const sizeKb = Math.round(f.size / 1024);
-    return `${i + 1}. ${f.filename} (${f.mimeType}, ${sizeKb} KB)`;
+function buildResourceResponse(results: DownloadedAttachment[], emailId: string) {
+  const summaryLines = results.map((r, i) => {
+    const sizeKb = Math.round(r.size / 1024);
+    return `${i + 1}. ${r.filename} (${r.mimeType || 'application/octet-stream'}, ${sizeKb} KB)`;
   });
-  outputParts.push(`# Downloaded Attachments (${savedFiles.length})\n\n${summaryLines.join('\n')}`);
+  const summary =
+    `# Downloaded Attachments (${results.length})\n\n${summaryLines.join('\n')}\n\n` +
+    'Each attachment follows as an embedded resource. A client that saves binary resources ' +
+    'reports a local path for each one; if yours shows none, call again with inline=true.';
 
-  outputParts.push('## Saved Files\n');
-  for (const file of savedFiles) {
-    outputParts.push(`- **${file.filename}**: \`${file.path}\``);
-  }
+  const resources = results.map((r) => {
+    const base64Data = base64UrlToBase64(r.data);
+    const uri = attachmentUri(emailId, r.index, r.filename);
+    if (isTextMimeType(r.mimeType)) {
+      const bytes = Buffer.from(base64Data, 'base64');
+      const text = bytes.length <= MAX_TEXT_RESOURCE_SIZE ? decodeUtf8Strict(bytes) : null;
+      if (text !== null) {
+        return {
+          type: 'resource' as const,
+          resource: { uri, mimeType: r.mimeType, text },
+        };
+      }
+    }
+    return {
+      type: 'resource' as const,
+      resource: { uri, mimeType: r.mimeType || 'application/octet-stream', blob: base64Data },
+    };
+  });
 
   return {
-    content: [{ type: 'text', text: outputParts.join('\n') }],
+    content: [{ type: 'text' as const, text: summary }, ...resources],
   };
 }
 
@@ -236,11 +240,11 @@ export function downloadEmailAttachmentsTool(_server: Server, clientFactory: Cli
 
         // Fetch the email to discover attachments
         const email = await client.getMessage(parsed.email_id, { format: 'full' });
-        const allAttachments: AttachmentInfo[] = [];
+        const found: Omit<AttachmentInfo, 'index'>[] = [];
 
         // Check payload-level attachment (single-part email with attachment)
         if (email.payload?.filename && email.payload?.body?.attachmentId) {
-          allAttachments.push({
+          found.push({
             filename: email.payload.filename,
             mimeType: email.payload.mimeType,
             size: email.payload.body.size,
@@ -249,7 +253,8 @@ export function downloadEmailAttachmentsTool(_server: Server, clientFactory: Cli
         }
 
         // Check nested parts for attachments
-        allAttachments.push(...getAttachmentInfos(email.payload?.parts));
+        found.push(...getAttachmentInfos(email.payload?.parts));
+        const allAttachments: AttachmentInfo[] = found.map((a, index) => ({ ...a, index }));
 
         if (allAttachments.length === 0) {
           return {
@@ -275,23 +280,21 @@ export function downloadEmailAttachmentsTool(_server: Server, clientFactory: Cli
           }
         }
 
-        // For inline mode, enforce size limit
-        if (parsed.inline) {
-          const totalSize = targetAttachments.reduce((sum, a) => sum + a.size, 0);
-          if (totalSize > MAX_INLINE_SIZE) {
-            const totalMb = (totalSize / (1024 * 1024)).toFixed(1);
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text:
-                    `Total attachment size (${totalMb} MB) exceeds the 25 MB limit for inline mode. ` +
-                    `Use inline=false (default) to save to files, or use the filename parameter to download individually.`,
-                },
-              ],
-              isError: true,
-            };
-          }
+        // Both modes carry the bytes in the response, so both are capped
+        const totalSize = targetAttachments.reduce((sum, a) => sum + a.size, 0);
+        if (totalSize > MAX_TOTAL_SIZE) {
+          const totalMb = (totalSize / (1024 * 1024)).toFixed(1);
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  `Total attachment size (${totalMb} MB) exceeds the 25 MB limit for one call. ` +
+                  `Use the filename parameter to download attachments individually.`,
+              },
+            ],
+            isError: true,
+          };
         }
 
         // Download all target attachments concurrently
@@ -304,9 +307,8 @@ export function downloadEmailAttachmentsTool(_server: Server, clientFactory: Cli
 
         if (parsed.inline) {
           return buildInlineResponse(results);
-        } else {
-          return await buildFileResponse(results, parsed.email_id);
         }
+        return buildResourceResponse(results, parsed.email_id);
       } catch (error) {
         return {
           content: [

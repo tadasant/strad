@@ -497,7 +497,7 @@ jobs:
   #
   # The smoke test is the honest half. It lists tools from every mount of the
   # RUNNING container and asserts the full-capability counts (slack 13, tailscale
-  # 15, monarch 24, gmail 8, docs 11, calendar 7, 1Password 9, secrets 4, …).
+  # 15, monarch 24, gmail 9, docs 14, calendar 7, 1Password 9, secrets 4, …).
   # Those are the numbers the gateway's read-only allow-lists are carved out of, so
   # if an upstream grows a tool, this is where we find out — not in production. For
   # secrets the count is a security assertion: a FIFTH tool on a server whose
@@ -774,7 +774,7 @@ jobs:
             // 2. It serves the full surface. A strad `-ro` slug is this same
             //    mount with tools withheld by the GATEWAY, not by the container.
             const tools = dump.mounts[`/${slug}`]?.tools ?? [];
-            if (tools.length !== 8) throw new Error(`per-slug gmail listed ${tools.length} tools, expected 8: ${tools.join(", ")}`);
+            if (tools.length !== 9) throw new Error(`per-slug gmail listed ${tools.length} tools, expected 9: ${tools.join(", ")}`);
 
             // 3. THE TRAP. It is degraded, and degraded on its TOKEN — not
             //    quietly serving the service-account mailbox sitting beside it.
@@ -784,11 +784,11 @@ jobs:
             for (const leaked of ["GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL", "GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY", "GMAIL_IMPERSONATE_EMAIL"])
               if (degraded.includes(leaked)) throw new Error(`per-slug gmail is reporting ${leaked}, which belongs to the conventional mount`);
 
-            // 4. And the conventional mount is untouched: same 8 tools, and NOT
+            // 4. And the conventional mount is untouched: same 9 tools, and NOT
             //    degraded, because its service-account credential is right there.
             if (bySlug.gmail?.degraded) throw new Error(`the conventional /gmail mount went degraded: ${bySlug.gmail.degraded}`);
             const conventional = dump.mounts["/gmail"]?.tools ?? [];
-            if (conventional.length !== 8) throw new Error(`/gmail listed ${conventional.length} tools, expected 8`);
+            if (conventional.length !== 9) throw new Error(`/gmail listed ${conventional.length} tools, expected 9`);
 
             console.log(`/${slug}: ${tools.length} tools, degraded on "${degraded}"; /gmail: ${conventional.length} tools, not degraded`);
 
@@ -796,7 +796,7 @@ jobs:
             const docsSlug = "google-docs-ci-personal-ro";
             if (!bySlug[docsSlug]) throw new Error(`no per-slug google-docs mount: ${health.servers.map((s) => s.slug).join(", ")}`);
             const docsTools = dump.mounts[`/${docsSlug}`]?.tools ?? [];
-            if (docsTools.length !== 11) throw new Error(`per-slug google-docs listed ${docsTools.length} tools, expected 11: ${docsTools.join(", ")}`);
+            if (docsTools.length !== 14) throw new Error(`per-slug google-docs listed ${docsTools.length} tools, expected 14: ${docsTools.join(", ")}`);
             const docsDegraded = bySlug[docsSlug].degraded ?? "";
             if (!/GOOGLE_DOCS_OAUTH_REFRESH_TOKEN/.test(docsDegraded))
               throw new Error(`an unconnected per-slug google-docs mount is not degraded on its token: ${JSON.stringify(docsDegraded)}`);
@@ -804,7 +804,7 @@ jobs:
               if (docsDegraded.includes(leaked)) throw new Error(`per-slug google-docs is reporting ${leaked}, which belongs to the conventional mount`);
             if (bySlug["google-docs"]?.degraded) throw new Error(`the conventional /google-docs mount went degraded: ${bySlug["google-docs"].degraded}`);
             const docsConventional = dump.mounts["/google-docs"]?.tools ?? [];
-            if (docsConventional.length !== 11) throw new Error(`/google-docs listed ${docsConventional.length} tools, expected 11`);
+            if (docsConventional.length !== 14) throw new Error(`/google-docs listed ${docsConventional.length} tools, expected 14`);
             console.log(`/${docsSlug}: ${docsTools.length} tools, degraded on "${docsDegraded}"; /google-docs: ${docsConventional.length} tools, not degraded`);
 
             // 6. A per-slug 1Password mount: its own token, its own path, all

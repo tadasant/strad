@@ -192,8 +192,9 @@ with no data move, and what keeps a rollback to an older image working. Two
 narrower residuals, both stated on the limitations page:
 
 1. **No compare-and-swap.** Parameter Manager has none, so every write is a
-   read-modify-write whose read is a direct `reveal()` immediately before the
-   write. Two humans minting inside that window lose one of the two mints. Same
+   read-modify-write whose read is a live `:render` through the gateway's
+   resolver immediately before the write (the console's own credential cannot
+   read on prod; see `docs/operate/secrets-iam.md#token-admin`). Two humans minting inside that window lose one of the two mints. Same
    as hack #91.
 2. **"Effective on the next request" assumes ONE core instance.** A write drops
    the reading held by the process that made it, and core runs
@@ -5355,7 +5356,10 @@ design defect, and this entry is the marker that rule asks for:
   (#115).
 - The Cloudflare Access application and its service token are made in
   Cloudflare's dashboard.
-- An upgrade is `git pull` and the install script again.
+- An upgrade is `git pull` and the install script again. It can run unattended
+  through a Mac-gated worker over the `shell-*` slug, which is still the box-access
+  route. `hostd/install/launchd.sh` is what keeps that from stranding the machine:
+  on an upgrade, nothing but a launchd-run one-shot unloads a service.
 
 **Why it cannot be designed out the usual way.** The rule exists because a
 container strad deploys can always be reached by a deploy. This box is a personal
@@ -5377,10 +5381,16 @@ secrets per slug are seeded at `/ui/secrets`. Whether the machine is up is on
   posture, not a fault. `consent.onTimeout: "allow"` in
   `~/.strad-hostd/config.json` makes the dialog a veto window, and is again a
   file on the box.
-- The macOS halves have never run in CI, which is Linux: the `osascript` dialog,
+- The macOS halves have never run in CI, which is Linux: the `osascript` dialog
+  (and that its JXA `NSAlert` ignores every key, which only a Mac can show),
   the LaunchAgent, the installer's `cloudflared` branch, and Chrome 144's
   debugging toggle against a real default profile. The design page lists what was
-  run and what was reasoned about.
+  run and what was reasoned about. The installer's restart paths run against a
+  real launchd on a macOS runner, on a throwaway agent. The `5` that stopped the
+  first unattended run (#457) reproduces on that runner as a `bootstrap` into an
+  unfinished `bootout`. Nobody has shown that on the laptop, so the installer prints
+  what would prove it. The post-restart `/healthz` check and rollback run only if
+  the installer outlives the restart.
 
 **Undo.** A signed, notarized app with an auto-updater would take upgrades off
 the terminal and give TCC a stable identity to grant. It would not remove the
@@ -5508,8 +5518,10 @@ nothing else. It needs only `https://www.googleapis.com/auth/spreadsheets` — t
 scope every `-rw` slug already holds; Google's discovery document lists `drive`,
 `drive.file` and `spreadsheets` as each sufficient — and the file lands in the
 ROOT of the slug account's My Drive, owned by that account and shared with no
-one. Filing it in a folder, sharing it and deleting it are all Drive API writes,
-and this server asks for no Drive write scope, so none of them is a tool.
+one. Filing it in a folder and deleting it are Drive API writes this server
+never makes, so neither is a tool. Sharing is one — `share_spreadsheet`, a
+`permissions.create` on the full `drive` scope, held only by an `-rw-external`
+slug — so on a `-rw` slug the new file stays shared with no one.
 
 It is also not idempotent. A call that times out after Google made the file and
 is then retried leaves two files, and nothing here can remove the first. The tool
@@ -5521,8 +5533,8 @@ reach only files this app created — so it could file a new spreadsheet but not
 one a human made. The tab titles and the frozen header row ride in the same one
 request, so a failure never leaves a half-built file behind.
 
-**Undo.** A `move_spreadsheet` / `share_spreadsheet` pair behind `drive.file`, on
-a slug whose operator has decided that scope is worth it. The create stays on
+**Undo.** A `move_spreadsheet` behind `drive.file`, on a slug whose operator has
+decided that scope is worth it. The create stays on
 `spreadsheets` either way.
 
 ## 105. A client id metadata document is fetched on an unauthenticated request, and trusted only at `/authorize`
@@ -6042,10 +6054,13 @@ that costs:
    through it. It is narrower than the alternative (Full Disk Access on
    `node`, which would hand every file the grant reaches to every Node script
    and to the shell slug): the connection is `SQLITE_OPEN_READONLY`, ATTACH is
-   denied so no other database is reachable, and attachments are read by id
+   denied so no database beyond chat.db and the Contacts files the helper
+   enumerates itself is reachable, and attachments are read by id
    from chat.db, never by a caller's path, and only under the database's own
    directory. As in #108, two processes of one macOS user cannot keep secrets
-   from each other; it is not a privilege boundary.
+   from each other; it is not a privilege boundary. The same socket reads the
+   owner's Contacts databases the same way (below), so it is an oracle for
+   those too.
 4. **The unattended read is allowed on timeout.** `strad-hostd init` and
    `add messages` write `onTimeout: "allow"` on this one server, so a nightly
    sweep with nobody at the screen is granted after the dialog's window
@@ -6058,13 +6073,31 @@ that costs:
    with the deprecated `NSUnarchiver` behind an Objective-C `@try`, with a byte
    scan as fallback. A macOS release that moves the body elsewhere shows up as
    `text: null` on messages that have text.
+6. **Contact names come from Contacts' own files, under the same grant.**
+   `sender_name` and each participant's `name` are matched from the
+   `AddressBook-v22.abcddb` files under
+   `~/Library/Application Support/AddressBook` (the top-level one and each `Sources/<id>/`), read as
+   SQLite under the Full Disk Access the helper already holds, not through
+   Contacts.framework, which asks for a separate Contacts grant a LaunchAgent
+   cannot answer unattended. That Full Disk Access reaches those files is
+   documented by other tools that read them, not yet observed on the owner's
+   Mac; `get_control_status` reports `helper.contacts`. The Core Data schema
+   (`ZABCDRECORD`, `ZABCDPHONENUMBER`, `ZABCDEMAILADDRESS`) is Apple's and
+   undocumented, like chat.db's. Numbers match on E.164, with the Mac's
+   region supplying a missing country code, and fall back to the national
+   number only for a contact number that is not valid in the Mac's region and
+   that exactly one name claims. A short code is never named. The book is read once per ten
+   minutes, so a contact added since then is unnamed until the next read. A
+   book that cannot be read adds a `contacts_warning` and never fails the
+   read of the messages: names are null if it has never been read, and the
+   last read's if a re-read failed.
 
 **Why it cannot be designed out.** 1 and 2 are #101's: the box is a personal
-Mac. 3 is what reading a TCC-guarded file from a daemon costs on macOS.
+Mac. 3 and 6 are what reading a TCC-guarded file from a daemon costs on macOS.
 
 **What stays off the box.** The slug, its entitlement and `recovery:` text
 ship by deploy; the key is seeded at `/ui/secrets`; `get_control_status`
-reports `helper: {running, full_disk_access, chat_db}`, and `request_control`
+reports `helper: {running, full_disk_access, chat_db, contacts}`, and `request_control`
 refuses with `helper_unavailable` before any dialog when the grant is missing.
 
 **Undo.** 1 and 3 go if Apple ships a Messages API, which it has not. 2 goes
@@ -6101,10 +6134,16 @@ query, and `window.open(_links["apiture:document"].href)`.
 5. **Read-only is enforced by `apiture.ts`, not by the token**, whose scopes
    include `banking/write`. `test/server.test.ts` asserts every API request is a
    GET.
+6. **A device confirmed but not stored is held in process memory.** Cognito
+   confirms and remembers the device inside `sendMFACode`, before the GCS
+   write, so a failed write cannot be ordered first. `enrol_device` probes the
+   store before logging in, which makes this rare. When it happens anyway, the
+   keys wait in memory for the next `enrol_device`, and a restart before that
+   loses them and leaves an orphaned remembered device on the account.
 
 **Undo.** 1 lapses with the first real enrolment and statement fetch in prod;
-anything it finds is a fix here. 2 wants a key-rotation path. 3 and 4 are the
-design while the bundle runs one instance. 5 is the design for as long as
+anything it finds is a fix here. 2 wants a key-rotation path. 3, 4 and 6 are
+the design while the bundle runs one instance. 5 is the design for as long as
 LiveOak issues one token for everything.
 
 ## 117. gmail attachments: `content_base64` is capped by core's body limit, and a URL's host is checked before the fetch, not by it
@@ -6270,7 +6309,7 @@ could return a signed link through the same grant. 3 and 4 move with the
 bundle's size: a larger instance, or these mounts on their own component,
 raises both.
 
-## 121. gmail reflows a plain-text body it judges hard-wrapped, by a heuristic
+## 121. gmail reflows a plain-text body it judges hard-wrapped, by a heuristic, and sends HTML beside it
 
 **What.** `vendor/gmail-shared` in `images/bundle-google` is a fork, and its
 third delta (`FORK.md` §3) rewrites the `plaintext_body` of `send_email` and
@@ -6299,10 +6338,20 @@ The fork joins those lines back into paragraphs and sends every text part
 4. **It is a fork.** A re-vendor from `pulsemcp/mcp-servers` drops
    `body-text.ts` and puts the raw body back on the wire, with only
    `images/bundle-google/test/gmail-body-text.test.ts` failing.
+5. **A `plaintext_body` sent alone carries an HTML part the caller did not
+   write.** Gmail breaks a `text/plain`-only message at about 70 columns when
+   it shows it, and ignores `format=flowed`, so a reflowed paragraph still
+   arrived broken. The fork adds `plainTextToHtml` of the reflowed text as the
+   `text/html` alternative, and every HTML-capable client shows that instead:
+   escaped text, a `<br>` per line break, bare URLs linked by their own text.
+   It is a rendering, not a rewrite, so it cannot give a link anchor text; the
+   tool descriptions ask callers for an `html_body` when there are links.
 
 **Undo.** 1 and 2 go if every caller writes each paragraph as one line, which
 the tool descriptions ask for, and a reflow is no longer needed. 3 is a
-`preserve_line_breaks` argument, if a caller ever needs it.
+`preserve_line_breaks` argument, if a caller ever needs it. 5 goes when
+Gmail lays out `text/plain` at the reader's width, or when every caller sends
+its own `html_body`.
 
 ## 122. nutrition-facts ships its data in the image, and calls FatSecret only through a proxy
 
@@ -6392,7 +6441,639 @@ the only evidence of who sent a message. What they cannot do on their own:
 mailbox. If they lack Google's header, internal mail needs another signal, and
 that belongs in the reader, not here.
 
-## 124. The SSH server is a shell on production hosts, and nothing here has reached one
+## 124. google-drive runs only on its own, and has met only fakes
+
+**What.** `images/bundle-google/vendor/google-drive-shared` is strad's own Google
+Drive MCP server, in three tiers. `readonly` is `search_files`, `get_file` and
+`read_file` on `drive.readonly`. `readwrite` adds `create_folder` and
+`create_file` on `drive.file`. `full` adds `update_file_metadata`,
+`move_file`, `copy_file`, `trash_file` and `restore_file` on the full `drive`
+scope. It is built into both the bundle-google image and the bundle image, and
+**neither one mounts it**. No environment declares a slug for it, so the only
+way to run it is the standalone entrypoint, `dist/standalone/google-drive.js`,
+described in that tree's README.
+Its suite runs against a faked `fetch` and a fake client. No request has reached
+Google.
+
+`readwrite` stays create-only so that it can stay on `drive.file`, which cannot
+touch a file a human made. Renaming, moving or trashing those files needs
+`drive`, so those tools are a tier of their own rather than an addition to
+`readwrite`. Permanent delete and sharing are in no tier, and neither is
+overwriting a file's content: Drive can only replace a whole file, and a Google
+Doc rebuilt that way from Markdown loses its formatting. Editing a document in
+place is a job for a Google Docs server, not this one.
+
+Three claims the first live call settles:
+
+1. Drive's `text/markdown` export of a Google Doc is what `read_file` returns by
+   default. The format is documented, and the output has not been looked at.
+2. A `drive.file` token can create inside a folder that `create_folder` made,
+   and is refused in a folder made by hand. The error hints assume Drive refuses
+   with a 403 `insufficientFilePermissions` or `appNotAuthorizedToFile`, or with
+   a 404. The `full` tools on a `drive.file` token are assumed to be refused the
+   same way on a file this client did not create.
+3. A multipart upload whose metadata names a Google type and whose media is
+   text, Markdown or HTML converts into a Doc, and CSV or TSV into a Sheet.
+   Other pairings are refused before the call. Slides are not offered, since
+   Drive builds a deck only from a .pptx or .odp.
+
+**Undo.** Mount it in the bundle host, which means a per-slug OAuth mount like
+google-sheets, a `google-drive-*` slug, the console's Connect flow for its
+scopes, and the counts in `servers/bundle/scripts/smoke.mjs`. The first real
+calls through that slug settle 1 to 3.
+
+## 125. google-calendar has a personal OAuth mode that strad added to a vendored tree
+
+**What.** `images/bundle-google/vendor/google-calendar-shared` is a copy of
+`pulsemcp/mcp-servers`' `experimental/google-calendar/shared`, and upstream
+signs in only as a service account with domain-wide delegation, which cannot
+reach a personal `@gmail.com` calendar. strad adds a second mode to its copy.
+`GOOGLE_CALENDAR_AUTH_MODE=oauth` signs in as one account with
+`GOOGLE_CALENDAR_OAUTH_CLIENT_ID`, `_CLIENT_SECRET` and `_REFRESH_TOKEN`.
+Unset, or `service_account`, keeps the service account, so no existing
+deployment changes. The tree is a PATCHED VENDOR, and its README's delta table
+lists the change.
+
+Five things about it are not obvious:
+
+1. **The mode is named, not inferred.** gmail and google-docs pick OAuth when
+   its three variables are complete and fall back to a service account
+   otherwise. Calendar does neither. A stray OAuth variable on a
+   service-account deployment changes nothing, and an `oauth` deployment
+   missing its token fails naming it rather than quietly using the service
+   account. An unknown value fails every call, and the standalone entrypoint
+   refuses to start on one.
+2. **The vendored error text is reworded, not edited.** `api-errors.ts` words a
+   401 and a 403 for a service account ("verify domain-wide delegation"). The
+   OAuth client matches those two messages by their opening words and replaces
+   them, so the vendored file stays as upstream wrote it. If upstream rewords
+   them, the OAuth mode shows the service-account wording again. The 401
+   still reaches the client as an error, but its token cache is no longer
+   dropped, so a token Google rejected before its expiry is reused until it
+   expires.
+3. **The account's address comes from its primary calendar.** A service
+   account is told which user it acts as. A refresh token is not, so the OAuth
+   client reads `calendars/primary` once for the `&authuser=` on event links. A
+   failed read means links without `authuser`, retried after five minutes.
+4. **An unknown mode is a boot failure only standalone.** The standalone
+   entrypoint exits 2 on one. Inside a strad bundle the server still boots and
+   lists its tools, and every call fails naming `GOOGLE_CALENDAR_AUTH_MODE`.
+   Neither bundle host checks the variable at boot.
+5. **The refresh token is minted and rotated by hand.** gmail and google-docs
+   OAuth mounts get theirs from the console's Connect Google flow
+   (`src/connectors/`). Calendar has no connector, so an `oauth` deployment's
+   token comes from a consent flow run outside strad (the tree's README uses
+   the OAuth Playground), and is replaced by hand when it dies. A consent
+   screen in Testing mode kills it every 7 days. That is a routine step outside
+   any deploy, which the operability rule in `AGENTS.md` names a defect, and it
+   is why no deployment sets the mode yet.
+
+Both hosts, this image's `src/index.ts` and the collapsed bundle's host, mount
+the server with no client factory, so they read the mode from `process.env`
+with no change of their own. No deployment sets the mode yet, and no request in
+either mode has reached Google from CI.
+
+**Undo.** Point 5 is undone by giving calendar a connector, the way gmail and
+google-docs have one: a per-slug OAuth mount the console's Connect flow seeds.
+If upstream gains an OAuth mode, re-vendor and drop the delta, then map
+`GOOGLE_CALENDAR_AUTH_MODE` onto whatever upstream reads. Until then, a
+re-vendor has to re-apply the row in the tree's README, and
+`images/bundle-google/test/calendar-auth-mode.test.ts` fails if it does not.
+
+---
+
+## 126. good-eggs nutrition comes from Good Eggs Kitchen's help-center tables, and only covers those
+
+**What.** `get_grocery_nutrition` reads `storeData.productDetails` off the
+product page for the product's name, producer, retail units and photos. When the
+producer is `goodeggskitchen` it also reads the Good Eggs Kitchen nutrition
+section through Zendesk's public Help Center API
+(`help.goodeggs.com/api/v2/help_center/en-us/sections/360007686892/articles.json`),
+parses the per-category HTML tables, and matches the product to a row by its
+whole folded name, split by retail units when one name has several sizes. Every
+other product gets `nutrition.status: not_published` and its photo URLs.
+`servers/good-eggs/FORK.md` #12 has the evidence.
+
+**Why.** Good Eggs exposes nutrition nowhere else. The product payload, the
+page's markup and the product page's own JavaScript carry no nutrition fields.
+The bundle's only nutrition reference is the "View Nutritional Information"
+link it renders for `goodeggskitchen` products, and that link is this section.
+Each product has one or two photos, and the ones checked were front of pack or
+plated food, not a Nutrition Facts panel. The tables are the only structured
+source, and they lag the catalog. On 2026-10-15, 3 of the 15 kitchen products on
+the producer page had a row. Most articles were last edited in 2020–2022. One
+product, Achiote Marinade 2 oz, appears in two articles with different values
+(70 kcal and 140 kcal).
+
+**Undo.** If Good Eggs starts publishing nutrition on the product payload, read
+it from there and drop the help-center read. Until then a caller that needs
+macros for a `not_published` or `not_in_kitchen_tables` product takes the
+producer, name and retail units to a nutrition database, or reads the label off
+a photo when one shows it.
+
+---
+
+## 127. The console masks a value field with CSS, not with a password input
+
+**What.** Every field on the parameters console that takes a value is a
+`<textarea>` with `-webkit-text-security: disc`: the create form, each row's
+Rotate field, and the bulk editor's Rows view (`src/ui/render.ts`). A browser
+without that property shows the value as it is typed. The fields carry
+`spellcheck="false"` and Grammarly's opt-out attributes, but an extension that
+ignores those can still read a textarea, where it would have skipped a password
+input. A value with no line break except at the end has that trailing line break
+dropped (`src/ui/index.ts`). A multi-line value is stored exactly as pasted.
+
+**Why.** A browser strips line breaks from an `<input type="password">`, so a
+pasted PEM key was stored as one line that no key parser accepts. Zimmer's APNs
+key spent twelve days like that. No input element is both masked and
+multi-line. The trailing-newline rule keeps the old field's behaviour for a
+one-line token: Enter in a textarea adds a line break where it used to submit,
+and a terminal copy often ends in one.
+
+**Undo.** If browsers ship a masked multi-line input, use it. Until then, a
+deployment that needs masking in every browser can fall back to a password input
+for values known to be one line, at the cost of the PEM case.
+
+---
+
+## 128. good-eggs adds through Good Eggs' undocumented basket endpoint, measured live only against an anonymous basket
+
+**What.** `add_to_cart` sends `POST /api/basket/update-item` with
+`{ productId, quantity, shouldSubscribe: false }` from inside the product page.
+That is the request the page's own "Add to basket" button sends. The button is
+kept as the fallback after a definite refusal. `quantity` is the line's new
+total, so the update is sent only when the prior total is known and below the
+request. An unknown prior total means no add at all.
+`servers/good-eggs/FORK.md` #13 has the evidence.
+
+**Why.** Clicking a drawn button failed about two adds in three during the
+2026-10-19 shop ([strad#439](https://github.com/tadasant/strad/issues/439)),
+because the button was not found visible in time. The request does not depend on
+the page drawing. It is read out of the site's own traffic, and Good Eggs
+publishes no API. The endpoint, its total-not-increment meaning and its answer
+shapes were measured on 2026-10-19 against an anonymous basket. No live
+signed-in account was used, because nothing in this repo may write to the
+household's real basket to test it.
+
+**Undo.** Nothing to undo while Good Eggs serves the endpoint. If it moves or
+changes shape, a non-2xx answer reports `Good Eggs refused the basket update …`
+and falls back to the button, which is the old behaviour. A 2xx in a shape this
+code cannot read is not followed by the button, because it may have applied. The
+basket re-read reports what landed. Re-read the button's
+request from the browser's network panel and update `BASKET_UPDATE_PATH` and
+`parseBasketUpdateResponse()`.
+
+**The same update, for a product Good Eggs will not sell.** For a product sold
+out or unavailable on the basket's day, Good Eggs answers the update with a 2xx
+naming the product and then leaves the line out of the basket (measured
+2026-11-02, six times in one shop). So `add_to_cart` reads the product's
+`availabilitiesByDay` from the page payload first. A product listed as `soldout`
+or `unavailable` for `currentFulfillmentDay` gets no request and a failure that
+says which. A missing record, or any other status, means the add is sent and
+the basket re-read decides.
+`servers/good-eggs/FORK.md` #14 has the evidence. If Good Eggs renames the field,
+the check reads as unknown and the answer is the basket re-read's: "does not
+appear in your cart afterward".
+
+---
+
+## 129. google-docs reads every tab, a strad delta on a vendored tree
+
+**What.** `images/bundle-google/vendor/google-docs-shared` is a copy of
+`pulsemcp/mcp-servers`' `experimental/google-docs/shared`, and upstream calls
+`documents.get` without `includeTabsContent`. Without that flag the Docs API
+returns only the first tab's content, in the top-level `body`, and nothing
+says other tabs exist. Every read tool saw one tab and called it the document.
+strad's copy asks for every tab. `get_document` and `get_document_outline`
+walk the tab tree, nested child tabs included, and each takes an optional
+`tab_id`. A `?tab=` in a pasted URL is deliberately NOT read: Docs puts
+`?tab=t.0` on nearly every URL, single-tab documents included, so honouring it
+would read the first tab alone again. The tree
+is a PATCHED VENDOR, and its README's delta table lists the change.
+
+Four things about it are not obvious:
+
+1. **A single-tab document is unchanged.** One tab is read the way a document
+   fetched without the flag is: its content is lifted back to the top level,
+   so `format=json` keeps `body`, `lists`, `namedStyles` and the rest there,
+   and the text output has no tab sections. The text is identical; the JSON
+   has the same fields and values, though its key order can differ from
+   Google's own legacy response. A test compares the two directly.
+2. **A multi-tab `format=json` changes shape.** With no `tab_id` it is the
+   full resource, and the content is under `tabs[].documentTab.body` with no
+   top-level `body`. A caller that read `body` off a multi-tab document was
+   reading the first tab alone. With a `tab_id` it is that tab with its
+   `body` at the top level and its `tabProperties` beside it.
+3. **A write with no tab still goes to the first tab.** `append_text` with no
+   `tab_id` fetches without the flag, so its end index is the first tab's, which
+   is where a `batchUpdate` request with no `tabId` lands. `update_document`'s
+   description says how to target another tab, and the wrappers take a `tab_id`
+   (#136).
+4. **Export is not per tab.** Drive's `files.export` has no tab parameter, so
+   `export_document` exports whatever Drive gives for the whole document, and
+   its description points at `get_document` with `tab_id` for one tab. What
+   Drive puts in an export of a multi-tab document has not been measured.
+
+No request with the flag has reached Google from CI. The tests fake the Docs
+API, and answer the way its reference says: the first tab alone without the
+flag, every tab with it.
+
+**Undo.** If upstream starts reading tabs, re-vendor and drop the delta. Until
+then a re-vendor has to re-apply the row in the tree's README, and
+`images/bundle-google/test/docs-tabs.test.ts` and the tab tests in
+`images/bundle-google/test/standalone.test.ts` fail if it does not.
+
+## 130. gmail's `delete_draft_email` deletes permanently, and asks nobody
+
+**What.** `delete_draft_email` (`images/bundle-google/vendor/gmail-shared`,
+`FORK.md` delta 5) sends Gmail's `users.drafts.delete`, which removes the
+draft for good: it is not moved to Trash and cannot be restored. The tool is
+on the `-rw` and `-rw-external` tiers and is not a confirmed tool, so an agent
+on either tier can delete any draft in the mailbox, including one a person
+wrote and meant to keep, and no human is asked.
+
+**Why.** It is a draft mutation, not a send. `upsert_draft_email`, on the same
+tiers and also unconfirmed, can already replace a draft's whole content, which
+loses it just as surely. Asking a human for every discard would put a prompt
+in front of the clean-up the tool exists for: an agent removing a draft it
+superseded so nobody sends the wrong one.
+
+**What bounds it.** One draft per call, by ID. The draft is read first and a
+non-draft ID is refused, so no message or thread is touched, and every draft
+call refuses an ID that is not draft-shaped before it builds a URL. The answer
+names the draft's recipient and subject.
+
+**Undo.** Add `delete_draft_email` to `CONFIRMED_TOOLS` in
+`images/bundle-google/src/confirm.ts` and make the tool call
+`requestConfirmation()`, if a deleted draft someone wanted ever turns up.
+Withhold the tool from a slug with its `tools: allow` list in the meantime.
+
+## 131. MCP Events tracks a draft SEP, in poll mode only, and the Slack feed has met only fakes
+
+**What.** strad serves MCP Events (`events/list`, `events/poll`, the
+`io.modelcontextprotocol/events` extension) from draft SEP-3415, pinned at
+commit `b08e4f9dd684f39d846d94089487fbeb28e666f5` in
+`docs/mcp-events-spec-pin.md`. Only poll mode is built: no `events/stream`, no
+webhooks, no `list_changed`, no `server/discover`. The error codes (`-32023`,
+`-32024`) are the draft's provisional numbers. The `Mcp-Method` / `Mcp-Name`
+headers are accepted and not checked. Results carry no `resultType`.
+
+The one event source is Slack's `message_posted`
+(`servers/bundle-api/fork/slack/src/events/`): one Socket Mode socket, a sealed
+7-day ring buffer in GCS and a lease, the WhatsApp bridge's pattern. The socket,
+the envelope ack, the backfill and GCS have met fakes only. Nothing in CI has
+held a real Socket Mode connection, and no deployment has seeded
+`SLACK_APP_TOKEN` yet.
+
+**Why.** Zimmer's deterministic triggers want a feed of Slack messages from the
+server strad already runs, rather than a second Slack client polling with its
+own copy of the bot token. Poll is the one mode Zimmer can consume with no
+public ingress.
+
+**What it costs.**
+
+- A change to the draft can break the wire. Re-read the live SEP against the
+  pin before changing anything here.
+- Backfill sees a thread reply in a gap only if the thread's parent is less than
+  48 hours older than the gap, and each read stops at 10 pages of 200. A read cut
+  short is counted on `slack_events_status` as `reads_cut_short`.
+- The buffer is one object, rewritten at most every couple of seconds. Events
+  buffered since the last write are lost if the process dies; the next
+  connection's backfill recovers what Slack still returns.
+- A superseded process answers polls from the owner's persisted buffer, which
+  lags the owner's memory by up to one flush (a couple of seconds).
+- Making the GCS bucket and the service account that writes it is a one-off
+  step by hand in GCP, outside any deploy, as it is for the WhatsApp bridge.
+  Seeding the six variables is done through the console and a deploy. The
+  bucket is the one step an agent cannot do without project IAM.
+- The single-instance rule is enforced by the lease, not by the renderer.
+  `SINGLE_SOCKET_PATHS` names `/whatsapp` and not `/slack`, because the shared
+  bundle serves `/slack` with no app token and must stay free to scale.
+- `tools:` policy does not narrow events. A `-readonly` slug on the same mount
+  as one with an app token would see the same events.
+
+**Undo.** Unseed `SLACK_APP_TOKEN`: the mount goes inert, lists no event types
+and stops advertising the extension. Removing the feature is deleting
+`src/gateway/events.ts`, its hooks in `mcpServer.ts`, `router.ts` and the HTTP
+adapter, and `fork/slack/src/events/`.
+
+## 132. google-docs adds and answers comments, a strad delta on a vendored tree
+
+**What.** `add_comment` and `reply_to_comment` are strad's additions to
+`images/bundle-google/vendor/google-docs-shared`, a PATCHED VENDOR (#129). They
+call Drive's `comments.create` and `replies.create`. Both are in the
+`readwrite` group, so a `-ro` slug never lists them and a `-rw` slug lists them
+beside `update_document`. They write as the mount's account, which is the
+author Docs shows.
+
+Three things about them are not obvious:
+
+1. **Drive cannot attach a comment to text.** Google Docs does not honour an
+   `anchor` sent to Drive's `comments.create`, so a comment made there shows in
+   the comments panel and highlights nothing. `add_comment` sends no anchor,
+   and uses this path only for a comment on the document as a whole. A comment
+   on a passage is the Docs API's `insertComment`, #135.
+2. **Resolving is a reply.** Drive has no "resolve" call. A reply carrying
+   `action: resolve` (or `reopen`) is how the editor does it, so
+   `reply_to_comment` takes `resolve: true | false` and may be sent with no
+   text.
+3. **Google sends the notifications.** A comment or reply may notify people
+   who already have access to the document, per their own Docs notification
+   settings, as one made in the editor does. Neither tool grants anyone access,
+   which is why both sit on `-rw` beside the other edits and not on
+   `-rw-external` with `share_document`.
+
+No scope changed: the read-write tiers already consent the full `drive` scope,
+which covers both calls. No request has reached Google from CI. The tests fake
+the Drive API, against the shapes its reference documents.
+
+**Undo.** If upstream gains comment writes, re-vendor and drop the delta. Until
+then a re-vendor has to re-apply the row in the tree's README, and
+`images/bundle-google/test/docs-comments.test.ts` and the comment tests in
+`images/bundle-google/test/standalone.test.ts` fail if it does not.
+
+## 133. The bundle restarts itself when its event loop wedges, and its heap size is a rule of thumb
+
+**What.** On 2026-11-02 prod's bundle (tadasant/strad#458) ran with its V8 heap
+pinned at the ceiling, heap used 537 MB of a 548 MB heap total, while the
+garbage collector ran back to back and event-loop utilization sat at 1.0 for
+over an hour. The process stayed alive, so nothing restarted it, and 66 slugs
+were unreachable until a human did. Three changes:
+
+1. `servers/bundle/host/src/watchdog.ts` samples event-loop utilization every
+   5 seconds. After 60 seconds at or above 0.9, `/healthz` answers 503. After
+   180 seconds (`STRAD_BUNDLE_WATCHDOG_EXIT_SECONDS`) the host closes its mounts,
+   with the same 5-second bound SIGTERM gets, and exits 1 so App Platform
+   restarts the container.
+2. The renderer gives a `strad-bundle` component a `liveness_health_check` on
+   `/healthz` (period 10s, timeout 5s, 12 failures, 120s initial delay). This
+   catches what the watchdog cannot: a loop blocked by one synchronous call
+   never runs the watchdog's timer.
+3. The renderer starts a `strad-bundle` component with
+   `NODE_OPTIONS=--max-old-space-size=` half the plan's memory.
+
+The incident's container memory read 2.50 GB, and cgroup usage cannot exceed
+the cgroup's `memory.max`, so the container really had more than 1 GiB. That
+is why a 1024 MB heap on the 2 GB plan is not expected to turn the thrash into
+repeated OOM kills.
+
+**Why it is a hack.**
+
+- **The heap figure is a rule of thumb, not a measurement.** The other half of
+  the plan is left for Chromium (about 545 MB at peak), mcp-grafana and Node's
+  off-heap memory. If it is wrong, the kernel OOM-kills the container, and the
+  container restarts. That is the outcome we want instead of thrashing, but it
+  is still a restart.
+- **Why Node picked a 1 GiB-sized ceiling on a 2 GB plan is not established.**
+  Node 24 under a 1 GiB cgroup gets a 560 MB `heap_size_limit` and under 2 GiB
+  gets 1120 MB, measured with `docker run -m`. The 548 MB heap total in the
+  incident matches the first. The host logs the limit and the memory Node sized
+  it from at boot, and `strad.process.memory.heap.limit` exports it, so the next
+  look can settle it. The explicit flag makes the question moot for the bundle.
+- **No leak was found.** The heap had been sitting near 500 MB before the
+  growth, which is a large footprint for one process serving 31 mounts. With a
+  ceiling about 10 MB above it, normal variation was enough to tip it over. If
+  `heap.used` climbs steadily toward the new 1 GB ceiling, that is a leak this
+  change does not fix.
+- **A restart drops in-flight calls** on every slug the component serves. A
+  minute-long busy spell does not trigger it; three minutes of saturation does.
+
+**Undo.** If the bundle is split, or measured to need less, set
+`bundles[].liveness: false` and a server-level `NODE_OPTIONS`. Remove the
+watchdog only together with the liveness check, never instead of it.
+
+## 134. gmail returns attachments as embedded resources, and a client that ignores them gets a summary
+
+**What.** `download_email_attachments` wrote attachments to `/tmp` on the
+bundle container and answered with the paths, so a remote caller got a path
+to a disk it cannot reach (2026-11-02, a ~1 MB PDF a session could not open).
+It now returns each attachment in the result as an MCP embedded resource, a
+base64 `blob`, or decoded `text` for small UTF-8 text, and writes nothing to disk
+(`images/bundle-google/vendor/gmail-shared/FORK.md` delta 6).
+
+**Why it is a hack.**
+
+- **Where the bytes land is the client's choice.** Claude Code saves a binary
+  resource to a local file and gives the model the path. A client that drops
+  embedded resources shows only the summary, and the caller has to call again
+  with `inline=true`, which puts the base64 in the text. The summary says so.
+- **The whole attachment rides one response.** Up to 25 MB decoded, about
+  33 MB as base64, held in the bundle's memory and core's while it passes
+  through. Gmail receives messages up to 50 MB, so a single attachment over
+  25 MB cannot be fetched in either mode.
+- **Small text attachments enter the model's context by default.** Text under
+  100 KB comes back as text, where `inline=true` used to be needed. It is
+  sender-written, the same as a message body from `get_email_conversation`.
+- **It is a fork delta.** A re-vendor of upstream's tool restores the `/tmp`
+  default with no failing build; only
+  `images/bundle-google/test/gmail-download-attachments.test.ts` notices.
+
+**Undo.** strad already has a link for getting bytes out of a mount: core's
+sealed, single-use `/mcp-download/<slug>/<token>`, which slack, whatsapp and
+liveoak use. It needs `STRAD_PUBLIC_URL` and a per-slug public-slug variable
+on the bundle, deploy-time config only, and has no 25 MB ceiling. Moving
+attachments over a threshold onto it would lift the cap and keep large blobs
+out of both processes' memory.
+
+## 135. google-docs suggests edits and anchors comments, and only part of that is seen live
+
+**What.** Comments and suggestions in the Docs API are generally available as
+of 2026-09-30. Two strad deltas on
+`images/bundle-google/vendor/google-docs-shared` use them. They add no tool
+name, so no `tools.allow:` list changes.
+
+1. **`suggest: true`** on `insert_content` (with refusals, #136), `append_text`,
+   `insert_text`,
+   `replace_text` and `update_document` sends `writeControl: { writeMode: "SUGGEST" }`. Omitted, the
+   request carries no `writeControl` and is a direct edit.
+2. **`add_comment`'s `quoted_text`** is the passage the comment attaches to.
+   The tool reads the document with `SUGGESTIONS_INLINE`, finds the passage in
+   the body of each tab and sends `insertComment` with that range. Without
+   `quoted_text`, the comment is a Drive comment on the whole document.
+
+Seven things about them are not obvious:
+
+1. **A 200 can carry a failure.** Google says a batch can commit its text
+   changes while the comment or suggestion fails to save, and reports that as
+   `commentUpdateState: ALL_FAILED_UNKNOWN_REASON`. `batchUpdate` turns that
+   into an error for every caller, because a retry could apply the edit twice.
+   What the document holds after such a failure, in suggest mode, is the thing
+   nobody has measured. It might be the edit as a direct change.
+2. **A suggest-mode result is labelled `UNCONFIRMED` when it names no suggestion
+   and `commentUpdateState` is not `ALL_SAVED`.** It is not an error, since the
+   request succeeded, but the caller asked that nothing change directly and
+   that answer cannot promise it. `ALL_SAVED` with no ids counts as saved. A
+   batch whose entries name a suggestion for some requests only gets a `Check`
+   line, so one id does not vouch for its siblings.
+3. **`quoted_text` that is missing or repeated is refused, not guessed.** A
+   comment on the wrong passage is worse than none. The search covers table
+   cells, but only the body, because headers, footers and footnotes are other
+   segments, and not a table of contents, whose text is generated from the
+   headings. For those, `update_document` takes a raw `insertComment`. Its
+   `assigneeEmailAddress` is reachable the same way.
+4. **Inline text holds both sides of a suggestion.** A passage a person reads
+   straight across a pending replacement is in no single run, so the search
+   also runs with pending deletions left out and with pending insertions left
+   out. Matches from all three count, so a repeat in any of them is refused.
+   The indexes stay those of the inline document, which are the only ones a
+   `batchUpdate` can use.
+5. **The comment's range is measured on one revision and sent against it.**
+   `targetRevisionId` makes Docs merge a collaborator's edit from between the
+   read and the write. Docs gives a `revisionId` only to an account with edit
+   access, so a comment-only account sends none and an edit in that window can
+   shift its range.
+6. **Tabs work as they do for direct edits.** A request with no `tabId` goes
+   to the first tab and `replace_text` reaches every tab unless `tab_id` narrows
+   it, in suggest mode too. `append_text`, `insert_text` and `insert_content`
+   take a `tab_id` (#136). An anchored comment carries its tab's id on the range.
+7. **`suggest` refuses requests on threads.** `acceptSuggestion`,
+   `insertComment` and the like are not edits to propose, and Google does not
+   say what `SUGGEST` does to them. That refusal is strad's rule. The other
+   refusals are Google's.
+
+**Unverified against Google.** From the reference, read 2026-11-06: the
+`writeControl` and `insertComment` shapes, `Range.tabId`, the refused requests,
+`commentUpdateState`, that `documents.batchUpdate` accepts the `documents` scope.
+Not seen on a live document: whether a `replaceAllText` makes one suggestion or
+many and what `occurrencesChanged` then says; whether a comment-only account can call `batchUpdate` at all; and whether `insertComment`'s `commentId` is an ID Drive's
+`replies.create` accepts, which `reply_to_comment` depends on. The tests fake
+both APIs.
+
+**Seen live, on 0.4.154 (session 27002).** All of it on one account's own
+suggestions, and nothing failed. `replace_text` under `suggest` matches text inside
+a pending insertion and rewrites that suggestion: banana to mango, then mango to
+papaya, returned the same suggestion id and mango was gone. Text in a pending
+deletion does not match. A quote across a pending replacement reads both sides,
+`papayabanana`, in `add_comment`'s "Anchored to" and in `list_comments`, and the
+anchor is right. Not tried: that overwrite on another author's suggestion.
+
+**Seen live, on 0.4.155 (the rollout of #463).** `suggest` with `tab_id` on
+`insert_text`, `append_text` and `replace_text`, and `update_document` by `tabId`,
+each stayed in its tab, and `suggestionResponses` carried the ids the tools returned.
+
+**Undo.** If upstream gains these, re-vendor and drop the delta. Until then a
+re-vendor has to re-apply the row in the tree's README, and
+`images/bundle-google/test/docs-suggest-anchor.test.ts` fails if it does not.
+
+## 136. google-docs edits by heading, and `insert_content` cannot suggest everywhere
+
+**What.** `images/bundle-google/vendor/google-docs-shared` gains one tool,
+`insert_content`, and `tab_id` on `append_text`, `insert_text` and `replace_text`.
+`get_document` gains `heading`, `heading_id`, `occurrence`, `start_index`,
+`end_index`, `include_styles`, `skip_tables` and `format=outline_with_indices`.
+`get_document_outline` lines gain the start index and heading id. Issue #463 is
+why: an agent told to add one H3 section to the second tab of a document gave up,
+because `format=json` was truncated before it reached the heading and every index
+had to be counted by hand.
+
+**A new tool, not parameters on `insert_text`.** Its required inputs differ, an
+anchor and a position rather than an index, and its input is markdown rather than
+literal text. An `insert_text` that did both would need a mode that JSON Schema
+cannot show as "exactly one of". The cost is a `tools.allow:` line on every `-rw`
+slug.
+
+Ten things about it are not obvious:
+
+1. **Two insertion shapes, because Docs refuses one position.** Text cannot go at
+   a table's start index. The normal shape is `text\n` at the start of the next
+   paragraph, which leaves that paragraph's newline, style and heading id alone.
+   Where no paragraph follows, above a table or at a tab's end, it is `\ntext`
+   inside the closing newline of the one before. That splits it. A heading above a
+   table keeps its heading id: live, direct and as a suggestion, pending, accepted
+   and rejected. At a tab's end the id was not checked. Item 10 is what the split
+   costs under `suggest`.
+
+2. **New text takes its neighbour's look.** Docs styles inserted text from what
+   surrounds it, so text above a heading starts out as that heading, and text
+   above a list item starts out in the list. The batch takes bullets off, sets
+   paragraph styles, resets the text style, and only then applies the content's
+   own styling. The order matters.
+3. **`createParagraphBullets` removes leading tabs and can shift indexes**, which
+   is how Docs expresses nesting. The dialect refuses nested lists, and the parser
+   drops a tab that arrives at the start of an item through a code span or link.
+   The requests also run last and bottom-up, so a shift cannot reach a range still
+   to come.
+4. **`insertText` strips control characters and the private use area** with no
+   word to the caller. The parser removes them first, or every later range would
+   be off by what Google dropped.
+5. **Ranges are computed in JavaScript string units**, which are the UTF-16 code
+   units Docs indexes in. That is the whole reason emoji cannot throw them off.
+6. **A heading is matched on folded text, in tiers.** A prefix must end on a word
+   boundary, so `Phase 1` is never `Phase 10`. Exact, then prefix, then the
+   same two with leading symbols ignored, because a reader calls `🖼️ Agent Run
+Lifecycle` "Agent Run Lifecycle". U+FE0F is folded too. All three views of a
+   heading with a pending suggestion count, as for `add_comment` (#135). A repeat
+   is refused with each match listed, and a tab is never guessed.
+7. **A section ends at the next heading of the same or a higher level**, so an
+   H2's section holds its H3s, and TITLE and SUBTITLE count as the highest level.
+   An H1 with no later H1 runs to the end of the tab.
+8. **The write names the revision it measured**, `targetRevisionId`, so Docs
+   carries the indexes over a collaborator's edit. In suggest mode it goes with
+   `writeMode: SUGGEST`. `WriteControl` puts `writeMode` outside the mutually
+   exclusive revision pair, so the reference allows both; no live call has
+   confirmed it.
+
+9. **`get_document` keeps the account's default suggestion view**, so a read-only
+   slug reads as it always did. `insert_content` asks for `SUGGESTIONS_INLINE`
+   itself, because #135 records it as the only mode whose indexes a `batchUpdate`
+   can use. Indexes read through `format=outline_with_indices` are only good for
+   a write if the account's default is inline, which #135 records for anyone
+   beyond view access.
+10. **`suggest` is refused where content ends on an existing newline it would have
+    to restyle.** In the `\ntext` shape the last paragraph ends on the neighbour's
+    newline, and under `SUGGEST` that newline is existing text. It keeps its style
+    and id, and the paragraph reset becomes a separate suggestion competing with
+    the insertion. Live, on a heading above a table: while pending that paragraph
+    read `HEADING_2` under the heading's own id, so `heading_id` lookups matched two
+    headings. Accepting the ids in the order the tool returned them left a real
+    `HEADING_2` under a new id, in both runs (one paragraph and two). Reverse order,
+    in one run, gave `NORMAL_TEXT`. Rejecting all restored the document. By Google's
+    reference, and not run live, no other shape reaches the gap: `\ntext\n` would
+    leave an empty heading on the old newline, and the newline in front of a table
+    cannot be deleted. A direct write of a spacer paragraph first is a live edit that
+    a rejecting reviewer cannot undo. So `suggestRefusal` in `content-requests.ts`
+    refuses, after the read that shows the shape and before any write, unless the
+    neighbour and the content's last paragraph are both plain: `NORMAL_TEXT` and not
+    a list item. In the allowed case `contentRequests` sends no paragraph reset to
+    the old newline, so no rival suggestion exists there, and the last paragraph
+    keeps whatever direct formatting that newline has. The live failure covers a
+    heading neighbour.
+    A tab's last paragraph when it is a heading takes the same code path and was not
+    run under `suggest`. A list item, or content ending in a heading or list on a
+    plain line, is refused from the same reasoning and was not run live either.
+
+**Left out on purpose.** `delete_section` and `replace_section`, the issue's
+nice-to-have. They delete live text on an anchor that has never met Google, and
+`deleteContentRange` through `update_document` does the job with the range a
+section read returns. A marker-paragraph proposal mode, because `suggest` (#135)
+is a real suggestion. An `index` anchor on `insert_content`: `insert_text` with
+`tab_id` reaches a non-heading paragraph, as plain text.
+
+**Seen on real Google** (rollout of #463, `0.4.155`, on a scratch document). The
+issue's edit landed correctly, in one call, with the other tab unchanged. Later
+requests in a `SUGGEST` batch see the text an earlier one suggested: every proposed
+style sat on the right run. No suggest call drew a 400 with `targetRevisionId`,
+though the outgoing request was not captured. A heading above a table kept its id.
+Suggestion counts differ by shape: one id for content above a heading, across five
+paragraphs including a list, and on a heading above a table one id per paragraph
+plus one, two for one and three for two, which is the shape item 10 refuses.
+
+**Not seen on a live document.** The Docs editor's Accept all on the refused shape.
+`suggest` on a tab's last paragraph, on any neighbour, so the count there. Whether a
+heading at a tab's end keeps its id. The stable
+facts from the reference, read 2026-11-06, are the table start index, the stripped
+characters, the bullet behaviour, that an unset field in the mask resets it, and the
+`tabsCriteria` shape. The tests apply requests to
+`images/bundle-google/test/fixtures/docs-simulator.ts`, a model strad wrote. Its
+split and suggestion rules follow the live results above, and beyond those cases it
+is an assumption. Written from the reference alone, it missed item 10.
+
+**Undo.** If upstream gains these, re-vendor and drop the delta. Until then a
+re-vendor has to re-apply the row in the tree's README, and
+`images/bundle-google/test/docs-anchored-edits.test.ts` fails if it does not.
+
+## 137. The SSH server is a shell on production hosts, and nothing here has reached one
 
 **What.** `servers/ssh/` serves `ssh_connection_info`, `ssh_check_connection`,
 `ssh_list_directory`, `ssh_download`, `ssh_upload` and `ssh_execute` against one

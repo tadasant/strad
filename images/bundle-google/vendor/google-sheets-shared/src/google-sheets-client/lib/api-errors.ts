@@ -60,7 +60,7 @@ function categoryPrefix(category: GoogleApiError['category']): string {
  * the download is what failed. So this branch is what a WRITE hits — and what
  * any caller of the client library gets if it does not take the Office path.
  */
-function recoveryHint(status: number, detail: string): string | undefined {
+function recoveryHint(status: number, detail: string, sharing: boolean): string | undefined {
   const text = detail.toLowerCase();
 
   if (
@@ -79,7 +79,34 @@ function recoveryHint(status: number, detail: string): string | undefined {
   }
 
   if (status === 403 && text.includes('has not been used in project')) {
-    return 'The Google Sheets API is not enabled on the GCP project behind this OAuth client.';
+    return `The Google ${sharing ? 'Drive' : 'Sheets'} API is not enabled on the GCP project behind this OAuth client.`;
+  }
+
+  // Sharing is a Drive write, so the scope it lacks is not a Sheets one — and
+  // the hint below would send a human to re-consent for a scope the token
+  // already holds.
+  if (sharing && status === 403 && text.includes('insufficient')) {
+    return (
+      'Sharing is a Drive write, and this refresh token was not consented for ' +
+      'https://www.googleapis.com/auth/drive — `spreadsheets` and `drive.readonly` cannot ' +
+      "create a permission. Add the drive scope to this slug's oauth.scopes, deploy, and press " +
+      "Reconnect Google on the slug's console page to mint a token that holds it."
+    );
+  }
+
+  // Drive answers a sharing quota with 403, not 429. Retrying later is the fix;
+  // checking who owns the file is not.
+  if (sharing && status === 403 && text.includes('rate limit')) {
+    return 'Google is rate-limiting sharing for this account. Wait a few minutes and try again.';
+  }
+
+  if (sharing && status === 403) {
+    return (
+      'Only an owner of the file, or someone it is shared with as an editor, can share it — ' +
+      'and an owner can switch that off for editors. A Workspace admin policy can also forbid ' +
+      'the grant, typically sharing outside the domain or with "anyone". Check that the ' +
+      'account this refresh token belongs to may share the file, and with this grantee.'
+    );
   }
 
   if (status === 403 && text.includes('insufficient')) {
@@ -115,9 +142,19 @@ function recoveryHint(status: number, detail: string): string | undefined {
  * Reads the body once, attempts to parse it as JSON for a Google API error message,
  * and falls back to the raw text otherwise.
  */
+export interface GoogleApiErrorOptions {
+  /**
+   * The call was a Drive `permissions.create`. Its scope, its API and its 403s
+   * are not the Sheets ones, and the Sheets hints would send a human after a
+   * scope the token already holds.
+   */
+  sharing?: boolean;
+}
+
 export async function throwForGoogleApiError(
   response: Response,
-  operation: string
+  operation: string,
+  options: GoogleApiErrorOptions = {}
 ): Promise<never> {
   const bodyText = await response.text().catch(() => '');
   let detail = bodyText;
@@ -134,7 +171,7 @@ export async function throwForGoogleApiError(
     // bodyText is not JSON - keep as raw text
   }
   const category = categorize(response.status);
-  const hint = recoveryHint(response.status, detail);
+  const hint = recoveryHint(response.status, detail, options.sharing ?? false);
   const message =
     `${categoryPrefix(category)} (${operation}): ${response.status} ${response.statusText}` +
     `${detail ? ` - ${detail}` : ''}${hint ? `\n\nHint: ${hint}` : ''}`;

@@ -1,5 +1,6 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { JWT } from 'google-auth-library';
+import { createHash } from 'node:crypto';
+import { JWT, OAuth2Client } from 'google-auth-library';
 import { createRegisterTools, parseEnabledToolGroups, type ToolGroup } from './tools.js';
 import type {
   CalendarEvent,
@@ -41,7 +42,7 @@ export interface ICalendarClient {
   createEvent(
     calendarId: string,
     event: Partial<CalendarEvent>,
-    options?: { supportsAttachments?: boolean }
+    options?: { sendUpdates?: 'all' | 'externalOnly' | 'none'; supportsAttachments?: boolean }
   ): Promise<CalendarEvent>;
 
   /**
@@ -182,7 +183,7 @@ export class ServiceAccountCalendarClient implements ICalendarClient {
   async createEvent(
     calendarId: string,
     event: Partial<CalendarEvent>,
-    options?: { supportsAttachments?: boolean }
+    options?: { sendUpdates?: 'all' | 'externalOnly' | 'none'; supportsAttachments?: boolean }
   ): Promise<CalendarEvent> {
     const headers = await this.getHeaders();
     const { createEvent } = await import('./calendar-client/lib/create-event.js');
@@ -250,17 +251,298 @@ export interface CreateMCPServerOptions {
 }
 
 /**
- * Creates the default Google Calendar client based on environment variables.
- * Uses service account with domain-wide delegation:
- *   - GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL: Service account email address
- *   - GCAL_SERVICE_ACCOUNT_PRIVATE_KEY: Service account private key (PEM format)
- *   - GCAL_IMPERSONATE_EMAIL: Email address to impersonate
+ * STRAD DELTA (the README's delta table, `HACKS.md` #125): a second auth mode,
+ * chosen by `GOOGLE_CALENDAR_AUTH_MODE`.
+ *
+ *   service_account (the default): GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL,
+ *     GCAL_SERVICE_ACCOUNT_PRIVATE_KEY and GCAL_IMPERSONATE_EMAIL. One user in a
+ *     Workspace domain, through domain-wide delegation.
+ *   oauth: GOOGLE_CALENDAR_OAUTH_CLIENT_ID, GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET
+ *     and GOOGLE_CALENDAR_OAUTH_REFRESH_TOKEN. One Google account, personal
+ *     `@gmail.com` or Workspace, that consented once.
+ *
+ * The mode is NAMED rather than inferred from which variables are set, so a
+ * deployment that sets a stray OAuth variable keeps the service account it
+ * always had, and an `oauth` deployment missing its token says so rather than
+ * falling back to a service account it never meant to use.
  */
-export function createDefaultClient(): ICalendarClient {
-  const clientEmail = process.env.GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL;
+export const GOOGLE_CALENDAR_AUTH_MODE_ENV = 'GOOGLE_CALENDAR_AUTH_MODE';
+export const GOOGLE_CALENDAR_AUTH_MODES = ['service_account', 'oauth'] as const;
+export type GoogleCalendarAuthMode = (typeof GOOGLE_CALENDAR_AUTH_MODES)[number];
+
+export const GOOGLE_CALENDAR_SERVICE_ACCOUNT_ENV_NAMES = [
+  'GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL',
+  'GCAL_SERVICE_ACCOUNT_PRIVATE_KEY',
+  'GCAL_IMPERSONATE_EMAIL',
+] as const;
+
+export const GOOGLE_CALENDAR_OAUTH_ENV_NAMES = [
+  'GOOGLE_CALENDAR_OAUTH_CLIENT_ID',
+  'GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET',
+  'GOOGLE_CALENDAR_OAUTH_REFRESH_TOKEN',
+] as const;
+
+/** The scope either mode's token is minted for. The write tools need the full one. */
+export const GOOGLE_CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar';
+
+export type EnvLike = Readonly<Record<string, string | undefined>>;
+
+/** How long a failed account-address lookup is remembered before it is tried again. */
+const ACCOUNT_EMAIL_RETRY_MS = 5 * 60 * 1000;
+
+/** How `calendar-client/lib/api-errors.ts` opens a 401 and a 403. */
+const SERVICE_ACCOUNT_401 = 'Service account authentication failed';
+const SERVICE_ACCOUNT_403 = 'Permission denied. Ensure calendar scope';
+
+/**
+ * The mode an environment selects. Unset or blank is `service_account`, so a
+ * deployment that predates the variable is unchanged. Anything else THROWS:
+ * reading a typo as the default would put the server on a credential nobody
+ * chose.
+ */
+export function parseAuthMode(env: EnvLike): GoogleCalendarAuthMode {
+  const raw = env[GOOGLE_CALENDAR_AUTH_MODE_ENV]?.trim().toLowerCase();
+  if (!raw) return 'service_account';
+  if ((GOOGLE_CALENDAR_AUTH_MODES as readonly string[]).includes(raw)) {
+    return raw as GoogleCalendarAuthMode;
+  }
+  throw new Error(
+    `${GOOGLE_CALENDAR_AUTH_MODE_ENV}="${env[GOOGLE_CALENDAR_AUTH_MODE_ENV]}" is not a mode; ` +
+      `expected ${GOOGLE_CALENDAR_AUTH_MODES.join(' or ')}`
+  );
+}
+
+/** The credential variables the selected mode needs. Throws on an unknown mode. */
+export function credentialEnvNames(env: EnvLike): readonly string[] {
+  return parseAuthMode(env) === 'oauth'
+    ? GOOGLE_CALENDAR_OAUTH_ENV_NAMES
+    : GOOGLE_CALENDAR_SERVICE_ACCOUNT_ENV_NAMES;
+}
+
+/** Which of the selected mode's variables this environment does not carry. */
+export function missingCredentials(env: EnvLike): string[] {
+  return credentialEnvNames(env).filter((name) => !env[name]);
+}
+
+/**
+ * Google Calendar API client authenticated as ONE Google account by an OAuth
+ * refresh token. The calls are the service-account client's, by the same
+ * `calendar-client/lib` functions; only the bearer token differs.
+ */
+export class OAuthCalendarClient implements ICalendarClient {
+  private baseUrl = 'https://www.googleapis.com/calendar/v3';
+  private oauth2Client: OAuth2Client;
+  private cachedToken: string | null = null;
+  private tokenExpiry = 0;
+  private refreshPromise: Promise<void> | null = null;
+  private accountEmail: Promise<string> | null = null;
+  private accountEmailFailedAt = 0;
+
+  constructor(
+    clientId: string,
+    clientSecret: string,
+    private readonly refreshTokenValue: string
+  ) {
+    this.oauth2Client = new OAuth2Client(clientId, clientSecret);
+    this.oauth2Client.setCredentials({ refresh_token: refreshTokenValue });
+  }
+
+  private async refreshToken(): Promise<void> {
+    let token: string | null | undefined;
+    let res: { data?: { expiry_date?: number } } | null | undefined;
+    try {
+      ({ token, res } = await this.oauth2Client.getAccessToken());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('invalid_grant')) {
+        throw new Error(
+          `${message}\n\nHint: this refresh token is no longer valid: revoked, expired, or ` +
+            'invalidated by a password change. A token issued by an OAuth app still in ' +
+            '"testing" mode expires after 7 days. Run the consent flow again for this account ' +
+            'and replace GOOGLE_CALENDAR_OAUTH_REFRESH_TOKEN with the new token.'
+        );
+      }
+      throw error;
+    }
+    if (!token) throw new Error('Failed to obtain an access token from the OAuth refresh token');
+    // `res` is absent when OAuth2Client answered from its own cache; its
+    // credentials then still carry that token's real expiry.
+    const expiry = res?.data?.expiry_date ?? this.oauth2Client.credentials.expiry_date;
+    this.cachedToken = token;
+    this.tokenExpiry = typeof expiry === 'number' ? expiry : Date.now() + 3600000;
+  }
+
+  private async getHeaders(): Promise<Record<string, string>> {
+    if (!this.cachedToken || Date.now() >= this.tokenExpiry - 60000) {
+      this.refreshPromise ??= this.refreshToken().finally(() => {
+        this.refreshPromise = null;
+      });
+      await this.refreshPromise;
+    }
+    return {
+      Authorization: `Bearer ${this.cachedToken}`,
+      'Content-Type': 'application/json',
+    };
+  }
+
+  /**
+   * One call. The shared `api-errors.ts` words a 401 and a 403 for a service
+   * account; in this mode they are reworded for a refresh token. A 401 also
+   * drops BOTH token caches: OAuth2Client keeps its own access token until its
+   * own expiry, so clearing only ours would re-cache the rejected token for
+   * another hour.
+   */
+  private async withAuth<T>(call: (headers: Record<string, string>) => Promise<T>): Promise<T> {
+    const headers = await this.getHeaders();
+    try {
+      return await call(headers);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      if (message.startsWith(SERVICE_ACCOUNT_401)) {
+        this.cachedToken = null;
+        this.tokenExpiry = 0;
+        this.oauth2Client.setCredentials({ refresh_token: this.refreshTokenValue });
+        throw new Error(
+          'OAuth authentication failed: Google rejected the access token (HTTP 401). The next ' +
+            'call mints a new one from the refresh token; if this repeats, re-consent the account.'
+        );
+      }
+      if (message.startsWith(SERVICE_ACCOUNT_403)) {
+        throw new Error(
+          'Permission denied (HTTP 403). The account this refresh token belongs to cannot do ' +
+            `this to that calendar, the token was not consented for ${GOOGLE_CALENDAR_SCOPE}, ` +
+            'or a Calendar API rate or usage limit was hit.'
+        );
+      }
+      throw error;
+    }
+  }
+
+  async listEvents(
+    calendarId: string,
+    options?: {
+      timeMin?: string;
+      timeMax?: string;
+      maxResults?: number;
+      pageToken?: string;
+      q?: string;
+      singleEvents?: boolean;
+      orderBy?: string;
+    }
+  ): Promise<CalendarEventList> {
+    const { listEvents } = await import('./calendar-client/lib/list-events.js');
+    return this.withAuth((h) => listEvents(this.baseUrl, h, calendarId, options));
+  }
+
+  async getEvent(calendarId: string, eventId: string): Promise<CalendarEvent> {
+    const { getEvent } = await import('./calendar-client/lib/get-event.js');
+    return this.withAuth((h) => getEvent(this.baseUrl, h, calendarId, eventId));
+  }
+
+  async createEvent(
+    calendarId: string,
+    event: Partial<CalendarEvent>,
+    options?: { sendUpdates?: 'all' | 'externalOnly' | 'none'; supportsAttachments?: boolean }
+  ): Promise<CalendarEvent> {
+    const { createEvent } = await import('./calendar-client/lib/create-event.js');
+    return this.withAuth((h) => createEvent(this.baseUrl, h, calendarId, event, options));
+  }
+
+  async updateEvent(
+    calendarId: string,
+    eventId: string,
+    event: Partial<CalendarEvent>,
+    options?: { sendUpdates?: 'all' | 'externalOnly' | 'none'; supportsAttachments?: boolean }
+  ): Promise<CalendarEvent> {
+    const { updateEvent } = await import('./calendar-client/lib/update-event.js');
+    return this.withAuth((h) => updateEvent(this.baseUrl, h, calendarId, eventId, event, options));
+  }
+
+  async deleteEvent(
+    calendarId: string,
+    eventId: string,
+    options?: { sendUpdates?: 'all' | 'externalOnly' | 'none' }
+  ): Promise<void> {
+    const { deleteEvent } = await import('./calendar-client/lib/delete-event.js');
+    return this.withAuth((h) => deleteEvent(this.baseUrl, h, calendarId, eventId, options));
+  }
+
+  async listCalendars(options?: {
+    maxResults?: number;
+    pageToken?: string;
+  }): Promise<CalendarList> {
+    const { listCalendars } = await import('./calendar-client/lib/list-calendars.js');
+    return this.withAuth((h) => listCalendars(this.baseUrl, h, options));
+  }
+
+  async queryFreebusy(request: FreeBusyRequest): Promise<FreeBusyResponse> {
+    const { queryFreebusy } = await import('./calendar-client/lib/query-freebusy.js');
+    return this.withAuth((h) => queryFreebusy(this.baseUrl, h, request));
+  }
+
+  /**
+   * A service account is told which user it acts as; a refresh token is not.
+   * The primary calendar's id IS the account's address, and `calendar` covers
+   * reading it. Resolved once per client. A failure is "" (the bare `?eid=`
+   * link) and is retried after five minutes, so a lasting one (an org policy
+   * 403) costs one extra request per five minutes, not one per tool call.
+   */
+  async getAccountEmail(): Promise<string> {
+    if (!this.accountEmail && Date.now() - this.accountEmailFailedAt < ACCOUNT_EMAIL_RETRY_MS) return '';
+    this.accountEmail ??= this.withAuth(async (headers) => {
+      const response = await fetch(`${this.baseUrl}/calendars/primary`, { headers });
+      if (!response.ok) throw new Error(`calendars/primary: ${response.status}`);
+      const body = (await response.json()) as { id?: unknown };
+      return typeof body.id === 'string' && body.id.includes('@') ? body.id : '';
+    }).catch(() => {
+      this.accountEmail = null;
+      this.accountEmailFailedAt = Date.now();
+      return '';
+    });
+    return this.accountEmail;
+  }
+}
+
+/**
+ * One OAuth client per credential, for the life of the process. Both hosts
+ * build a fresh `Server` per HTTP request, so a client built per server would
+ * exchange the refresh token on every call.
+ */
+const oauthClients = new Map<string, OAuthCalendarClient>();
+
+/**
+ * Creates the default Google Calendar client from environment variables, in
+ * the mode `GOOGLE_CALENDAR_AUTH_MODE` selects (see above). Called at the first
+ * tool call, never at boot, so a missing credential is a failed call and the
+ * server still lists its tools.
+ */
+export function createDefaultClient(env: EnvLike = process.env): ICalendarClient {
+  if (parseAuthMode(env) === 'oauth') {
+    const missing = missingCredentials(env);
+    if (missing.length > 0) {
+      throw new Error(
+        `${GOOGLE_CALENDAR_AUTH_MODE_ENV}=oauth, but ${missing.join(', ')} ` +
+          `${missing.length === 1 ? 'is' : 'are'} not set. OAuth mode needs an OAuth client id, ` +
+          `client secret and a refresh token for one Google account, consented for ${GOOGLE_CALENDAR_SCOPE}.`
+      );
+    }
+    const clientId = env.GOOGLE_CALENDAR_OAUTH_CLIENT_ID!;
+    const clientSecret = env.GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET!;
+    const refreshToken = env.GOOGLE_CALENDAR_OAUTH_REFRESH_TOKEN!;
+    // Hashed, so the map holds no credential a heap dump or a debug print could show.
+    const key = createHash('sha256').update(`${clientId}\u0000${clientSecret}\u0000${refreshToken}`).digest('hex');
+    let client = oauthClients.get(key);
+    if (!client) {
+      client = new OAuthCalendarClient(clientId, clientSecret, refreshToken);
+      oauthClients.set(key, client);
+    }
+    return client;
+  }
+
+  const clientEmail = env.GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL;
   // Handle both literal \n in JSON configs and actual newlines
-  const privateKey = process.env.GCAL_SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, '\n');
-  const impersonateEmail = process.env.GCAL_IMPERSONATE_EMAIL;
+  const privateKey = env.GCAL_SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, '\n');
+  const impersonateEmail = env.GCAL_IMPERSONATE_EMAIL;
 
   if (!clientEmail) {
     throw new Error(

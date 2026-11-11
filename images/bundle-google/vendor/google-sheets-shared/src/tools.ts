@@ -11,6 +11,7 @@ import { clearSheetValuesTool } from './tools/clear-sheet-values.js';
 import { addSheetTool } from './tools/add-sheet.js';
 import { createSpreadsheetTool } from './tools/create-spreadsheet.js';
 import { formatCellsTool } from './tools/format-cells.js';
+import { shareSpreadsheetTool } from './tools/share-spreadsheet.js';
 
 interface Tool {
   name: string;
@@ -29,14 +30,17 @@ interface Tool {
 type ToolFactory = (server: Server, clientFactory: ClientFactory) => Tool;
 
 /**
- * The tools that only read, and the tools that also write.
+ * The tools that only read, the tools that also write, and the one that grants
+ * other people access.
  *
- * THIS SERVER REGISTERS ALL OF THEM, ALWAYS. The split is exported because the
- * READ_TOOLS list is what a strad `-ro` slug's `tools: allow:` must contain, and
- * a list transcribed by hand into a config in another repository is a list that
- * goes stale. `test/tool-tiers.test.mjs` asserts these two arrays account for
- * every registered tool, so adding a tool without deciding its tier fails CI
- * rather than silently landing in whichever tier a config happens to allow.
+ * THIS SERVER REGISTERS ALL OF THEM, ALWAYS. The split is exported because
+ * READ_TOOLS is what a strad `-ro` slug's `tools: allow:` must contain, and
+ * READ_TOOLS + WRITE_TOOLS is what a `-rw` slug's must — a list transcribed by
+ * hand into a config in another repository is a list that goes stale. Only an
+ * `-rw-external` slug, with no `tools:` block, reaches EXTERNAL_TOOLS.
+ * `test/tool-tiers.test.ts` asserts the three arrays account for every
+ * registered tool, so adding a tool without deciding its tier fails CI rather
+ * than silently landing in whichever tier a config happens to allow.
  */
 export const READ_TOOLS = [
   'get_spreadsheet',
@@ -54,6 +58,13 @@ export const WRITE_TOOLS = [
   'format_cells',
 ] as const;
 
+/**
+ * Sharing: the act an `-rw` slug must not have, because it hands a spreadsheet
+ * to someone outside the account. The google-docs counterpart, `share_document`,
+ * is withheld the same way.
+ */
+export const EXTERNAL_TOOLS = ['share_spreadsheet'] as const;
+
 const ALL_TOOLS: ToolFactory[] = [
   // Read
   getSpreadsheetTool,
@@ -67,6 +78,8 @@ const ALL_TOOLS: ToolFactory[] = [
   addSheetTool,
   createSpreadsheetTool,
   formatCellsTool,
+  // External
+  shareSpreadsheetTool,
 ];
 
 export function createRegisterTools(clientFactory: ClientFactory) {

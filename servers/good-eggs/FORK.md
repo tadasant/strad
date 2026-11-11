@@ -517,6 +517,309 @@ client over a fake page through `setSharedBrowserProvider`. That covers the
 list-then-read flow, that a lookup reloads a list it is already sitting on, and
 that the path never falls back to a DOM scrape when the payload is there.
 
+## 12. `get_grocery_nutrition`: what Good Eggs publishes about a product's nutrition, and nothing it does not
+
+**Upstream.** No such tool. `get_grocery_details` scrapes a name, price,
+description and one `img` off the drawn page.
+
+**Here.** A twelfth tool, `get_grocery_nutrition(grocery_url)`, built in
+`shared/src/nutrition.ts`. It loads the product page and reads
+`storeData.productDetails`, the product payload the page renders, for the name,
+producer, retail units and photos. It returns JSON with three parts:
+
+- **`nutrition.status`**, always set:
+  - `found` comes with `facts`: calories, total fat, carbohydrate, protein,
+    serving size, servings per package, and the other ten columns the table
+    carries. It also comes with the matched row and the article it came from,
+    including the article's `updatedAt`. `sizeMatches: false` flags a row for a
+    different package size.
+  - `ambiguous` lists every candidate row.
+  - `not_in_kitchen_tables`.
+  - `not_published`.
+  - `unknown`: the tables could not be read. That is not the same as absent.
+- **`images`**: for each photo, an uncropped JPEG rendition at most 2000px wide,
+  and the original upload. Both are public CDN URLs. The tool returns URLs and
+  never bytes.
+- **The product's identity** (producer, name, retail units, product type), so a
+  caller can take a `not_published` product to a nutrition database.
+
+A payload that names no producer is `unknown` rather than `not_published`: the
+producer is what decides between the two. A page whose product id differs from
+the URL's, or that carries none when the URL names one, is an error.
+
+A nutrient is a number when the table prints one. It is the printed text when
+the table prints something else (`"less than 1"`), and `null` when the cell is
+blank or the column is missing.
+
+**Why it looks like this. Good Eggs has no structured nutrition, except for one
+producer.** Measured on 2026-10-15:
+
+- The product payload has no nutrition field. `storeData.productDetails` carries
+  `product`, `photoUrl`, `photosUrls`, `breadCrumbs`, `rawDescription`, `tags`
+  and availability, and none of `calor|serving|nutri` appears anywhere in
+  `storeData` except category names ("Shop by Serving Size").
+- The product page makes no product API call. Its network log is the document,
+  two bundles, Cloudflare's challenge script and a chat widget.
+- Its JavaScript names nutrition once:
+  `"goodeggskitchen"===e.currentProducer.slug && … "View Nutritional Information"`,
+  a link to a help-center section.
+- That section, read through Zendesk's public API
+  (`/api/v2/help_center/en-us/sections/360007686892/articles.json`: HTTP 200
+  with no cookie, where the HTML section page is behind a Cloudflare challenge),
+  is 13 articles with one HTML table each. It has 498 product rows, headed
+  `Recipe name | Servings per Package | Serving Size | Calories | Total Fat (g) | … | Protein (g) | …`.
+- Every product checked (eleven favorites and the kitchen range) has one or two
+  photos. The ones looked at were front of pack (Oatly, Ezekiel bread) or plated
+  food (Corn Chowder's second photo), not a Nutrition Facts panel. Both URL
+  forms return `200` to an unauthenticated `curl`:
+
+  ```
+  200 image/jpeg 298821B   https://images.goodeggs.com/cdn-cgi/image/width=2000,fit=scale-down,format=jpeg,quality=85/27e44621-….jpg
+  200 image/jpeg 5719840B  https://images.goodeggs.com/27e44621-….jpg
+  ```
+
+  So no signed or temporary hosting is needed. The URLs are the download
+  links.
+
+**How the tables are read.** Each table's header row is repeated through it
+(496 header rows in all), and every header row restarts the column map. Columns
+are mapped by header TEXT, because one real article has no
+`Servings per Package` column. Mapping by position would read its calories as
+serving size. Anything the parser cannot read throws, so the answer is
+`unknown`: no `articles` array, an article with no body, merged cells
+(`colspan`/`rowspan`), a row whose width differs from its header, or a table that
+yields no rows (a renamed header). A section that has partly changed shape must
+not come back as "no row for this product". A row with a name and no values is a
+heading and is skipped. `next_page` is followed only on the section's own URL
+(the URL comes from the response, and this runs inside strad's private network),
+and a section longer than five pages throws rather than being read in part. A
+good read is cached for six hours. A failed one is not cached, so the next call
+retries.
+
+**How a product is matched to a row.** The product's whole name and the row's
+name are compared after folding case, accents, apostrophes, and `&` to `and`. Named,
+decimal and hex HTML entities are decoded first. The row's name has its size
+suffix removed, at the LAST dash (`-`, `–` or `—`) followed by something that
+reads as a size: `Black Beans - 10 oz`, `Grana Padano- 2 oz`,
+`Chicken Tenders-16oz`, `Chicken Caesar Salad - Large`. So a name with a dash of
+its own keeps it. A substring never matches, because a near miss would report
+another product's macros. If nothing matches, a storage qualifier (`(Frozen)`,
+`(Fresh)`, `(Chilled)`, `(Refrigerated)`) is dropped from both names and the
+comparison runs once more. Any other parenthetical, such as `(Vegan)`, can be a
+different recipe and is kept. Rows with the same size and identical values fold
+into one: one article repeats a row seven times. When several rows remain, the product's retail units choose
+between them. If that does not leave exactly one, the answer is `ambiguous`.
+That case is real: `Achiote Marinade - 2 oz` is 70 kcal in one article and 140
+kcal in another.
+
+**Coverage.** On 2026-10-15, 3 of the 15 kitchen products on
+`/goodeggskitchen` had a row: Corn Chowder, Baked Pasta with Pork & Beef Ragu,
+and Brown Butter Squash Soup (Frozen). Most articles were last edited in
+2020–2022. `HACKS.md` #126 records this.
+
+`shared/test/nutrition.test.ts` pins the parse and the match against real rows
+in `shared/test/fixtures/kitchen-nutrition.mjs`, and every status against real
+product payloads. It also covers the HTTPS source's caching and retry, the
+client's page read, and the tool's description, JSON result and error.
+
+## 13. `add_to_cart` sends the basket update, and the button is the fallback
+
+**Upstream (and this tree until this delta).** `addToCart()` loads the product
+page, waits a fixed three seconds, then waits up to ten more for
+
+```ts
+page.waitForSelector(
+  'button:has-text("add to basket"), button:has-text("add to cart"), ' +
+    '[role="button"]:has-text("add to basket"), [role="button"]:has-text("add to cart")',
+  { state: 'visible' }
+);
+```
+
+and clicks what it finds. No visible button in that window means no add.
+
+**Here.** The add is the request Good Eggs' own button sends, made from inside
+the product page so it carries the page's origin, cookies and referer:
+
+```
+POST /api/basket/update-item
+{"productId":"5e8ce389caa412000ec13df7","quantity":1,"shouldSubscribe":false}
+```
+
+`parseBasketUpdateResponse()` reads the answer three ways:
+
+- **Accepted**: a 2xx whose `basketItem` names the product.
+- **Refused**: a non-2xx, with Good Eggs' own reason when it gives one
+  (`HTTP 500: Product could not be added to basket` for a product it will not
+  sell). Nothing changed, so the page's button is tried next. Its selector ends
+  `>> visible=true`, so hidden matches are filtered out before Playwright picks
+  one.
+- **Unknown**: a 2xx this code cannot read, or a request whose answer never came
+  back (a timeout, a page torn down mid-flight). The update may have been
+  applied, and a click on top of it could double the line. So nothing else is
+  sent, and the basket re-read decides.
+
+A failed add names what went wrong on each path, Good Eggs' answer included,
+rather than "the button could not be found".
+
+**`quantity` is a total, and that decides when the update may be sent.**
+Measured on live `www.goodeggs.com` against an anonymous basket: posting
+`quantity: 1` for a line already at 1 left it at 1, and posting 3 then set it to
+3. Posting less than the line holds removes units. So:
+
+- With the prior total known and already at or above the request, nothing is
+  sent. Reconciliation reports "already in your cart", as it did before.
+- With the prior total known and below the request, the update sets the line to
+  the requested quantity. That is the target-total contract `reconcileAddResult`
+  already judged results by. A retry after a lost answer is idempotent, so it
+  cannot make a duplicate.
+- With the prior total unknown, nothing is sent. A `/basket` read that failed
+  gets a second chance from the product page's own payload, which carries the
+  same basket and counts only when signed in. If that fails too, the add is not
+  attempted and the result says so. The button is no substitute: it posts the
+  same total. A basket readable in neither place is almost always a lapsed
+  login, where any add would land in an anonymous basket anyway.
+- An existing line's Subscribe & Save setting (`shouldSubscribe`) is read from
+  the basket payload and sent back unchanged. A new line is a one-time purchase,
+  the page's default.
+
+The button fallback cannot lower a line either. Good Eggs draws "Add to basket"
+only for a product that is not in the basket. Once it is, the same button reads
+"in basket" (measured live), which the selector does not match.
+
+An accepted update does not prove the line landed. The basket is still re-read
+afterwards and the result reconciled against it (delta 2). Good Eggs clamps a
+line to the product's `maxQuantity` without saying so in the update's answer.
+Asked for 2 eggs with a `maxQuantity` of 1, it answered `quantity: 2` and the
+basket held 1. The re-read reports that as a partial add.
+
+**Why.** During the 2026-10-19 weekly shop
+([strad#439](https://github.com/tadasant/strad/issues/439), Zimmer session
+25407), 46 of 68 `add_to_cart` calls answered "Could not find the add-to-cart
+button" on in-stock products whose pages showed an "Add to basket" button. The
+same product went either way on a retry: bacon failed four times and then
+landed. Failures took 26–32 s and successes 31–37 s, consistent with the
+ten-second wait running out. Why the signed-in page sometimes drew its
+button late, or drew a match that was not the visible one, was not established.
+Anonymous product pages, measured the same day, render exactly one matching
+button, server-side, visible within about 1.2 s of navigation. Two things are
+established:
+
+- `waitForSelector(…, { state: 'visible' })` judges only the FIRST element a
+  selector list resolves to. With a hidden "Add to basket" button placed ahead
+  of the real one on a live page, the old selector timed out and the new one
+  resolved.
+- The update request does not depend on the drawn page at all. It answered in
+  about a quarter of a second.
+
+So the add does not depend on the page drawing in time, and the fallback does
+not fail on a hidden duplicate. This is the same rule the fork applies to reads
+(deltas 1, 7 and 11): ask for the state, not for its rendering.
+
+`shared/test/add-to-cart.test.ts` runs the real `addToCart()` over a fake page
+through `setSharedBrowserProvider`, with a server-side basket the payload, the
+update and the button all act on. It pins:
+
+- the update needs no button, and the quantity sent is the target total;
+- a line already at the request gets no lowering update, including through a URL
+  whose id is in another case;
+- a subscribed line keeps `shouldSubscribe: true`;
+- an accepted update the basket does not show is a failure;
+- the button follows a refusal, but never an update whose answer was lost or
+  could not be read;
+- the message when both paths fail;
+- the product-page prior read, and that nothing is sent when the prior total is
+  unknown everywhere;
+- the response parse against live bodies, and the `visible=true` filter.
+
+**What this delta does not cover.** The update path has been exercised against
+live Good Eggs only for an anonymous basket. A signed-in account has met it only
+through the fakes. The request is the one the site's own button sends from the
+same page and the same session, but it is still an undocumented endpoint.
+`HACKS.md` #128 records this.
+
+## 14. A product Good Eggs will not sell on the basket's day is refused by name, and details say so
+
+**Upstream (and this tree until this delta).** `add_to_cart` sent the basket
+update for any product id (delta 13), and `get_grocery_details` scraped the drawn
+page:
+
+- its name from `h1, [class*="title"]`, which is the day picker ("Select a
+  delivery day");
+- its brand from `[class*="brand"], [class*="producer"]`, which lands on a
+  container holding the whole page, so the "brand" was the site header plus
+  every inline script, payload included: 170-220K characters per call;
+- its "availability" from `[class*="availability"] span, [class*="delivery"] span`,
+  which is the day picker again. It lists every delivery day, for a product
+  sold out on all of them.
+
+**Here.** Every product record in the page's `storeData` carries
+`availabilitiesByDay`, and the payload names the basket's day in
+`currentFulfillmentDay`:
+
+```
+"currentFulfillmentDay":"2026-11-02"
+"availabilitiesByDay":{"2026-11-02":{"status":"soldout","quantity":0}, …}
+```
+
+Measured live on 2026-11-02, the statuses are `available` (with the units
+left), `soldout` and `unavailable`. The page's "Sorry, this product is sold
+out." / "… is unavailable." banner is drawn from the same record.
+`src/availability.ts` reads it:
+
+- **`add_to_cart`.** A product whose entry for the basket's day is `soldout` or
+  `unavailable` gets no update and no click. The failure names the status, the
+  day, and the next day it is available, or says that no listed day has it. It
+  says that a retry cannot help and that the caller should substitute and say
+  so. A line already in the cart below the request is named with its quantity,
+  so the caller knows it is still there. The client result carries
+  `unavailable: true`. The MCP answer is the text. A line already at or above
+  the request is still "already in your cart". A missing record, a missing entry
+  for the day, no `currentFulfillmentDay`, or a status other than those two is
+  UNKNOWN, never unavailable. The add goes ahead and the basket re-read decides.
+- **`get_grocery_details`.** Name, producer, price, original price, unit and
+  description (capped at 1,000 characters) come from the product record.
+  Availability is a line for the basket's day, placed before the description, (`Your delivery day (Mon 11/2): SOLD OUT. add_to_cart cannot add
+  it for this day.`) plus the status for every listed day. Without a record the
+  page scrape is the fallback, with every field capped at 1,000 characters and
+  the day-picker "availability" left out. The answer says the delivery day's
+  availability is UNKNOWN instead.
+
+**Why.** In the 2026-11-02 weekly shop (Zimmer session 26683), six adds
+answered:
+
+> Failed to add to cart: Sent the add for Organic Large Yellow Onion, but it
+> does not appear in your cart afterward. The add did not take effect (a
+> delivery day may need to be selected, or the item may be unavailable).
+
+Two brussels sprouts listings, the unsalted pistachios, the large eggs, the
+large onion and a dried oregano got that answer. The update had been accepted
+with a 2xx naming the product each time, and the line never appeared. Read back
+the same afternoon, every one of the six was `unavailable` (the eggs:
+`soldout`) on every day its record listed. So the add path worked. What failed
+was the answer: "may need to be selected, or may be unavailable" told the caller
+neither which nor what to do, and the grocery agent substituted without telling
+anyone why.
+
+The stock check before the shop could not have caught it either. The details
+tool's "availability" was the day picker, which listed Mon 11/2 for every one of
+those products, and the agent had stopped calling the tool because each answer
+ran to about 200K characters.
+
+`shared/test/availability.test.ts` pins the read against two of those six
+records as served (eggs `soldout`, large onion `unavailable`) and an available
+control. It also covers the refusal message and the details tool's output,
+under 2,000 characters. `shared/test/add-to-cart.test.ts` pins that a sold-out
+or unavailable product sends nothing, that the next available day is named, and
+that a line already met stays met. It also covers that an unknown record still
+sends. Its fake reproduces the live accept-and-drop, so the pre-check is what
+those tests exercise.
+
+**What this delta does not cover.** A product `available` with fewer units left
+than requested is still sent. Good Eggs clamps it, and the basket re-read
+reports a partial add (delta 13). The record is an undocumented payload field,
+like the rest of `storeData`. `search_for_grocery` is unchanged and still
+returns the page's "Next available day for delivery" text inside the name.
+
 ## Deltas that predate this fork
 
 These were already in the tree when it was still a vendor copy, and are listed so

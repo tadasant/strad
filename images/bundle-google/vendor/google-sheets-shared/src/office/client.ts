@@ -23,6 +23,10 @@ import type {
 } from '../google-sheets-client/lib/values.js';
 import type { CreateSpreadsheetRequest } from '../google-sheets-client/lib/create-spreadsheet.js';
 import type { FormatEntry, FormatCellsResult } from '../google-sheets-client/lib/format-cells.js';
+import type {
+  CreatePermissionOptions,
+  DrivePermission,
+} from '../drive-client/lib/permissions.js';
 import {
   OfficeWorkbookLoader,
   readWithOfficeFallback,
@@ -131,6 +135,14 @@ class OfficeAwareClient implements IGoogleSheetsClient {
     return writeRefusingOfficeFiles('format_cells', spreadsheetId, () =>
       this.sheets.formatCells(spreadsheetId, entries, defaultSheetId)
     );
+  }
+
+  /**
+   * Straight through. A permission is a Drive call, and Drive shares an
+   * uploaded .xlsx exactly as it shares a native Sheet.
+   */
+  createPermission(fileId: string, options: CreatePermissionOptions): Promise<DrivePermission> {
+    return this.sheets.createPermission(fileId, options);
   }
 }
 

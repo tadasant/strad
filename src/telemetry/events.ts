@@ -74,9 +74,34 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
   Object.freeze({
     /** Boot. The roster proves which build is running and what it mounted. */
     "strad.listening": ["port", "mode", "bundle", "env", "servers", "tokens"],
-    /** THE line this whole change exists for. `error` is excluded; see above. */
-    "mcp.list_tools_failed": ["slug", "explicit"],
-    "mcp.list_resources_failed": ["slug"],
+    /**
+     * THE line this whole change exists for. `error` is excluded; see above.
+     *
+     * `attempts` and `retry` come from the HTTP adapter's listing retry
+     * (`listRetryOutcome` in gateway/adapters/http.ts): a count strad made,
+     * and one of four words this repo wrote (`budget`, `deadline`,
+     * `not_transient`, `closed`). Absent for an adapter kind with no retry.
+     */
+    "mcp.list_tools_failed": ["slug", "explicit", "attempts", "retry"],
+    "mcp.list_resources_failed": ["slug", "attempts", "retry"],
+    /**
+     * One transient listing failure the adapter's retry budget absorbed, at
+     * Info (gateway/adapters/http.ts). NOT a fault: a slug that is still
+     * failing when the budget is spent emits its `_failed` record and that is
+     * what pages. This one says how often a listing is rescued, and whether a
+     * `_failed` that paged came at the end of a spent budget or never entered
+     * one.
+     *
+     * `slug` is the adapter's own, from the config. `listing` is one of three
+     * words this repo wrote (`tools`, `resources`, `events`). `attempt` and
+     * `delay_ms` are numbers strad computed from its own budget. `error` is
+     * not shipped; it becomes `error.kind`, as on the `_failed` records.
+     *
+     * Throttled per slug like the `_failed` records, so the exported stream
+     * holds at most one of these a minute per slug; the counts on `_failed`
+     * are what answer "was this one retried".
+     */
+    "mcp.list_retry": ["slug", "listing", "attempt", "delay_ms"],
     /**
      * A `local-tunnel` slug that served its troubleshooting tool instead of its
      * own, because its machine was not answering.
@@ -232,6 +257,13 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      * in both channels.
      */
     "mcp.tool_denied": ["slug"],
+    /**
+     * One selected slug's `events/list` failed, so its event types are missing
+     * from the union (src/gateway/events.ts). `slug` has matched the request's
+     * selection, so it is one of the config's own slugs; the upstream's message
+     * is not carried at all.
+     */
+    "mcp.events_list_failed": ["slug"],
     /**
      * A flow-through call refused for sending a value other than the one its
      * grant pins (src/config/reach.ts). `slug` has matched the selection and
@@ -625,6 +657,12 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
     "per request — mcp.auth_failed's queue-starvation argument, on the console " +
     "door. A refusal of a token whose secret DID verify is a different event, " +
     "console.token_exchange_failed, and that one ships.",
+  "mcp.events_forbidden":
+    "An events/poll naming an event whose server the request did not select. " +
+    "The only field is `principal`, which is a token pubid through /mcp, and " +
+    "the event name the caller sent is its own bytes and is not recorded at " +
+    "all. Client-driven, one per refused poll, so it would be the queue-" +
+    "starvation shape too; the refusal itself is the caller's answer.",
   "mcp.auth_failed":
     "Its attributes are safe — `reason` is a closed set — but it is emitted " +
     "BEFORE authentication succeeds, so anyone who can reach /mcp produces one " +
@@ -703,6 +741,7 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
 const CLASSIFY_ERROR = new Set([
   "mcp.list_tools_failed",
   "mcp.list_resources_failed",
+  "mcp.list_retry",
 ]);
 
 /** Set by startTelemetry once an SDK is running. Null means stdout only. */
@@ -742,6 +781,8 @@ export function eventExportEnabled(): boolean {
 const THROTTLED = new Set([
   "mcp.list_tools_failed",
   "mcp.list_resources_failed",
+  // Up to two per failing listing, and a client drives listings.
+  "mcp.list_retry",
   "mcp.local_machine_offline",
   // A slug waiting on a deferred credential fires this on every tools/list and
   // resources/list a client sends, for as long as the value is pending — which
@@ -759,6 +800,8 @@ const THROTTLED = new Set([
   // throttled; `strad.mcp.tool_denials` is the continuous half of this pair,
   // and the record is the narration.
   "mcp.tool_denied",
+  // Every events/list a client sends, for as long as one upstream cannot list.
+  "mcp.events_list_failed",
   // Driven by a hosted server's own calls, one per refused call.
   "mcp.pin_refused",
   // Client-driven through the request path, though the minter's backoff

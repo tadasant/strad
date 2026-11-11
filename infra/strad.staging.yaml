@@ -76,8 +76,8 @@
 # call with an auth error naming no cause.
 #
 # The allow-lists below are derived from each upstream's own tool-group
-# definitions, so the counts stay honest: slack 7/13 · tailscale 7/15 ·
-# monarch 10/24 · gmail 5/7/8 · google-docs 4/10/11 · google-calendar 4/7 ·
+# definitions, so the counts stay honest: slack 8/14 · tailscale 7/15 ·
+# monarch 10/24 · gmail 5/8/9 · google-docs 4/13/14 · google-calendar 4/7 ·
 # 1Password 5/9 · telegram 5/6 · bill-spend 4/5 · digitalocean 19/29.
 # test/staging-config.test.ts
 # asserts every one of those numbers.
@@ -399,6 +399,8 @@ servers:
         - slack_get_dms
         - slack_get_dm
         - slack_find_user
+        # The MCP Events feed's state. Reports, calls nothing; no secret value.
+        - slack_events_status
 
   # ---------------------------------------------------------------------------
   # Tailscale — 15 tools full, 7 read-only (policy/devices/keys, reads only).
@@ -942,7 +944,7 @@ servers:
       ZIMMER_SECRETS_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${ZIMMER_SECRETS_ADMIN_KEY_JSON}"
 
   # ---------------------------------------------------------------------------
-  # Gmail — 8 tools full, 7 read-write, 5 read-only. THREE slugs, ONE container.
+  # Gmail — 9 tools full, 8 read-write, 5 read-only. THREE slugs, ONE container.
   #
   # ALL THREE SHARE THE CONVENTIONAL /gmail MOUNT, which authenticates as a
   # SERVICE ACCOUNT impersonating one Workspace user. The only difference between
@@ -999,6 +1001,7 @@ servers:
         - list_draft_emails
         - change_email_conversation
         - upsert_draft_email
+        - delete_draft_email
 
   # readwrite_external: the tier that may act on people OUTSIDE the org (send
   # mail to, share docs with). It is the only tier that gets `send_email`.
@@ -1015,7 +1018,7 @@ servers:
     # No `tools:` — every tool this server has. The full set IS this tier.
 
   # ---------------------------------------------------------------------------
-  # Google Docs — 11 full, 10 read-write, 4 read-only.
+  # Google Docs — 14 full, 13 read-write, 4 read-only.
   # ---------------------------------------------------------------------------
   - slug: google-docs-ro
     kind: supplementary-image
@@ -1055,7 +1058,10 @@ servers:
         - delete_document
         - append_text
         - insert_text
+        - insert_content
         - replace_text
+        - add_comment
+        - reply_to_comment
 
   - slug: google-docs-rw-external
     kind: supplementary-image
@@ -1067,7 +1073,7 @@ servers:
       GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GOOGLE_DOCS_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL}"
       GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY: "${GOOGLE_DOCS_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY}"
       GOOGLE_DOCS_IMPERSONATE_EMAIL: "${GOOGLE_DOCS_IMPERSONATE_EMAIL}"
-    # No `tools:` — the full 11, including share_document (the external one).
+    # No `tools:` — the full 14, including share_document (the external one).
 
   # ---------------------------------------------------------------------------
   # Google Calendar — 7 full, 4 read-only. (No external tier exists.)

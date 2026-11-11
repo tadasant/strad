@@ -214,9 +214,11 @@ than one slug.
 So the renderer **injects** a connector's three variables from the slug's own
 namespace, each one only if the store holds it, and the config gate refuses a
 `${NAME}` reference to any of them by name. An unconnected slug therefore renders
-with two variables and no third: it deploys, mounts, lists its tools, and reports
-itself degraded — which is the state the Google Sheets server is already built to
-survive. The ordering is one-phase:
+with two variables and no third: it deploys, mounts, lists its tools, and its
+mount reports itself degraded — which is the state the Google Sheets server is
+already built to survive. A server that cannot list without a token reads as
+[`unconfigured`](#a-slug-nobody-has-connected-is-unconfigured-not-down) instead,
+not as a fault. The ordering is one-phase:
 
 ```text
 seed client id + secret  →  deploy (slug mounts, degraded)
@@ -297,12 +299,27 @@ discovers it and serves spreadsheets at its path. The scopes per tier:
 | -------------- | -------------------------------------- | ------------------------------------------------------ |
 | `-ro`          | `documents.readonly`, `drive.readonly` | Google and the gateway's `tools:` list                 |
 | `-rw`          | `documents`, `drive`                   | The gateway alone: `tools:` withholds `share_document` |
-| `-rw-external` | `documents`, `drive`                   | Nothing narrower; this tier is the full eleven         |
+| `-rw-external` | `documents`, `drive`                   | Nothing narrower; this tier is the full fourteen       |
 
 `-rw` cannot be narrowed on Google's side: deleting and sharing both go through
 the Drive API on documents the app never created, which `drive.file` cannot
 reach, so the write tiers hold the same grant and differ only by policy — the
 same trade as the service-account tiers.
+
+**google-sheets has the same three tiers**, with one difference: its `-rw` tier
+needs no Drive write at all, so only the external tier carries `drive`.
+
+| Tier           | Scopes                                    | What enforces the tier                                                         |
+| -------------- | ----------------------------------------- | ------------------------------------------------------------------------------ |
+| `-ro`          | `spreadsheets.readonly`, `drive.readonly` | Google and the gateway's `tools:` list                                         |
+| `-rw`          | `spreadsheets`, `drive.readonly`          | Google and the gateway: `tools:` withholds `share_spreadsheet`, and no `drive` |
+| `-rw-external` | `spreadsheets`, `drive`                   | Nothing narrower; this tier is the full eleven                                 |
+
+`drive.readonly` is optional on the first two — it only reads Office files out of
+Drive. `drive` is what `share_spreadsheet` needs, because sharing a file the app
+did not create is out of `drive.file`'s reach, and it is read and write over the
+whole Drive. Adding it to an existing slug takes a **Reconnect Google** on that
+slug's page. See [Google Sheets](/servers/google-sheets/#sharing-is-its-own-tier).
 
 ### The credential arrives under the slug's own variable name, and only that one
 
@@ -493,6 +510,33 @@ The console says _a credential is stored_, not _this works_. A stored refresh
 token is evidence that a human once consented; it is not evidence that Google
 still accepts it, and the store cannot see a revocation. The only honest live
 signal is a real call, and the console does not make one.
+
+### A slug nobody has connected is `unconfigured`, not down
+
+Before the first Connect there is no refresh token anywhere, and a mount that
+needs one fails its listing the way a broken upstream does. strad tells the two
+apart in core: when an operation on an `oauth:` slug fails, it asks the store
+whether the slug's own `oauth/` or `static/` namespace holds a value for
+`refreshTokenVariable`. Only on a definite "no" is the failure reported as the
+slug being **unconfigured**, the same state a [`mayBeUnseeded:`
+credential](/operate/secrets/#what-the-slug-looks-like-while-it-waits) is in:
+`/healthz` lists it under `unconfigured` and not `degraded`, a named
+`tools/list` or a `tools/call` gets an error saying the slug is not connected
+yet, and the log record is `mcp.server_unconfigured` at Info, which pages
+nothing.
+
+Everything else stays a fault. A token that IS held, whether revoked, expired or
+fine behind a bundle that will not start, leaves the original error alone, and
+`mcp.list_tools_failed` ships at ERROR and pages. So does a store that cannot be
+read, because "strad could not check" is not evidence that nobody connected. A
+listing that succeeds never asks the store, so a server built to list its tools
+unconnected (Google Sheets) is unaffected. Under `provider: env` there is no
+per-slug namespace to ask, and nothing is translated.
+
+The check reads the store, not the container. Between a Connect and the deploy
+that carries the token onto the box (step 4 above), the store holds a token the
+mount does not have yet, and a failure in that window is reported as the fault
+it looks like.
 
 ## Telemetry
 

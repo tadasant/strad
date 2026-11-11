@@ -95,6 +95,10 @@ export default defineConfig({
             { label: "Flow-through", slug: "servers/flow-through" },
             { label: "Apps in the console", slug: "servers/apps" },
             {
+              label: "Running a server without strad",
+              slug: "servers/standalone",
+            },
+            {
               label: "Confirming a tool before it acts",
               slug: "servers/confirmations",
             },
@@ -108,6 +112,7 @@ export default defineConfig({
             { label: "Slack attachments", slug: "servers/slack-attachments" },
             { label: "Telegram", slug: "servers/telegram" },
             { label: "WhatsApp", slug: "servers/whatsapp" },
+            { label: "MCP Events (draft)", slug: "servers/events" },
             { label: "BILL Spend & Expense", slug: "servers/bill-spend" },
             { label: "LiveOak Bank", slug: "servers/liveoak" },
             { label: "SSH", slug: "servers/ssh" },

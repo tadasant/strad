@@ -113,6 +113,25 @@ generates a key per server, creates the named tunnel and its DNS route, writes a
 bootstraps the LaunchAgent. Re-running it upgrades the code and keeps the config,
 the keys and the tunnel.
 
+**A re-run must not be able to strand the machine.** The daemon serves the shell
+an unattended installer arrives through, so a plain `bootout` then `bootstrap` is
+a window in which losing the script loses the machine. The first unattended run
+failed in that shape on the helper's agent
+([#457](https://github.com/tadasant/strad/issues/457)):
+`Bootstrap failed: 5: Input/output error`. `hostd/install/launchd-smoke.sh`
+reproduces that exact error on a real launchd: `bootout` exits 0 while a service
+that takes three seconds to die is still loaded, and a `bootstrap` straight after
+it fails with 5. That was a macOS runner, not the laptop, and launchd's 5 covers
+most refusals, so the cause on the laptop is likely and not proven. Running from a
+detached session is the weaker candidate: a new session
+changes the POSIX session and neither the Mach bootstrap port nor the audit
+session, both inherited from a daemon already in `gui/<uid>`, and the domain is
+named explicitly. So `install/launchd.sh` is built for either answer: an unchanged
+plist is `kickstart -k` and never unloads, the one unload belongs to a one-shot
+launchd itself runs, and a refusal prints what tells the causes apart, including
+`launchctl managername`. [The install section](/servers/hostd/#install) has the
+paths.
+
 ## Consent
 
 ### "A connection" does not exist, so a grant does
@@ -149,14 +168,42 @@ requests a grant on one connection and uses it on another for that reason.
 Remote control requested by shell-tadas-mbp MCP server for purpose: Find the Q3
 invoice PDFs in ~/Documents and report their file names.
 
-Denied automatically in 5 seconds unless you allow it.
+Denied automatically in 10 seconds unless you allow it.
+
+Click a button. The keyboard cannot answer this dialog.
 ```
 
-Buttons are **Reject** (the default, so a reflexive Return refuses) and **Allow**.
-On macOS it is `osascript`'s own `display dialog … giving up after 5`, which needs
-no TCC grant and no helper app. The purpose travels as an argument to a constant
-script. It is never interpolated into AppleScript source, so a purpose cannot
-close a string and start a `do shell script`.
+Buttons are **Allow** (in the primary place), **Reject** and **Disallow and
+cool down**, and only a mouse click on one of them answers the dialog. Reject
+refuses this one request. Disallow and cool down refuses it and holds that
+server off for the cooldown (see the table below). It takes focus when it appears, and the owner may be typing
+in another app at that moment, so a key that answered it would decide requests
+nobody meant to decide. No key decides it, in either direction. Typing that
+lands on it is swallowed.
+
+On macOS it is an `NSAlert` built from JavaScript for Automation
+(`osascript -l JavaScript`), which needs no TCC grant and no helper app. Each
+button has its key equivalent cleared and refuses first responder, so Return,
+Escape, Space (under Full Keyboard Access) and Tab do nothing. The countdown is
+`abortModal` scheduled on the run loop, and an aborted dialog is a `timeout`
+that goes to `onTimeout` like any other. `display dialog` cannot be made to
+ignore the keyboard, so it is only the fallback for an `osascript` whose Cocoa
+bridge will not load, and even then it has no default button and no button
+named Cancel, so Return and Escape do nothing there either. The purpose travels
+as an argument to a constant script. It is never interpolated into script
+source, so a purpose cannot close a string and start a `do shell script`.
+
+None of this has run on a Mac. Whether no key answers the `NSAlert`, whether
+its three buttons come back as the codes the script reads, and
+whether a first click on a button presses it rather than only bringing the
+window forward (macOS 14 can decline `activateIgnoringOtherApps`), are
+reasoned from AppKit, not observed. Allow is the button
+AppKit hands Return to, so the script checks that every key equivalent is
+empty and no default button remains before it shows anything, and if one
+survived it fails, and the keyless AppleScript dialog is shown instead.
+
+On Linux it is `zenity`, whose keys cannot be switched off: Return there
+rejects. Disallow and cool down is its `--extra-button`.
 
 The purpose is untrusted text headed for a screen. `src/consent/purpose.ts`
 strips control characters and bidi overrides (a right-to-left override can make a
@@ -171,13 +218,13 @@ saw the request, so nobody agreed to it, and what is being granted is a shell on
 a personal machine.
 
 This is stricter than the words of the request, which describe a veto window:
-stall five seconds, give the person at the laptop the chance to reject, then
+stall a few seconds, give the person at the laptop the chance to reject, then
 proceed. That reading is what unattended use from a phone needs. Both are
 supported and the choice belongs to the owner: `onTimeout: "allow"` in
 `~/.strad-hostd/config.json`, a file only they can write. The dialog says which
 rule is in force, and `request_control`'s description tells the caller, so an
 agent knows whether the owner has to be at the screen. Two outcomes are denials
-under either setting: a click on Reject, and a dialog that could not be shown at
+under either setting: a click on Reject (or Disallow and cool down), and a dialog that could not be shown at
 all (`no_display`: nobody is logged in to the desktop).
 
 The unattended configuration is therefore `onTimeout: "allow"` with
@@ -195,8 +242,9 @@ mentioned.
 | lifetime | 30 min, caller may ask up to 120 | a task, not a standing permission |
 | idle | 10 min | a caller that went away gives the grant back |
 | live grants | 4 | several sessions can work |
-| dialogs on screen | 1, machine-wide | the cooldown is only written when a rejection comes back, so without this a caller firing twenty requests at once gets several dialogs up before the first "no" lands. The rest are refused as `dialog_busy` |
-| after a Reject | 60 s cooldown for that server, no dialog shown | a rejection is an answer, and a caller cannot wear the owner down |
+| dialogs on screen | 1, machine-wide | a caller firing twenty requests at once would otherwise stack twenty dialogs, and a cooldown chosen in the first could not reach the others. The rest are refused as `dialog_busy` |
+| after a Kill, or "Disallow and cool down" | 60 s cooldown for that server (`consent.rejectCooldownSeconds`), no dialog shown | the owner deliberately ended or refused that server's control and asked for quiet. The Kill is the status page's (one grant or all), `strad-hostd kill`, or the banner's |
+| after a plain Reject, or an unanswered dialog | no cooldown: the next request gets a fresh dialog | a mis-click costs one request, not a minute of them. One dialog at a time is what keeps a caller from stacking them |
 | daemon restart | ends every grant | grants are in memory only; one that outlived the process that showed its dialog would be a permission nobody can see |
 
 ### The kill switch and the status page
@@ -461,7 +509,7 @@ Accessibility tree and capturing the screen run on a serial queue of their own,
 so a stuck app cannot freeze the Kill button. `hello` reports the two grants, and the
 daemon asks it **before** showing a consent dialog: a server that cannot work
 gets `helper_unavailable` and no dialog, because nothing the person at the
-screen can click in five seconds would fix a missing grant.
+screen can click in ten seconds would fix a missing grant.
 
 ### computer-use headless — built
 
@@ -500,11 +548,11 @@ works (BlueBubbles, imessage-exporter, the Messages MCP servers).
   folded into `strad-hostd-ax`: that helper posts mouse and keyboard input,
   and the grant that reads every message should not sit in the same process.
 - **The SQL is the daemon's; the guarantee is the helper's.** The helper
-  serves three ops — `hello`, `query`, `read_attachment` — and `query` runs
-  one statement it is sent. The statements live in `src/messages/chatdb.ts`,
+  serves four ops — `hello`, `query`, `read_attachment`, `contacts_sources` —
+  and `query` runs one statement it is sent. The statements live in `src/messages/chatdb.ts`,
   where `test/messages.test.ts` runs them against a fixture database on Linux.
   What the helper guarantees is that nothing it runs writes or reaches beyond
-  this file: the connection is `SQLITE_OPEN_READONLY`, a statement SQLite does
+  chat.db and the Contacts databases it enumerates itself: the connection is `SQLITE_OPEN_READONLY`, a statement SQLite does
   not report read-only is refused, so is anything after the first statement,
   and ATTACH — which `sqlite3_stmt_readonly` calls read-only because it changes
   the connection, not a file — is denied by an authorizer and a limit of zero,
@@ -540,9 +588,27 @@ works (BlueBubbles, imessage-exporter, the Messages MCP servers).
   about the AX helper; with `com.strad.hostd-messages` installed, the daemon
   reaches this helper over its socket whatever that setting says, because a
   spawned child would need Full Disk Access on `node`.
-- **What it does not have.** Contact names: they live in the Contacts
-  database, a separate TCC grant, and a sender is a phone number or an email.
-  A send tool: posting as the owner is a different grant, and would be a
+- **Contact names, from Contacts' files.** A sender and each participant
+  come with the name the owner's Contacts give them (`sender_name`, a
+  participant's `name`), resolved on the Mac so a name never has to be
+  looked up anywhere else. Contacts keeps one Core Data SQLite file per
+  account, `AddressBook-v22.abcddb` at the top of `~/Library/Application
+  Support/AddressBook` and one under each `Sources/<id>/`. They are read as
+  files, under the Full Disk Access the helper already holds:
+  Contacts.framework would ask for a separate Contacts grant, a prompt an
+  unattended LaunchAgent cannot answer. `contacts_sources` returns the ids
+  the helper found, and `query` takes one as `contacts_source`, so the daemon
+  names a source and never a path; the statement runs under the same
+  read-only guards as chat.db's, and the SQL lives in
+  `src/messages/contacts.ts`. The whole book is read into one index (phones
+  in E.164 with the Mac's region filling a missing country code, emails
+  lowercased) and kept for ten minutes, so a page of 200 messages is 200 map
+  lookups. A contact saved in another country's local form matches on its
+  national number when that number is not valid in the Mac's region and
+  exactly one name claims it. An unreadable book means a `contacts_warning`,
+  never a failed read: null names if it has never been read, the last read's
+  if a re-read failed.
+- **What it does not have.** A send tool: posting as the owner is a different grant, and would be a
   separate server and slug. Freshness on a sleeping Mac: see below.
 - **Consent.** The intended caller is a nightly sweep, which runs with nobody
   at the screen. `init` and `add` write `onTimeout: "allow"` on this server
@@ -619,7 +685,7 @@ machine. The daemon adds:
 any prompt injection that lands in one: a web page, an email, an issue body. For
 the first `local-tunnel` slug the worst case was a damaged flashcard deck. Here it
 is a shell on a personal laptop, or a browser signed in to a bank. The dialog is
-the last line and it is a five-second one. Under `onTimeout: "allow"` with nobody
+the last line and it is a ten-second one. Under `onTimeout: "allow"` with nobody
 at the screen, it is no line.
 
 Recommended tiering:
@@ -695,7 +761,9 @@ MCP client against `test/fake-messages.ts`, which executes the daemon's own
 SQL with `node:sqlite` on a read-only connection to a fixture chat.db: the
 ROWID cursor across every chat and within one, the newest-first read,
 reactions, replies, edits, unsends, system rows, an `attributedBody`-only body,
-attachments, a rebuilt database's warning, the per-server timeout rule beside
+attachments, a rebuilt database's warning, contact names matched from fixture
+Contacts databases (and null, with a warning, when they cannot be read), the
+per-server timeout rule beside
 a shell that still denies, and the pre-dialog refusals for a helper that is
 missing or has no Full Disk Access.
 
@@ -714,6 +782,7 @@ runs the daemon's own queries through it on macOS's SQLite.
 **Reasoned about, not run:** everything that needs a person at a Mac. The
 `osascript` dialog and whether it comes to the front when launched from a
 LaunchAgent, both LaunchAgents, the installer's `cloudflared` branch, the
+installer restarting the real daemon under the shell it arrived through, the
 Chrome 144 toggle and its prompt on a real default profile, the extension in
 Google Chrome rather than Chromium — the unpacked install and its options
 page, whether developer mode keeps it installed across Chrome updates, and,

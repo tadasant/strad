@@ -28,6 +28,7 @@ export interface DeviceState {
 }
 
 const OBJECT = "device.sealed";
+const PROBE = "write-probe";
 
 export class DeviceStore {
   constructor(
@@ -56,5 +57,16 @@ export class DeviceStore {
 
   async clear(): Promise<void> {
     await this.blobs.delete(this.name);
+  }
+
+  /**
+   * Prove the store can take a write and a delete, with a throwaway object
+   * beside the device state. Run before a login that may text a code: a code
+   * whose device then cannot be stored is a text to a person for nothing.
+   */
+  async probe(): Promise<void> {
+    const name = `${this.prefix}/${PROBE}`;
+    await this.blobs.write(name, Buffer.from("liveoak write probe"));
+    await this.blobs.delete(name);
   }
 }

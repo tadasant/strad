@@ -1,5 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { createRegisterTools } from './tools.js';
+import { SlackEventsIngest, type IngestDeps } from './events/ingest.js';
+import { registerEventHandlers } from './events/protocol.js';
 import {
   DEFAULT_TTL_SECONDS,
   NonceLedger,
@@ -301,6 +303,12 @@ export interface CreateMCPServerOptions {
     workspaceToken: string;
     ttlSeconds?: number;
   };
+  /**
+   * The MCP Events ingest (src/events/ingest.ts). Absent: one is built from
+   * `process.env`, which on a container without SLACK_APP_TOKEN is inert — no
+   * socket, no GCS, no Slack call. Pass an instance to drive it in tests.
+   */
+  events?: SlackEventsIngest | IngestDeps;
 }
 
 /** What the host serves for `GET /<mount>/download/:token`. */
@@ -352,10 +360,20 @@ export function createMCPServer(options: CreateMCPServerOptions) {
   // is a property of the MOUNT, and a per-request set would remember nothing.
   const ledger = new NonceLedger();
 
+  // ONE ingest for the life of the process: it holds the socket and the buffer,
+  // and every per-request Server reads from it.
+  const events =
+    options.events instanceof SlackEventsIngest
+      ? options.events
+      : new SlackEventsIngest(options.events);
+  // A failed boot is a state on slack_events_status and retries itself.
+  events.start().catch(() => {});
+
   const registerHandlers = async (server: Server, clientFactory?: ClientFactory) => {
     const factory = clientFactory || defaultClientFactory;
-    const registerTools = createRegisterTools(factory, undefined, { downloadLink });
+    const registerTools = createRegisterTools(factory, undefined, { downloadLink, events });
     registerTools(server);
+    registerEventHandlers(server, events);
   };
 
   /**
@@ -421,5 +439,5 @@ export function createMCPServer(options: CreateMCPServerOptions) {
     }
   };
 
-  return { server, registerHandlers, handleDownload };
+  return { server, registerHandlers, handleDownload, events, close: () => events.close() };
 }

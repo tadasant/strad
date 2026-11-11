@@ -457,7 +457,8 @@ that would always fail.
 What remains under `parameter-store`:
 
 1. **No compare-and-swap.** Parameter Manager has none, so a write is a
-   read-modify-write whose read is a direct reveal immediately before the write.
+   read-modify-write whose read is a live `:render` through the gateway's
+   resolver immediately before the write.
    Two humans minting inside that window lose one of the two mints — the same
    limitation as [#91](#91-a-rotated-refresh-token-can-be-overwritten-by-a-re-seed).
    A lost mint is a token that does not work, which is loud; revoke and forget
@@ -3223,7 +3224,9 @@ The rule assumes a box strad deploys to. This one is a personal laptop strad hol
 
 An unanswered consent dialog is a denial by default, so with nobody at the laptop every `request_control` fails with `timeout`. `consent.onTimeout: "allow"` changes that, and [the design page](/servers/hostd-design/#fail-closed-and-the-tension-with-the-original-ask) says what it costs.
 
-The macOS halves have not run anywhere but a bare CI runner: the `osascript` dialog, the LaunchAgents, the installer's `cloudflared` branch, and Chrome 144's debugging toggle against a real default profile. The two computer-use servers add steps of their own; see #108. The Chrome extension adds one more, and the trade-off that goes with it; see #112. The Messages server adds a Full Disk Access grant and needs the Mac awake; see #115.
+The macOS halves have not run anywhere but a bare CI runner: the `osascript` dialog (including the claim that no key answers it, which only a Mac can show), the LaunchAgents, the installer's `cloudflared` branch, and Chrome 144's debugging toggle against a real default profile. The two computer-use servers add steps of their own; see #108. The Chrome extension adds one more, and the trade-off that goes with it; see #112. The Messages server adds a Full Disk Access grant and needs the Mac awake; see #115.
+
+An upgrade can run unattended over the shell slug, and that route is still box access. On an upgrade [the installer](/servers/hostd/#install) unloads a service only through a one-shot launchd runs itself, so a failure there leaves the machine reachable or retrying. The `5` that stopped the first unattended run ([#457](https://github.com/tadasant/strad/issues/457)) reproduces on a macOS runner as a `bootstrap` into a `bootout` that has not finished. Nobody has shown that on the laptop itself, so a refusal prints what would prove it. Its restart paths run against a real launchd on a macOS runner, on a throwaway agent, and against the real daemon only on the owner's Mac. The `/healthz` check and rollback after a restart need the installer to outlive that restart; if it does not, a new build that crashes at runtime is left crash-looping under launchd. A service launchd refuses permanently, on both its old and new plist, stays down until someone is at the Mac: the one-shot keeps trying for as long as the owner is logged in, and that is all it can do.
 
 **How you would know.** `troubleshoot_host` reports `offline` when the daemon, the tunnel or the laptop is down, and also when the owner has switched remote control off. `http://127.0.0.1:7312` on the machine says which.
 
@@ -3302,13 +3305,13 @@ See `HACKS.md` #103.
 
 ### 104. A new spreadsheet lands in the Drive root, shared with no one
 
-[`create_spreadsheet`](/servers/google-sheets/#the-tools) needs nothing wider than the `https://www.googleapis.com/auth/spreadsheets` scope a `-rw` slug already holds, and that is exactly why it stops where it does. The file lands in the **root** of the slug account's My Drive, owned by that account and shared with no one. Putting it in a folder, sharing it and deleting it are Drive API writes, and this server asks for no Drive write scope — so a human moves or shares it, in Drive.
+[`create_spreadsheet`](/servers/google-sheets/#the-tools) needs nothing wider than the `https://www.googleapis.com/auth/spreadsheets` scope a `-rw` slug already holds, and that is exactly why it stops where it does. The file lands in the **root** of the slug account's My Drive, owned by that account and shared with no one. Putting it in a folder and deleting it are Drive API writes this server never makes — so a human moves it, in Drive. Sharing it is [`share_spreadsheet`](/servers/google-sheets/#sharing-is-its-own-tier), on an `-rw-external` slug that holds the full `drive` scope; on a `-rw` slug a human shares it.
 
 It is **not idempotent**. A call that times out after Google made the file, retried, leaves two; nothing here can remove the first. The tool's own description tells a caller to look before retrying. The tabs and their header rows go in the same single request as the file, so a failure never leaves a half-built spreadsheet behind.
 
 **How you would know.** The tool's answer names the new file's id and URL; a duplicate is a second id with the same title.
 
-**Undo:** a move/share pair behind `drive.file`, on a slug whose operator has decided that scope is worth it. The create itself stays on `spreadsheets`.
+**Undo:** a move tool behind `drive.file`, on a slug whose operator has decided that scope is worth it. The create itself stays on `spreadsheets`.
 
 See `HACKS.md` #104.
 
@@ -3548,17 +3551,19 @@ See `HACKS.md` #114.
 
 ### 115. The Messages server needs Full Disk Access granted by hand, and an awake Mac
 
-The `imessage-*` server of [strad-hostd](/servers/hostd/) reads the owner's Messages history from `~/Library/Messages/chat.db` through a native helper, `strad-hostd-messages`, the one process on the machine strad-hostd asks Full Disk Access for. Four things about it are not what the rest of strad is like.
+The `imessage-*` server of [strad-hostd](/servers/hostd/) reads the owner's Messages history from `~/Library/Messages/chat.db` through a native helper, `strad-hostd-messages`, the one process on the machine strad-hostd asks Full Disk Access for. Five things about it are not what the rest of strad is like.
 
 The grant is clicked at the Mac. There is no API that asks for Full Disk Access; the owner drags the helper into System Settings › Privacy & Security › Full Disk Access, and `strad-hostd messages --grant` opens the list and shows the binary. It lands on the helper rather than on `node` because the helper runs as its own LaunchAgent, which is reasoned from how macOS attributes grants and has not been observed on a real Mac.
 
 The data is only as fresh as the Mac. iMessage exists only on Apple hardware, and a sleeping Mac receives nothing. With Messages in iCloud on, a Mac that wakes catches up, and the ROWID cursor `imessage_get_messages` takes then reads what arrived meanwhile; without it, what arrived during sleep may never reach this Mac's database. Nothing keeps the Mac awake.
 
-The helper's socket answers any process running as the owner, and reads chat.db for it, read-only and nothing else: no other database, and attachments only by id from inside the Messages directory. That is narrower than granting Full Disk Access to `node`, and it is not a privilege boundary, for the same reason as #108.
+The helper's socket answers any process running as the owner, and reads chat.db and the owner's Contacts databases for it, read-only and nothing else: no database the helper did not find itself, and attachments only by id from inside the Messages directory. That is narrower than granting Full Disk Access to `node`, and it is not a privilege boundary, for the same reason as #108.
+
+Contact names come from Contacts' own SQLite files under `~/Library/Application Support/AddressBook`, read under that same Full Disk Access grant rather than through Contacts.framework, which would ask for a second grant nobody is there to answer. That the grant reaches those files is documented by other tools that read them and has not been observed on the owner's Mac. Their schema is Apple's and undocumented, like chat.db's. The book is re-read every ten minutes, so a contact added since then has no name until the next read, and a book that cannot be read adds a `contacts_warning` rather than failing the read: names are null if it has never been read, and the last read's if a re-read failed.
 
 The server is allowed on timeout. `init` and `add messages` set `onTimeout: "allow"` on it alone so a nightly read works with nobody at the screen; the rest of the machine keeps `deny`. With nobody there, the dialog refuses nothing. The slug stays `admin`-only.
 
-**How you would know.** `get_control_status` reports `helper: {running, full_disk_access, chat_db}`, `request_control` refuses with `helper_unavailable` and shows no dialog while the grant is missing, and `strad-hostd messages` on the Mac says the same. A cursor past every message comes back with a `warning`: the database was rebuilt and numbering restarted.
+**How you would know.** `get_control_status` reports `helper: {running, full_disk_access, chat_db, contacts}`, `request_control` refuses with `helper_unavailable` and shows no dialog while the grant is missing, and `strad-hostd messages` on the Mac says the same. A cursor past every message comes back with a `warning`: the database was rebuilt and numbering restarted.
 
 **Undo:** an always-on Mac removes the freshness gap. Setting `"onTimeout": "deny"` on `capabilities.messages` puts the dialog back in charge. The grant is the owner's and stays.
 
@@ -3593,6 +3598,13 @@ bank's Apiture API. LiveOak publishes neither. What it costs:
   account holder's phone, and Cognito's challenge lives about three minutes
   unless the pool says otherwise. The pending challenge is in one container's
   memory, so a deploy between `enrol_device` and `confirm_device` drops it.
+- **A confirmed device whose keys could not be stored lives in memory.** LiveOak
+  remembers the device before this server writes it to the bucket.
+  `enrol_device` checks the bucket takes a write before it texts a code, so this
+  takes a storage failure in the seconds between the two calls. If it happens,
+  the next `enrol_device` stores the held keys with no code. A restart first
+  loses them, `force: true` enrols again, and the old device stays on the
+  account doing nothing.
 - **A pool that issues no device makes this server useless unattended.** If
   LiveOak's pool does not track devices, every login asks for a code.
   `confirm_device` says so instead of reporting success.
@@ -3754,7 +3766,7 @@ See `HACKS.md` #120.
 
 ---
 
-### 121. gmail reflows a plain-text body that looks hard-wrapped
+### 121. gmail reflows a plain-text body that looks hard-wrapped, and sends HTML beside it
 
 Agents hard-wrap prose at 72-80 columns. Sent as plain text, every one of those
 newlines is a hard break, and on a phone a paragraph comes out as alternating
@@ -3774,11 +3786,19 @@ every text part quoted-printable so a long paragraph stays one line.
   keeps it.
 - **There is no way to turn it off.** Send `html_body`, or indent the lines,
   when every newline has to survive as written.
+- **A `plaintext_body` sent alone also goes out as HTML the caller did not
+  write.** Gmail breaks a plain-text-only message at about 70 columns when it
+  shows it, whatever the line on the wire was, so the reflow alone still
+  arrived broken. The HTML part is the reflowed text escaped, a `<br>` per line
+  break, bare URLs linked by their own text. It cannot give a link anchor text;
+  the tool descriptions ask for an `html_body` for that.
 - **The gmail tree is a fork.** Re-vendoring it from upstream would remove the
-  reflow. `images/bundle-google/vendor/gmail-shared/FORK.md` lists the delta.
+  reflow and the HTML part. `images/bundle-google/vendor/gmail-shared/FORK.md` lists the delta.
 
 **How you would know.** The draft or the Sent copy shows the paragraph as one
-line where the caller sent several.
+line where the caller sent several, and a message sent with only a
+`plaintext_body` is `multipart/alternative`, with a `<div dir="auto">` HTML
+part the caller did not write.
 
 **Undo:** callers that write each paragraph as one line, as the tool
 descriptions ask, make the reflow a no-op.
@@ -3864,7 +3884,427 @@ See `HACKS.md` #123.
 
 ---
 
-### 124. The SSH server is a shell on production hosts, and nothing here has reached one
+### 124. google-drive runs only on its own, and has met only fakes
+
+`images/bundle-google/vendor/google-drive-shared` is a Google Drive MCP server
+in three tiers: three read tools on `drive.readonly`, `create_folder` and
+`create_file` on `drive.file`, and five tools that rename, move, copy, trash
+and restore existing files on the full `drive` scope. No strad slug mounts
+it. You run it [on its own](/servers/standalone/), over stdio or on a localhost
+port, with one Google account's OAuth refresh token.
+
+- **No request has reached Google.** Its tests fake the network. Three things
+  are still unverified: the Markdown a Doc exports as, how Drive refuses a
+  `drive.file` write into a folder made by hand, and whether an upload converts
+  into a Doc or a Sheet.
+- **Only the `full` tier changes existing files.** `readwrite` only creates, so
+  it can stay on `drive.file`. Under `drive.file`, a create should work only at
+  the top of My Drive or in a folder `create_folder` made.
+- **No tool rewrites a file's content.** Drive can only replace a whole file,
+  and a Google Doc rebuilt from Markdown that way loses its formatting. Editing
+  a document belongs to a Google Docs server.
+- **No tool group set means every tool, the `full` tier included.** A setup that
+  set no group before the `full` tier existed now lists its five tools. Set
+  `GOOGLE_DRIVE_ENABLED_TOOLGROUPS` to match the token.
+- **No permanent delete and no sharing.** `trash_file` is recoverable for 30
+  days.
+- **`read_file` reads text and images.** A PDF or Office file is refused with
+  its link. A Google Sheet exports its first tab only.
+
+**How you would know.** A `read_file` on a Doc that comes back empty or as raw
+HTML, or a `create_file` into a `create_folder` folder that is refused.
+
+See `HACKS.md` #124.
+
+---
+### 125. google-calendar's personal OAuth mode is a strad patch on a vendored copy
+
+The google-calendar server signs in as a service account with domain-wide
+delegation by default. `GOOGLE_CALENDAR_AUTH_MODE=oauth` makes it sign in as one
+Google account with a refresh token instead, which is the only way it reaches a
+personal `@gmail.com` calendar. The setup is in
+`images/bundle-google/vendor/google-calendar-shared/README.md`.
+
+- **strad added the mode, not upstream.** The server is a copy of a pulsemcp
+  server. Re-copying it from upstream removes the mode unless the change is
+  applied again, and a test fails if it is not.
+- **The mode is chosen, never guessed.** Unlike gmail and google-docs, which
+  switch to OAuth when its variables are present, calendar uses the service
+  account unless the variable says `oauth`. In `oauth` mode a missing variable
+  is an error, not a fallback.
+- **Its error text is matched on.** The upstream code words a 401 and a 403 for
+  a service account, and the OAuth mode rewrites those messages by matching
+  their opening words. If upstream rewords them, the OAuth mode shows the
+  service-account advice, and a token Google rejected early is reused until it
+  expires.
+- **The refresh token is yours to mint and replace.** gmail and google-docs
+  get theirs from the console's Connect Google button. Calendar has no such
+  flow, so you run the consent yourself and set the token as a secret, and
+  again whenever Google revokes it. A consent screen still in Testing mode
+  revokes it every 7 days.
+- **A mistyped mode boots inside strad.** The standalone server refuses to
+  start on one. In a bundle the server starts, and every call fails naming the
+  variable.
+- **No request has reached Google in OAuth mode.** The tests fake the token
+  exchange and the Calendar API.
+
+**How you would know.** An `oauth` call that fails with "verify the credentials
+and domain-wide delegation", or event links whose `authuser` is missing.
+
+See `HACKS.md` #125.
+
+---
+
+### 126. good-eggs nutrition covers Good Eggs Kitchen products only, from tables that lag the catalog
+
+`get_grocery_nutrition` returns structured calories, fat, carbohydrate, protein,
+serving size and servings per package only for products Good Eggs' own kitchen
+makes, and only when the kitchen's help-center tables have a row for them. Good
+Eggs publishes no nutrition for any other product: not on the product payload,
+not on the page, not in an API the page calls. For those the tool says
+`not_published` and returns the product's photo URLs, which are public and
+usually front of pack, so they rarely show the label.
+
+The tables cover little of the kitchen's current range. On 2026-10-15, 3 of the 15
+kitchen products on the producer page had a row, and most of the articles were
+last edited in 2020–2022. A row is matched on the product's whole name, never a
+substring. When rows under one name disagree and the product's retail units do
+not single one out, as happens for one product across two articles, the answer
+is `ambiguous` and lists them all. A table the parser cannot fully read makes the
+answer `unknown` for every kitchen product, not "no row".
+
+**How you would know.** From the tool's own answer. `nutrition.status` is always
+set, and `matchedRow.source.updatedAt` says how old the table is.
+
+See `HACKS.md` #126 and `servers/good-eggs/FORK.md` #12.
+
+---
+
+---
+
+### 127. The console masks a value field with CSS, so not every browser masks it
+
+The parameters console's value fields are textareas, so a pasted PEM key keeps
+its line breaks. A password input would have stripped them. The dots come from
+CSS `-webkit-text-security`, and a browser that does not support it shows the
+value as you type it. A browser extension that reads text fields can see the
+value too, where it would have skipped a password input. A one-line value has a
+trailing line break dropped, and a multi-line value is stored exactly as pasted.
+
+**How you would know.** You see the characters instead of dots in the **Value**
+field.
+
+See `HACKS.md` #127 and [the parameters page](/operate/secrets/#a-value-is-kept-exactly-as-pasted-line-breaks-included).
+
+---
+
+### 128. good-eggs adds through an endpoint Good Eggs does not document
+
+`add_to_cart` sends the same request as the "Add to basket" button on a product
+page, `POST /api/basket/update-item`. It does not click the button. Good Eggs
+publishes no API, so the request was read out of the site's own traffic, and its
+meaning was measured against an anonymous basket. `quantity` sets the line's
+total. It does not add to it. So the tool sends the update only when it has read
+the line's current total and that total is below the request. With the total
+unknown it attempts no add, and says so. A signed-in account has exercised this
+path only through tests with fakes.
+
+**How you would know.** From the tool's answer. If Good Eggs moves or reshapes
+the endpoint, a failed add names the HTTP status and Good Eggs' reason
+(`Good Eggs refused the basket update with HTTP …`) before falling back to the
+button. Every add is checked against a fresh read of the basket.
+
+Good Eggs also answers that update with a 2xx for a product it will not sell on
+the basket's delivery day, then leaves the line out. So `add_to_cart` reads
+the product's `availabilitiesByDay` from the page payload first. That is
+another undocumented field, read the same way as the basket. A product listed
+as sold out or unavailable for that day is refused by name, with no request
+sent, along with the next day it is available. When the record is missing or
+carries a status nobody has measured, the add is sent and the basket re-read
+decides. `get_grocery_details` reports the same
+record.
+
+See `HACKS.md` #128 and `servers/good-eggs/FORK.md` #13 and #14.
+
+---
+
+### 129. google-docs reading every tab is a strad patch on a vendored copy
+
+The google-docs server reads every tab of a document, nested tabs included.
+`get_document` and `get_document_outline` take a `tab_id` to read one, and
+a `?tab=` in a pasted link is ignored, because Docs puts `?tab=t.0` on nearly
+every link. The upstream server it is copied from reads only the first tab.
+
+- **strad added it, not upstream.** Re-copying the server from upstream
+  removes it unless the change is applied again, and a test fails if it is
+  not.
+- **`format=json` on a multi-tab document has no top-level `body`.** The
+  content is under `tabs[].documentTab.body`. Pass `tab_id` to get one tab
+  with its `body` at the top level. A single-tab document is unchanged.
+- **A write with no tab goes to the first tab.** `append_text` and `insert_text`
+  take a `tab_id`, and an `update_document` request can name a `tabId`.
+  `replace_text` replaces in every tab unless `tab_id` narrows it. `insert_content`
+  searches every tab and refuses a heading it finds in two.
+- **`export_document` cannot export one tab.** Drive's export has no option
+  for it, and what it does with a multi-tab document has not been measured.
+- **No tabbed read has reached Google from CI.** The tests fake the Docs API.
+
+**How you would know.** A tool answer that shows one tab of a document that
+has several, or a `tab_id` that comes back "not found" with the tab list
+missing the one you expected.
+
+See `HACKS.md` #129.
+
+---
+
+### 130. gmail's `delete_draft_email` deletes permanently, and asks nobody
+
+`delete_draft_email` removes one draft, by ID, and Gmail does not keep it in
+Trash. It is on the `-rw` and `-rw-external` tiers, and like
+`upsert_draft_email` it asks no human. An agent on either tier can delete a
+draft a person wrote.
+
+- **It deletes drafts only.** It reads the draft first and refuses an ID
+  that is not one, so a message or a thread is never touched.
+- **`upsert_draft_email` does not delete.** It creates and updates. A slug
+  can allow drafting and withhold deletion by leaving `delete_draft_email`
+  off its `tools: allow` list.
+- **The gmail tree is a fork.** Re-vendoring it from upstream would remove the
+  tool. `images/bundle-google/vendor/gmail-shared/FORK.md` lists the delta.
+
+**How you would know.** A draft is missing from Gmail's Drafts folder and not
+in Sent. The calling agent's transcript has the `delete_draft_email` answer,
+which names the draft's recipient and subject.
+
+See `HACKS.md` #130.
+
+---
+
+### 131. MCP Events follows a draft, in poll mode only
+
+strad's [MCP Events](/servers/events/) support is built from draft SEP-3415,
+pinned in `docs/mcp-events-spec-pin.md`. The draft can still change, and so can
+its error codes. Only `events/list` and `events/poll` exist. There is no push,
+no webhook, no `list_changed` notification and no `server/discover`.
+
+The Slack `message_posted` feed has met fakes only. No real Socket Mode
+connection has run in CI, and it stays off until `SLACK_APP_TOKEN` and the
+`SLACK_EVENTS_*` variables are seeded.
+
+- **Backfill has a horizon.** After a gap, a thread reply is recovered only if
+  its parent is less than 48 hours older than the gap. Each read stops at 10
+  pages.
+- **The buffer is written every couple of seconds.** A crash loses what was
+  buffered since. The next connection's backfill recovers what Slack returns.
+- **One instance is a lease, not a render check.** A second replica stops
+  writing within 30 seconds, but its socket takes a share of Slack's events
+  until then.
+- **`tools:` does not narrow events.** A read-only slug sharing the mount sees
+  the same events.
+- **The bucket is made by hand.** The GCS bucket and the service account that
+  writes it are created once in GCP, outside any deploy, as for WhatsApp.
+
+**How you would know.** `slack_events_status` reports the state, the last
+backfill and how many reads were cut short, and the last GCS write.
+
+See `HACKS.md` #131.
+
+---
+
+### 132. google-docs comments can notify people, with no gate in strad
+
+`add_comment` and `reply_to_comment` write comments to a Google Doc as the
+slug's account. They are on the read-write tiers only.
+
+- **Google may notify people.** A comment or reply can notify people who
+  already have access to the document, per their own Docs settings, with no
+  gate in strad. Neither tool grants anyone access.
+- **strad added them, not upstream.** Re-copying the server from upstream
+  removes them unless the change is applied again, and a test fails if it is
+  not.
+- **No comment has reached Google from CI.** The tests fake the Drive API.
+
+**How you would know.** Someone with access to the document mentions a
+notification about a comment an agent wrote.
+
+See `HACKS.md` #132.
+
+---
+
+### 133. The bundle restarts itself when its event loop wedges
+
+A `strad-bundle` component restarts when its event loop has been saturated for
+about three minutes. The host's watchdog exits on its own, and a liveness check
+on `/healthz` restarts it if the loop is too blocked to run the watchdog. It
+also starts with a V8 heap of half its plan's memory, rather than whatever Node
+would pick.
+
+- **A restart drops in-flight calls** on every slug the component serves, and
+  takes about a minute.
+- **The heap size is a rule of thumb.** If Chromium and everything else outgrow
+  the other half, the kernel kills the container and it restarts.
+- **No leak was found behind the incident that caused this.** A heap that
+  climbs steadily toward its new ceiling is a leak this does not fix.
+- **Any other image gets no liveness check** unless `bundles[].liveness: true`,
+  because a check against an image with no `/healthz` restarts it in a loop.
+
+**How you would know.** `strad.process.uptime` resets on the bundle, and its
+log has a `[watchdog] ERROR event loop saturated for …` line, or App Platform
+shows a liveness restart.
+
+See `HACKS.md` #133.
+
+---
+
+### 134. gmail attachments come back as embedded resources
+
+`download_email_attachments` returns each attachment inside the tool result,
+as an MCP embedded resource: the bytes as base64 for a PDF or an image, the
+decoded text for UTF-8 text under 100 KB, base64 for any other text. It writes nothing to the server's disk, which no
+caller can reach anyway. Claude Code saves each binary resource to a local
+file and reports the path.
+
+- **A client that ignores embedded resources shows only the summary.** Call
+  again with `inline=true` and the content comes back as text, binary types as
+  a base64 code block.
+- **One call carries at most 25 MB.** Use `filename` to fetch attachments one
+  at a time. Gmail receives messages up to 50 MB, so a single attachment over
+  25 MB cannot be fetched at all.
+- **Small text attachments come back as text** and land in the model's
+  context, the way a message body does. They are written by the sender.
+
+**How you would know.** The result's first block lists the attachments, and
+no local path follows it in the client.
+
+See `HACKS.md` #134.
+
+---
+
+### 135. google-docs suggestions and anchored comments are partly seen live
+
+`suggest: true` on `insert_content` (with refusals, #136), `append_text`,
+`insert_text`, `replace_text` and `update_document` makes an edit a suggestion for a
+human to review.
+`add_comment`'s `quoted_text` attaches a comment to that passage.
+
+- **A failed save can still change the document.** Google says a batch can
+  commit its text while the comment or suggestion fails to save. strad reports
+  that as an error and says to read the document before retrying. What a failed
+  suggestion leaves behind has not been measured, and it might be a direct edit.
+- **`update_document` refuses what Docs cannot suggest**, by name and before
+  calling Google: tab and named-range changes, deleting a header or footer,
+  table column properties, and three document style fields. Send those without
+  `suggest`. strad also refuses requests on comment and suggestion threads, as its
+  own rule, because they are not edits to propose.
+- **A comment only attaches to text in the body.** Headers, footers, footnotes
+  and a table of contents are not searched; send `insertComment` through
+  `update_document` for those. `quoted_text` that is not found, or that repeats with no
+  `occurrence`, is refused and creates nothing.
+- **`suggest` follows the tab rules of direct edits.** A write with no tab goes
+  to the first tab, and `replace_text` reaches every tab unless `tab_id` narrows
+  it.
+- **`get_document`'s text shows both sides of a pending suggestion**, unmarked.
+  `format=json` carries the suggestion ids.
+- **`replace_text` with `suggest` can overwrite a pending suggestion.** It matches
+  text inside a pending insertion and rewrites that suggestion under the same id,
+  so what it proposed is gone. Text in a pending deletion does not match. This was
+  seen on one account's own suggestions. Whether it does the same to another
+  author's suggestion is untested.
+- **A quote across a pending replacement shows both sides.** `add_comment`'s
+  "Anchored to" and `list_comments` read `papayabanana` for a passage typed as
+  either word. The anchor itself is right.
+- **The live behaviour is only partly seen.** The request shapes come from Google's
+  reference. #462 ran against real Google on 0.4.154 with nothing failing, and on
+  0.4.155 suggestions with `tab_id` each stayed in their tab. Not yet seen on a real
+  document:
+  how `replace_text` splits into suggestions and what count it reports, whether `reply_to_comment` accepts an anchored comment's ID, and
+  whether a comment-only account can write this way at all. The tests fake both
+  APIs.
+- **strad added it, not upstream.** Re-copying the server from upstream removes
+  it unless the change is applied again, and a test fails if it is not.
+
+**How you would know.** A result labelled `UNCONFIRMED` means Google neither
+named a suggestion nor said it saved one. An edit with `suggest` that shows in
+the document with no suggestion marking is the failure to report.
+
+See `HACKS.md` #135.
+
+---
+
+### 136. google-docs edits by heading, and `insert_content` cannot suggest everywhere
+
+`insert_content` writes markdown above, under or at the end of a heading's
+section, in any tab, and `get_document` can read one section. An agent no longer
+needs an index for the common edit.
+
+- **The dialect is small.** Headings, paragraphs, one level of bullets or numbers,
+  bold, italic, code and links. Tables, images, block quotes, code fences, rules
+  and nested lists are refused by line, not written as punctuation. They go
+  through `update_document`.
+- **Every non-blank line is a paragraph, and no blank paragraph is written.**
+  Spacing comes from the document's own named styles, so a document that relies
+  on empty lines between paragraphs will read tighter around new text.
+- **Only top-level headings are anchors.** A heading inside a table cell is not
+  found. A paragraph styled to look like a heading, in bold with no heading
+  style, is not a heading to Docs; `insert_text` with `tab_id` and
+  `format=outline_with_indices` reaches those, as plain text.
+- **Directly above a table, or at a tab's end, the paragraph before is split.**
+  Docs takes no text at a table's start, so `after_heading` on a heading followed
+  by a table, or on a tab's last paragraph, writes inside the heading's closing
+  newline. Above a table its text, style and `heading_id` stay. At a tab's end the
+  `heading_id` was not checked.
+- **`suggest` is refused there unless everything involved is plain text.** In that
+  shape the content's last paragraph ends on the existing paragraph's own newline,
+  and a suggestion cannot restyle that newline cleanly. On a real document, a
+  reviewer accepting the suggestions in the order the tool returned them was left
+  with a stray heading under a new id. So `after_heading` on a heading directly
+  above a table cannot be a suggestion. The same goes for a tab's end when the last
+  paragraph is a heading or list item, or the content would end in one. The refusal
+  names what to do instead, such as `end_of_section`, `before_heading` or a direct
+  write.
+  Only the heading above a table failed live. The other refused cases share its
+  shape and were not run. An allowed suggestion at a tab's end keeps any direct
+  formatting of the line it follows, a centred line for example, on its last
+  paragraph, and that case has not been run either.
+- **One suggest call can make several suggestions, and the number depends on the
+  shape.** Content above a heading made one, across five paragraphs. The refused
+  shape made one per paragraph plus one. A tab's end, the one remaining shape that
+  ends on an existing newline, has not been measured, so read the IDs the tool
+  returns rather than assuming one.
+- **A numbered list directly after an existing one joins it.** That is Docs' rule
+  for a matching list, and so the numbering continues. A number other than 1 only
+  continues a list being written; elsewhere it stays text, so `2020. A year` is a
+  sentence.
+- **A heading anchor can match more loosely than you typed.** It ignores case,
+  matches a whole-word prefix when nothing is exact, and last ignores leading
+  symbols, so
+  `Agent Run` finds `🖼️ Agent Run Lifecycle`. A repeat is refused, and the result
+  always names the heading it used.
+- **`delete_section` and `replace_section` do not exist.** Read the range with
+  `get_document` and send `deleteContentRange` through `update_document`. For a
+  tab's last section use `endIndex - 1`, because Docs keeps a segment's final
+  newline.
+- **`format=outline_with_indices` uses the account's default suggestion view**,
+  which is inline for anyone who can edit or comment. Only those indexes are good
+  for a write. An account that can only view may be shown other ones.
+- **The tests use a local model of a tab that strad wrote.** It follows what the
+  live run showed for a split paragraph and a suggested style. Beyond those
+  cases it is an assumption. Written from Google's reference alone, it missed the
+  stray heading above.
+- **strad added it, not upstream.** Re-copying the server from upstream removes
+  it unless the change is applied again, and a test fails if it is not.
+
+**How you would know.** New text in the right place with the wrong style means
+ranges were off. A `heading_id` refused as matching two headings means a suggested
+paragraph is sitting on that heading's newline, most likely one written before the
+refusal existed; resolve the suggestions, or use `heading`. A paragraph at a tab's
+end that keeps the wrong look after accepting is the unmeasured case above.
+
+See `HACKS.md` #136.
+
+---
+
+### 137. The SSH server is a shell on production hosts, and nothing here has reached one
 
 The [SSH](/servers/ssh/) server runs commands and moves files on one host per
 slug, with the key and a pinned host key in the slug's own namespace. What it
@@ -3902,6 +4342,4 @@ refused or unreachable port.
 **Undo:** a fixed egress address or a tunnel for the firewall case, and a pty
 mode for the timeout case. The rest is the design.
 
-See `HACKS.md` #124.
-
----
+See `HACKS.md` #137.

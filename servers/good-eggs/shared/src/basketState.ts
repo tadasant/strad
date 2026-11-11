@@ -47,6 +47,10 @@ export interface StoreProduct {
   basePrice?: number;
   currentProducer?: { name?: string } | null;
   hasVariableProducers?: boolean;
+  /** HTML. */
+  description?: string;
+  /** Per-day `{ status, quantity }`, keyed by ISO day. Read by `availability.ts`. */
+  availabilitiesByDay?: unknown;
 }
 
 /** Per-line totals, keyed by LINE-ITEM id (not product id). */
@@ -210,6 +214,7 @@ export function cartItemsFromStoreData(
       quantity: typeof item.quantity === 'number' ? item.quantity : 1,
       price: formatCents(subtotal),
       imageUrl: product.photoUrl || undefined,
+      subscribed: item.shouldSubscribe === true,
     };
   });
 }

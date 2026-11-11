@@ -14,6 +14,16 @@ import {
   pastOrdersFromStoreData,
   type PastOrdersStoreData,
 } from './pastOrders.js';
+import {
+  groceryDetailsFromStoreData,
+  productAvailabilityFromHtml,
+  unavailableAddMessage,
+} from './availability.js';
+import {
+  getKitchenNutritionSource,
+  groceryNutritionFromHtml,
+  type GroceryNutrition,
+} from './nutrition.js';
 import type {
   GoodEggsConfig,
   GroceryItem,
@@ -29,10 +39,11 @@ const BASE_URL = 'https://www.goodeggs.com';
 // control) to appear before giving up. Capped against the configured timeout.
 const ELEMENT_WAIT_TIMEOUT_MS = 10_000;
 
-// Good Eggs renders the add control as a <button> whose label varies in casing
-// ("ADD TO BASKET", "Add to Cart", "Add to Basket") and is occasionally a
-// role="button" element rather than a real <button>. Match all of these
-// case-insensitively so a markup/copy tweak doesn't break the add flow.
+// Ceiling on any one field the details fallback scrapes off the drawn page. A
+// selector that lands on a page-wide container otherwise returns the whole
+// document's text, inline scripts included.
+const DOM_FIELD_CAP = 1_000;
+
 // A Good Eggs product id is a 24-character Mongo-style hex string. Removal
 // interpolates one into a CSS selector, so it is validated against this first.
 const PRODUCT_ID_PATTERN = /^[0-9a-f]{24}$/i;
@@ -123,7 +134,7 @@ type SignedInSignal = 'signed-in' | 'anonymous' | 'unknown';
  * A payload that carries no `user` key AT ALL is `unknown`, not `anonymous`.
  * That distinction is the difference between this being a safety net and being
  * a second way to break the server: refusing a basket read on a payload nobody
- * recognises is cheap, and refusing a LOGIN on one takes all eleven tools down.
+ * recognises is cheap, and refusing a LOGIN on one takes every tool down.
  * So a shape change, an error page and a page that ships no payload all leave
  * the verdict to the URL.
  */
@@ -138,9 +149,73 @@ async function signedInFromPage(page: import('playwright').Page): Promise<Signed
   return storeData.user === null ? 'anonymous' : 'signed-in';
 }
 
-const ADD_BUTTON_SELECTOR =
+// The fallback add control. Good Eggs renders it as a <button> whose label
+// varies in casing ("ADD TO BASKET", "Add to Cart") and occasionally as a
+// role="button" element, so every spelling is matched case-insensitively.
+// `visible=true` filters the WHOLE list before Playwright picks a match:
+// `waitForSelector(..., { state: 'visible' })` judges only the FIRST element
+// the selector resolves to, so a hidden duplicate earlier in the document
+// would otherwise hold the wait to its timeout beside a visible button.
+export const ADD_BUTTON_SELECTOR =
   'button:has-text("add to basket"), button:has-text("add to cart"), ' +
-  '[role="button"]:has-text("add to basket"), [role="button"]:has-text("add to cart")';
+  '[role="button"]:has-text("add to basket"), [role="button"]:has-text("add to cart") ' +
+  '>> visible=true';
+
+// The endpoint Good Eggs' own "Add to basket" button posts to, from the product
+// page: `{ productId, quantity, shouldSubscribe }`. `quantity` is the line's
+// new TOTAL, not an increment — posting 1 for a line already at 1 leaves it at
+// 1 — so the add is idempotent, and posting less than the line holds would
+// REMOVE units. FORK.md #13.
+export const BASKET_UPDATE_PATH = '/api/basket/update-item';
+
+/**
+ * What Good Eggs answered a basket update with. `refused` is a definite no — a
+ * non-2xx answer — so nothing changed and the button may be tried. `unknown`
+ * is a 2xx this code cannot read, or a request whose answer never came back:
+ * the update may have been applied, so nothing else may be sent after it.
+ */
+export type BasketUpdateOutcome =
+  | { kind: 'accepted'; quantity: number }
+  | { kind: 'refused'; reason: string }
+  | { kind: 'unknown'; reason: string };
+
+/**
+ * Read the answer to a `POST /api/basket/update-item`. Accepted means a 2xx
+ * whose `basketItem` names the product and carries a numeric quantity. Any
+ * other 2xx is `unknown`. A non-2xx is a refusal, with the reason Good Eggs
+ * gave when it gave one (`{"error":{"message":"Product could not be added to
+ * basket"}}` on a 500).
+ */
+export function parseBasketUpdateResponse(
+  status: number,
+  body: string,
+  productId: string
+): BasketUpdateOutcome {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    parsed = undefined;
+  }
+  const record = (value: unknown): Record<string, unknown> | undefined =>
+    value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
+  const root = record(parsed);
+  if (status >= 200 && status < 300) {
+    const item = record(root?.basketItem);
+    const product = record(item?.product);
+    const quantity = item?.quantity;
+    if (product?.id === productId && typeof quantity === 'number') {
+      return { kind: 'accepted', quantity };
+    }
+    return {
+      kind: 'unknown',
+      reason: `Good Eggs answered the basket update with HTTP ${status} but no basket line for this product`,
+    };
+  }
+  const message = record(root?.error)?.message;
+  const said = typeof message === 'string' && message.trim() ? `: ${message.trim().slice(0, 200)}` : '';
+  return { kind: 'refused', reason: `Good Eggs refused the basket update with HTTP ${status}${said}` };
+}
 
 /**
  * Extract the stable product id (the trailing path segment) from a Good Eggs
@@ -170,13 +245,14 @@ export function findCartItemForUrl(
   cartItems: CartItem[],
   groceryUrl: string
 ): CartItem | undefined {
-  const productId = extractProductId(groceryUrl);
+  // Ids are lowercase hex; a URL typed in another case is the same product.
+  const productId = extractProductId(groceryUrl).toLowerCase();
   if (!productId) return undefined;
   // `productId` is read off the basket payload and survives a product whose
   // presentation data (and therefore whose url) the page didn't ship; fall back
   // to the url only for items that predate it.
   return cartItems.find(
-    (item) => (item.productId || extractProductId(item.url)) === productId
+    (item) => (item.productId || extractProductId(item.url)).toLowerCase() === productId
   );
 }
 
@@ -193,7 +269,16 @@ export interface ReconcileAddParams {
   priorQuantityKnown: boolean;
   /** Cart contents read back AFTER the add was attempted. */
   cartItems: CartItem[];
-  buttonFound: boolean;
+  /**
+   * Whether the add was sent: Good Eggs accepted the basket update, or the
+   * fallback add button was found and clicked.
+   */
+  addSent: boolean;
+  /**
+   * Why the add did not go through, when it did not. It goes into the failure
+   * message, so a failed add says what went wrong instead of guessing.
+   */
+  addFailure?: string;
   /**
    * Whether the after-read actually succeeded. When false, `cartItems` is not
    * evidence of anything and no outcome may be asserted from it.
@@ -205,11 +290,10 @@ export interface ReconcileAddParams {
  * Decide the true outcome of an add-to-cart attempt by reconciling what we tried
  * to do against the actual cart contents read back afterward.
  *
- * This exists because the add button and the server-side cart state can
- * disagree: Good Eggs frequently adds the item even when the button can't be
- * located (false negative), and occasionally reports a clicked button when
- * nothing was added because, e.g., a delivery day still needs to be selected
- * (false positive). The cart is the source of truth.
+ * This exists because what the add reported and the server-side cart state can
+ * disagree: an add that was accepted can still leave nothing in the basket
+ * because, e.g., a delivery day still needs to be selected, and an add that
+ * looked unsent can have landed. The cart is the source of truth.
  *
  * Success is judged by a BEFORE/AFTER delta, not just the after-snapshot: an
  * item that was already in the cart must not be misreported as a fresh add when
@@ -222,10 +306,12 @@ export function reconcileAddResult(params: ReconcileAddParams): CartResult {
     itemName,
     priorQuantity,
     cartItems,
-    buttonFound,
+    addSent,
+    addFailure,
     cartReadable,
     priorQuantityKnown,
   } = params;
+  const notSent = addFailure ?? 'the add-to-cart button was not found';
 
   // The basket could not be read back. Nothing here is evidence, so say that
   // instead of picking an outcome. Reporting an unread basket as "the add did
@@ -238,11 +324,11 @@ export function reconcileAddResult(params: ReconcileAddParams): CartResult {
     return {
       success: false,
       verified: false,
-      message: buttonFound
-        ? `Clicked add for ${name}, but the basket could not be read back, so the result is ` +
+      message: addSent
+        ? `Sent the add for ${name}, but the basket could not be read back, so the result is ` +
           `UNVERIFIED. Do not re-add it without checking the cart first — a blind retry is how ` +
           `duplicates happen.`
-        : `The add-to-cart button was not found for ${name} and the basket could not be read ` +
+        : `The add for ${name} did not go through (${notSent}) and the basket could not be read ` +
           `back, so the result is UNVERIFIED. Check the cart before retrying.`,
       itemName,
     };
@@ -273,12 +359,12 @@ export function reconcileAddResult(params: ReconcileAddParams): CartResult {
     return {
       success: false,
       verified: true,
-      message: buttonFound
-        ? `Clicked add for ${displayName}, but it is not in your cart afterward. The add did ` +
+      message: addSent
+        ? `Sent the add for ${displayName}, but it is not in your cart afterward. The add did ` +
           `not take effect (a delivery day may need to be selected, or the item may be ` +
           `unavailable).`
-        : `Could not find the add-to-cart button, and ${displayName} is not in your cart. The ` +
-          `add did not succeed.`,
+        : `The add for ${displayName} did not go through (${notSent}), and it is not in your cart. ` +
+          `The add did not succeed.`,
       itemName: displayName,
       quantity: 0,
     };
@@ -290,9 +376,9 @@ export function reconcileAddResult(params: ReconcileAddParams): CartResult {
       return {
         success: true,
         verified: true,
-        message: buttonFound
+        message: addSent
           ? `Successfully added ${displayName} to cart (cart now has ${cartQuantity}).`
-          : `The add-to-cart button was not found on the page, but the cart quantity for ` +
+          : `The add did not go through (${notSent}), but the cart quantity for ` +
             `${displayName} increased to ${cartQuantity}. The add succeeded.`,
         itemName: displayName,
         quantity: cartQuantity,
@@ -329,11 +415,11 @@ export function reconcileAddResult(params: ReconcileAddParams): CartResult {
     return {
       success: false,
       verified: true,
-      message: buttonFound
-        ? `Clicked add for ${displayName}, but the cart quantity did not change (still ` +
+      message: addSent
+        ? `Sent the add for ${displayName}, but the cart quantity did not change (still ` +
           `${cartQuantity}, below the requested ${requestedQuantity}). The add did not take ` +
           `effect (a delivery day may need to be selected).`
-        : `The add-to-cart button was not found and the cart quantity for ${displayName} did ` +
+        : `The add for ${displayName} did not go through (${notSent}) and its cart quantity did ` +
           `not change (still ${cartQuantity}, below the requested ${requestedQuantity}). The ` +
           `add did not take effect.`,
       itemName: displayName,
@@ -344,10 +430,11 @@ export function reconcileAddResult(params: ReconcileAddParams): CartResult {
   return {
     success: false,
     verified: true,
-    message: buttonFound
-      ? `Clicked add for ${displayName}, but it does not appear in your cart afterward. ` +
+    message: addSent
+      ? `Sent the add for ${displayName}, but it does not appear in your cart afterward. ` +
         `The add did not take effect (a delivery day may need to be selected, or the item may be unavailable).`
-      : `Could not find the add-to-cart button, and ${displayName} is not in your cart. The add did not succeed.`,
+      : `The add for ${displayName} did not go through (${notSent}), and it is not in your cart. ` +
+        `The add did not succeed.`,
     itemName: displayName,
     quantity: 0,
   };
@@ -424,6 +511,12 @@ export interface IGoodEggsClient {
    * Get detailed information about a specific grocery item
    */
   getGroceryDetails(groceryUrl: string): Promise<GroceryDetails>;
+
+  /**
+   * Nutrition and photo URLs for a product — what Good Eggs publishes, with an
+   * explicit status when it publishes nothing (FORK.md #12)
+   */
+  getGroceryNutrition(groceryUrl: string): Promise<GroceryNutrition>;
 
   /**
    * Add an item to the shopping cart
@@ -869,59 +962,81 @@ export class GoodEggsClient implements IGoodEggsClient {
   async getGroceryDetails(groceryUrl: string): Promise<GroceryDetails> {
     const page = await this.ensureBrowser();
 
+    const fullUrl = groceryUrl.startsWith('http') ? groceryUrl : `${BASE_URL}${groceryUrl}`;
+
     // Check if we're already on the product page
     const currentUrl = page.url();
     if (!currentUrl.includes(groceryUrl) && !groceryUrl.includes(currentUrl)) {
-      // Navigate to the product page
       // Use domcontentloaded instead of networkidle - Good Eggs has persistent connections
-      const fullUrl = groceryUrl.startsWith('http') ? groceryUrl : `${BASE_URL}${groceryUrl}`;
       await page.goto(fullUrl, { waitUntil: 'domcontentloaded' });
     }
 
-    // Wait for React to render
+    // The payload first, the way the basket, the add and nutrition read it: the
+    // product's own record, including whether it can be had on the basket's day.
+    // The drawn page is not a substitute: its first heading is the day picker,
+    // its "brand" selector matches a container holding the whole document, and
+    // its availability strip is the day picker again. FORK.md #14.
+    const productId = extractProductId(fullUrl).toLowerCase();
+    const storeData = extractStoreData(await page.content());
+    const fromPayload =
+      storeData && PRODUCT_ID_PATTERN.test(productId)
+        ? groceryDetailsFromStoreData(storeData, productId, fullUrl, BASE_URL)
+        : null;
+    if (fromPayload) return fromPayload;
+
+    // No payload record for this product: fall back to the drawn page, with
+    // every field capped. Availability is left out, because the only strip the
+    // page draws is the day picker, which says nothing about this product.
     await page.waitForTimeout(3000);
-
-    // Extract product details
-    const details = await page.evaluate((url) => {
-      // Find the main product info
-      const nameEl = document.querySelector('h1, [class*="product-name"], [class*="title"]');
-      const brandEl = document.querySelector('[class*="brand"], [class*="producer"]');
-      const priceEl = document.querySelector('[class*="sale-price"], [class*="current-price"]');
-      const originalPriceEl = document.querySelector(
-        '[class*="original-price"], [class*="regular-price"], s'
-      );
-      const discountEl = document.querySelector('[class*="off"], [class*="discount"]');
-      const descriptionEl = document.querySelector(
-        '[class*="description"], [class*="details"] p, .product-description'
-      );
-      const productDetailsEl = document.querySelector('[class*="product-details"]');
-      const imgEl = document.querySelector('[class*="product"] img, main img');
-
-      // Get availability dates
-      const availabilityEls = document.querySelectorAll(
-        '[class*="availability"] span, [class*="delivery"] span'
-      );
-      const availability: string[] = [];
-      availabilityEls.forEach((el) => {
-        const text = el.textContent?.trim();
-        if (text) availability.push(text);
-      });
-
-      return {
-        url: url,
-        name: nameEl?.textContent?.trim() || 'Unknown',
-        brand: brandEl?.textContent?.trim() || '',
-        price: priceEl?.textContent?.trim() || '',
-        originalPrice: originalPriceEl?.textContent?.trim() || undefined,
-        discount: discountEl?.textContent?.trim() || undefined,
-        description: descriptionEl?.textContent?.trim() || undefined,
-        productDetails: productDetailsEl?.textContent?.trim() || undefined,
-        availability: availability.length > 0 ? availability : undefined,
-        imageUrl: (imgEl as HTMLImageElement)?.src || undefined,
-      };
-    }, groceryUrl);
+    const details = await page.evaluate(
+      ({ url, cap }) => {
+        const text = (el: Element | null): string | undefined => {
+          const value = el?.textContent?.replace(/\s+/g, ' ').trim();
+          return value ? value.slice(0, cap) : undefined;
+        };
+        const imgEl = document.querySelector('[class*="product"] img, main img');
+        return {
+          url,
+          name: text(document.querySelector('h1, [class*="product-name"]')) || 'Unknown',
+          brand: text(document.querySelector('[class*="brand"], [class*="producer"]')) || '',
+          price: text(document.querySelector('[class*="sale-price"], [class*="current-price"]')) || '',
+          originalPrice: text(
+            document.querySelector('[class*="original-price"], [class*="regular-price"], s')
+          ),
+          discount: text(document.querySelector('[class*="off"], [class*="discount"]')),
+          description: text(
+            document.querySelector('[class*="description"], [class*="details"] p, .product-description')
+          ),
+          productDetails: text(document.querySelector('[class*="product-details"]')),
+          imageUrl: (imgEl as HTMLImageElement)?.src || undefined,
+        };
+      },
+      { url: groceryUrl, cap: DOM_FIELD_CAP }
+    );
 
     return details;
+  }
+
+  async getGroceryNutrition(groceryUrl: string): Promise<GroceryNutrition> {
+    const page = await this.ensureBrowser();
+    const fullUrl = groceryUrl.startsWith('http') ? groceryUrl : `${BASE_URL}${groceryUrl}`;
+    const productId = extractProductId(fullUrl);
+
+    // Always load the page, and read the SERVED document straight after
+    // domcontentloaded, the way the basket read does: the payload is the
+    // server's state for this product, and nothing here needs React to draw.
+    await withNavigationRetry(
+      () => page.goto(fullUrl, { waitUntil: 'domcontentloaded' }),
+      async () => {}
+    );
+    const html = await page.content();
+
+    return groceryNutritionFromHtml(
+      html,
+      fullUrl,
+      getKitchenNutritionSource(),
+      PRODUCT_ID_PATTERN.test(productId) ? productId : undefined
+    );
   }
 
   async addToCart(groceryUrl: string, quantity: number): Promise<CartResult> {
@@ -933,21 +1048,18 @@ export class GoodEggsClient implements IGoodEggsClient {
     // Snapshot the cart BEFORE attempting the add so we can judge success by a
     // before/after delta. Without this, an item that is already in the cart at a
     // sufficient quantity would be misreported as a successful add even when this
-    // attempt changed nothing (e.g. the button was missing or a delivery day
-    // still needs to be selected).
+    // attempt changed nothing (e.g. a delivery day still needs to be selected).
     let priorCartItems: CartItem[] | null = null;
     try {
       priorCartItems = await this.getCart();
     } catch {
       priorCartItems = null;
     }
-    const priorQuantity = priorCartItems
-      ? (findCartItemForUrl(priorCartItems, groceryUrl)?.quantity ?? 0)
-      : 0;
 
-    // Navigate to the product page if we're not already on it. Wrap in a retry
-    // so a stale page / re-render during navigation reloads once instead of
-    // failing the whole add.
+    // Load the product page. The add is sent from it, so the request carries the
+    // page's origin, cookies and referer exactly as the site's own button does.
+    // Wrap in a retry so a stale page / re-render during navigation reloads once
+    // instead of failing the whole add.
     const navigateIfNeeded = async (): Promise<void> => {
       const currentUrl = page.url();
       const normalizedGroceryUrl = groceryUrl.replace(BASE_URL, '');
@@ -955,71 +1067,117 @@ export class GoodEggsClient implements IGoodEggsClient {
       if (!normalizedCurrentUrl.includes(normalizedGroceryUrl.split('/').pop() || '')) {
         // Use domcontentloaded instead of networkidle - Good Eggs has persistent connections
         await page.goto(fullUrl, { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(3000);
       }
     };
     await withNavigationRetry(navigateIfNeeded, async () => {
       await page.goto(fullUrl, { waitUntil: 'domcontentloaded' });
-      await page.waitForTimeout(3000);
     });
+    const productHtml = await page.content();
+
+    // The product page carries the same basket payload /basket does, so a
+    // before-read that failed there gets a second chance here. Only a signed-in
+    // payload counts — an anonymous basket is not this account's.
+    if (priorCartItems === null) {
+      const snapshot = basketSnapshotFromHtml(productHtml, BASE_URL);
+      if (snapshot?.signedIn) priorCartItems = snapshot.items;
+    }
+    const priorQuantityKnown = priorCartItems !== null;
+    const priorQuantity = priorCartItems
+      ? (findCartItemForUrl(priorCartItems, groceryUrl)?.quantity ?? 0)
+      : 0;
 
     // Name the product from the page's own payload, falling back to the
     // heading. The heading is not reliable: it reads `h1, [class*="title"]`,
     // and on a product page with no delivery day chosen the first such element
     // is the day picker — which is why successful adds were reported against an
     // item called "Select a delivery day".
+    const productId = extractProductId(fullUrl).toLowerCase();
     const itemName =
-      productNameFromHtml(await page.content(), extractProductId(groceryUrl)) ??
+      productNameFromHtml(productHtml, productId) ??
       (await page.evaluate(() => {
         const nameEl = document.querySelector('h1, [class*="product-name"], [class*="title"]');
         return nameEl?.textContent?.trim() || 'Unknown item';
       }));
 
-    // Set quantity if different from 1. This is best-effort: if the quantity
-    // controls can't be found we still attempt the add and let cart
-    // verification report the actual resulting quantity, rather than hard
-    // failing here.
-    if (quantity > 1) {
-      const quantitySelector = await page.$(
-        'select[class*="quantity"], [class*="quantity"] select'
+    // Good Eggs answers the basket update for a product it will not sell on the
+    // basket's day with a 2xx, then leaves the line out of the basket. So a
+    // product the payload lists as sold out or unavailable for that day is not
+    // sent, and the result says which, rather than "did not take effect (a
+    // delivery day may need to be selected, or the item may be unavailable)"
+    // after the fact. That vaguer answer is what six adds got in the 2026-11-02
+    // shop. FORK.md #14.
+    const availability = PRODUCT_ID_PATTERN.test(productId)
+      ? productAvailabilityFromHtml(productHtml, productId)
+      : null;
+    const alreadyMet = priorQuantityKnown && priorQuantity >= quantity;
+    if (availability?.addable === false && !alreadyMet) {
+      const name = itemName && itemName !== 'Unknown item' ? itemName : 'This product';
+      return {
+        success: false,
+        // Nothing was sent, so "not added" is certain without a re-read.
+        verified: true,
+        message: unavailableAddMessage(name, availability, priorQuantity),
+        itemName,
+        ...(priorQuantityKnown ? { quantity: priorQuantity } : {}),
+        unavailable: true,
+      };
+    }
+
+    let addSent = false;
+    let addFailure: string | undefined;
+    const priorLine = priorCartItems ? findCartItemForUrl(priorCartItems, groceryUrl) : undefined;
+
+    if (!priorQuantityKnown) {
+      // The update SETS a total, so without the line's current total it could
+      // lower it. Nor is the button a safe substitute: it posts the same total.
+      // A basket readable neither on /basket nor on a signed-in product page is
+      // almost always a lapsed login, where any add lands in an anonymous basket.
+      addFailure =
+        'the basket could not be read before the add, so its current quantity is unknown ' +
+        'and no add was attempted';
+    } else if (priorQuantity >= quantity) {
+      // Nothing to send: the update could only lower the line. Reconciliation
+      // reports it as already met.
+      addFailure = `the cart already held ${priorQuantity}`;
+    } else if (!PRODUCT_ID_PATTERN.test(productId)) {
+      addFailure = `the URL carries no Good Eggs product id (got "${productId.slice(0, 40)}")`;
+    } else {
+      // The primary path: the request the site's own button sends, with the
+      // quantity the line should end at. It does not depend on how, or how fast,
+      // the page draws its controls — which is what failed two adds in three in
+      // the 2026-10-19 shop (strad#439). An existing line keeps its
+      // Subscribe & Save setting.
+      const outcome = await this.sendBasketUpdate(
+        page,
+        productId,
+        quantity,
+        priorLine?.subscribed === true,
+        elementTimeout
       );
-      if (quantitySelector) {
-        await quantitySelector.selectOption(String(quantity)).catch(() => {});
+      if (outcome.kind === 'accepted') {
+        addSent = true;
+      } else if (outcome.kind === 'unknown') {
+        // It was sent and may have been applied. A second add on top of it
+        // could double the line, so the button is not tried and the basket
+        // re-read decides.
+        addSent = true;
       } else {
-        const plusButton = await page.$('button[aria-label*="increase"], button:has-text("+")');
-        if (plusButton) {
-          for (let i = 1; i < quantity; i++) {
-            await plusButton.click().catch(() => {});
-            await page.waitForTimeout(200);
-          }
+        // A definite refusal: nothing changed, so the page's own button may try.
+        // It only renders "Add to basket" for a product NOT in the basket ("in
+        // basket" otherwise, which the selector does not match), so it cannot
+        // lower a line either.
+        const clicked = await this.clickAddButton(page, quantity, elementTimeout);
+        if (clicked) {
+          addSent = true;
+        } else {
+          addFailure = `${outcome.reason}; the add-to-cart button was not found either`;
         }
       }
     }
 
-    // Wait for the add control to render (it can appear a beat after
-    // domcontentloaded) rather than synchronously null-checking it.
-    const addButton = (await waitForElement(page, ADD_BUTTON_SELECTOR, elementTimeout)) as
-      | import('playwright').ElementHandle
-      | null;
-    const buttonFound = addButton !== null;
-
-    if (addButton) {
-      // The click itself can fail if the element goes stale; that's not fatal,
-      // because the add may still have registered. Reconciliation against the
-      // cart below determines the true outcome.
-      try {
-        await addButton.click();
-      } catch {
-        // Ignore - verified against cart state below.
-      }
-      // Give the cart a moment to update server-side before we read it back.
-      await page.waitForTimeout(1500);
-    }
-
-    // Read the cart back and reconcile against what we requested. This is what
-    // turns the frequent false negative ("button not found" on an add that
-    // actually succeeded) into an accurate result. Reading the cart navigates
-    // away from the product page, so do it last.
+    // Read the cart back and reconcile against what we requested: an accepted
+    // update is not proof the line landed, and an unsent add is not proof it did
+    // not. Reading the cart navigates away from the product page, so do it last.
     let cartItems: CartItem[] = [];
     let cartReadable = true;
     try {
@@ -1042,11 +1200,103 @@ export class GoodEggsClient implements IGoodEggsClient {
       requestedQuantity: quantity,
       itemName,
       priorQuantity,
-      priorQuantityKnown: priorCartItems !== null,
+      priorQuantityKnown,
       cartItems,
-      buttonFound,
+      addSent,
+      addFailure,
       cartReadable,
     });
+  }
+
+  /**
+   * POST the basket update from inside the product page, the way the page's
+   * own button does: same origin, the session's cookies, a JSON body. Never
+   * throws. A request whose answer never came back — a timeout, a page torn
+   * down mid-flight — is `unknown`, because it may have reached Good Eggs.
+   */
+  private async sendBasketUpdate(
+    page: import('playwright').Page,
+    productId: string,
+    quantity: number,
+    shouldSubscribe: boolean,
+    timeoutMs: number
+  ): Promise<BasketUpdateOutcome> {
+    let answer: { status: number; body: string };
+    try {
+      answer = await page.evaluate(
+        async ({ path, productId, quantity, shouldSubscribe, timeoutMs }) => {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), timeoutMs);
+          try {
+            const response = await fetch(path, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', accept: 'application/json' },
+              body: JSON.stringify({ productId, quantity, shouldSubscribe }),
+              credentials: 'same-origin',
+              signal: controller.signal,
+            });
+            return { status: response.status, body: await response.text() };
+          } finally {
+            clearTimeout(timer);
+          }
+        },
+        { path: BASKET_UPDATE_PATH, productId, quantity, shouldSubscribe, timeoutMs }
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message.split('\n')[0] : String(error);
+      return {
+        kind: 'unknown',
+        reason: `the basket update got no answer (${message.slice(0, 200)})`,
+      };
+    }
+    return parseBasketUpdateResponse(answer.status, answer.body, productId);
+  }
+
+  /**
+   * The fallback add: the page's own button, with the quantity set first when
+   * more than one is wanted. Returns whether a button was found and clicked; a
+   * click that throws still counts, because the add may have registered and
+   * the basket re-read decides.
+   */
+  private async clickAddButton(
+    page: import('playwright').Page,
+    quantity: number,
+    timeoutMs: number
+  ): Promise<boolean> {
+    // Wait for the add control to render (it can appear a beat after
+    // domcontentloaded) rather than synchronously null-checking it.
+    const addButton = (await waitForElement(page, ADD_BUTTON_SELECTOR, timeoutMs)) as
+      | import('playwright').ElementHandle
+      | null;
+    if (!addButton) return false;
+
+    // Best-effort: if the quantity controls can't be found the add still goes
+    // ahead, and the basket re-read reports the quantity that resulted.
+    if (quantity > 1) {
+      const quantitySelector = await page.$(
+        'select[class*="quantity"], [class*="quantity"] select'
+      );
+      if (quantitySelector) {
+        await quantitySelector.selectOption(String(quantity)).catch(() => {});
+      } else {
+        const plusButton = await page.$('button[aria-label*="increase"], button:has-text("+")');
+        if (plusButton) {
+          for (let i = 1; i < quantity; i++) {
+            await plusButton.click().catch(() => {});
+            await page.waitForTimeout(200);
+          }
+        }
+      }
+    }
+
+    try {
+      await addButton.click();
+    } catch {
+      // Ignore - verified against cart state by the caller.
+    }
+    // Give the cart a moment to update server-side before it is read back.
+    await page.waitForTimeout(1500);
+    return true;
   }
 
   async searchFreebieGroceries(): Promise<GroceryItem[]> {

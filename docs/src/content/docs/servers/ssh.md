@@ -284,7 +284,7 @@ Not tested by anything here: OpenSSH's handling of the `SIGKILL` request on
 timeout (OpenSSH honours `signal` requests only in recent versions), and whether
 a host firewalls SSH by source address — App Platform's egress address is not
 fixed, so a host that allowlists sources will refuse this container until its
-egress is on the list. See [Known limitations](/limitations/) #124.
+egress is on the list. See [Known limitations](/limitations/) #137.
 
 ## Logging
 

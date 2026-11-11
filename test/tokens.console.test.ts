@@ -10,7 +10,14 @@ import {
 import { parseConfig } from "../src/config/load.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
-import { createFakeGcp, type FakeGcp } from "../src/secrets/parameters/fake.ts";
+import {
+  createFakeGcp,
+  PARAMETER_VIEWER_PERMISSIONS,
+  RESOLVER_PERMISSIONS,
+  WRITE_ONLY_CONSOLE_PERMISSIONS,
+  type FakeGcp,
+} from "../src/secrets/parameters/fake.ts";
+import type { ParameterStore } from "../src/secrets/parameters/index.ts";
 import {
   buildSecretProviders,
   type ServerSecretProviders,
@@ -25,6 +32,12 @@ import {
  * cannot: a credential minted in a browser authenticates an agent's very next
  * `/mcp` request, and a revocation in a browser stops it — with no restart, no
  * redeploy, and no TTL to wait out.
+ *
+ * And under PROD'S IAM, which is the other half of that claim. The console's
+ * client holds `WRITE_ONLY_CONSOLE_PERMISSIONS` — docs/operate/secrets-iam.md
+ * §1, no read path of any kind — and the resolver holds `RESOLVER_PERMISSIONS`.
+ * An all-powerful client on both sides would hide that split: a console read
+ * passes here and is a 403 on prod.
  */
 
 const BOOTSTRAP = "bootstrap-secret-xyz";
@@ -94,15 +107,32 @@ let baseUrl: string;
 
 const auth = { authorization: `Bearer ${BOOTSTRAP}` };
 
-async function boot(seedEnvTokens?: string): Promise<void> {
+/** Who holds what. Prod's split by default; a test may narrow either side. */
+interface Credentials {
+  console?: (fake: FakeGcp) => ParameterStore;
+  resolver?: ((fake: FakeGcp) => ParameterStore) | null;
+}
+
+async function boot(
+  seedEnvTokens?: string,
+  creds: Credentials = {},
+): Promise<void> {
   fake = createFakeGcp();
+  const consoleStore = (
+    creds.console ?? ((f) => f.storeAs(WRITE_ONLY_CONSOLE_PERMISSIONS))
+  )(fake);
+  const resolver =
+    creds.resolver === null
+      ? undefined
+      : (creds.resolver ?? ((f) => f.storeAs(RESOLVER_PERMISSIONS)))(fake);
   // The SHARED provider over the gateway namespace, built exactly as
   // src/index.ts builds it — including the hour-long TTL, so nothing in this
   // file passes by waiting.
   providers = buildSecretProviders({
     config: CONFIG,
     env: seedEnvTokens ? { ...env, STRAD_TOKENS: seedEnvTokens } : env,
-    resolver: fake.store,
+    // The same client the console's read goes through, as in src/index.ts.
+    resolver: resolver ?? fake.store,
   });
   const registry = await Registry.build({
     config: CONFIG,
@@ -118,7 +148,8 @@ async function boot(seedEnvTokens?: string): Promise<void> {
     env,
     secrets: SECRETS,
     secretProvider: providers,
-    parametersStore: () => fake.store,
+    parametersStore: () => consoleStore,
+    resolver,
   });
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => resolve());
@@ -603,5 +634,137 @@ describe("a gateway that cannot write", () => {
     // And the write route refuses rather than half-writing.
     const res = await post("/tokens/mint", { label: "nope", roles: "admin" });
     expect(res.status).toBe(503);
+  });
+});
+
+describe("under prod's IAM: the console writes, the resolver reads", () => {
+  /** A roster already in the store, the way a seeded deployment has one. */
+  async function seed(secret = true): Promise<ReturnType<typeof mintToken>> {
+    const existing = mintToken({
+      env: "test",
+      label: "seeded",
+      roles: ["admin"],
+    });
+    await fake.store.create({
+      path: TOKENS_PATH,
+      secret,
+      value: serializeTokenRecords([existing.record]),
+    });
+    providers.invalidate();
+    return existing;
+  }
+
+  it("revokes a seeded token without the console's credential ever reading it", async () => {
+    const existing = await seed();
+    expect((await mcp(existing.plaintext)).status).toBe(200);
+
+    const res = await post("/tokens/revoke", { pubid: existing.record.pubid });
+    expect(res.status).toBe(200);
+    expect((await mcp(existing.plaintext)).status).toBe(401);
+    expect((await stored())[0]?.revokedAt).toBeTruthy();
+
+    // And the console's credential is exactly as blind as it was: the fix
+    // borrowed the resolver's read rather than granting this one a read.
+    await expect(
+      fake.storeAs(WRITE_ONLY_CONSOLE_PERMISSIONS).reveal(TOKENS_PATH),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("mints onto a seeded roster, keeping the record already there", async () => {
+    const existing = await seed();
+    const res = await post("/tokens/mint", { label: "fresh", roles: "admin" });
+    expect(res.status).toBe(200);
+    const minted = plaintextIn(await res.text());
+    expect((await stored()).map((r) => r.label)).toEqual(["seeded", "fresh"]);
+    expect((await mcp(minted)).status).toBe(200);
+    expect((await mcp(existing.plaintext)).status).toBe(200);
+  });
+
+  it("a resolver that may not render says WHICH grant is missing, and writes nothing", async () => {
+    server.close();
+    await boot(undefined, {
+      resolver: (f) => f.storeAs(PARAMETER_VIEWER_PERMISSIONS),
+    });
+    const existing = await seed();
+
+    const res = await post("/tokens/revoke", { pubid: existing.record.pubid });
+    expect(res.status).toBe(502);
+    const html = await res.text();
+    expect(html).toContain("resolver credential was refused (403)");
+    expect(html).toContain("parametermanager.parameterVersions.render");
+    expect(html).toContain("operate/secrets-iam/#token-admin");
+    expect((await stored())[0]?.revokedAt).toBeFalsy();
+  });
+
+  it("a parameter whose principal may not read its secret names THAT grant", async () => {
+    const existing = await seed();
+    // The binding `create()` made, removed: the shape of a parameter seeded by
+    // hand. The resolver may render; the parameter may not deref.
+    for (const id of fake.secretPolicies.keys())
+      fake.secretPolicies.set(id, []);
+
+    const res = await post("/tokens/revoke", { pubid: existing.record.pubid });
+    expect(res.status).toBe(502);
+    const html = await res.text();
+    expect(html).toContain("would not render (400)");
+    expect(html).toContain("secretmanager.secretAccessor");
+    expect((await stored())[0]?.revokedAt).toBeFalsy();
+  });
+
+  it("refuses to write when the resolver reads a different project than the console writes", async () => {
+    server.close();
+    await boot(undefined, {
+      resolver: (f) => {
+        const real = f.storeAs(RESOLVER_PERMISSIONS);
+        // Same reads, a different store: what a `consoleStores:` entry for
+        // another project looks like from here.
+        return Object.assign(Object.create(real) as ParameterStore, {
+          projectId: "some-other-project",
+        });
+      },
+    });
+    const existing = await seed();
+
+    const html = await (
+      await fetch(`${baseUrl}/tokens`, { headers: auth })
+    ).text();
+    expect(html).toContain("some-other-project");
+    expect(html).not.toContain('action="/tokens/mint"');
+
+    const res = await post("/tokens/revoke", { pubid: existing.record.pubid });
+    expect(res.status).toBe(503);
+    expect((await stored())[0]?.revokedAt).toBeFalsy();
+  });
+
+  it("a console that may not write says so, naming the console's credential", async () => {
+    // The fake checks Parameter Manager verbs, not Secret Manager's
+    // `versions.add`, so the refused write is a non-secret parameter's version
+    // create, denied to every caller the way a deny policy would.
+    const existing = await seed(false);
+    fake.denied.add("parametermanager.parameterVersions.create");
+
+    const res = await post("/tokens/revoke", { pubid: existing.record.pubid });
+    expect(res.status).toBe(502);
+    const html = await res.text();
+    expect(html).toContain("console&#39;s admin credential was refused (403)");
+    expect(html).toContain("secretmanager.versions.add");
+    expect((await stored())[0]?.revokedAt).toBeFalsy();
+  });
+
+  it("with no resolver to read through, offers no form rather than a form that fails", async () => {
+    server.close();
+    await boot(undefined, { resolver: null });
+    const existing = await seed();
+
+    const html = await (
+      await fetch(`${baseUrl}/tokens`, { headers: auth })
+    ).text();
+    expect(html).toContain("Minting is not available on this gateway");
+    expect(html).toContain("no resolver that can read");
+    expect(html).not.toContain('action="/tokens/mint"');
+
+    const res = await post("/tokens/revoke", { pubid: existing.record.pubid });
+    expect(res.status).toBe(503);
+    expect((await stored())[0]?.revokedAt).toBeFalsy();
   });
 });

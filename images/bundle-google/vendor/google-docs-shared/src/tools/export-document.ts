@@ -55,7 +55,9 @@ about the original byte length).
 **Notes:**
 - The export is performed by Google's converters; fidelity varies by format.
 - Markdown export was added relatively recently and may not preserve all
-  formatting from a doc with complex layout.`;
+  formatting from a doc with complex layout.
+- Drive exports the document as a whole and has no option to export one tab.
+  To read a single tab of a multi-tab document, use get_document with tab_id.`;
 
 export function exportDocumentTool(_server: Server, clientFactory: ClientFactory) {
   return {

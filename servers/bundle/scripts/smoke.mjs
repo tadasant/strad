@@ -52,7 +52,7 @@ const AUTH = TOKEN ? { authorization: `Bearer ${TOKEN}` } : {};
 
 /** The mounts, and the tool count each should list at FULL capability. */
 const EXPECT = {
-  slack: 13, // upstream's 9 plus the fork's four DM tools
+  slack: 14, // upstream's 9, the fork's four DM tools and slack_events_status
   "serpapi-hotels": 3,
   tailscale: 15,
   "monarch-money": 24,
@@ -61,12 +61,13 @@ const EXPECT = {
   // delete_file — the artifact store's whole surface.
   "remote-filesystem-tmp-public": 7,
   "google-flights": 3,
-  gmail: 8,
+  gmail: 9,
   "google-calendar": 7,
-  "google-docs": 11,
-  // Four read tools and six write tools. A strad `google-sheets-*-ro` slug is
-  // this same mount with the write six withheld by the gateway.
-  "google-sheets": 10,
+  "google-docs": 14,
+  // Four read tools, six write tools and share_spreadsheet. A strad
+  // `google-sheets-*-ro` slug is this same mount with the write six and the
+  // share withheld by the gateway; a `-rw` slug withholds the share alone.
+  "google-sheets": 11,
   onepassword: 9,
   // Four tools, and not one of them can return a SECRET value. This is the
   // CREDENTIAL-FREE, CORE-LESS count: the probe fails closed here, so it is the

@@ -97,7 +97,7 @@ async function main(): Promise<void> {
   //
   // This container serves ONE server, so a process that cannot log in has
   // nothing to offer, and a failed health check is louder than a server that
-  // lists eleven tools and errors on all of them. (Inside strad's bundle, where
+  // lists twelve tools and errors on all of them. (Inside strad's bundle, where
   // twenty other servers are on board, the host takes the other option the
   // shared factory offers: mark the mount degraded and let the next tool call
   // retry the login.)

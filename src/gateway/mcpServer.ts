@@ -24,6 +24,7 @@ import {
 import { ServerUnconfiguredError } from "./unconfigured.ts";
 import { withDeadline } from "../util/deadline.ts";
 import {
+  listRetryOutcome,
   LocalHostUnavailableError,
   LocalMachineOfflineError,
 } from "./adapters/http.ts";
@@ -51,6 +52,7 @@ import {
 } from "./toolPolicy.ts";
 import { errorText } from "../util/error-text.ts";
 import { pinViolation, type ArgumentPins } from "../config/reach.ts";
+import { EVENTS_EXTENSION, registerEventHandlers } from "./events.ts";
 
 /**
  * The MCP `Server` strad builds for ONE already-authorized selection.
@@ -130,6 +132,13 @@ export interface GatewayServerOptions {
    * turns it off: a grant names TOOLS, and a resource read is not one of them.
    */
   resources?: boolean;
+  /**
+   * MCP Events (src/gateway/events.ts). Absent: no `events/*` handlers at all,
+   * which is every door but `/mcp`. Present: the handlers are registered, and
+   * the extension is advertised when `advertise` is true — which the router
+   * decides on `initialize` from the selected upstreams' own handshakes.
+   */
+  events?: { advertise: boolean };
 }
 
 /**
@@ -161,11 +170,24 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
   const server = new Server(
     { name: config.gateway.name, version: "0.1.0" },
     {
-      capabilities: relayResources
-        ? { tools: {}, resources: {} }
-        : { tools: {} },
+      capabilities: {
+        tools: {},
+        ...(relayResources ? { resources: {} } : {}),
+        ...(opts.events?.advertise
+          ? { extensions: { [EVENTS_EXTENSION]: {} } }
+          : {}),
+      },
     },
   );
+
+  if (opts.events) {
+    registerEventHandlers(server, {
+      selected,
+      registry,
+      principalId,
+      log,
+    });
+  }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: await listToolsFor(selected, registry, policies, log, explicit),
@@ -634,6 +656,11 @@ export async function listToolsFor(
                 evt: "mcp.list_tools_failed",
                 slug,
                 explicit: Boolean(explicit),
+                // How many tries the adapter's transient retry made and why it
+                // stopped — a spent budget and a never-retried kind page the
+                // same and mean different things (#468). Absent for an adapter
+                // kind with no retry.
+                ...listRetryOutcome(err),
                 // Stays on stdout in full; the exporter substitutes `error.kind`.
                 error: errorText(err),
               },
@@ -783,6 +810,7 @@ async function listResourcesFor(
             : {
                 evt: "mcp.list_resources_failed",
                 slug,
+                ...listRetryOutcome(err),
                 error: errorText(err),
               },
         );

@@ -819,6 +819,10 @@ out.
 | `tools/list` with no `?servers=`   | the slug contributes no tools; every other server is unaffected   |
 | logs                               | `strad.tool_surface_unconfigured`, at Info — it does not page     |
 
+An [`oauth:` slug nobody has connected yet](/operate/connectors/#a-slug-nobody-has-connected-is-unconfigured-not-down)
+is reported the same way, naming its `refreshTokenVariable` where this table
+says `${NAME}`.
+
 Keeping it out of `degraded` is load-bearing rather than cosmetic: `degraded` is
 what the staging deploy gate asserts on, so counting a deliberate deferral there
 would red the deploy this feature exists to let through, one layer further down
@@ -2646,6 +2650,24 @@ reason the console does not; `test/readiness.test.ts` is the canary.
 `/ui/secrets` is the human half of the `secrets` server, and the only place a
 value can be written or a secret value read back. A few things about how it
 addresses the store are worth knowing before you use it.
+
+The two create forms, **Add a parameter** and **Add several parameters**, sit
+above the listing, so a namespace with a long list does not bury them.
+
+### A value is kept exactly as pasted, line breaks included
+
+Every field that takes a value is a masked textarea: the create form, each row's
+**Rotate** field, and each row of the bulk editor's **Rows** view. None of them is
+an `<input type="password">`, because a browser strips the line breaks from a
+password input's value, so a pasted PEM key would be stored as one line that no
+key parser accepts. A line break is stored as `\n`, though a browser submits a
+textarea's line breaks as `\r\n`. A multi-line value is stored exactly, its
+final newline included. A one-line value has a trailing line break dropped, as
+the password input did, so a token copied with one, or an Enter pressed after
+it, is not stored as `token\n`. The create form has a **show** box that unmasks its
+value so you can check a paste before submitting. The dots come from CSS
+`-webkit-text-security`, and a browser without it shows the value as you type
+([limitation #127](/limitations/#127-the-console-masks-a-value-field-with-css-so-not-every-browser-masks-it)).
 
 ### The namespace field is free text
 

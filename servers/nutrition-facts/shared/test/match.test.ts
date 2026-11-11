@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
+import type { UsdaRecord } from "../src/data/format.js";
 import { restaurantScore } from "../src/local/menustat.js";
+import { UsdaIndex } from "../src/local/usda.js";
 import { fromTuple } from "../src/nutrients.js";
 import { matchLabel, nameTokens, score, tokens } from "../src/text.js";
 import { parsePortionLabel, parseUnit, portion, resolve } from "../src/units.js";
@@ -21,11 +23,79 @@ describe("text matching", () => {
     expect(nameTokens("Rice, white, cooked, NS as to fat added in cooking")).toEqual(["rice", "white", "cooked"]);
   });
 
+  it('does not read a word with "-ed" on it as the word', () => {
+    expect(score("butter", "Pretzels, soft, buttered").coverage).toBe(0);
+    expect(score("salt", "Butter, salted").coverage).toBe(0);
+    expect(score("bread", "Chicken, breaded").coverage).toBe(0);
+    // A cooking method's "-ed" form is the same food.
+    expect(score("roast chicken", "Chicken, roasted").coverage).toBe(1);
+    expect(score("smoke salmon", "Salmon, smoked").coverage).toBe(1);
+    // A spelling the plural fold missed still matches.
+    expect(score("tomatoe", "Tomato, raw").coverage).toBe(1);
+  });
+
+  it('folds "without salt" into "unsalted", and keeps a negated word from matching the word', () => {
+    expect(tokens("Butter, without salt")).toEqual(["butter", "unsalted"]);
+    expect(tokens("Beans, canned, no salt added")).toEqual(["bean", "canned", "unsalted"]);
+    expect(tokens("Butter, whipped, with salt")).toEqual(["butter", "whipped", "salted"]);
+    expect(score("butter, unsalted", "Butter, without salt").score).toBe(1);
+    expect(score("butter", "Pretzels, soft, unsalted, no butter").coverage).toBe(0);
+    expect(score("peanuts", "Mixed nuts, without peanuts").coverage).toBe(0);
+    expect(tokens("Peanuts, with salt added")).toEqual(["peanut", "salted"]);
+    expect(tokens("Applesauce, no sugar added")).toEqual(["applesauce", "nosugar"]);
+    expect(tokens("Applesauce, no added sugar")).toEqual(["applesauce", "nosugar"]);
+    expect(score("chicken skin", "Chicken, without the skin").coverage).toBe(0.5);
+  });
+
+  it("scores the real butter above a buttered pretzel, and the pretzel weak", () => {
+    const butter = score("butter, unsalted", "Butter, without salt").score;
+    const pretzel = score("butter, unsalted", "Pretzels, soft, ready-to-eat, unsalted, buttered").score;
+    expect(butter).toBeGreaterThan(pretzel);
+    expect(matchLabel(pretzel)).toBe("weak");
+    // Good matches stay what they were.
+    expect(matchLabel(score("salted butter", "Butter, salted").score)).toBe("exact");
+    expect(matchLabel(score("unsalted peanuts", "Peanuts, roasted, unsalted").score)).toBe("strong");
+    expect(matchLabel(score("chicken breast", "Chicken, broilers or fryers, breast, meat only, cooked, roasted").score)).toBe("strong");
+  });
+
   it("labels scores", () => {
     expect(matchLabel(1)).toBe("exact");
     expect(matchLabel(0.8)).toBe("strong");
     expect(matchLabel(0.6)).toBe("partial");
     expect(matchLabel(0.4)).toBe("weak");
+  });
+});
+
+describe("USDA ranking", () => {
+  const food = (i: number, n: string, d: UsdaRecord["d"] = "S"): UsdaRecord => ({
+    i,
+    d,
+    n,
+    c: "",
+    y: 2018,
+    k: [100, 1, 1, 1, null, null, null, null],
+    p: [],
+  });
+  const index = new UsdaIndex({
+    version: 1,
+    built_at: "",
+    sources: [],
+    foods: [
+      food(1, "Peanut butter, chunk style, without salt"),
+      food(2, "Peanuts, roasted, unsalted", "N"),
+      food(3, "Rice flour, brown"),
+      food(4, "Rice, brown, long-grain, cooked"),
+      food(5, "Big Mac (McDonalds)", "N"),
+    ],
+  });
+
+  it("ranks a compound the query only half names below the food itself", () => {
+    expect(index.search("unsalted peanuts", { kind: "ingredient" })[0]!.id).toBe("usda:2");
+    expect(index.search("brown rice")[0]!.id).toBe("usda:4");
+  });
+
+  it("does not count a parenthetical as part of the name's head", () => {
+    expect(index.search("big mac")[0]!.id).toBe("usda:5");
   });
 });
 
@@ -92,6 +162,15 @@ describe("units and scaling", () => {
     const burger = portion("1 burger", 219, fromTuple([590, 25, 46, 34]));
     expect(resolve(1, parseUnit("serving"), null, [burger], burger).nutrients!.calories).toBe(590);
     expect(resolve(110, parseUnit("g"), null, [burger], burger).nutrients!.calories).toBeCloseTo(296.3, 1);
+  });
+
+  it("scales through the whole-unit portion when a source lists several in one unit", () => {
+    // USDA's ricotta: "0.2 cup" = 64.6 g is a truncated quarter cup.
+    const ricotta = [portion("0.2 cup", 64.6), portion("0.5 cup", 129), portion("1 cup", 258)];
+    const r = resolve(0.75, parseUnit("cup"), per100, ricotta);
+    expect(r.grams).toBeCloseTo(193.5, 5);
+    expect(r.basis).toBe('0.75 cup via source portion "1 cup" = 258 g');
+    expect(resolve(0.75, parseUnit("cup"), per100, [portion("1/4 cup", 64.6)]).grams).toBeCloseTo(193.8, 5);
   });
 
   it("maps whole to a fruit portion", () => {

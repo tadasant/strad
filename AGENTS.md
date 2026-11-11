@@ -173,8 +173,9 @@ does not use it.
   `.github/workflows/hostd-ax.yml` is the ONE workflow in this repository on
   GitHub-hosted (billed) macOS runners, path-filtered to them. The Node suite
   runs on Linux against fake helpers, so the macOS halves — the `osascript`
-  consent dialog, the LaunchAgents, the installer's `cloudflared` branch, the
-  signing script, a real Accessibility tree, a real screenshot, the real
+  consent dialog, the real LaunchAgents (the installer's restart paths run on a
+  throwaway agent in that workflow's `launchd` job), the installer's `cloudflared`
+  branch, the signing script, a real Accessibility tree, a real screenshot, the real
   chat.db under a real Full Disk Access grant — are exercised by nothing but
   the owner's Mac. Do not describe them as tested.
 
@@ -413,7 +414,7 @@ slop behind when you fix a stale fact.
   any other key is refused before the key signs anything. An SSH slug cannot be
   created at runtime (`assertCreatable`), so its roles only ever come from
   checked-in config — and `ssh-tadasant-zimmer-prod` stays `[admin]`, because
-  Zimmer sessions run on that host. `HACKS.md` #124.
+  Zimmer sessions run on that host. `HACKS.md` #137.
 - `servers/bill-spend/` — strad's own BILL Spend & Expense server, behind
   `bill-spend-ro` and `bill-spend-rw`. Re-codes card transactions to the right
   chart-of-accounts value, which BILL carries as CUSTOM-FIELD VALUES rather than

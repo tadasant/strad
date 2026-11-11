@@ -54,8 +54,8 @@ const TOOL_DESCRIPTION = `Create a new, native Google Sheets spreadsheet owned b
 **Returns:** the new spreadsheet's id and URL, and each tab's title and gid.
 
 The file lands in the root of the account's Google Drive and is shared with no
-one. This server cannot move it into a folder or share it: both are Drive
-operations, and it asks for no Drive write scope.
+one. This server cannot move it into a folder. Sharing it is share_spreadsheet,
+which only a slug holding the Drive scope is given.
 
 EVERY CALL MAKES A NEW FILE. It is not idempotent: if a call fails or times out,
 look for the file before calling again, or you may leave a duplicate behind.

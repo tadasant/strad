@@ -340,6 +340,12 @@ Only `send_email` is confirmed. `CONFIRMED_TOOLS` in `confirm.ts` names it, and
 `images/bundle-google/test/confirm.test.ts` fails if the vendored tree gains
 another tool that calls `requestConfirmation` without the list changing with it.
 
+gmail run [on its own](/servers/standalone/), without strad, does not serve
+`send_email` at all. With no core in front of it, the `_meta` key that carries
+the channel is whatever the client wrote, so there is no channel to trust. The
+standalone entrypoint refuses `GMAIL_ENABLED_TOOLGROUPS=readwrite_external` at
+startup, and the mailbox it hands the tools refuses to send.
+
 ## A mailbox that is the agent's own
 
 Asking a human makes sense when the mail goes out as that human. When the

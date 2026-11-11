@@ -240,6 +240,13 @@ bundles:
     # component. The schema itself takes any string, because it is also the boot
     # parse: see src/deploy/instance-size.ts.
     instanceSizeSlug: apps-s-1vcpu-2gb
+    # Restart this component when its /healthz fails for about three minutes.
+    # Defaults to true for this repo's `strad-bundle` image, whose host answers
+    # 503 once its event loop has been saturated for a minute, and to false for
+    # any other image, which may have no /healthz to answer. A strad-bundle
+    # component is also started with a V8 heap of half the plan's memory. See
+    # docs/servers/interface (tadasant/strad#458).
+    # liveness: true
 
 servers:
   # The roster editor, as an MCP server — the other half of the console at
@@ -606,6 +613,8 @@ servers:
         - slack_get_dms
         - slack_get_dm
         - slack_find_user
+        # The MCP Events feed's state. Reports, calls nothing; no secret value.
+        - slack_events_status
 
   # A SERVER WHOSE CREDENTIAL IS ONE PERSON.
   #
@@ -695,9 +704,12 @@ servers:
         - batch_get_sheet_values
         - find_in_spreadsheet
 
-  # The write tier: no `tools:` block, because the full ten ARE this tier. Its
-  # consent is for the wider https://www.googleapis.com/auth/spreadsheets, so
-  # Google enforces the split as well as the gateway.
+  # The write tier. Its consent is for the wider
+  # https://www.googleapis.com/auth/spreadsheets, so Google enforces the split
+  # from -ro as well as the gateway. Its `tools:` list is every tool but
+  # share_spreadsheet — the one that hands the file to someone else, which only
+  # the -rw-external slug below reaches. Drop the list and this slug lists the
+  # share too, failing it on Google's side for want of the `drive` scope.
   - slug: google-sheets-rw
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
@@ -713,9 +725,41 @@ servers:
         # out of Drive. Writing one back is not a thing this server does under
         # any scope — the write tools refuse an Office file and say so.
         - https://www.googleapis.com/auth/drive.readonly
+    tools:
+      allow:
+        - get_spreadsheet
+        - get_sheet_values
+        - batch_get_sheet_values
+        - find_in_spreadsheet
+        - update_sheet_values
+        - append_sheet_rows
+        - clear_sheet_values
+        - add_sheet
+        - create_spreadsheet
+        - format_cells
     # FLOW-THROUGH: the target's half of a grant. Uncomment together with the
     # `reaches:` block below; either half alone is a config error.
     # reachableFrom: [my-sheet-app]
+
+  # The external tier: no `tools:` block, because the full eleven ARE this tier,
+  # share_spreadsheet included. Sharing a file this app did not create needs the
+  # full https://www.googleapis.com/auth/drive scope — `drive.file` reaches only
+  # app-created files — and that scope is read and write over the account's whole
+  # Drive, so it lives on this slug alone. Its own path and its own consent,
+  # like the two above. It needs no drive.readonly beside `drive`, which already
+  # covers reading an Office file. docs: servers/google-sheets#sharing-is-its-own-tier.
+  - slug: google-sheets-rw-external
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /google-sheets-rw-external
+    entitlements: [admin]
+    oauth:
+      provider: google
+      account: someone@example.com
+      scopes:
+        - https://www.googleapis.com/auth/spreadsheets
+        - https://www.googleapis.com/auth/drive
 
   # A HOSTED SERVER THAT CALLS ANOTHER SLUG'S TOOLS THROUGH CORE, as itself, with
   # no credential of its own. `tools:` is exhaustive and bounded by the target's
@@ -752,7 +796,7 @@ servers:
   # under a slug named for a personal account, with every call succeeding. The
   # bundle host drops them and says so in the boot log.
   #
-  # Before consent this slug mounts, lists all eight tools and reports itself
+  # Before consent this slug mounts, lists all nine tools and reports itself
   # degraded naming GMAIL_OAUTH_REFRESH_TOKEN. That is the state the Connect
   # button on its console page exists to end.
   - slug: gmail-someone-ro
@@ -780,6 +824,12 @@ servers:
         - search_email_conversations
         - download_email_attachments
         - list_draft_emails
+        # A `-rw` slug for the same account consents `gmail.modify` and adds
+        # the three draft and label writes, none of which sends:
+        #   - change_email_conversation
+        #   - upsert_draft_email
+        #   - delete_draft_email   (one draft, permanently; HACKS.md #130)
+        # `send_email` is the `-rw-external` tier's alone.
 
   # google-docs IS gmail's shape again: two auth modes on one container (the
   # conventional /google-docs mount impersonates a Workspace user under bare

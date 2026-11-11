@@ -163,7 +163,17 @@ describe("staging config", () => {
     // The credentials of every upstream server staging gives a slug, unioned onto
     // the one box — and every one of them SECRET-typed, so App Platform encrypts
     // it at rest.
-    const credentials = bundle.envs.filter((e) => !e.key.startsWith("STRAD_"));
+    // NODE_OPTIONS is the one name here that is neither a credential nor
+    // STRAD_*: the heap ceiling, half of the 2 GB plan (#458). The liveness check
+    // is the other half of that fix.
+    expect(bundle.envs.find((e) => e.key === "NODE_OPTIONS")).toMatchObject({
+      value: "--max-old-space-size=1024",
+      type: "GENERAL",
+    });
+    expect(bundle.liveness_health_check?.http_path).toBe("/healthz");
+    const credentials = bundle.envs.filter(
+      (e) => !e.key.startsWith("STRAD_") && e.key !== "NODE_OPTIONS",
+    );
     expect(credentials.some((e) => e.key === "SLACK_BOT_TOKEN")).toBe(true);
     expect(credentials.some((e) => e.key === "OP_SERVICE_ACCOUNT_TOKEN")).toBe(
       true,
@@ -277,13 +287,13 @@ describe("staging config", () => {
 
   /** Tool counts, per capability tier — the numbers the containers used to make. */
   const ALLOW_COUNTS: Record<string, number> = {
-    "slack-readonly": 7,
+    "slack-readonly": 8,
     "tailscale-readonly": 7,
     "monarch-money-readonly": 10,
     "gmail-ro": 5,
-    "gmail-rw": 7,
+    "gmail-rw": 8,
     "google-docs-ro": 4,
-    "google-docs-rw": 10,
+    "google-docs-rw": 13,
     "google-calendar-ro": 4,
     "onepassword-ro": 5,
     "telegram-ro": 5,
@@ -301,7 +311,7 @@ describe("staging config", () => {
 
   it.each([
     // These tiers ARE the full tool set, so they carry no policy at all. Their
-    // counts (gmail 8, docs 11, calendar 7, 1Password 9, slack 13, tailscale 15,
+    // counts (gmail 9, docs 11, calendar 7, 1Password 9, slack 14, tailscale 15,
     // monarch 24) are asserted against the running image by the bundle's smoke test.
     "slack",
     "tailscale-readwrite",

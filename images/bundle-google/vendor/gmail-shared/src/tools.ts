@@ -6,6 +6,7 @@ import { getEmailConversationTool } from './tools/get-email-conversation.js';
 import { changeEmailConversationTool } from './tools/change-email-conversation.js';
 import { upsertDraftEmailTool } from './tools/draft-email.js';
 import { listDraftEmailsTool } from './tools/list-draft-emails.js';
+import { deleteDraftEmailTool } from './tools/delete-draft-email.js';
 import { sendEmailTool } from './tools/send-email.js';
 import { searchEmailConversationsTool } from './tools/search-email-conversations.js';
 import { downloadEmailAttachmentsTool } from './tools/download-email-attachments.js';
@@ -22,18 +23,31 @@ interface Tool {
     required?: string[];
   };
   handler: (args: unknown) => Promise<{
-    content: Array<{ type: string; text: string }>;
+    content: ToolContent[];
     isError?: boolean;
   }>;
 }
+
+/**
+ * A result block: text, or an embedded resource carrying a file's bytes
+ * (`download_email_attachments`, FORK.md delta 6).
+ */
+type ToolContent =
+  | { type: string; text: string }
+  | {
+      type: 'resource';
+      resource:
+        | { uri: string; mimeType?: string; text: string }
+        | { uri: string; mimeType?: string; blob: string };
+    };
 
 type ToolFactory = (server: Server, clientFactory: ClientFactory) => Tool;
 
 /**
  * Available tool groups for Gmail MCP server
  * - readonly: Read-only Gmail operations (list, get, search, download_attachments)
- *   Note: download_email_attachments writes to local /tmp/ but does not modify mailbox state
- * - readwrite: Read and write operations (includes readonly + modify, draft)
+ *   Note: download_email_attachments returns attachment bytes in the response and does not modify mailbox state
+ * - readwrite: Read and write operations (includes readonly + modify, draft, delete draft)
  * - readwrite_external: External communication operations (includes readwrite + send_email)
  */
 export type ToolGroup = 'readonly' | 'readwrite' | 'readwrite_external';
@@ -49,7 +63,7 @@ interface ToolDefinition {
  * All available tools with their group assignments
  *
  * readonly: list_email_conversations, get_email_conversation, search_email_conversations, download_email_attachments, list_draft_emails
- * readwrite: all readonly tools + change_email_conversation, upsert_draft_email
+ * readwrite: all readonly tools + change_email_conversation, upsert_draft_email, delete_draft_email
  * readwrite_external: all readwrite tools + send_email (external communication)
  */
 const ALL_TOOLS: ToolDefinition[] = [
@@ -69,6 +83,8 @@ const ALL_TOOLS: ToolDefinition[] = [
   // Write tools (available in readwrite and readwrite_external)
   { factory: changeEmailConversationTool, groups: ['readwrite', 'readwrite_external'] },
   { factory: upsertDraftEmailTool, groups: ['readwrite', 'readwrite_external'] },
+  // Deletes a draft only — never a sent or received message, never a thread
+  { factory: deleteDraftEmailTool, groups: ['readwrite', 'readwrite_external'] },
   // External communication tools (only in readwrite_external - most dangerous)
   { factory: sendEmailTool, groups: ['readwrite_external'] },
 ];

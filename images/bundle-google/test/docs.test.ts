@@ -227,17 +227,20 @@ test("one account is one client, so its access token outlives a single request",
   );
 });
 
-test("a mount lists all eleven tools, and lists them with no credential at all", async () => {
+test("a mount lists all fourteen tools, and lists them with no credential at all", async () => {
   assert.deepEqual(await toolsOf({}), [
+    "add_comment",
     "append_text",
     "create_document",
     "delete_document",
     "export_document",
     "get_document",
     "get_document_outline",
+    "insert_content",
     "insert_text",
     "list_comments",
     "replace_text",
+    "reply_to_comment",
     "share_document",
     "update_document",
   ]);
@@ -258,7 +261,7 @@ test("GOOGLE_DOCS_ENABLED_TOOLGROUPS comes from the injected env, per mount", as
   // readwrite withholds share_document, the one tool that grants someone else
   // access — which is what the rw-external tier exists to hold alone.
   const rw = await toolsOf({ GOOGLE_DOCS_ENABLED_TOOLGROUPS: "readwrite" });
-  assert.equal(rw.length, 10);
+  assert.equal(rw.length, 13);
   assert.ok(!rw.includes("share_document"));
 });
 

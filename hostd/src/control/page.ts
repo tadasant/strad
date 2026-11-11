@@ -6,7 +6,13 @@ export interface ControlState {
   machine: string;
   disabled: boolean;
   tunnel: string;
-  consent: { mode: string; windowSeconds: number; onTimeout: string };
+  consent: {
+    mode: string;
+    windowSeconds: number;
+    onTimeout: string;
+    /** How long a server is refused, without a dialog, after its grant is killed. */
+    cooldownSeconds: number;
+  };
   /** `onTimeout` is the server's own, which may differ from the machine's. */
   servers: { id: string; name: string; onTimeout: string }[];
   pending: { server: string; purpose: string; since: number }[];
@@ -126,7 +132,7 @@ ${g.running.map((c) => `<span class="cmd">▶ ${esc(c)}</span>`).join("")}
   }</p>
 ${banner}
 <h2>In control now</h2>${pending}${grants}
-${state.grants.length > 1 ? `<div class="actions" style="margin-top:10px">${form("/kill-all", "Kill all", "danger")}</div>` : ""}
+${state.grants.length > 1 ? `<div class="actions" style="margin-top:10px">${form("/kill-all", "Kill all", "danger")}</div>` : ""}${state.grants.length && state.consent.cooldownSeconds ? `<p class="meta">Kill ends the grant and refuses that server's requests, with no dialog, for ${state.consent.cooldownSeconds} seconds. A plain Reject in the dialog does not.</p>` : ""}
 <h2>Recent activity</h2>${audit}
 </main></body></html>`;
 }

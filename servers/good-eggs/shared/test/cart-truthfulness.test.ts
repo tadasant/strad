@@ -27,7 +27,7 @@ function addParams(overrides = {}) {
     priorQuantity: 0,
     priorQuantityKnown: true,
     cartItems: CART,
-    buttonFound: true,
+    addSent: true,
     cartReadable: true,
     ...overrides,
   };
@@ -61,7 +61,7 @@ test('an unreadable basket after the add is UNVERIFIED, not a failure', () => {
 
 test('an unreadable basket with no button found is still UNVERIFIED', () => {
   const result = reconcileAddResult(
-    addParams({ cartItems: [], cartReadable: false, buttonFound: false })
+    addParams({ cartItems: [], cartReadable: false, addSent: false })
   );
   assert.equal(result.verified, false);
   assert.equal(result.success, false);
@@ -71,11 +71,11 @@ test('an unreadable basket with no button found is still UNVERIFIED', () => {
 test('an UNVERIFIED add claims nothing in its FIELDS either, not just its prose', () => {
   // `success` must not be derived from the click, and `quantity` must be absent
   // rather than 0 — a 0 is indistinguishable from a measured absence.
-  for (const buttonFound of [true, false]) {
+  for (const addSent of [true, false]) {
     const result = reconcileAddResult(
-      addParams({ cartItems: [], cartReadable: false, buttonFound })
+      addParams({ cartItems: [], cartReadable: false, addSent })
     );
-    assert.equal(result.success, false, `buttonFound=${buttonFound}`);
+    assert.equal(result.success, false, `addSent=${addSent}`);
     assert.equal(result.verified, false);
     assert.equal(result.quantity, undefined);
   }

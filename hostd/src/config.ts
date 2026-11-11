@@ -76,7 +76,7 @@ const ConsentConfig = z
      */
     mode: z.enum(["modal", "none"]).default("modal"),
     /** How long the dialog stays up, and so how long a request stalls. */
-    windowSeconds: z.number().int().min(3).max(60).default(5),
+    windowSeconds: z.number().int().min(3).max(60).default(10),
     /**
      * What an unanswered dialog means. `deny` — fail closed — is the default:
      * nobody saw the request, so nobody agreed to it. `allow` turns the dialog
@@ -84,7 +84,11 @@ const ConsentConfig = z
      * decision and it is made here, in a file only they can write.
      */
     onTimeout: z.enum(["deny", "allow"]).default("deny"),
-    /** How long after a rejection the same capability refuses new requests. */
+    /**
+     * How long a capability refuses new requests, without a dialog, after the
+     * owner kills one of its grants or answers "Disallow and cool down". A plain
+     * Reject or an unanswered dialog starts none.
+     */
     rejectCooldownSeconds: z.number().int().min(0).max(3600).default(60),
     grantMinutes: z.number().int().min(1).max(240).default(30),
     maxGrantMinutes: z.number().int().min(1).max(240).default(120),

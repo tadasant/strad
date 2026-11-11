@@ -1,0 +1,22 @@
+{
+  "name": "google-drive-workspace-mcp-server-shared",
+  "version": "0.1.0",
+  "description": "Shared code for strad's Google Drive MCP server: three read tools, two create tools and five tools that rename, move, copy, trash and restore, in three tiers, one Google account per credential",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "google-auth-library": "^10.5.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.6",
+    "typescript": "^5.7.3"
+  },
+  "keywords": [],
+  "license": "MIT"
+}

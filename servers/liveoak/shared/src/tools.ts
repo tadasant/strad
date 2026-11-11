@@ -131,7 +131,9 @@ function getStatusTool(service: ServiceFactory): ToolDefinition {
     description:
       "Whether this LiveOak server is configured, whether a remembered device is " +
       "enrolled (without one, list_statements and get_statement refuse), and " +
-      "whether an enrolment is waiting for its code. Does not log in to LiveOak.\n\n" +
+      "whether an enrolment is waiting for its code. Does not log in to LiveOak. " +
+      "It does read the device storage, so device_store_error reports GCS " +
+      "settings that cannot work, before enrol_device is tried.\n\n" +
       'Example: {"configured":true,"device_enrolled":true,"enrolled_at":"2026-10-09T17:00:00.000Z",' +
       '"enrolment_pending":false,"download_links":true}',
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
@@ -228,6 +230,10 @@ function enrolDeviceTool(service: ServiceFactory): ToolDefinition {
       "account, so later logins skip the MFA code. It logs in with the stored " +
       "credentials, and LiveOak texts a code to the account holder's phone. Ask " +
       "them for it, then call confirm_device within about 3 minutes.\n\n" +
+      "It checks that the device storage takes a write BEFORE logging in, and " +
+      "sends no code if it does not. If confirm_device could not store a device " +
+      "LiveOak confirmed (status says device_unsaved), call this without force " +
+      "to store it; no code is sent.\n\n" +
       "Run it once, when status says device_enrolled is false. If the enrolled " +
       'device still works it answers "already_enrolled" and sends nothing. ' +
       "force: true discards the stored device first. Each call that sends a " +

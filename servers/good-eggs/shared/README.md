@@ -1,6 +1,6 @@
 # good-eggs MCP server — shared module
 
-The tool logic: the Playwright client, the 11 tools, and the basket read they
+The tool logic: the Playwright client, the 12 tools, and the basket read they
 all depend on. `remote/` imports `createMCPServer()` from here; nothing is
 reimplemented there.
 
@@ -16,7 +16,8 @@ shared/
 │   ├── index.ts        # public exports
 │   ├── server.ts       # the Playwright client + createMCPServer()
 │   ├── basketState.ts  # the authoritative basket read (FORK.md #1)
-│   ├── tools.ts        # the 11 tool definitions and handlers
+│   ├── nutrition.ts    # nutrition tables + photo URLs (FORK.md #12)
+│   ├── tools.ts        # the 12 tool definitions and handlers
 │   ├── appUi.ts        # the MCP-App (io.modelcontextprotocol/ui) surface
 │   ├── telemetry.ts    # browser-span instrumentation
 │   ├── logging.ts      # stderr logging helpers
