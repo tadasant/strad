@@ -24,11 +24,7 @@
 import ssh2 from "ssh2";
 import { ConfigError } from "./errors.js";
 import { parseHostKeyPins, type HostKeyPin } from "./host-key.js";
-import {
-  parseProxyAddress,
-  TAILNET_SOCKS5_ENV,
-  type ProxyAddress,
-} from "./tailnet.js";
+import { parseProxyAddress, TAILNET_SOCKS5_ENV, type ProxyAddress } from "./tailnet.js";
 
 const { utils } = ssh2;
 
@@ -168,17 +164,9 @@ function parseMs(
  */
 export function parseHint(raw: string | undefined): string | undefined {
   if (raw === undefined) return undefined;
-  const text = raw
-    .replace(
-      /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]+/g,
-      " ",
-    )
-    .replace(/\s+/g, " ")
-    .trim();
+  const text = raw.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]+/g, " ").replace(/\s+/g, " ").trim();
   if (text === "") return undefined;
-  return text.length > MAX_UNREACHABLE_HINT
-    ? `${text.slice(0, MAX_UNREACHABLE_HINT - 1)}…`
-    : text;
+  return text.length > MAX_UNREACHABLE_HINT ? `${text.slice(0, MAX_UNREACHABLE_HINT - 1)}…` : text;
 }
 
 /**
@@ -227,9 +215,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SshConfig {
     throw new ConfigError(
       `${ENV.privateKey} could not be read as a private key: ${parsed.message}. ` +
         `It must be the full key, BEGIN and END lines included` +
-        (passphrase
-          ? ""
-          : `, and ${ENV.passphrase} must be set if it is encrypted`) +
+        (passphrase ? "" : `, and ${ENV.passphrase} must be set if it is encrypted`) +
         `.`,
     );
   }
@@ -253,17 +239,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SshConfig {
     hostKeyPins,
     // Capped at two minutes: a down host costs every call this long, and
     // core's default `timeoutMs` for a slug is 120 s.
-    connectTimeoutMs: parseMs(
-      env,
-      ENV.connectTimeout,
-      DEFAULT_CONNECT_TIMEOUT_MS,
-      MAX_CONNECT_TIMEOUT_MS,
-    ),
-    commandTimeoutMs: parseMs(
-      env,
-      ENV.commandTimeout,
-      DEFAULT_COMMAND_TIMEOUT_MS,
-    ),
+    connectTimeoutMs: parseMs(env, ENV.connectTimeout, DEFAULT_CONNECT_TIMEOUT_MS, MAX_CONNECT_TIMEOUT_MS),
+    commandTimeoutMs: parseMs(env, ENV.commandTimeout, DEFAULT_COMMAND_TIMEOUT_MS),
     unreachableHint: parseHint(env[ENV.unreachableHint]),
     tailnetProxy: parseProxyAddress(env[TAILNET_SOCKS5_ENV]),
   };

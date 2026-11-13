@@ -12,8 +12,7 @@
  * rule keeps out of every channel.
  */
 
-const PEM_BLOCK =
-  /-----BEGIN [A-Z0-9 ]+-----[\s\S]*?(-----END [A-Z0-9 ]+-----|$)/g;
+const PEM_BLOCK = /-----BEGIN [A-Z0-9 ]+-----[\s\S]*?(-----END [A-Z0-9 ]+-----|$)/g;
 
 export function redact(
   text: string,

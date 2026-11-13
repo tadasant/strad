@@ -65,10 +65,7 @@ function invalid(envName: string, line: number, why: string): Error {
 }
 
 /** Every pin in `raw`, or an error naming the first line that is not one. */
-export function parseHostKeyPins(
-  raw: string,
-  envName = "SSH_HOST_KEY",
-): HostKeyPin[] {
+export function parseHostKeyPins(raw: string, envName = "SSH_HOST_KEY"): HostKeyPin[] {
   const pins: HostKeyPin[] = [];
   // A single-line field may carry `\n` literally; a pin never contains a
   // backslash, so this cannot corrupt one.
@@ -117,12 +114,7 @@ export function parseHostKeyPins(
     // starts with the right type and would otherwise pin something no host has.
     const parsed = utils.parseKey(`${type} ${b64}`);
     const key = Array.isArray(parsed) ? parsed[0] : parsed;
-    if (
-      blobType(blob) !== type ||
-      key instanceof Error ||
-      !key ||
-      key.type !== type
-    ) {
+    if (blobType(blob) !== type || key instanceof Error || !key || key.type !== type) {
       throw invalid(
         envName,
         n,
@@ -143,15 +135,10 @@ export function parseHostKeyPins(
 }
 
 /** True when the key the server presented is one of the pins. */
-export function matchesPin(
-  pins: readonly HostKeyPin[],
-  presented: Buffer,
-): boolean {
+export function matchesPin(pins: readonly HostKeyPin[], presented: Buffer): boolean {
   const fingerprint = fingerprintOf(presented);
   return pins.some((pin) =>
-    pin.kind === "key"
-      ? pin.blob.equals(presented)
-      : pin.fingerprint === fingerprint,
+    pin.kind === "key" ? pin.blob.equals(presented) : pin.fingerprint === fingerprint,
   );
 }
 
@@ -164,9 +151,7 @@ export function matchesPin(
  * would look exactly like an impostor. A fingerprint does not say its type, so a
  * pin set holding one leaves the list alone.
  */
-export function hostKeyAlgorithms(
-  pins: readonly HostKeyPin[],
-): string[] | undefined {
+export function hostKeyAlgorithms(pins: readonly HostKeyPin[]): string[] | undefined {
   if (pins.some((p) => p.kind === "fingerprint")) return undefined;
   const out: string[] = [];
   for (const pin of pins) {
