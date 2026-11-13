@@ -55,6 +55,18 @@ its environment at boot. A stale one would not just be ignored — it would stri
 write tools from the read-**write** slugs too, and the failure would look like an
 upstream bug.
 
+## Tailnet egress: an optional second process
+
+A component whose bundle declares `tailnet:` in the strad config is also handed
+a Tailscale credential, and the host starts `tailscaled` in userspace mode
+beside itself (`host/src/tailnet.ts`): an ephemeral, tagged node with its SOCKS5
+listener on `127.0.0.1:1055`. The `ssh` tree dials hosts that resolve into the
+tailnet through it; nothing else is given its address. The key is removed from
+`process.env` before any mount is built. With no `tailnet:` block the two
+binaries sit in the image unused. `/healthz` reports the sidecar under
+`tailnet` and never folds it into `ok`. See
+[`docs/operate/tailnet`](../../docs/src/content/docs/operate/tailnet.md).
+
 ## How twenty-three projects become one image
 
 `Dockerfile`'s build context is the **repo root**, because the servers live in

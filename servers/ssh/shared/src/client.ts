@@ -11,6 +11,8 @@
  * `cat` of a 4 GB log costs a fixed amount of this container's memory and comes
  * back marked as truncated.
  */
+import { lookup as dnsLookup } from "node:dns/promises";
+import { isIP, type Socket } from "node:net";
 import ssh2 from "ssh2";
 import type {
   ClientChannel,
@@ -22,6 +24,14 @@ import type {
 } from "ssh2";
 import type { SshConfig } from "./config.js";
 import { ConfigError, HostKeyMismatchError, InputError, SshUnreachableError } from "./errors.js";
+import {
+  isTailnetAddress,
+  isTailnetName,
+  socks5Connect,
+  SocksProxyDownError,
+  SocksReplyError,
+  SocksTimeoutError,
+} from "./tailnet.js";
 import {
   blobType,
   describePins,
@@ -207,8 +217,89 @@ function connectError(
  * The verifier runs during key exchange, BEFORE user authentication — so a host
  * that presents the wrong key never receives a signature made with ours.
  */
-export const connect: Connector = (config) =>
-  new Promise<SshSession>((resolve, reject) => {
+export const connect: Connector = async (config) => {
+  const route = await routeFor(config);
+  const sock = route.kind === "tailnet" ? await dialTailnet(config, route.address) : undefined;
+  return handshake(config, sock);
+};
+
+/** How a host is reached: straight out of the container, or through the bundle's tailnet. */
+export type Route = { kind: "direct" } | { kind: "tailnet"; address: string };
+
+type Lookup = (host: string) => Promise<Array<{ address: string }>>;
+const defaultLookup: Lookup = (host) => dnsLookup(host, { all: true });
+
+/**
+ * The route for this host, decided by where it RESOLVES. A MagicDNS name, a
+ * Tailscale address, or a name whose first address is one goes through the
+ * tailnet; everything else dials direct, exactly as it did before the tailnet
+ * existed. A name that does not resolve is left to the direct dial, which
+ * reports it as the unreachable error it always was.
+ */
+export async function routeFor(config: Pick<SshConfig, "host">, lookup: Lookup = defaultLookup): Promise<Route> {
+  const host = config.host;
+  if (isTailnetName(host)) return { kind: "tailnet", address: host.replace(/\.$/, "") };
+  if (isIP(host)) return isTailnetAddress(host) ? { kind: "tailnet", address: host } : { kind: "direct" };
+  let addresses: Array<{ address: string }>;
+  try {
+    addresses = await lookup(host);
+  } catch {
+    return { kind: "direct" };
+  }
+  const first = addresses[0]?.address;
+  return first && isTailnetAddress(first) ? { kind: "tailnet", address: first } : { kind: "direct" };
+}
+
+/**
+ * A TCP stream to the host through tailscaled's SOCKS5 listener, or the error
+ * that says which of three things is wrong: this container has no tailnet at
+ * all (configuration — a human), the sidecar is not up (the container — retry,
+ * then an operator), or the tailnet could not reach the host (the host is off,
+ * or the tailnet policy does not let strad's node reach that port).
+ */
+export async function dialTailnet(
+  config: Pick<SshConfig, "host" | "port" | "username" | "connectTimeoutMs" | "unreachableHint" | "tailnetProxy">,
+  address: string,
+  dial?: Parameters<typeof socks5Connect>[4],
+): Promise<Socket> {
+  const where = `${config.username}@${config.host}:${config.port}`;
+  const via = address === config.host ? "" : ` (${address})`;
+  if (!config.tailnetProxy) {
+    throw new ConfigError(
+      `${config.host}${via} is a Tailscale tailnet address, and this container has ` +
+        `no tailnet egress, so it cannot be reached from here. The bundle that ` +
+        `serves this slug needs a \`tailnet:\` block in the strad config ` +
+        `(docs/operate/tailnet), which a human enables. Nothing was sent and the ` +
+        `private key was not used.`,
+    );
+  }
+  try {
+    return await socks5Connect(config.tailnetProxy, address, config.port, config.connectTimeoutMs, dial);
+  } catch (err) {
+    if (err instanceof SocksProxyDownError) {
+      throw new SshConnectError(
+        `${where}${via} is on the tailnet, and strad's tailnet sidecar in this ` +
+          `container is not accepting connections (${err.code ?? "closed"}): it is ` +
+          `starting, restarting, or failed to join. The bundle's /healthz \`tailnet\` ` +
+          `field says which. Retry in a minute; if it persists, an operator reads ` +
+          `the bundle log. Nothing was sent and the private key was not used.`,
+      );
+    }
+    if (err instanceof SocksReplyError || err instanceof SocksTimeoutError) {
+      throw new SshUnreachableError(
+        `the tailnet could not reach ${address}:${config.port} (${err.message}). The ` +
+          `host is down or offline on the tailnet, or the tailnet policy does not ` +
+          `let strad's node reach that port`,
+        `${where}${via}`,
+        config.unreachableHint,
+      );
+    }
+    throw new SshConnectError(`SSH connection to ${where}${via} over the tailnet failed: ${(err as Error).message}`);
+  }
+}
+
+function handshake(config: SshConfig, sock: Socket | undefined): Promise<SshSession> {
+  return new Promise<SshSession>((resolve, reject) => {
     const client = new Client();
     let presented: Buffer | undefined;
     // Where the attempt got to, because a timeout means different things at
@@ -222,6 +313,9 @@ export const connect: Connector = (config) =>
     const options: ConnectConfig = {
       host: config.host,
       port: config.port,
+      // A tailnet host arrives as an already-connected stream through the
+      // sidecar; ssh2 speaks SSH over it exactly as over its own socket.
+      ...(sock ? { sock } : {}),
       username: config.username,
       privateKey: config.privateKey,
       passphrase: config.passphrase,
@@ -304,6 +398,7 @@ export const connect: Connector = (config) =>
       reject(connectError(err as Error, config));
     }
   });
+}
 
 /** Keeps the first and last bytes of a stream, counting everything. */
 class HeadTail {

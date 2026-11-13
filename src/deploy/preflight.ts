@@ -104,11 +104,35 @@ export function requiredSecretNames(config: StradConfig): string[] {
 }
 
 /**
+ * The `${NAME}` behind each rendered bundle's `tailnet.authKey`.
+ *
+ * Baked like a supplementary server's `env:` — onto that one component, read
+ * from the store under the store provider — and so counted with them: in
+ * `bakedSecretNames` (what `render-spec` fetches) and `supplementaryEnvNames`
+ * (what `store:check` demands). A bundle no enabled server uses renders no
+ * component and asks for nothing; neither does `enabled: false`, which is what
+ * makes that the rollback.
+ */
+export function tailnetSecretNames(config: StradConfig): string[] {
+  const used = new Set(
+    config.servers
+      .filter((s) => s.enabled && s.kind === "supplementary-image")
+      .map((s) => (s as { bundle: string }).bundle),
+  );
+  const names = new Set<string>();
+  for (const bundle of config.bundles) {
+    if (!bundle.tailnet?.enabled || !used.has(bundle.name)) continue;
+    for (const name of refsIn(bundle.tailnet.authKey)) names.add(name);
+  }
+  return [...names].sort();
+}
+
+/**
  * Names a store-backed deploy must still resolve at render time, because they
  * land as env on a component the gateway process does not own.
  */
 export function bakedSecretNames(config: StradConfig): string[] {
-  const names = new Set<string>();
+  const names = new Set<string>(tailnetSecretNames(config));
   for (const server of config.servers) {
     if (!server.enabled) continue;
     if (server.kind !== "supplementary-image") continue;
@@ -133,7 +157,7 @@ export function bakedSecretNames(config: StradConfig): string[] {
  * the server that declared it under `env:`.
  */
 export function supplementaryEnvNames(config: StradConfig): string[] {
-  const names = new Set<string>();
+  const names = new Set<string>(tailnetSecretNames(config));
   for (const server of config.servers) {
     if (!server.enabled) continue;
     if (server.kind !== "supplementary-image") continue;

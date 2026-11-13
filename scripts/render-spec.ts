@@ -90,6 +90,7 @@ import {
 } from "../src/secrets/parameters/index.ts";
 import {
   bakedSecretNames,
+  tailnetSecretNames,
   consoleEnvNames,
   preflightSecrets,
 } from "../src/deploy/preflight.ts";
@@ -486,6 +487,7 @@ if (storeBacked && !store) {
 // value-reading credential out of the container that answers /mcp.
 const scopedSecrets: Record<string, string> = {};
 const wanted = bakedSecretNames(config);
+const tailnetNames = new Set(tailnetSecretNames(config));
 
 /**
  * Does this config put a THIRD-PARTY container on the app?
@@ -715,6 +717,20 @@ if (wanted.length > 0) {
     const value = consoleOnly.has(name)
       ? process.env[name]
       : (available[name] ?? process.env[name]);
+    if (!value && tailnetNames.has(name)) {
+      // A bundle's tailnet credential has no server namespace to fall back on
+      // and no waiver: a block that asks for it and cannot have it is a config
+      // that should say `enabled: false` instead.
+      console.error(
+        `::error::${name} is a bundle's tailnet.authKey but is not set ` +
+          (storeBacked
+            ? `in ${gatewayNamespace(config.gateway.env)}`
+            : `in the environment`) +
+          `. Seed it, or set tailnet.enabled: false on that bundle ` +
+          `(docs/operate/tailnet).`,
+      );
+      process.exit(1);
+    }
     if (!value) {
       // Not missing if every server that references it was served by its OWN
       // namespace: the shared bag is a FALLBACK, and demanding a fallback for a

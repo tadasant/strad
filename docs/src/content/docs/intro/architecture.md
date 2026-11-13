@@ -690,6 +690,11 @@ compute. This is what the [telemetry](/operate/telemetry/) exists to answer. See
   cannot read the store, so its own `env:` and its two boot keys are still read
   from the store at render time and baked onto it. See
   [Secrets](/operate/secrets/).
+- **Tailnet egress:** a bundle with a `tailnet:` block runs a userspace
+  `tailscaled` beside its host process and joins a Tailscale tailnet as a
+  tagged, ephemeral node. The `ssh` tree reaches a host that resolves into the
+  tailnet through its loopback SOCKS5 listener; nothing else uses it, and the
+  tailnet policy bounds what it can reach. See [Tailnet egress](/operate/tailnet/).
 
 ## The secrets and parameters system
 

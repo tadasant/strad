@@ -27,6 +27,8 @@ export {
 
 export {
   connect,
+  dialTailnet,
+  routeFor,
   shellQuote,
   MAX_DIRECTORY_ENTRIES,
   MAX_EXEC_WALL_MS,
@@ -39,6 +41,7 @@ export {
   type ExecResult,
   type FileRead,
   type PresentedHostKey,
+  type Route,
   type SshSession,
 } from "./client.js";
 
@@ -52,3 +55,15 @@ export {
 } from "./tools.js";
 
 export { redact } from "./logging.js";
+
+export {
+  TAILNET_SOCKS5_ENV,
+  isTailnetAddress,
+  isTailnetName,
+  parseProxyAddress,
+  socks5Connect,
+  SocksProxyDownError,
+  SocksReplyError,
+  SocksTimeoutError,
+  type ProxyAddress,
+} from "./tailnet.js";

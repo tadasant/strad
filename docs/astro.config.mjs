@@ -148,6 +148,7 @@ export default defineConfig({
             },
             { label: "Secrets IAM", slug: "operate/secrets-iam" },
             { label: "State store", slug: "operate/state-store" },
+            { label: "Tailnet egress", slug: "operate/tailnet" },
             { label: "Operations & CI", slug: "operate/operations" },
             { label: "Telemetry", slug: "operate/telemetry" },
             { label: "DNS & domains", slug: "operate/dns" },

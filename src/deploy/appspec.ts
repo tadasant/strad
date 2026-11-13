@@ -1,6 +1,10 @@
 import { secretRefsIn } from "../config/env-name.ts";
 import { isUnhosted } from "../config/schema.ts";
-import type { ServerConfig, StradConfig } from "../config/schema.ts";
+import type {
+  BundleConfig,
+  ServerConfig,
+  StradConfig,
+} from "../config/schema.ts";
 import { connectorVariables } from "./server-namespaces.ts";
 import { bundleUrlEnvName } from "../gateway/registry.ts";
 import { prefixedEnvName, slugEnvPrefix } from "../secrets/env-prefix.ts";
@@ -761,6 +765,93 @@ function bundleBootEnvVars(
     out.push({ key, value, scope: "RUN_TIME", type: "SECRET" });
   }
   return out;
+}
+
+/** The variables the bundle host reads to start its tailnet sidecar. */
+export const TAILNET_ENV_KEYS = [
+  "STRAD_TAILNET_AUTHKEY",
+  "STRAD_TAILNET_TAGS",
+  "STRAD_TAILNET_HOSTNAME",
+  "STRAD_TAILNET_SOCKS5",
+] as const;
+
+/**
+ * A bundle's `tailnet:` block as the variables its host reads
+ * (servers/bundle/host/src/tailnet.ts), on THAT component only.
+ *
+ * The auth key is resolved here the way a supplementary server's `env:` is —
+ * from the store under the store provider, from the deploy environment under
+ * `env` — and lands as a SECRET on this one component. It is never in
+ * `opts.env`, so it is never broadcast, and no other component, core included,
+ * holds it.
+ *
+ * Only a `strad-bundle` image ships `tailscaled`. Anywhere else the block would
+ * render a key into a container that cannot use it, so it is refused rather
+ * than quietly carried.
+ */
+function tailnetEnvVars(
+  bundle: string,
+  tailnet: BundleConfig["tailnet"],
+  isStradBundle: boolean,
+  gatewayEnv: string,
+  secrets: Readonly<Record<string, string>>,
+): EnvVar[] {
+  if (!tailnet?.enabled) return [];
+  if (!isStradBundle) {
+    throw new Error(
+      `bundle "${bundle}" declares tailnet:, but it does not run the ` +
+        `${STRAD_BUNDLE_REPOSITORY} image — the only image that ships tailscaled. ` +
+        `Move the block to the bundle that serves the ssh slugs, or remove it.`,
+    );
+  }
+  const { STRAD_TAILNET_AUTHKEY } = resolveMap(
+    { STRAD_TAILNET_AUTHKEY: tailnet.authKey },
+    secrets,
+  );
+  return [
+    {
+      key: "STRAD_TAILNET_AUTHKEY",
+      value: STRAD_TAILNET_AUTHKEY!,
+      scope: "RUN_TIME",
+      type: "SECRET",
+    },
+    {
+      key: "STRAD_TAILNET_TAGS",
+      value: tailnet.tags.join(","),
+      scope: "RUN_TIME",
+      type: "GENERAL",
+    },
+    {
+      key: "STRAD_TAILNET_HOSTNAME",
+      value: tailnet.hostname ?? `strad-${gatewayEnv}-${bundle}`.slice(0, 63),
+      scope: "RUN_TIME",
+      type: "GENERAL",
+    },
+  ];
+}
+
+/**
+ * The tailnet variables are the RENDERER's to set. A server's `env:` (or a
+ * managed parameter) spelling one of them would either hand the host a second
+ * key or, for `STRAD_TAILNET_SOCKS5`, point the ssh tree's dial somewhere the
+ * host did not choose — so it fails the render, naming the variable and never
+ * the value.
+ */
+function withTailnet(
+  bundle: string,
+  envs: EnvVar[],
+  tailnet: EnvVar[],
+): EnvVar[] {
+  const reserved = new Set<string>(TAILNET_ENV_KEYS);
+  const clash = envs.find((e) => reserved.has(e.key));
+  if (clash) {
+    throw new Error(
+      `bundle "${bundle}": ${clash.key} is set by a server's env: or a managed ` +
+        `parameter on this component, but it is reserved for the bundle's ` +
+        `tailnet: block. Remove it from the server.`,
+    );
+  }
+  return [...envs, ...tailnet];
 }
 
 /**
@@ -1874,6 +1965,13 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       supplementary !== undefined &&
       componentImage.repository === STRAD_BUNDLE_REPOSITORY;
     const liveness = declared?.liveness ?? isStradBundle;
+    const tailnet = tailnetEnvVars(
+      name,
+      declared?.tailnet,
+      isStradBundle,
+      config.gateway.env,
+      opts.secrets ?? {},
+    );
 
     services.push({
       name,
@@ -1887,7 +1985,11 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
         : {}),
       envs: supplementary
         ? withHeapCeiling(
-            supplementaryEnvs(name, supplementary, componentImage),
+            withTailnet(
+              name,
+              supplementaryEnvs(name, supplementary, componentImage),
+              tailnet,
+            ),
             isStradBundle ? bundleHeapMiB(instanceSizeSlug) : null,
           )
         : [

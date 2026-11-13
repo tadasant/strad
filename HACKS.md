@@ -7177,3 +7177,52 @@ per consumer: the module already takes the bucket and credential per
 `GcsBlobStore`, so only the environment rules would change. The legacy names go
 once `whatsapp-zimmer` and `whatsapp-tadas` are on `STRAD_STATE_GCS_*`: delete
 `LEGACY_ENV` in `servers/whatsapp/shared/src/config.ts`.
+
+---
+
+## 139. Tailnet egress is a userspace tailscaled inside the bundle, and has met only fakes
+
+**What.** A bundle with a `tailnet:` block runs `tailscaled
+--tun=userspace-networking --state=mem:` as a child of the bundle host
+(`servers/bundle/host/src/tailnet.ts`), joined with `--shields-up` as a tagged,
+pre-authorized, ephemeral node from a Tailscale OAuth client secret. The `ssh`
+tree reaches a host that resolves into Tailscale's ranges through its SOCKS5
+listener on `127.0.0.1:1055` (`servers/ssh/shared/src/tailnet.ts`); every other
+host dials direct. `docs/operate/tailnet` is the design.
+
+**Why.** Zimmer's droplets take no public TCP at all, and their SSH answers only
+on the tailnet. App Platform gives a container no TUN device and runs one
+container per component, so there is no kernel-mode Tailscale and no sidecar
+container. A userspace daemon in the same container is what is left. The other
+option, a public SSH port allowlisted to strad, puts sshd back on the internet
+(Zimmer closed it after a brute-force flood) behind an allowlist of an egress
+address App Platform does not keep fixed.
+
+**What it costs.**
+
+- **A second process in a container built around one.** The host supervises
+  it: restarts with backoff, `/healthz` reports it, and it never fails the
+  container. Its log goes to stderr with the key scrubbed, and stderr is not
+  shipped, so a sidecar that will not join is visible on `/healthz` and in
+  `doctl apps logs`, not in telemetry.
+- **The SOCKS5 listener is reachable by every process in the container**, not
+  only the `ssh` tree. Only the `ssh` tree is given its address, but nothing in
+  the container enforces that. The tailnet policy is the real boundary: one
+  port on Zimmer staging for `tag:strad`. It only holds once the tailnet's
+  allow-all grant is narrowed to exclude `tag:strad`, so that policy change has
+  to land before any key for the tag is minted.
+- **No ACL-level "no inbound".** The proposed policy narrows what `tag:strad`
+  may reach, not who may reach it; `--shields-up` refuses inbound at the node.
+- **Rotating the OAuth client secret is a redeploy**, like any baked value.
+- **Proven only against fakes.** CI runs the real `ssh2` client through a fake
+  SOCKS5 proxy to a real loopback SSH server, and the supervision against
+  stand-in shell scripts. Nothing has run the real `tailscaled` inside App
+  Platform's gVisor sandbox, and nothing has joined the real tailnet. The first
+  deploy with the block is that test, and the bundle's `/healthz` is where to
+  read it.
+
+**Undo.** `tailnet: { enabled: false }` and a deploy, or remove the block. Revoke
+the OAuth client and remove the node in the Tailscale admin console to cut a
+running container off at once. If App Platform ever offers a network sidecar or
+a TUN device, kernel-mode Tailscale would replace the child process; the ssh
+tree's address-based routing would not change.

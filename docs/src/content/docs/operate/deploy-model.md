@@ -390,6 +390,12 @@ learn:
   (tadasant/strad#458). Any other image gets neither unless `bundles[].liveness`
   says so. See [what a strad-bundle component is rendered
   with](/servers/interface/#what-a-strad-bundle-component-is-rendered-with-so-it-recovers-on-its-own).
+- **A bundle with `tailnet:` gets its tailnet credential, and no other component
+  does.** `STRAD_TAILNET_AUTHKEY` (a SECRET, resolved from `tailnet.authKey`),
+  `STRAD_TAILNET_TAGS` and `STRAD_TAILNET_HOSTNAME` land on that component
+  alone. The key is never in the broadcast and core never holds it. Its name is
+  in `bakedSecretNames`, so `render-spec` reads it from the store and
+  `store:check` counts it. See [Tailnet egress](/operate/tailnet/).
 
 ## What strad's own config renders to
 

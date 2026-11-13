@@ -105,6 +105,7 @@ import {
   instanceSyncSeconds,
   type InstanceTree,
 } from "./param-route.js";
+import { startTailnet } from "./tailnet.js";
 import { loadFromTree, treeSdk, type TreeName } from "./trees.js";
 import {
   WATCHDOG_DEFAULTS,
@@ -2212,6 +2213,10 @@ function sessionfulHandler(mount: Mount) {
 
 async function main(): Promise<void> {
   scrubCapabilityEnv();
+  // BEFORE the mounts: it removes the tailnet key from `process.env`, which a
+  // conventional mount would otherwise read along with everything else. Null,
+  // and nothing started, unless the renderer gave this component `tailnet:`.
+  const tailnet = startTailnet();
 
   const mounts = await buildMounts();
 
@@ -2315,6 +2320,9 @@ async function main(): Promise<void> {
         heapLimitMB: Math.round(loop.heapLimit / 2 ** 20),
       },
       chromium: { up: browserIsUp(), launches: browserLaunchCount() },
+      // Reported, never folded into `ok`: a tailnet that will not come up costs
+      // the tailnet hosts, and a liveness restart would cost every mount.
+      ...(tailnet ? { tailnet: tailnet.state() } : {}),
       servers: [
         ...[
           ...mounts,
@@ -2532,7 +2540,12 @@ async function main(): Promise<void> {
     // A mount with `close` holds state worth saving — whatsapp flushes its
     // Signal state to GCS here. Bounded, because App Platform escalates a
     // slow exit to SIGKILL and a hung close must not cost the rest.
-    const closing = Promise.allSettled(mounts.map((m) => m.close?.()));
+    const closing = Promise.allSettled([
+      ...mounts.map((m) => m.close?.()),
+      // Logs the ephemeral node out, so it leaves the tailnet now rather than
+      // when the control plane notices it went quiet.
+      tailnet?.stop(),
+    ]);
     const bounded = Promise.race([
       closing,
       new Promise((resolve) => setTimeout(resolve, 5_000).unref()),

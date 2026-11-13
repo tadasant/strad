@@ -212,8 +212,8 @@ export function missingCredentialsDegraded(
  * So an instance gets what a process needs to run at all — the grafana tree
  * spawns a Go binary, which needs a `PATH`, a `HOME` and its CA settings — plus
  * what core served. The list is deliberately the one the grafana tree already
- * passes its child (servers/grafana/shared/src/config.ts), and none of it is a
- * credential.
+ * passes its child (servers/grafana/shared/src/config.ts) plus the tailnet
+ * proxy address, and none of it is a credential.
  */
 export const INSTANCE_PROCESS_ENV_NAMES = [
   "PATH",
@@ -222,6 +222,11 @@ export const INSTANCE_PROCESS_ENV_NAMES = [
   "SSL_CERT_FILE",
   "SSL_CERT_DIR",
   "NODE_EXTRA_CA_CERTS",
+  // Where this container's tailnet SOCKS5 listener is, set by the host itself
+  // when the component was rendered with `tailnet:` (src/tailnet.ts). An
+  // address, not a credential, and listed HERE so a served value of the same
+  // name can never point an instance's SSH dial at a proxy of its choosing.
+  "STRAD_TAILNET_SOCKS5",
 ] as const;
 
 export function instanceEnv(
