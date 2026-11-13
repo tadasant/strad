@@ -22,7 +22,8 @@ slug, and what changed from upstream — is the docs page,
 | ------------------------ | --------------------------------------------------------------------------------- |
 | `shared/src/config.ts`   | The `SSH_*` variables, the key parse, the error that says where to seed them      |
 | `shared/src/host-key.ts` | Pin parsing (keyscan line, bare key, `SHA256:` fingerprint), matching, negotiation |
-| `shared/src/client.ts`   | One connection per call: the pin check, exec with bounded output, SFTP            |
+| `shared/src/client.ts`   | One connection per call: the route, the pin check, exec with bounded output, SFTP |
+| `shared/src/tailnet.ts`  | Which hosts are tailnet hosts, and the SOCKS5 dial through the bundle's tailscaled |
 | `shared/src/tools.ts`    | The six tools and the one error path                                             |
 | `shared/src/server.ts`   | `createMCPServer({ version, label, env })`, the factory the bundle host mounts    |
 
@@ -40,3 +41,8 @@ authentication attempt, missing values refusing without connecting, the private
 key appearing in no tool result, and a down host: listing that opens nothing,
 the `UNREACHABLE` message on every tool, and `ssh_check_connection` going from
 `unreachable` to `ok` when the host comes up, with no new MCP session.
+`shared/test/tailnet.test.ts` puts a SOCKS5 proxy in front of the same host and
+covers the tailnet route: a tailnet address goes through the proxy with the pin
+still enforced, a public host does not, and the three tailnet failures (no
+egress configured, sidecar down, tailnet could not reach the host) each say
+which they are. See [`docs/operate/tailnet`](../../docs/src/content/docs/operate/tailnet.md).

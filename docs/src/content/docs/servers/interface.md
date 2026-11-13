@@ -1058,6 +1058,37 @@ deployment whose spec has no liveness check still restarts. What only the
 liveness check catches is a loop blocked by one synchronous call that never
 returns. A loop in that state runs no timers, so the watchdog never runs either.
 
+### `tailnet:` — a bundle that can reach hosts only on a Tailscale tailnet
+
+Off unless written. With it, the bundle host runs a userspace `tailscaled`
+joined as a tagged, pre-authorized, ephemeral node, and the `ssh` tree dials a
+host that resolves into Tailscale's ranges through it. Nothing else in the
+container uses it. [Tailnet egress](/operate/tailnet/) is the whole design: the
+policy, the credential, audit and rollback.
+
+```yaml
+bundles:
+  - name: bundle
+    tailnet:
+      authKey: "${STRAD_TAILNET_OAUTH_CLIENT_SECRET}" # a ${NAME}, never the key
+      tags: [tag:strad] # required, at least one
+      hostname: strad-prod-bundle # default strad-<gateway.env>-<bundle>
+      enabled: true # false is the rollback
+```
+
+| Field      | Rule                                                                                                                                             |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `authKey`  | One `${NAME}` reference and nothing else; a literal fails the parse. Resolved at render like a supplementary `env:` name, onto this component only. |
+| `tags`     | At least one `tag:<lowercase-name>`. An untagged node would carry the access of whoever minted its key.                                          |
+| `hostname` | Lowercase letters, digits and dashes, up to 63.                                                                                                  |
+| `enabled`  | Default `true`. `false` renders nothing and asks the store for nothing.                                                                          |
+
+The render refuses `tailnet:` on a bundle that does not run the `strad-bundle`
+image, the only one that ships `tailscaled`. It also refuses a server `env:` or
+managed parameter on any component that spells `STRAD_TAILNET_AUTHKEY`,
+`STRAD_TAILNET_TAGS`, `STRAD_TAILNET_HOSTNAME` or `STRAD_TAILNET_SOCKS5`:
+those are the renderer's and the host's to set.
+
 ## `gateway.secrets`
 
 Where `${NAME}` resolves from, and when. One block, one provider, per deployment.

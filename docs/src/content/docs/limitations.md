@@ -4376,3 +4376,29 @@ and "outside this server's folder". `slack_events_status` reports
 `config_error` the same way.
 
 See `HACKS.md` #138.
+
+### 139. Tailnet egress runs a userspace tailscaled inside the bundle, and has met only fakes
+
+A bundle with `tailnet:` runs Tailscale's daemon as a second process beside the
+bundle host, so the [SSH server](/servers/ssh/) can reach hosts that exist only
+on a tailnet. See [Tailnet egress](/operate/tailnet/).
+
+- **Any process in that container can use it.** Only the `ssh` tree is given
+  the listener's address, but nothing stops another server from dialing
+  loopback. What it would reach is what the tailnet policy grants the node's
+  tag. For strad's own deployment that is OpenSSH on Zimmer staging, once the
+  allow-all grant is narrowed. Until then a key for the tag must not exist.
+- **Inbound is refused at the node, not by the policy.** `--shields-up` drops
+  every incoming tailnet connection.
+- **The credential is baked**, so rotating it is a redeploy.
+- **It has not run for real.** CI proves the SOCKS5 route with the real SSH
+  client against fakes, and the supervision against stand-in binaries. A real
+  `tailscaled` in App Platform's sandbox, on the real tailnet, has not run yet.
+
+**How you would know.** The bundle's `/healthz` has a `tailnet` field: `up`,
+`starting`, or `down` with a reason. An SSH call to a tailnet host says "no
+tailnet egress" when the block is missing, "tailnet sidecar" when the daemon is
+not up, and `UNREACHABLE` naming the tailnet policy when the host could not be
+reached.
+
+See `HACKS.md` #139.

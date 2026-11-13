@@ -234,6 +234,30 @@ failure of the server, and it never fails the MCP connection.
 workflow." It is text and nothing else: it cannot change the pin, the key or
 who may call the slug.
 
+## A host on a Tailscale tailnet
+
+A host whose `SSH_HOST` is a MagicDNS name (`*.ts.net`) or resolves into
+Tailscale's ranges (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) has no route from
+the internet: Zimmer's droplets are the case here, with `staging.zimmer.tadasant.com`
+resolving to a tailnet address and OpenSSH on tailnet port 2222. A MagicDNS
+name has to be written in full (`zimmer-staging.tail52556f.ts.net`): the
+container does not use the tailnet's DNS, so a short name does not resolve. The tree dials
+such a host through the bundle's tailnet sidecar, a userspace `tailscaled`, and
+every other host direct, as before. The route is decided by the address alone,
+and the pin is checked the same way on both.
+
+The sidecar exists only on a bundle whose config has a `tailnet:` block, and
+it is off by default. [Tailnet egress](/operate/tailnet/) covers the
+mechanism, the tailnet policy that bounds it, the credential, audit and
+rollback. Without it, a call to a tailnet host comes back `Not configured`
+("this container has no tailnet egress") and nothing is dialed. With it, the
+answers are the ones above, plus two that name the tailnet:
+
+| What happened                                                    | The error says                                                                              | `ssh_check_connection` status |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ----------------------------- |
+| The tailnet could not reach the host                             | `UNREACHABLE`: down or offline on the tailnet, or the policy does not allow this port       | `unreachable`                 |
+| The sidecar is not accepting connections (starting, restarting)  | the tailnet sidecar is not up; retry, and the bundle's `/healthz` `tailnet` field says why  | `connect_failed`              |
+
 ## What changed from `ssh-agent-mcp-server`
 
 - **Authentication is a key from the store.** No SSH agent, no key file, no
@@ -285,6 +309,12 @@ timeout (OpenSSH honours `signal` requests only in recent versions), and whether
 a host firewalls SSH by source address — App Platform's egress address is not
 fixed, so a host that allowlists sources will refuse this container until its
 egress is on the list. See [Known limitations](/limitations/) #137.
+
+The tailnet route is proven to the same depth and no further: the suite in
+`tailnet.test.ts` runs the real `ssh2` client through a SOCKS5 proxy to the same
+loopback SSH server, with the pin enforced, and covers the three tailnet
+failures. A real `tailscaled` carrying a real session has not run yet
+([Known limitations](/limitations/) #139).
 
 ## Logging
 

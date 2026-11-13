@@ -247,6 +247,22 @@ bundles:
     # component is also started with a V8 heap of half the plan's memory. See
     # docs/servers/interface (tadasant/strad#458).
     # liveness: true
+    #
+    # TAILNET EGRESS, off unless written. The bundle host runs a userspace
+    # tailscaled joined as a tagged, pre-authorized, EPHEMERAL node, and the ssh
+    # tree reaches a host that resolves into Tailscale's ranges (100.64.0.0/10,
+    # fd7a:115c:a1e0::/48, *.ts.net) through it; every other host dials direct.
+    # `authKey` names a Tailscale OAuth client secret scoped to auth_keys for
+    # exactly these tags. It lands on this component only, as a SECRET. The
+    # tailnet policy must already limit the tag to what it needs before the key
+    # exists: a tag the policy does not narrow can reach the whole tailnet.
+    # `enabled: false` is the rollback. docs/operate/tailnet has the design.
+    #
+    # tailnet:
+    #   authKey: "${STRAD_TAILNET_OAUTH_CLIENT_SECRET}"
+    #   tags: [tag:strad]
+    #   hostname: strad-prod-bundle # default: strad-<gateway.env>-<bundle>
+    #   enabled: true
 
 servers:
   # The roster editor, as an MCP server — the other half of the console at

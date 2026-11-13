@@ -351,6 +351,36 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     test "$(/out/mcp-grafana --version)" = "${MCP_GRAFANA_VERSION}"
 
+# ---- tailscale (userspace tailscaled, for tailnet egress) --------------------
+# Started by the host ONLY on a component rendered with a bundle `tailnet:`
+# block (servers/bundle/host/src/tailnet.ts); on every other component the two
+# binaries sit on disk unused. Userspace networking, because App Platform gives
+# a container no TUN device. Pinned and checksum-verified against Tailscale's
+# published digests, for the same reason as mcp-grafana above: a rebuild of an
+# old commit must yield the same binary.
+FROM ${PW} AS fetch-tailscale
+ARG TAILSCALE_VERSION=1.104.7
+ARG TAILSCALE_SHA256_AMD64=e56693ff74a64f2591b7e819c280635a100aae1ddfb0ef058fcd052b7cd8d16c
+ARG TAILSCALE_SHA256_ARM64=d6bed2720310b328b861f943d7b4016c5358a9bad60575eb51e8143b79068484
+ARG TARGETARCH=amd64
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) want="${TAILSCALE_SHA256_AMD64}" ;; \
+      arm64) want="${TAILSCALE_SHA256_ARM64}" ;; \
+      *) echo "tailscale: no pinned digest for TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
+    curl -fsSL -o /tmp/tailscale.tgz \
+      "https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_${TARGETARCH}.tgz"; \
+    echo "${want}  /tmp/tailscale.tgz" | sha256sum -c -; \
+    mkdir -p /out; \
+    tar xzf /tmp/tailscale.tgz -C /tmp; \
+    install -m 755 "/tmp/tailscale_${TAILSCALE_VERSION}_${TARGETARCH}/tailscaled" /out/tailscaled; \
+    install -m 755 "/tmp/tailscale_${TAILSCALE_VERSION}_${TARGETARCH}/tailscale" /out/tailscale; \
+    rm -rf /tmp/tailscale.tgz "/tmp/tailscale_${TAILSCALE_VERSION}_${TARGETARCH}" /var/lib/apt/lists/*; \
+    test "$(/out/tailscale version | head -1)" = "${TAILSCALE_VERSION}"
+
 FROM ${PW} AS build-goodeggs
 WORKDIR /src
 COPY servers/good-eggs/package.json servers/good-eggs/package-lock.json ./
@@ -457,6 +487,11 @@ COPY --from=build-grafana /src /app/trees/grafana
 # servers/grafana/shared/src/config.ts for what it is and is not handed.
 COPY --from=fetch-mcp-grafana /out/mcp-grafana /usr/local/bin/mcp-grafana
 
+# tailscaled + tailscale, on PATH where src/tailnet.ts spawns them. Inert unless
+# the component was rendered with `tailnet:`.
+COPY --from=fetch-tailscale /out/tailscaled /usr/local/bin/tailscaled
+COPY --from=fetch-tailscale /out/tailscale /usr/local/bin/tailscale
+
 # The host: the only new code in this image.
 COPY --from=build-host /src/node_modules /app/host/node_modules
 COPY --from=build-host /src/dist /app/host/dist
@@ -474,6 +509,9 @@ COPY servers/bundle/otel /app/host/otel
 ENV PORT=8080
 EXPOSE 8080
 
+# boot.sh is `exec node --import /app/host/otel/instrument.mjs
+# /app/host/dist/index.js`, after moving a tailnet auth key, if the component
+# has one, out of the environment Node starts with (see the script).
 # --import runs the bootstrap to completion BEFORE the host loads, which is what
 # lets it publish the Chromium hooks on globalThis in time for the first launch.
-CMD ["node", "--import", "/app/host/otel/instrument.mjs", "/app/host/dist/index.js"]
+CMD ["/app/scripts/boot.sh"]

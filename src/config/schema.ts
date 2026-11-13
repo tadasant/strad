@@ -1213,6 +1213,53 @@ export function soleRefName(value: string): string | null {
 // ---------------------------------------------------------------------------
 
 /**
+ * TAILNET EGRESS for one bundle component: a userspace `tailscaled` in the
+ * container, joined as a tagged, pre-authorized, ephemeral node, reached by the
+ * `ssh` tree for a host that resolves into Tailscale's ranges and by nothing
+ * else (docs/operate/tailnet). Rendered onto THIS component only — never the
+ * broadcast — and only onto a `strad-bundle` image, the one that ships
+ * `tailscaled`.
+ *
+ * `authKey` is a `${NAME}` reference and never a literal: it is a credential,
+ * resolved at render the way a supplementary server's `env:` is. Use a
+ * Tailscale OAuth client secret scoped to `auth_keys` for exactly `tags`, so a
+ * redeploy mints its own ephemeral node and nothing long-lived ever sits on a
+ * device. `enabled: false` is the rollback: the component renders without the
+ * key and the container is what it was before the block existed.
+ */
+const BundleTailnet = z.object({
+  enabled: z.boolean().default(true),
+  authKey: z
+    .string()
+    .regex(
+      /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/,
+      "tailnet.authKey must be a single ${NAME} reference to the stored credential, never the key itself",
+    ),
+  /**
+   * The ACL tags the node joins with. Required, and at least one, because an
+   * untagged node carries the access of whoever minted its key.
+   */
+  tags: z
+    .array(
+      z
+        .string()
+        .regex(
+          /^tag:[a-z0-9][a-z0-9-]*$/,
+          "a tailnet tag is tag:<lowercase-name>",
+        ),
+    )
+    .min(1),
+  /** The node's tailnet name. Defaults to `strad-<gateway.env>-<bundle>`. */
+  hostname: z
+    .string()
+    .regex(
+      /^[a-z0-9][a-z0-9-]{0,62}$/,
+      "a tailnet hostname is lowercase letters, digits and dashes",
+    )
+    .optional(),
+});
+
+/**
  * A bundle is one App Platform component.
  *
  * `core` is implicit: the public gateway. Every other bundle is internal-only
@@ -1273,6 +1320,8 @@ const BundleConfig = z.object({
    * restarts it in a loop. `false` turns it off for a `strad-bundle` image.
    */
   liveness: z.boolean().optional(),
+  /** Tailnet egress for this component. See `BundleTailnet` above. */
+  tailnet: BundleTailnet.optional(),
 });
 
 // ---------------------------------------------------------------------------

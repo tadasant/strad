@@ -24,6 +24,7 @@
 import ssh2 from "ssh2";
 import { ConfigError } from "./errors.js";
 import { parseHostKeyPins, type HostKeyPin } from "./host-key.js";
+import { parseProxyAddress, TAILNET_SOCKS5_ENV, type ProxyAddress } from "./tailnet.js";
 
 const { utils } = ssh2;
 
@@ -85,6 +86,13 @@ export interface SshConfig {
    * anything else: it cannot loosen the pin, the key or who may call.
    */
   unreachableHint?: string;
+  /**
+   * The bundle's tailnet SOCKS5 listener, when this container has tailnet
+   * egress. Set by the bundle HOST (`STRAD_TAILNET_SOCKS5`), never by a slug's
+   * namespace, and only ever used for a host that resolves into Tailscale's
+   * ranges — see `tailnet.ts`.
+   */
+  tailnetProxy?: ProxyAddress;
 }
 
 /**
@@ -234,5 +242,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SshConfig {
     connectTimeoutMs: parseMs(env, ENV.connectTimeout, DEFAULT_CONNECT_TIMEOUT_MS, MAX_CONNECT_TIMEOUT_MS),
     commandTimeoutMs: parseMs(env, ENV.commandTimeout, DEFAULT_COMMAND_TIMEOUT_MS),
     unreachableHint: parseHint(env[ENV.unreachableHint]),
+    tailnetProxy: parseProxyAddress(env[TAILNET_SOCKS5_ENV]),
   };
 }

@@ -712,6 +712,14 @@ describe("instanceEnv", () => {
     expect(env.PATH).toBe("/usr/bin");
     expect(env.GRAFANA_URL).toBe("https://g");
   });
+  it("passes the host's tailnet proxy address through, and never a served one in its place", () => {
+    const env = instanceEnv(
+      { SSH_HOST: "staging.zimmer.tadasant.com", STRAD_TAILNET_SOCKS5: "203.0.113.9:1080" },
+      { PATH: "/usr/bin", STRAD_TAILNET_SOCKS5: "127.0.0.1:1055", STRAD_TAILNET_AUTHKEY: "tskey-x" } as NodeJS.ProcessEnv,
+    );
+    expect(env.STRAD_TAILNET_SOCKS5).toBe("127.0.0.1:1055");
+    expect(env).not.toHaveProperty("STRAD_TAILNET_AUTHKEY");
+  });
 });
 
 /**
