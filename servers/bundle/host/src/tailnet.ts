@@ -17,21 +17,31 @@
  * no key this module starts nothing, sets nothing and the container is
  * byte-for-byte what it was.
  *
- * THE KEY LEAVES `process.env` BEFORE ANY MOUNT IS BUILT. A conventional mount
- * reads the whole container environment (`slugEnvView`), so a key left there
- * would be readable by thirty-one other servers, some of them third-party code.
- * It is taken out at boot, kept in this module, and handed to `tailscale up`
- * through a 0600 file in a 0700 directory that is removed as soon as `up`
- * returns — never on a command line, where `ps` would show it.
+ * THE KEY IS NOT IN THE ENVIRONMENT NODE STARTS WITH. A conventional mount
+ * reads the whole container environment (`slugEnvView`), and deleting a name
+ * from `process.env` does not remove it from `/proc/<pid>/environ`, which every
+ * server loaded into this process can read. So the image's entrypoint
+ * (servers/bundle/scripts/boot.sh) moves the key into a 0600 file before Node
+ * starts and passes its path as `STRAD_TAILNET_AUTHKEY_FILE`; this module reads
+ * the file and deletes it. A bare `STRAD_TAILNET_AUTHKEY` is still honoured for
+ * a host started some other way, with a warning, because then it IS in
+ * `/proc`. The key reaches `tailscale up` through another 0600 file in a 0700
+ * directory, removed as soon as `up` returns — never on a command line, where
+ * `ps` would show it.
  *
  * NO INBOUND. `--shields-up` refuses every incoming tailnet connection at the
  * node, which matters more in userspace mode than in kernel mode: userspace
  * tailscaled forwards an accepted inbound connection to the same port on
- * loopback, where this bundle's internal listener is. The tailnet policy
- * denies inbound to the tag as well; this is the second lock.
+ * loopback, where this bundle's internal listener is.
+ *
+ * ADMIN-SIDE REMOVAL STICKS. A node removed in the admin console, or logged
+ * out by the control plane, keeps its daemon running and is reported `down`
+ * by the status poll below; it is NOT re-joined, because re-joining would undo
+ * the removal. A daemon that exits is restarted, and that mints a new node, so
+ * revoking the OAuth client is what makes a cut-off survive a restart.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -40,6 +50,8 @@ import { log, logWarn } from "./log.js";
 /** The variables the renderer sets on a component whose bundle declares `tailnet:`. */
 export const TAILNET_ENV = {
   authKey: "STRAD_TAILNET_AUTHKEY",
+  /** Set by the image's boot.sh: where it moved the key to. */
+  authKeyFile: "STRAD_TAILNET_AUTHKEY_FILE",
   hostname: "STRAD_TAILNET_HOSTNAME",
   tags: "STRAD_TAILNET_TAGS",
   /** Set BY THIS HOST, for the ssh tree: where the SOCKS5 listener is. */
@@ -66,9 +78,10 @@ export interface TailnetConfig {
  * untagged node is owned by whoever minted the key and inherits THEIR access,
  * which on a tailnet with an allow-all grant is everything.
  */
-export function takeTailnetConfig(env: NodeJS.ProcessEnv = process.env): TailnetConfig | null {
-  const authKey = env[TAILNET_ENV.authKey]?.trim();
-  delete env[TAILNET_ENV.authKey];
+export function takeTailnetConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): TailnetConfig | null {
+  const authKey = readKey(env);
   // Whatever a slug's namespace said, the proxy address is this host's to set.
   delete env[TAILNET_ENV.socks5];
   if (!authKey) return null;
@@ -89,6 +102,39 @@ export function takeTailnetConfig(env: NodeJS.ProcessEnv = process.env): Tailnet
   return { authKey, hostname, tags };
 }
 
+/** The key from boot.sh's file (deleted once read), else from the bare variable. Both names are removed. */
+function readKey(env: NodeJS.ProcessEnv): string | undefined {
+  const file = env[TAILNET_ENV.authKeyFile];
+  const bare = env[TAILNET_ENV.authKey]?.trim();
+  delete env[TAILNET_ENV.authKeyFile];
+  delete env[TAILNET_ENV.authKey];
+  if (file) {
+    try {
+      const key = readFileSync(file, "utf8").trim();
+      return key || undefined;
+    } catch (err) {
+      logWarn(
+        `tailnet: could not read the key boot.sh wrote (${(err as NodeJS.ErrnoException).code ?? "error"}); not joining`,
+      );
+      return undefined;
+    } finally {
+      rmSync(file, { force: true });
+      try {
+        rmSync(join(file, ".."), { recursive: true, force: true });
+      } catch {
+        // the directory is boot.sh's mktemp; leaving it empty is harmless
+      }
+    }
+  }
+  if (bare) {
+    logWarn(
+      `tailnet: the key arrived in ${TAILNET_ENV.authKey}, not through the image's boot.sh, ` +
+        `so it stays readable in this process's /proc environ`,
+    );
+  }
+  return bare || undefined;
+}
+
 /**
  * The auth key as `tailscale up` should read it. An OAuth client secret
  * (`tskey-client-…`) is a key FACTORY: `up` mints a node key from it, and the
@@ -97,7 +143,8 @@ export function takeTailnetConfig(env: NodeJS.ProcessEnv = process.env): Tailnet
  * ordinary auth key carries those properties itself and is passed unchanged.
  */
 export function authKeyForUp(authKey: string): string {
-  if (!authKey.startsWith("tskey-client-") || authKey.includes("?")) return authKey;
+  if (!authKey.startsWith("tskey-client-") || authKey.includes("?"))
+    return authKey;
   return `${authKey}?ephemeral=true&preauthorized=true`;
 }
 
@@ -113,7 +160,11 @@ export function tailscaledArgs(stateDir: string, socket: string): string[] {
   ];
 }
 
-export function upArgs(config: TailnetConfig, keyFile: string, socket: string): string[] {
+export function upArgs(
+  config: TailnetConfig,
+  keyFile: string,
+  socket: string,
+): string[] {
   return [
     `--socket=${socket}`,
     "up",
@@ -134,7 +185,8 @@ const KEY_SHAPE = /tskey-[A-Za-z0-9_-]+(\?[^\s"']*)?/g;
 /** Every auth-key-shaped token and the literal key, out of a line before it is logged. */
 export function redactTailnet(text: string, authKey?: string): string {
   let out = text;
-  if (authKey && authKey.length >= 8) out = out.split(authKey).join("[redacted]");
+  if (authKey && authKey.length >= 8)
+    out = out.split(authKey).join("[redacted]");
   return out.replace(KEY_SHAPE, "tskey-[redacted]");
 }
 
@@ -146,12 +198,20 @@ export type TailnetState =
 export interface SidecarOptions {
   tailscaled?: string;
   tailscale?: string;
-  /** Delay before the n-th restart (1-based). */
+  /** Delay before a restart, given the consecutive failures so far (1-based). */
   backoffMs?: (n: number) => number;
+  /** How often a joined node's backend state is checked. */
+  statusEveryMs?: number;
+  /** The floor on a retry after the control plane refused the key. */
+  refusedBackoffMs?: number;
   now?: () => Date;
 }
 
-const defaultBackoff = (n: number): number => Math.min(60_000, 1_000 * 2 ** Math.min(n - 1, 6));
+/** The floor on a retry after the control plane refused the key. */
+export const REFUSED_BACKOFF_MS = 10 * 60_000;
+
+const defaultBackoff = (n: number): number =>
+  Math.min(60_000, 1_000 * 2 ** Math.min(n - 1, 6));
 
 /**
  * One supervised `tailscaled` and the `up` that joins it. A crash or a failed
@@ -162,7 +222,13 @@ const defaultBackoff = (n: number): number => Math.min(60_000, 1_000 * 2 ** Math
 export class TailnetSidecar {
   private daemon: ChildProcess | null = null;
   private current: TailnetState;
+  /** Every restart in this container's life, for `/healthz`. */
   private restarts = 0;
+  /** Consecutive failures since the last successful join: what the backoff counts. */
+  private failures = 0;
+  private statusTimer: NodeJS.Timeout | null = null;
+  private readonly statusEveryMs: number;
+  private readonly refusedBackoffMs: number;
   private stopping = false;
   private retryTimer: NodeJS.Timeout | null = null;
   private readonly stateDir: string;
@@ -180,18 +246,30 @@ export class TailnetSidecar {
       tailscale: options.tailscale ?? "tailscale",
     };
     this.backoff = options.backoffMs ?? defaultBackoff;
+    this.statusEveryMs = options.statusEveryMs ?? 30_000;
+    this.refusedBackoffMs = options.refusedBackoffMs ?? REFUSED_BACKOFF_MS;
     this.now = options.now ?? (() => new Date());
     this.stateDir = mkdtempSync(join(tmpdir(), "strad-tailnet-"));
     this.socket = join(this.stateDir, "tailscaled.sock");
-    this.current = { state: "starting", since: this.now().toISOString(), restarts: 0 };
+    this.current = {
+      state: "starting",
+      since: this.now().toISOString(),
+      restarts: 0,
+    };
   }
 
   state(): TailnetState {
     return this.current;
   }
 
-  private set(next: { state: "starting" | "up" } | { state: "down"; reason: string }): void {
-    this.current = { ...next, since: this.now().toISOString(), restarts: this.restarts } as TailnetState;
+  private set(
+    next: { state: "starting" | "up" } | { state: "down"; reason: string },
+  ): void {
+    this.current = {
+      ...next,
+      since: this.now().toISOString(),
+      restarts: this.restarts,
+    } as TailnetState;
   }
 
   start(): void {
@@ -201,13 +279,19 @@ export class TailnetSidecar {
       `tailnet: starting userspace tailscaled as ${this.config.hostname} ` +
         `(${this.config.tags.join(",")}), SOCKS5 on ${SOCKS5_LISTEN}`,
     );
-    const daemon = spawn(this.bins.tailscaled, tailscaledArgs(this.stateDir, this.socket), {
-      env: this.childEnv(),
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const daemon = spawn(
+      this.bins.tailscaled,
+      tailscaledArgs(this.stateDir, this.socket),
+      {
+        env: this.childEnv(),
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
     this.daemon = daemon;
     this.pipeLines(daemon, "tailscaled");
-    daemon.once("error", (err) => this.fail(`tailscaled could not start: ${err.message}`));
+    daemon.once("error", (err) =>
+      this.fail(`tailscaled could not start: ${err.message}`),
+    );
     daemon.once("exit", (code, signal) => {
       if (this.daemon !== daemon) return;
       this.daemon = null;
@@ -223,15 +307,29 @@ export class TailnetSidecar {
       const result = await this.up();
       if (this.stopping || this.daemon !== daemon) return;
       if (result.ok) {
+        this.failures = 0;
         this.set({ state: "up" });
-        log(`tailnet: joined as ${this.config.hostname}; tailnet hosts are reachable through ${SOCKS5_LISTEN}`);
+        this.watch(daemon);
+        log(
+          `tailnet: joined as ${this.config.hostname}; tailnet hosts are reachable through ${SOCKS5_LISTEN}`,
+        );
         return;
       }
       // The daemon answers its socket a moment after it starts; anything else
       // is a real refusal (a revoked or expired key, a tag the key may not
       // assign) and retrying it fast only spends the key's mint budget.
-      if (!/failed to connect to local tailscaled|connect: no such file|connection refused/i.test(result.output)) {
-        this.fail(`tailscale up failed: ${result.output || "no output"}`);
+      if (
+        !/failed to connect to local tailscaled|tailscaled\.sock/i.test(
+          result.output,
+        )
+      ) {
+        // A refusal by the control plane — revoked or expired key, a tag the
+        // client may not mint — will not fix itself in a minute, and every
+        // retry spends a mint. Wait long.
+        this.fail(
+          `tailscale up failed: ${result.output || "no output"}`,
+          this.refusedBackoffMs,
+        );
         daemon.kill("SIGTERM");
         return;
       }
@@ -246,10 +344,14 @@ export class TailnetSidecar {
     const keyFile = join(keyDir, "authkey");
     writeFileSync(keyFile, authKeyForUp(this.config.authKey), { mode: 0o600 });
     return new Promise((resolve) => {
-      const child = spawn(this.bins.tailscale, upArgs(this.config, keyFile, this.socket), {
-        env: this.childEnv(),
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+      const child = spawn(
+        this.bins.tailscale,
+        upArgs(this.config, keyFile, this.socket),
+        {
+          env: this.childEnv(),
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
       let output = "";
       const take = (d: Buffer) => {
         if (output.length < 2000) output += d.toString();
@@ -261,7 +363,13 @@ export class TailnetSidecar {
         if (settled) return;
         settled = true;
         rmSync(keyDir, { recursive: true, force: true });
-        resolve({ ok, output: redactTailnet((output + extra).trim(), this.config.authKey).slice(0, 500) });
+        resolve({
+          ok,
+          output: redactTailnet(
+            (output + extra).trim(),
+            this.config.authKey,
+          ).slice(0, 500),
+        });
       };
       child.once("error", (err) => done(false, err.message));
       // `close`, not `exit`: `exit` can fire before the last of stderr is
@@ -270,14 +378,83 @@ export class TailnetSidecar {
     });
   }
 
-  private fail(reason: string): void {
+  /**
+   * While joined, ask tailscaled every `statusEveryMs` whether it still is. A
+   * node removed or logged out by the control plane keeps a live daemon, so
+   * the exit handler never sees it; this is what turns `/healthz` to `down`.
+   * Reported only — never re-joined (see the module comment).
+   */
+  private watch(daemon: ChildProcess): void {
+    if (this.statusTimer) clearInterval(this.statusTimer);
+    this.statusTimer = setInterval(() => {
+      if (this.stopping || this.daemon !== daemon) {
+        if (this.statusTimer) clearInterval(this.statusTimer);
+        this.statusTimer = null;
+        return;
+      }
+      void this.backendState().then((backend) => {
+        if (this.stopping || this.daemon !== daemon) return;
+        if (backend === "Running") {
+          if (this.current.state !== "up") {
+            this.set({ state: "up" });
+            log(`tailnet: backend is Running again`);
+          }
+        } else if (this.current.state === "up") {
+          const reason = `tailnet backend is ${backend ?? "not answering"} (removed or logged out in the admin console, or its key expired)`;
+          this.set({ state: "down", reason });
+          logWarn(`tailnet: ${reason}; not re-joining`);
+        }
+      });
+    }, this.statusEveryMs);
+    this.statusTimer.unref();
+  }
+
+  private backendState(): Promise<string | null> {
+    return new Promise((resolve) => {
+      const child = spawn(
+        this.bins.tailscale,
+        [`--socket=${this.socket}`, "status", "--json"],
+        {
+          env: this.childEnv(),
+          stdio: ["ignore", "pipe", "ignore"],
+        },
+      );
+      let out = "";
+      child.stdout?.on("data", (d: Buffer) => {
+        if (out.length < 1_000_000) out += d.toString();
+      });
+      const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
+      timer.unref();
+      child.once("error", () => resolve(null));
+      child.once("close", () => {
+        clearTimeout(timer);
+        try {
+          const state = (JSON.parse(out) as { BackendState?: unknown })
+            .BackendState;
+          resolve(typeof state === "string" ? state : null);
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+  }
+
+  private fail(reason: string, minDelayMs = 0): void {
     if (this.stopping) return;
     const clean = redactTailnet(reason, this.config.authKey);
-    this.set({ state: "down", reason: clean });
-    if (this.retryTimer) return;
+    if (this.retryTimer) {
+      this.set({ state: "down", reason: clean });
+      return;
+    }
+    if (this.statusTimer) clearInterval(this.statusTimer);
+    this.statusTimer = null;
     this.restarts++;
-    const delay = this.backoff(this.restarts);
-    logWarn(`tailnet: ${clean}; restarting in ${Math.round(delay / 1000)}s (restart ${this.restarts})`);
+    this.failures++;
+    this.set({ state: "down", reason: clean });
+    const delay = Math.max(minDelayMs, this.backoff(this.failures));
+    logWarn(
+      `tailnet: ${clean}; restarting in ${Math.round(delay / 1000)}s (restart ${this.restarts})`,
+    );
     if (this.daemon) {
       const d = this.daemon;
       this.daemon = null;
@@ -298,14 +475,19 @@ export class TailnetSidecar {
   async stop(timeoutMs = 3_000): Promise<void> {
     this.stopping = true;
     if (this.retryTimer) clearTimeout(this.retryTimer);
+    if (this.statusTimer) clearInterval(this.statusTimer);
     const daemon = this.daemon;
     this.daemon = null;
     if (daemon && this.current.state === "up") {
       await new Promise<void>((resolve) => {
-        const child = spawn(this.bins.tailscale, [`--socket=${this.socket}`, "logout"], {
-          env: this.childEnv(),
-          stdio: "ignore",
-        });
+        const child = spawn(
+          this.bins.tailscale,
+          [`--socket=${this.socket}`, "logout"],
+          {
+            env: this.childEnv(),
+            stdio: "ignore",
+          },
+        );
         const timer = setTimeout(() => {
           child.kill("SIGKILL");
           resolve();
@@ -330,7 +512,8 @@ export class TailnetSidecar {
   private pipeLines(child: ChildProcess, name: string): void {
     const forward = (d: Buffer) => {
       for (const line of d.toString().split("\n")) {
-        if (line.trim()) log(`[${name}] ${redactTailnet(line, this.config.authKey)}`);
+        if (line.trim())
+          log(`[${name}] ${redactTailnet(line, this.config.authKey)}`);
       }
     };
     child.stdout?.on("data", forward);

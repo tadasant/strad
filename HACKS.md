@@ -7200,6 +7200,16 @@ address App Platform does not keep fixed.
 
 **What it costs.**
 
+- **The key is kept out of the process environment by a shell entrypoint.**
+  `delete process.env.X` leaves the value in `/proc/<pid>/environ`, readable by
+  every server in the host process, so `servers/bundle/scripts/boot.sh` moves
+  it to a `0600` file before `exec node`, and the host reads and deletes the
+  file. The key is still in the host's memory, where code running in that
+  process could find it.
+- **A removal in the admin console is not undone, but a restart is a new
+  node.** The host polls the backend state and reports a dropped node `down`
+  without re-joining. A daemon crash or container restart mints again, so a
+  lasting cut-off is the OAuth client's revocation.
 - **A second process in a container built around one.** The host supervises
   it: restarts with backoff, `/healthz` reports it, and it never fails the
   container. Its log goes to stderr with the key scrubbed, and stderr is not

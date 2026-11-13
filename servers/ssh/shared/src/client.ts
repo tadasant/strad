@@ -23,7 +23,12 @@ import type {
   Stats,
 } from "ssh2";
 import type { SshConfig } from "./config.js";
-import { ConfigError, HostKeyMismatchError, InputError, SshUnreachableError } from "./errors.js";
+import {
+  ConfigError,
+  HostKeyMismatchError,
+  InputError,
+  SshUnreachableError,
+} from "./errors.js";
 import {
   isTailnetAddress,
   isTailnetName,
@@ -106,9 +111,18 @@ export interface SshSession {
     command: string,
     options: { cwd?: string; timeoutMs: number; maxWallMs?: number },
   ): Promise<ExecResult>;
-  listDirectory(path: string): Promise<{ entries: DirectoryEntry[]; total: number }>;
-  readFile(path: string, options: { offset: number; maxBytes: number }): Promise<FileRead>;
-  writeFile(path: string, data: Buffer, options: { mode?: number }): Promise<void>;
+  listDirectory(
+    path: string,
+  ): Promise<{ entries: DirectoryEntry[]; total: number }>;
+  readFile(
+    path: string,
+    options: { offset: number; maxBytes: number },
+  ): Promise<FileRead>;
+  writeFile(
+    path: string,
+    data: Buffer,
+    options: { mode?: number },
+  ): Promise<void>;
   close(): void;
 }
 
@@ -139,7 +153,10 @@ function target(config: SshConfig): string {
 function connectError(
   err: Error & { level?: string; code?: string },
   config: SshConfig,
-  stage: { tcpConnected: boolean; presented: boolean } = { tcpConnected: false, presented: false },
+  stage: { tcpConnected: boolean; presented: boolean } = {
+    tcpConnected: false,
+    presented: false,
+  },
 ): Error {
   const where = target(config);
   const unreachable = (reason: string) =>
@@ -207,7 +224,9 @@ function connectError(
         `a firewall or fail2ban on the host may be dropping this source address.`,
     );
   }
-  return new SshConnectError(`SSH connection to ${where} failed: ${err.message}`);
+  return new SshConnectError(
+    `SSH connection to ${where} failed: ${err.message}`,
+  );
 }
 
 /**
@@ -219,7 +238,10 @@ function connectError(
  */
 export const connect: Connector = async (config) => {
   const route = await routeFor(config);
-  const sock = route.kind === "tailnet" ? await dialTailnet(config, route.address) : undefined;
+  const sock =
+    route.kind === "tailnet"
+      ? await dialTailnet(config, route.address)
+      : undefined;
   return handshake(config, sock);
 };
 
@@ -236,18 +258,41 @@ const defaultLookup: Lookup = (host) => dnsLookup(host, { all: true });
  * existed. A name that does not resolve is left to the direct dial, which
  * reports it as the unreachable error it always was.
  */
-export async function routeFor(config: Pick<SshConfig, "host">, lookup: Lookup = defaultLookup): Promise<Route> {
+export async function routeFor(
+  config: Pick<SshConfig, "host"> &
+    Partial<Pick<SshConfig, "connectTimeoutMs">>,
+  lookup: Lookup = defaultLookup,
+): Promise<Route> {
   const host = config.host;
-  if (isTailnetName(host)) return { kind: "tailnet", address: host.replace(/\.$/, "") };
-  if (isIP(host)) return isTailnetAddress(host) ? { kind: "tailnet", address: host } : { kind: "direct" };
+  if (isTailnetName(host))
+    return { kind: "tailnet", address: host.replace(/\.$/, "") };
+  if (isIP(host))
+    return isTailnetAddress(host)
+      ? { kind: "tailnet", address: host }
+      : { kind: "direct" };
   let addresses: Array<{ address: string }>;
   try {
-    addresses = await lookup(host);
+    // Bounded: ssh2's own lookup ran inside its ready timeout, and this one
+    // runs before it. A resolver that never answers falls back to the direct
+    // dial, which reports the name as it always did.
+    const timeoutMs = config.connectTimeoutMs ?? 15_000;
+    let timer: NodeJS.Timeout | undefined;
+    addresses = await Promise.race([
+      lookup(host),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("lookup timed out")),
+          timeoutMs,
+        );
+      }),
+    ]).finally(() => clearTimeout(timer));
   } catch {
     return { kind: "direct" };
   }
   const first = addresses[0]?.address;
-  return first && isTailnetAddress(first) ? { kind: "tailnet", address: first } : { kind: "direct" };
+  return first && isTailnetAddress(first)
+    ? { kind: "tailnet", address: first }
+    : { kind: "direct" };
 }
 
 /**
@@ -258,7 +303,15 @@ export async function routeFor(config: Pick<SshConfig, "host">, lookup: Lookup =
  * or the tailnet policy does not let strad's node reach that port).
  */
 export async function dialTailnet(
-  config: Pick<SshConfig, "host" | "port" | "username" | "connectTimeoutMs" | "unreachableHint" | "tailnetProxy">,
+  config: Pick<
+    SshConfig,
+    | "host"
+    | "port"
+    | "username"
+    | "connectTimeoutMs"
+    | "unreachableHint"
+    | "tailnetProxy"
+  >,
   address: string,
   dial?: Parameters<typeof socks5Connect>[4],
 ): Promise<Socket> {
@@ -274,7 +327,13 @@ export async function dialTailnet(
     );
   }
   try {
-    return await socks5Connect(config.tailnetProxy, address, config.port, config.connectTimeoutMs, dial);
+    return await socks5Connect(
+      config.tailnetProxy,
+      address,
+      config.port,
+      config.connectTimeoutMs,
+      dial,
+    );
   } catch (err) {
     if (err instanceof SocksProxyDownError) {
       throw new SshConnectError(
@@ -294,11 +353,16 @@ export async function dialTailnet(
         config.unreachableHint,
       );
     }
-    throw new SshConnectError(`SSH connection to ${where}${via} over the tailnet failed: ${(err as Error).message}`);
+    throw new SshConnectError(
+      `SSH connection to ${where}${via} over the tailnet failed: ${(err as Error).message}`,
+    );
   }
 }
 
-function handshake(config: SshConfig, sock: Socket | undefined): Promise<SshSession> {
+function handshake(
+  config: SshConfig,
+  sock: Socket | undefined,
+): Promise<SshSession> {
   return new Promise<SshSession>((resolve, reject) => {
     const client = new Client();
     let presented: Buffer | undefined;
@@ -329,7 +393,11 @@ function handshake(config: SshConfig, sock: Socket | undefined): Promise<SshSess
         return matchesPin(config.hostKeyPins, key);
       },
       ...(algorithms
-        ? { algorithms: { serverHostKey: algorithms as ServerHostKeyAlgorithm[] } }
+        ? {
+            algorithms: {
+              serverHostKey: algorithms as ServerHostKeyAlgorithm[],
+            },
+          }
         : {}),
     };
 
@@ -340,7 +408,11 @@ function handshake(config: SshConfig, sock: Socket | undefined): Promise<SshSess
       settled = true;
       const key = presented!;
       resolve(
-        sessionOver(client, { type: blobType(key), fingerprint: fingerprintOf(key) }, config),
+        sessionOver(
+          client,
+          { type: blobType(key), fingerprint: fingerprintOf(key) },
+          config,
+        ),
       );
     });
     // ssh2 reports an `error` only for a socket that closes BEFORE the server's
@@ -371,7 +443,10 @@ function handshake(config: SshConfig, sock: Socket | undefined): Promise<SshSess
       if (presented && !matchesPin(config.hostKeyPins, presented)) {
         reject(
           new HostKeyMismatchError(
-            { type: blobType(presented), fingerprint: fingerprintOf(presented) },
+            {
+              type: blobType(presented),
+              fingerprint: fingerprintOf(presented),
+            },
             describePins(config.hostKeyPins),
             `${config.host}:${config.port}`,
           ),
@@ -388,7 +463,12 @@ function handshake(config: SshConfig, sock: Socket | undefined): Promise<SshSess
         );
         return;
       }
-      reject(connectError(err, config, { tcpConnected, presented: presented !== undefined }));
+      reject(
+        connectError(err, config, {
+          tcpConnected,
+          presented: presented !== undefined,
+        }),
+      );
     });
 
     try {
@@ -453,7 +533,12 @@ class HeadTail {
 
 function formatPermissions(mode: number): string {
   const perms = ["---", "--x", "-w-", "-wx", "r--", "r-x", "rw-", "rwx"];
-  const kind = (mode & 0o170000) === 0o040000 ? "d" : (mode & 0o170000) === 0o120000 ? "l" : "-";
+  const kind =
+    (mode & 0o170000) === 0o040000
+      ? "d"
+      : (mode & 0o170000) === 0o120000
+        ? "l"
+        : "-";
   return `${kind}${perms[(mode >> 6) & 7]}${perms[(mode >> 3) & 7]}${perms[mode & 7]}`;
 }
 
@@ -591,10 +676,14 @@ function sessionOver(
               // No exit status and not ended by this end: the connection died
               // under the command. Not a result — the command may still be
               // running, or may never have finished.
-              reject(lost ? lostError("the command") : new SshConnectError(
-                `${target(config)} closed the command's channel without an exit ` +
-                  `status. It may or may not have run to completion.`,
-              ));
+              reject(
+                lost
+                  ? lostError("the command")
+                  : new SshConnectError(
+                      `${target(config)} closed the command's channel without an exit ` +
+                        `status. It may or may not have run to completion.`,
+                    ),
+              );
               return;
             }
             resolve({
@@ -660,57 +749,72 @@ function sessionOver(
       });
     },
 
-    listDirectory: (path) => deadline("Listing the directory", async () => {
-      const s = await sftp();
-      const list = await new Promise<FileEntryWithStats[]>((resolve, reject) =>
-        s.readdir(path, (err, l) => (err ? reject(err) : resolve(l))),
-      );
-      const entries = list
-        .map((item) => ({
-          name: item.filename,
-          type: entryType(item.attrs.mode),
-          size: item.attrs.size,
-          permissions: formatPermissions(item.attrs.mode),
-          modified: new Date(item.attrs.mtime * 1000).toISOString(),
-        }))
-        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-      return { entries: entries.slice(0, MAX_DIRECTORY_ENTRIES), total: entries.length };
-    }),
+    listDirectory: (path) =>
+      deadline("Listing the directory", async () => {
+        const s = await sftp();
+        const list = await new Promise<FileEntryWithStats[]>(
+          (resolve, reject) =>
+            s.readdir(path, (err, l) => (err ? reject(err) : resolve(l))),
+        );
+        const entries = list
+          .map((item) => ({
+            name: item.filename,
+            type: entryType(item.attrs.mode),
+            size: item.attrs.size,
+            permissions: formatPermissions(item.attrs.mode),
+            modified: new Date(item.attrs.mtime * 1000).toISOString(),
+          }))
+          .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        return {
+          entries: entries.slice(0, MAX_DIRECTORY_ENTRIES),
+          total: entries.length,
+        };
+      }),
 
-    readFile: (path, { offset, maxBytes }) => deadline("Reading the file", async () => {
-      const s = await sftp();
-      const stats = await new Promise<Stats>((resolve, reject) =>
-        s.stat(path, (err, st) => (err ? reject(err) : resolve(st))),
-      );
-      if (stats.isDirectory()) {
-        throw new InputError(`${path} is a directory. Use ssh_list_directory for it.`);
-      }
-      if (!stats.isFile()) {
-        throw new InputError(`${path} is not a regular file, so it has no fixed content to download.`);
-      }
-      const size = stats.size;
-      if (offset >= size) return { size, offset, data: Buffer.alloc(0), truncated: false };
-      const length = Math.min(maxBytes, size - offset);
-      const chunks: Buffer[] = [];
-      await new Promise<void>((resolve, reject) => {
-        const rs = s.createReadStream(path, { start: offset, end: offset + length - 1 });
-        rs.on("data", (c: Buffer) => chunks.push(c));
-        rs.on("error", reject);
-        rs.on("end", () => resolve());
-        rs.on("close", () => resolve());
-      });
-      const data = Buffer.concat(chunks).subarray(0, length);
-      return { size, offset, data, truncated: offset + data.length < size };
-    }),
+    readFile: (path, { offset, maxBytes }) =>
+      deadline("Reading the file", async () => {
+        const s = await sftp();
+        const stats = await new Promise<Stats>((resolve, reject) =>
+          s.stat(path, (err, st) => (err ? reject(err) : resolve(st))),
+        );
+        if (stats.isDirectory()) {
+          throw new InputError(
+            `${path} is a directory. Use ssh_list_directory for it.`,
+          );
+        }
+        if (!stats.isFile()) {
+          throw new InputError(
+            `${path} is not a regular file, so it has no fixed content to download.`,
+          );
+        }
+        const size = stats.size;
+        if (offset >= size)
+          return { size, offset, data: Buffer.alloc(0), truncated: false };
+        const length = Math.min(maxBytes, size - offset);
+        const chunks: Buffer[] = [];
+        await new Promise<void>((resolve, reject) => {
+          const rs = s.createReadStream(path, {
+            start: offset,
+            end: offset + length - 1,
+          });
+          rs.on("data", (c: Buffer) => chunks.push(c));
+          rs.on("error", reject);
+          rs.on("end", () => resolve());
+          rs.on("close", () => resolve());
+        });
+        const data = Buffer.concat(chunks).subarray(0, length);
+        return { size, offset, data, truncated: offset + data.length < size };
+      }),
 
-    writeFile: (path, data, { mode }) => deadline("Writing the file", async () => {
-      const s = await sftp();
-      await new Promise<void>((resolve, reject) =>
-        s.writeFile(path, data, mode === undefined ? {} : { mode }, (err) =>
-          err ? reject(err) : resolve(),
-        ),
-      );
-    }),
+    writeFile: (path, data, { mode }) =>
+      deadline("Writing the file", async () => {
+        const s = await sftp();
+        await new Promise<void>((resolve, reject) =>
+          s.writeFile(path, data, mode === undefined ? {} : { mode }, (err) =>
+            err ? reject(err) : resolve(),
+          ),
+        );
+      }),
 
     close() {
       closing = true;

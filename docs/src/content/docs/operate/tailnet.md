@@ -66,7 +66,9 @@ flowchart LR
 
 When the tailnet is configured, the bundle's `/healthz` carries a `tailnet`
 field: `starting`, `up`, or `down` with a reason, and how many times it has
-restarted. It is reported and never folded into `ok`: a tailnet that will
+restarted. While joined, the host asks `tailscaled` for its backend state every
+30 seconds, so a node removed or logged out in the admin console reads `down`
+too, even though its daemon is still running. It is reported and never folded into `ok`: a tailnet that will
 not come up costs the tailnet hosts, and a liveness restart would cost every
 mount in the container.
 
@@ -174,9 +176,13 @@ secret. So:
   human seeds it. `render-spec` reads it like a supplementary server's `env:`
   and bakes it onto **that one component** as a SECRET. It is never in the
   broadcast, and core does not hold it. `store:check` counts it.
-- **In the container**, the host takes it out of `process.env` before any
-  mount is built. A conventional mount reads the whole environment, and the
-  key would otherwise be readable by thirty-one other servers. It reaches
+- **In the container**, it is not in the environment Node starts with. A
+  conventional mount reads the whole environment, and deleting a name from
+  `process.env` would not help: the kernel keeps a process's starting
+  environment in `/proc/<pid>/environ`, which every server loaded into the
+  host can read. So the image's entrypoint (`servers/bundle/scripts/boot.sh`)
+  moves the key into a `0600` file before Node starts, and the host reads that
+  file and deletes it before any mount is built. It reaches
   `tailscale up` through a `0600` file in a `0700` directory that is deleted
   as soon as `up` returns. It is never on a command line, where `ps` would
   show it, and never in `tailscaled`'s environment.
@@ -214,7 +220,12 @@ tailnet:
    join. A running one keeps its node key until it restarts.
 3. **Remove the node** (Machines → the `strad-…` node → Remove), or drop the
    `tag:strad` grant from the policy. That takes effect at once, with no
-   deploy.
+   deploy. The host sees the removal, reports `down`, and does not re-join on
+   its own. A `tailscaled` crash or a container restart does mint a new node,
+   so pair a removal with step 2 if it has to last.
+
+A key the control plane refuses (revoked or expired) is retried at most every
+10 minutes, so a revoked client does not turn into a stream of failed mints.
 
 ## Compared with a public SSH port
 
@@ -233,7 +244,9 @@ allow strad's address through.
 
 - **strad becomes a tailnet node.** Anything that can run code in the bundle
   container (one of its thirty-two servers, a compromised dependency) can
-  dial the SOCKS5 listener. What that buys is what `tag:strad` is granted:
+  dial the SOCKS5 listener. Code running inside the host process could also
+  read the key from the host's memory before it is used; keeping it out of
+  the environment and off disk closes the easy routes, not that one. What that buys is what `tag:strad` is granted:
   OpenSSH on Zimmer staging, which still wants a key it does not have. The
   policy is the boundary, which is why it has to narrow before the first key
   exists.

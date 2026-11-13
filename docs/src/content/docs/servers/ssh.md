@@ -239,7 +239,9 @@ who may call the slug.
 A host whose `SSH_HOST` is a MagicDNS name (`*.ts.net`) or resolves into
 Tailscale's ranges (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) has no route from
 the internet: Zimmer's droplets are the case here, with `staging.zimmer.tadasant.com`
-resolving to a tailnet address and OpenSSH on tailnet port 2222. The tree dials
+resolving to a tailnet address and OpenSSH on tailnet port 2222. A MagicDNS
+name has to be written in full (`zimmer-staging.tail52556f.ts.net`): the
+container does not use the tailnet's DNS, so a short name does not resolve. The tree dials
 such a host through the bundle's tailnet sidecar, a userspace `tailscaled`, and
 every other host direct, as before. The route is decided by the address alone,
 and the pin is checked the same way on both.

@@ -14,7 +14,12 @@ export {
   type SshConfig,
 } from "./config.js";
 
-export { ConfigError, HostKeyMismatchError, InputError, SshUnreachableError } from "./errors.js";
+export {
+  ConfigError,
+  HostKeyMismatchError,
+  InputError,
+  SshUnreachableError,
+} from "./errors.js";
 
 export {
   describePins,

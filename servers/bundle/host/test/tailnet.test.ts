@@ -1,4 +1,11 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -47,17 +54,51 @@ describe("takeTailnetConfig", () => {
       [TAILNET_ENV.tags]: "tag:strad",
       [TAILNET_ENV.hostname]: "strad-prod-bundle",
     };
-    expect(takeTailnetConfig(env)).toEqual({ authKey: KEY, hostname: "strad-prod-bundle", tags: ["tag:strad"] });
+    expect(takeTailnetConfig(env)).toEqual({
+      authKey: KEY,
+      hostname: "strad-prod-bundle",
+      tags: ["tag:strad"],
+    });
     expect(env).not.toHaveProperty(TAILNET_ENV.authKey);
   });
 
   it("refuses to join untagged, and still removes the key", () => {
     quiet();
     for (const tags of [undefined, "", "strad", "tag:strad,admin"]) {
-      const env: NodeJS.ProcessEnv = { [TAILNET_ENV.authKey]: KEY, [TAILNET_ENV.tags]: tags };
+      const env: NodeJS.ProcessEnv = {
+        [TAILNET_ENV.authKey]: KEY,
+        [TAILNET_ENV.tags]: tags,
+      };
       expect(takeTailnetConfig(env), String(tags)).toBeNull();
       expect(env).not.toHaveProperty(TAILNET_ENV.authKey);
     }
+  });
+
+  it("reads the key from the file boot.sh wrote, and deletes it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "boot-key-"));
+    const file = join(dir, "authkey");
+    writeFileSync(file, KEY, { mode: 0o600 });
+    const env: NodeJS.ProcessEnv = {
+      [TAILNET_ENV.authKeyFile]: file,
+      [TAILNET_ENV.tags]: "tag:strad",
+    };
+    expect(takeTailnetConfig(env)?.authKey).toBe(KEY);
+    expect(existsSync(file)).toBe(false);
+    expect(env).not.toHaveProperty(TAILNET_ENV.authKeyFile);
+  });
+
+  it("still takes a bare key, and warns that it stays in /proc", () => {
+    const lines: string[] = [];
+    vi.spyOn(console, "error").mockImplementation(
+      (l: string) => void lines.push(l),
+    );
+    const env: NodeJS.ProcessEnv = {
+      [TAILNET_ENV.authKey]: KEY,
+      [TAILNET_ENV.tags]: "tag:strad",
+    };
+    expect(takeTailnetConfig(env)?.authKey).toBe(KEY);
+    expect(lines.join("\n")).toContain("/proc");
+    expect(lines.join("\n")).not.toContain("SECRET");
   });
 
   it("drops a proxy address it did not set", () => {
@@ -70,7 +111,9 @@ describe("takeTailnetConfig", () => {
 describe("the tailscale command lines", () => {
   it("asks an OAuth client for an ephemeral, pre-authorized node, and passes an ordinary key unchanged", () => {
     expect(authKeyForUp(KEY)).toBe(`${KEY}?ephemeral=true&preauthorized=true`);
-    expect(authKeyForUp(`${KEY}?ephemeral=false`)).toBe(`${KEY}?ephemeral=false`);
+    expect(authKeyForUp(`${KEY}?ephemeral=false`)).toBe(
+      `${KEY}?ephemeral=false`,
+    );
     expect(authKeyForUp("tskey-auth-kXYZ-abc")).toBe("tskey-auth-kXYZ-abc");
   });
 
@@ -86,7 +129,11 @@ describe("the tailscale command lines", () => {
   });
 
   it("joins tagged, shields up, without taking the tailnet's DNS or routes, and reads the key from a file", () => {
-    const args = upArgs({ authKey: KEY, hostname: "strad-prod-bundle", tags: ["tag:strad"] }, "/k/authkey", "/s/sock");
+    const args = upArgs(
+      { authKey: KEY, hostname: "strad-prod-bundle", tags: ["tag:strad"] },
+      "/k/authkey",
+      "/s/sock",
+    );
     expect(args).toEqual(
       expect.arrayContaining([
         "up",
@@ -102,8 +149,12 @@ describe("the tailscale command lines", () => {
   });
 
   it("redacts any auth-key-shaped token, and the literal key", () => {
-    expect(redactTailnet(`using ${KEY}?ephemeral=true now`)).toBe("using tskey-[redacted] now");
-    expect(redactTailnet("key=abcdefgh-literal", "abcdefgh-literal")).toBe("key=[redacted]");
+    expect(redactTailnet(`using ${KEY}?ephemeral=true now`)).toBe(
+      "using tskey-[redacted] now",
+    );
+    expect(redactTailnet("key=abcdefgh-literal", "abcdefgh-literal")).toBe(
+      "key=[redacted]",
+    );
   });
 });
 
@@ -124,9 +175,11 @@ function fakeBinaries(up: "ok" | "refuse" | "slow-socket") {
       : up === "refuse"
         ? `echo "backend error: invalid key: ${KEY} is expired" >&2; exit 1`
         : `if [ ! -f ${dir}/second ]; then touch ${dir}/second; echo "failed to connect to local tailscaled; it doesn't appear to be running" >&2; exit 1; fi; exit 0`;
+  const backend = join(dir, "backend");
+  writeFileSync(backend, "Running");
   writeFileSync(
     cli,
-    `#!/bin/sh\necho "tailscale $*" >> ${record}\nkeyfile=""\nfor a in "$@"; do case "$a" in --auth-key=file:*) keyfile="\${a#--auth-key=file:}";; esac; done\ncase "$*" in *" up "*) ${upBody};; *logout*) echo logout >> ${record}; exit 0;; esac\n`,
+    `#!/bin/sh\necho "tailscale $*" >> ${record}\nkeyfile=""\nfor a in "$@"; do case "$a" in --auth-key=file:*) keyfile="\${a#--auth-key=file:}";; esac; done\ncase "$*" in *" up "*) ${upBody};; *logout*) echo logout >> ${record}; exit 0;; *status*) printf '{"BackendState":"%s"}' "$(cat ${backend})"; exit 0;; esac\n`,
   );
   chmodSync(daemon, 0o755);
   chmodSync(cli, 0o755);
@@ -135,6 +188,7 @@ function fakeBinaries(up: "ok" | "refuse" | "slow-socket") {
     tailscale: cli,
     calls: () => (existsSync(record) ? readFileSync(record, "utf8") : ""),
     keySeen: () => (existsSync(keyCopy) ? readFileSync(keyCopy, "utf8") : null),
+    setBackend: (state: string) => writeFileSync(backend, state),
   };
 }
 
@@ -175,9 +229,15 @@ describe("TailnetSidecar", () => {
 
   it("reports a refused key as down, with the key redacted, and restarts with backoff", async () => {
     const lines: string[] = [];
-    vi.spyOn(console, "error").mockImplementation((l: string) => void lines.push(l));
+    vi.spyOn(console, "error").mockImplementation(
+      (l: string) => void lines.push(l),
+    );
     const fake = fakeBinaries("refuse");
-    const sidecar = new TailnetSidecar(config, { ...fake, backoffMs: () => 50 });
+    const sidecar = new TailnetSidecar(config, {
+      ...fake,
+      backoffMs: () => 50,
+      refusedBackoffMs: 0,
+    });
     sidecar.start();
     await until(() => sidecar.state().restarts >= 2);
     const state = sidecar.state();
@@ -190,13 +250,117 @@ describe("TailnetSidecar", () => {
   it("restarts tailscaled when it dies", async () => {
     quiet();
     const fake = fakeBinaries("ok");
-    const sidecar = new TailnetSidecar(config, { ...fake, backoffMs: () => 50 });
+    const sidecar = new TailnetSidecar(config, {
+      ...fake,
+      backoffMs: () => 50,
+    });
     sidecar.start();
     await until(() => sidecar.state().state === "up");
     // Kill the daemon out from under the supervisor.
-    (sidecar as unknown as { daemon: { kill: (s: string) => void } }).daemon.kill("SIGKILL");
-    await until(() => sidecar.state().restarts === 1 && sidecar.state().state === "up");
+    (
+      sidecar as unknown as { daemon: { kill: (s: string) => void } }
+    ).daemon.kill("SIGKILL");
+    await until(
+      () => sidecar.state().restarts === 1 && sidecar.state().state === "up",
+    );
     await sidecar.stop();
+  });
+});
+
+describe("TailnetSidecar after joining", () => {
+  const config = { authKey: KEY, hostname: "strad-test", tags: ["tag:strad"] };
+
+  it("reports down when the control plane drops the node, does NOT re-join, and reports up when it is back", async () => {
+    quiet();
+    const fake = fakeBinaries("ok");
+    const sidecar = new TailnetSidecar(config, {
+      ...fake,
+      statusEveryMs: 30,
+      backoffMs: () => 50,
+    });
+    sidecar.start();
+    await until(() => sidecar.state().state === "up");
+    fake.setBackend("NeedsLogin");
+    await until(() => sidecar.state().state === "down");
+    const down = sidecar.state();
+    expect(down.state === "down" && down.reason).toContain("NeedsLogin");
+    await new Promise((r) => setTimeout(r, 200));
+    // Still one join: a removal in the admin console is not undone from here.
+    expect(fake.calls().match(/ up /g)?.length).toBe(1);
+    expect(sidecar.state().restarts).toBe(0);
+    fake.setBackend("Running");
+    await until(() => sidecar.state().state === "up");
+    await sidecar.stop();
+  });
+
+  it("waits the long refusal floor after the control plane refuses the key", async () => {
+    quiet();
+    const fake = fakeBinaries("refuse");
+    const sidecar = new TailnetSidecar(config, {
+      ...fake,
+      backoffMs: () => 10,
+      refusedBackoffMs: 60_000,
+    });
+    sidecar.start();
+    await until(() => sidecar.state().state === "down");
+    await new Promise((r) => setTimeout(r, 300));
+    expect(sidecar.state().restarts).toBe(1);
+    await sidecar.stop();
+  });
+
+  it("resets the backoff after a successful join", async () => {
+    quiet();
+    const fake = fakeBinaries("ok");
+    const delays: number[] = [];
+    const sidecar = new TailnetSidecar(config, {
+      ...fake,
+      backoffMs: (n) => {
+        delays.push(n);
+        return 20;
+      },
+    });
+    sidecar.start();
+    for (let i = 1; i <= 2; i++) {
+      await until(
+        () =>
+          sidecar.state().state === "up" && sidecar.state().restarts === i - 1,
+      );
+      (
+        sidecar as unknown as { daemon: { kill: (s: string) => void } }
+      ).daemon.kill("SIGKILL");
+      await until(() => sidecar.state().restarts === i);
+    }
+    expect(delays).toEqual([1, 1]);
+    await sidecar.stop();
+  });
+});
+
+describe("boot.sh", () => {
+  it("moves the key into a 0600 file and starts node WITHOUT it in the environment", () => {
+    const bin = mkdtempSync(join(tmpdir(), "fake-node-"));
+    writeFileSync(
+      join(bin, "node"),
+      `#!/bin/sh\necho "bare=\${STRAD_TAILNET_AUTHKEY:-unset}"\necho "file=$(cat "$STRAD_TAILNET_AUTHKEY_FILE")"\necho "mode=$(stat -c %a "$STRAD_TAILNET_AUTHKEY_FILE")"\necho "args=$*"\n`,
+    );
+    chmodSync(join(bin, "node"), 0o755);
+    const script = join(__dirname, "..", "..", "scripts", "boot.sh");
+    const out = execFileSync("sh", [script], {
+      env: { PATH: `${bin}:/usr/bin:/bin`, STRAD_TAILNET_AUTHKEY: KEY },
+      encoding: "utf8",
+    });
+    expect(out).toContain("bare=unset");
+    expect(out).toContain(`file=${KEY}`);
+    expect(out).toContain("mode=600");
+    expect(out).toContain(
+      "args=--import /app/host/otel/instrument.mjs /app/host/dist/index.js",
+    );
+
+    const plain = execFileSync("sh", [script], {
+      env: { PATH: `${bin}:/usr/bin:/bin` },
+      encoding: "utf8",
+    });
+    expect(plain).toContain("bare=unset");
+    expect(plain).toContain("file=");
   });
 });
 
@@ -210,9 +374,15 @@ describe("startTailnet", () => {
   it("tells the ssh tree where the listener is, and only after removing the key", async () => {
     quiet();
     const fake = fakeBinaries("ok");
-    const env: NodeJS.ProcessEnv = { [TAILNET_ENV.authKey]: KEY, [TAILNET_ENV.tags]: "tag:strad" };
+    const env: NodeJS.ProcessEnv = {
+      [TAILNET_ENV.authKey]: KEY,
+      [TAILNET_ENV.tags]: "tag:strad",
+    };
     const sidecar = startTailnet(env, fake);
-    expect(env).toEqual({ [TAILNET_ENV.tags]: "tag:strad", [TAILNET_ENV.socks5]: SOCKS5_LISTEN });
+    expect(env).toEqual({
+      [TAILNET_ENV.tags]: "tag:strad",
+      [TAILNET_ENV.socks5]: SOCKS5_LISTEN,
+    });
     await sidecar!.stop();
   });
 });

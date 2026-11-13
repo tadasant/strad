@@ -509,6 +509,9 @@ COPY servers/bundle/otel /app/host/otel
 ENV PORT=8080
 EXPOSE 8080
 
+# boot.sh is `exec node --import /app/host/otel/instrument.mjs
+# /app/host/dist/index.js`, after moving a tailnet auth key, if the component
+# has one, out of the environment Node starts with (see the script).
 # --import runs the bootstrap to completion BEFORE the host loads, which is what
 # lets it publish the Chromium hooks on globalThis in time for the first launch.
-CMD ["node", "--import", "/app/host/otel/instrument.mjs", "/app/host/dist/index.js"]
+CMD ["/app/scripts/boot.sh"]

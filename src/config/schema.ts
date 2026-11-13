@@ -1213,36 +1213,6 @@ export function soleRefName(value: string): string | null {
 // ---------------------------------------------------------------------------
 
 /**
- * A bundle is one App Platform component.
- *
- * `core` is implicit: the public gateway. Every other bundle is internal-only
- * and reached over the private network via ${bundle-name.PRIVATE_URL}.
- *
- * Rules (enforced below):
- *   - a bundle holding a `supplementary-image` server holds ONLY supplementary
- *     images, and they must all be the SAME image
- *   - `builtin` servers may share a bundle freely (that's the $0-marginal win)
- *
- * Two servers in one bundle MAY share a `path`. That is the capability-variant
- * case and it is the point of the whole design: `gmail-ro` and `gmail-rw` are
- * the same upstream at the same path in the same container, differing only in
- * their `tools:` policy, which the GATEWAY enforces. (Before capability moved to
- * the gateway, they could not even share a container — each needed its own
- * `*_ENABLED_TOOLGROUPS` value, and a component's env is the union of its
- * servers' env maps. That constraint is what made the fleet cost 12 bundles for
- * its 26 slugs. The staging fleet is 28 slugs in ONE bundle; the two other
- * non-core slugs are the `echo` builtin and the `deepwiki` remote-http, which
- * need no container of their own. A 29th supplementary slug, `zimmer-secrets`,
- * has its own bundle — for a reason capability cannot cause: it fronts a second
- * parameter store, and a store is `process.env`.)
- *
- * Sizing: a bundle that hosts a browser server runs a real Chromium (~1.06s per
- * launch, ~545MB peak RSS) and CPU — not RAM — is what binds it, because 1 vCPU
- * serialises page rendering. Co-locating everything in one bundle means that box
- * also runs `op` and 20 other upstream servers (which the config names as 28 slugs), so
- * size it up, not down.
- */
-/**
  * TAILNET EGRESS for one bundle component: a userspace `tailscaled` in the
  * container, joined as a tagged, pre-authorized, ephemeral node, reached by the
  * `ssh` tree for a host that resolves into Tailscale's ranges and by nothing
@@ -1289,6 +1259,36 @@ const BundleTailnet = z.object({
     .optional(),
 });
 
+/**
+ * A bundle is one App Platform component.
+ *
+ * `core` is implicit: the public gateway. Every other bundle is internal-only
+ * and reached over the private network via ${bundle-name.PRIVATE_URL}.
+ *
+ * Rules (enforced below):
+ *   - a bundle holding a `supplementary-image` server holds ONLY supplementary
+ *     images, and they must all be the SAME image
+ *   - `builtin` servers may share a bundle freely (that's the $0-marginal win)
+ *
+ * Two servers in one bundle MAY share a `path`. That is the capability-variant
+ * case and it is the point of the whole design: `gmail-ro` and `gmail-rw` are
+ * the same upstream at the same path in the same container, differing only in
+ * their `tools:` policy, which the GATEWAY enforces. (Before capability moved to
+ * the gateway, they could not even share a container — each needed its own
+ * `*_ENABLED_TOOLGROUPS` value, and a component's env is the union of its
+ * servers' env maps. That constraint is what made the fleet cost 12 bundles for
+ * its 26 slugs. The staging fleet is 28 slugs in ONE bundle; the two other
+ * non-core slugs are the `echo` builtin and the `deepwiki` remote-http, which
+ * need no container of their own. A 29th supplementary slug, `zimmer-secrets`,
+ * has its own bundle — for a reason capability cannot cause: it fronts a second
+ * parameter store, and a store is `process.env`.)
+ *
+ * Sizing: a bundle that hosts a browser server runs a real Chromium (~1.06s per
+ * launch, ~545MB peak RSS) and CPU — not RAM — is what binds it, because 1 vCPU
+ * serialises page rendering. Co-locating everything in one bundle means that box
+ * also runs `op` and 20 other upstream servers (which the config names as 28 slugs), so
+ * size it up, not down.
+ */
 const BundleConfig = z.object({
   name: SLUG,
   /**

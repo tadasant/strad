@@ -41,7 +41,12 @@ import {
   SshConnectError,
 } from "./client.js";
 import { HOW_TO_SEED, missingCredentials, type SshConfig } from "./config.js";
-import { ConfigError, HostKeyMismatchError, InputError, SshUnreachableError } from "./errors.js";
+import {
+  ConfigError,
+  HostKeyMismatchError,
+  InputError,
+  SshUnreachableError,
+} from "./errors.js";
 import { describePins } from "./host-key.js";
 import { log, redact } from "./logging.js";
 
@@ -99,7 +104,9 @@ const BREAK_GLASS =
   "ssh_check_connection.";
 
 function ok(payload: unknown): ToolResult {
-  return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
+  return {
+    content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+  };
 }
 
 function failText(text: string, ctx: ToolContext): ToolResult {
@@ -110,7 +117,10 @@ function failText(text: string, ctx: ToolContext): ToolResult {
   } catch {
     // nothing to scrub beyond the PEM pattern
   }
-  return { content: [{ type: "text", text: redact(text, secrets) }], isError: true };
+  return {
+    content: [{ type: "text", text: redact(text, secrets) }],
+    isError: true,
+  };
 }
 
 /** The one error path. Each class has a different next move, and the text says which. */
@@ -132,7 +142,10 @@ function fail(err: unknown, ctx: ToolContext): ToolResult {
   // SFTP status errors carry a numeric code and a short message ("No such
   // file", "Permission denied") that is already the answer.
   const message = e instanceof Error ? e.message : String(err);
-  return failText(typeof e?.code === "number" ? `SFTP: ${message}` : message, ctx);
+  return failText(
+    typeof e?.code === "number" ? `SFTP: ${message}` : message,
+    ctx,
+  );
 }
 
 /**
@@ -147,7 +160,8 @@ async function withSession<T>(
   run: (session: SshSession, config: SshConfig) => Promise<T>,
 ): Promise<T> {
   const config = ctx.config();
-  if (signal?.aborted) throw new InputError("The call was cancelled before it connected.");
+  if (signal?.aborted)
+    throw new InputError("The call was cancelled before it connected.");
   const session = await ctx.connector(config);
   const onAbort = () => session.close();
   signal?.addEventListener("abort", onAbort, { once: true });
@@ -168,9 +182,21 @@ function asObject(args: unknown): Record<string, unknown> {
   return args as Record<string, unknown>;
 }
 
-function str(args: Record<string, unknown>, name: string, required: true): string;
-function str(args: Record<string, unknown>, name: string, required: false): string | undefined;
-function str(args: Record<string, unknown>, name: string, required: boolean): string | undefined {
+function str(
+  args: Record<string, unknown>,
+  name: string,
+  required: true,
+): string;
+function str(
+  args: Record<string, unknown>,
+  name: string,
+  required: false,
+): string | undefined;
+function str(
+  args: Record<string, unknown>,
+  name: string,
+  required: boolean,
+): string | undefined {
   const v = args[name];
   if (v === undefined || v === null || v === "") {
     if (required) throw new InputError(`${name} is required.`);
@@ -189,12 +215,18 @@ function int(
   if (v === undefined || v === null || v === "") return undefined;
   const n = typeof v === "string" ? Number(v) : v;
   if (typeof n !== "number" || !Number.isInteger(n) || n < min || n > max) {
-    throw new InputError(`${name} must be a whole number from ${min} to ${max}.`);
+    throw new InputError(
+      `${name} must be a whole number from ${min} to ${max}.`,
+    );
   }
   return n;
 }
 
-function refuseLocalPath(args: Record<string, unknown>, tool: string, instead: string): void {
+function refuseLocalPath(
+  args: Record<string, unknown>,
+  tool: string,
+  instead: string,
+): void {
   if (args.localPath === undefined) return;
   throw new InputError(
     `${tool} does not take localPath here: this server runs inside strad, so a ` +
@@ -226,11 +258,16 @@ function connectionInfoTool(ctx: ToolContext): ToolDefinition {
         },
       },
     },
-    annotations: { title: "SSH connection info", readOnlyHint: true, openWorldHint: true },
+    annotations: {
+      title: "SSH connection info",
+      readOnlyHint: true,
+      openWorldHint: true,
+    },
     handler: async (raw, signal) => {
       try {
         const args = asObject(raw);
-        const test = args.test_connection === true || args.test_connection === "true";
+        const test =
+          args.test_connection === true || args.test_connection === "true";
         const missing = missingCredentials(ctx.env());
         if (missing.length > 0) {
           return ok({
@@ -275,20 +312,37 @@ function connectionInfoTool(ctx: ToolContext): ToolDefinition {
  * `auth_rejected` are fixed in the store or on the host, not by waiting.
  */
 type ConnectionCheck =
-  | { ok: true; status: "ok"; host_key_presented: { type: string | null; fingerprint: string }; elapsed_ms: number }
+  | {
+      ok: true;
+      status: "ok";
+      host_key_presented: { type: string | null; fingerprint: string };
+      elapsed_ms: number;
+    }
   | {
       ok: false;
-      status: "unreachable" | "host_key_mismatch" | "not_configured" | "connect_failed";
+      status:
+        | "unreachable"
+        | "host_key_mismatch"
+        | "not_configured"
+        | "connect_failed";
       elapsed_ms: number;
       error: string;
       next_step: string;
     };
 
-async function checkConnection(ctx: ToolContext, signal?: AbortSignal): Promise<ConnectionCheck> {
+async function checkConnection(
+  ctx: ToolContext,
+  signal?: AbortSignal,
+): Promise<ConnectionCheck> {
   const started = Date.now();
   try {
     const presented = await withSession(ctx, signal, async (s) => s.hostKey);
-    return { ok: true, status: "ok", host_key_presented: presented, elapsed_ms: Date.now() - started };
+    return {
+      ok: true,
+      status: "ok",
+      host_key_presented: presented,
+      elapsed_ms: Date.now() - started,
+    };
   } catch (err) {
     const elapsed_ms = Date.now() - started;
     const error = fail(err, ctx).content[0]!.text;
@@ -307,7 +361,8 @@ async function checkConnection(ctx: ToolContext, signal?: AbortSignal): Promise<
         status: "host_key_mismatch",
         elapsed_ms,
         error,
-        next_step: "Do not retry. A human verifies the host's key out of band and re-seeds SSH_HOST_KEY.",
+        next_step:
+          "Do not retry. A human verifies the host's key out of band and re-seeds SSH_HOST_KEY.",
       };
     }
     if (err instanceof ConfigError) {
@@ -316,7 +371,8 @@ async function checkConnection(ctx: ToolContext, signal?: AbortSignal): Promise<
         status: "not_configured",
         elapsed_ms,
         error,
-        next_step: "A human seeds the named parameters in strad's store; retrying does not help.",
+        next_step:
+          "A human seeds the named parameters in strad's store; retrying does not help.",
       };
     }
     return {
@@ -324,7 +380,8 @@ async function checkConnection(ctx: ToolContext, signal?: AbortSignal): Promise<
       status: "connect_failed",
       elapsed_ms,
       error,
-      next_step: "The host answered but the login failed; the error says what to fix on the host.",
+      next_step:
+        "The host answered but the login failed; the error says what to fix on the host.",
     };
   }
 }
@@ -344,8 +401,13 @@ function checkConnectionTool(ctx: ToolContext): ToolDefinition {
       `elapsed_ms, error and next_step (otherwise) }. Only "unreachable" is fixed ` +
       `by waiting for or starting the host; "host_key_mismatch" must never be retried.`,
     inputSchema: { type: "object", properties: {} },
-    annotations: { title: "Check SSH connection", readOnlyHint: true, openWorldHint: true },
-    handler: async (_raw, signal) => ok({ slug: ctx.label, ...(await checkConnection(ctx, signal)) }),
+    annotations: {
+      title: "Check SSH connection",
+      readOnlyHint: true,
+      openWorldHint: true,
+    },
+    handler: async (_raw, signal) =>
+      ok({ slug: ctx.label, ...(await checkConnection(ctx, signal)) }),
   };
 }
 
@@ -368,14 +430,23 @@ function listDirectoryTool(ctx: ToolContext): ToolDefinition {
       },
       required: ["path"],
     },
-    annotations: { title: "List remote directory", readOnlyHint: true, openWorldHint: true },
+    annotations: {
+      title: "List remote directory",
+      readOnlyHint: true,
+      openWorldHint: true,
+    },
     handler: async (raw, signal) => {
       try {
         const args = asObject(raw);
         const path = str(args, "path", true);
         return await withSession(ctx, signal, async (s) => {
           const { entries, total } = await s.listDirectory(path);
-          return ok({ path, total, truncated: total > entries.length, entries });
+          return ok({
+            path,
+            total,
+            truncated: total > entries.length,
+            entries,
+          });
         });
       } catch (err) {
         return fail(err, ctx);
@@ -404,24 +475,34 @@ function encodeContent(
 ): { encoding: "utf8" | "base64"; content: string; bytes: number } {
   if (want !== "base64") {
     try {
-      let text = new TextDecoder("utf-8", { fatal: true }).decode(data, { stream: !atEnd });
+      let text = new TextDecoder("utf-8", { fatal: true }).decode(data, {
+        stream: !atEnd,
+      });
       if (text === "" && data.length > 0) {
         text = new TextDecoder("utf-8", { fatal: true }).decode(data);
       }
       if (want === "utf8" || !text.includes("\u0000")) {
-        return { encoding: "utf8", content: text, bytes: Buffer.byteLength(text, "utf8") };
+        return {
+          encoding: "utf8",
+          content: text,
+          bytes: Buffer.byteLength(text, "utf8"),
+        };
       }
     } catch {
       if (want === "utf8") {
         throw new InputError(
           "These bytes are not valid UTF-8 (binary, a character cut off at the end of the " +
             "file, or a maxBytes smaller than one character). Call again with " +
-            "encoding: \"base64\" (or \"auto\"), or a larger maxBytes.",
+            'encoding: "base64" (or "auto"), or a larger maxBytes.',
         );
       }
     }
   }
-  return { encoding: "base64", content: data.toString("base64"), bytes: data.length };
+  return {
+    encoding: "base64",
+    content: data.toString("base64"),
+    bytes: data.length,
+  };
 }
 
 function downloadTool(ctx: ToolContext): ToolDefinition {
@@ -461,16 +542,27 @@ function downloadTool(ctx: ToolContext): ToolDefinition {
       },
       required: ["remotePath"],
     },
-    annotations: { title: "Download remote file", readOnlyHint: true, openWorldHint: true },
+    annotations: {
+      title: "Download remote file",
+      readOnlyHint: true,
+      openWorldHint: true,
+    },
     handler: async (raw, signal) => {
       try {
         const args = asObject(raw);
-        refuseLocalPath(args, "ssh_download", "The file's content is returned in the result instead.");
+        refuseLocalPath(
+          args,
+          "ssh_download",
+          "The file's content is returned in the result instead.",
+        );
         const remotePath = str(args, "remotePath", true);
-        const offset = int(args, "offset", { min: 0, max: Number.MAX_SAFE_INTEGER }) ?? 0;
+        const offset =
+          int(args, "offset", { min: 0, max: Number.MAX_SAFE_INTEGER }) ?? 0;
         const maxBytes =
-          int(args, "maxBytes", { min: 1, max: MAX_TRANSFER_BYTES }) ?? DEFAULT_DOWNLOAD_BYTES;
-        const want = (str(args, "encoding", false) ?? "auto") as "auto" | "utf8" | "base64";
+          int(args, "maxBytes", { min: 1, max: MAX_TRANSFER_BYTES }) ??
+          DEFAULT_DOWNLOAD_BYTES;
+        const want = (str(args, "encoding", false) ?? "auto") as
+          "auto" | "utf8" | "base64";
         if (!["auto", "utf8", "base64"].includes(want)) {
           throw new InputError('encoding must be "auto", "utf8" or "base64".');
         }
@@ -514,7 +606,8 @@ function uploadTool(ctx: ToolContext): ToolDefinition {
       properties: {
         remotePath: {
           type: "string",
-          description: 'Destination on the remote host. Example: "/tmp/fix.sh".',
+          description:
+            'Destination on the remote host. Example: "/tmp/fix.sh".',
         },
         content: {
           type: "string",
@@ -547,7 +640,7 @@ function uploadTool(ctx: ToolContext): ToolDefinition {
         refuseLocalPath(
           args,
           "ssh_upload",
-          "Pass the file's bytes as content (encoding: \"base64\" for binary).",
+          'Pass the file\'s bytes as content (encoding: "base64" for binary).',
         );
         const remotePath = str(args, "remotePath", true);
         if (typeof args.content !== "string") {
@@ -557,7 +650,10 @@ function uploadTool(ctx: ToolContext): ToolDefinition {
         if (encoding !== "utf8" && encoding !== "base64") {
           throw new InputError('encoding must be "utf8" or "base64".');
         }
-        if (encoding === "base64" && !/^[A-Za-z0-9+/\s]*={0,2}\s*$/.test(args.content)) {
+        if (
+          encoding === "base64" &&
+          !/^[A-Za-z0-9+/\s]*={0,2}\s*$/.test(args.content)
+        ) {
           throw new InputError("content is not valid base64.");
         }
         const data = Buffer.from(args.content, encoding);
@@ -610,11 +706,13 @@ function executeTool(ctx: ToolContext): ToolDefinition {
       properties: {
         command: {
           type: "string",
-          description: 'Shell command. Example: "df -h && systemctl status nginx --no-pager".',
+          description:
+            'Shell command. Example: "df -h && systemctl status nginx --no-pager".',
         },
         cwd: {
           type: "string",
-          description: 'Directory to run it in. Example: "/srv/app". Default: the login directory.',
+          description:
+            'Directory to run it in. Example: "/srv/app". Default: the login directory.',
         },
         timeout: {
           type: "integer",
@@ -635,7 +733,10 @@ function executeTool(ctx: ToolContext): ToolDefinition {
         const args = asObject(raw);
         const command = str(args, "command", true);
         const cwd = str(args, "cwd", false);
-        const timeout = int(args, "timeout", { min: 1000, max: MAX_COMMAND_TIMEOUT_MS });
+        const timeout = int(args, "timeout", {
+          min: 1000,
+          max: MAX_COMMAND_TIMEOUT_MS,
+        });
         return await withSession(ctx, signal, async (s, config) => {
           const result = await s.exec(command, {
             cwd,
@@ -682,8 +783,8 @@ export function toolDefinitions(
   ctx: ToolContext,
   groups: ToolGroup[] = ALL_GROUPS,
 ): ToolDefinition[] {
-  return ENTRIES.filter((e) => e.groups.some((g) => groups.includes(g))).map((e) =>
-    e.factory(ctx),
+  return ENTRIES.filter((e) => e.groups.some((g) => groups.includes(g))).map(
+    (e) => e.factory(ctx),
   );
 }
 

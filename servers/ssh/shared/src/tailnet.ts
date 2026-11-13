@@ -32,7 +32,9 @@ export interface ProxyAddress {
  * if the host and this tree disagree, and failing toward "direct only" keeps a
  * public host working.
  */
-export function parseProxyAddress(raw: string | undefined): ProxyAddress | undefined {
+export function parseProxyAddress(
+  raw: string | undefined,
+): ProxyAddress | undefined {
   const text = raw?.trim();
   if (!text) return undefined;
   const m = /^(?:\[([^\]]+)\]|([^:]+)):(\d{1,5})$/.exec(text);
@@ -49,6 +51,9 @@ export function parseProxyAddress(raw: string | undefined): ProxyAddress | undef
  * host that resolves to one is reachable over the tailnet or not at all.
  */
 export function isTailnetAddress(address: string): boolean {
+  // An IPv4-mapped IPv6 address (`::ffff:100.64.1.2`) is the IPv4 address.
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address);
+  if (mapped) return isTailnetAddress(mapped[1]!);
   const family = isIP(address);
   if (family === 4) {
     const [a, b] = address.split(".").map(Number) as [number, number];
@@ -66,7 +71,10 @@ function expandV6Prefix(address: string): string {
   const [head = "", tail] = lower.split("::");
   const left = head === "" ? [] : head.split(":");
   const right = tail === undefined || tail === "" ? [] : tail.split(":");
-  const fill = tail === undefined ? [] : Array(Math.max(0, 8 - left.length - right.length)).fill("0");
+  const fill =
+    tail === undefined
+      ? []
+      : Array(Math.max(0, 8 - left.length - right.length)).fill("0");
   return [...left, ...fill, ...right]
     .slice(0, 3)
     .map((h) => h.replace(/^0+(?=.)/, ""))
@@ -93,7 +101,9 @@ const SOCKS_REPLIES: Record<number, string> = {
 /** The proxy answered and refused the CONNECT: the tailnet could not reach the target. */
 export class SocksReplyError extends Error {
   constructor(readonly reply: number) {
-    super(`tailnet proxy reply ${reply} (${SOCKS_REPLIES[reply] ?? "unknown"})`);
+    super(
+      `tailnet proxy reply ${reply} (${SOCKS_REPLIES[reply] ?? "unknown"})`,
+    );
     this.name = "SocksReplyError";
   }
 }
@@ -129,7 +139,8 @@ export function socks5Connect(
   target: string,
   port: number,
   timeoutMs: number,
-  dial: (p: ProxyAddress) => Socket = (p) => netConnect({ host: p.host, port: p.port }),
+  dial: (p: ProxyAddress) => Socket = (p) =>
+    netConnect({ host: p.host, port: p.port }),
 ): Promise<Socket> {
   return new Promise<Socket>((resolve, reject) => {
     const sock = dial(proxy);
@@ -145,7 +156,10 @@ export function socks5Connect(
       sock.destroy();
       reject(err);
     };
-    const timer = setTimeout(() => fail(new SocksTimeoutError(timeoutMs)), timeoutMs);
+    const timer = setTimeout(
+      () => fail(new SocksTimeoutError(timeoutMs)),
+      timeoutMs,
+    );
 
     sock.once("connect", () => {
       tcpUp = true;
@@ -183,7 +197,14 @@ export function socks5Connect(
           return;
         }
         const atyp = buf[3];
-        const addrLen = atyp === 0x01 ? 4 : atyp === 0x04 ? 16 : atyp === 0x03 ? 1 + buf[4]! : -1;
+        const addrLen =
+          atyp === 0x01
+            ? 4
+            : atyp === 0x04
+              ? 16
+              : atyp === 0x03
+                ? 1 + buf[4]!
+                : -1;
         if (addrLen < 0) {
           fail(new Error(`tailnet proxy sent a malformed SOCKS5 reply`));
           return;
@@ -222,17 +243,27 @@ function connectRequest(target: string, port: number): Buffer {
     const groups = expandV6(target);
     const bytes = Buffer.alloc(16);
     groups.forEach((g, i) => bytes.writeUInt16BE(parseInt(g, 16), i * 2));
-    return Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x04]), bytes, portBytes]);
+    return Buffer.concat([
+      Buffer.from([0x05, 0x01, 0x00, 0x04]),
+      bytes,
+      portBytes,
+    ]);
   }
   const name = Buffer.from(target, "utf8");
-  if (name.length > 255) throw new Error(`host name too long for SOCKS5: ${target.slice(0, 40)}…`);
-  return Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x03, name.length]), name, portBytes]);
+  if (name.length > 255)
+    throw new Error(`host name too long for SOCKS5: ${target.slice(0, 40)}…`);
+  return Buffer.concat([
+    Buffer.from([0x05, 0x01, 0x00, 0x03, name.length]),
+    name,
+    portBytes,
+  ]);
 }
 
 function expandV6(address: string): string[] {
   const [head = "", tail] = address.split("::");
   const left = head === "" ? [] : head.split(":");
   const right = tail === undefined || tail === "" ? [] : tail.split(":");
-  const fill = tail === undefined ? [] : Array(8 - left.length - right.length).fill("0");
+  const fill =
+    tail === undefined ? [] : Array(8 - left.length - right.length).fill("0");
   return [...left, ...fill, ...right];
 }
