@@ -12,7 +12,7 @@ import {
 import type { Registry } from "./registry.ts";
 
 /**
- * MCP Events through the gateway — draft SEP-3415, POLL MODE ONLY.
+ * MCP Events through the gateway — draft SEP-3415, POLL AND WEBHOOK MODES.
  *
  * The draft this tracks is pinned in `docs/mcp-events-spec-pin.md`; it is a
  * draft, its error codes are provisional, and the wire may move under it.
@@ -24,9 +24,10 @@ import type { Registry } from "./registry.ts";
  *      `initialize` exactly when a slug selected for the request serves events
  *      — decided from each upstream's own handshake (`supportsEvents`).
  *   2. NAMESPACE. `events/list` is the union over the selected slugs, each name
- *      prefixed `<slug>__` like a tool; `events/poll` strips the prefix, routes
- *      to that slug, and prefixes the names in the answer.
- *   3. ENTITLE. A poll is allowed for a slug the request SELECTED — the
+ *      prefixed `<slug>__` like a tool; `events/poll`, `events/subscribe` and
+ *      `events/unsubscribe` strip the prefix and route to that slug, and a
+ *      poll's answer has its names prefixed again.
+ *   3. ENTITLE. A poll or a subscription is allowed for a slug the request SELECTED — the
  *      intersection the router computed from the token and `?servers=`, the
  *      same set a tool call is checked against. Anything else is Forbidden
  *      (`-32024`), whether the slug exists or not: a refusal that said which
@@ -34,6 +35,15 @@ import type { Registry } from "./registry.ts";
  *
  * Core holds NO event state. The cursor is the upstream's, opaque here; each
  * poll is one stateless round trip, like every other `/mcp` request.
+ *
+ * WEBHOOK MODE adds one thing core alone can supply: WHO is subscribing. The
+ * draft keys a subscription on `(principal, delivery.url, name, arguments)`
+ * and requires an authenticated principal, and only core authenticated the
+ * caller. So core forwards `events/subscribe` and `events/unsubscribe` with a
+ * `_meta` it builds itself — `strad/principal` (the principal's id) and
+ * `strad/name` (the prefixed name deliveries must carry) — and drops whatever
+ * `_meta` the client sent. The upstream holds the subscriptions and POSTs the
+ * deliveries; core is not in that path.
  *
  * `tools:` policy does not apply. It names tools, and an event type is not one;
  * a slug that should not deliver events should not be selected for the caller.
@@ -52,7 +62,12 @@ export const EVENTS_ERROR = {
   forbidden: -32024,
   resourceExhausted: -32025,
   unsupported: -32026,
+  callbackEndpointError: -32027,
 } as const;
+
+/** `_meta` keys core sets on a forwarded subscribe or unsubscribe. */
+export const PRINCIPAL_META = "strad/principal";
+export const NAME_META = "strad/name";
 
 /** Codes an upstream's refusal is relayed under, verbatim. Everything else is ours. */
 const RELAYED_CODES = new Set<number>([
@@ -61,6 +76,7 @@ const RELAYED_CODES = new Set<number>([
   EVENTS_ERROR.forbidden,
   EVENTS_ERROR.resourceExhausted,
   EVENTS_ERROR.unsupported,
+  EVENTS_ERROR.callbackEndpointError,
 ]);
 
 /**
@@ -108,6 +124,40 @@ const PollEventsParamsSchema = z
     cursor: z.string().nullish(),
     maxEvents: z.number().int().positive().optional(),
     maxAgeMs: z.number().nonnegative().optional(),
+  })
+  .passthrough();
+
+const SubscribeRequestSchema = z.object({
+  method: z.literal("events/subscribe"),
+  params: z.unknown().optional(),
+});
+
+const UnsubscribeRequestSchema = z.object({
+  method: z.literal("events/unsubscribe"),
+  params: z.unknown().optional(),
+});
+
+/**
+ * Shape only. What the upstream owns — the URL's scheme and address, the
+ * secret's format, the arguments — it checks itself and refuses with the
+ * draft's codes, which are relayed.
+ */
+const SubscribeParamsSchema = z
+  .object({
+    name: z.string(),
+    arguments: z.record(z.unknown()).nullish(),
+    delivery: z.record(z.unknown()),
+    cursor: z.string().nullish(),
+    maxAgeMs: z.number().nonnegative().nullish(),
+    ttlMs: z.number().nonnegative().nullable().optional(),
+  })
+  .passthrough();
+
+const UnsubscribeParamsSchema = z
+  .object({
+    name: z.string(),
+    arguments: z.record(z.unknown()).nullish(),
+    delivery: z.object({ url: z.unknown() }).passthrough(),
   })
   .passthrough();
 
@@ -260,6 +310,113 @@ export function registerEventHandlers(
         name: namespaced(parsed.slug, e.name),
       })),
     } as never;
+  });
+
+  /**
+   * The name's slug, if this request may reach it. The same check, and the
+   * same refusal, as a poll: a slug the request did not select is Forbidden
+   * whether or not it exists.
+   */
+  const entitled = (name: string) => {
+    const parsed = denamespace(name);
+    if (!parsed) {
+      throw new EventsError(
+        EVENTS_ERROR.invalidParams,
+        `event "${name}" is not namespaced as <server>__<event>`,
+      );
+    }
+    const adapter = selected.includes(parsed.slug)
+      ? registry.get(parsed.slug)
+      : undefined;
+    if (!adapter) {
+      log({ evt: "mcp.events_forbidden", principal: opts.principalId });
+      throw new EventsError(
+        EVENTS_ERROR.forbidden,
+        `event "${name}" is not available to this request: its server is not ` +
+          `selected for it, or this principal is not entitled to it.`,
+      );
+    }
+    return { slug: parsed.slug, bare: parsed.tool, adapter };
+  };
+
+  const paramsOf = <T>(
+    schema: z.ZodType<T>,
+    raw: unknown,
+    method: string,
+  ): T => {
+    const checked = schema.safeParse(raw);
+    if (!checked.success) {
+      const issue = checked.error.issues[0];
+      throw new EventsError(
+        EVENTS_ERROR.invalidParams,
+        `${method}: ${issue ? `${issue.path.join(".") || "params"}: ${issue.message}` : "invalid params"}`,
+      );
+    }
+    return checked.data;
+  };
+
+  /** Core's own `_meta`: the authenticated principal and the subscriber's name. */
+  const meta = (name: string): Record<string, string> => ({
+    [PRINCIPAL_META]: opts.principalId,
+    [NAME_META]: name,
+  });
+
+  server.setRequestHandler(SubscribeRequestSchema, async (request) => {
+    const params = paramsOf(
+      SubscribeParamsSchema,
+      request.params,
+      "events/subscribe",
+    );
+    const { slug, bare, adapter } = entitled(params.name);
+    if (!adapter.subscribeEvents) {
+      throw new EventsError(
+        EVENTS_ERROR.notFound,
+        `server "${slug}" serves no events`,
+        { kind: "event" },
+      );
+    }
+    try {
+      return (await adapter.subscribeEvents({
+        name: bare,
+        arguments: params.arguments ?? {},
+        delivery: params.delivery,
+        ...(params.cursor !== undefined ? { cursor: params.cursor } : {}),
+        ...(params.maxAgeMs !== undefined && params.maxAgeMs !== null
+          ? { maxAgeMs: params.maxAgeMs }
+          : {}),
+        ...(params.ttlMs !== undefined ? { ttlMs: params.ttlMs } : {}),
+        _meta: meta(params.name),
+      })) as never;
+    } catch (err) {
+      throw relayed(err, slug);
+    }
+  });
+
+  server.setRequestHandler(UnsubscribeRequestSchema, async (request) => {
+    const params = paramsOf(
+      UnsubscribeParamsSchema,
+      request.params,
+      "events/unsubscribe",
+    );
+    const { slug, bare, adapter } = entitled(params.name);
+    if (!adapter.unsubscribeEvents) {
+      throw new EventsError(
+        EVENTS_ERROR.notFound,
+        `server "${slug}" serves no events`,
+        { kind: "event" },
+      );
+    }
+    try {
+      await adapter.unsubscribeEvents({
+        name: bare,
+        arguments: params.arguments ?? {},
+        delivery: { url: params.delivery.url },
+        _meta: meta(params.name),
+      });
+    } catch (err) {
+      throw relayed(err, slug);
+    }
+    return {} as never;
   });
 }
 

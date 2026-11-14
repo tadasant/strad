@@ -52,8 +52,9 @@ tilde, so the fix has to live in the tool definitions. The fork also **adds four
 DM tools** — `slack_send_dm`, `slack_get_dm`, `slack_get_dms`, `slack_find_user`
 — because upstream can address a channel and a thread but not a person, and
 Slack's DM flow is a two-call dance no agent should have to know. And it serves
-**MCP Events** (draft SEP-3415, poll mode): a Socket Mode ingest, inert until
-`SLACK_APP_TOKEN` is seeded, buffers `message_posted` for `events/poll`, and
+**MCP Events** (draft SEP-3415, poll and webhook delivery): a Socket Mode
+ingest, inert until `SLACK_APP_TOKEN` is seeded, buffers `message_posted` for
+`events/poll` and for the webhooks it POSTs, and
 `slack_events_status` reports its state. Fourteen tools, eight of them
 read-only. Every delta, the recipient-naming rules and the OAuth scopes are in
 [`fork/slack/FORK.md`](fork/slack/FORK.md).

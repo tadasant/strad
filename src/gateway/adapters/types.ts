@@ -74,19 +74,27 @@ export interface ServerAdapter {
   getRaw?(path: string, req: Request, res: Response): Promise<void>;
 
   /**
-   * MCP Events (draft SEP-3415, poll mode — see src/gateway/events.ts).
+   * MCP Events (draft SEP-3415, poll and webhook — see src/gateway/events.ts).
    *
-   * OPTIONAL, all three, and present together: a kind that cannot carry
-   * events omits them and the gateway treats it as serving none. Names here
-   * are BARE, like tool names; the gateway adds the `<slug>__` prefix.
+   * OPTIONAL, and present together: a kind that cannot carry events omits
+   * them and the gateway treats it as serving none. Names here are BARE, like
+   * tool names; the gateway adds the `<slug>__` prefix.
    *
    * `supportsEvents` answers from the upstream's handshake — whether it
    * advertised `io.modelcontextprotocol/events` — and is what decides whether
    * core advertises the extension on `initialize`.
+   *
+   * `subscribeEvents` and `unsubscribeEvents` are webhook mode. Their params
+   * carry the caller's principal in `_meta`, set by core and never by the
+   * client (`WebhookSubscribeParams`).
    */
   supportsEvents?(): Promise<boolean>;
   listEvents?(): Promise<EventDescriptor[]>;
   pollEvents?(params: PollEventsParams): Promise<PollEventsResult>;
+  subscribeEvents?(
+    params: WebhookSubscribeParams,
+  ): Promise<Record<string, unknown>>;
+  unsubscribeEvents?(params: WebhookUnsubscribeParams): Promise<void>;
 
   /** Release upstream connections. */
   close(): Promise<void>;
@@ -109,6 +117,31 @@ export interface PollEventsParams {
   cursor: string | null;
   maxEvents?: number;
   maxAgeMs?: number;
+}
+
+/**
+ * `events/subscribe` as core forwards it. `_meta` is core's own: the
+ * authenticated principal, and the event name as the subscriber knows it
+ * (prefixed), which deliveries must carry. Built fresh by core; nothing the
+ * client sent in `_meta` reaches the upstream.
+ */
+export interface WebhookSubscribeParams {
+  /** Bare (unprefixed). */
+  name: string;
+  arguments: Record<string, unknown>;
+  delivery: Record<string, unknown>;
+  cursor?: string | null;
+  maxAgeMs?: number;
+  ttlMs?: number | null;
+  _meta: Record<string, string>;
+}
+
+export interface WebhookUnsubscribeParams {
+  /** Bare (unprefixed). */
+  name: string;
+  arguments: Record<string, unknown>;
+  delivery: { url: unknown };
+  _meta: Record<string, string>;
 }
 
 export interface EventOccurrence {

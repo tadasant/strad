@@ -6710,13 +6710,13 @@ names the draft's recipient and subject.
 `requestConfirmation()`, if a deleted draft someone wanted ever turns up.
 Withhold the tool from a slug with its `tools: allow` list in the meantime.
 
-## 131. MCP Events tracks a draft SEP, in poll mode only, and the Slack feed has met only fakes
+## 131. MCP Events tracks a draft SEP, in poll and webhook mode, and the Slack feed has met only fakes
 
 **What.** strad serves MCP Events (`events/list`, `events/poll`, the
 `io.modelcontextprotocol/events` extension) from draft SEP-3415, pinned at
 commit `b08e4f9dd684f39d846d94089487fbeb28e666f5` in
-`docs/mcp-events-spec-pin.md`. Only poll mode is built: no `events/stream`, no
-webhooks, no `list_changed`, no `server/discover`. The error codes (`-32023`,
+`docs/mcp-events-spec-pin.md`. Poll and webhook mode are built (#140 is the
+webhook half): no `events/stream`, no `list_changed`, no `server/discover`. The error codes (`-32023`,
 `-32024`) are the draft's provisional numbers. The `Mcp-Method` / `Mcp-Name`
 headers are accepted and not checked. Results carry no `resultType`.
 
@@ -7236,3 +7236,68 @@ the OAuth client and remove the node in the Tailscale admin console to cut a
 running container off at once. If App Platform ever offers a network sidecar or
 a TUN device, kernel-mode Tailscale would replace the child process; the ssh
 tree's address-based routing would not change.
+
+## 140. Webhook delivery for MCP Events: strad POSTs to a URL a caller chose, and has met only a fake receiver
+
+**What.** `events/subscribe` and `events/unsubscribe` (draft SEP-3415 webhook
+mode) for `slack-zimmer__message_posted`. Core forwards them with the
+authenticated principal in a `_meta` it builds; the Slack mount verifies the
+endpoint by challenge-echo, persists the subscription (`webhooks.bin`, sealed,
+in the state store, #138), and the lease holder POSTs each event, signed with
+Standard Webhooks, from the same buffer `events/poll` reads.
+`servers/bundle-api/fork/slack/src/events/webhook/` is the code;
+`docs/servers/events` has the wire and `docs/mcp-events-spec-pin.md` the
+choices the draft leaves open.
+
+**Why.** Zimmer wants pushes rather than a poll a minute, and its receiver is
+tadasant/zimmer#1484. Polling stays as Zimmer's catch-up path.
+
+**What it costs.**
+
+- **strad makes requests to URLs a caller chose.** That is the SSRF surface the
+  draft warns about. What stands in front of it: `https` only; every address
+  the host resolves to must be globally routable, checked on every attempt and
+  connected to directly (so DNS rebinding finds nothing to change), and every
+  IPv4-mapped or IPv4-compatible IPv6 address is refused whatever it carries,
+  because unwrapping one by its spelling is how a check like this is bypassed
+  (`[::ffff:127.0.0.1]` reaches Node as `::ffff:7f00:1`); no
+  redirects; a challenge every `(principal, url)` must answer before any
+  delivery; five verifications per host per minute; failures reported only as
+  the draft's categories, never the far end's words. Only a principal entitled
+  to the slug can subscribe at all.
+- **An edge credential is sent on purpose.** Zimmer's receiver sits behind
+  Cloudflare Access, which wants a service token on every request, so URLs
+  under a prefix in `SLACK_EVENTS_WEBHOOK_ACCESS_PREFIXES`
+  (`https://zimmer.tadasant.com/webhooks/mcp_events/`) get `CF-Access-Client-Id`
+  and `CF-Access-Client-Secret`: a host AND a path, `https`, the default port,
+  from strad's config only, never from a subscribe. A whole host is refused as a
+  prefix, because a subscriber picks the path, and a token sent to any path on
+  the host could be presented to whatever else that host's edge admits it to.
+  The merge gate held this credential path for Tadas (H2) at the host-wide
+  scope; the path scope is the narrowing it named. A wrong prefix is still a
+  token sent to that prefix.
+- **Delivery has met only a fake receiver.** The tests drive the real HTTPS
+  transport against a loopback server and everything else against a recording
+  fake, and check signatures with the specification's own test vector. Zimmer's
+  receiver has not received a real delivery, and nothing in CI has crossed
+  Cloudflare Access.
+- **Revocation is not immediate.** Nothing sends a `terminated` envelope. A
+  principal that loses the slug can no longer refresh, and its subscription
+  keeps delivering until its grant runs out: at most 24 hours.
+- **Suspension is not the draft's example.** The draft suggests a failure rate
+  over an hour and 100 attempts; a low-traffic feed never reaches 100. Here an
+  event that exhausts five attempts with no answer from the endpoint suspends
+  the subscription and gives nothing up, and a refresh resumes delivery from
+  the watermark. A receiver that is down longer than the buffer's retention
+  (7 days) gets a `gap` envelope and loses those events from webhook delivery.
+- **Delivery runs in the lease holder only**, every second, and re-reads the
+  registry every 15 seconds. A subscription made on another container in a
+  deploy overlap starts delivering within that.
+- **In-flight retries are memory.** A restart re-sends from the persisted
+  watermark: some events arrive twice, under new `webhook-id`s. The `eventId`
+  is the same, which is what a receiver dedupes on.
+
+**Undo.** Stop listing `webhook` in `MESSAGE_POSTED_DESCRIPTOR.delivery` and
+drop the two handlers in `servers/bundle-api/fork/slack/src/events/protocol.ts`;
+a client then has poll only. Existing subscriptions stay in `webhooks.bin` and
+are never delivered to: delete it, or let their grants run out.

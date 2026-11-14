@@ -49,6 +49,14 @@ const PollEvents = z.object({
   method: z.literal("events/poll"),
   params: z.object({ name: z.string() }).passthrough(),
 });
+const SubscribeEvents = z.object({
+  method: z.literal("events/subscribe"),
+  params: z.object({ name: z.string() }).passthrough(),
+});
+const UnsubscribeEvents = z.object({
+  method: z.literal("events/unsubscribe"),
+  params: z.object({ name: z.string() }).passthrough(),
+});
 
 class CodedError extends Error {
   constructor(
@@ -62,6 +70,8 @@ class CodedError extends Error {
 
 interface Seen {
   polls: Record<string, unknown>[];
+  subscribes: Record<string, unknown>[];
+  unsubscribes: Record<string, unknown>[];
 }
 
 function upstream(kind: "feed" | "quiet" | "unset", seen: Seen) {
@@ -141,6 +151,29 @@ function upstream(kind: "feed" | "quiet" | "unset", seen: Seen) {
         } as never;
       });
     }
+    if (kind === "feed") {
+      server.setRequestHandler(SubscribeEvents, async (request) => {
+        seen.subscribes.push(request.params);
+        const url = (request.params.delivery as { url?: string }).url;
+        if (url === "https://unreachable.example.com/hook") {
+          throw new CodedError(
+            -32027,
+            "the callback endpoint could not be verified: challenge_failed",
+            { reason: "challenge_failed" },
+          );
+        }
+        return {
+          id: "sub_0123456789abcdef0123456789abcdef",
+          refreshBefore: "2026-11-11T18:00:00.000Z",
+          cursor: "v1.100",
+          truncated: false,
+        } as never;
+      });
+      server.setRequestHandler(UnsubscribeEvents, async (request) => {
+        seen.unsubscribes.push(request.params);
+        return {} as never;
+      });
+    }
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
     });
@@ -153,7 +186,7 @@ function upstream(kind: "feed" | "quiet" | "unset", seen: Seen) {
   };
 }
 
-const seen: Seen = { polls: [] };
+const seen: Seen = { polls: [], subscribes: [], unsubscribes: [] };
 let upstreamServer: HttpServer;
 let stradServer: HttpServer;
 let registry: Registry;
@@ -425,6 +458,132 @@ describe("events/poll", () => {
     const line = text.split("\n").find((l) => l.startsWith("data:"));
     const body = JSON.parse(line ? line.slice(5) : text);
     expect(body.result).toMatchObject({ events: [], cursor: "v1.100" });
+  });
+});
+
+describe("events/subscribe and events/unsubscribe (webhook mode)", () => {
+  const HOOK = "https://zimmer.tadasant.com/webhooks/mcp_events/abc";
+  const subscribe = (c: Client, name: string, extra = {}) =>
+    c.request(
+      {
+        method: "events/subscribe",
+        params: {
+          name,
+          arguments: { channel_ids: ["C1"] },
+          delivery: { mode: "webhook", url: HOOK, secret: "whsec_x" },
+          cursor: null,
+          ttlMs: 21_600_000,
+          ...extra,
+        },
+      },
+      Loose,
+    );
+
+  it("forwards the bare name with core's own _meta: the principal and the prefixed name", async () => {
+    const c = await client();
+    seen.subscribes.length = 0;
+    const res = await subscribe(c, "feed__message_posted", {
+      // A client cannot speak for another principal: its _meta never reaches the upstream.
+      _meta: { "strad/principal": "someone-else", "strad/name": "x" },
+    });
+    expect(res).toMatchObject({
+      id: "sub_0123456789abcdef0123456789abcdef",
+      refreshBefore: "2026-11-11T18:00:00.000Z",
+      cursor: "v1.100",
+      truncated: false,
+    });
+    const [forwarded] = seen.subscribes;
+    expect(forwarded).toMatchObject({
+      name: "message_posted",
+      arguments: { channel_ids: ["C1"] },
+      delivery: { mode: "webhook", url: HOOK, secret: "whsec_x" },
+      cursor: null,
+      ttlMs: 21_600_000,
+    });
+    const meta = forwarded!._meta as Record<string, unknown>;
+    expect(meta["strad/name"]).toBe("feed__message_posted");
+    expect(typeof meta["strad/principal"]).toBe("string");
+    expect(meta["strad/principal"]).not.toBe("someone-else");
+    expect(meta["strad/principal"]).not.toBe("");
+    await c.close();
+  });
+
+  it("is Forbidden for a slug the request did not select, before anything is forwarded", async () => {
+    const c = await client("quiet");
+    seen.subscribes.length = 0;
+    await expect(subscribe(c, "feed__message_posted")).rejects.toMatchObject({
+      code: -32024,
+    });
+    expect(seen.subscribes).toEqual([]);
+    await c.close();
+  });
+
+  it("relays CallbackEndpointError (-32027) with its reason, prefixed once", async () => {
+    const c = await client();
+    const err = await subscribe(c, "feed__message_posted", {
+      delivery: {
+        mode: "webhook",
+        url: "https://unreachable.example.com/hook",
+        secret: "whsec_x",
+      },
+    }).catch((e: unknown) => e);
+    expect(err).toMatchObject({
+      code: -32027,
+      data: { reason: "challenge_failed" },
+    });
+    const message = (err as Error).message;
+    expect(message).toContain(
+      "the callback endpoint could not be verified: challenge_failed",
+    );
+    expect(message.match(/MCP error/g)).toHaveLength(1);
+    await c.close();
+  });
+
+  it("answers malformed params as InvalidParams, and a tools-only upstream as NotFound", async () => {
+    const c = await client();
+    await expect(
+      c.request(
+        {
+          method: "events/subscribe",
+          params: { name: "feed__message_posted" },
+        },
+        Loose,
+      ),
+    ).rejects.toMatchObject({ code: -32602 });
+    await expect(subscribe(c, "quiet__message_posted")).rejects.toMatchObject({
+      code: -32023,
+    });
+    await c.close();
+  });
+
+  it("forwards an unsubscribe by the same key, with the principal", async () => {
+    const c = await client();
+    seen.unsubscribes.length = 0;
+    const res = await c.request(
+      {
+        method: "events/unsubscribe",
+        params: {
+          name: "feed__message_posted",
+          arguments: { channel_ids: ["C1"] },
+          delivery: { url: HOOK, secret: "ignored" },
+        },
+      },
+      Loose,
+    );
+    expect(res).toEqual({});
+    const [forwarded] = seen.unsubscribes;
+    expect(forwarded).toMatchObject({
+      name: "message_posted",
+      arguments: { channel_ids: ["C1"] },
+      delivery: { url: HOOK },
+    });
+    expect(
+      (forwarded!.delivery as Record<string, unknown>).secret,
+    ).toBeUndefined();
+    expect(
+      typeof (forwarded!._meta as Record<string, unknown>)["strad/principal"],
+    ).toBe("string");
+    await c.close();
   });
 });
 

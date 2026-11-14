@@ -278,8 +278,9 @@ Upstream can read a channel when asked, and cannot say that something was just
 posted. A trigger that fires on a new message needs that feed, and the
 alternative was a second Slack client in Zimmer, polling `conversations.history`
 on a cron with its own copy of the bot token. This fork serves the feed as
-**MCP Events** (draft SEP-3415, poll mode): one event type, `message_posted`,
-behind `events/list` and `events/poll`. strad core prefixes and entitles it.
+**MCP Events** (draft SEP-3415, poll and webhook delivery): one event type,
+`message_posted`, behind `events/list`, `events/poll` and
+`events/subscribe`/`events/unsubscribe`. strad core prefixes and entitles it.
 See strad's `servers/events` page.
 
 Inert unless `SLACK_APP_TOKEN`, `SLACK_EVENTS_STATE_ENCRYPTION_KEY` and strad's
@@ -296,7 +297,8 @@ No existing tool changed.
 | `src/events/state-store.ts` | **Generated.** strad's state store, vendored from `src/state/store.ts` in strad by `npm run statestore:sync`: the GCS JSON API on Node's `fetch`, the seal, the lease. Edit the source, never this copy. |
 | `src/events/slack-api.ts` | **New.** `auth.test`, `apps.connections.open`, `users.conversations`, `conversations.history`, `conversations.replies`. |
 | `src/events/ingest.ts` | **New.** The Socket Mode client: ack every envelope first, buffer second, backfill on every hello, stand down when the lease is lost. |
-| `src/events/protocol.ts` | **New.** `events/list`, `events/poll`, and the extension, advertised only when configured. |
+| `src/events/protocol.ts` | **New.** `events/list`, `events/poll`, `events/subscribe`, `events/unsubscribe`, and the extension, advertised only when configured. |
+| `src/events/webhook/` | **New.** Webhook delivery (draft SEP-3415): the Standard Webhooks signature (`signing.ts`), the SSRF-guarded HTTPS transport (`transport.ts`), the persisted subscriptions (`registry.ts`), and verification, retries, suspension and the watermark (`delivery.ts`). strad's `docs/servers/events` and `HACKS.md` #140. |
 | `src/tools/events-status.ts` | **New.** `slack_events_status`, read-only. |
 | `src/server.ts`, `src/tools.ts`, `src/index.ts` | One ingest per process, threaded to the status tool and the handlers; `close()` flushes the buffer. |
 

@@ -182,6 +182,30 @@ export class EventBuffer {
     return this.events[this.events.length - 1];
   }
 
+  /** The largest sequence ever evicted: a cursor below it has missed something. */
+  get evictedThroughSeq(): number {
+    return this.evictedThrough;
+  }
+
+  /** Matching events after `after`, oldest first, at most `limit`. What webhook delivery reads. */
+  eventsAfter(after: number, args: MessagePostedArgs, limit: number): StoredEvent[] {
+    // `events` is sorted by seq; start at the first one after the cursor, so a
+    // caught-up subscription costs a binary search, not a walk of the buffer.
+    let lo = 0;
+    let hi = this.events.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (this.events[mid]!.seq <= after) lo = mid + 1;
+      else hi = mid;
+    }
+    const out: StoredEvent[] = [];
+    for (let i = lo; i < this.events.length && out.length < limit; i++) {
+      const e = this.events[i]!;
+      if (matchesMessagePosted(e.data, args)) out.push(e);
+    }
+    return out;
+  }
+
   has(eventId: string): boolean {
     return this.ids.has(eventId);
   }
