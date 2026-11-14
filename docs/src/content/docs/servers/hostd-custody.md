@@ -41,7 +41,7 @@ strad.
 
 | Tool                | What it does                                                                                                       |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `list_tabs`         | The owner's tabs, each marked `tainted` or not.                                                                    |
+| `list_tabs`         | The owner's tabs, each marked `tainted` or not. A tainted tab's title and URL are hidden.                                                                    |
 | `click_and_capture` | Taints the tab, clicks, and captures the value that appears. Returns a handle and a shape.                         |
 | `capture_download`  | Clicks a download, reads the new file from the Downloads folder into a handle, and deletes the file.               |
 | `release_tab`       | Navigates a tainted tab to `about:blank` and lifts its taint.                                                      |
@@ -76,26 +76,39 @@ while a capture is running. While it is live:
   folder, the clipboard, Chrome's profile and the daemon's own state.
 - **computer** and **computer-headless** refuse every call. A screenshot or an
   Accessibility read of a window showing the token is the token.
-- **browser** refuses `read_page`, `evaluate_script` and `take_screenshot` on
-  every tab. On a tainted tab it also refuses everything except `list_tabs`,
-  `navigate_tab` and `close_tab`. Reads are refused on every tab because the
-  DevTools route and the extension route name the same tab differently, so
-  "is this the tainted tab" cannot be answered across them.
+- **browser** refuses `read_page`, `evaluate_script`, `take_screenshot` and
+  `list_tabs` on every tab (`list_tabs` because it carries each page's own
+  title). On a tainted tab it also refuses everything except `navigate_tab`
+  and `close_tab`. Reads are refused on every tab because the DevTools route
+  and the extension route name the same tab differently, so "is this the
+  tainted tab" cannot be answered across them.
 - **messages** is not affected. It reads the Messages database, not the
   screen.
 
-Navigating away from or closing a tainted tab, through any server, lifts its
-taint. When a custody grant ends for any reason (`end_control`, expiry,
-idle, the kill switch), the daemon navigates every tab that grant tainted to
-`about:blank` and drops every handle it held.
+Two things lift a tab's taint: closing it, and custody's `release_tab`, which
+navigates it to `about:blank`. A navigation through the browser server does
+not, because a `#fragment` navigation leaves the page and the secret where
+they were. When a custody grant ends for any reason (`end_control`, expiry,
+idle, the kill switch), the daemon blanks every tab that grant tainted and
+drops every handle it held. If a tab cannot be blanked but is still open, it
+stays tainted until a custody grant releases it.
+
+A capture also **will not start while a shell command is running**. The hold is
+checked when a call begins, so a command started before the capture
+(`sleep 20; pbpaste`) would otherwise run straight through it.
 
 **The egress filter** is the backstop. Every result any server returns, and
 every set of arguments any caller sends, is checked for the exact value of
-every live handle: the value itself, its JSON-escaped, base64, base64url and
+every live handle, and of every handle deposited or discarded under a custody
+grant that is still running: the value itself, its JSON-escaped, base64, base64url and
 URL-encoded forms, and for a JSON or PEM credential, its secret fields and
-the long lines of a PEM body. A match withholds the result and **burns** the
-handle. A burned handle cannot be deposited, because a value that reached the
-model is a leaked credential. Revoke it at the provider and capture a new one.
+the long lines of a PEM body, and any credential-shaped word in a value that
+was captured with text around it. A match withholds the result and **burns** a
+handle still held. A burned handle cannot be deposited, because a value that
+reached the model is a leaked credential. Revoke it at the provider and capture
+a new one. A match on a deposited value means the copy in strad has leaked,
+and it needs rotating. Values stay watched after a deposit because the token
+may still be on the clipboard or in a window.
 This is an exact match on a known value, so it does not guess what looks
 secret.
 
@@ -111,10 +124,23 @@ tainted.
 
 - **No read.** There is no GET, any other verb is a 405, and no answer
   contains a value.
-- **Create-only.** If the name already exists under `static/` or `oauth/`, the
-  answer is 409. A write-only door that could replace a live credential could
-  point an agent's traffic at an attacker's account, so overwriting is ruled
-  out entirely. To rotate a credential, use the console.
+- **Create-only, and no shadowing.** The answer is 409 if the name already
+  exists under `static/` or `oauth/`, and also if it already resolves for that
+  slug from any layer: the gateway namespace, or core's environment. A new
+  `static/` copy would outrank those, which is an overwrite in everything but
+  name. A write-only door that could replace a live credential could point an
+  agent's traffic at an attacker's account, so that is ruled out entirely. To
+  rotate a credential, use the console.
+- **Not a name that steers.** The answer is 403 for any of these:
+  - A name that is part of the target slug's `url:`, because that value decides
+    where its traffic goes.
+  - A name a process reads as configuration rather than as a credential:
+    `NODE_*`, `LD_*`, `DYLD_*`, `STRAD_*`, `OTEL_*`, the `*_PROXY` names, `PATH`
+    and similar.
+  - A slug that is itself a `local-tunnel` machine, whose keys a human places.
+  - A `params: true` slug, unless the caller names it in `deposit.into:`. Such a
+    slug loads its whole namespace into its container's environment, so a
+    deposit there is a new environment variable on a container.
 - **One namespace.** The path is always `/strad/<env>/mcp/<slug>/static/<VAR>`,
   built from the literal `static` kind and two shape-checked segments. No
   spelling reaches a gateway name or `oauth/`.
@@ -134,8 +160,12 @@ The custody server is a `local-tunnel` slug, so strad already holds its bearer
 key: the `${NAME}` in that entry's `Authorization` header. The daemon holds
 the same key. The deposit bearer is `HMAC-SHA256(key, "strad-deposit-v1")`,
 base64url-encoded. Both sides compute it and neither stores it, so **nothing
-new is seeded anywhere**. It is still a different string from the slug key, so
-a value captured from one door does not open the other. Core identifies the
+new is seeded anywhere**. The bearer does not open the slug, so a deposit
+bearer seen in transit is not a way into the Mac. The other direction does
+hold: **whoever holds the slug key can deposit.** That is strad, the Mac's
+`~/.strad-hostd/config.json`, and so a shell-server grant on the Mac while
+custody holds nothing. Custody deposits are therefore only as private as the
+other hostd servers' keys, which that file already holds. Core identifies the
 caller by which entry's key matched, never by anything the caller claims. The
 derivation lives in `src/secrets/deposit-wire.ts`, vendored into hostd by
 `npm run deposit:sync`.

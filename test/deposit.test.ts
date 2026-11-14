@@ -75,6 +75,19 @@ servers:
     entitlements: [admin]
     headers:
       Authorization: "Bearer \${HOSTD_SHELL_KEY}"
+  - slug: tracker
+    kind: remote-http
+    url: "https://\${TRACKER_HOST}/mcp"
+    entitlements: [admin]
+    headers:
+      Authorization: "Bearer \${TRACKER_TOKEN}"
+  - slug: paramsy
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle-secrets
+    path: /paramsy
+    entitlements: [admin]
+    params: true
   - slug: secrets
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
@@ -103,6 +116,8 @@ beforeAll(async () => {
     HOSTD_CUSTODY_KEY: CUSTODY_KEY,
     HOSTD_NARROW_KEY: NARROW_KEY,
     HOSTD_SHELL_KEY: SHELL_KEY,
+    // A name the gateway already resolves for every slug, e.g. from core's env.
+    SHARED_API_KEY: "the-live-shared-one",
   });
   const providers = sharedSecretProviders({
     name: keys.name,
@@ -272,6 +287,55 @@ describe("what it never does", () => {
         })
       ).status,
     ).toBe(413);
+  });
+});
+
+describe("what it never shadows or injects", () => {
+  it("refuses a name that already resolves for the slug from another layer", async () => {
+    const res = await deposit("linear", "SHARED_API_KEY", { bearer: CUSTODY });
+    expect(res.status).toBe(409);
+    expect(
+      await fake.store.isSecret!(
+        serverParameterPath("test", "linear", "static", "SHARED_API_KEY"),
+      ),
+    ).toBe(undefined);
+  });
+
+  it("refuses a name in a slug's url, but takes its unseeded header token", async () => {
+    expect(
+      (await deposit("tracker", "TRACKER_HOST", { bearer: CUSTODY })).status,
+    ).toBe(403);
+    expect(
+      (await deposit("tracker", "TRACKER_TOKEN", { bearer: CUSTODY })).status,
+    ).toBe(201);
+  });
+
+  it("refuses a machine's own keys", async () => {
+    const res = await deposit("shell-test-mbp", "ANOTHER_KEY", {
+      bearer: CUSTODY,
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("refuses process-control names on every slug", async () => {
+    for (const v of [
+      "NODE_OPTIONS",
+      "HTTPS_PROXY",
+      "https_proxy",
+      "LD_PRELOAD",
+      "STRAD_INTERNAL_TOKEN",
+      "PATH",
+    ]) {
+      expect((await deposit("linear", v, { bearer: CUSTODY })).status, v).toBe(
+        403,
+      );
+    }
+  });
+
+  it("refuses a params: true slug unless the caller names it in into:", async () => {
+    expect(
+      (await deposit("paramsy", "PARAMSY_KEY", { bearer: CUSTODY })).status,
+    ).toBe(403);
   });
 });
 

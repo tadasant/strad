@@ -7342,8 +7342,13 @@ a tool that never returns the value. Design: Zimmer session 27977.
   is what shows that.
 - **The hold blocks other sessions.** From capture to release, every shell and
   computer-use call on the Mac is refused, and browser reads on every tab, for
-  whoever makes them. Bounded by the custody grant: its end blanks the tainted
-  tabs and drops the handles.
+  whoever makes them. A capture also refuses to start while any shell command
+  is running. Bounded by the custody grant: its end blanks the tainted tabs and
+  drops the handles. A tab that cannot be blanked stays tainted until a custody
+  grant releases it.
+- **The clipboard is not cleared.** A provider whose "Copy" button was the
+  click leaves the value on the clipboard. The filter keeps watching for it
+  until the custody grant ends, but a read after that is not caught.
 - **A daemon restart loses every handle**, and a tab still showing the token is
   no longer tainted. It fails closed for the handle (re-mint), not for the
   page.
@@ -7359,6 +7364,14 @@ a tool that never returns the value. Design: Zimmer session 27977.
   calls, so a console consent that writes `oauth/` between them leaves a
   `static/` copy that the `oauth/` one shadows. The `static/` name itself
   cannot be overwritten: the store's create refuses an existing secret.
+- **Whoever holds the custody slug key can deposit.** The bearer is derived
+  from it, and the key sits in `~/.strad-hostd/config.json` beside every other
+  hostd key, which a shell grant can read when custody holds nothing. What such
+  a caller can do is bounded by the route: create a secret parameter that does
+  not exist and does not resolve in any layer for that slug, not in a `url:`,
+  not a process-control name, not on a `local-tunnel`, and on a `params: true`
+  slug only if `into:` names it. Keeping the key where the shell server cannot
+  read it (a Keychain item behind the helper) is the follow-up that closes it.
 - **The macOS halves are untested in CI.** The suite drives a real headless
   Chromium on Linux against a fake strad; the owner's Chrome, the extension
   route and a real provider page have not been exercised by anything but the

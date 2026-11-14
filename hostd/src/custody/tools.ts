@@ -39,6 +39,8 @@ const P = {
 } as const;
 
 const POLL_MS = 250;
+/** What list_tabs shows for a tainted tab's title and URL. */
+const TAINTED = "(tainted — hidden until release_tab)";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface Candidate {
@@ -85,6 +87,12 @@ export function custodyCapability(
   config: Config,
   vault: Vault,
   bridge?: ExtensionBridge,
+  /**
+   * Why a capture may not start right now — the daemon passes "a shell
+   * command is running", since a command started before the hold runs
+   * through it. Undefined when nothing is in the way.
+   */
+  busy: () => string | undefined = () => undefined,
 ): Capability {
   const sessions = new Map<string, BrowserSession>();
 
@@ -106,10 +114,20 @@ export function custodyCapability(
         vault.endGrant(grant.id);
         void (async () => {
           for (const tab of vault.taintedBy(grant.id)) {
-            await session
+            const blanked = await session
               .send(tab, "Page.navigate", { url: "about:blank" }, 5000)
-              .catch(() => {});
-            vault.untaint(tab);
+              .then(() => true)
+              .catch(() => false);
+            // A tab that could not be blanked keeps its taint while it still
+            // exists — the secret may still be on it — and any custody grant
+            // can release_tab it. A tab that is gone took the secret with it.
+            const gone =
+              !blanked &&
+              !(await session
+                .tabs()
+                .then((ts) => ts.some((t) => t.tab_id === tab))
+                .catch(() => true));
+            if (blanked || gone) vault.untaint(tab);
           }
           session.close();
         })();
@@ -140,8 +158,11 @@ tainted is true for a tab a capture ran in: the secret may still be on it, so th
       return json({
         tabs: tabs.map((t) => ({
           tab_id: t.tab_id,
-          title: t.title,
-          url: t.url,
+          // A tainted tab's page wrote its own title and URL, and nothing is
+          // held yet when a capture found nothing to keep — so the egress
+          // filter has no value to match them against. Withhold them.
+          title: vault.isTainted(t.tab_id) ? TAINTED : t.title,
+          url: vault.isTainted(t.tab_id) ? TAINTED : t.url,
           tainted: vault.isTainted(t.tab_id),
         })),
       });
@@ -200,6 +221,9 @@ shape.kind is "token", "json", "pem" or "text". Check length and prefix against 
           "Give click_selector, capture_selector, or both. Nothing ran.",
           true,
         );
+      const blocked = busy();
+      if (blocked)
+        return text(`Not now: ${blocked}. Nothing was clicked.`, true);
       const s = sessionFor(grant);
       const wasTainted = vault.isTainted(a.tab_id);
       const done = vault.beginCapture();
@@ -272,7 +296,14 @@ shape.kind is "token", "json", "pem" or "text". Check length and prefix against 
                 captured: false,
                 reason: `${several.length} new credential-shaped values appeared; nothing was kept. Call click_and_capture again with NO click_selector and the right capture_selector.`,
                 candidates: several.slice(0, 20).map((c) => ({
-                  capture_selector: c.selector,
+                  // None of these values is held, so the filter cannot catch
+                  // one: a selector the page built out of a candidate (an id
+                  // that IS the token) is withheld here instead.
+                  capture_selector: several.some((o) =>
+                    c.selector.includes(o.token),
+                  )
+                    ? null
+                    : c.selector,
                   shape: shapeOf(c.token),
                 })),
                 tab_tainted: true,
@@ -289,10 +320,16 @@ shape.kind is "token", "json", "pem" or "text". Check length and prefix against 
             true,
           );
         }
-        const held = vault.hold(grant.id, value, {
-          label: a.label,
-          source: `page ${await origin(s, a.tab_id)}`,
-        });
+        const source = `page ${await origin(s, a.tab_id)}`;
+        // The grant ended while this ran: its handles were already dropped,
+        // and one held now would outlive it with nothing able to deposit it.
+        // Checked with no await between it and the hold.
+        if (grant.signal.aborted)
+          return text(
+            "The grant ended during the capture. Nothing was kept.",
+            true,
+          );
+        const held = vault.hold(grant.id, value, { label: a.label, source });
         return json({
           handle: held.handle,
           shape: held.shape,
@@ -349,6 +386,9 @@ While this runs the shell server is refused, so nothing can read the file in the
     summarize: (a) =>
       `capture_download: click ${a.click_selector.slice(0, 120)}`,
     handler: async (a, { grant }) => {
+      const blocked = busy();
+      if (blocked)
+        return text(`Not now: ${blocked}. Nothing was clicked.`, true);
       const s = sessionFor(grant);
       const dir = downloadsDir(config);
       const wasTainted = vault.isTainted(a.tab_id);
@@ -392,15 +432,31 @@ While this runs the shell server is refused, so nothing can read the file in the
           );
         const path = join(dir, found);
         const bytes = readFileSync(path);
-        if (bytes.length > MAX_DEPOSIT_VALUE_LENGTH)
+        // A file this call downloaded and cannot keep is still deleted: it may
+        // be a credential (a .p12, an oversized bundle), and the moment the
+        // hold lifts the shell server could read it where it lies.
+        const reject = (why: string) => {
+          bytes.fill(0);
+          unlinkSync(path);
           return text(
-            `${found} is ${bytes.length} bytes, more than a credential strad stores (${MAX_DEPOSIT_VALUE_LENGTH}). It was NOT captured and was left where it is.`,
+            `${found} ${why}. It was NOT captured, and it was deleted from ${dir}. Revoke it at its provider if it was a credential.`,
             true,
           );
+        };
+        if (bytes.length > MAX_DEPOSIT_VALUE_LENGTH)
+          return reject(
+            `is ${bytes.length} bytes, more than a credential strad stores (${MAX_DEPOSIT_VALUE_LENGTH})`,
+          );
         const value = bytes.toString("utf8");
-        if (value.includes("\u0000") || value.includes("�"))
+        if (value.includes("\u0000") || value.includes("\uFFFD"))
+          return reject(
+            "is not text, so it is not a credential strad can store",
+          );
+        // The grant ended while this ran: its handles were already dropped,
+        // and one held now would outlive it with nothing able to deposit it.
+        if (grant.signal.aborted)
           return text(
-            `${found} is not text, so it is not a credential strad can store. It was NOT captured and was left where it is.`,
+            "The grant ended during the capture. Nothing was kept.",
             true,
           );
         const held = vault.hold(grant.id, value, {
@@ -491,7 +547,7 @@ While this runs the shell server is refused, so nothing can read the file in the
     },
     summarize: (a) => `discard_handle: ${a.handle}`,
     handler: async (a, { grant }) => {
-      const mine = vault.reveal(a.handle, grant.id) !== undefined;
+      const mine = vault.owns(a.handle, grant.id);
       return json({
         discarded: mine ? vault.end(a.handle, "discarded") : false,
       });
@@ -502,7 +558,7 @@ While this runs the shell server is refused, so nothing can read the file in the
     name: "deposit",
     description: `Send a held secret to strad, which stores it as a NEW secret parameter at /strad/<env>/mcp/<slug>/static/<VARIABLE>. The value goes from this machine to strad directly; you get back where it went.
 
-Create-only: if that name already exists (under static/ or oauth/) strad refuses and the handle stays held — choose another name, or have a human rotate it in strad's console. strad only ever writes that one namespace, never gateway or oauth names, and never reads anything back.
+Create-only: if that name already exists for the slug — in its static/ or oauth/ namespace, or resolved from the gateway — strad refuses with "exists" and the handle stays held; a human rotates existing credentials in strad's console. strad also refuses (not_permitted) a name in the slug's url, a process-control name such as NODE_OPTIONS or HTTPS_PROXY, a local-tunnel machine's slug, and a params: true slug this machine is not configured for. It only ever writes that one namespace and never reads anything back.
 
 **Returns:** {"deposited":true,"path":"/strad/prod/mcp/linear/static/LINEAR_API_KEY","version":"v1"}
 The handle ends on success. Confirm through strad's secrets server (list_parameters shows the parameter and its timestamp), never by reading the value.

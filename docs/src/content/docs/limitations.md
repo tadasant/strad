@@ -4466,7 +4466,16 @@ What that leaves:
   seconds could be taken. The shape it reports (`json_keys`) shows which.
 - **The hold blocks other sessions on the Mac.** From capture to release, every
   shell and computer-use call is refused, and so are browser reads on every
-  tab. Ending the custody grant blanks its tainted tabs and drops its handles.
+  tab. A capture will not start while a shell command is running. Ending the
+  custody grant blanks its tainted tabs and drops its handles.
+- **Whoever holds the custody slug key can deposit.** That includes a shell
+  grant on the Mac while custody holds nothing, because the key is in hostd's
+  config file. The route bounds what they can write: only a new secret, never
+  one that already resolves for the slug, never a `url:` name, never a
+  process-control name such as `NODE_OPTIONS`, never on a `local-tunnel`, and
+  on a `params: true` slug only if `deposit.into:` names it.
+- **The clipboard is not cleared.** A value put there by a "Copy" button is
+  filtered only until the custody grant ends.
 - **A daemon restart loses every handle**, and a tab still showing the token is
   no longer tainted. Re-mint the credential.
 - **The egress filter matches known forms.** It catches the raw value,

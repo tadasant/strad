@@ -187,6 +187,11 @@ export function needlesFor(value: string): string[] {
     }
   }
   if (value.includes("-----BEGIN ")) linesOf(value);
+  // A value captured with text around it ("Your token: abc…") is still a
+  // secret in its credential-shaped part alone.
+  for (const tok of value.split(/\s+/))
+    if (tok.length >= 16 && /[0-9]/.test(tok) && /[A-Za-z]/.test(tok))
+      forms(tok);
   return [...out];
 }
 
@@ -200,6 +205,16 @@ export interface VaultOptions {
 export class Vault {
   private readonly held = new Map<string, Held>();
   private readonly ended: Ended[] = [];
+  /**
+   * The match forms of values that LEFT custody — deposited or discarded —
+   * kept until their grant ends. The value is still live at its provider and
+   * may still be on the clipboard, in a command's buffered output or in a
+   * window; ending the handle must not end the filter.
+   */
+  private readonly watched = new Map<
+    string,
+    { grantId: string; needles: string[] }
+  >();
   /** tab id → the custody grant that tainted it. */
   private readonly tainted = new Map<string, string>();
   private capturing = 0;
@@ -258,7 +273,8 @@ export class Vault {
     if (!h) return false;
     this.held.delete(handle);
     h.value.fill(0);
-    h.needles.length = 0;
+    if (state === "deposited" || state === "discarded")
+      this.watched.set(handle, { grantId: h.grantId, needles: h.needles });
     this.ended.unshift({
       grantId: h.grantId,
       view: {
@@ -278,6 +294,14 @@ export class Vault {
   endGrant(grantId: string): void {
     for (const h of [...this.held.values()])
       if (h.grantId === grantId) this.end(h.id, "grant_ended");
+    for (const [id, w] of [...this.watched.entries()])
+      if (w.grantId === grantId) this.watched.delete(id);
+  }
+
+  /** Owned by this grant and still held — without copying the value out. */
+  owns(handle: string, grantId: string): boolean {
+    this.sweep();
+    return this.held.get(handle)?.grantId === grantId;
   }
 
   taint(tabId: string, grantId: string): void {
@@ -334,15 +358,22 @@ export class Vault {
     };
   }
 
-  /** The handles whose value appears in any of `texts`, in any form. */
+  /**
+   * The handles whose value appears in any of `texts`, in any form: held
+   * ones, and ones whose value left custody under a grant still running.
+   */
   scan(texts: string[]): string[] {
-    if (this.held.size === 0) return [];
     const hits: string[] = [];
-    for (const h of this.held.values()) {
-      if (h.needles.some((n) => texts.some((t) => t.includes(n))))
-        hits.push(h.id);
-    }
+    const hit = (needles: string[]) =>
+      needles.some((n) => texts.some((t) => t.includes(n)));
+    for (const h of this.held.values()) if (hit(h.needles)) hits.push(h.id);
+    for (const [id, w] of this.watched) if (hit(w.needles)) hits.push(id);
     return hits;
+  }
+
+  /** Whether `handle` is held, as opposed to deposited or discarded. */
+  isHeld(handle: string): boolean {
+    return this.held.has(handle);
   }
 
   /** One grant's handles, live and recently ended. */
@@ -359,6 +390,7 @@ export class Vault {
   /** Everything, for the kill switch: every handle ends, every taint drops. */
   clear(): void {
     for (const id of [...this.held.keys()]) this.end(id, "cleared");
+    this.watched.clear();
     this.tainted.clear();
     this.opts.onChange?.();
   }

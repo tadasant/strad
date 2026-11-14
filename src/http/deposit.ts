@@ -21,6 +21,7 @@ import {
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
 import type { ServerSecretProviders } from "../secrets/provider/index.ts";
+import { refsIn } from "../secrets/provider/resolve.ts";
 import { forgetDeploymentDiagnosis } from "../ui/secret-status.ts";
 import { storeForPath, type StoreClientOptions } from "../ui/store-client.ts";
 import { event } from "../telemetry/index.ts";
@@ -126,6 +127,53 @@ async function callerFor(
   return found;
 }
 
+/**
+ * Names a deposit may never create, on any slug: the ones a process reads as
+ * an instruction rather than as a credential. A `params: true` server loads
+ * its whole `static/` namespace into its environment, so `NODE_OPTIONS` there
+ * is code execution and `HTTPS_PROXY` is every request it makes, read by
+ * someone else. A list rather than a rule, so it errs by refusing.
+ */
+const PROCESS_CONTROL =
+  /^(NODE_|LD_|DYLD_|STRAD_|OTEL_|NPM_CONFIG_|GIT_|PYTHON|SSL_|SENTRY_|GOOGLE_APPLICATION_CREDENTIALS$|(HTTPS?|ALL|NO)_PROXY$|(PATH|HOME|SHELL|TMPDIR|PORT|HOST|TZ|LANG|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE)$)/i;
+
+/**
+ * Why `variable` may not be deposited for `slug`, from the config that RUNS
+ * (overlay included — it is what will read the value), or undefined.
+ */
+export function refusalForTarget(
+  config: StradConfig,
+  caller: Caller,
+  slug: string,
+  variable: string,
+): string | undefined {
+  if (PROCESS_CONTROL.test(variable))
+    return `${variable} is a name a process reads as configuration, not a credential; it cannot be deposited`;
+  const target = config.servers.find((s) => s.slug === slug);
+  if (!target) return undefined;
+  // A machine's own keys — this caller's, or another custody host's — are
+  // placed by a human. A deposit that could seed one could mint a caller.
+  if (target.kind === "local-tunnel")
+    return `${slug} is a local-tunnel machine; its keys are placed by a human, not deposited`;
+  // A value in a URL decides WHERE a slug's traffic and headers go.
+  if (
+    "url" in target &&
+    typeof target.url === "string" &&
+    refsIn(target.url).includes(variable)
+  )
+    return `${variable} is part of ${slug}'s url, which decides where its traffic goes; it cannot be deposited`;
+  // A `params: true` server takes its whole namespace into its environment,
+  // so a deposit there is a new environment variable on a container. Only a
+  // caller that names the slug in `into:` may do that.
+  if (
+    "params" in target &&
+    target.params === true &&
+    !caller.deposit?.into?.includes(slug)
+  )
+    return `${slug} loads its whole namespace into its environment; only a caller that lists it in deposit.into may deposit there`;
+  return undefined;
+}
+
 /** Whether `path` exists in the store, read NOW rather than from a held listing. */
 async function exists(store: ParameterStore, path: string): Promise<boolean> {
   if (store.isSecret) return (await store.isSecret(path)) !== undefined;
@@ -172,6 +220,11 @@ export function createDepositHandler(
       );
       return;
     }
+    const targetRefusal = refusalForTarget(opts.config, caller, slug, variable);
+    if (targetRefusal) {
+      refuse(res, 403, "not_permitted", targetRefusal);
+      return;
+    }
 
     const parsed = parseDepositRequest(req.body);
     if (!parsed.ok) {
@@ -193,8 +246,27 @@ export function createDepositHandler(
     const store = resolved.store;
 
     try {
+      // A name that ALREADY RESOLVES for this slug — from its `oauth/`, the
+      // gateway namespace, or core's environment — would be shadowed by a new
+      // `static/` copy, which outranks the last two. That is an overwrite in
+      // everything but name, so it is refused like one.
+      const current = await opts.secretProvider
+        ?.forServer(slug)
+        .get(variable)
+        .catch(() => null);
+      if (current) {
+        refuse(
+          res,
+          409,
+          "exists",
+          `${variable} already resolves for ${slug}; a deposit never replaces a value a server reads. Rotate it in the console.`,
+        );
+        return;
+      }
       // `oauth/` outranks `static/` on every read, so a deposit beside an
-      // existing `oauth/` copy would land under a value that shadows it.
+      // existing `oauth/` copy would land under a value that shadows it. Read
+      // from the store itself as well as through the provider above, which
+      // can hold a reading up to `ttlSeconds` old.
       for (const candidate of [path, shadow]) {
         if (await exists(store, candidate)) {
           refuse(

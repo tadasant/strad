@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { custodyRefusal } from "../src/custody/enforce.js";
+import {
+  custodyAfter,
+  custodyRefusal,
+  egressHits,
+} from "../src/custody/enforce.js";
 import { depositToken } from "../src/custody/deposit-wire.js";
 import { needlesFor, shapeOf, Vault } from "../src/custody/vault.js";
 import { startDaemon, type RunningDaemon } from "../src/daemon.js";
@@ -87,6 +91,28 @@ describe("the vault", () => {
     expect(vault.live()).toBe(false);
   });
 
+  it("keeps filtering a deposited value until its grant ends", () => {
+    const vault = new Vault({ handleTtlMs: 60_000 });
+    const { handle } = vault.hold("g1", "secret-value-0123456789", {
+      source: "t",
+    });
+    vault.end(handle, "deposited", { path: "/p", version: "v1" });
+    expect(vault.live()).toBe(false);
+    expect(egressHits(vault, { text: "secret-value-0123456789" })).toEqual([
+      handle,
+    ]);
+    // Still recorded as deposited: a watched hit withholds, it does not burn.
+    expect(vault.list("g1")[0]?.state).toBe("deposited");
+    vault.endGrant("g1");
+    expect(vault.scan(["secret-value-0123456789"])).toEqual([]);
+  });
+
+  it("filters the credential-shaped part of a value captured with text around it", () => {
+    expect(needlesFor("Your token: tok_0123456789abcdefXYZ")).toContain(
+      "tok_0123456789abcdefXYZ",
+    );
+  });
+
   it("refuses a value too short to be a credential", () => {
     const vault = new Vault({ handleTtlMs: 60_000 });
     expect(() => vault.hold("g", "short", { source: "t" })).toThrow(
@@ -125,10 +151,22 @@ describe("the hold", () => {
     expect(
       custodyRefusal(vault, "browser", "click_element", { tab_id: "OTHER" }),
     ).toBeUndefined();
-    for (const tool of ["navigate_tab", "close_tab", "list_tabs"])
+    // list_tabs carries every page's own title, so it is a read too.
+    expect(custodyRefusal(vault, "browser", "list_tabs", {})).toBeDefined();
+    for (const tool of ["navigate_tab", "close_tab"])
       expect(
         custodyRefusal(vault, "browser", tool, { tab_id: "TAB" }),
       ).toBeUndefined();
+  });
+
+  it("lifts a taint on close, never on a navigation (a #fragment keeps the page)", () => {
+    const v = new Vault({ handleTtlMs: 60_000 });
+    v.taint("T", "g");
+    const ok = { content: [] };
+    custodyAfter(v, "browser", "navigate_tab", { tab_id: "T" }, ok);
+    expect(v.isTainted("T")).toBe(true);
+    custodyAfter(v, "browser", "close_tab", { tab_id: "T" }, ok);
+    expect(v.isTainted("T")).toBe(false);
   });
 
   it("leaves messages and custody itself alone", () => {
@@ -200,6 +238,24 @@ describe.skipIf(!chrome)(
           res.end(t);
           return;
         }
+        if (req.url === "/title") {
+          res.writeHead(200, { "content-type": "text/html" });
+          res.end(`<title>${minted.at(-1)}</title><p>echo</p>`);
+          return;
+        }
+        if (req.url === "/download-big") {
+          setTimeout(
+            () =>
+              writeFileSync(
+                join(downloads, "huge.bin"),
+                Buffer.alloc(70 * 1024, 1),
+              ),
+            300,
+          );
+          res.writeHead(204);
+          res.end();
+          return;
+        }
         if (req.url === "/download") {
           // Stands in for Chrome saving a download: the file lands in the
           // downloads directory a moment after the click.
@@ -217,6 +273,7 @@ describe.skipIf(!chrome)(
 <button id="gen" onclick="fetch('/mint').then(r=>r.text()).then(t=>{document.getElementById('out').textContent=t;})">Generate</button>
 <button id="leak" onclick="fetch('/mint').then(r=>r.text()).then(t=>{document.title=t;document.getElementById('out').textContent=t;})">Generate (into title)</button>
 <button id="dl" onclick="fetch('/download')">Download key</button>
+<button id="dlbig" onclick="fetch('/download-big')">Download bundle</button>
 <code id="out"></code>`);
       });
       await new Promise<void>((r) => site.listen(0, "127.0.0.1", r));
@@ -322,6 +379,33 @@ describe.skipIf(!chrome)(
       !(await call(shell, "shell", "run_command", { command: "echo hi" }))
         .isError;
 
+    it("will not start a capture while a shell command could run through the hold", async () => {
+      const started = resultJson<{ command_id: string }>(
+        await call(shell, "shell", "run_command", {
+          command: "sleep 30",
+          wait_seconds: 0,
+        }),
+      );
+      const refused = await call(custody, "custody", "click_and_capture", {
+        tab_id: tab,
+        click_selector: "#gen",
+      });
+      expect(refused.isError).toBe(true);
+      expect(resultText(refused)).toMatch(/shell command/);
+      await call(shell, "shell", "kill_command", {
+        command_id: started.command_id,
+      });
+      for (let i = 0; i < 50; i++) {
+        const st = resultJson<{ status: string }>(
+          await call(shell, "shell", "get_command", {
+            command_id: started.command_id,
+          }),
+        );
+        if (st.status !== "running") break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    });
+
     it("captures a token in one call and never returns it", async () => {
       expect(tab).not.toBe("");
       expect(await shellWorks()).toBe(true);
@@ -375,6 +459,13 @@ describe.skipIf(!chrome)(
       expect(await shellWorks()).toBe(false);
       await call(custody, "custody", "release_tab", { tab_id: tab });
       expect(await shellWorks()).toBe(true);
+      // Deposited is not forgotten: while the custody grant runs, the value
+      // is still filtered on every server.
+      const echoed = await call(shell, "shell", "run_command", {
+        command: `echo ${minted.at(-1)}`,
+      });
+      expect(echoed.isError).toBe(true);
+      expect(resultText(echoed)).toMatch(/arguments contain the secret/);
     });
 
     it("withholds a result carrying a held value, from ANY server, and burns the handle", async () => {
@@ -388,11 +479,18 @@ describe.skipIf(!chrome)(
           click_selector: "#leak",
         }),
       );
-      // The page put the token in its title, and list_tabs is not held.
-      const listed = await call(browser, "browser", "list_tabs");
-      expect(listed.isError).toBe(true);
-      expect(resultText(listed)).toMatch(/Withheld/);
-      expect(JSON.stringify(listed)).not.toContain(minted.at(-1)!);
+      // custody's own list_tabs hides what a tainted page wrote about itself.
+      const own = await call(custody, "custody", "list_tabs");
+      expect(JSON.stringify(own)).not.toContain(minted.at(-1)!);
+      expect(JSON.stringify(own)).toContain("tainted — hidden");
+      // A second page puts the token in its title; open_tab is not held (it
+      // reads nothing of the tainted tab) and returns that title.
+      const opened = await call(browser, "browser", "open_tab", {
+        url: `${origin}/title`,
+      });
+      expect(opened.isError).toBe(true);
+      expect(resultText(opened)).toMatch(/Withheld/);
+      expect(JSON.stringify(opened)).not.toContain(minted.at(-1)!);
       const dep = await call(custody, "custody", "deposit", {
         handle: cap.handle,
         slug: "linear",
@@ -461,6 +559,16 @@ describe.skipIf(!chrome)(
         variable: "GCS_KEY_JSON",
       });
       expect(deposits.at(-1)?.value).toBe(SA);
+    });
+
+    it("deletes a download it cannot keep rather than leaving it for the shell", async () => {
+      const res = await call(custody, "custody", "capture_download", {
+        tab_id: tab,
+        click_selector: "#dlbig",
+      });
+      expect(res.isError).toBe(true);
+      expect(resultText(res)).toMatch(/deleted/);
+      expect(readdirSync(downloads)).toEqual([]);
     });
 
     it("ending the custody grant blanks its tainted tabs and lifts the hold", async () => {

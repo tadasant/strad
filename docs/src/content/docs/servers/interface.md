@@ -358,7 +358,10 @@ server's own docs for the URL it tells clients to connect to, and use that.
 
 This lets the machine call `POST /_strad/deposit/{slug}/{VARIABLE}`, which
 creates one **secret** parameter at `/strad/{env}/mcp/{slug}/static/{VARIABLE}`
-and never reads, overwrites or reaches another namespace. It exists for
+and never reads, overwrites, shadows a value the slug already resolves, or
+reaches another namespace. It also refuses a name in the target's `url:`, a
+process-control name such as `NODE_OPTIONS`, a `local-tunnel` target, and a
+`params: true` target that `into:` does not name. It exists for
 strad-hostd's custody server; see
 [custody and deposit](/servers/hostd-custody/). The caller's bearer is an HMAC
 of this entry's own key, so the `Authorization` header must be exactly

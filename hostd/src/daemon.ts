@@ -188,7 +188,12 @@ export function buildCore(
   if (messagesHelper)
     capabilities.messages = messagesCapability(config, messagesHelper);
   if (ids.includes("custody"))
-    capabilities.custody = custodyCapability(config, vault, bridge);
+    capabilities.custody = custodyCapability(config, vault, bridge, () => {
+      const running = shell?.processes.running().length ?? 0;
+      return running > 0
+        ? `${running} shell command(s) are running on this machine, and one started before a capture would run straight through the hold. Wait for them, or kill_command them, then retry`
+        : undefined;
+    });
 
   const sweep = setInterval(() => {
     // A `touch`ed DISABLED file calls nothing: the sweep is what notices it,

@@ -17,18 +17,26 @@ import type { Vault } from "./vault.js";
  *      - `computer` and `computer-headless`, every tool: a screenshot or an
  *        Accessibility read of a window showing the token is the token.
  *      - `browser`: the reads (`read_page`, `evaluate_script`,
- *        `take_screenshot`) on EVERY tab, and anything but `list_tabs`,
- *        `navigate_tab` and `close_tab` on a tainted tab. Every tab, because a
+ *        `take_screenshot`, and `list_tabs`, which carries every page's own
+ *        title) on EVERY tab, and anything but `navigate_tab` and `close_tab`
+ *        on a tainted tab. Every tab, because a
  *        tab id from the DevTools backend and one from the extension are
  *        different strings for the same tab, so "is this the tainted one"
  *        cannot be answered across backends — refusing all reads can.
  *    `messages` reads the Messages database, not the screen, and is left
- *    alone. Navigating or closing a tainted tab through any server clears its
- *    taint: the page holding the secret is gone.
+ *    alone. Closing a tainted tab clears its taint, and so does custody's
+ *    `release_tab`, which blanks it. A navigation does not: a `#fragment`
+ *    navigation leaves the page, and the secret, where they were.
+ *
+ *    A capture also refuses to START while a shell command is running. The
+ *    hold is checked when a call begins, so a command started before the
+ *    capture — `sleep 20; pbpaste` — would otherwise run straight through it.
  *
  * 2. **The egress filter.** Every result any server returns, and every set of
  *    arguments any caller sends, is checked for the exact value of every live
- *    handle in every form it could travel in (`needlesFor`). A hit withholds
+ *    handle in every form it could travel in (`needlesFor`) — and of every
+ *    handle deposited or discarded under a custody grant that is still
+ *    running, since that value is still live at its provider. A hit withholds
  *    the result and BURNS the handle: a value that reached the model is a
  *    leaked credential, and depositing it anyway would store one the owner
  *    has to rotate. This is the backstop for whatever the hold does not
@@ -48,8 +56,9 @@ const BROWSER_READS = new Set([
   "read_page",
   "evaluate_script",
   "take_screenshot",
+  "list_tabs",
 ]);
-const SAFE_ON_TAINTED = new Set(["list_tabs", "navigate_tab", "close_tab"]);
+const SAFE_ON_TAINTED = new Set(["navigate_tab", "close_tab"]);
 
 function holdMessage(vault: Vault): string {
   const s = vault.status();
@@ -84,7 +93,7 @@ export function custodyRefusal(
   return undefined;
 }
 
-/** After a call that succeeded: a tab navigated away or closed shows no secret. */
+/** After a call that succeeded: a closed tab shows no secret. */
 export function custodyAfter(
   vault: Vault,
   capability: CapabilityId,
@@ -93,8 +102,10 @@ export function custodyAfter(
   result: CallToolResult,
 ): void {
   if (result.isError) return;
-  if (capability !== "browser" && capability !== "custody") return;
-  if (tool !== "navigate_tab" && tool !== "close_tab") return;
+  // CLOSE only. A navigation can leave the page where it is — a `#fragment`
+  // is a same-document navigation — so it lifts nothing; `release_tab`,
+  // which blanks the tab, is the way to keep a tab and lose the taint.
+  if (capability !== "browser" || tool !== "close_tab") return;
   if (typeof args.tab_id === "string") vault.untaint(args.tab_id);
 }
 
@@ -123,9 +134,10 @@ function textsOf(payload: unknown): string[] {
 export function egressHits(vault: Vault, payload: unknown): string[] {
   const hits = vault.scan(textsOf(payload));
   for (const id of hits)
-    vault.end(id, "burned", {
-      reason: "its value appeared in a tool call or result",
-    });
+    if (vault.isHeld(id))
+      vault.end(id, "burned", {
+        reason: "its value appeared in a tool call or result",
+      });
   return hits;
 }
 
@@ -139,9 +151,9 @@ export function withheldResult(
         type: "text",
         text:
           where === "result"
-            ? `Withheld: this result contained the secret held by ${hits.join(", ")}. ` +
-              "Those handles are now BURNED and cannot be deposited — treat the credential as leaked: " +
-              "revoke it at its provider and capture a fresh one. Nothing of the result was returned."
+            ? `Withheld: this result contained the secret behind ${hits.join(", ")}. ` +
+              "A handle still held is now BURNED and cannot be deposited; one already deposited is in strad and " +
+              "must be rotated. Either way treat the credential as leaked. Nothing of the result was returned."
             : `Refused: these arguments contain the secret held by ${hits.join(", ")}, so it has already ` +
               "been in your context. Those handles are now BURNED — revoke the credential at its provider " +
               "and capture a fresh one. Nothing ran.",
