@@ -1794,6 +1794,13 @@ there was no failure, but it does mean the event pair that paged is no longer
 watching those slugs. `mcp.list_tools_failed` still fires for a genuinely failing
 listing, which is the half that matters.
 
+Quieter again since #475: a listing retries an upstream JSON-RPC `-32603`
+(`isTransientListFailure` in `src/gateway/adapters/http.ts`). A persistent one
+still pages once the budget is spent; an INTERMITTENT one — which is what a
+two-methods-in-flight failure can look like — is absorbed into an Info
+`mcp.list_retry` record that pages nobody. A per-slug rate alert on
+`mcp.list_retry` is the only thing that would see that class.
+
 **It happened a second way, and the same probe missed that too.** A `tools/list`
 can be perfect and every `tools/call` can fail: fetchpet's login selector went
 stale when Fetch redesigned its form, and the mount spent weeks in both staging

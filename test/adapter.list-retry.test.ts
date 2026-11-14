@@ -291,6 +291,17 @@ describe("a listing rides out a transient upstream failure", () => {
     ]);
   });
 
+  it("tools/list: a -32603 is retried on the SAME connection", async () => {
+    // A JSON-RPC error arrived over a working transport, so the retry must not
+    // cost a handshake: one `initialize` across both attempts.
+    const { stub, registry, faults } = await setup();
+    stub.rpcError("tools/list", -32603, 1);
+    expect(await listTools(registry)).toEqual(["apify__ping"]);
+    expect(stub.seen("tools/list")).toBe(2);
+    expect(stub.seen("initialize")).toBe(1);
+    expect(faults().filter((l) => l.includes("_failed"))).toEqual([]);
+  });
+
   it("a 429 is transient too", async () => {
     const { stub, registry } = await setup();
     stub.fail("tools/list", 429, 1);
@@ -353,6 +364,21 @@ describe("a sustained failure still pages", () => {
       faults().filter((l) => l.includes("mcp.list_tools_failed")),
     ).toHaveLength(1);
     expect(retries()).toHaveLength(2);
+  });
+
+  it("tools/list: a persistent 408 still pages, once, after 3 attempts", async () => {
+    const { stub, registry, faults } = await setup();
+    stub.fail("tools/list", 408, 100);
+    expect(await listTools(registry)).toEqual([]);
+    expect(stub.seen("tools/list")).toBe(3);
+    const failed = faults().filter((l) => l.includes("mcp.list_tools_failed"));
+    expect(failed).toHaveLength(1);
+    expect(JSON.parse(failed[0]!)).toMatchObject({
+      attempts: 3,
+      retry: "budget",
+      status: 408,
+      error_class: "StreamableHTTPError",
+    });
   });
 
   it("resources/list: a persistent -32603 still pages, once, after 3 attempts", async () => {
@@ -542,6 +568,11 @@ describe("what kind of failure a _failed record names (#475)", () => {
       { error_class: "other" },
     ],
     ["a thrown non-error", up("a string"), { error_class: "other" }],
+    [
+      "the SDK's -1 for an unparseable response, which is not a status",
+      up(new StreamableHTTPError(-1, "Unexpected content type")),
+      { error_class: "StreamableHTTPError" },
+    ],
   ])("%s", (_label, err, expected) => {
     expect(listFailureDetail(err)).toEqual(expected);
   });

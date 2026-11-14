@@ -1427,14 +1427,14 @@ export function listRetryOutcome(
  * The error classes a `_failed` listing record may name. Every one is a class
  * this process constructs — an upstream can make a listing fail, but it cannot
  * choose the class of the object that says so. Anything else is `other`, so the
- * exported value is always one of the words below.
+ * exported value is always one of the words below. `UpstreamError` and the
+ * `LocalHostUnavailableError` family are absent on purpose: they are unwrapped
+ * to their cause, or never reach a `_failed` record.
  */
 const LIST_FAILURE_CLASSES = new Set([
   "StreamableHTTPError",
   "McpError",
-  "UnauthorizedError",
   "SseError",
-  "UpstreamError",
   "TypeError",
   "Error",
   "DeadlineError",
@@ -1442,7 +1442,6 @@ const LIST_FAILURE_CLASSES = new Set([
   "AbortError",
   "TokenRefreshError",
   "SecretNotFoundError",
-  "LocalHostRefusedError",
 ]);
 
 /**
@@ -1455,7 +1454,9 @@ const LIST_FAILURE_CLASSES = new Set([
  * network error alike — a page nobody could triage from the record. These
  * three can be told apart, and none of them is prose:
  *
- * - `status`: the HTTP status a `StreamableHTTPError` carries. An integer.
+ * - `status`: the HTTP status a `StreamableHTTPError` carries, when it is
+ *   one — the SDK also throws that class with `-1` for a response it could not
+ *   parse, and that is not a status.
  * - `rpc_code`: the JSON-RPC error code an `McpError` carries. An integer —
  *   the upstream picks it, but it can only pick a number.
  * - `error_class`: the class of the error under strad's own `UpstreamError`
@@ -1478,8 +1479,10 @@ export function listFailureDetail(err: unknown): {
   };
   if (
     cause instanceof StreamableHTTPError &&
+    cause.code !== undefined &&
     Number.isInteger(cause.code) &&
-    cause.code !== undefined
+    cause.code >= 100 &&
+    cause.code <= 599
   ) {
     detail.status = cause.code;
   }
