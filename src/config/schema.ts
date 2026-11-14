@@ -5,6 +5,7 @@ import {
   confirmationHeaderProblem,
   elicitationPrefixProblem,
 } from "../gateway/elicitation.ts";
+import { bearerToken } from "../secrets/presence.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
 import { normaliseNamespace } from "../secrets/parameters/namespace.ts";
 import {
@@ -850,7 +851,51 @@ const LocalTunnelServer = ServerBase.extend({
       notes: z.string().min(1).optional(),
     })
     .default({}),
+  /**
+   * Let this machine DEPOSIT secrets into strad's store, write-only.
+   *
+   * For strad-hostd's custody server (docs/servers/hostd-custody.md): it
+   * captures a credential in the owner's browser and posts it to
+   * `POST /_strad/deposit/{slug}/{VARIABLE}`, so the value goes laptop → core
+   * and never through a model. Present, the route accepts a bearer DERIVED
+   * from this entry's own `Authorization: Bearer ${NAME}` key — an HMAC of it,
+   * src/secrets/deposit-wire.ts — which is why the header must be exactly that
+   * shape.
+   *
+   *   deposit:
+   *     into: [granola, linear]   # optional; omitted, any slug
+   *
+   * What a deposit can do is fixed by the route, not by this block: create a
+   * SECRET parameter at `/strad/{env}/mcp/{slug}/static/{VARIABLE}` that does
+   * not already exist under `static/` or `oauth/`. Never a gateway name, never
+   * `oauth/`, never a plain parameter, never an overwrite, never a read.
+   * `into:` only narrows which slugs.
+   *
+   * Honoured from the CHECKED-IN config only: a runtime roster write may not
+   * declare or change it (src/config/overlay.ts), and the route reads its
+   * callers from the deploy's own document.
+   */
+  deposit: z
+    .object({
+      into: z.array(SLUG).min(1).optional(),
+    })
+    .strict()
+    .optional(),
 });
+
+/**
+ * The `${NAME}` a deposit caller's bearer key lives under — the reference in
+ * its `Authorization: "Bearer ${NAME}"` header — or null when the header is
+ * absent or any other shape. Header names fold case, as HTTP's do.
+ */
+export function depositKeyRef(headers: Record<string, string>): string | null {
+  const entry = Object.entries(headers).find(
+    ([name]) => name.toLowerCase() === "authorization",
+  );
+  if (!entry) return null;
+  const token = bearerToken(entry[1]);
+  return token ? soleRefName(token) : null;
+}
 
 /**
  * kind: supplementary-image
@@ -1790,6 +1835,24 @@ export const StradConfig = z
         });
       }
       seen.add(s.slug);
+    }
+
+    // A DEPOSIT CALLER'S BEARER IS DERIVED FROM ITS OWN SLUG KEY, so the key
+    // has to be one strad can name: exactly `Authorization: Bearer ${NAME}`. A
+    // literal key would be a credential in the config file, and a header that
+    // only CONTAINS a reference cannot be told apart from a second credential.
+    for (const s of cfg.servers) {
+      if (s.kind !== "local-tunnel" || !s.deposit) continue;
+      if (depositKeyRef(s.headers) === null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `server "${s.slug}" declares deposit: but its headers carry no ` +
+            '`Authorization: "Bearer ${NAME}"`. The deposit bearer is derived ' +
+            "from that key, so it must be exactly one reference after Bearer.",
+          path: ["servers"],
+        });
+      }
     }
 
     // A SLUG ASKS ITS CALLER'S HUMAN OR NOBODY, NEVER BOTH.

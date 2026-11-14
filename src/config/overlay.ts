@@ -799,6 +799,7 @@ export function assertNoAccessControlChange(
 ): void {
   const declared = rawEntry(baseDoc, String(entry.slug));
   assertNoReachChange(declared, entry);
+  assertNoDepositChange(declared, entry);
   if (!declared) return;
 
   const withMount = declared.kind === "supplementary-image";
@@ -846,6 +847,31 @@ function assertNoReachChange(
       `${String(entry.slug)}. A flow-through grant lets one server call ` +
       `another's tools as itself, so both of its halves stay with the deploy. ` +
       `Change ${moved.length > 1 ? "them" : "it"} in the checked-in config.`,
+  );
+}
+
+/**
+ * A runtime write may not declare or change a `deposit:` block, on any slug.
+ *
+ * It is standing authority to CREATE secrets in strad's store, and its bearer
+ * is derived from the entry's own key — so a roster editor that could add the
+ * block to a `local-tunnel` it also points at a key of its choosing would have
+ * minted itself a write path into every slug's namespace. Same rule as a
+ * flow-through grant: exactly what the checked-in entry declares, which for a
+ * slug the file does not name is none. The route reads its callers from the
+ * checked-in document as well (src/http/deposit.ts), so this is the refusal
+ * that says so at write time rather than a block that silently does nothing.
+ */
+function assertNoDepositChange(
+  declared: Record<string, unknown> | undefined,
+  entry: Record<string, unknown>,
+): void {
+  const shape = (v: unknown) => JSON.stringify(v ?? null);
+  if (shape(declared?.deposit) === shape(entry.deposit)) return;
+  throw new AccessControlChanged(
+    `deposit: cannot be written at runtime on ${String(entry.slug)}. It lets ` +
+      `a machine create secrets in strad's store, so it stays with the ` +
+      `deploy. Change it in the checked-in config.`,
   );
 }
 

@@ -5,7 +5,7 @@ import { defineTool, json, text, type Capability } from "../mcp/tool.js";
 import { clip } from "../shell/output.js";
 import { focusForTyping, LIST_ELEMENTS, locate } from "./page-scripts.js";
 import type { ExtensionBridge } from "./bridge.js";
-import { BrowserSessions } from "./session.js";
+import { BrowserSessions, type BrowserSession } from "./session.js";
 
 const P = {
   tab_id:
@@ -40,6 +40,27 @@ export function checkUrl(raw: string): string | undefined {
   } catch {
     return `"${raw}" is not an absolute URL.`;
   }
+}
+
+/**
+ * Click one element with a real mouse event at its centre, scrolled into view
+ * first. Null when nothing matches. Shared with the custody server, whose
+ * click has to be the same click the owner's page sees from this one.
+ */
+export async function clickSelector(
+  s: BrowserSession,
+  tabId: string,
+  selector: string,
+): Promise<{ tag: string } | null> {
+  const at = await s.evaluate<{ x: number; y: number; tag: string } | null>(
+    tabId,
+    locate(selector),
+  );
+  if (!at) return null;
+  const base = { x: at.x, y: at.y, button: "left", clickCount: 1 };
+  for (const type of ["mouseMoved", "mousePressed", "mouseReleased"])
+    await s.send(tabId, "Input.dispatchMouseEvent", { ...base, type });
+  return { tag: at.tag };
 }
 
 export function browserCapability(
@@ -268,28 +289,12 @@ If the selector matches nothing the result is an error and nothing is clicked; r
     summarize: (a) => `click_element: ${a.selector.slice(0, 120)}`,
     handler: async (a, { grant }) => {
       const s = sessions.for(grant);
-      const at = await s.evaluate<{ x: number; y: number; tag: string } | null>(
-        a.tab_id,
-        locate(a.selector),
-      );
+      const at = await clickSelector(s, a.tab_id, a.selector);
       if (!at)
         return text(
           `No element matches ${JSON.stringify(a.selector)}. Nothing was clicked.`,
           true,
         );
-      const base = { x: at.x, y: at.y, button: "left", clickCount: 1 };
-      await s.send(a.tab_id, "Input.dispatchMouseEvent", {
-        ...base,
-        type: "mouseMoved",
-      });
-      await s.send(a.tab_id, "Input.dispatchMouseEvent", {
-        ...base,
-        type: "mousePressed",
-      });
-      await s.send(a.tab_id, "Input.dispatchMouseEvent", {
-        ...base,
-        type: "mouseReleased",
-      });
       await new Promise((r) => setTimeout(r, 250));
       await s.waitForLoad(a.tab_id, 8000);
       return json({

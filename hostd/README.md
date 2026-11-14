@@ -9,6 +9,7 @@ MCP servers that operate the machine they run on.
 | `computer-headless` | `list_apps`, `read_ui_tree`, `find_elements`, `get_element`, `perform_action`, `set_value`, `read_text`                                               |
 | `computer`          | `take_screenshot`, `list_displays`, `click`, `move_mouse`, `drag`, `scroll`, `type_text`, `press_keys`                                                |
 | `messages`          | `imessage_list_chats`, `imessage_get_messages`, `imessage_get_attachment`                                                                             |
+| `custody`           | `list_tabs`, `click_and_capture`, `capture_download`, `release_tab`, `list_handles`, `discard_handle`, `deposit`                                      |
 
 The two `computer-*` servers are macOS only and need the native helper below.
 `computer-headless` works through the Accessibility tree and never touches the
@@ -18,6 +19,15 @@ from the person at the machine ends its grant.
 `messages` is macOS only too, read-only, and needs its own helper below: it
 reads the Messages database (`~/Library/Messages/chat.db`), which macOS guards
 with Full Disk Access. It cannot send.
+
+`custody` is opt-in: `init` and the installer leave it off, and
+`strad-hostd add custody` turns it on. It captures a credential the browser
+shows or downloads into a handle, never returning the value, and deposits it
+into strad. While it holds one, the shell and computer-use servers refuse every
+call and the browser server refuses its reads. That is enforced here, in
+`src/custody/enforce.ts`, and every result from every server is checked for a
+held value before it leaves. See
+`docs/src/content/docs/servers/hostd-custody.md`.
 
 Every server also has `request_control`, `end_control` and `get_control_status`.
 `request_control` takes a purpose of at most two sentences and returns a
@@ -291,6 +301,9 @@ matter:
 | `messages.binary` / `messages.socketPath`                  | see `src/config.ts` | where `strad-hostd-messages` is, or where its LaunchAgent listens      |
 | `messages.maxAttachmentBytes`                              | `10485760`          | largest attachment returned, after conversion                          |
 | `computer.maxScreenshotWidth`                              | `1280`              | widest image `take_screenshot` returns                                 |
+| `custody.stradUrl`                                         | unset               | the strad deployment `deposit` posts to; https, or http on loopback    |
+| `custody.downloadsDir`                                     | `~/Downloads`       | where `capture_download` looks for the new file                        |
+| `custody.handleMinutes`                                    | `15`                | how long a captured secret is held undeposited                         |
 | `port` / `controlPort`                                     | `7311` / `7312`     | daemon mode only, both on `127.0.0.1`                                  |
 
 `STRAD_HOSTD_HOME` moves the state directory.

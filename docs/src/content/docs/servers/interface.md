@@ -292,7 +292,7 @@ Use it for servers that are machine-bound by nature: an application's own MCP
 add-on, computer use, browser automation driving a real logged-in profile.
 
 Fields: `url` (required), `headers`, `connectTimeoutMs` (default `5000`),
-`recovery`.
+`recovery`, `deposit`.
 
 ```yaml
 servers:
@@ -343,6 +343,28 @@ common convention and plenty of servers use it, but the Anki add-on above serves
 streamable HTTP at the **root** of its port — its `http_path` setting defaults to
 the empty string — so its URL ends at the hostname. When in doubt, read the
 server's own docs for the URL it tells clients to connect to, and use that.
+
+#### `deposit:` — let the machine store secrets, write-only
+
+```yaml
+  - slug: custody-my-mbp
+    kind: local-tunnel
+    url: https://hostd.example.com/custody/mcp
+    headers:
+      Authorization: "Bearer ${HOSTD_CUSTODY_KEY}"
+    deposit:
+      into: [linear, granola] # optional; omitted, any slug
+```
+
+This lets the machine call `POST /_strad/deposit/{slug}/{VARIABLE}`, which
+creates one **secret** parameter at `/strad/{env}/mcp/{slug}/static/{VARIABLE}`
+and never reads, overwrites or reaches another namespace. It exists for
+strad-hostd's custody server; see
+[custody and deposit](/servers/hostd-custody/). The caller's bearer is an HMAC
+of this entry's own key, so the `Authorization` header must be exactly
+`Bearer ${NAME}`, and the schema refuses `deposit:` otherwise. `into:` only
+narrows the slugs. The block is read from the checked-in config only, and a
+runtime roster write cannot add or change it.
 
 #### `troubleshoot_host`: the tool a machine that is off still serves
 

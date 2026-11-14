@@ -4448,3 +4448,43 @@ of the draft's categories (`connection_refused`, `timeout`, `tls_error`,
 with the reason.
 
 See `HACKS.md` #140.
+
+### 141. Custody holds a captured secret in a daemon's memory, and its capture and filter are heuristics
+
+strad-hostd's [custody server](/servers/hostd-custody/) captures a credential
+in the owner's browser into an in-memory handle and deposits it through core's
+write-only `POST /_strad/deposit`. The value never appears in a tool result.
+What that leaves:
+
+- **Capture can miss.** Without `capture_selector` it takes the one new string
+  of 16 or more characters, with letters and digits and no spaces, that the
+  click produced. A token with no digits, one split across elements, one drawn
+  in a canvas, or one only put on the clipboard is not found. If two such
+  strings appear at once, nothing is kept and their selectors are returned.
+- **`capture_download` watches the Downloads folder**, not Chrome. A Chrome set
+  to ask where to save times out, and an unrelated file arriving in the same
+  seconds could be taken. The shape it reports (`json_keys`) shows which.
+- **The hold blocks other sessions on the Mac.** From capture to release, every
+  shell and computer-use call is refused, and so are browser reads on every
+  tab. Ending the custody grant blanks its tainted tabs and drops its handles.
+- **A daemon restart loses every handle**, and a tab still showing the token is
+  no longer tainted. Re-mint the credential.
+- **The egress filter matches known forms.** It catches the raw value,
+  JSON-escaped, base64, base64url and URL-encoded forms, and a JSON
+  credential's secret fields and PEM lines. A value transformed some other way
+  would pass. This is why shell and computer-use are refused outright rather
+  than filtered. Images are not scanned.
+- **Create-only has a narrow race.** The `oauth/` check and the create are two
+  calls, so a consent written in between leaves a `static/` copy that it
+  shadows.
+- **Only fakes in CI.** The suite runs a real headless Chromium against a fake
+  strad. The owner's Chrome, the extension route and real provider pages have
+  only been used on the owner's Mac.
+
+**How you would know.** The hostd status page shows how many secrets custody
+holds and how many tabs are tainted. A refused call says custody is holding a
+secret. `list_handles` shows each handle as held, deposited (with its path),
+burned, discarded or expired. On core, `strad.deposit_written`,
+`strad.deposit_failed` and `strad.deposit_refused` record each attempt.
+
+See `HACKS.md` #141.

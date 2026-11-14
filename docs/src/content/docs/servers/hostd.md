@@ -8,7 +8,9 @@ built: a shell server, a browser server that drives the Chrome you already have
 open, a computer-use server that operates apps through macOS Accessibility
 without touching your mouse, a computer-use server that sees the screen and
 drives the real mouse and keyboard, and a read-only Messages server that reads
-your iMessage and SMS history. strad reaches them as
+your iMessage and SMS history. A sixth, `custody`, is opt-in: it captures a
+credential in your browser and deposits it into strad without the agent ever
+seeing it ([custody and deposit](/servers/hostd-custody/)). strad reaches them as
 [`kind: local-tunnel`](/servers/local-tunnel-host/) slugs.
 [The design page](/servers/hostd-design/) has the reasoning. To run it on any
 machine with no tunnel, read `hostd/README.md`.
@@ -17,10 +19,13 @@ machine with no tunnel, read `hostd/README.md`.
 flowchart LR
   S["strad core"] -->|"CF-Access headers + Bearer key"| E["Cloudflare edge<br/>Access: Service Auth"]
   E -->|"outbound-only tunnel"| C["cloudflared<br/>(child of strad-hostd)"]
-  C -->|"127.0.0.1:7311"| M["MCP listener<br/>/shell/mcp · /browser/mcp<br/>/computer-headless/mcp · /computer/mcp<br/>/messages/mcp"]
+  C -->|"127.0.0.1:7311"| M["MCP listener<br/>/shell/mcp · /browser/mcp<br/>/computer-headless/mcp · /computer/mcp<br/>/messages/mcp · /custody/mcp"]
   M --> G["consent gate<br/>dialog · grants · kill switch"]
   G --> SH["shell"]
   G --> BR["browser"]
+  G --> CU["custody<br/>(opt-in)"]
+  CU -->|"same Chrome routes"| CH
+  CU -->|"POST /_strad/deposit"| SC["strad core"]
   BR -->|"when connected"| EXT["bridge extension<br/>in the owner's Chrome<br/>(chrome.debugger)"]
   BR -.->|"else DevToolsActivePort"| CH["Chrome, over DevTools"]
   EXT -->|"ws to 127.0.0.1:7312/extension<br/>+ pairing token"| P
@@ -281,6 +286,11 @@ each server's bearer key. Seed it, and the Access token's id and secret, under
 that slug's `static/` namespace at `/ui/secrets` **before** the config that
 references them deploys: an unset `${NAME}` fails the render, and the render is
 the whole spec.
+
+The custody server is `/custody/mcp` (`custody-my-mbp`). Its entry also
+carries a `deposit:` block, which is what lets it write secrets into strad.
+[Custody and deposit](/servers/hostd-custody/) covers that entry and the
+on-Mac step, `strad-hostd add custody`. The installer does not enable it.
 
 Keep these slugs `admin`-only unless you have read
 [what entitlement means here](/servers/hostd-design/#security-model).

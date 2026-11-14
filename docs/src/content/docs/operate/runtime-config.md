@@ -466,6 +466,15 @@ Its value must equal the checked-in entry's, which for an overlay-only slug is
 none. A grant lets one server call another's tools as itself, and a roster
 editor that could write either half could write the pair.
 
+A `local-tunnel`'s `deposit:` block is bound the same way, on any slug. It
+lets a machine create secrets in strad's store
+([custody and deposit](/servers/hostd-custody/)), and its bearer is derived
+from the entry's own key, so a roster editor who could add the block to an
+entry pointing at a key of their choice would have given themselves a write
+path into every slug's namespace. The deposit route also reads its callers,
+and their headers, from the checked-in document, so a runtime edit to such an
+entry's `headers:` does not change who may deposit.
+
 `kind:` is in that set because a checked-in `local-tunnel`, re-created as a
 `supplementary-image`, is the `path:` move wearing a different field: the slug
 name keeps the reach the deploy granted it while the thing on the other end

@@ -13,6 +13,7 @@ import {
   helperFor,
   isCapabilityId,
   needsHelper,
+  OPT_IN,
   slugFor,
 } from "./capabilities.js";
 import {
@@ -113,14 +114,16 @@ async function main(argv: string[]): Promise<number> {
         capabilities: Object.fromEntries(
           CAPABILITY_IDS.map((id) => [
             id,
-            {
-              ...CAPABILITY_DEFAULTS[id],
-              // The computer-use and messages servers need a macOS helper;
-              // elsewhere they would only ever answer "helper not running".
-              enabled: !needsHelper(id) || process.platform === "darwin",
-              key: randomBytes(32).toString("base64url"),
-              displayName: slugFor(id, suffix),
-            },
+            OPT_IN.includes(id)
+              ? { enabled: false }
+              : {
+                  ...CAPABILITY_DEFAULTS[id],
+                  // The computer-use and messages servers need a macOS helper;
+                  // elsewhere they would only ever answer "helper not running".
+                  enabled: !needsHelper(id) || process.platform === "darwin",
+                  key: randomBytes(32).toString("base64url"),
+                  displayName: slugFor(id, suffix),
+                },
           ]),
         ),
       });

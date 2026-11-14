@@ -439,6 +439,24 @@ servers:
   #   entitlements: [admin]
   #   timeoutMs: 300000        # driving a real desktop is slow; the RUN budget
   #   connectTimeoutMs: 5000   # is separate from "is anyone home"
+  #
+  # `deposit:` lets the machine CREATE secret parameters in strad's store, and
+  # nothing else: strad-hostd's custody server captures a credential in the
+  # owner's browser and posts it to POST /_strad/deposit/{slug}/{VARIABLE},
+  # which writes /strad/{env}/mcp/{slug}/static/{VARIABLE} — secret, create-only,
+  # never a read, never a gateway or oauth/ name. The caller's bearer is an HMAC
+  # of the key in this entry's own `Authorization: "Bearer ${NAME}"`, which must
+  # be exactly that shape. `into:` narrows the slugs; omitted, any. Checked-in
+  # config only: a runtime roster write cannot add or change it.
+  #
+  # - slug: custody-my-mbp
+  #   kind: local-tunnel
+  #   url: https://hostd.example.com/custody/mcp
+  #   entitlements: [admin]
+  #   headers:
+  #     Authorization: "Bearer ${HOSTD_CUSTODY_KEY}"
+  #   deposit:
+  #     into: [linear, granola]
 
   # --- kind: supplementary-image --------------------------------------------
   # A server published as its own container image. strad deploys it as an

@@ -108,6 +108,10 @@ export default defineConfig({
             },
             { label: "Running strad-hostd", slug: "servers/hostd" },
             { label: "strad-hostd: the design", slug: "servers/hostd-design" },
+            {
+              label: "strad-hostd: custody and deposit",
+              slug: "servers/hostd-custody",
+            },
             { label: "The artifact store", slug: "servers/artifact-store" },
             { label: "Slack attachments", slug: "servers/slack-attachments" },
             { label: "Telegram", slug: "servers/telegram" },

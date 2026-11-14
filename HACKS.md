@@ -7308,3 +7308,62 @@ tadasant/zimmer#1484. Polling stays as Zimmer's catch-up path.
 drop the two handlers in `servers/bundle-api/fork/slack/src/events/protocol.ts`;
 a client then has poll only. Existing subscriptions stay in `webhooks.bin` and
 are never delivered to: delete it, or let their grants run out.
+
+## 141. Custody: a secret captured in the owner's browser is held in a daemon's memory and deposited through a write-only route
+
+**What.** strad-hostd's `custody` server (`hostd/src/custody/`) clicks a
+provider's "generate" button, or a download, and takes the credential into an
+in-memory handle; its `deposit` tool posts the value to core's
+`POST /_strad/deposit/{slug}/{VARIABLE}` (`src/http/deposit.ts`), which creates
+a secret parameter under `static/` with the console's admin credential. While
+the vault holds anything, the daemon refuses shell and computer-use calls and
+browser reads, and every result from every server passes an exact-match filter
+on the held values (`hostd/src/custody/enforce.ts`). The deposit bearer is
+`HMAC(custody slug key, "strad-deposit-v1")` (`src/secrets/deposit-wire.ts`,
+vendored to hostd). `docs/servers/hostd-custody` has the design.
+
+**Why.** Tadas's ask: agents should mint the credentials a task needs by
+clicking through his own accounts, and the value must never reach inference or
+a transcript. A tool result always reaches both, so the only working control is
+a tool that never returns the value. Design: Zimmer session 27977.
+
+**What it costs.**
+
+- **Capture is a heuristic.** Without `capture_selector` it takes the one new
+  credential-shaped string (16+ characters, letters and digits, no spaces) the
+  click produced. A token without digits, one split across elements, or one
+  rendered in a canvas or a closed shadow root is missed. A page that adds a
+  second such string at the same moment makes the call keep nothing. A value
+  only placed on the clipboard is not captured at all.
+- **`capture_download` watches a folder, not Chrome.** It takes the first new
+  settled file in `custody.downloadsDir` (`~/Downloads`). A Chrome set to ask
+  where to save, or a download that lands elsewhere, times out. Another file
+  arriving in the same seconds could be taken instead; the shape (`json_keys`)
+  is what shows that.
+- **The hold blocks other sessions.** From capture to release, every shell and
+  computer-use call on the Mac is refused, and browser reads on every tab, for
+  whoever makes them. Bounded by the custody grant: its end blanks the tainted
+  tabs and drops the handles.
+- **A daemon restart loses every handle**, and a tab still showing the token is
+  no longer tainted. It fails closed for the handle (re-mint), not for the
+  page.
+- **The filter matches known forms, not every encoding.** Raw, JSON-escaped,
+  base64, base64url, URL-encoded, a JSON credential's secret fields and long PEM
+  lines. A value hex-encoded, split, or reversed by a page or a command passes.
+  Shell and computer-use are held for exactly that reason. Images are not
+  scanned; the servers that return them are held.
+- **Values are not wiped from memory completely.** The handle's Buffer is
+  zeroed; the JavaScript strings derived for matching cannot be and are left to
+  the collector.
+- **Create-only has one race:** the `oauth/` check and the create are two
+  calls, so a console consent that writes `oauth/` between them leaves a
+  `static/` copy that the `oauth/` one shadows. The `static/` name itself
+  cannot be overwritten: the store's create refuses an existing secret.
+- **The macOS halves are untested in CI.** The suite drives a real headless
+  Chromium on Linux against a fake strad; the owner's Chrome, the extension
+  route and a real provider page have not been exercised by anything but the
+  owner's Mac.
+
+**Undo.** Remove `deposit:` from the custody slug's entry (the route then 401s
+it), or rotate the slug's key in the console. On the Mac,
+`capabilities.custody.enabled: false`.

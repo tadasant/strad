@@ -23,6 +23,8 @@ export interface ControlState {
   messagesHelper?: { connected: boolean; error?: string };
   /** Absent when the browser server is not enabled. */
   extension?: BridgeState;
+  /** Absent when the custody server is not enabled. Counts only, never a value. */
+  custody?: { handles: number; tainted_tabs: number; capturing: number };
   audit: AuditEntry[];
   now: number;
 }
@@ -128,6 +130,13 @@ ${g.running.map((c) => `<span class="cmd">▶ ${esc(c)}</span>`).join("")}
             ? `connected${state.extension.version ? ` (v${esc(state.extension.version)}` : ""}${state.extension.attachedTabs ? `, attached to ${state.extension.attachedTabs} tab${state.extension.attachedTabs === 1 ? "" : "s"}` : ""}${state.extension.version ? ")" : ""}`
             : "not connected"
         }`
+      : ""
+  }${
+    state.custody &&
+    (state.custody.handles ||
+      state.custody.tainted_tabs ||
+      state.custody.capturing)
+      ? ` · <strong>custody is holding ${state.custody.handles} secret${state.custody.handles === 1 ? "" : "s"} and ${state.custody.tainted_tabs} tainted tab${state.custody.tainted_tabs === 1 ? "" : "s"}</strong>: shell and computer-use are refused until they are deposited or released`
       : ""
   }</p>
 ${banner}
