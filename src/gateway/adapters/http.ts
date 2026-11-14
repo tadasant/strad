@@ -1424,6 +1424,72 @@ export function listRetryOutcome(
 }
 
 /**
+ * The error classes a `_failed` listing record may name. Every one is a class
+ * this process constructs — an upstream can make a listing fail, but it cannot
+ * choose the class of the object that says so. Anything else is `other`, so the
+ * exported value is always one of the words below.
+ */
+const LIST_FAILURE_CLASSES = new Set([
+  "StreamableHTTPError",
+  "McpError",
+  "UnauthorizedError",
+  "SseError",
+  "UpstreamError",
+  "TypeError",
+  "Error",
+  "DeadlineError",
+  "TimeoutError",
+  "AbortError",
+  "TokenRefreshError",
+  "SecretNotFoundError",
+  "LocalHostRefusedError",
+]);
+
+/**
+ * WHAT KIND of failure escaped a listing, in fields the exporter may ship
+ * (#475).
+ *
+ * The `_failed` records page, and their `error` text is dropped on export
+ * because an upstream wrote it. That left `error.kind = upstream_error` as the
+ * only clue, and it covers a `404`, a JSON-RPC `-32603` and an unrecognised
+ * network error alike — a page nobody could triage from the record. These
+ * three can be told apart, and none of them is prose:
+ *
+ * - `status`: the HTTP status a `StreamableHTTPError` carries. An integer.
+ * - `rpc_code`: the JSON-RPC error code an `McpError` carries. An integer —
+ *   the upstream picks it, but it can only pick a number.
+ * - `error_class`: the class of the error under strad's own `UpstreamError`
+ *   wrapper, from `LIST_FAILURE_CLASSES` or `other`.
+ */
+export function listFailureDetail(err: unknown): {
+  status?: number;
+  rpc_code?: number;
+  error_class: string;
+} {
+  const cause = err instanceof UpstreamError ? err.cause : err;
+  const name =
+    cause instanceof Error
+      ? cause.constructor.name === "DOMException"
+        ? cause.name
+        : cause.constructor.name
+      : "";
+  const detail: { status?: number; rpc_code?: number; error_class: string } = {
+    error_class: LIST_FAILURE_CLASSES.has(name) ? name : "other",
+  };
+  if (
+    cause instanceof StreamableHTTPError &&
+    Number.isInteger(cause.code) &&
+    cause.code !== undefined
+  ) {
+    detail.status = cause.code;
+  }
+  if (cause instanceof McpError && Number.isInteger(cause.code)) {
+    detail.rpc_code = cause.code;
+  }
+  return detail;
+}
+
+/**
  * The listing retry's budget: three tries, at most ~750ms of sleep.
  *
  * `totalDelayMs` never binds: it is the ceiling a `Retry-After` is measured
@@ -1459,10 +1525,16 @@ const LIST_RETRY_DEADLINE_MS = 5_000;
  * first answer:
  *
  * - An HTTP status in `src/http/retry.ts`'s transient set (`429`, `500`,
- *   `502`, `503`, `504`). Every other status is a real answer, a `401`
- *   included — `authorized()` owns that one.
+ *   `502`, `503`, `504`), or `408` — the upstream timing out waiting for a
+ *   request it never got, a connection-level blip and not a verdict on the
+ *   listing. Every other status is a real answer, a `401` included —
+ *   `authorized()` owns that one — and `403` / `404` with it.
  * - The connection closing under the request (`-32000`), which is also how a
  *   request on a connection a peer just retired ends.
+ * - An upstream's JSON-RPC `InternalError` (`-32603`): the server is up, it
+ *   answered, and it threw. A hosted server answering one listing with it and
+ *   the next one normally paged prod on one record (#475). Listings only — a
+ *   `tools/call` that threw may have done half its work.
  * - A fetch that got no response because the socket went away or was refused:
  *   a reset, a hang up, a refused connect, or undici's "fetch failed" around
  *   one of those. A "fetch failed" around anything else — DNS, TLS, a connect
@@ -1491,10 +1563,16 @@ export function isTransientListFailure(err: unknown): boolean {
   const cause = err instanceof UpstreamError ? err.cause : err;
   if (cause instanceof StreamableHTTPError) {
     // `true`: the transport POSTs, but a listing is a read, so it may repeat.
-    return cause.code !== undefined && isRetryableStatus(cause.code, true);
+    return (
+      cause.code !== undefined &&
+      (cause.code === 408 || isRetryableStatus(cause.code, true))
+    );
   }
   if (cause instanceof McpError) {
-    return cause.code === ErrorCode.ConnectionClosed;
+    return (
+      cause.code === ErrorCode.ConnectionClosed ||
+      cause.code === ErrorCode.InternalError
+    );
   }
   if (!(cause instanceof Error)) return false;
   if (cause.name === "TimeoutError" || cause.name === "AbortError") {

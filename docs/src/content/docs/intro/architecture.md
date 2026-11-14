@@ -352,9 +352,10 @@ so the retry cannot run a tool twice.
 ### A listing gets a second look; a tool call does not
 
 `tools/list`, `resources/list` and `events/list` retry a **transient** upstream failure: a
-`429` or `500`/`502`/`503`/`504`, a connection that closed under the request, or
-a socket reset or refused connect, or a resolver answering `EAI_AGAIN` ("try
-again"). Three tries, with jittered exponential
+`408`, `429` or `500`/`502`/`503`/`504`, an upstream's JSON-RPC `InternalError`
+(`-32603`) — it answered, and it threw — a connection that closed under the
+request, a socket reset or refused connect, or a resolver answering `EAI_AGAIN`
+("try again"). Three tries, with jittered exponential
 backoff from 250ms — under a second of sleep in all — and no new try once 5s
 have gone, which keeps a retry inside the 10s deadline the reachability probe
 puts around a listing. Each try is still bounded by `timeoutMs`. Each failure
@@ -362,11 +363,16 @@ the budget absorbs is an `mcp.list_retry` record at Info, which pages nobody;
 `mcp.list_tools_failed` and `mcp.list_resources_failed` fire at ERROR only once
 the budget is spent, and carry `attempts` and `retry` — `budget`, `deadline`,
 `not_transient` or `closed` — so a page says whether the failure outlasted the
-retry or was never eligible for one. One bad
+retry or was never eligible for one. They also carry what KIND of failure it
+was, since the upstream's text never leaves the box: `status` (the HTTP
+status), `rpc_code` (the JSON-RPC error code) and `error_class` (the error's
+class, from a closed list, else `other`). `mcp.events_list_failed` carries the
+same five. One bad
 second at a hosted server's edge therefore does not page, and an upstream that
 is still failing a moment later still does.
 
-Everything else fails on the first answer: any other `4xx`, `-32601`, a
+Everything else fails on the first answer: any other `4xx` (`401`, `403` and
+`404` among them), any other JSON-RPC code (`-32601`, `-32602`, …), a
 timeout, a name that does not resolve (`ENOTFOUND`) or a TLS failure, a slug waiting on an unseeded credential, and a `local-tunnel` machine
 that is off. A `401` on a minted credential keeps its own single retry above.
 `tools/call` is never retried, because a `5xx` does not say whether the tool
