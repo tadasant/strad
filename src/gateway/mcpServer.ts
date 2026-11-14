@@ -24,6 +24,7 @@ import {
 import { ServerUnconfiguredError } from "./unconfigured.ts";
 import { withDeadline } from "../util/deadline.ts";
 import {
+  listFailureDetail,
   listRetryOutcome,
   LocalHostUnavailableError,
   LocalMachineOfflineError,
@@ -186,6 +187,10 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
       registry,
       principalId,
       log,
+      describeListFailure: (err) => ({
+        ...listRetryOutcome(err),
+        ...listFailureDetail(err),
+      }),
     });
   }
 
@@ -661,6 +666,9 @@ export async function listToolsFor(
                 // same and mean different things (#468). Absent for an adapter
                 // kind with no retry.
                 ...listRetryOutcome(err),
+                // What kind of failure, in numbers and class names the exporter
+                // may ship — the text below is dropped on export (#475).
+                ...listFailureDetail(err),
                 // Stays on stdout in full; the exporter substitutes `error.kind`.
                 error: errorText(err),
               },
@@ -811,6 +819,7 @@ async function listResourcesFor(
                 evt: "mcp.list_resources_failed",
                 slug,
                 ...listRetryOutcome(err),
+                ...listFailureDetail(err),
                 error: errorText(err),
               },
         );

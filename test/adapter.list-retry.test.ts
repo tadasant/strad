@@ -24,6 +24,7 @@ import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
   isTransientListFailure,
+  listFailureDetail,
   LocalMachineOfflineError,
   UpstreamError,
 } from "../src/gateway/adapters/http.ts";
@@ -59,12 +60,15 @@ interface Stub {
   fail: (method: string, status: number, times: number) => void;
   /** Destroy the socket under the next `times` requests for `method`. */
   drop: (method: string, times: number) => void;
+  /** Answer the next `times` requests for `method` with a JSON-RPC error. */
+  rpcError: (method: string, code: number, times: number) => void;
 }
 
 function startStub(): Promise<Stub> {
   const counts = new Map<string, number>();
   const failing = new Map<string, { status: number; left: number }>();
   const dropping = new Map<string, number>();
+  const erroring = new Map<string, { code: number; left: number }>();
 
   const build = (): McpServer => {
     const server = new McpServer({ name: "stub", version: "0" });
@@ -89,6 +93,18 @@ function startStub(): Promise<Stub> {
     if (method && d > 0) {
       dropping.set(method, d - 1);
       req.socket.destroy();
+      return;
+    }
+    const e = method ? erroring.get(method) : undefined;
+    if (e && e.left > 0) {
+      e.left--;
+      // A real JSON-RPC error response over a working transport: HTTP 200,
+      // the code in the body. The message is upstream prose.
+      res.status(200).json({
+        jsonrpc: "2.0",
+        id: (req.body as { id?: unknown }).id,
+        error: { code: e.code, message: "upstream says no" },
+      });
       return;
     }
     const f = method ? failing.get(method) : undefined;
@@ -125,6 +141,7 @@ function startStub(): Promise<Stub> {
         seen: (m) => counts.get(m) ?? 0,
         fail: (m, status, times) => failing.set(m, { status, left: times }),
         drop: (m, times) => dropping.set(m, times),
+        rpcError: (m, code, times) => erroring.set(m, { code, left: times }),
       });
     });
   });
@@ -252,6 +269,39 @@ describe("a listing rides out a transient upstream failure", () => {
     ]);
   });
 
+  it("a 408 is transient too", async () => {
+    const { stub, registry, faults } = await setup();
+    stub.fail("tools/list", 408, 1);
+    expect(await listTools(registry)).toEqual(["apify__ping"]);
+    expect(stub.seen("tools/list")).toBe(2);
+    expect(faults().filter((l) => l.includes("_failed"))).toEqual([]);
+  });
+
+  it("resources/list: one JSON-RPC -32603 then success pages nobody (#475)", async () => {
+    // The page this exists for: a hosted server answering one listing with an
+    // InternalError and the next one normally.
+    const { stub, registry, faults, retries } = await setup();
+    stub.rpcError("resources/list", -32603, 1);
+
+    expect(await listResources(registry)).toEqual(["ui://stub/app.html"]);
+    expect(stub.seen("resources/list")).toBe(2);
+    expect(faults().filter((l) => l.includes("_failed"))).toEqual([]);
+    expect(retries()).toEqual([
+      expect.objectContaining({ listing: "resources", attempt: 1 }),
+    ]);
+  });
+
+  it("tools/list: a -32603 is retried on the SAME connection", async () => {
+    // A JSON-RPC error arrived over a working transport, so the retry must not
+    // cost a handshake: one `initialize` across both attempts.
+    const { stub, registry, faults } = await setup();
+    stub.rpcError("tools/list", -32603, 1);
+    expect(await listTools(registry)).toEqual(["apify__ping"]);
+    expect(stub.seen("tools/list")).toBe(2);
+    expect(stub.seen("initialize")).toBe(1);
+    expect(faults().filter((l) => l.includes("_failed"))).toEqual([]);
+  });
+
   it("a 429 is transient too", async () => {
     const { stub, registry } = await setup();
     stub.fail("tools/list", 429, 1);
@@ -316,6 +366,39 @@ describe("a sustained failure still pages", () => {
     expect(retries()).toHaveLength(2);
   });
 
+  it("tools/list: a persistent 408 still pages, once, after 3 attempts", async () => {
+    const { stub, registry, faults } = await setup();
+    stub.fail("tools/list", 408, 100);
+    expect(await listTools(registry)).toEqual([]);
+    expect(stub.seen("tools/list")).toBe(3);
+    const failed = faults().filter((l) => l.includes("mcp.list_tools_failed"));
+    expect(failed).toHaveLength(1);
+    expect(JSON.parse(failed[0]!)).toMatchObject({
+      attempts: 3,
+      retry: "budget",
+      status: 408,
+      error_class: "StreamableHTTPError",
+    });
+  });
+
+  it("resources/list: a persistent -32603 still pages, once, after 3 attempts", async () => {
+    const { stub, registry, faults } = await setup();
+    stub.rpcError("resources/list", -32603, 100);
+
+    expect(await listResources(registry)).toEqual([]);
+    expect(stub.seen("resources/list")).toBe(3);
+    const failed = faults().filter((l) =>
+      l.includes("mcp.list_resources_failed"),
+    );
+    expect(failed).toHaveLength(1);
+    expect(JSON.parse(failed[0]!)).toMatchObject({
+      attempts: 3,
+      retry: "budget",
+      rpc_code: -32603,
+      error_class: "McpError",
+    });
+  });
+
   it("resources/list: a persistent 503 emits mcp.list_resources_failed after 3 attempts", async () => {
     const { stub, registry, faults } = await setup();
     stub.fail("resources/list", 503, 100);
@@ -344,10 +427,30 @@ describe("a real answer is not retried", () => {
       expect(JSON.parse(failed[0]!)).toMatchObject({
         attempts: 1,
         retry: "not_transient",
+        status,
+        error_class: "StreamableHTTPError",
       });
       expect(retries()).toEqual([]);
     });
   }
+
+  it("a JSON-RPC error other than -32603 fails on the first attempt, and says which", async () => {
+    const { stub, registry, faults } = await setup();
+    stub.rpcError("tools/list", -32602, 100);
+
+    expect(await listTools(registry)).toEqual([]);
+    expect(stub.seen("tools/list")).toBe(1);
+    const failed = faults().filter((l) => l.includes("mcp.list_tools_failed"));
+    expect(failed).toHaveLength(1);
+    const record = JSON.parse(failed[0]!) as Record<string, unknown>;
+    expect(record).toMatchObject({
+      attempts: 1,
+      retry: "not_transient",
+      rpc_code: -32602,
+      error_class: "McpError",
+    });
+    expect(record).not.toHaveProperty("status");
+  });
 
   it("a 4xx on resources/list is not retried either", async () => {
     const { stub, registry, faults } = await setup();
@@ -397,7 +500,16 @@ describe("what counts as transient", () => {
     ["socket reset", up(fetchFailed("ECONNRESET")), true],
     ["refused connect", up(fetchFailed("ECONNREFUSED")), true],
     ["undici socket", up(fetchFailed("UND_ERR_SOCKET")), true],
+    ["408", up(new StreamableHTTPError(408, "x")), true],
+    [
+      "JSON-RPC internal error",
+      up(new McpError(ErrorCode.InternalError, "x")),
+      true,
+    ],
     ["404", up(new StreamableHTTPError(404, "x")), false],
+    ["403", up(new StreamableHTTPError(403, "x")), false],
+    ["409", up(new StreamableHTTPError(409, "x")), false],
+    ["-32602", up(new McpError(ErrorCode.InvalidParams, "x")), false],
     ["401", up(new StreamableHTTPError(401, "x")), false],
     ["501", up(new StreamableHTTPError(501, "x")), false],
     ["-32601", up(new McpError(ErrorCode.MethodNotFound, "x")), false],
@@ -423,6 +535,46 @@ describe("what counts as transient", () => {
     ],
   ])("%s -> %s", (_label, err, transient) => {
     expect(isTransientListFailure(err)).toBe(transient);
+  });
+});
+
+describe("what kind of failure a _failed record names (#475)", () => {
+  const up = (cause: unknown) => new UpstreamError("apify", cause);
+
+  it.each([
+    [
+      "an HTTP status",
+      up(new StreamableHTTPError(404, "Not Found: secret-ish body")),
+      { status: 404, error_class: "StreamableHTTPError" },
+    ],
+    [
+      "a JSON-RPC code",
+      up(new McpError(ErrorCode.InternalError, "upstream prose")),
+      { rpc_code: -32603, error_class: "McpError" },
+    ],
+    [
+      "a fetch with no response",
+      up(new TypeError("fetch failed")),
+      { error_class: "TypeError" },
+    ],
+    [
+      "a DOMException by its name",
+      up(new DOMException("timed out", "TimeoutError")),
+      { error_class: "TimeoutError" },
+    ],
+    [
+      "a class this repo did not list",
+      up(new (class SomethingNew extends Error {})("x")),
+      { error_class: "other" },
+    ],
+    ["a thrown non-error", up("a string"), { error_class: "other" }],
+    [
+      "the SDK's -1 for an unparseable response, which is not a status",
+      up(new StreamableHTTPError(-1, "Unexpected content type")),
+      { error_class: "StreamableHTTPError" },
+    ],
+  ])("%s", (_label, err, expected) => {
+    expect(listFailureDetail(err)).toEqual(expected);
   });
 });
 
@@ -469,6 +621,8 @@ describe("what the exporter ships", () => {
         slug: "apify",
         attempts: 3,
         retry: "budget",
+        status: 503,
+        error_class: "StreamableHTTPError",
       });
       expect(JSON.stringify(records)).not.toMatch(/upstream says no/);
     } finally {

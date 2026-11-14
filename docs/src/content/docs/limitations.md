@@ -149,6 +149,12 @@ here. The channel that did catch it is also quieter now — a tools-only slug no
 longer reports a failed `resources/list`, because it is no longer asked — so
 `mcp.list_tools_failed` is the half of that pair still watching.
 
+And a listing now retries an upstream's JSON-RPC `-32603` before it reports one
+(#475). A persistent `-32603` still pages once the retry budget is spent, but an
+_intermittent_ one — the shape a two-methods-in-flight failure can take — is
+absorbed and shows up only as an Info `mcp.list_retry` record. Nothing pages on
+that; a rate alert on `mcp.list_retry` per slug is the only signal for that class.
+
 It has also been narrower than a second, plainer failure: a slug can list its tools
 perfectly and fail every _call_. Fetch redesigned its login form to floating labels,
 the `fetchpet` mount's email selector went stale, and it spent weeks in both

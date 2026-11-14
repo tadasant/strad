@@ -206,6 +206,12 @@ export interface EventHandlerOptions {
   registry: Registry;
   principalId: string;
   log: (event: Record<string, unknown>) => void;
+  /**
+   * The exportable shape of a failed `events/list` — retry counts and the
+   * status / code / class discriminator (#475). Injected rather than imported
+   * because the HTTP adapter that owns those already imports this module.
+   */
+  describeListFailure?: (err: unknown) => Record<string, unknown>;
 }
 
 /** Registers `events/list` and `events/poll` on a one-shot gateway server. */
@@ -238,10 +244,15 @@ export function registerEventHandlers(
             "events/list",
           );
           return events.map((e) => ({ ...e, name: namespaced(slug, e.name) }));
-        } catch {
+        } catch (err) {
           // One upstream that cannot list does not hide the others' events.
-          // Its own message is not ours to log.
-          log({ evt: "mcp.events_list_failed", slug });
+          // Its own message is not ours to log; its status, JSON-RPC code and
+          // error class are, and they are what tells a page apart (#475).
+          log({
+            evt: "mcp.events_list_failed",
+            slug,
+            ...opts.describeListFailure?.(err),
+          });
           return [];
         }
       }),

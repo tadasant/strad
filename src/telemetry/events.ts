@@ -81,9 +81,32 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      * (`listRetryOutcome` in gateway/adapters/http.ts): a count strad made,
      * and one of four words this repo wrote (`budget`, `deadline`,
      * `not_transient`, `closed`). Absent for an adapter kind with no retry.
+     *
+     * `status`, `rpc_code` and `error_class` say what KIND of failure it was
+     * (`listFailureDetail` in gateway/adapters/http.ts, #475): the HTTP status
+     * and the JSON-RPC error code as integers, and the error's class from a
+     * closed set this repo wrote, else `other`. Numbers and class names, never
+     * the upstream's text — but enough to tell a `404` from a `-32603` from a
+     * dropped socket without stderr. `status` is the same integer key the
+     * store and connector records use.
      */
-    "mcp.list_tools_failed": ["slug", "explicit", "attempts", "retry"],
-    "mcp.list_resources_failed": ["slug", "attempts", "retry"],
+    "mcp.list_tools_failed": [
+      "slug",
+      "explicit",
+      "attempts",
+      "retry",
+      "status",
+      "rpc_code",
+      "error_class",
+    ],
+    "mcp.list_resources_failed": [
+      "slug",
+      "attempts",
+      "retry",
+      "status",
+      "rpc_code",
+      "error_class",
+    ],
     /**
      * One transient listing failure the adapter's retry budget absorbed, at
      * Info (gateway/adapters/http.ts). NOT a fault: a slug that is still
@@ -261,9 +284,18 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      * One selected slug's `events/list` failed, so its event types are missing
      * from the union (src/gateway/events.ts). `slug` has matched the request's
      * selection, so it is one of the config's own slugs; the upstream's message
-     * is not carried at all.
+     * is not carried at all. `attempts`, `retry`, `status`, `rpc_code` and
+     * `error_class` are the same closed-set and integer fields the
+     * `mcp.list_*_failed` records carry, from the same adapter retry.
      */
-    "mcp.events_list_failed": ["slug"],
+    "mcp.events_list_failed": [
+      "slug",
+      "attempts",
+      "retry",
+      "status",
+      "rpc_code",
+      "error_class",
+    ],
     /**
      * A flow-through call refused for sending a value other than the one its
      * grant pins (src/config/reach.ts). `slug` has matched the selection and
