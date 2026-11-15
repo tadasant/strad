@@ -2,7 +2,12 @@
  * MIME message utilities for building and encoding email messages
  */
 
-import { encodeQuotedPrintable, plainTextToHtml, reflowPlainText } from './body-text.js';
+import {
+  encodeQuotedPrintable,
+  plainTextToHtml,
+  reflowPlainText,
+  trimLeadingHtmlSpace,
+} from './body-text.js';
 
 export interface MimeMessageOptions {
   to: string;
@@ -44,8 +49,9 @@ export function encodeSubject(subject: string): string {
 }
 
 /**
- * Strips leading newline characters (\r\n, \n, and bare \r) from email body content.
- * Prevents extra blank lines at the top of the email when displayed in Gmail.
+ * Strips leading newline characters (\r\n, \n, and bare \r) from a plain-text
+ * body. Prevents extra blank lines at the top of the email when displayed in
+ * Gmail. An HTML body goes through `trimLeadingHtmlSpace` instead.
  */
 function stripLeadingNewlines(body: string): string {
   return body.replace(/^[\r\n]+/, '');
@@ -81,11 +87,11 @@ function textPart(subtype: 'plain' | 'html', body: string): { headers: string[];
  */
 function buildBodyEntity(options: MimeMessageOptions): { headers: string[]; body: string } {
   if (options.htmlBody && !options.plaintextBody) {
-    return textPart('html', stripLeadingNewlines(options.htmlBody));
+    return textPart('html', trimLeadingHtmlSpace(options.htmlBody));
   }
 
   const plain = reflowPlainText(stripLeadingNewlines(options.plaintextBody ?? ''));
-  const html = options.htmlBody ? stripLeadingNewlines(options.htmlBody) : plainTextToHtml(plain);
+  const html = options.htmlBody ? trimLeadingHtmlSpace(options.htmlBody) : plainTextToHtml(plain);
   const boundary = generateBoundary('boundary');
   const parts = [textPart('plain', plain), textPart('html', html)].map(
     (part) => `--${boundary}\r\n${part.headers.join('\r\n')}\r\n\r\n${part.body}`
