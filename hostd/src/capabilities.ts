@@ -17,6 +17,15 @@
  * `messages` has a helper of its own (`strad-hostd-messages`, under
  * `messages/`), the one process holding Full Disk Access, and it only reads:
  * it cannot send, type, click or run anything.
+ *
+ * `custody` drives the same Chrome as `browser`, for one job: capture a
+ * credential the owner's browser is showing into an opaque handle, and deposit
+ * it into strad, without the value ever reaching the caller. It is its own
+ * server — its own slug, key and consent line — because "may mint and move my
+ * credentials" is a different grant from "may browse as me", and because the
+ * key strad holds for it is what its deposit bearer is derived from
+ * (src/custody/deposit-wire.ts). While it holds a secret, the other servers
+ * refuse whatever could read it back (src/custody/enforce.ts).
  */
 export const CAPABILITY_IDS = [
   "shell",
@@ -24,6 +33,7 @@ export const CAPABILITY_IDS = [
   "computer-headless",
   "computer",
   "messages",
+  "custody",
 ] as const;
 export type CapabilityId = (typeof CAPABILITY_IDS)[number];
 
@@ -82,6 +92,15 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityInfo> = {
     summary:
       "Reads the owner's iMessage and SMS history from the Messages database on this Mac — chats, messages and attachments. Read-only: it cannot send, and reading marks nothing as read.",
   },
+  custody: {
+    id: "custody",
+    path: "/custody/mcp",
+    mode: "background",
+    summary:
+      "Captures a credential shown or downloaded in the owner's Chrome into an opaque handle, and deposits it into strad's secret store. The value is never returned to you: you work with the handle and its shape only.",
+    consentNote:
+      "This server can capture a credential your browser shows and send it to strad. While it holds one, shell and computer-use on this machine are refused.",
+  },
 };
 
 /**
@@ -104,6 +123,15 @@ export const CAPABILITY_DEFAULTS: Partial<
 };
 
 /**
+ * Servers `init` writes switched OFF and without a key, and the installer does
+ * not add: each is enabled only by its owner running `strad-hostd add <id>`.
+ * `custody` is one because enabling it mints the key its deposit bearer is
+ * derived from, and a credential that can write into strad's store is put on a
+ * machine by a decision, not by an upgrade.
+ */
+export const OPT_IN: readonly CapabilityId[] = ["custody"];
+
+/**
  * The name a server goes by — its strad slug, and the name in the consent
  * dialog. "headless" is the owner's word for "does not take over the screen".
  */
@@ -117,6 +145,8 @@ export function slugFor(id: CapabilityId, suffix: string): string {
       return `computer-use-${suffix}`;
     case "messages":
       return `imessage-${suffix}`;
+    case "custody":
+      return `custody-${suffix}`;
     default:
       return `${id}-${suffix}`;
   }

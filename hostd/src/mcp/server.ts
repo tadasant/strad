@@ -10,6 +10,13 @@ import type { AuditLog } from "../audit.js";
 import { CAPABILITIES, type CapabilityId } from "../capabilities.js";
 import { displayName, onTimeoutFor, type Config } from "../config.js";
 import type { ConsentGate } from "../consent/gate.js";
+import {
+  custodyAfter,
+  custodyRefusal,
+  egressHits,
+  withheldResult,
+} from "../custody/enforce.js";
+import type { Vault } from "../custody/vault.js";
 import type { KillSwitch } from "../killswitch.js";
 import { json, text, type Capability } from "./tool.js";
 
@@ -32,6 +39,11 @@ export interface ServerDeps {
   gate: ConsentGate;
   killSwitch: KillSwitch;
   audit: AuditLog;
+  /**
+   * The custody vault, shared by every server on the daemon. Absent, no
+   * custody rule applies — a test or a `stdio` run that builds a server alone.
+   */
+  vault?: Vault;
 }
 
 /**
@@ -57,7 +69,7 @@ export function buildServer(
   /** The client key's name, when the request came on one: it is shown with the server's. */
   client?: string,
 ): Server {
-  const { config, gate, killSwitch, audit } = deps;
+  const { config, gate, killSwitch, audit, vault } = deps;
   const name = displayName(config, id);
   const onTimeout = onTimeoutFor(config, id);
   /** What the dialog, the grant and the status page call the caller. */
@@ -188,6 +200,18 @@ Idempotent: ending a grant that is already gone returns {"ended":false}.`,
       const tool = req.params.name;
       const args = (req.params.arguments ?? {}) as Record<string, unknown>;
 
+      // A caller writing a held secret into ANY call has already seen it.
+      // Checked before anything runs, on every server, control tools included.
+      const leaked = vault ? egressHits(vault, args) : [];
+      if (leaked.length > 0) {
+        audit.record({
+          kind: "denied",
+          capability: id,
+          detail: `custody: ${tool} arguments carried ${leaked.join(", ")}; burned`,
+        });
+        return withheldResult(leaked, "arguments");
+      }
+
       if (tool === "request_control") {
         // A server that cannot work gets no dialog: the helper is down, or a
         // TCC grant is missing, and neither is something the person at the
@@ -300,17 +324,57 @@ Idempotent: ending a grant that is already gone returns {"ended":false}.`,
           true,
         );
       }
+      const held = vault
+        ? custodyRefusal(
+            vault,
+            id,
+            tool,
+            parsed.data as Record<string, unknown>,
+          )
+        : undefined;
+      if (held) {
+        audit.record({
+          kind: "denied",
+          capability: id,
+          grantId: used.grant.id,
+          detail: `custody hold: ${tool}`,
+        });
+        return text(held, true);
+      }
       audit.record({
         kind: "tool",
         capability: id,
         grantId: used.grant.id,
         detail: def.summarize ? def.summarize(parsed.data) : tool,
       });
+      let result: CallToolResult;
       try {
-        return await def.handler(parsed.data, { grant: used.grant });
+        result = await def.handler(parsed.data, { grant: used.grant });
       } catch (err) {
-        return text(`${tool} failed: ${(err as Error).message}`, true);
+        result = text(`${tool} failed: ${(err as Error).message}`, true);
       }
+      if (!vault) return result;
+      // THE ONE RETURN POINT. Whatever a tool produced — a page, a command's
+      // output, an error carrying a page's text — is checked against every
+      // held secret before it leaves this machine.
+      const hits = egressHits(vault, result);
+      if (hits.length > 0) {
+        audit.record({
+          kind: "denied",
+          capability: id,
+          grantId: used.grant.id,
+          detail: `custody: ${tool} result carried ${hits.join(", ")}; withheld and burned`,
+        });
+        return withheldResult(hits, "result");
+      }
+      custodyAfter(
+        vault,
+        id,
+        tool,
+        parsed.data as Record<string, unknown>,
+        result,
+      );
+      return result;
     },
   );
 

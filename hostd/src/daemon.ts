@@ -9,6 +9,8 @@ import { browserCapability } from "./browser/tools.js";
 import { CAPABILITIES, helperFor, type CapabilityId } from "./capabilities.js";
 import { computerCapability } from "./computer/foreground.js";
 import { computerHeadlessCapability } from "./computer/headless.js";
+import { custodyCapability } from "./custody/tools.js";
+import { Vault } from "./custody/vault.js";
 import { enabledCapabilities, reloadKeys, type Config } from "./config.js";
 import { ConsentGate } from "./consent/gate.js";
 import type { Notifier } from "./consent/notifier.js";
@@ -98,6 +100,14 @@ export function buildCore(
       })
     : undefined;
 
+  // ONE vault for the whole daemon, whichever servers are on: the custody
+  // server fills it, and every server's calls are checked against it
+  // (src/custody/enforce.ts), so a shell grant cannot read what a custody
+  // grant captured.
+  const vault = new Vault({
+    handleTtlMs: config.custody.handleMinutes * 60_000,
+  });
+
   // The gate and the helper each need the presence sync, which needs both.
   const late: { presence?: Presence } = {};
   const gate = new ConsentGate({
@@ -177,6 +187,13 @@ export function buildCore(
     : undefined;
   if (messagesHelper)
     capabilities.messages = messagesCapability(config, messagesHelper);
+  if (ids.includes("custody"))
+    capabilities.custody = custodyCapability(config, vault, bridge, () => {
+      const running = shell?.processes.running().length ?? 0;
+      return running > 0
+        ? `${running} shell command(s) are running on this machine, and one started before a capture would run straight through the hold. Wait for them, or kill_command them, then retry`
+        : undefined;
+    });
 
   const sweep = setInterval(() => {
     // A `touch`ed DISABLED file calls nothing: the sweep is what notices it,
@@ -187,7 +204,7 @@ export function buildCore(
   presence.start();
 
   return {
-    deps: { config, gate, killSwitch, audit },
+    deps: { config, gate, killSwitch, audit, vault },
     capabilities,
     helper,
     messagesHelper,
@@ -312,6 +329,9 @@ export async function startDaemon(
           connected: core.messagesHelper!.connected,
           error: core.messagesHelper!.error,
         })
+      : undefined,
+    custodyState: core.capabilities.custody
+      ? () => core.deps.vault!.status()
       : undefined,
     stateDir: opts.stateDir,
     extension: core.bridge

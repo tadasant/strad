@@ -354,6 +354,27 @@ Resource Manager API is not enabled on the project — the `gcloud services enab
 line above — or that this credential has no access to the project at all. It is the
 same 403 the runtime probe reports as "capability unverified".
 
+## The custody deposit route needs no grant of its own
+
+`POST /_strad/deposit/{slug}/{VARIABLE}` is how strad-hostd's custody server
+stores a credential it captured
+([custody and deposit](/servers/hostd-custody/)). It writes with the
+**console's admin credential**, through the same `store.create()` the console's
+create form calls. So it needs exactly the create permissions in the table at
+the top of this page, which §1 already grants, and nothing else. The
+per-parameter `secretAccessor` grant is made by `create()` as for any console
+create.
+
+The write-only property is enforced by the route, not by IAM. The Mac holds no
+GCP credential at all, only a bearer derived from its custody slug's key, and
+the route will only create a secret parameter under
+`/strad/<env>/mcp/<slug>/static/`. It never reads, never overwrites, and never
+touches a gateway or `oauth/` name. A GCP key on the laptop could not be made
+write-only this cleanly: creating a secret needs `secretmanager.secrets.setIamPolicy`,
+and anything holding that can grant itself read. That is the "speed bump, not a
+wall" this page closes with a deny policy for the console. Keeping the GCP
+identity on core is what keeps that deny policy the only one to maintain.
+
 ## An `oauth:` connector reads its own OAuth client
 
 A server with an [`oauth:` connector](/operate/connectors/) has a **Connect**

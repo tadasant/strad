@@ -247,6 +247,18 @@ exists — see below. If you only changed a value, nothing else is needed.
 With `provider: env`, add it to whatever seeds the deploy job's environment and
 re-run the deploy.
 
+### An agent minting it in your browser: custody
+
+When the value comes from a provider's "generate token" page, strad-hostd's
+custody server can capture it in your browser and deposit it, and the agent
+never sees it. The deposit goes to `POST /_strad/deposit/{slug}/{VARIABLE}`
+on core, which creates a **secret** parameter at
+`/strad/{env}/mcp/{slug}/static/{VARIABLE}` with the console's own write path.
+It is create-only, never reads, and never touches a gateway or `oauth/` name.
+The caller authenticates with a bearer derived from its custody slug's key, and
+only a `local-tunnel` entry with `deposit:` in the checked-in config can call
+it. See [custody and deposit](/servers/hostd-custody/).
+
 ### Secret or not: the one question to ask
 
 Not "will this value store cleanly" — that used to matter and no longer does, see

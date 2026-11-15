@@ -236,6 +236,22 @@ export const VENDORED = [
       "servers/bundle-api/fork/slack/src/events/state-store.ts",
     ],
   },
+  {
+    // BOTH ends of `POST /_strad/deposit`: core serves it (src/http/deposit.ts)
+    // and strad-hostd's custody server is its only caller, in its own npm tree
+    // on the owner's Mac. The load-bearing part is `depositToken` — the bearer
+    // both sides DERIVE from the custody slug's key rather than store. A drift
+    // in it, the context string, the path or the receipt is every deposit
+    // refused, loudly, on the owner's machine. It imports only `node:crypto`.
+    id: "deposit",
+    source: "src/secrets/deposit-wire.ts",
+    label: "the custody deposit wire",
+    banner: `// GENERATED — DO NOT EDIT.
+// Vendored from src/secrets/deposit-wire.ts by \`npm run deposit:sync\`.
+// Edit the source, run the sync, and commit both. CI fails if these drift.
+`,
+    targets: ["hostd/src/custody/deposit-wire.ts"],
+  },
 ];
 
 /**

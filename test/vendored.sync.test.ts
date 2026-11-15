@@ -9,10 +9,10 @@ const { copies, drifted, repoPath, select, VENDORED } = manifest;
 /**
  * Vendored copies rot. This is the thing that notices — for every seam at once.
  *
- * Nine seams cross an npm-tree boundary — twelve files, since one of them is a
+ * Ten seams cross an npm-tree boundary — thirteen files, since one of them is a
  * library that spans four — because a supplementary image is its own Docker
- * build context and `servers/bundle/host` and `servers/secrets` are their own
- * npm projects. Each has to exist twice, and the only thing standing between
+ * build context and `servers/bundle/host`, `servers/secrets` and `hostd` are
+ * their own npm projects. Each has to exist twice, and the only thing standing between
  * that and slowly-diverging copies is this file.
  *
  * If it fails: edit the SOURCE named in the failure (never a copy), run
@@ -103,6 +103,7 @@ describe("the vendored-module manifest", () => {
     // ships with a guard that guards nothing.
     expect(entries.map((entry) => entry.id).sort()).toEqual([
       "capabilities",
+      "deposit",
       "elicitation",
       "envprefix",
       "paramroute",

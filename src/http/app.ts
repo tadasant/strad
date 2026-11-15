@@ -73,6 +73,8 @@ import {
   createParamWriteHandler,
   createStoreRefreshHandler,
 } from "./params.ts";
+import { createDepositHandler, depositMethodNotAllowed } from "./deposit.ts";
+import { DEPOSIT_ROUTE_PREFIX } from "../secrets/deposit-wire.ts";
 import {
   createInstanceEnvHandler,
   createInstanceListHandler,
@@ -536,6 +538,24 @@ export function createApp(opts: AppOptions): Express {
     // rather than within `ttlSeconds` — the counterpart of the console's
     // "Re-read the store" button. See src/http/params.ts.
     app.post(STORE_REFRESH_ROUTE, createStoreRefreshHandler(paramsOptions));
+    // The DEPOSIT route — write-only, create-only, `static/`-only, secret-only.
+    // strad-hostd's custody server is its caller, authenticated by a bearer
+    // derived from that `local-tunnel` entry's own key and honoured only when
+    // the CHECKED-IN config declares `deposit:` on it. See src/http/deposit.ts.
+    const depositRoute = `${DEPOSIT_ROUTE_PREFIX}/:slug/:variable`;
+    app.post(
+      depositRoute,
+      createDepositHandler({
+        config: opts.config,
+        env,
+        secrets: opts.secrets ?? {},
+        runtimeConfig: opts.runtimeConfig,
+        secretProvider: opts.secretProvider,
+        parametersStore: opts.parametersStore,
+        diagnosticStore: opts.diagnosticStore,
+      }),
+    );
+    app.all(depositRoute, depositMethodNotAllowed);
     // The store-served instance pair, same direction, same token: which
     // instances a bundle should run, and one instance's own namespace. Built
     // from THIS app's config, and the app is rebuilt on every roster change, so

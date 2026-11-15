@@ -35,7 +35,8 @@
     "envprefix:sync": "node scripts/sync-vendored.mjs --only envprefix",
     "writerules:sync": "node scripts/sync-vendored.mjs --only writerules",
     "elicitation:sync": "node scripts/sync-vendored.mjs --only elicitation",
-    "statestore:sync": "node scripts/sync-vendored.mjs --only statestore"
+    "statestore:sync": "node scripts/sync-vendored.mjs --only statestore",
+    "deposit:sync": "node scripts/sync-vendored.mjs --only deposit"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",

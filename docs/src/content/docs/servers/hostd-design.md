@@ -650,6 +650,22 @@ HID tap.
   image maps back to the global coordinates `click` takes. JPEG by default,
   because a desktop is large and the caller pays per pixel.
 
+### custody — built
+
+Takes a credential the owner's browser shows or downloads into an opaque
+handle, and deposits it into strad through a write-only route. The model sees
+only the handle and the value's shape. It is its own server for the reason
+every hostd server is: "may mint and move my credentials" is a different
+grant from "may browse as me". The key strad holds for its slug is also what
+the deposit bearer is derived from.
+
+It is also the one server that changes what the others may do. One vault is
+shared by the whole daemon. While it holds a secret, shell and both
+computer-use servers refuse every call, and the browser server refuses its
+reads. Every result from every server passes an exact-match filter against the
+held values. [Custody and deposit](/servers/hostd-custody/) has the tools, the
+rules and the route.
+
 ## Security model
 
 The two locks of every `local-tunnel` slug apply unchanged. Cloudflare Access
@@ -696,6 +712,7 @@ Recommended tiering:
 | `browser-use-*-headless` | `admin` only. `evaluate_script` in a signed-in profile reaches every account the owner is logged in to, which is arguably wider than the shell. With the extension installed there is no Chrome prompt in front of that at all. |
 | `computer-use-*-headless` | `admin` only. Every app's contents, fields and buttons, in the background. |
 | `computer-use-*` | `admin` only. The screen and the keyboard; a caller here is the person at the machine. |
+| `custody-*` | `admin` only, and attached to a session only after a human approved the specific secrets it will capture. It is write-only into strad and create-only, but it clicks "generate" on the owner's accounts, and a prompt-injected page could steer it to mint a token with more scope than intended. |
 | `imessage-*` | `admin` only, and handed to the session that sweeps it. Read-only, but every conversation the owner has had, and allowed on timeout by default, so with nobody at the screen the dialog refuses nothing. A message is also untrusted text: a sweep that reads it should not hold a tool that can send on its say-so. |
 
 None of them is a candidate for fleet-wide entitlement today. If one is widened,

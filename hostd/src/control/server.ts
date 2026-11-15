@@ -35,6 +35,12 @@ export interface ControlDeps {
   helperState?: () => { connected: boolean; error?: string };
   /** The same for `strad-hostd-messages`, when the messages server is enabled. */
   messagesHelperState?: () => { connected: boolean; error?: string };
+  /** The custody vault's counts, when the custody server is enabled. */
+  custodyState?: () => {
+    handles: number;
+    tainted_tabs: number;
+    capturing: number;
+  };
   /** Where to write the control token, for the CLI. Omitted in tests. */
   stateDir?: string;
   /**
@@ -85,6 +91,7 @@ export function collectState(deps: ControlDeps): ControlState {
     helper: deps.helperState?.(),
     messagesHelper: deps.messagesHelperState?.(),
     extension: deps.extension?.bridge.state(),
+    custody: deps.custodyState?.(),
     audit: deps.audit.tail(40),
     now: Date.now(),
   };

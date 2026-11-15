@@ -183,6 +183,34 @@ const MessagesConfig = z
   })
   .default({});
 
+const CustodyConfig = z
+  .object({
+    /**
+     * The strad deployment `deposit` posts to, e.g. "https://strad.example.com".
+     * The deposit bearer is derived from THIS server's own key
+     * (`capabilities.custody.key`, the one strad holds for the custody slug),
+     * so nothing else needs configuring here. https only, but for loopback.
+     * Unset, capture works and every deposit says so.
+     */
+    stradUrl: z
+      .string()
+      .url()
+      .refine((u) => {
+        const url = new URL(u);
+        return (
+          url.protocol === "https:" ||
+          (url.protocol === "http:" &&
+            ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname))
+        );
+      }, "stradUrl must be https (or http on loopback)")
+      .optional(),
+    /** Where Chrome saves downloads, for `capture_download`. Defaults to ~/Downloads. */
+    downloadsDir: z.string().min(1).optional(),
+    /** How long a captured secret is held before it is dropped undeposited. */
+    handleMinutes: z.number().int().min(1).max(120).default(15),
+  })
+  .default({});
+
 const TunnelConfig = z
   .object({
     /** Supervise `cloudflared` as a child, so one LaunchAgent runs everything. */
@@ -208,6 +236,7 @@ export const ConfigSchema = z
         "computer-headless": CapabilityConfig,
         computer: CapabilityConfig,
         messages: CapabilityConfig,
+        custody: CapabilityConfig,
       })
       .default({}),
     consent: ConsentConfig,
@@ -216,6 +245,7 @@ export const ConfigSchema = z
     native: NativeConfig,
     computer: ComputerConfig,
     messages: MessagesConfig,
+    custody: CustodyConfig,
     tunnel: TunnelConfig,
   })
   .strict()

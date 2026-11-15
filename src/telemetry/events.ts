@@ -431,6 +431,19 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      */
     "strad.param_refused": [],
     /**
+     * strad-hostd's custody server deposited a secret through
+     * `POST /_strad/deposit` (src/http/deposit.ts), or tried to.
+     *
+     * `caller` is the depositing `local-tunnel` entry's slug, from the CONFIG —
+     * the one matched by its derived bearer. The TARGET slug and variable are
+     * the caller's own bytes and go to core's stderr only, for the reason
+     * `strad.param_refused` gives. `status` is the store's HTTP status on a
+     * failed create. A refused bearer carries nothing.
+     */
+    "strad.deposit_written": ["caller"],
+    "strad.deposit_failed": ["caller", "status"],
+    "strad.deposit_refused": [],
+    /**
      * A bundle read a store-served INSTANCE's credentials through core
      * (src/http/instances.ts) — the record a runtime-created mount would
      * otherwise not leave, since nothing about it is in a rendered spec. It
