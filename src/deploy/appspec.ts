@@ -10,8 +10,8 @@ import { bundleUrlEnvName } from "../gateway/registry.ts";
 import {
   ENV_COPIES_VAR,
   formatEnvCopies,
+  isCopyableEnvName,
   prefixedEnvName,
-  SLUG_ENV_SEPARATOR,
   slugEnvPrefix,
 } from "../secrets/env-prefix.ts";
 import { resolveMap } from "../secrets/index.ts";
@@ -870,7 +870,7 @@ function withTailnet(
  * `<SLUG>__<NAME>` — and in a real deployment most of those pairs hold one
  * value. On prod that was dozens of credentials baked twice, service-account
  * keys of 2.5 KB among them, against an App Platform spec ceiling that
- * DigitalOcean does not document and that prod has run into four times
+ * DigitalOcean does not document and that prod has run into more than once
  * (src/deploy/spec-size.ts). A copy costs the target's name and a separator.
  *
  * WHAT MAY BE FOLDED, and each limit is there to keep the container's
@@ -879,6 +879,11 @@ function withTailnet(
  *     and the tailnet block are read by things that run BEFORE the host can
  *     restore anything — `boot.sh`, the `--import`ed instrumentation — so they
  *     always travel literally.
+ *   - SECRET onto SECRET only. Folding onto a GENERAL source would print a
+ *     secret's value in the plaintext spec under the source's name.
+ *   - never a value holding `${`, which App Platform may expand as a bindable
+ *     variable; whether it expands the same way under two names is not
+ *     something this should depend on.
  *   - only onto a SOURCE that travels literally, appears once, and holds the
  *     identical value. A per-slug value nothing else holds stays literal and
  *     becomes the source for the next per-slug name that repeats it, so twelve
@@ -887,8 +892,8 @@ function withTailnet(
  *     something this should depend on.
  *   - never a name that appears twice on the component. Which of two entries
  *     App Platform keeps is not either.
- *   - never a name ending in `__`, which the list's abbreviation reserves
- *     (`formatEnvCopies` in src/secrets/env-prefix.ts).
+ *   - never a name, source or target, ending in `__`: the list's abbreviation
+ *     reserves it (`isCopyableEnvName` in src/secrets/env-prefix.ts).
  *
  * Only the caller decides WHERE this runs: on a `strad-bundle` component, the
  * one image whose host restores the copies. Any other image would be handed a
@@ -910,17 +915,20 @@ export function foldEnvCopies(
     );
   }
   const reserved = new Set<string>(TAILNET_ENV_KEYS);
-  const foldable = (e: EnvVar): boolean =>
-    perSlugKeys.has(e.key) &&
-    !e.key.endsWith(SLUG_ENV_SEPARATOR) &&
+  /** Could this entry carry a value in the list, as either end of a copy? */
+  const copyable = (e: EnvVar): boolean =>
+    e.type === "SECRET" &&
     e.value !== "" &&
+    !e.value.includes("${") &&
+    isCopyableEnvName(e.key) &&
     occurrences.get(e.key) === 1;
+  const foldable = (e: EnvVar): boolean =>
+    perSlugKeys.has(e.key) && copyable(e);
 
   /** value -> the name it travels under literally. First one wins. */
   const sources = new Map<string, string>();
   for (const e of envs) {
-    if (foldable(e) || reserved.has(e.key) || e.value === "") continue;
-    if (occurrences.get(e.key) !== 1) continue;
+    if (foldable(e) || reserved.has(e.key) || !copyable(e)) continue;
     if (!sources.has(e.value)) sources.set(e.value, e.key);
   }
 

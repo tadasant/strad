@@ -7563,9 +7563,11 @@ against an App Platform spec ceiling DigitalOcean does not document
 **What it costs.** The spec no longer lists every variable a bundle's process
 holds. The names are in `STRAD_ENV_COPIES`, beside the spec's other variables,
 but reading the full environment off the spec needs that one expansion. And it
-is a renderer/host contract: a bundle image older than the renderer drops every
-folded name (see `limitations.md` #146). Only `strad-bundle` components are
-folded. Bare names, boot keys, telemetry and tailnet variables never are.
+is a renderer/host contract that nothing checks. A bundle image older than the
+renderer silently drops every folded name, and a connector's per-slug credential
+then has no bare name to fall back on (see `limitations.md` #146). Only
+`strad-bundle` components are folded, only SECRET onto SECRET, and never a value
+holding `${`. Bare names, boot keys, telemetry and tailnet variables never are.
 
 **Undo.** Remove the `foldEnvCopies` call in `renderAppSpec`. The host's restore
 is a no-op on a spec with no list, so it can stay.

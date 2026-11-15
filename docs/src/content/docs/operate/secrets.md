@@ -622,14 +622,17 @@ GENERAL variable, `STRAD_ENV_COPIES` (`TELEGRAM_API_HASH=TELEGRAM_RW__`: copy th
 bare value to that name), and the bundle host's first import restores it into
 `process.env` before any mount, tree or child process reads the environment, then
 removes the list. The variables a running server sees are the same either way.
-What changes is the spec: on prod that was more than eighty credentials stored twice, across four components, service-account keys of 2.5 KB among them, against
+What changes is the spec: prod was carrying more than eighty credentials twice,
+service-account keys of 2.5 KB among them, against
 [a spec size ceiling](/operate/deploy-model/#the-config-travels-without-its-prose-and-the-spec-has-a-size).
 A per-slug value nothing else holds (one slug's own refresh token) is baked
 literally, and when several slugs share it (one OAuth client's id), it is baked
-once and copied to the others. Bare names, boot keys, telemetry and the tailnet
-block are never folded, because `boot.sh` and the instrumentation read them
-before the host can restore anything. Any image other than `strad-bundle` gets
-every name literally, because nothing on it would restore a copy.
+once and copied to the others. Only SECRET folds onto SECRET, so no secret value
+appears in the spec under a plaintext variable's name. Bare names, boot keys,
+telemetry and the tailnet block are never folded, because `boot.sh` and the
+instrumentation read them before the host can restore anything. Any image other
+than `strad-bundle` gets every name literally, because nothing on it would
+restore a copy.
 
 An earlier version minted the second name only where two servers resolved one
 variable differently. That was correct and unreadable: what a variable was called

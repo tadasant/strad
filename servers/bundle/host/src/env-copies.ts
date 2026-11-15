@@ -30,6 +30,6 @@ if (result.missingSources.length > 0) {
 if (result.alreadySet.length > 0) {
   logWarn(
     `env: STRAD_ENV_COPIES lists ${result.alreadySet.join(", ")}, which the ` +
-      `environment already holds; the baked value was kept`,
+      `environment already held; the spec's copy replaced it, as a baked value would have`,
   );
 }

@@ -266,12 +266,11 @@ describe("the real staging config, which is the false-positive canary", () => {
     expect(report.bytes).toBeLessThan(LARGEST_ACCEPTED_SPEC_BYTES / 2);
   });
 
-  it("carries the config gzipped, so it no longer dominates the spec", () => {
-    // The config was the one variable that dominated the spec — 47% of it on
-    // the render App Platform refused (src/deploy/config-inline.ts). Gzipped,
-    // it is about a quarter of a spec whose secrets are one byte each. (Core is the largest component again here, but only
-    // because every placeholder value is "x", so the bundle's per-slug names
-    // all fold into STRAD_ENV_COPIES; real credentials do not shrink that way.)
+  it("carries the config gzipped, under a third of the spec", () => {
+    // The config was 47% of the render App Platform refused
+    // (src/deploy/config-inline.ts). Every placeholder value here is "x", so
+    // the bundle's per-slug names all fold into STRAD_ENV_COPIES and core is the
+    // largest component; real credentials do not shrink that way.
     const report = specSizeReport(spec);
     const core = report.components.find((c) => c.name === "core")!;
     const config = core.largest[0]!;

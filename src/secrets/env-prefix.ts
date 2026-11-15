@@ -170,6 +170,21 @@ export function slugsWithPrefixedNames(
 export const ENV_COPIES_VAR = "STRAD_ENV_COPIES";
 
 /**
+ * Whether `name` can appear in a copy list, as a source or as a target: a
+ * portable variable name, not the list's own, and not ending in `__` (which the
+ * abbreviation in {@link formatEnvCopies} reserves). The renderer folds nothing
+ * that fails this, on either side, so {@link formatEnvCopies} never throws on a
+ * legal config.
+ */
+export function isCopyableEnvName(name: string): boolean {
+  return (
+    ENV_NAME.test(name) &&
+    name !== ENV_COPIES_VAR &&
+    !name.endsWith(SLUG_ENV_SEPARATOR)
+  );
+}
+
+/**
  * Serialize a copy list: `SOURCE=TARGET,TARGET;SOURCE=TARGET`.
  *
  * Not JSON, on purpose. This value sits inside a JSON app spec, where every `"`
@@ -193,11 +208,7 @@ export function formatEnvCopies(
   for (const [source, targets] of copies) {
     if (targets.length === 0) continue;
     for (const name of [source, ...targets]) {
-      if (
-        !ENV_NAME.test(name) ||
-        name === ENV_COPIES_VAR ||
-        name.endsWith(SLUG_ENV_SEPARATOR)
-      ) {
+      if (!isCopyableEnvName(name)) {
         throw new Error(
           `${ENV_COPIES_VAR}: "${name}" cannot be carried as a copy`,
         );
@@ -243,7 +254,7 @@ export interface EnvCopiesResult {
   copied: number;
   /** Sources the list named and the environment did not hold — their targets stay unset. */
   missingSources: string[];
-  /** Targets the environment already held, left as they were. */
+  /** Targets the environment already held, overwritten with the source's value. */
   alreadySet: string[];
 }
 
@@ -258,10 +269,12 @@ export interface EnvCopiesResult {
  * `process.env` directly, and every child process the host spawns, which
  * inherits the environment as it stands. Run it once, before any of them.
  *
- * Never overwrites. A target the environment already holds was baked literally,
- * and the literal is what the render meant. A missing source leaves its targets
- * unset, which is the state the reader of that name already knows how to report
- * as a missing credential; it is returned so the caller can say so.
+ * A target the environment already holds is OVERWRITTEN, and reported. The
+ * renderer never lists a name it also bakes, so a held target came from the
+ * image (a Dockerfile `ENV`) or a boot script — and in an unfolded render the
+ * spec's value beats both, so the copy has to as well. A missing source leaves
+ * its targets unset, which is the state the reader of that name already knows
+ * how to report as a missing credential; it is returned so the caller can say so.
  */
 export function applyEnvCopies(
   env: Record<string, string | undefined>,
@@ -281,10 +294,7 @@ export function applyEnvCopies(
       continue;
     }
     for (const target of targets) {
-      if (env[target] !== undefined) {
-        result.alreadySet.push(target);
-        continue;
-      }
+      if (env[target] !== undefined) result.alreadySet.push(target);
       env[target] = value;
       result.copied += 1;
     }

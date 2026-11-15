@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { parseConfig } from "../src/config/load.ts";
 import {
   foldEnvCopies,
@@ -95,19 +96,19 @@ describe("applyEnvCopies", () => {
     expect(env).toEqual({ TOKEN: "fake-token" });
   });
 
-  it("never overwrites, and reports a missing source instead of inventing a value", () => {
+  it("overwrites a held target, as a baked value would, and reports a missing source", () => {
     const env: Record<string, string | undefined> = {
       TOKEN: "fake-token",
-      A__TOKEN: "fake-literal",
+      A__TOKEN: "fake-from-the-image",
       [ENV_COPIES_VAR]: "TOKEN=A__;GONE=B__",
     };
     const result = applyEnvCopies(env);
     expect(result).toEqual({
-      copied: 0,
+      copied: 1,
       missingSources: ["GONE"],
       alreadySet: ["A__TOKEN"],
     });
-    expect(env.A__TOKEN).toBe("fake-literal");
+    expect(env.A__TOKEN).toBe("fake-token");
     expect("B__GONE" in env).toBe(false);
   });
 });
@@ -160,6 +161,29 @@ describe("foldEnvCopies", () => {
       envs,
       new Set(["A__TAIL", "A__EMPTY", "A__WEIRD__", "B__DUP"]),
     );
+    expect(folded).toEqual(envs);
+  });
+
+  it("never folds across types, onto a bindable reference, or onto a reserved name", () => {
+    const general = (key: string, value: string): EnvVar => ({
+      ...v(key, value),
+      type: "GENERAL",
+    });
+    const envs = [
+      general("NODE_ENV", "production"), // a GENERAL source would print the secret
+      v("A__MODE", "production"),
+      v("URL", "${core.PRIVATE_URL}"), // App Platform may expand it
+      v("A__URL", "${core.PRIVATE_URL}"),
+      v("FOO__", "fake-same"), // a source ending in `__` is not carriable
+      v("A__X", "fake-same"),
+      v("A__W__", "fake-other"), // nor is a per-slug name ending in `__`
+      v("B__Y", "fake-other"),
+    ];
+    const folded = foldEnvCopies(
+      envs,
+      new Set(["A__MODE", "A__URL", "A__X", "A__W__", "B__Y"]),
+    );
+    // B__Y has no carriable source, so it stays literal too: nothing folds.
     expect(folded).toEqual(envs);
   });
 
@@ -248,5 +272,62 @@ servers:
     // NODE_OPTIONS is the strad-bundle heap ceiling, not part of this.
     delete folded.NODE_OPTIONS;
     expect(folded).toEqual(literal);
+  });
+});
+
+describe("every component of the staging config", () => {
+  // Mixed values: a name shared by every server resolves the same, a name a
+  // server reads from its own namespace resolves per slug. Then each component's
+  // restored environment is folded again and restored again, and must come back
+  // unchanged: folding loses nothing a restore cannot put back.
+  const raw = readFileSync(
+    new URL("../infra/strad.staging.yaml", import.meta.url),
+    "utf8",
+  );
+  const config = parseConfig(raw, "infra/strad.staging.yaml");
+  // Every `${NAME}` the file mentions, each with a value of its own.
+  const secrets = Object.fromEntries(
+    [...raw.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map(([, name]) => [
+      name!,
+      `fake-${name}`,
+    ]),
+  );
+  const serverSecrets: Record<string, Record<string, string>> = {};
+  for (const server of config.servers) {
+    if (server.kind !== "supplementary-image") continue;
+    // Only a slug alone on `/<its own slug>` may hold a value of its own.
+    if (server.path !== `/${server.slug}`) continue;
+    if (!/-(ro|rw)$/.test(server.slug)) continue;
+    serverSecrets[server.slug] = Object.fromEntries(
+      Object.keys(server.env).map((k) => [k, `fake-${server.slug}-${k}`]),
+    );
+  }
+  const spec = renderAppSpec({
+    config,
+    appName: "strad-staging",
+    region: "nyc",
+    image: parseImage("ghcr.io/tadasant/strad:0.1.0"),
+    env: [],
+    secrets,
+    serverSecrets,
+    unseededRefs: new Set(),
+  });
+
+  it("folds something, and restores to a fixed point on every component", () => {
+    let listed = 0;
+    for (const service of spec.services) {
+      const env = restored(service.envs);
+      if (service.envs.some((e) => e.key === ENV_COPIES_VAR)) listed += 1;
+      const perSlug = new Set(
+        Object.keys(env).filter((k) => /^[A-Z][A-Z0-9_]*?__./.test(k)),
+      );
+      const asEntries = Object.entries(env).map(([key, value]) =>
+        v(key, value ?? ""),
+      );
+      expect(restored(foldEnvCopies(asEntries, perSlug)), service.name).toEqual(
+        env,
+      );
+    }
+    expect(listed).toBeGreaterThan(0);
   });
 });

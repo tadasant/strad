@@ -4606,12 +4606,14 @@ It is listed in `STRAD_ENV_COPIES`, and the bundle host restores it into
 `process.env` as its first import. That keeps the spec under App Platform's
 undocumented size ceiling.
 
-The renderer and the host have to agree. A bundle image from before this change,
-deployed by a renderer from after it, ignores the list, and every folded
-per-slug name is missing. A slug served by a per-slug instance then is not
-discovered, or reads the bare name. Prod's deploy pairs the renderer with the
-bundle built from the same history, so that needs a deliberate rollback of the
-bundle image alone. A list the host cannot parse stops the bundle at boot rather
-than guessing.
+The renderer and the host have to agree, and nothing checks that they do. A
+bundle image from before this change, deployed by a renderer from after it,
+ignores the list silently, and every folded per-slug name is missing. A slug
+served by a per-slug instance is then not discovered, and reads the bare name
+instead. A connector's per-slug credential, such as a Google refresh token, has
+no bare name to fall back on, so that slug has no credential at all. Prod's
+deploy pairs the renderer with the bundle built from the same history, so this
+takes a bundle image pinned or rolled back on its own. A list the host cannot
+parse stops the bundle at boot rather than guessing.
 
 See `HACKS.md` #146.
