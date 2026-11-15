@@ -208,6 +208,8 @@ describe("the browser server through the extension", () => {
     const opened = resultJson<{ tab_id: string; load: string; url: string }>(
       await call("open_tab", { url: "https://shop.example/cart" }),
     );
+    // The new tab sits on about:blank for two evaluations first, as a real
+    // one does: open_tab has to wait past it, not report the blank page.
     expect(opened).toMatchObject({
       load: "complete",
       url: "https://shop.example/cart",
@@ -246,6 +248,17 @@ describe("the browser server through the extension", () => {
     ).toEqual({ closed: opened.tab_id });
     expect(ext.tabs.has(Number(opened.tab_id))).toBe(false);
   });
+
+  it("does not wait out the whole timeout on a URL that loads no page", async () => {
+    const t0 = Date.now();
+    const opened = resultJson<{ load: string; url: string }>(
+      await call("open_tab", {
+        url: "https://shop.example/download/report.csv",
+      }),
+    );
+    expect(opened).toMatchObject({ load: "complete", url: "about:blank" });
+    expect(Date.now() - t0).toBeLessThan(10_000);
+  }, 20_000);
 
   it("surfaces a page's own exception, a missing tab, and a screenshot as an image", async () => {
     const thrown = await call("evaluate_script", {
