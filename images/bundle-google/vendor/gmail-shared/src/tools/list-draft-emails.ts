@@ -1,7 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
-import { getHeader } from '../utils/email-helpers.js';
+import { buildGmailDraftsUrl, draftsAccountEmail, getHeader } from '../utils/email-helpers.js';
 
 const PARAM_DESCRIPTIONS = {
   count: 'Maximum number of drafts to return. Default: 10. Max: 100.',
@@ -27,7 +27,7 @@ const TOOL_DESCRIPTION = `List draft emails from Gmail.
 - Check which drafts exist for a specific email conversation
 - Find a stale or duplicate draft to remove with delete_draft_email
 
-**Note:** Use the returned draft IDs with upsert_draft_email to update drafts, with delete_draft_email to delete them, or with send_email's from_draft_id to send them.`;
+**Note:** The response links the account's Drafts folder. Use the returned draft IDs with upsert_draft_email to update drafts, with delete_draft_email to delete them, or with send_email's from_draft_id to send them.`;
 
 export function listDraftEmailsTool(server: Server, clientFactory: ClientFactory) {
   return {
@@ -68,8 +68,12 @@ export function listDraftEmailsTool(server: Server, clientFactory: ClientFactory
           };
         }
 
-        // Fetch full draft details to get headers (subject, to, etc.)
-        const fullDrafts = await Promise.all(drafts.map((d) => client.getDraft(d.id)));
+        // Fetch full draft details to get headers (subject, to, etc.), and the
+        // account, for the Drafts folder link.
+        const [fullDrafts, accountEmail] = await Promise.all([
+          Promise.all(drafts.map((d) => client.getDraft(d.id))),
+          draftsAccountEmail(client),
+        ]);
 
         // Filter by thread_id if specified
         let filtered = fullDrafts;
@@ -99,6 +103,9 @@ export function listDraftEmailsTool(server: Server, clientFactory: ClientFactory
         }
 
         let responseText = `Found ${filtered.length} draft(s):\n`;
+        if (accountEmail) {
+          responseText += `\n**Drafts folder (${accountEmail}):** ${buildGmailDraftsUrl(accountEmail)}\n`;
+        }
 
         for (const draft of filtered) {
           const subject = getHeader(draft.message, 'Subject') || '(No Subject)';

@@ -38,7 +38,9 @@ entrypoint, which hands that same per-account layer to the shared runner.
 - `change_email_conversation` marks a conversation read, unread or archived,
   and adds or removes labels.
 - `upsert_draft_email` creates or updates a draft, with attachments by HTTPS
-  URL or as base64 (`FORK.md` delta 1). A draft is saved, not sent.
+  URL or as base64 (`FORK.md` delta 1). A draft is saved, not sent. The
+  answer names the account and links its Drafts folder (`FORK.md` delta 7),
+  as does `list_draft_emails`.
 - `delete_draft_email` deletes one draft by ID, permanently, and refuses an
   ID that is not a draft (`FORK.md` delta 5). It never touches a message or
   a thread.
