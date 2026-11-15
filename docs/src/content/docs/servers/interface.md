@@ -85,15 +85,15 @@ parameter. The credential lands under the slug's
 [`oauth` kind](/operate/secrets/#the-two-kinds-static-and-oauth).
 
 ```yaml
-- slug: google-sheets-tadas412-ro
+- slug: google-sheets-personal-ro
   kind: supplementary-image
   image: ghcr.io/tadasant/strad-bundle:latest
   bundle: bundle
-  path: /google-sheets-tadas412-ro
+  path: /google-sheets-personal-ro
   entitlements: [zimmer]
   oauth:
     provider: google
-    account: tadas412@gmail.com
+    account: personal@example.com
     scopes:
       - https://www.googleapis.com/auth/spreadsheets.readonly
 ```

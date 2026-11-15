@@ -165,12 +165,12 @@ const OAUTH_DEFAULTS = {
  * straight into the parameter store without ever being rendered, returned or
  * logged.
  *
- *   - slug: google-sheets-tadas412-ro
+ *   - slug: google-sheets-personal-ro
  *     kind: supplementary-image
  *     ...
  *     oauth:
  *       provider: google
- *       account: tadas412@gmail.com
+ *       account: personal@example.com
  *       scopes:
  *         - https://www.googleapis.com/auth/spreadsheets.readonly
  *
@@ -232,13 +232,13 @@ function connectorVariableFields(defaults: {
 const GoogleConnector = z.object({
   provider: z.literal("google"),
   /**
-   * The Google account this slug is pinned to, e.g. `tadas412@gmail.com`.
+   * The Google account this slug is pinned to, e.g. `personal@example.com`.
    *
    * Checked against the verified `email` claim on the ID token Google returns,
    * NOT against whichever account the browser happened to be signed into. A
    * mismatch is refused and its token is never written, because a slug is one
    * account by construction: the refresh token IS the account, and installing
-   * the wrong one gives an agent entitled to `tadas412` a view of `tadasant`.
+   * the wrong one gives an agent entitled to `personal` a view of `tadasant`.
    */
   account: z.string().email(),
   /**

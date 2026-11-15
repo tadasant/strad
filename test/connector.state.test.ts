@@ -44,11 +44,11 @@ const payload = (
   v: 1,
   state: "a-high-entropy-state-value-here",
   verifier: "a-pkce-verifier-of-adequate-length",
-  slug: "google-sheets-tadas412-ro",
+  slug: "google-sheets-personal-ro",
   env: "staging",
   provider: "google",
   terms: "",
-  account: "tadas412@gmail.com",
+  account: "personal@example.com",
   scopes: [
     "openid",
     "email",
@@ -56,7 +56,7 @@ const payload = (
   ],
   variable: "GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN",
   sid: consoleSessionId(PRINCIPAL),
-  next: "/ui/google-sheets-tadas412-ro",
+  next: "/ui/google-sheets-personal-ro",
   exp: now + CONNECTOR_TX_TTL_MS,
   ...overrides,
 });
@@ -70,9 +70,9 @@ describe("the sealed connector transaction", () => {
     const sealed = connector.seal(payload());
     const read = readConnectorTx(connector, cookie(sealed));
     expect(read).toMatchObject({
-      slug: "google-sheets-tadas412-ro",
+      slug: "google-sheets-personal-ro",
       env: "staging",
-      account: "tadas412@gmail.com",
+      account: "personal@example.com",
       variable: "GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN",
       sid: "google:10928374650192837465",
     });

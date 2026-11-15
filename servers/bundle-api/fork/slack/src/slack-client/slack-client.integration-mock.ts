@@ -24,7 +24,7 @@ interface MockData {
 
 const DEFAULT_USERS: User[] = [
   {
-    id: 'U0BFTSUN8MD',
+    id: 'U012AB3CDEF',
     name: 'tadas',
     real_name: 'Tadas Antanavicius',
     is_bot: false,
@@ -41,9 +41,9 @@ const DEFAULT_USERS: User[] = [
 
 const DEFAULT_DMS: DirectMessage[] = [
   {
-    id: 'D0BGVRZRX4Z',
+    id: 'D034CD5EFGH',
     isGroup: false,
-    userId: 'U0BFTSUN8MD',
+    userId: 'U012AB3CDEF',
     user: DEFAULT_USERS[0],
     created: 1783890249,
     updated: 1786500743223,

@@ -75,10 +75,10 @@ it the way it was written. mrkdwn is not Markdown.
 • 3 tilde pair(s) — Slack has STRUCK THROUGH the text between each pair
     "750 som each ("
     "500 som pp, or 2000–3000 som ("
-    "5000-7000 som for a 4x4; Naryn cars run"
+    "5000-7000 som for a 4x4; Dover cars run"
   mrkdwn has no backslash escape: write "approx." or "≈", or wrap the value in `backticks`.
 
-To repair: slack_update_message with channel_id "C0BG98BRH7U" and message_ts "1786453389.428549". Note that chat.update caps text at 4,000 characters — a message long enough to post is not always short enough to edit.
+To repair: slack_update_message with channel_id "C012AB3CDEF" and message_ts "1700000000.000100". Note that chat.update caps text at 4,000 characters — a message long enough to post is not always short enough to edit.
 ```
 
 Each quoted span ENDS at the closing tilde, which is why they read as fragments:
@@ -132,7 +132,7 @@ tools are untouched.
 
 #### Naming a recipient
 
-One parameter, four forms: a user ID (`U0BFTSUN8MD`), an email address, a handle
+One parameter, four forms: a user ID (`U012AB3CDEF`), an email address, a handle
 with or without the `@`, or a display or real name. Matching is
 case-insensitive, exact beats prefix beats substring, and — as the tie-break —
 a hit on a handle beats one on a display name beats one on a real name beats one

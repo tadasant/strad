@@ -26,7 +26,7 @@ resolved to a name where the token can read the user directory.
 
 **Returns:**
 For each conversation:
-- DM channel ID (e.g. "D0BGVRZRX4Z") — an ordinary channel ID that every other
+- DM channel ID (e.g. "D034CD5EFGH") — an ordinary channel ID that every other
   tool here accepts
 - The other member: real name, handle and user ID
 - Last activity, where Slack reports one for the conversation. Where it does not,

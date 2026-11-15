@@ -163,7 +163,7 @@ test("an EMPTY app pair is still an OAuth mount, because discovery keys on the n
 });
 
 test("THE TRAP: the app pair beside a bare service account is a WORKING wrong mailbox", () => {
-  // Left in place, this is what an unconnected `gmail-tadas412-ro` would be. The
+  // Left in place, this is what an unconnected `gmail-personal-ro` would be. The
   // point of asserting it is that the failure is silent — `missingCredentials`
   // reports nothing wrong and the client is real. Sheets cannot express this
   // bug; it has one auth mode and its fallback is at worst another spreadsheets
@@ -285,7 +285,7 @@ test("an expired token names the slug's console page, not an OAuth Playground", 
   // it stays out of the tree.
   const client = createDefaultClient({
     ...account("expiring"),
-    GMAIL_RECONNECT_URL: "https://strad.example/ui/gmail-tadas412-ro",
+    GMAIL_RECONNECT_URL: "https://strad.example/ui/gmail-personal-ro",
   });
   const oauth2 = Object.values(client as Record<string, unknown>).find(
     (v): v is { getAccessToken: () => Promise<unknown> } =>
@@ -296,7 +296,7 @@ test("an expired token names the slug's console page, not an OAuth Playground", 
 
   await assert.rejects(client.listMessages(), (error: Error) => {
     assert.match(error.message, /invalid_grant/);
-    assert.match(error.message, /https:\/\/strad\.example\/ui\/gmail-tadas412-ro/);
+    assert.match(error.message, /https:\/\/strad\.example\/ui\/gmail-personal-ro/);
     assert.match(error.message, /Reconnect Google/);
     return true;
   });

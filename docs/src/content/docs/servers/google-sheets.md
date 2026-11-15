@@ -41,14 +41,14 @@ as the bare token. `google-docs` is the same again. See [Connectors](/operate/co
 
 A slug's credential is baked onto the container under
 [the slug's own variable names](/operate/secrets/#what-a-servers-variables-are-called-on-the-box)
-(`GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`), and the bundle
+(`GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`), and the bundle
 host mounts one instance of this server per slug it finds the OAuth client id and
 secret for — the token is what the mount is _for_, not what summons it.
 Nothing forks: the account is a parameter, and so is the tier.
 
 ```
-                       ┌── /google-sheets-tadas412-ro     ← token: account A
-  one implementation ──┼── /google-sheets-tadas412-rw     ← token: account A
+                       ┌── /google-sheets-personal-ro     ← token: account A
+  one implementation ──┼── /google-sheets-personal-rw     ← token: account A
   (vendored once)      ├── /google-sheets-tadas-tadasant-ro  ← token: account B
                        ├── ...
                        └── /google-sheets                 ← conventional mount
@@ -84,15 +84,15 @@ write tools and `share_spreadsheet` withheld by strad's
 `tools/call`:
 
 ```yaml
-- slug: google-sheets-tadas412-ro
+- slug: google-sheets-personal-ro
   kind: supplementary-image
   image: ghcr.io/tadasant/strad-bundle:latest
   bundle: bundle
-  path: /google-sheets-tadas412-ro
+  path: /google-sheets-personal-ro
   entitlements: [zimmer]
   oauth:
     provider: google
-    account: tadas412@gmail.com
+    account: personal@example.com
     scopes:
       - https://www.googleapis.com/auth/spreadsheets.readonly
   tools:

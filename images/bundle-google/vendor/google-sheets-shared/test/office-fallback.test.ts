@@ -71,7 +71,7 @@ const googleError = (status, message, statusText = "Forbidden") =>
 const metadata = (overrides = {}) =>
   okJson({ id: FILE_ID, name: "Master tracker.xlsx", mimeType: XLSX_MIME, ...overrides });
 
-const loader = () => new OfficeWorkbookLoader(async () => ({ Authorization: "Bearer t" }), "https://strad.example/ui/google-sheets-tadas412-ro");
+const loader = () => new OfficeWorkbookLoader(async () => ({ Authorization: "Bearer t" }), "https://strad.example/ui/google-sheets-personal-ro");
 
 beforeEach(() => {
   calls = [];
@@ -171,7 +171,7 @@ test("a missing Drive scope names the scope, the field and the button", async ()
     assert.match(message, /oauth: scopes:/);
     // Consent does not follow a config edit — the trap this sentence exists for.
     assert.match(message, /a scope added to a config does not reach an already-minted refresh token/);
-    assert.match(message, /Reconnect Google on https:\/\/strad\.example\/ui\/google-sheets-tadas412-ro/);
+    assert.match(message, /Reconnect Google on https:\/\/strad\.example\/ui\/google-sheets-personal-ro/);
     // And the route that needs no scope change at all.
     assert.match(message, /File > Save as Google Sheets/);
     return true;

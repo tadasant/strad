@@ -5,14 +5,14 @@ import type { User, UserMatch } from '../types.js';
 /**
  * How a DM tool names its recipient.
  *
- * A raw `U0BFTSUN8MD` is what Slack's API wants and is not something an agent
+ * A raw `U012AB3CDEF` is what Slack's API wants and is not something an agent
  * has lying around; a name is what the agent has and is not unique. So one
  * parameter takes all three forms and the AMBIGUITY, not the lookup, is what
  * gets surfaced: an identifier matching two people is an error listing both with
  * their IDs, never a message delivered to whichever sorted first.
  */
 export const USER_PARAM_GUIDANCE =
-  'The recipient. Accepts any of: a Slack user ID ("U0BFTSUN8MD" — exact and ' +
+  'The recipient. Accepts any of: a Slack user ID ("U012AB3CDEF" — exact and ' +
   'always unambiguous), an email address ("tadas@example.com", needs the ' +
   'users:read.email scope), a handle with or without the "@" ("@tadas"), or a ' +
   'display or real name ("Tadas Antanavicius"). Names are matched case-' +
@@ -42,7 +42,7 @@ const MAX_CANDIDATES = 5;
 
 export interface ResolvedUser {
   id: string;
-  /** "Tadas Antanavicius (@tadas, U0BFTSUN8MD)" — what a result line should say. */
+  /** "Tadas Antanavicius (@tadas, U012AB3CDEF)" — what a result line should say. */
   label: string;
   /** Absent when the directory could not confirm the id. The label says so too. */
   user?: User;

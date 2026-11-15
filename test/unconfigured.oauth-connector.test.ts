@@ -57,7 +57,7 @@ import {
  */
 
 const ENV = "test";
-const SLUG = "google-docs-tadas412-ro";
+const SLUG = "google-docs-personal-ro";
 const REFRESH = "GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN";
 
 const cleanup: Array<() => Promise<void> | void> = [];
@@ -108,7 +108,7 @@ servers:
     entitlements: [admin]
     oauth:
       provider: google
-      account: tadas412@gmail.com
+      account: personal@example.com
       scopes: [https://www.googleapis.com/auth/documents.readonly]
 `);
 }

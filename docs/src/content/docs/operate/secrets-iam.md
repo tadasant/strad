@@ -441,7 +441,7 @@ only**:
 ```bash
 PROJECT=strad-secrets-prod
 SA=strad-secrets-admin@${PROJECT}.iam.gserviceaccount.com
-SLUG=google-sheets-tadas412-ro
+SLUG=google-sheets-personal-ro
 ENV=prod
 
 for VAR in GOOGLE_SHEETS_OAUTH_CLIENT_ID GOOGLE_SHEETS_OAUTH_CLIENT_SECRET; do

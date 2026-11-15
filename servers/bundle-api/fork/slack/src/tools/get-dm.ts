@@ -7,7 +7,7 @@ import { resolveUser, USER_PARAM_GUIDANCE } from './resolve-user.js';
 const PARAM_DESCRIPTIONS = {
   user: `Read the DM with this person. ${USER_PARAM_GUIDANCE}`,
   channel_id:
-    'Read this DM channel directly (e.g. "D0BGVRZRX4Z"), skipping the user lookup. ' +
+    'Read this DM channel directly (e.g. "D034CD5EFGH"), skipping the user lookup. ' +
     'Get DM channel IDs from slack_get_dms or from a slack_send_dm result. ' +
     'Pass either this or user, not both.',
   message_limit:

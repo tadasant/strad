@@ -60,7 +60,7 @@ import {
 
 const BOOTSTRAP = "bootstrap-secret-for-the-refusal-suite";
 const SESSION_KEY = "a-console-session-secret-of-adequate-length";
-const SLUG = "google-sheets-tadas412-ro";
+const SLUG = "google-sheets-personal-ro";
 const NS = `/strad/test/mcp/${SLUG}/static/`;
 const CLIENT_ID_VAR = "GOOGLE_SHEETS_OAUTH_CLIENT_ID";
 const CLIENT_SECRET_VAR = "GOOGLE_SHEETS_OAUTH_CLIENT_SECRET";
@@ -131,7 +131,7 @@ servers:
     entitlements: [admin]
     oauth:
       provider: google
-      account: tadas412@gmail.com
+      account: personal@example.com
       scopes: [https://www.googleapis.com/auth/spreadsheets.readonly]
 `;
 }

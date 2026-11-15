@@ -30,7 +30,7 @@
  *
  * So a per-slug mount that inherited the bare names would not merely be
  * unconfigured — it would be configured as SOMEBODY ELSE. An unconnected
- * `gmail-tadas412-ro` falling back to `GMAIL_SERVICE_ACCOUNT_*` +
+ * `gmail-personal-ro` falling back to `GMAIL_SERVICE_ACCOUNT_*` +
  * `GMAIL_IMPERSONATE_EMAIL` serves a work mailbox under a slug named for a
  * personal account, and every symptom says the mount is healthy. That is why
  * {@link GMAIL_ENV_NAMES} names the SERVICE-ACCOUNT variables too: the bundle
@@ -294,7 +294,7 @@ export interface CreateMCPServerOptions {
  * The `-ro` / `-rw` / `-rw-external` split is NOT normally made here. strad's
  * gateway carries a `tools:` allow-list per slug and enforces it on
  * `tools/list` and on `tools/call` (`src/gateway/toolPolicy.ts`), so
- * `gmail-tadas412-ro` is this same server with the write tools withheld.
+ * `gmail-personal-ro` is this same server with the write tools withheld.
  * Deciding it in the container instead would mean a container per tier per
  * account, which is the architecture the bundle exists to have deleted — and it
  * is why the bundle host SCRUBS every `*_ENABLED_TOOLGROUPS` variable at boot
