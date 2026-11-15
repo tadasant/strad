@@ -45,25 +45,25 @@ roles:
 bundles:
   - name: bundle
 servers:
-  - slug: google-sheets-tadas412-ro
+  - slug: google-sheets-personal-ro
     kind: supplementary-image
     image: ${IMAGE}
     bundle: bundle
-    path: /google-sheets-tadas412-ro
+    path: /google-sheets-personal-ro
     entitlements: [admin]
     oauth:
       provider: google
-      account: tadas412@gmail.com
+      account: personal@example.com
       scopes: [${SHEETS_RO}]
-  - slug: google-sheets-tadas412-rw
+  - slug: google-sheets-personal-rw
     kind: supplementary-image
     image: ${IMAGE}
     bundle: bundle
-    path: /google-sheets-tadas412-rw
+    path: /google-sheets-personal-rw
     entitlements: [admin]
     oauth:
       provider: google
-      account: tadas412@gmail.com
+      account: personal@example.com
       scopes: [https://www.googleapis.com/auth/spreadsheets]
 `);
 
@@ -104,22 +104,22 @@ describe("a connector's variables are injected, never referenced", () => {
   it("renders a spec for a slug whose refresh token DOES NOT EXIST YET", () => {
     // The whole point. Two slugs, neither connected, and the deploy is fine.
     const spec = render({
-      "google-sheets-tadas412-ro": {
+      "google-sheets-personal-ro": {
         GOOGLE_SHEETS_OAUTH_CLIENT_ID: "client-id",
         GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "client-secret",
       },
-      "google-sheets-tadas412-rw": {
+      "google-sheets-personal-rw": {
         GOOGLE_SHEETS_OAUTH_CLIENT_ID: "client-id",
         GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "client-secret",
       },
     });
     const env = bundleEnv(spec);
-    expect(env.GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_CLIENT_ID).toBe(
+    expect(env.GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_CLIENT_ID).toBe(
       "client-id",
     );
     // Absent, not empty: the mount degrades and says which variable is missing.
     expect(
-      "GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN" in env,
+      "GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN" in env,
     ).toBe(false);
   });
 
@@ -131,7 +131,7 @@ describe("a connector's variables are injected, never referenced", () => {
 
   it("injects the token under the slug's OWN name, and never under the bare one", () => {
     const spec = render({
-      "google-sheets-tadas412-ro": {
+      "google-sheets-personal-ro": {
         GOOGLE_SHEETS_OAUTH_CLIENT_ID: "client-id",
         GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "client-secret",
         GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "ro-refresh",
@@ -139,7 +139,7 @@ describe("a connector's variables are injected, never referenced", () => {
     });
     const env = bundleEnv(spec);
     expect(
-      env.GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN,
+      env.GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN,
     ).toBe("ro-refresh");
 
     // THE BARE NAME IS EMPTY, AND THAT IS THE POINT. The bundle host falls back
@@ -150,19 +150,19 @@ describe("a connector's variables are injected, never referenced", () => {
 
     // And the slug that owns it still reads it, through the view its host uses.
     expect(
-      mountSees(spec, "google-sheets-tadas412-ro")
+      mountSees(spec, "google-sheets-personal-ro")
         .GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN,
     ).toBe("ro-refresh");
   });
 
   it("gives two slugs on one bundle their own tokens, connected independently", () => {
     const spec = render({
-      "google-sheets-tadas412-ro": {
+      "google-sheets-personal-ro": {
         GOOGLE_SHEETS_OAUTH_CLIENT_ID: "client-id",
         GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "client-secret",
         GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "ro-refresh",
       },
-      "google-sheets-tadas412-rw": {
+      "google-sheets-personal-rw": {
         GOOGLE_SHEETS_OAUTH_CLIENT_ID: "client-id",
         GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "client-secret",
         GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "rw-refresh",
@@ -170,31 +170,31 @@ describe("a connector's variables are injected, never referenced", () => {
     });
     const env = bundleEnv(spec);
     expect(
-      env.GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN,
+      env.GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN,
     ).toBe("ro-refresh");
     expect(
-      env.GOOGLE_SHEETS_TADAS412_RW__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN,
+      env.GOOGLE_SHEETS_PERSONAL_RW__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN,
     ).toBe("rw-refresh");
   });
 
   it("connects one slug without disturbing its unconnected sibling", () => {
     const spec = render({
-      "google-sheets-tadas412-ro": {
+      "google-sheets-personal-ro": {
         GOOGLE_SHEETS_OAUTH_CLIENT_ID: "client-id",
         GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "client-secret",
         GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "ro-refresh",
       },
-      "google-sheets-tadas412-rw": {
+      "google-sheets-personal-rw": {
         GOOGLE_SHEETS_OAUTH_CLIENT_ID: "client-id",
         GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "client-secret",
       },
     });
     const env = bundleEnv(spec);
     expect(
-      env.GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN,
+      env.GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN,
     ).toBe("ro-refresh");
     expect(
-      "GOOGLE_SHEETS_TADAS412_RW__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN" in env,
+      "GOOGLE_SHEETS_PERSONAL_RW__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN" in env,
     ).toBe(false);
 
     // THE ASSERTION THAT MATTERS. An absent alias is not isolation on its own —
@@ -202,7 +202,7 @@ describe("a connector's variables are injected, never referenced", () => {
     // must see no refresh token at all, or it would come up holding its
     // sibling's while its console page said "not connected".
     expect(
-      mountSees(spec, "google-sheets-tadas412-rw")
+      mountSees(spec, "google-sheets-personal-rw")
         .GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN,
     ).toBeUndefined();
   });
@@ -212,26 +212,26 @@ describe("a connector's variables are injected, never referenced", () => {
     // six production slugs take: one OAuth app, one bundle, the same three
     // variable names, and only the write tier connected.
     const spec = render({
-      "google-sheets-tadas412-rw": {
+      "google-sheets-personal-rw": {
         GOOGLE_SHEETS_OAUTH_CLIENT_ID: "client-id",
         GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "client-secret",
         GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "rw-WRITE-SCOPED-TOKEN",
       },
     });
-    const ro = mountSees(spec, "google-sheets-tadas412-ro");
+    const ro = mountSees(spec, "google-sheets-personal-ro");
     expect(ro.GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN).toBeUndefined();
     expect(ro.GOOGLE_SHEETS_OAUTH_CLIENT_ID).toBeUndefined();
     expect(ro.GOOGLE_SHEETS_OAUTH_CLIENT_SECRET).toBeUndefined();
     // The connected sibling is unaffected.
     expect(
-      mountSees(spec, "google-sheets-tadas412-rw")
+      mountSees(spec, "google-sheets-personal-rw")
         .GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN,
     ).toBe("rw-WRITE-SCOPED-TOKEN");
   });
 
   it("ships the credentials as SECRET vars on that bundle, not as a broadcast", () => {
     const spec = render({
-      "google-sheets-tadas412-ro": {
+      "google-sheets-personal-ro": {
         GOOGLE_SHEETS_OAUTH_CLIENT_ID: "client-id",
         GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "client-secret",
         GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "ro-refresh",
@@ -241,7 +241,7 @@ describe("a connector's variables are injected, never referenced", () => {
     const token = (service.envs ?? []).find(
       (e) =>
         e.key ===
-        "GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN",
+        "GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN",
     );
     expect(token?.type).toBe("SECRET");
 
@@ -255,14 +255,14 @@ describe("a connector's variables are injected, never referenced", () => {
 
   it("ignores an empty value rather than baking a non-credential", () => {
     const spec = render({
-      "google-sheets-tadas412-ro": {
+      "google-sheets-personal-ro": {
         GOOGLE_SHEETS_OAUTH_CLIENT_ID: "client-id",
         GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "client-secret",
         GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "",
       },
     });
     expect(
-      "GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN" in
+      "GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN" in
         bundleEnv(spec),
     ).toBe(false);
   });
@@ -272,16 +272,16 @@ describe("a connector's variables are injected, never referenced", () => {
     // /strad/{env}/mcp/{slug}/static/ alone. A value under the sibling is not a
     // value under this one.
     const spec = render({
-      "google-sheets-tadas412-rw": {
+      "google-sheets-personal-rw": {
         GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "rw-refresh",
       },
     });
     const env = bundleEnv(spec);
     expect(
-      "GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN" in env,
+      "GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN" in env,
     ).toBe(false);
     expect(
-      mountSees(spec, "google-sheets-tadas412-ro")
+      mountSees(spec, "google-sheets-personal-ro")
         .GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN,
     ).toBeUndefined();
   });
@@ -290,7 +290,7 @@ describe("a connector's variables are injected, never referenced", () => {
 describe("a seeded connector parameter is not reported as unread", () => {
   it("counts the three variables as names this slug's namespace serves", () => {
     const names = ownNamespaceNamesBySlug(CONFIG);
-    expect([...(names.get("google-sheets-tadas412-ro") ?? [])].sort()).toEqual([
+    expect([...(names.get("google-sheets-personal-ro") ?? [])].sort()).toEqual([
       "GOOGLE_SHEETS_OAUTH_CLIENT_ID",
       "GOOGLE_SHEETS_OAUTH_CLIENT_SECRET",
       "GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN",
@@ -302,7 +302,7 @@ describe("a seeded connector parameter is not reported as unread", () => {
       CONFIG,
       new Map([
         [
-          "google-sheets-tadas412-ro",
+          "google-sheets-personal-ro",
           [
             "GOOGLE_SHEETS_OAUTH_CLIENT_ID",
             "GOOGLE_SHEETS_OAUTH_CLIENT_SECRET",
@@ -316,7 +316,7 @@ describe("a seeded connector parameter is not reported as unread", () => {
   it("still warns about a variable this connector does not read", () => {
     const findings = unreadParameters(
       CONFIG,
-      new Map([["google-sheets-tadas412-ro", ["GOOGLE_SHEETS_OAUTH_TYPO"]]]),
+      new Map([["google-sheets-personal-ro", ["GOOGLE_SHEETS_OAUTH_TYPO"]]]),
     );
     expect(findings).toHaveLength(1);
     expect(findings[0]!.message).toContain("GOOGLE_SHEETS_OAUTH_TYPO");

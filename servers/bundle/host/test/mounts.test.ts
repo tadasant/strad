@@ -191,21 +191,21 @@ describe("extraSlugs", () => {
 
   it("finds an UNCONNECTED google-sheets slug, which has no refresh token yet", () => {
     const found = extraSlugs("google-sheets", SHEETS_MARKERS, {
-      GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_CLIENT_ID: "id",
-      GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "secret",
+      GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_CLIENT_ID: "id",
+      GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "secret",
     } as NodeJS.ProcessEnv);
 
-    expect(found).toEqual(["google-sheets-tadas412-ro"]);
+    expect(found).toEqual(["google-sheets-personal-ro"]);
   });
 
   it("finds a connected google-sheets slug too — the token is not a marker", () => {
     const found = extraSlugs("google-sheets", SHEETS_MARKERS, {
-      GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_CLIENT_ID: "id",
-      GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "secret",
-      GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "token",
+      GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_CLIENT_ID: "id",
+      GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "secret",
+      GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "token",
     } as NodeJS.ProcessEnv);
 
-    expect(found).toEqual(["google-sheets-tadas412-ro"]);
+    expect(found).toEqual(["google-sheets-personal-ro"]);
   });
 
   it("still requires EVERY marker: the id alone is not a google-sheets slug", () => {
@@ -214,7 +214,7 @@ describe("extraSlugs", () => {
     // is a stray `..__GOOGLE_SHEETS_OAUTH_CLIENT_ID` belonging to nobody.
     expect(
       extraSlugs("google-sheets", SHEETS_MARKERS, {
-        GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_CLIENT_ID: "id",
+        GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_CLIENT_ID: "id",
       } as NodeJS.ProcessEnv),
     ).toEqual([]);
 
@@ -222,7 +222,7 @@ describe("extraSlugs", () => {
     // nothing either, because it is not in the marker set at all.
     expect(
       extraSlugs("google-sheets", SHEETS_MARKERS, {
-        GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "token",
+        GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "token",
       } as NodeJS.ProcessEnv),
     ).toEqual([]);
   });
@@ -269,7 +269,7 @@ describe("extraSlugs", () => {
   const GMAIL_MARKERS = ["GMAIL_OAUTH_CLIENT_ID", "GMAIL_OAUTH_CLIENT_SECRET"];
 
   it("finds an UNCONNECTED gmail slug beside the conventional service-account mount", () => {
-    // The state a prod `gmail-tadas412-ro` deploys in: the OAuth app pair
+    // The state a prod `gmail-personal-ro` deploys in: the OAuth app pair
     // injected by the renderer, no token yet, and the conventional /gmail
     // mount's service-account credential sitting on the same container under
     // bare names. Discovery must see the slug; `dropInheritedNames` below is
@@ -278,11 +278,11 @@ describe("extraSlugs", () => {
       GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL: "dwd@tadasant.iam.gserviceaccount.com",
       GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----",
       GMAIL_IMPERSONATE_EMAIL: "tadas@tadasant.com",
-      GMAIL_TADAS412_RO__GMAIL_OAUTH_CLIENT_ID: "id",
-      GMAIL_TADAS412_RO__GMAIL_OAUTH_CLIENT_SECRET: "secret",
+      GMAIL_PERSONAL_RO__GMAIL_OAUTH_CLIENT_ID: "id",
+      GMAIL_PERSONAL_RO__GMAIL_OAUTH_CLIENT_SECRET: "secret",
     } as NodeJS.ProcessEnv);
 
-    expect(found).toEqual(["gmail-tadas412-ro"]);
+    expect(found).toEqual(["gmail-personal-ro"]);
   });
 
   it("does not mistake the conventional gmail credential for a per-slug one", () => {
@@ -308,7 +308,7 @@ describe("extraSlugs", () => {
   ];
 
   it("finds an UNCONNECTED google-docs slug beside the conventional service-account mount", () => {
-    // The state a prod `google-docs-tadas412-ro` deploys in, with the
+    // The state a prod `google-docs-personal-ro` deploys in, with the
     // conventional /google-docs slugs' variables baked under their own
     // prefixes too — those carry no OAuth pair, so they ask for no mount.
     const found = extraSlugs("google-docs", DOCS_MARKERS, {
@@ -316,15 +316,15 @@ describe("extraSlugs", () => {
       GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----",
       GOOGLE_DOCS_IMPERSONATE_EMAIL: "tadas@tadasant.com",
       GOOGLE_DOCS_RO__GOOGLE_DOCS_IMPERSONATE_EMAIL: "tadas@tadasant.com",
-      GOOGLE_DOCS_TADAS412_RO__GOOGLE_DOCS_OAUTH_CLIENT_ID: "id",
-      GOOGLE_DOCS_TADAS412_RO__GOOGLE_DOCS_OAUTH_CLIENT_SECRET: "secret",
-      GOOGLE_DOCS_TADAS412_RW_EXTERNAL__GOOGLE_DOCS_OAUTH_CLIENT_ID: "id",
-      GOOGLE_DOCS_TADAS412_RW_EXTERNAL__GOOGLE_DOCS_OAUTH_CLIENT_SECRET: "secret",
+      GOOGLE_DOCS_PERSONAL_RO__GOOGLE_DOCS_OAUTH_CLIENT_ID: "id",
+      GOOGLE_DOCS_PERSONAL_RO__GOOGLE_DOCS_OAUTH_CLIENT_SECRET: "secret",
+      GOOGLE_DOCS_PERSONAL_RW_EXTERNAL__GOOGLE_DOCS_OAUTH_CLIENT_ID: "id",
+      GOOGLE_DOCS_PERSONAL_RW_EXTERNAL__GOOGLE_DOCS_OAUTH_CLIENT_SECRET: "secret",
     } as NodeJS.ProcessEnv);
 
     expect(found.sort()).toEqual([
-      "google-docs-tadas412-ro",
-      "google-docs-tadas412-rw-external",
+      "google-docs-personal-ro",
+      "google-docs-personal-rw-external",
     ]);
   });
 
@@ -333,14 +333,14 @@ describe("extraSlugs", () => {
     // google-sheets default variable names is discovered by SHEETS, which is
     // why a docs connector has to name GOOGLE_DOCS_OAUTH_* explicitly.
     const env = {
-      GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_CLIENT_ID: "id",
-      GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "secret",
+      GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_CLIENT_ID: "id",
+      GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "secret",
     } as NodeJS.ProcessEnv;
     expect(extraSlugs("google-docs", DOCS_MARKERS, env)).toEqual([]);
     expect(
       extraSlugs("google-sheets", SHEETS_MARKERS, {
-        GOOGLE_DOCS_TADAS412_RO__GOOGLE_DOCS_OAUTH_CLIENT_ID: "id",
-        GOOGLE_DOCS_TADAS412_RO__GOOGLE_DOCS_OAUTH_CLIENT_SECRET: "secret",
+        GOOGLE_DOCS_PERSONAL_RO__GOOGLE_DOCS_OAUTH_CLIENT_ID: "id",
+        GOOGLE_DOCS_PERSONAL_RO__GOOGLE_DOCS_OAUTH_CLIENT_SECRET: "secret",
       } as NodeJS.ProcessEnv),
     ).toEqual([]);
   });
@@ -372,8 +372,8 @@ describe("dropInheritedNames", () => {
   it("keeps a name the slug holds under its OWN prefix", () => {
     const view = { [TOKEN]: "mine" };
 
-    dropInheritedNames(view, "google-sheets-tadas412-ro", [TOKEN], {
-      GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "mine",
+    dropInheritedNames(view, "google-sheets-personal-ro", [TOKEN], {
+      GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "mine",
       [TOKEN]: "somebody-elses",
     } as NodeJS.ProcessEnv);
 
@@ -387,7 +387,7 @@ describe("dropInheritedNames", () => {
     const log = captureLog();
     const view = { [TOKEN]: "somebody-elses" };
 
-    dropInheritedNames(view, "google-sheets-tadas412-ro", [TOKEN], {
+    dropInheritedNames(view, "google-sheets-personal-ro", [TOKEN], {
       [TOKEN]: "somebody-elses",
     } as NodeJS.ProcessEnv);
 
@@ -395,7 +395,7 @@ describe("dropInheritedNames", () => {
     expect(log.lines()).toHaveLength(1);
     expect(log.lines()[0]).toContain(`not inheriting the bare ${TOKEN}`);
     expect(log.lines()[0]).toContain(
-      "GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN",
+      "GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN",
     );
   });
 
@@ -405,8 +405,8 @@ describe("dropInheritedNames", () => {
     const log = captureLog();
     const view: Record<string, string | undefined> = {};
 
-    dropInheritedNames(view, "google-sheets-tadas412-ro", [TOKEN], {
-      GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_CLIENT_ID: "id",
+    dropInheritedNames(view, "google-sheets-personal-ro", [TOKEN], {
+      GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_CLIENT_ID: "id",
     } as NodeJS.ProcessEnv);
 
     expect(view).toEqual({});
@@ -416,8 +416,8 @@ describe("dropInheritedNames", () => {
   it("treats an empty per-slug value as no value: '' is not a credential", () => {
     const view = { [TOKEN]: "somebody-elses" };
 
-    dropInheritedNames(view, "google-sheets-tadas412-ro", [TOKEN], {
-      GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "",
+    dropInheritedNames(view, "google-sheets-personal-ro", [TOKEN], {
+      GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "",
       [TOKEN]: "somebody-elses",
     } as NodeJS.ProcessEnv);
 
@@ -433,7 +433,7 @@ describe("dropInheritedNames", () => {
    * service account impersonating a Workspace user, so all three of those
    * variables are on the container as bare names.
    *
-   * Inherit them and an unconnected `gmail-tadas412-ro` is not degraded: it is
+   * Inherit them and an unconnected `gmail-personal-ro` is not degraded: it is
    * SOMEBODY ELSE. Tadas's work mailbox, served under a slug named for his
    * personal account, with every tool call succeeding and the console page still
    * saying "not connected". Nothing about that reads as a failure.
@@ -451,8 +451,8 @@ describe("dropInheritedNames", () => {
       GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL: "dwd@tadasant.iam.gserviceaccount.com",
       GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----",
       GMAIL_IMPERSONATE_EMAIL: "tadas@tadasant.com",
-      GMAIL_TADAS412_RO__GMAIL_OAUTH_CLIENT_ID: "id",
-      GMAIL_TADAS412_RO__GMAIL_OAUTH_CLIENT_SECRET: "secret",
+      GMAIL_PERSONAL_RO__GMAIL_OAUTH_CLIENT_ID: "id",
+      GMAIL_PERSONAL_RO__GMAIL_OAUTH_CLIENT_SECRET: "secret",
     } as NodeJS.ProcessEnv;
     // What `slugEnvView` hands the mount: its own two, plus the bare three.
     const view: Record<string, string | undefined> = {
@@ -461,7 +461,7 @@ describe("dropInheritedNames", () => {
       GMAIL_OAUTH_CLIENT_SECRET: "secret",
     };
 
-    dropInheritedNames(view, "gmail-tadas412-ro", GMAIL_PER_ACCOUNT, box);
+    dropInheritedNames(view, "gmail-personal-ro", GMAIL_PER_ACCOUNT, box);
 
     // The marker pair survives — it is this slug's own, and it is what the
     // consent flow needs to mint the token.
@@ -478,7 +478,7 @@ describe("dropInheritedNames", () => {
       "GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL",
       "GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY",
       "GMAIL_IMPERSONATE_EMAIL",
-      "GMAIL_TADAS412_RO__GMAIL_IMPERSONATE_EMAIL",
+      "GMAIL_PERSONAL_RO__GMAIL_IMPERSONATE_EMAIL",
     ]) {
       expect(log.lines()[0]).toContain(name);
     }
@@ -517,8 +517,8 @@ describe("dropInheritedNames for google-docs", () => {
       GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL: "dwd@tadasant.iam.gserviceaccount.com",
       GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----",
       GOOGLE_DOCS_IMPERSONATE_EMAIL: "tadas@tadasant.com",
-      GOOGLE_DOCS_TADAS412_RO__GOOGLE_DOCS_OAUTH_CLIENT_ID: "id",
-      GOOGLE_DOCS_TADAS412_RO__GOOGLE_DOCS_OAUTH_CLIENT_SECRET: "secret",
+      GOOGLE_DOCS_PERSONAL_RO__GOOGLE_DOCS_OAUTH_CLIENT_ID: "id",
+      GOOGLE_DOCS_PERSONAL_RO__GOOGLE_DOCS_OAUTH_CLIENT_SECRET: "secret",
     } as NodeJS.ProcessEnv;
     const view: Record<string, string | undefined> = {
       ...box,
@@ -526,7 +526,7 @@ describe("dropInheritedNames for google-docs", () => {
       GOOGLE_DOCS_OAUTH_CLIENT_SECRET: "secret",
     };
 
-    dropInheritedNames(view, "google-docs-tadas412-ro", PER_ACCOUNT, box);
+    dropInheritedNames(view, "google-docs-personal-ro", PER_ACCOUNT, box);
 
     expect(view.GOOGLE_DOCS_OAUTH_CLIENT_ID).toBe("id");
     expect(view.GOOGLE_DOCS_OAUTH_CLIENT_SECRET).toBe("secret");

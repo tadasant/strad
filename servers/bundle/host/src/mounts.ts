@@ -105,7 +105,7 @@ export function extraSlugs(
  * `/gmail` mount is a service account impersonating a Workspace user, so
  * `GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL`, `GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY` and
  * `GMAIL_IMPERSONATE_EMAIL` are all on the box as bare names. An unconnected
- * `gmail-tadas412-ro` that inherited them would not be unconfigured — it would
+ * `gmail-personal-ro` that inherited them would not be unconfigured — it would
  * be configured as somebody ELSE, serving a work mailbox under a slug named for
  * a personal account, with nothing failing anywhere. So every per-account name
  * in BOTH modes is dropped, not just the refresh token.

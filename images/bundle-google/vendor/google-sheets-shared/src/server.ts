@@ -66,7 +66,7 @@ export const GOOGLE_SHEETS_SCOPES = {
  * They are read out of an injected `env`, never out of `process.env` directly,
  * because the strad bundle runs SEVERAL instances of this server in one process —
  * one per Google account — and hands each the environment as its own slug sees
- * it (`GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN` and friends,
+ * it (`GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN` and friends,
  * flattened back to these bare names). A module that reached for the global would
  * give every account the last one's credential.
  */
@@ -434,7 +434,7 @@ export function createDefaultClient(env: EnvLike = process.env): IGoogleSheetsCl
  *
  * The `-ro` / `-rw` / `-rw-external` split is NOT made here. strad's gateway
  * carries a `tools:` allow-list per slug and enforces it on `tools/list` and on
- * `tools/call` (src/gateway/toolPolicy.ts), so `google-sheets-tadas412-ro` is
+ * `tools/call` (src/gateway/toolPolicy.ts), so `google-sheets-personal-ro` is
  * this same server with the six write tools and `share_spreadsheet` withheld,
  * and a `-rw` slug withholds `share_spreadsheet` alone. Deciding it in the
  * container instead would mean a container per tier per account, which is the

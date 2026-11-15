@@ -59,9 +59,9 @@ const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const SHEETS_RO = "https://www.googleapis.com/auth/spreadsheets.readonly";
 const SHEETS_RW = "https://www.googleapis.com/auth/spreadsheets";
 
-const RO_SLUG = "google-sheets-tadas412-ro";
+const RO_SLUG = "google-sheets-personal-ro";
 const RW_SLUG = "google-sheets-tadas-tadasant-rw";
-const RO_ACCOUNT = "tadas412@gmail.com";
+const RO_ACCOUNT = "personal@example.com";
 const RW_ACCOUNT = "tadas@tadasant.com";
 
 const RO_NS = `/strad/test/mcp/${RO_SLUG}/static/`;

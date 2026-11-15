@@ -36,7 +36,7 @@ import { lookupUserByEmail } from '../src/slack-client/lib/lookup-user-by-email.
 import { createIntegrationMockSlackClient } from '../src/slack-client/slack-client.integration-mock.js';
 
 const TADAS = {
-  id: 'U0BFTSUN8MD',
+  id: 'U012AB3CDEF',
   name: 'tadas',
   real_name: 'Tadas Antanavicius',
   is_bot: false,
@@ -44,7 +44,7 @@ const TADAS = {
 };
 
 const TADAS_TWIN = {
-  id: 'U0BFTSUN8ZZ',
+  id: 'U012AB3CDZZ',
   name: 'tadas.a',
   real_name: 'Tadas Antanavicius (personal)',
   is_bot: false,
@@ -52,11 +52,11 @@ const TADAS_TWIN = {
 };
 
 const JULIE = {
-  id: 'U0BGU04U6F6',
+  id: 'U045GH6IJKL',
   name: 'julie',
-  real_name: 'juliehazz',
+  real_name: 'Julie Doe',
   is_bot: false,
-  profile: { display_name: 'juliehazz', real_name: 'juliehazz', email: 'julie@example.com' },
+  profile: { display_name: 'Julie Doe', real_name: 'Julie Doe', email: 'julie@example.com' },
 };
 
 /** A client whose every call is recorded, so "nothing was sent" is assertable. */
@@ -79,11 +79,11 @@ function fakeClient(overrides = {}) {
     getUser: record('getUser', overrides.getUser ?? (async () => TADAS)),
     findUsers: record('findUsers', search),
     lookupUserByEmail: record('lookupUserByEmail', overrides.lookupUserByEmail ?? (async () => null)),
-    openDm: record('openDm', overrides.openDm ?? (async () => ({ channelId: 'D0BGVRZRX4Z', via: 'conversations.open' }))),
-    findDmChannel: record('findDmChannel', overrides.findDmChannel ?? (async () => 'D0BGVRZRX4Z')),
+    openDm: record('openDm', overrides.openDm ?? (async () => ({ channelId: 'D034CD5EFGH', via: 'conversations.open' }))),
+    findDmChannel: record('findDmChannel', overrides.findDmChannel ?? (async () => 'D034CD5EFGH')),
     getDms: record('getDms', overrides.getDms ?? (async () => ({ dms: [], truncated: false }))),
     getMessages: record('getMessages', overrides.getMessages ?? (async () => ({ messages: [], hasMore: false }))),
-    postMessage: record('postMessage', overrides.postMessage ?? (async () => ({ ts: '1786453389.428549' }))),
+    postMessage: record('postMessage', overrides.postMessage ?? (async () => ({ ts: '1700000000.000100' }))),
   };
 }
 
@@ -205,14 +205,14 @@ test('openDm falls back to an existing DM when it may not open one', async () =>
     'conversations.list': {
       ok: true,
       channels: [
-        { id: 'D0BGQKN0WCV', user: 'USLACKBOT', created: 1783890249 },
-        { id: 'D0BGVRZRX4Z', user: TADAS.id, created: 1783890249, updated: 1786500743223 },
+        { id: 'D056EF7GHIJ', user: 'USLACKBOT', created: 1783890249 },
+        { id: 'D034CD5EFGH', user: TADAS.id, created: 1783890249, updated: 1786500743223 },
       ],
     },
   });
   try {
     const result = await openDm(BASE, HEADERS, TADAS.id);
-    assert.deepEqual(result, { channelId: 'D0BGVRZRX4Z', via: 'conversations.list' });
+    assert.deepEqual(result, { channelId: 'D034CD5EFGH', via: 'conversations.list' });
     assert.match(stub.requests[1].url, /types=im\b/);
   } finally {
     stub.restore();
@@ -227,11 +227,11 @@ test('every refusal to OPEN falls back, not just a missing scope', async () => {
       'conversations.open': { ok: false, error },
       'conversations.list': {
         ok: true,
-        channels: [{ id: 'D0BGVRZRX4Z', user: TADAS.id, created: 1783890249 }],
+        channels: [{ id: 'D034CD5EFGH', user: TADAS.id, created: 1783890249 }],
       },
     });
     try {
-      assert.equal((await openDm(BASE, HEADERS, TADAS.id)).channelId, 'D0BGVRZRX4Z', error);
+      assert.equal((await openDm(BASE, HEADERS, TADAS.id)).channelId, 'D034CD5EFGH', error);
     } finally {
       stub.restore();
     }
@@ -285,11 +285,11 @@ test('findDmChannel opens nothing — the read-only tier depends on it', async (
   const stub = stubFetch({
     'conversations.list': {
       ok: true,
-      channels: [{ id: 'D0BGVRZRX4Z', user: TADAS.id, created: 1783890249 }],
+      channels: [{ id: 'D034CD5EFGH', user: TADAS.id, created: 1783890249 }],
     },
   });
   try {
-    assert.equal(await findDmChannel(BASE, HEADERS, TADAS.id), 'D0BGVRZRX4Z');
+    assert.equal(await findDmChannel(BASE, HEADERS, TADAS.id), 'D034CD5EFGH');
     assert.equal(await findDmChannel(BASE, HEADERS, 'U0NEVERMET'), null);
     assert.ok(!stub.requests.some((r) => r.path === 'conversations.open'));
   } finally {
@@ -481,16 +481,16 @@ test('resolving over the REAL search refuses the bot-beats-human case', async ()
 
 test('a user ID is used as given, and confirmed with a name', async () => {
   const client = fakeClient();
-  const resolved = await resolveUser(client, 'U0BFTSUN8MD');
-  assert.equal(resolved.id, 'U0BFTSUN8MD');
-  assert.match(resolved.label, /Tadas Antanavicius \(@tadas, U0BFTSUN8MD\)/);
+  const resolved = await resolveUser(client, 'U012AB3CDEF');
+  assert.equal(resolved.id, 'U012AB3CDEF');
+  assert.match(resolved.label, /Tadas Antanavicius \(@tadas, U012AB3CDEF\)/);
   assert.equal(called(client, 'findUsers').length, 0);
 });
 
 test('an enterprise-grid W… id is an id too', async () => {
-  const client = fakeClient({ getUser: async () => ({ ...TADAS, id: 'W0BFTSUN8MD' }) });
-  const resolved = await resolveUser(client, 'W0BFTSUN8MD');
-  assert.equal(resolved.id, 'W0BFTSUN8MD');
+  const client = fakeClient({ getUser: async () => ({ ...TADAS, id: 'W012AB3CDEF' }) });
+  const resolved = await resolveUser(client, 'W012AB3CDEF');
+  assert.equal(resolved.id, 'W012AB3CDEF');
   assert.equal(called(client, 'findUsers').length, 0);
 });
 
@@ -525,8 +525,8 @@ test('an unreadable directory does not block a send, but the label says so', asy
       throw new Error('Slack API error on users.info: missing_scope — needs users:read');
     },
   });
-  const resolved = await resolveUser(client, 'U0BFTSUN8MD');
-  assert.equal(resolved.id, 'U0BFTSUN8MD');
+  const resolved = await resolveUser(client, 'U012AB3CDEF');
+  assert.equal(resolved.id, 'U012AB3CDEF');
   assert.equal(resolved.user, undefined);
   assert.match(resolved.label, /UNVERIFIED/);
 });
@@ -535,7 +535,7 @@ test('a deactivated account is refused by ID and by email', async () => {
   // users.list drops them; users.info and users.lookupByEmail do NOT, and both
   // of those are resolution paths.
   const byId = fakeClient({ getUser: async () => ({ ...JULIE, deleted: true }) });
-  await assert.rejects(() => resolveUser(byId, 'U0BGU04U6F6'), /deactivated/);
+  await assert.rejects(() => resolveUser(byId, 'U045GH6IJKL'), /deactivated/);
 
   const byEmail = fakeClient({ lookupUserByEmail: async () => ({ ...JULIE, deleted: true }) });
   await assert.rejects(() => resolveUser(byEmail, 'julie@example.com'), /deactivated/);
@@ -607,7 +607,7 @@ test('no match at all says so', async () => {
 });
 
 test('a label carries the id, so a caller can pin the next call', () => {
-  assert.equal(userLabel(TADAS), 'Tadas Antanavicius (@tadas, U0BFTSUN8MD)');
+  assert.equal(userLabel(TADAS), 'Tadas Antanavicius (@tadas, U012AB3CDEF)');
   assert.match(userLabel({ id: 'U9', name: 'ci', is_bot: true }), /\[bot\]$/);
 });
 
@@ -624,15 +624,15 @@ test('slack_send_dm resolves, opens and posts in one call', async () => {
   assert.notEqual(result.isError, true);
   assert.deepEqual(called(client, 'openDm')[0].args, [TADAS.id]);
   assert.deepEqual(called(client, 'postMessage')[0].args, [
-    'D0BGVRZRX4Z',
+    'D034CD5EFGH',
     'Please re-auth at /quotas.',
   ]);
 
   const text = result.content[0].text;
   // Who it went to, in a form a human can check, and the ids to keep talking.
-  assert.match(text, /Tadas Antanavicius \(@tadas, U0BFTSUN8MD\)/);
-  assert.match(text, /D0BGVRZRX4Z/);
-  assert.match(text, /1786453389\.428549/);
+  assert.match(text, /Tadas Antanavicius \(@tadas, U012AB3CDEF\)/);
+  assert.match(text, /D034CD5EFGH/);
+  assert.match(text, /1700000000\.000100/);
   assert.match(text, /slack_reply_to_thread/);
 });
 
@@ -645,7 +645,7 @@ test('slack_send_dm carries the unverified warning into its result', async () =>
     },
   });
   const result = await sendDmTool(null, () => client).handler({
-    user: 'U0BFTSUN8MD',
+    user: 'U012AB3CDEF',
     text: 'hi',
   });
   assert.match(result.content[0].text, /UNVERIFIED/);
@@ -658,7 +658,7 @@ test('slack_send_dm sends the caller text UNCHANGED and warns about mrkdwn', asy
   const tool = sendDmTool(null, () => client);
   const text = 'the fare is ~750 som and ~$9';
 
-  const result = await tool.handler({ user: 'U0BFTSUN8MD', text });
+  const result = await tool.handler({ user: 'U012AB3CDEF', text });
 
   assert.equal(called(client, 'postMessage')[0].args[1], text);
   assert.match(result.content[0].text, /Slack mrkdwn warning/);
@@ -686,11 +686,11 @@ test('slack_send_dm reports a scope failure verbatim rather than as "unknown err
   const client = fakeClient({
     openDm: async () => {
       throw new Error(
-        'Cannot open a DM with U0BFTSUN8MD: conversations.open was refused (missing_scope, needs "im:write")'
+        'Cannot open a DM with U012AB3CDEF: conversations.open was refused (missing_scope, needs "im:write")'
       );
     },
   });
-  const result = await sendDmTool(null, () => client).handler({ user: 'U0BFTSUN8MD', text: 'hi' });
+  const result = await sendDmTool(null, () => client).handler({ user: 'U012AB3CDEF', text: 'hi' });
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /im:write/);
   assert.equal(called(client, 'postMessage').length, 0);
@@ -708,7 +708,7 @@ test('slack_get_dm reads the conversation without opening one', async () => {
           type: 'message',
           user: TADAS.id,
           text: 'Can you work in DMs?',
-          ts: '1785498097.604729',
+          ts: '1700000003.000400',
         },
       ],
       hasMore: false,
@@ -719,7 +719,7 @@ test('slack_get_dm reads the conversation without opening one', async () => {
 
   assert.notEqual(result.isError, true);
   assert.match(result.content[0].text, /Can you work in DMs\?/);
-  assert.match(result.content[0].text, /D0BGVRZRX4Z/);
+  assert.match(result.content[0].text, /D034CD5EFGH/);
   assert.equal(called(client, 'openDm').length, 0);
 });
 
@@ -736,7 +736,7 @@ test('slack_get_dm with nobody to read reports that, and still opens nothing', a
 test('slack_get_dm surfaces a cut-off scan as an error, not as "no conversation"', async () => {
   const client = fakeClient({
     findDmChannel: async () => {
-      throw new Error('Could not tell whether a DM with U0BFTSUN8MD exists: … cut off …');
+      throw new Error('Could not tell whether a DM with U012AB3CDEF exists: … cut off …');
     },
   });
   const result = await getDmTool(null, () => client).handler({ user: '@tadas' });
@@ -746,17 +746,17 @@ test('slack_get_dm surfaces a cut-off scan as an error, not as "no conversation"
 
 test('slack_get_dm takes a channel id directly, skipping the lookup', async () => {
   const client = fakeClient();
-  const result = await getDmTool(null, () => client).handler({ channel_id: 'D0BGVRZRX4Z' });
+  const result = await getDmTool(null, () => client).handler({ channel_id: 'D034CD5EFGH' });
   assert.notEqual(result.isError, true);
   assert.equal(called(client, 'findDmChannel').length, 0);
-  assert.deepEqual(called(client, 'getMessages')[0].args[0], 'D0BGVRZRX4Z');
+  assert.deepEqual(called(client, 'getMessages')[0].args[0], 'D034CD5EFGH');
 });
 
 test('slack_get_dm refuses both, and neither', async () => {
   const client = fakeClient();
   const tool = getDmTool(null, () => client);
 
-  for (const args of [{}, { user: '@tadas', channel_id: 'D0BGVRZRX4Z' }]) {
+  for (const args of [{}, { user: '@tadas', channel_id: 'D034CD5EFGH' }]) {
     const result = await tool.handler(args);
     assert.equal(result.isError, true, JSON.stringify(args));
     assert.match(result.content[0].text, /exactly one of user .* or channel_id/);
@@ -766,8 +766,8 @@ test('slack_get_dm refuses both, and neither', async () => {
 test('slack_get_dms lists conversations with names and ids', async () => {
   const client = createIntegrationMockSlackClient();
   const result = await getDmsTool(null, () => client).handler({});
-  assert.match(result.content[0].text, /Tadas Antanavicius \(@tadas, U0BFTSUN8MD\)/);
-  assert.match(result.content[0].text, /DM channel: D0BGVRZRX4Z/);
+  assert.match(result.content[0].text, /Tadas Antanavicius \(@tadas, U012AB3CDEF\)/);
+  assert.match(result.content[0].text, /DM channel: D034CD5EFGH/);
 });
 
 test('slack_get_dms labels a creation date as one', async () => {
@@ -846,14 +846,14 @@ test('a DM list survives a directory the token cannot read', async () => {
   const stub = stubFetch({
     'conversations.list': {
       ok: true,
-      channels: [{ id: 'D0BGVRZRX4Z', user: TADAS.id, created: 1783890249 }],
+      channels: [{ id: 'D034CD5EFGH', user: TADAS.id, created: 1783890249 }],
     },
     'users.list': { ok: false, error: 'missing_scope', needed: 'users:read' },
   });
   try {
     const { dms } = await getDms(BASE, HEADERS);
     assert.equal(dms.length, 1);
-    assert.equal(dms[0].id, 'D0BGVRZRX4Z');
+    assert.equal(dms[0].id, 'D034CD5EFGH');
     assert.equal(dms[0].user, undefined);
   } finally {
     stub.restore();
@@ -882,7 +882,7 @@ test('slack_find_user reports WHY each candidate matched', async () => {
 test('slack_find_user answers an email in one call, not a directory scan', async () => {
   const client = fakeClient({ lookupUserByEmail: async () => JULIE });
   const result = await findUserTool(null, () => client).handler({ query: 'julie@example.com' });
-  assert.match(result.content[0].text, /juliehazz \(@julie, U0BGU04U6F6\)/);
+  assert.match(result.content[0].text, /Julie Doe \(@julie, U045GH6IJKL\)/);
   assert.equal(called(client, 'findUsers').length, 0);
 });
 

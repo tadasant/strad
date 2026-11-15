@@ -40,7 +40,7 @@ const CLIENT_SECRET = "GOCSPX-do-not-leak-this-anywhere";
 const REDIRECT_URI = "https://strad.example/ui/oauth/callback";
 const SHEETS_RO = "https://www.googleapis.com/auth/spreadsheets.readonly";
 const SHEETS_RW = "https://www.googleapis.com/auth/spreadsheets";
-const ACCOUNT = "tadas412@gmail.com";
+const ACCOUNT = "personal@example.com";
 const REFRESH = "1//0e-REFRESH-TOKEN-CANARY-do-not-leak";
 
 interface TestKey {
@@ -240,7 +240,7 @@ describe("the exchange", () => {
       code: "account_mismatch",
     });
     await expect(exchange(fetchImpl)).rejects.toThrow(
-      /pinned to tadas412@gmail.com/,
+      /pinned to personal@example.com/,
     );
   });
 
@@ -249,12 +249,12 @@ describe("the exchange", () => {
       stubGoogle({
         body: {
           refresh_token: REFRESH,
-          id_token: idToken({ email: "Tadas412@Gmail.com" }),
+          id_token: idToken({ email: "Personal@Example.com" }),
           scope: `openid email ${SHEETS_RO}`,
         },
       }),
     );
-    expect(grant.email).toBe("Tadas412@Gmail.com");
+    expect(grant.email).toBe("Personal@Example.com");
   });
 
   it("refuses an unverified email rather than trusting the claim", async () => {

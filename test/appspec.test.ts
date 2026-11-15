@@ -126,7 +126,7 @@ function render(secrets?: Record<string, string>) {
       { key: "STRAD_TOKENS", value: "tok", scope: "RUN_TIME", type: "SECRET" },
     ],
     secrets: secrets ?? {
-      GOODEGGS_EMAIL: "tadas412@gmail.com",
+      GOODEGGS_EMAIL: "personal@example.com",
       GOODEGGS_PASSWORD: "s3cr3t",
     },
   });
@@ -156,7 +156,7 @@ describe("renderAppSpec: supplementary-image (good-eggs)", () => {
     const byKey = Object.fromEntries(bundle.envs.map((e) => [e.key, e]));
 
     expect(byKey.GOODEGGS_EMAIL).toMatchObject({
-      value: "tadas412@gmail.com",
+      value: "personal@example.com",
       type: "SECRET",
     });
     expect(byKey.GOODEGGS_PASSWORD).toMatchObject({

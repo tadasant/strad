@@ -40,11 +40,11 @@ roles:
 bundles:
   - name: bundle
 servers:
-  - slug: google-sheets-tadas412-ro
+  - slug: google-sheets-personal-ro
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:1.0.0
     bundle: bundle
-    path: /google-sheets-tadas412-ro
+    path: /google-sheets-personal-ro
     entitlements: [admin]
 ${extra}    oauth:
 ${oauth}
@@ -54,7 +54,7 @@ const SHEETS_RO = "https://www.googleapis.com/auth/spreadsheets.readonly";
 const SHEETS_RW = "https://www.googleapis.com/auth/spreadsheets";
 
 const MINIMAL = `      provider: google
-      account: tadas412@gmail.com
+      account: personal@example.com
       scopes:
         - ${SHEETS_RO}
 `;
@@ -62,11 +62,11 @@ const MINIMAL = `      provider: google
 describe("oauth: the shape", () => {
   it("needs only provider, account and scopes — the variables default to the Sheets set", () => {
     const config = parseConfig(BASE(MINIMAL));
-    const entry = connectorFor(config, "google-sheets-tadas412-ro");
+    const entry = connectorFor(config, "google-sheets-personal-ro");
     expect(entry).not.toBeNull();
     expect(entry!.oauth).toMatchObject({
       provider: "google",
-      account: "tadas412@gmail.com",
+      account: "personal@example.com",
       scopes: [SHEETS_RO],
       clientIdVariable: "GOOGLE_SHEETS_OAUTH_CLIENT_ID",
       clientSecretVariable: "GOOGLE_SHEETS_OAUTH_CLIENT_SECRET",
@@ -81,10 +81,10 @@ describe("oauth: the shape", () => {
     expect(
       refreshTokenPath(
         config,
-        connectorFor(config, "google-sheets-tadas412-ro")!,
+        connectorFor(config, "google-sheets-personal-ro")!,
       ),
     ).toBe(
-      "/strad/test/mcp/google-sheets-tadas412-ro/oauth/GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN",
+      "/strad/test/mcp/google-sheets-personal-ro/oauth/GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN",
     );
   });
 
@@ -102,7 +102,7 @@ describe("oauth: the shape", () => {
 
   it("adds the identity scopes itself, and only those", () => {
     const config = parseConfig(BASE(MINIMAL));
-    const entry = connectorFor(config, "google-sheets-tadas412-ro")!;
+    const entry = connectorFor(config, "google-sheets-personal-ro")!;
     expect(requestedScopes(entry.oauth)).toEqual([
       "openid",
       "email",
@@ -142,7 +142,7 @@ describe("oauth: the shape", () => {
     expect(() =>
       parseConfig(
         BASE(
-          `      provider: google\n      account: tadas412\n      scopes: [${SHEETS_RO}]\n`,
+          `      provider: google\n      account: personal\n      scopes: [${SHEETS_RO}]\n`,
         ),
       ),
     ).toThrow(/account/);
@@ -269,11 +269,11 @@ servers:
     expect(() =>
       parseConfig(
         BASE(MINIMAL).replace(
-          "path: /google-sheets-tadas412-ro",
+          "path: /google-sheets-personal-ro",
           "path: /google-sheets",
         ),
       ),
-    ).toThrow(/Set path: \/google-sheets-tadas412-ro/);
+    ).toThrow(/Set path: \/google-sheets-personal-ro/);
   });
 
   it("refuses a connector ${NAME} hiding in consoleEnv: too", () => {
@@ -327,7 +327,7 @@ describe("oauth: provider generic", () => {
     // the consent URL) or on the way back (to exchange and store), and a value
     // Zod dropped would be an empty default nothing complains about.
     const config = parseConfig(BASE(GENERIC));
-    const entry = connectorFor(config, "google-sheets-tadas412-ro");
+    const entry = connectorFor(config, "google-sheets-personal-ro");
     expect(entry!.oauth).toEqual({
       provider: "generic",
       label: "Linear",
@@ -356,7 +356,7 @@ describe("oauth: provider generic", () => {
 `,
       ),
     );
-    const oauth = connectorFor(config, "google-sheets-tadas412-ro")!.oauth;
+    const oauth = connectorFor(config, "google-sheets-personal-ro")!.oauth;
     expect(oauth).toMatchObject({
       clientAuth: "basic",
       credential: "access_token",
@@ -458,7 +458,7 @@ describe("oauth: provider generic", () => {
 
   it("adds no identity scopes, because it can prove no identity", () => {
     const config = parseConfig(BASE(GENERIC));
-    const oauth = connectorFor(config, "google-sheets-tadas412-ro")!.oauth;
+    const oauth = connectorFor(config, "google-sheets-personal-ro")!.oauth;
     // Google gets `openid email` added; a generic provider gets exactly what the
     // config named, because there is no standard proof to ask one for.
     expect(requestedScopes(oauth)).toEqual(["read"]);

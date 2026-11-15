@@ -31,9 +31,9 @@ import { sendDmTool } from '../src/tools/send-dm.js';
 // An abridged copy of the message that actually shipped struck through, in
 // #general on 2026-08-11. Six tildes, every one of them meaning "approximately".
 const INCIDENT = [
-  'There is a direct Karakol → Kochkor marshrutka, ~750 som each (~$9), 4–5 hrs.',
-  'Then Kochkor → Kyzart on arrival: shared taxi ~500 som pp, or 2000–3000 som (~$23–34)',
-  'for the whole car. CBT quotes ~5000-7000 som for a 4x4; Naryn cars run ~800-1000/seat.',
+  'There is a direct Alder → Birch minibus, ~750 som each (~$9), 4–5 hrs.',
+  'Then Birch → Cedar on arrival: shared taxi ~500 som pp, or 2000–3000 som (~$23–34)',
+  'for the whole car. The agency quotes ~5000-7000 som for a 4x4; Dover cars run ~800-1000/seat.',
 ].join('\n');
 
 const rules = (text) => lintMrkdwn(text).map((f) => f.rule);
@@ -144,15 +144,15 @@ test('correct mrkdwn reports nothing', () => {
 
 test('an advisory names the fix and the ids to repair with', () => {
   const advisory = mrkdwnAdvisory(INCIDENT, {
-    channelId: 'C0BG98BRH7U',
-    messageTs: '1786453389.428549',
+    channelId: 'C012AB3CDEF',
+    messageTs: '1700000000.000100',
   });
   assert.ok(advisory);
   assert.match(advisory, /STRUCK THROUGH/);
   assert.match(advisory, /approx\.|≈/);
   assert.match(advisory, /slack_update_message/);
-  assert.match(advisory, /C0BG98BRH7U/);
-  assert.match(advisory, /1786453389\.428549/);
+  assert.match(advisory, /C012AB3CDEF/);
+  assert.match(advisory, /1700000000\.000100/);
   assert.match(advisory, /4,000/);
 });
 
@@ -286,7 +286,7 @@ function fakeClient() {
     sent,
     async postMessage(channelId, text, options) {
       sent.push({ channelId, text, options });
-      return { ts: '1786453389.428549' };
+      return { ts: '1700000000.000100' };
     },
     async updateMessage(channelId, ts, text) {
       sent.push({ channelId, ts, text });
@@ -299,7 +299,7 @@ test('slack_post_message sends the caller text UNCHANGED and warns in the result
   const client = fakeClient();
   const tool = postMessageTool(null, () => client);
 
-  const result = await tool.handler({ channel_id: 'C0BG98BRH7U', text: INCIDENT });
+  const result = await tool.handler({ channel_id: 'C012AB3CDEF', text: INCIDENT });
 
   // The promise this fork makes: it does not silently escape or rewrite. `~`
   // has legitimate uses, and a server that edits a caller's words fails just as
@@ -324,8 +324,8 @@ test('slack_reply_to_thread warns too — this thread is where it happened', asy
   const client = fakeClient();
   const tool = replyToThreadTool(null, () => client);
   const result = await tool.handler({
-    channel_id: 'C0BG98BRH7U',
-    thread_ts: '1786445558.550989',
+    channel_id: 'C012AB3CDEF',
+    thread_ts: '1700000004.000500',
     text: INCIDENT,
   });
   assert.equal(client.sent[0].text, INCIDENT);
@@ -336,8 +336,8 @@ test('slack_update_message warns, so a repair that reintroduces the bug is caugh
   const client = fakeClient();
   const tool = updateMessageTool(null, () => client);
   const result = await tool.handler({
-    channel_id: 'C0BG98BRH7U',
-    message_ts: '1786453389.428549',
+    channel_id: 'C012AB3CDEF',
+    message_ts: '1700000000.000100',
     text: 'still ~750 som and ~$9',
   });
   assert.equal(client.sent[0].text, 'still ~750 som and ~$9');

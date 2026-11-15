@@ -61,15 +61,15 @@ console URL for the person to open and the parameter path the token lands at.
 ## The configuration
 
 ```yaml
-- slug: google-sheets-tadas412-ro
+- slug: google-sheets-personal-ro
   kind: supplementary-image
   image: ghcr.io/tadasant/strad-bundle:latest
   bundle: bundle
-  path: /google-sheets-tadas412-ro
+  path: /google-sheets-personal-ro
   entitlements: [zimmer]
   oauth:
     provider: google
-    account: tadas412@gmail.com
+    account: personal@example.com
     scopes:
       - https://www.googleapis.com/auth/spreadsheets.readonly
   tools:
@@ -254,15 +254,15 @@ to consume them. That is history, not a recommendation:
 | anything else   | Whatever that tree reads. Check its README before writing the block                             |
 
 ```yaml
-- slug: gmail-tadas412-ro
+- slug: gmail-personal-ro
   kind: supplementary-image
   image: ghcr.io/tadasant/strad-bundle:latest
   bundle: bundle
-  path: /gmail-tadas412-ro
+  path: /gmail-personal-ro
   entitlements: [admin]
   oauth:
     provider: google
-    account: tadas412@gmail.com
+    account: personal@example.com
     scopes:
       - https://www.googleapis.com/auth/gmail.readonly
     clientIdVariable: GMAIL_OAUTH_CLIENT_ID
@@ -324,7 +324,7 @@ slug's page. See [Google Sheets](/servers/google-sheets/#sharing-is-its-own-tier
 ### The credential arrives under the slug's own variable name, and only that one
 
 A connector's variables are baked onto the container as
-`GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN` — the
+`GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN` — the
 [per-slug name](/operate/secrets/#what-a-servers-variables-are-called-on-the-box)
 — and **never** under the bare `GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`.
 
@@ -560,7 +560,7 @@ own words:
 On `client_unreadable` it also carries `variable` (the config's name for the
 value that could not be read), `failure` (`denied`, `not_found`, `unreadable`,
 `timeout`, `store`, `credential` or `unexpected`) and `status`, the store's HTTP
-status as a number. So `slug=google-sheets-tadas412-ro reason=client_unreadable
+status as a number. So `slug=google-sheets-personal-ro reason=client_unreadable
 failure=denied status=403` is enough to know which grant is missing. The store's
 own one-line summary, which names the Secret Manager resource, rides in the same
 payload on stderr and is not exported.

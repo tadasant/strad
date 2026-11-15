@@ -25,7 +25,7 @@ display name — and nothing is sent until exactly one member matches.
 **Returns:**
 - Who it went to, resolved: real name, handle and user ID. Check this. An
   identifier is not proof of identity, and the resolved name is.
-- The DM channel ID (e.g. "D0BGVRZRX4Z") and the message timestamp (ts)
+- The DM channel ID (e.g. "D034CD5EFGH") and the message timestamp (ts)
 
 **The DM channel ID is an ordinary channel ID.** Every other tool here takes it:
 slack_reply_to_thread to thread under the message, slack_update_message to edit

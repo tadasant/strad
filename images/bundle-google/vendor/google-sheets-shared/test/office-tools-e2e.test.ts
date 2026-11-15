@@ -57,7 +57,7 @@ function officeClient() {
     sheetsRefusingEverything(),
     new OfficeWorkbookLoader(
       async () => ({ Authorization: "Bearer t" }),
-      "https://strad.example/ui/google-sheets-tadas412-ro",
+      "https://strad.example/ui/google-sheets-personal-ro",
     ),
   );
 }
@@ -215,7 +215,7 @@ test("a missing Drive scope reaches the caller as a tool error that names it", a
   assert.equal(result.isError, true);
   const text = textOf(result);
   assert.match(text, /https:\/\/www\.googleapis\.com\/auth\/drive\.readonly/);
-  assert.match(text, /Reconnect Google on https:\/\/strad\.example\/ui\/google-sheets-tadas412-ro/);
+  assert.match(text, /Reconnect Google on https:\/\/strad\.example\/ui\/google-sheets-personal-ro/);
   assert.match(text, /File > Save as Google Sheets/);
 });
 

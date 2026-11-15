@@ -70,9 +70,9 @@ import {
 
 const BOOTSTRAP = "bootstrap-secret-for-the-client-grant-suite";
 const SESSION_KEY = "a-console-session-secret-of-adequate-length";
-const SLUG = "google-sheets-tadas412-ro";
+const SLUG = "google-sheets-personal-ro";
 /** A second connector slug, to prove a grant does not spill sideways. */
-const OTHER_SLUG = "google-sheets-tadas412-rw";
+const OTHER_SLUG = "google-sheets-personal-rw";
 /** A slug with no `oauth:` block at all, holding the same variable NAMES. */
 const PLAIN_SLUG = "gcs";
 const ENV = "test";
@@ -158,7 +158,7 @@ servers:
     entitlements: [admin]
     oauth:
       provider: google
-      account: tadas412@gmail.com
+      account: personal@example.com
       scopes: [https://www.googleapis.com/auth/spreadsheets.readonly]
   - slug: ${OTHER_SLUG}
     kind: supplementary-image
@@ -168,7 +168,7 @@ servers:
     entitlements: [admin]
     oauth:
       provider: google
-      account: tadas412@gmail.com
+      account: personal@example.com
       scopes: [https://www.googleapis.com/auth/spreadsheets]
 `;
 

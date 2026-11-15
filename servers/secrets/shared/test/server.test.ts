@@ -53,7 +53,7 @@ const P_OUTSIDE = "/strad/staging/core/static/STRAD_TOKENS";
  * authorized, and can never read what it was authorized with.
  */
 const P_OAUTH =
-  "/strad/staging/mcp/google-sheets-tadas412-ro/oauth/GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN";
+  "/strad/staging/mcp/google-sheets-personal-ro/oauth/GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN";
 
 const EMAIL_VALUE = "remote-fs@strad-staging.iam.gserviceaccount.com";
 /** The secret's bytes. They live only in Secret Manager and must never appear. */
@@ -75,7 +75,7 @@ const CANARY_OUTSIDE = "strad-token-DO-NOT-LEAK-tttt";
 async function fixture(caps) {
   const projectId = "test-project";
   const secretId = "strad-staging-remote-filesystem-tmp-public-gcs-private-key";
-  const oauthSecretId = "strad-staging-google-sheets-tadas412-ro-oauth-refresh-token";
+  const oauthSecretId = "strad-staging-google-sheets-personal-ro-oauth-refresh-token";
 
   const seeds = [
     makeParameter(projectId, {
@@ -96,7 +96,7 @@ async function fixture(caps) {
       path: P_OAUTH,
       secret: true,
       secretId: oauthSecretId,
-      note: "connected as tadas412@gmail.com via the strad console on 2026-09-11T00:00:00.000Z; granted: https://www.googleapis.com/auth/spreadsheets.readonly",
+      note: "connected as personal@example.com via the strad console on 2026-09-11T00:00:00.000Z; granted: https://www.googleapis.com/auth/spreadsheets.readonly",
     }),
     // Managed by strad, but OUTSIDE the mcp namespace: strad's own token store.
     // It must never appear in an mcp listing, nor be gettable through this server.
@@ -385,7 +385,7 @@ test("an `oauth` kind parameter is listed as metadata, and its token is not", as
   // The note strad wrote at consent time is safe metadata by construction: who
   // consented, what was granted, when. It is exactly what an agent needs to tell
   // a human whether to re-authorize.
-  assert.match(entry.note, /connected as tadas412@gmail\.com/);
+  assert.match(entry.note, /connected as personal@example\.com/);
   assert.equal(entry.value, undefined, "a listing never carries a value");
   assert.ok(!JSON.stringify(res).includes(CANARY_OAUTH));
 

@@ -2996,8 +2996,8 @@ rather than by channel id, and both were delivered:
 
 | Recipient                      | Prior DM channel                                                    | Result                            |
 | ------------------------------ | ------------------------------------------------------------------- | --------------------------------- |
-| `U0BGU04U6F6` (a person)       | `D0BHN8SKH8Q`, created at app-install time, zero messages in it     | delivered, `ts` 1786783069.838599 |
-| `U0BPJ1Z8L13` (an app account) | none — `conversations.list?types=im` did not list one on 2026-08-14 | delivered, `ts` 1786783106.193319 |
+| `U045GH6IJKL` (a person)       | `D012AB3CDEF`, created at app-install time, zero messages in it     | delivered, `ts` 1700000001.000200 |
+| `U078MN9OPQR` (an app account) | none — `conversations.list?types=im` did not list one on 2026-08-14 | delivered, `ts` 1700000002.000300 |
 
 The second row is the interesting one: a message reached a recipient this bot had
 never had a conversation with. **It still does not settle `im:write`,** and the

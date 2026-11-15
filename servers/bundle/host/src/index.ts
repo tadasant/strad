@@ -917,7 +917,7 @@ async function loadGoogleTree(): Promise<GoogleTree> {
  * WHY THE DROP IS NOT OPTIONAL. `slugEnvView` falls back to the bare name for
  * anything a slug has no name of its own for, and for sheets the worst case of
  * that is a mount holding another Google account's spreadsheets token. Here the
- * worst case is bigger: an unconnected `gmail-tadas412-ro` would fall back to
+ * worst case is bigger: an unconnected `gmail-personal-ro` would fall back to
  * `GMAIL_SERVICE_ACCOUNT_*` + `GMAIL_IMPERSONATE_EMAIL`, which are on this box
  * for the conventional mount — and serve Tadas's WORK mailbox under a slug named
  * for his personal account, with `missingCredentials()` reporting nothing wrong
@@ -988,7 +988,7 @@ function loadGmail(gmail: GmailModule, slug: string, perSlug: boolean): Mount {
  * {@link loadGmail} line for line, and for the same reason: the conventional
  * `/google-docs` mount impersonates a Workspace user through
  * `GOOGLE_DOCS_SERVICE_ACCOUNT_*` + `GOOGLE_DOCS_IMPERSONATE_EMAIL` under bare
- * names, so an unconnected `google-docs-tadas412-ro` that inherited them would
+ * names, so an unconnected `google-docs-personal-ro` that inherited them would
  * serve the Workspace user's documents under a slug named for a personal
  * account, with every call succeeding. A discovered slug reads every
  * per-account name from its own prefix or not at all.
@@ -1041,12 +1041,12 @@ function loadGoogleDocs(
  * service account with domain-wide delegation — one credential, any user in the
  * Workspace. Sheets here authenticates as a PERSON: an OAuth refresh token minted
  * by that person for that account. A refresh token is one account by
- * construction, so `google-sheets-tadas412-*` and `google-sheets-tadas-tadasant-*`
+ * construction, so `google-sheets-personal-*` and `google-sheets-tadas-tadasant-*`
  * cannot share a variable, in the same way `gcs` and the artifact store cannot
  * share GCS_BUCKET.
  *
  * The renderer already solves that: every supplementary server's variables are
- * ALSO baked under its own slug (`GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`),
+ * ALSO baked under its own slug (`GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`),
  * and `slugEnvView` flattens one slug's prefixed names back to the bare ones this
  * server reads. So a config with six google-sheets slugs produces six mounts here,
  * each holding exactly one account's token, without this file knowing any of their

@@ -31,7 +31,7 @@ best-first: exact, then starts-with, then contains.
 
 **Returns:**
 A list of matching members, each with:
-- Real name, handle and user ID (e.g. "Tadas Antanavicius (@tadas, U0BFTSUN8MD)")
+- Real name, handle and user ID (e.g. "Tadas Antanavicius (@tadas, U012AB3CDEF)")
 - Which field matched, and how closely
 - Whether the account is a bot
 

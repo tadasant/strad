@@ -170,7 +170,7 @@ test("an EMPTY app pair is still an OAuth mount, because discovery keys on the n
 });
 
 test("THE TRAP: the app pair beside a bare service account is a WORKING wrong Drive", () => {
-  // What an unconnected `google-docs-tadas412-ro` would be without the drop:
+  // What an unconnected `google-docs-personal-ro` would be without the drop:
   // `missingCredentials` reports nothing wrong and the client is real.
   const inherited = {
     ...SERVICE_ACCOUNT,
@@ -268,7 +268,7 @@ test("GOOGLE_DOCS_ENABLED_TOOLGROUPS comes from the injected env, per mount", as
 test("an expired token names the slug's console page", async () => {
   const client = createDefaultClient({
     ...account("expiring"),
-    GOOGLE_DOCS_RECONNECT_URL: "https://strad.example/ui/google-docs-tadas412-ro",
+    GOOGLE_DOCS_RECONNECT_URL: "https://strad.example/ui/google-docs-personal-ro",
   });
   oauth2Of(client).getAccessToken = () =>
     Promise.reject(new Error("invalid_grant: Token has been expired or revoked."));
@@ -277,7 +277,7 @@ test("an expired token names the slug's console page", async () => {
     assert.match(error.message, /invalid_grant/);
     assert.match(
       error.message,
-      /https:\/\/strad\.example\/ui\/google-docs-tadas412-ro/,
+      /https:\/\/strad\.example\/ui\/google-docs-personal-ro/,
     );
     assert.match(error.message, /Reconnect Google/);
     return true;
