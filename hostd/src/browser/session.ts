@@ -111,15 +111,25 @@ export class BrowserSession {
     return res.result.value as T;
   }
 
+  /**
+   * Wait for the tab's document to finish loading. `pastBlank`: a tab just
+   * created starts on an `about:blank` document that already reads
+   * "complete", so "complete" means nothing until that document is gone —
+   * without it a fresh tab answers before its page has even committed, with
+   * an empty title.
+   */
   async waitForLoad(
     tabId: string,
     timeoutMs = 15_000,
+    pastBlank = false,
   ): Promise<"complete" | "timeout"> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const state = await this.evaluate<string>(
         tabId,
-        "document.readyState",
+        pastBlank
+          ? "location.href === 'about:blank' ? 'blank' : document.readyState"
+          : "document.readyState",
       ).catch(() => "loading");
       if (state === "complete") return "complete";
       await new Promise((r) => setTimeout(r, 150));

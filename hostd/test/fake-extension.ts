@@ -209,6 +209,9 @@ export class FakeExtension {
       const expr = params.expression as string;
       const value = (v: unknown) => ({ result: { value: v } });
       if (expr === "document.readyState") return value("complete");
+      // `waitForLoad`'s fresh-tab form: still on the initial about:blank?
+      if (expr.includes("about:blank") && expr.includes("document.readyState"))
+        return value(tab.url === "about:blank" ? "blank" : "complete");
       if (expr === "location.href") return value(tab.url);
       if (expr.includes("location.href") && expr.includes("document.title"))
         return value({ url: tab.url, title: tab.title });

@@ -126,7 +126,11 @@ load is "complete", or "timeout" if the page was still loading after 15s (it is 
       if (bad) return text(bad, true);
       const s = sessions.for(grant);
       const targetId = await s.openTab(a.url, a.foreground);
-      const load = await s.waitForLoad(targetId);
+      const load = await s.waitForLoad(
+        targetId,
+        15_000,
+        a.url !== "about:blank",
+      );
       const info = await s.evaluate<{ url: string; title: string }>(
         targetId,
         "({url: location.href, title: document.title})",
