@@ -117,7 +117,10 @@ does not use it.
     under a name nothing looks for: green deploy, clean boot log, every call
     failing on a variable that is right there.
     `test/env-prefix.markers.test.ts` is the seam's other half: it greps both
-    trees for the marker variables discovery actually looks for.
+    trees for the marker variables discovery actually looks for. It also carries
+    `STRAD_ENV_COPIES`, the list of per-slug names the renderer bakes once and
+    the host restores at boot (`HACKS.md` #146) — a drift there is every folded
+    per-slug name missing from a running bundle.
   - `npm run writerules:sync` (`--only writerules`) re-vendors
     `src/secrets/parameters/write-rules.ts` — the version ranking, the `v{n+1}`
     mint, and the `secretAccessor` policy edit that makes a secret parameter's

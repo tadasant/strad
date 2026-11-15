@@ -7,7 +7,13 @@ import type {
 } from "../config/schema.ts";
 import { connectorVariables } from "./server-namespaces.ts";
 import { bundleUrlEnvName } from "../gateway/registry.ts";
-import { prefixedEnvName, slugEnvPrefix } from "../secrets/env-prefix.ts";
+import {
+  ENV_COPIES_VAR,
+  formatEnvCopies,
+  prefixedEnvName,
+  SLUG_ENV_SEPARATOR,
+  slugEnvPrefix,
+} from "../secrets/env-prefix.ts";
 import { resolveMap } from "../secrets/index.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
 import { normaliseNamespace } from "../secrets/parameters/namespace.ts";
@@ -855,6 +861,97 @@ function withTailnet(
 }
 
 /**
+ * Bake each per-slug VALUE once. A per-slug name whose value the component
+ * already carries under another name becomes a line in `STRAD_ENV_COPIES`, and
+ * the bundle host restores it at boot (`applyEnvCopies` in
+ * src/secrets/env-prefix.ts).
+ *
+ * WHY. The per-slug pass names every supplementary variable twice — bare, and
+ * `<SLUG>__<NAME>` — and in a real deployment most of those pairs hold one
+ * value. On prod that was dozens of credentials baked twice, service-account
+ * keys of 2.5 KB among them, against an App Platform spec ceiling that
+ * DigitalOcean does not document and that prod has run into four times
+ * (src/deploy/spec-size.ts). A copy costs the target's name and a separator.
+ *
+ * WHAT MAY BE FOLDED, and each limit is there to keep the container's
+ * environment identical to the unfolded render:
+ *   - only a per-slug name (`perSlugKeys`). Bare names, boot keys, telemetry
+ *     and the tailnet block are read by things that run BEFORE the host can
+ *     restore anything — `boot.sh`, the `--import`ed instrumentation — so they
+ *     always travel literally.
+ *   - only onto a SOURCE that travels literally, appears once, and holds the
+ *     identical value. A per-slug value nothing else holds stays literal and
+ *     becomes the source for the next per-slug name that repeats it, so twelve
+ *     slugs on one OAuth client carry its id once.
+ *   - never an empty value. Whether App Platform keeps an empty variable is not
+ *     something this should depend on.
+ *   - never a name that appears twice on the component. Which of two entries
+ *     App Platform keeps is not either.
+ *   - never a name ending in `__`, which the list's abbreviation reserves
+ *     (`formatEnvCopies` in src/secrets/env-prefix.ts).
+ *
+ * Only the caller decides WHERE this runs: on a `strad-bundle` component, the
+ * one image whose host restores the copies. Any other image would be handed a
+ * list nothing reads, and per-slug names nothing sets.
+ */
+export function foldEnvCopies(
+  envs: EnvVar[],
+  perSlugKeys: ReadonlySet<string>,
+): EnvVar[] {
+  if (perSlugKeys.size === 0) return envs;
+  const occurrences = new Map<string, number>();
+  for (const e of envs) {
+    occurrences.set(e.key, (occurrences.get(e.key) ?? 0) + 1);
+  }
+  if (occurrences.has(ENV_COPIES_VAR)) {
+    throw new Error(
+      `${ENV_COPIES_VAR} is set by a server's env: or a managed parameter, ` +
+        `but it is reserved for the renderer. Remove it from the server.`,
+    );
+  }
+  const reserved = new Set<string>(TAILNET_ENV_KEYS);
+  const foldable = (e: EnvVar): boolean =>
+    perSlugKeys.has(e.key) &&
+    !e.key.endsWith(SLUG_ENV_SEPARATOR) &&
+    e.value !== "" &&
+    occurrences.get(e.key) === 1;
+
+  /** value -> the name it travels under literally. First one wins. */
+  const sources = new Map<string, string>();
+  for (const e of envs) {
+    if (foldable(e) || reserved.has(e.key) || e.value === "") continue;
+    if (occurrences.get(e.key) !== 1) continue;
+    if (!sources.has(e.value)) sources.set(e.value, e.key);
+  }
+
+  const copies = new Map<string, string[]>();
+  const kept: EnvVar[] = [];
+  for (const e of envs) {
+    if (!foldable(e)) {
+      kept.push(e);
+      continue;
+    }
+    const source = sources.get(e.value);
+    if (source === undefined) {
+      sources.set(e.value, e.key);
+      kept.push(e);
+      continue;
+    }
+    (copies.get(source) ?? copies.set(source, []).get(source)!).push(e.key);
+  }
+  if (copies.size === 0) return envs;
+  return [
+    ...kept,
+    {
+      key: ENV_COPIES_VAR,
+      value: formatEnvCopies([...copies]),
+      scope: "RUN_TIME",
+      type: "GENERAL",
+    },
+  ];
+}
+
+/**
  * The internal token ONE non-core component holds: its own, derived from the
  * root, under the name every component-side reader already looks for.
  *
@@ -1453,10 +1550,15 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
   // slug happened to have been seeded, which is unreadable and unpredictable.
   //
   // So the rule is flat and mechanical. Every enabled `supplementary-image`
-  // server's resolved `env:` is emitted TWICE onto its bundle: once under the
-  // bare name it always had, and once under `<SLUG>__<NAME>` — the slug
+  // server's resolved `env:` lands TWICE in its bundle's environment: once under
+  // the bare name it always had, and once under `<SLUG>__<NAME>` — the slug
   // uppercased, `-` to `_`, joined with `__`. Given a config you can compute the
   // whole set by hand, per server, with no reference to any other server.
+  //
+  // In the container's environment, that is. In the SPEC, a per-slug name whose
+  // value is already baked under another name on a `strad-bundle` component
+  // travels as a line in `STRAD_ENV_COPIES` and the host restores it at boot —
+  // see `foldEnvCopies`. Same environment, each value's bytes paid once.
   //
   // NOTHING IS REMOVED. The bare names keep their values and every tree in the
   // image that reads `process.env` directly goes on reading them, so this is
@@ -1827,7 +1929,8 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       // The same values under their per-slug names — every server on this
       // bundle, with no condition attached, which is the whole point. Nothing
       // here replaces a bare name: the bare ones are all still above, holding
-      // the values they always held.
+      // the values they always held. On a strad-bundle component the repeats
+      // are folded into `STRAD_ENV_COPIES` afterwards (`foldEnvCopies`).
       ...Object.entries(emittedAliases.get(name) ?? {}).map(
         ([key, value]): EnvVar => ({
           key,
@@ -1985,11 +2088,22 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
         : {}),
       envs: supplementary
         ? withHeapCeiling(
-            withTailnet(
-              name,
-              supplementaryEnvs(name, supplementary, componentImage),
-              tailnet,
-            ),
+            // A strad-bundle host restores folded per-slug names at boot; no
+            // other image does, so nothing else is folded.
+            isStradBundle
+              ? foldEnvCopies(
+                  withTailnet(
+                    name,
+                    supplementaryEnvs(name, supplementary, componentImage),
+                    tailnet,
+                  ),
+                  new Set(Object.keys(emittedAliases.get(name) ?? {})),
+                )
+              : withTailnet(
+                  name,
+                  supplementaryEnvs(name, supplementary, componentImage),
+                  tailnet,
+                ),
             isStradBundle ? bundleHeapMiB(instanceSizeSlug) : null,
           )
         : [

@@ -4595,3 +4595,23 @@ See `HACKS.md` #144.
   pattern learns it.
 
 See `HACKS.md` #145.
+
+---
+
+### 146. A per-slug variable the spec does not carry is restored by the bundle host
+
+On a `strad-bundle` component, a per-slug variable (`<SLUG>__<NAME>`) whose
+value the component already bakes under another name is not in the app spec.
+It is listed in `STRAD_ENV_COPIES`, and the bundle host restores it into
+`process.env` as its first import. That keeps the spec under App Platform's
+undocumented size ceiling.
+
+The renderer and the host have to agree. A bundle image from before this change,
+deployed by a renderer from after it, ignores the list, and every folded
+per-slug name is missing. A slug served by a per-slug instance then is not
+discovered, or reads the bare name. Prod's deploy pairs the renderer with the
+bundle built from the same history, so that needs a deliberate rollback of the
+bundle image alone. A list the host cannot parse stops the bundle at boot rather
+than guessing.
+
+See `HACKS.md` #146.

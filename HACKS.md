@@ -7544,3 +7544,28 @@ fix here. 2 goes if the `-ro` slug gets a Read token of its own, which needs a
 second mount. 3 narrows if the destructive tools are gated behind strad's
 confirmation channel. 4 is the design. 5 goes with a component of its own for
 this slug pair, which costs a billed component.
+
+## 146. Per-slug variables travel as names, and the bundle host restores their values
+
+**What.** `foldEnvCopies` in `src/deploy/appspec.ts` drops a per-slug variable
+from a `strad-bundle` component's spec when the component already bakes the same
+value under another name, and lists it in `STRAD_ENV_COPIES`
+(`SOURCE=TARGET,…;…`, with a `<PREFIX>__` target meaning `<PREFIX>__<SOURCE>`).
+`servers/bundle/host/src/env-copies.ts`, the host's first import, restores
+every listed name from its source and deletes the list. The format and both
+halves live in `src/secrets/env-prefix.ts`, vendored by `npm run envprefix:sync`.
+
+**Why.** Every supplementary variable exists under its bare name and its
+per-slug name, and prod's spec was carrying more than eighty credentials twice
+against an App Platform spec ceiling DigitalOcean does not document
+(`src/deploy/spec-size.ts`). Prod deploys were blocked at 132,052 bytes.
+
+**What it costs.** The spec no longer lists every variable a bundle's process
+holds. The names are in `STRAD_ENV_COPIES`, beside the spec's other variables,
+but reading the full environment off the spec needs that one expansion. And it
+is a renderer/host contract: a bundle image older than the renderer drops every
+folded name (see `limitations.md` #146). Only `strad-bundle` components are
+folded. Bare names, boot keys, telemetry and tailnet variables never are.
+
+**Undo.** Remove the `foldEnvCopies` call in `renderAppSpec`. The host's restore
+is a no-op on a spec with no list, so it can stay.

@@ -600,8 +600,8 @@ namespace.
 
 A namespace decides which value a server _resolves_. It does not decide where the
 value can _go_ — a bundle is a component is a container with one `process.env`,
-and one name holds one value. So **every** supplementary server's `env:` is
-emitted twice onto its bundle:
+and one name holds one value. So **every** supplementary server's `env:` lands
+twice in its bundle's environment:
 
 | On the box                       | Carries                                                      |
 | -------------------------------- | ------------------------------------------------------------ |
@@ -614,6 +614,22 @@ compute the whole set by hand, one server at a time, without looking at any othe
 server and without knowing what has been seeded anywhere. A server reads its own
 name first and falls back to the bare one, so a server whose per-slug name holds
 the same value reads the same thing either way.
+
+"In its bundle's environment" is not "twice in the app spec". On a
+`strad-bundle` component, a per-slug name whose value the component already bakes
+under another name is not baked a second time. It travels as one line in a
+GENERAL variable, `STRAD_ENV_COPIES` (`TELEGRAM_API_HASH=TELEGRAM_RW__`: copy the
+bare value to that name), and the bundle host's first import restores it into
+`process.env` before any mount, tree or child process reads the environment, then
+removes the list. The variables a running server sees are the same either way.
+What changes is the spec: on prod that was more than eighty credentials stored twice, across four components, service-account keys of 2.5 KB among them, against
+[a spec size ceiling](/operate/deploy-model/#the-config-travels-without-its-prose-and-the-spec-has-a-size).
+A per-slug value nothing else holds (one slug's own refresh token) is baked
+literally, and when several slugs share it (one OAuth client's id), it is baked
+once and copied to the others. Bare names, boot keys, telemetry and the tailnet
+block are never folded, because `boot.sh` and the instrumentation read them
+before the host can restore anything. Any image other than `strad-bundle` gets
+every name literally, because nothing on it would restore a copy.
 
 An earlier version minted the second name only where two servers resolved one
 variable differently. That was correct and unreadable: what a variable was called

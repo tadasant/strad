@@ -24,12 +24,18 @@
  * `telegram` + `RO__X` is `TELEGRAM__RO__X`, `telegram-ro` + `X` is
  * `TELEGRAM_RO__X`.
  *
- * BOTH NAMES ARE EMITTED, FOR EVERY SERVER, and the container prefers the
- * prefixed one. There is no condition on the naming: given a config you can work
- * out what a server's variables are called from that server's own entry, without
+ * BOTH NAMES EXIST, FOR EVERY SERVER, and the container prefers the prefixed
+ * one. There is no condition on the naming: given a config you can work out
+ * what a server's variables are called from that server's own entry, without
  * looking at any other server. The trees migrated to an injected env view read
  * `PREFIX__NAME`; the eight that have not keep reading the bare `NAME` they
  * always read. See `slugEnvView`.
+ *
+ * "Exist" is a claim about the RUNNING container's environment, not about the
+ * app spec. On a `strad-bundle` component a per-slug name whose value is already
+ * baked under another name travels as a line in `STRAD_ENV_COPIES` instead of a
+ * second copy of the value, and the bundle host restores it before anything
+ * reads the environment. See {@link applyEnvCopies}.
  *
  * This module is IMPORT-FREE on purpose: it is vendored into the bundle host tree
  * across an npm boundary (`npm run envprefix:sync`). The renderer names the
@@ -151,4 +157,138 @@ export function slugsWithPrefixedNames(
     .filter(([, held]) => held.size === names.length)
     .map(([slug]) => slug)
     .sort();
+}
+
+// ============================================================================
+// COPIES: one value baked once, restored under every name that holds it.
+// ============================================================================
+
+/**
+ * The variable that carries a component's copy list. GENERAL, not SECRET: it
+ * holds variable NAMES, every one of which is already in the spec beside it.
+ */
+export const ENV_COPIES_VAR = "STRAD_ENV_COPIES";
+
+/**
+ * Serialize a copy list: `SOURCE=TARGET,TARGET;SOURCE=TARGET`.
+ *
+ * Not JSON, on purpose. This value sits inside a JSON app spec, where every `"`
+ * costs two bytes, and the whole point of the variable is spec bytes. Variable
+ * names are `[A-Za-z0-9_]`, so `=`, `,` and `;` cannot occur inside one.
+ *
+ * A target that is `<anything>__<SOURCE>` — which is what nearly every per-slug
+ * name copied from its bare name is — is written as `<anything>__`, and the
+ * reader appends the source back. That is unambiguous because a literal target
+ * ending in `__` is refused: no per-slug name ends that way unless its variable
+ * does, and the renderer does not fold one that does.
+ *
+ * Throws on a name that is not a portable variable name, or that would make the
+ * line ambiguous: the renderer is the only writer, and a list it could not read
+ * back is a bug to stop at render time rather than on the box.
+ */
+export function formatEnvCopies(
+  copies: ReadonlyArray<readonly [source: string, targets: readonly string[]]>,
+): string {
+  const parts: string[] = [];
+  for (const [source, targets] of copies) {
+    if (targets.length === 0) continue;
+    for (const name of [source, ...targets]) {
+      if (
+        !ENV_NAME.test(name) ||
+        name === ENV_COPIES_VAR ||
+        name.endsWith(SLUG_ENV_SEPARATOR)
+      ) {
+        throw new Error(
+          `${ENV_COPIES_VAR}: "${name}" cannot be carried as a copy`,
+        );
+      }
+    }
+    const tail = SLUG_ENV_SEPARATOR + source;
+    const written = targets.map((t) =>
+      t.length > tail.length && t.endsWith(tail)
+        ? t.slice(0, t.length - source.length)
+        : t,
+    );
+    parts.push(`${source}=${written.join(",")}`);
+  }
+  return parts.join(";");
+}
+
+/** Read a copy list back. Throws on anything {@link formatEnvCopies} would not write. */
+export function parseEnvCopies(text: string): Array<[string, string[]]> {
+  if (text === "") return [];
+  return text.split(";").map((part) => {
+    const eq = part.indexOf("=");
+    const source = eq === -1 ? "" : part.slice(0, eq);
+    const targets = eq === -1 ? [] : part.slice(eq + 1).split(",");
+    if (
+      !ENV_NAME.test(source) ||
+      targets.length === 0 ||
+      !targets.every((t) => ENV_NAME.test(t))
+    ) {
+      throw new Error(
+        `${ENV_COPIES_VAR} is malformed near "${part.slice(0, 80)}"`,
+      );
+    }
+    return [
+      source,
+      targets.map((t) => (t.endsWith(SLUG_ENV_SEPARATOR) ? t + source : t)),
+    ];
+  });
+}
+
+/** What {@link applyEnvCopies} did, for the boot log. Names only. */
+export interface EnvCopiesResult {
+  /** Targets set from their source. */
+  copied: number;
+  /** Sources the list named and the environment did not hold — their targets stay unset. */
+  missingSources: string[];
+  /** Targets the environment already held, left as they were. */
+  alreadySet: string[];
+}
+
+/**
+ * Restore every name in `STRAD_ENV_COPIES` from its source, IN PLACE, and then
+ * remove `STRAD_ENV_COPIES` itself, so the environment that results is the one
+ * a render without copies would have produced, name for name and value for
+ * value.
+ *
+ * It mutates rather than returning a view because the readers are everywhere:
+ * `slugEnvView` snapshots, the per-slug instance discovery, a tree reading
+ * `process.env` directly, and every child process the host spawns, which
+ * inherits the environment as it stands. Run it once, before any of them.
+ *
+ * Never overwrites. A target the environment already holds was baked literally,
+ * and the literal is what the render meant. A missing source leaves its targets
+ * unset, which is the state the reader of that name already knows how to report
+ * as a missing credential; it is returned so the caller can say so.
+ */
+export function applyEnvCopies(
+  env: Record<string, string | undefined>,
+): EnvCopiesResult {
+  const result: EnvCopiesResult = {
+    copied: 0,
+    missingSources: [],
+    alreadySet: [],
+  };
+  const text = env[ENV_COPIES_VAR];
+  if (text === undefined) return result;
+  const copies = parseEnvCopies(text);
+  for (const [source, targets] of copies) {
+    const value = env[source];
+    if (value === undefined) {
+      result.missingSources.push(source);
+      continue;
+    }
+    for (const target of targets) {
+      if (env[target] !== undefined) {
+        result.alreadySet.push(target);
+        continue;
+      }
+      env[target] = value;
+      result.copied += 1;
+    }
+  }
+  delete env[ENV_COPIES_VAR];
+  return result;
 }
