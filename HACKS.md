@@ -7380,3 +7380,23 @@ a tool that never returns the value. Design: Zimmer session 27977.
 **Undo.** Remove `deposit:` from the custody slug's entry (the route then 401s
 it), or rotate the slug's key in the console. On the Mac,
 `capabilities.custody.enabled: false`.
+
+## 142. gmail's draft tools link the account's Drafts folder, not the draft
+
+**What.** `upsert_draft_email` and `list_draft_emails` answer with
+`https://mail.google.com/mail/u/?authuser=<email>#drafts`, the acting account's
+Drafts folder, with the address percent-encoded
+(`images/bundle-google/vendor/gmail-shared/FORK.md` delta 7).
+
+**Why.** Gmail documents no URL for one draft. The `#drafts?compose=<message-id>`
+fragment is widely repeated, but nothing here could open it against a signed-in
+mailbox, so it is not shipped. The folder link selects the account by address,
+because the reader is signed into several Google accounts and a `/u/<n>/` index
+opens whichever one has that number.
+
+**What it costs.** One click from the folder to the draft. If the account
+address cannot be read (an OAuth profile lookup that fails), the answer carries
+no link at all; the draft is still saved and reported.
+
+**Undo.** Confirm `#drafts?compose=<message.id>` against a live mailbox, then add
+it beside the folder link in `src/tools/draft-email.ts`.

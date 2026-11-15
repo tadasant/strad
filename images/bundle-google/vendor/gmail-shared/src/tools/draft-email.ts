@@ -1,7 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
-import { getHeader } from '../utils/email-helpers.js';
+import { buildGmailDraftsUrl, draftsAccountEmail, getHeader } from '../utils/email-helpers.js';
 import {
   ATTACHMENTS_DESCRIPTION,
   ATTACHMENTS_JSON_SCHEMA,
@@ -96,7 +96,7 @@ Use delete_draft_email with the draft_id. Do not leave a superseded draft behind
 - Revise a draft after user feedback (without creating duplicates)
 - Save an email without sending it immediately
 
-**Note:** The draft will be saved in Gmail's Drafts folder. Use send_email with from_draft_id to send it.`;
+**Note:** The draft will be saved in Gmail's Drafts folder. The response names the account and links that account's Drafts folder (\`https://mail.google.com/mail/u/?authuser=<email>#drafts\`); pass the link on to the user so they reach the draft in one click. Use send_email with from_draft_id to send it.`;
 
 export function upsertDraftEmailTool(server: Server, clientFactory: ClientFactory) {
   return {
@@ -198,7 +198,12 @@ export function upsertDraftEmailTool(server: Server, clientFactory: ClientFactor
           : await client.createDraft(draftOptions);
 
         const action = isUpdate ? 'updated' : 'created';
+        const accountEmail = await draftsAccountEmail(client);
         let responseText = `Draft ${action} successfully!\n\n**Draft ID:** ${draft.id}`;
+        if (accountEmail) {
+          responseText += `\n**Account:** ${accountEmail}`;
+          responseText += `\n**Drafts folder (${accountEmail}):** ${buildGmailDraftsUrl(accountEmail)}`;
+        }
 
         if (parsed.thread_id) {
           responseText += `\n**Thread ID:** ${parsed.thread_id}`;
@@ -224,8 +229,9 @@ export function upsertDraftEmailTool(server: Server, clientFactory: ClientFactor
           responseText += `\n**Attachments:** ${formatAttachmentList(attachments)}`;
         }
 
-        responseText +=
-          "\n\nUse send_email with from_draft_id parameter to send this draft, or find it in Gmail's Drafts folder.";
+        responseText += accountEmail
+          ? `\n\nUse send_email with from_draft_id parameter to send this draft, or open it from the Drafts folder link above. Give the user that link.`
+          : "\n\nUse send_email with from_draft_id parameter to send this draft, or find it in Gmail's Drafts folder.";
 
         return {
           content: [

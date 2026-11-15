@@ -31,6 +31,41 @@ export function buildGmailUrl(accountEmail: string, messageId: string): string {
 }
 
 /**
+ * The Drafts folder of ONE account, as a Gmail web URL.
+ *
+ * Gmail has no documented URL for a single draft. The widely repeated
+ * `#drafts?compose=<message-id>` fragment is undocumented and was not
+ * confirmed against a live mailbox, so a draft tool links its account's
+ * Drafts folder instead: one click from the draft (`FORK.md` delta 7).
+ *
+ * The account is selected by ADDRESS (`?authuser=<email>`), never by a
+ * `/u/<n>/` index: a reader signed into several Google accounts has them
+ * numbered in sign-in order, and an index opens whichever one happens to sit
+ * there. The address is percent-encoded, so a `+` in it is not read as a
+ * space and a `#` or `&` cannot end the parameter.
+ */
+export function buildGmailDraftsUrl(accountEmail: string): string {
+  return `https://mail.google.com/mail/u/?authuser=${encodeURIComponent(accountEmail)}#drafts`;
+}
+
+/**
+ * The account a draft tool is acting as, or `undefined` when it cannot be
+ * read. A draft tool asks AFTER its write has landed, so a failed profile
+ * lookup must cost the link and never turn a saved draft into a reported
+ * error.
+ */
+export async function draftsAccountEmail(client: {
+  getAccountEmail(): Promise<string>;
+}): Promise<string | undefined> {
+  try {
+    const email = (await client.getAccountEmail()).trim();
+    return email || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Formats an email for display in tool output.
  *
  * When `accountEmail` is provided, an account-scoped Gmail web URL is

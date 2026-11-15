@@ -353,3 +353,39 @@ files with one name, the URI encoding, a missing MIME type, `inline=true`
 unchanged, and the 25 MB refusal in the default mode. It has also run end to end: the built tree served over stdio to
 an MCP SDK client returned the 989,829-byte PDF that prompted it, the same
 SHA-256 as the copy Gmail served.
+
+---
+
+## 7. The draft tools link the account's Drafts folder
+
+**Upstream.** `upsert_draft_email` answers with the draft's ID and "find it in
+Gmail's Drafts folder". `list_draft_emails` answers with IDs. Neither names the
+account. strad serves several mailboxes behind `/gmail`, so a person handed a
+draft had to work out which account it was in, open it, and go to Drafts.
+
+**Here.**
+
+- Both tools answer with `**Drafts folder (<email>):**
+  https://mail.google.com/mail/u/?authuser=<email>#drafts` (`buildGmailDraftsUrl`
+  in `src/utils/email-helpers.ts`). `upsert_draft_email` also names the
+  `**Account:**`. `list_draft_emails` gives the link once, above the drafts.
+- The account is the one the client acts as, `getAccountEmail()`: the
+  impersonated user for a service account, the profile address for OAuth.
+- It is selected by address, never by a `/u/<n>/` index, and the address is
+  percent-encoded (`encodeURIComponent`), so a `+` is not read as a space and a
+  `#` or `&` cannot end the parameter.
+- The link is to the folder, not the draft. Gmail documents no single-draft URL,
+  and `#drafts?compose=<message-id>` was not confirmed against a live mailbox
+  (`HACKS.md` #142).
+- The address is read after the draft is saved. If that read fails, the answer
+  carries no link and the draft is still reported as saved, never as an error.
+- The tools return text only, with no `structuredContent`, so the link is in
+  the text and nowhere else.
+
+**Files.** `src/utils/email-helpers.ts`, `src/tools/draft-email.ts`,
+`src/tools/list-draft-emails.ts`.
+
+**Tests.** `images/bundle-google/test/gmail-draft-links.test.ts`: the URL shape
+and its encoding (round-tripped through `URL`), both tools on create, update
+and list, and a failed account read costing the link and not the draft. Stubs
+only; no live mailbox was opened.
