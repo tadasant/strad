@@ -7403,3 +7403,34 @@ drafts are still listed.
 
 **Undo.** Confirm `#drafts?compose=<message.id>` against a live mailbox, then add
 it beside the folder link in `src/tools/draft-email.ts`.
+
+## 143. The banner's session is the caller's claim, and its call text is scrubbed by heuristic
+
+**What.** strad-hostd's on-screen banner names the session a grant acts for and
+shows the call it is in the middle of. The session comes from an optional
+`session` argument to `request_control` (`hostd/src/consent/display.ts`
+`normalizeSession`); the call text is the tool's audit summary, run through
+`screenText` before it is pushed to the helper.
+
+**Why.** strad pools one upstream connection per slug and forwards a tool's
+name and arguments and nothing else, so nothing that reaches the machine says
+which session is calling. An argument the caller fills in is the smallest
+honest channel: it needs no change to strad's forwarding and none to Zimmer.
+Agents only pass it when told to, by the tool description or by the skill that
+drives them. The text is scrubbed because the banner sits on a screen that a
+screenshot, a screen share or a person behind the owner can see.
+
+**What it costs.** A caller can claim any session, or none. The banner says it
+is a claim, only https URLs become links, and it decides nothing:
+`Banner.authorize` reads the same three facts it always did. The scrubber
+catches the shapes it knows — headers, `key=value` pairs and flags with a
+credential-looking name, URL userinfo, known token prefixes, JWTs, PEM keys,
+long mixed-case runs — and shows a password typed as a bare word as typed. The
+banner is not excluded from capture: a foreground grant's screenshot includes
+it, and with **Details** open that is every grant's current call. Hiding it
+from capture would let a model driving the mouse click a Kill button it cannot
+see. The audit log on disk keeps the unscrubbed summary.
+
+**Undo.** If strad forwards a caller identity to `local-tunnel` slugs, read it
+in `buildServer` and drop the argument. A real exclusion from capture would
+need the screenshot op to draw the banner's frame out of its image instead.

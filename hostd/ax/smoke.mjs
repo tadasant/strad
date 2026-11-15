@@ -135,6 +135,64 @@ try {
     JSON.stringify(fg.result ?? fg.error),
   );
 
+  // The detailed payload the daemon sends: two grants, a session link, a
+  // call in flight, a command left running and a finished call. Every
+  // field draws, whichever of the three sizes the banner is in.
+  const at = Date.now();
+  const rich = await call("set_state", {
+    disabled: false,
+    control_url: "http://127.0.0.1:7312",
+    grants: [
+      {
+        id: "g_smoke",
+        server: "computer-use-ci",
+        purpose: "Smoke-test the banner.",
+        foreground: true,
+        started_at: at - 90_000,
+        expires_at: at + 1_710_000,
+        calls: 3,
+        session: "session 1234",
+        session_url: "https://zimmer.example.com/sessions/1234",
+        in_flight: [
+          {
+            tool: "click",
+            summary: "click: 10,20 left",
+            started_at: at - 2000,
+          },
+        ],
+        background: [],
+        recent: [
+          {
+            tool: "screenshot",
+            summary: "screenshot: display 0",
+            started_at: at - 9000,
+            ended_at: at - 8000,
+            ok: true,
+          },
+        ],
+      },
+      {
+        id: "g_smoke_shell",
+        server: "shell-ci",
+        purpose: "Run the test suite. Report what fails.",
+        foreground: false,
+        started_at: at - 600_000,
+        expires_at: at + 1_200_000,
+        calls: 12,
+        session: "file:///etc/passwd is not a link",
+        session_url: "file:///etc/passwd",
+        in_flight: [],
+        background: ["run_command: npm test"],
+        recent: [],
+      },
+    ],
+  });
+  check(
+    "set_state with the detailed payload (session, in-flight, recent) shows the banner",
+    rich.ok === true && rich.result?.shown === true,
+    JSON.stringify(rich.result ?? rich.error),
+  );
+
   const badArgs = await call("click", {});
   check(
     "a guarded op with bad arguments refuses with bad_args (or the permission code)",

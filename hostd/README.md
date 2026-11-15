@@ -248,7 +248,12 @@ picker, and there is no setting for it.
 
 While a grant is live the helper shows a banner at the top of the screen and a
 menu-bar item, each with Kill and Disable buttons. A foreground (`computer`)
-grant is red and ends on your first key or click.
+grant is red and ends on your first key or click. The banner has three sizes —
+a sliver with a count and Kill, a compact strip with each grant's server,
+claimed session, purpose and current call, and a details view adding timing,
+commands left running and the last five calls — and remembers the one you
+picked (`defaults read` the helper's `bannerMode`). Call text is scrubbed of
+obvious secrets before it is drawn.
 
 ### The Messages helper (macOS): `strad-hostd-messages`
 

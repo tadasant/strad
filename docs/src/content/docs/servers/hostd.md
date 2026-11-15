@@ -303,7 +303,11 @@ Every server starts the same way:
    on the machine and the call blocks for up to ten seconds. Only a mouse
    click on **Allow**, **Reject** or **Disallow and cool down** answers it: no
    key does, so someone typing in another app when it appears cannot decide it
-   by accident.
+   by accident. Pass the optional `session` too — the URL of the session you
+   act for (`https://…/sessions/1234`), or an id or title — and the banner
+   says whose work this is, with a link when it is an https URL. It is the
+   caller's own claim, shown as one: nothing on the wire carries who is
+   calling, and it grants nothing.
 2. Pass the returned `grant_id` to every other tool.
 3. `end_control` when done.
 
@@ -414,11 +418,30 @@ so, its banner is red, and your first key or click ends the grant.
 The machine posts a notification when a grant starts and when it ends, naming
 the server and the purpose. With the helper installed, a banner also sits at
 the top of the screen for the life of every grant, on every Space and above
-every window, naming the server and the purpose, with **Kill** and **Disable
-everything** buttons, and the menu bar shows the same state with the same
-buttons. Orange means background control (shell, browser, Accessibility, Messages); red
-means the mouse and keyboard are taken, and any key or click you make ends
-that grant. The daemon re-sends the banner's state every two seconds, so a
+every window. Orange means background control (shell, browser, Accessibility,
+Messages); red means the mouse and keyboard are taken, and any key or click you
+make ends that grant. It has three sizes, and the helper remembers the one you
+picked for the next grant:
+
+| Size | What it shows |
+| --- | --- |
+| **Sliver** (**Minimize**) | a pill: how many grants, the tool running now, **Show** and **Kill** |
+| **Compact** (the default) | each grant's server, the session it says it acts for, its whole purpose, and the call it is in the middle of — `▶ run_command: npm test — running 12s` — with **Details**, **Minimize**, **Kill** and **Disable everything** |
+| **Details** | adds, per grant, when it started, when it expires and how many calls it has made, every call in flight, shell commands still running after the call that started them returned, the last five calls with ✓ or ✗ and how long each took, and a **Kill** for that grant alone |
+
+**Kill** is on all three. The menu bar carries the same state: a Kill per
+grant with its session and current call, and the three sizes. The text of a
+call is caller-authored, so before it reaches the screen the daemon scrubs
+the obvious secrets — `Authorization` and cookie headers, `password=`-shaped
+pairs, credential-looking flags, URL userinfo, well-known token prefixes,
+JWTs, private keys, long opaque runs — and caps it at 240 characters. That is
+a heuristic: a password typed as a bare word is shown as typed. The audit log
+keeps the unscrubbed summary, on the machine. The banner is part of the screen,
+so a screenshot a foreground grant takes includes it, and in **Details** that
+is every grant's current call.
+
+The daemon re-sends the banner's state every two seconds, and whenever a call
+starts or finishes, so a
 helper that restarts redraws it on the next tick, and the helper acts for one
 connection only: it refuses to read a tree, capture the screen or post input
 unless the daemon that reported the grants is the one asking, and unless a

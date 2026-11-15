@@ -1,7 +1,38 @@
 import { CAPABILITIES } from "../capabilities.js";
+import { screenText } from "../consent/display.js";
 import type { ConsentGate } from "../consent/gate.js";
 import type { KillSwitch } from "../killswitch.js";
 import type { HelperClient } from "./client.js";
+
+/** How many running calls (or background commands) a grant shows. */
+const IN_FLIGHT_SHOWN = 3;
+
+type BannerCall = {
+  tool: string;
+  summary: string;
+  started_at: number;
+};
+
+/** What `set_state` carries. The helper ignores what it does not know. */
+export type BannerState = {
+  disabled: boolean;
+  control_url?: string;
+  grants: {
+    id: string;
+    server: string;
+    purpose: string;
+    foreground: boolean;
+    started_at: number;
+    expires_at: number;
+    calls: number;
+    session?: string;
+    session_url?: string;
+    in_flight: BannerCall[];
+    /** Shell commands still running after the call that started them returned. */
+    background: string[];
+    recent: (BannerCall & { ended_at: number; ok: boolean })[];
+  }[];
+};
 
 /**
  * The banner and the menu-bar state, kept true.
@@ -33,6 +64,8 @@ export class Presence {
       gate: ConsentGate;
       killSwitch: KillSwitch;
       controlUrl?: string;
+      /** The shell commands a grant has running, in full. */
+      running?: (grantId: string) => string[];
       log?: (line: string) => void;
     },
   ) {}
@@ -46,25 +79,48 @@ export class Presence {
     clearInterval(this.timer);
   }
 
-  state(): {
-    disabled: boolean;
-    control_url?: string;
-    grants: {
-      id: string;
-      server: string;
-      purpose: string;
-      foreground: boolean;
-    }[];
-  } {
+  /**
+   * Everything the banner draws. Times are epoch milliseconds, so the helper
+   * counts "running for" on its own clock between pushes. Every string a
+   * caller authored is already normalised (purpose) or scrubbed for the screen
+   * (call summaries, the session); the helper only lays it out.
+   */
+  state(): BannerState {
     return {
       disabled: this.deps.killSwitch.isDisabled(),
       ...(this.deps.controlUrl ? { control_url: this.deps.controlUrl } : {}),
-      grants: this.deps.gate.grants.active().map((g) => ({
-        id: g.id,
-        server: g.server,
-        purpose: g.purpose,
-        foreground: CAPABILITIES[g.capability].mode === "foreground",
-      })),
+      grants: this.deps.gate.grants.active().map((g) => {
+        const running = this.deps.running?.(g.id) ?? [];
+        return {
+          id: g.id,
+          server: g.server,
+          purpose: g.purpose,
+          foreground: CAPABILITIES[g.capability].mode === "foreground",
+          started_at: g.createdAt,
+          expires_at: g.expiresAt,
+          calls: g.calls,
+          ...(g.session ? { session: g.session.label } : {}),
+          ...(g.session?.url ? { session_url: g.session.url } : {}),
+          in_flight: g.inFlight.slice(-IN_FLIGHT_SHOWN).map((c) => ({
+            tool: c.tool,
+            summary: c.summary,
+            started_at: c.startedAt,
+          })),
+          // A command whose run_command is still waiting on it is already
+          // the "now" line; the rest outlived their call.
+          background: running
+            .map((c) => screenText(`run_command: ${c.slice(0, 200)}`))
+            .filter((s) => !g.inFlight.some((f) => f.summary === s))
+            .slice(0, IN_FLIGHT_SHOWN),
+          recent: g.recent.map((c) => ({
+            tool: c.tool,
+            summary: c.summary,
+            started_at: c.startedAt,
+            ended_at: c.endedAt,
+            ok: c.ok,
+          })),
+        };
+      }),
     };
   }
 

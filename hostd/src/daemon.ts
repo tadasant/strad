@@ -151,6 +151,7 @@ export function buildCore(
     gate,
     killSwitch,
     controlUrl: opts.controlUrl,
+    running: (grantId) => commandsFor(grantId),
     log,
   });
   late.presence = presence;
@@ -195,6 +196,14 @@ export function buildCore(
         : undefined;
     });
 
+  const commandsFor = (grantId: string): string[] =>
+    shell?.processes
+      .list(grantId)
+      .filter((c) => c.status === "running")
+      .map((c) => c.command) ?? [];
+  const runningFor = (grantId: string): string[] =>
+    commandsFor(grantId).map((c) => c.slice(0, 160));
+
   const sweep = setInterval(() => {
     // A `touch`ed DISABLED file calls nothing: the sweep is what notices it,
     // ends the grants, and takes the extension off every tab.
@@ -210,11 +219,7 @@ export function buildCore(
     messagesHelper,
     presence,
     bridge,
-    runningFor: (grantId) =>
-      shell?.processes
-        .list(grantId)
-        .filter((c) => c.status === "running")
-        .map((c) => c.command.slice(0, 160)) ?? [],
+    runningFor,
     close: async () => {
       clearInterval(sweep);
       presence.stop();
