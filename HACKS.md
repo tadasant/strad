@@ -7420,14 +7420,18 @@ Agents only pass it when told to, by the tool description or by the skill that
 drives them. The text is scrubbed because the banner sits on a screen that a
 screenshot, a screen share or a person behind the owner can see.
 
-**What it costs.** A caller can claim any session, or none. The banner says it
-is a claim, only https URLs become links, and it decides nothing:
+**What it costs.** A caller can claim any session, or none. The banner draws
+it as `says it's for: …` with the link's host in the label, only https URLs
+become links (query and fragment dropped), and it decides nothing:
 `Banner.authorize` reads the same three facts it always did. The scrubber
 catches the shapes it knows — headers, `key=value` pairs and flags with a
 credential-looking name, URL userinfo, known token prefixes, JWTs, PEM keys,
-long mixed-case runs — and shows a password typed as a bare word as typed. The
-banner is not excluded from capture: a foreground grant's screenshot includes
-it, and with **Details** open that is every grant's current call. Hiding it
+long letter-and-digit runs — and shows a password passed as a bare word in a
+shell command as written; typed and set field text is shown as a length only.
+It also redacts some things that are not secrets, such as a path segment of 32
+or more letters and digits. The banner is not excluded from capture: a
+foreground grant's screenshot includes it, which in compact is every grant's
+purpose, session and current call, and in **Details** more. Hiding it
 from capture would let a model driving the mouse click a Kill button it cannot
 see. The audit log on disk keeps the unscrubbed summary.
 

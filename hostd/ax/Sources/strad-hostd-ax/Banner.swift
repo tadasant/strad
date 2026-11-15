@@ -1,6 +1,12 @@
 import AppKit
 import Foundation
 
+/// A banner button that knows which grant it is for.
+final class GrantButton: NSButton {
+    var grantId = ""
+    var url: URL?
+}
+
 /// The part of this helper that is for the person at the machine.
 ///
 /// While any grant is in force, a strip sits at the top of the main display,
@@ -28,12 +34,6 @@ import Foundation
 /// say — while the daemon is up. It is not a privilege boundary: a process
 /// running as the owner can stop the daemon, edit its config or replace this
 /// binary, and the docs say so. It closes the cheap path, not the machine.
-/// A banner button that knows which grant it is for.
-final class GrantButton: NSButton {
-    var grantId = ""
-    var url: URL?
-}
-
 final class Banner: NSObject {
     private struct Call {
         let tool: String
@@ -56,7 +56,10 @@ final class Banner: NSObject {
         let session: String?
         let sessionURL: URL?
         let inFlight: [Call]
+        /// How many calls are running; `inFlight` is the oldest few.
+        let inFlightCount: Int
         let background: [String]
+        let backgroundCount: Int
         let recent: [Call]
     }
 
@@ -79,6 +82,8 @@ final class Banner: NSObject {
     }
 
     private static let modeKey = "bannerMode"
+    /// What Show goes back to from the sliver.
+    private static let openModeKey = "bannerOpenMode"
 
     private var grants: [GrantRow] = []
     private var disabled = false
@@ -146,6 +151,8 @@ final class Banner: NSObject {
         controlUrl = args.string("control_url")
         grants = ((args.raw["grants"] as? [[String: Any]]) ?? []).compactMap { g in
             guard let id = g["id"] as? String else { return nil }
+            let inFlight = Banner.calls(g["in_flight"])
+            let background = (g["background"] as? [Any])?.compactMap { $0 as? String } ?? []
             return GrantRow(
                 id: id,
                 server: g["server"] as? String ?? "?",
@@ -156,8 +163,10 @@ final class Banner: NSObject {
                 calls: (g["calls"] as? NSNumber)?.intValue ?? 0,
                 session: g["session"] as? String,
                 sessionURL: Banner.httpsURL(g["session_url"]),
-                inFlight: Banner.calls(g["in_flight"]),
-                background: (g["background"] as? [Any])?.compactMap { $0 as? String } ?? [],
+                inFlight: inFlight,
+                inFlightCount: max((g["in_flight_count"] as? NSNumber)?.intValue ?? 0, inFlight.count),
+                background: background,
+                backgroundCount: max((g["background_count"] as? NSNumber)?.intValue ?? 0, background.count),
                 recent: Banner.calls(g["recent"]))
         }
         render()
@@ -265,9 +274,10 @@ final class Banner: NSObject {
         insetConstraints = [top, leading, bottom, trailing]
 
         // The sliver: a count, a way back, and Kill.
+        // A fixed width, so the pill never resizes under a click on its Kill
+        // as calls start and finish.
         let sliverText = label(.boldSystemFont(ofSize: 11), wraps: false)
-        sliverText.setContentHuggingPriority(.required, for: .horizontal)
-        sliverText.setContentCompressionResistancePriority(.required, for: .horizontal)
+        sliverText.widthAnchor.constraint(equalToConstant: 160).isActive = true
         let restore = button("Show", #selector(restoreTapped), small: true)
         restore.toolTip = "Show what has control of this Mac"
         let sliverKill = button("Kill", #selector(killTapped), small: true)
@@ -406,8 +416,8 @@ final class Banner: NSObject {
             if let session = g.session {
                 row.session.isHidden = false
                 row.session.url = g.sessionURL
-                row.session.isEnabled = g.sessionURL != nil
-                let text = g.sessionURL != nil ? "for \(session) ↗" : "for \(session)"
+                // Enabled either way, so it is drawn white; with no URL a click does nothing.
+                let text = g.sessionURL != nil ? "says it's for: \(session) ↗" : "says it's for: \(session)"
                 row.session.attributedTitle = NSAttributedString(string: text, attributes: [
                     .foregroundColor: NSColor.white,
                     .font: NSFont.systemFont(ofSize: 12),
@@ -421,14 +431,28 @@ final class Banner: NSObject {
             row.kill.isHidden = !many && !expanded
             row.purpose.stringValue = g.purpose
 
+            // Compact keeps this to ONE line, so the banner's height does not
+            // change as calls start and finish under a foreground grant; the
+            // detail view lists them.
             var lines: [String] = []
             let shown = expanded ? g.inFlight : Array(g.inFlight.prefix(1))
             for c in shown {
                 lines.append("▶ \(c.summary) — running \(Banner.span(now.timeIntervalSince(c.startedAt)))")
             }
-            if !expanded && g.inFlight.count > 1 { lines.append("  and \(g.inFlight.count - 1) more call(s) running") }
-            for cmd in expanded ? g.background : Array(g.background.prefix(1)) {
-                lines.append("⟳ still running: \(cmd)")
+            let moreCalls = g.inFlightCount - shown.count
+            if moreCalls > 0 { lines.append("and \(moreCalls) more call\(moreCalls == 1 ? "" : "s") running") }
+            if !expanded && !lines.isEmpty && g.backgroundCount > 0 {
+                // Compact, with a call already on the line: just the count.
+                lines.append("\(g.backgroundCount) command\(g.backgroundCount == 1 ? "" : "s") still running")
+            } else {
+                let commands = expanded ? g.background : Array(g.background.prefix(1))
+                for cmd in commands {
+                    lines.append("⟳ still running: \(cmd)")
+                }
+                let moreCommands = g.backgroundCount - commands.count
+                if moreCommands > 0 {
+                    lines.append("and \(moreCommands) more command\(moreCommands == 1 ? "" : "s") still running")
+                }
             }
             if lines.isEmpty {
                 if let last = g.recent.first {
@@ -437,8 +461,9 @@ final class Banner: NSObject {
                     lines.append("no calls yet")
                 }
             }
-            row.now.stringValue = lines.joined(separator: "\n")
-            row.now.maximumNumberOfLines = expanded ? 0 : 3
+            row.now.stringValue = lines.joined(separator: expanded ? "\n" : "  ·  ")
+            row.now.maximumNumberOfLines = expanded ? 0 : 1
+            row.now.lineBreakMode = expanded ? .byWordWrapping : .byTruncatingTail
 
             row.timing.isHidden = !expanded
             row.recent.isHidden = !expanded || g.recent.isEmpty
@@ -486,7 +511,9 @@ final class Banner: NSObject {
         let fit = stack.fittingSize
         let w = sliver ? fit.width + 2 * side : width
         let h = min(fit.height + 2 * inset, visible.height - 12)
-        panel.setFrame(NSRect(x: visible.midX - w / 2, y: visible.maxY - h - 6, width: w, height: h), display: true)
+        let frame = NSRect(x: (visible.midX - w / 2).rounded(), y: (visible.maxY - h - 6).rounded(), width: w.rounded(), height: h.rounded())
+        // Unchanged, the panel is left alone: a moving frame cancels a click.
+        if panel.frame != frame { panel.setFrame(frame, display: true) }
     }
 
     private func startTicker() {
@@ -508,6 +535,7 @@ final class Banner: NSObject {
     private func setMode(_ next: Mode) {
         mode = next
         UserDefaults.standard.set(next.rawValue, forKey: Banner.modeKey)
+        if next != .sliver { UserDefaults.standard.set(next.rawValue, forKey: Banner.openModeKey) }
         render()
     }
 
@@ -673,7 +701,8 @@ final class Banner: NSObject {
     }
 
     @objc private func restoreTapped() {
-        setMode(.compact)
+        let open = Mode(rawValue: UserDefaults.standard.string(forKey: Banner.openModeKey) ?? "") ?? .compact
+        setMode(open == .sliver ? .compact : open)
     }
 
     @objc private func pickMode(_ sender: NSMenuItem) {

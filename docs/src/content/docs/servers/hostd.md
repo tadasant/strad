@@ -305,9 +305,11 @@ Every server starts the same way:
    key does, so someone typing in another app when it appears cannot decide it
    by accident. Pass the optional `session` too — the URL of the session you
    act for (`https://…/sessions/1234`), or an id or title — and the banner
-   says whose work this is, with a link when it is an https URL. It is the
-   caller's own claim, shown as one: nothing on the wire carries who is
-   calling, and it grants nothing.
+   says whose work this is, as `says it's for: zimmer.example.com · session
+   1234 ↗`, linked only when it is an https URL (its query and fragment are
+   dropped, and the host is always in the label). It is the caller's own
+   claim, shown as one: nothing on the wire carries who is calling, and it
+   grants nothing.
 2. Pass the returned `grant_id` to every other tool.
 3. `end_control` when done.
 
@@ -425,20 +427,25 @@ picked for the next grant:
 
 | Size | What it shows |
 | --- | --- |
-| **Sliver** (**Minimize**) | a pill: how many grants, the tool running now, **Show** and **Kill** |
-| **Compact** (the default) | each grant's server, the session it says it acts for, its whole purpose, and the call it is in the middle of — `▶ run_command: npm test — running 12s` — with **Details**, **Minimize**, **Kill** and **Disable everything** |
-| **Details** | adds, per grant, when it started, when it expires and how many calls it has made, every call in flight, shell commands still running after the call that started them returned, the last five calls with ✓ or ✗ and how long each took, and a **Kill** for that grant alone |
+| **Sliver** (**Minimize**) | a fixed-width pill: how many grants, the tool running now, **Show** (back to the size you left) and **Kill** |
+| **Compact** (the default) | each grant's server, the session it says it acts for, its whole purpose, and ONE line for what it is doing — `▶ run_command: npm test — running 12s`, plus how many more calls or left-running commands there are — with **Details**, **Minimize**, **Kill** and **Disable everything**, and a **Kill** per grant when there is more than one |
+| **Details** | adds, per grant, when it started, when it expires and how many calls it has made, up to three calls in flight and three shell commands still running after the call that started them returned (with the count of any more), the last five calls with ✓ or ✗ and how long each took, and a **Kill** per grant |
 
 **Kill** is on all three. The menu bar carries the same state: a Kill per
 grant with its session and current call, and the three sizes. The text of a
 call is caller-authored, so before it reaches the screen the daemon scrubs
 the obvious secrets — `Authorization` and cookie headers, `password=`-shaped
-pairs, credential-looking flags, URL userinfo, well-known token prefixes,
-JWTs, private keys, long opaque runs — and caps it at 240 characters. That is
-a heuristic: a password typed as a bare word is shown as typed. The audit log
-keeps the unscrubbed summary, on the machine. The banner is part of the screen,
-so a screenshot a foreground grant takes includes it, and in **Details** that
-is every grant's current call.
+pairs, credential-looking flags, `curl -u` passwords, URL userinfo,
+well-known token prefixes, JWTs, private keys, long opaque runs — and caps it
+at 240 characters. Text typed or set into a field (`type_text`, `set_value`)
+is shown only as its length. That is a heuristic: a password passed as a bare
+word in a shell command is shown as written. The audit log keeps the
+unscrubbed summary, on the machine. The banner is part of the screen, so a
+screenshot a foreground grant takes includes it: in compact that is every
+grant's purpose, session and current call, and in **Details** the rest. In
+compact the banner's height changes only when a grant starts or ends, not per
+call; it is still taller than a single line, and **Minimize** is the size that
+stays out of a foreground grant's way.
 
 The daemon re-sends the banner's state every two seconds, and whenever a call
 starts or finishes, so a

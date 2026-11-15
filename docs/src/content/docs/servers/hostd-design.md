@@ -508,7 +508,8 @@ banner's state is one idempotent `set_state`: each grant's id, server,
 purpose and mode, when it started and expires, its call count, the session
 its caller claimed in `request_control` (a label, and a link only when it is
 https — the helper checks the scheme again before it opens anything), the
-calls in flight, the shell commands it left running, and its last five calls.
+calls in flight and the shell commands it left running (the oldest three of
+each, with their totals), and its last five calls.
 The call text is the tool's own audit summary, scrubbed for the screen by
 `hostd/src/consent/display.ts`. None of it is read by `Banner.authorize`, which
 still asks only whether the connection is the controller and whether a grant,

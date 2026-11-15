@@ -27,7 +27,10 @@ export type BannerState = {
     calls: number;
     session?: string;
     session_url?: string;
+    /** How many calls are running; `in_flight` is the oldest few of them. */
+    in_flight_count: number;
     in_flight: BannerCall[];
+    background_count: number;
     /** Shell commands still running after the call that started them returned. */
     background: string[];
     recent: (BannerCall & { ended_at: number; ok: boolean })[];
@@ -90,7 +93,19 @@ export class Presence {
       disabled: this.deps.killSwitch.isDisabled(),
       ...(this.deps.controlUrl ? { control_url: this.deps.controlUrl } : {}),
       grants: this.deps.gate.grants.active().map((g) => {
-        const running = this.deps.running?.(g.id) ?? [];
+        // A command whose run_command is still waiting on it is already an
+        // in-flight call; the rest outlived the call that started them. One
+        // in-flight summary accounts for one command, so two identical
+        // commands are not folded into one.
+        const waiting = g.inFlight.map((f) => f.summary);
+        const background = (this.deps.running?.(g.id) ?? [])
+          .map((c) => screenText(`run_command: ${c.slice(0, 200)}`))
+          .filter((s) => {
+            const i = waiting.indexOf(s);
+            if (i === -1) return true;
+            waiting.splice(i, 1);
+            return false;
+          });
         return {
           id: g.id,
           server: g.server,
@@ -101,17 +116,14 @@ export class Presence {
           calls: g.calls,
           ...(g.session ? { session: g.session.label } : {}),
           ...(g.session?.url ? { session_url: g.session.url } : {}),
-          in_flight: g.inFlight.slice(-IN_FLIGHT_SHOWN).map((c) => ({
+          in_flight_count: g.inFlight.length,
+          in_flight: g.inFlight.slice(0, IN_FLIGHT_SHOWN).map((c) => ({
             tool: c.tool,
             summary: c.summary,
             started_at: c.startedAt,
           })),
-          // A command whose run_command is still waiting on it is already
-          // the "now" line; the rest outlived their call.
-          background: running
-            .map((c) => screenText(`run_command: ${c.slice(0, 200)}`))
-            .filter((s) => !g.inFlight.some((f) => f.summary === s))
-            .slice(0, IN_FLIGHT_SHOWN),
+          background_count: background.length,
+          background: background.slice(0, IN_FLIGHT_SHOWN),
           recent: g.recent.map((c) => ({
             tool: c.tool,
             summary: c.summary,

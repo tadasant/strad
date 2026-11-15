@@ -47,6 +47,16 @@ describe("call summaries headed for the screen", () => {
       "printf '-----BEGIN OPENSSH PRIVATE KEY-----\\nb3BlbnNzaA\\n-----END OPENSSH PRIVATE KEY-----'",
       "b3BlbnNzaA",
     ],
+    ["curl -H 'Cookie: theme=dark; auth=abcdef123456' x", "abcdef123456"],
+    ["curl -u admin:hunter2 https://x.test", "hunter2"],
+    [`doctl --access-token dop_v1_${"ab12".repeat(16)}`, "dop_v1_ab12"],
+    [`echo dop_v1_${"ab12".repeat(16)}`, "dop_v1_ab12"],
+    ["stripe sk_live_abcdefghijklmnop1234", "sk_live_abc"],
+    ["echo npm_abcdefghijklmnopqrstuvwxyz0123", "npm_abcdef"],
+    [
+      `curl -H 'X-Auth: ${"0123456789abcdef".repeat(2)}' x`,
+      "0123456789abcdef0123",
+    ],
   ])("scrubs %s", (raw, secret) => {
     const out = screenText(raw);
     expect(out).not.toContain(secret);
@@ -59,8 +69,23 @@ describe("call summaries headed for the screen", () => {
     "navigate_tab: https://example.com/docs/getting-started?page=2",
     "click_element: button[data-test=submit-token-form]",
     "run_command: git commit -m 'refresh the token handling'",
+    "run_command: git log --author=someone -n 5",
   ])("leaves ordinary text alone: %s", (raw) => {
     expect(screenText(raw)).toBe(raw);
+  });
+
+  it("shows the length of typed or set text, never the text", () => {
+    expect(screenText('type_text: "hunter2"')).toBe("type_text: 7 chars");
+    expect(screenText(`type_text: ${JSON.stringify("x".repeat(80))}`)).toBe(
+      "type_text: 80+ chars",
+    );
+    expect(screenText('set_value: e12 = "hunter2"')).toBe(
+      "set_value: e12 = (text, 7 chars)",
+    );
+    // The browser's own summary already carries only a length.
+    expect(screenText("type_text: 7 chars into #pw")).toBe(
+      "type_text: 7 chars into #pw",
+    );
   });
 
   it("caps the length and strips control characters", () => {
@@ -76,9 +101,29 @@ describe("the session a caller says it acts for", () => {
     expect(
       normalizeSession("https://zimmer.example.com/sessions/28427"),
     ).toEqual({
-      label: "session 28427",
+      label: "zimmer.example.com · session 28427",
       url: "https://zimmer.example.com/sessions/28427",
     });
+  });
+
+  it("names the host the link really goes to, and keeps no query or fragment", () => {
+    expect(
+      normalizeSession("https://evil.example/sessions/1234?token=abc#x"),
+    ).toEqual({
+      label: "evil.example · session 1234",
+      url: "https://evil.example/sessions/1234",
+    });
+    expect(normalizeSession("https://x.test/runs/9/")).toEqual({
+      label: "x.test/runs/9",
+      url: "https://x.test/runs/9/",
+    });
+  });
+
+  it("strips link arrows and invisible characters from a label", () => {
+    expect(normalizeSession("session 99 ↗ (verified)")).toEqual({
+      label: "session 99 (verified)",
+    });
+    expect(normalizeSession("a\u200fb\u200bc")).toEqual({ label: "a b c" });
   });
 
   it("never links anything but https, and never a URL carrying userinfo", () => {
@@ -197,8 +242,9 @@ describe("what set_state carries", () => {
           started_at: 5_000_000,
           expires_at: 5_000_000 + 10 * 60_000,
           calls: 0,
-          session: "session 7",
+          session: "zimmer.example.com · session 7",
           session_url: "https://zimmer.example.com/sessions/7",
+          in_flight_count: 1,
           in_flight: [
             {
               tool: "run_command",
@@ -207,6 +253,7 @@ describe("what set_state carries", () => {
             },
           ],
           // `npm test` is the call above; the other outlived its call, scrubbed.
+          background_count: 1,
           background: [
             "run_command: curl -H 'Authorization: Bearer [redacted]' x",
           ],
@@ -237,6 +284,56 @@ describe("what set_state carries", () => {
     expect(g).not.toHaveProperty("session");
     expect(g).not.toHaveProperty("session_url");
     expect(g.background).toEqual([]);
+  });
+});
+
+describe("the caps on what a grant shows", () => {
+  it("sends the oldest three calls and commands, with the real totals", async () => {
+    const killSwitch = new KillSwitch(tmpState());
+    const gate = new ConsentGate({
+      config: testConfig(),
+      prompter: new ScriptedPrompter("allowed"),
+      killSwitch,
+      audit: new AuditLog(),
+    });
+    const d = await gate.request({
+      capability: "shell",
+      server: "s",
+      purpose: "Run several long jobs at once.",
+    });
+    if (!d.ok) throw new Error(d.reason);
+    for (let i = 0; i < 5; i++)
+      gate.grants.begin(d.grant.id, "run_command", `run_command: job ${i}`);
+    const [g] = new Presence({
+      helper: {} as HelperClient,
+      gate,
+      killSwitch,
+      // Two identical commands: one is a call's, the other outlived its call.
+      running: () => [
+        "job 0",
+        "job 0",
+        "a",
+        "b",
+        "c",
+        "d",
+        "job 1",
+        "job 2",
+        "job 3",
+        "job 4",
+      ],
+    }).state().grants;
+    expect(g.in_flight_count).toBe(5);
+    expect(g.in_flight.map((c) => c.summary)).toEqual([
+      "run_command: job 0",
+      "run_command: job 1",
+      "run_command: job 2",
+    ]);
+    expect(g.background_count).toBe(5);
+    expect(g.background).toEqual([
+      "run_command: job 0",
+      "run_command: a",
+      "run_command: b",
+    ]);
   });
 });
 
@@ -277,7 +374,7 @@ describe("through the daemon: request_control(session) → a call in flight → 
       await new Promise((r) => setTimeout(r, 20));
     }
     expect(during).toMatchObject({
-      session: "session 99",
+      session: "zimmer.example.com · session 99",
       session_url: "https://zimmer.example.com/sessions/99",
       in_flight: [
         {
@@ -301,6 +398,37 @@ describe("through the daemon: request_control(session) → a call in flight → 
       }),
     ]);
     expect(after?.calls).toBe(1);
+    // The audit log records the claimed session with the grant.
+    expect(
+      daemon.core.deps.audit
+        .tail(50)
+        .some(
+          (e) =>
+            e.kind === "granted" &&
+            e.detail.includes("(for https://zimmer.example.com/sessions/99)"),
+        ),
+    ).toBe(true);
+    await client.close();
+  });
+
+  it("puts a call that fails into recent with ok: false", async () => {
+    const client = await connect(daemon.mcpPort, "/shell/mcp", SHELL_KEY);
+    const { grant_id } = resultJson<{ grant_id: string }>(
+      await client.callTool({
+        name: "request_control",
+        arguments: { purpose: "Check the banner's failed-call line." },
+      }),
+    );
+    const r = await client.callTool({
+      name: "get_command",
+      arguments: { grant_id, command_id: "c_missing" },
+    });
+    expect(r.isError).toBe(true);
+    const g = daemon.core.presence
+      .state()
+      .grants.find((x) => x.id === grant_id);
+    expect(g).not.toHaveProperty("session");
+    expect(g?.recent[0]).toMatchObject({ tool: "get_command", ok: false });
     await client.close();
   });
 });
