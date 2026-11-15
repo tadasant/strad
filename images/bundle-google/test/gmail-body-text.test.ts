@@ -39,7 +39,9 @@ function bodyOf(message: string): string {
 
 /** The two alternatives of a message's body, still as they are on the wire. */
 function wireParts(message: string): { plain: string; html: string } {
-  expect(message).toMatch(/Content-Type: multipart\/alternative;\r\n boundary="/);
+  expect(message).toMatch(
+    /Content-Type: multipart\/alternative;\r\n boundary="/,
+  );
   const boundary = message.match(/boundary="([^"]+)"/)![1];
   const parts = bodyOf(message)
     .split(`--${boundary}`)
@@ -58,7 +60,10 @@ function wireParts(message: string): { plain: string; html: string } {
 /** The two alternatives of a message's body, as the recipient's client reads them. */
 function partsOf(message: string): { plain: string; html: string } {
   const { plain, html } = wireParts(message);
-  return { plain: decodeQuotedPrintable(plain), html: decodeQuotedPrintable(html) };
+  return {
+    plain: decodeQuotedPrintable(plain),
+    html: decodeQuotedPrintable(html),
+  };
 }
 
 /** A paragraph as an agent hard-wraps it, at 72 columns. */
@@ -318,7 +323,9 @@ describe("buildMimeMessage body parts", () => {
     const { plain, html } = wireParts(message);
     expect(plain.split(/(?<!=)\r\n/)).toHaveLength(1);
     expect(decodeQuotedPrintable(plain)).toBe(paragraph);
-    expect(decodeQuotedPrintable(html)).toBe(`<div dir="auto">${paragraph}</div>`);
+    expect(decodeQuotedPrintable(html)).toBe(
+      `<div dir="auto">${paragraph}</div>`,
+    );
   });
 
   it("keeps every header line within 78 characters", () => {
@@ -363,7 +370,10 @@ describe("buildMimeMessage body parts", () => {
       subject: "s",
       plaintextBody: "\n\r\nHello",
     });
-    expect(partsOf(message)).toEqual({ plain: "Hello", html: '<div dir="auto">Hello</div>' });
+    expect(partsOf(message)).toEqual({
+      plain: "Hello",
+      html: '<div dir="auto">Hello</div>',
+    });
   });
 
   it("sends an html_body alone as a single text/html part", () => {
@@ -396,7 +406,16 @@ describe("trimLeadingHtmlSpace", () => {
   });
 
   it("covers every block with a default top margin", () => {
-    for (const tag of ["h1", "h3", "ul", "ol", "dl", "blockquote", "pre", "figure"]) {
+    for (const tag of [
+      "h1",
+      "h3",
+      "ul",
+      "ol",
+      "dl",
+      "blockquote",
+      "pre",
+      "figure",
+    ]) {
       expect(trimLeadingHtmlSpace(`<${tag}>x</${tag}>`)).toBe(
         `<${tag} style="margin-top:0">x</${tag}>`,
       );
@@ -405,7 +424,9 @@ describe("trimLeadingHtmlSpace", () => {
 
   it("drops leading whitespace, <br>s and empty blocks before the first content", () => {
     expect(
-      trimLeadingHtmlSpace("\r\n  <br><br/><p>&nbsp;</p>\n<div><br></div><p> </p><p>Hi</p>"),
+      trimLeadingHtmlSpace(
+        "\r\n  <br><br/><p>&nbsp;</p>\n<div><br></div><p> </p><p>Hi</p>",
+      ),
     ).toBe('<p style="margin-top:0">Hi</p>');
     expect(trimLeadingHtmlSpace("\n\n<div>Hi</div>")).toBe("<div>Hi</div>");
   });
@@ -432,6 +453,54 @@ describe("trimLeadingHtmlSpace", () => {
     }
   });
 
+  it("edits only the style attribute itself, wherever the tag's quotes put a > or a style=", () => {
+    expect(trimLeadingHtmlSpace(`<p title="see style='x'">Hi</p>`)).toBe(
+      `<p style="margin-top:0" title="see style='x'">Hi</p>`,
+    );
+    expect(
+      trimLeadingHtmlSpace('<p title="a>b" style="color:red">Hi</p>'),
+    ).toBe('<p title="a>b" style="margin-top:0;color:red">Hi</p>');
+  });
+
+  it("quotes an unquoted style rather than adding a second one", () => {
+    expect(trimLeadingHtmlSpace("<p style=color:red>Hi</p>")).toBe(
+      '<p style="margin-top:0;color:red">Hi</p>',
+    );
+  });
+
+  it("is idempotent", () => {
+    const once = trimLeadingHtmlSpace("<br><p>Hi</p>");
+    expect(trimLeadingHtmlSpace(once)).toBe(once);
+  });
+
+  it("leaves a custom element whose name starts like a block alone", () => {
+    for (const html of [
+      "<p-note>Hi</p-note>",
+      "<h1-x>Hi</h1-x>",
+      "<divider></divider><p>x</p>",
+    ]) {
+      expect(trimLeadingHtmlSpace(html)).toBe(html);
+    }
+  });
+
+  it("keeps an empty block the caller styled: a spacer or a rule is meant", () => {
+    for (const html of [
+      '<div style="height:24px">&nbsp;</div><p>Hi</p>',
+      '<div class="rule"></div><p>Hi</p>',
+    ]) {
+      expect(trimLeadingHtmlSpace(html)).toBe(html);
+    }
+    expect(trimLeadingHtmlSpace('<div dir="ltr"><br></div><p>Hi</p>')).toBe(
+      '<p style="margin-top:0">Hi</p>',
+    );
+  });
+
+  it("drops a no-break space written in hex too", () => {
+    expect(trimLeadingHtmlSpace("<p>&#xA0;</p><p>Hi</p>")).toBe(
+      '<p style="margin-top:0">Hi</p>',
+    );
+  });
+
   it("keeps blank lines that come after the first content", () => {
     expect(trimLeadingHtmlSpace("<div>Hi</div><br><p></p><p>Bye</p>")).toBe(
       "<div>Hi</div><br><p></p><p>Bye</p>",
@@ -455,7 +524,9 @@ describe("trimLeadingHtmlSpace", () => {
     });
     const sent = partsOf(message).html;
     expect(sent).toBe(html.replace(/^<p>/, '<p style="margin-top:0">'));
-    expect(wireParts(message).html.startsWith('<p style=3D"margin-top:0">Yes,')).toBe(true);
+    expect(
+      wireParts(message).html.startsWith('<p style=3D"margin-top:0">Yes,'),
+    ).toBe(true);
   });
 });
 
@@ -468,7 +539,9 @@ describe("plainTextToHtml", () => {
 
   it("links bare URLs and leaves sentence punctuation outside the link", () => {
     expect(
-      plainTextToHtml("See https://x.test/a?b=1&c=2. Or (https://x.test/wiki/A_(b)), then stop."),
+      plainTextToHtml(
+        "See https://x.test/a?b=1&c=2. Or (https://x.test/wiki/A_(b)), then stop.",
+      ),
     ).toBe(
       '<div dir="auto">See <a href="https://x.test/a?b=1&amp;c=2">https://x.test/a?b=1&amp;c=2</a>. ' +
         'Or (<a href="https://x.test/wiki/A_(b)">https://x.test/wiki/A_(b)</a>), then stop.</div>',
@@ -476,7 +549,11 @@ describe("plainTextToHtml", () => {
   });
 
   it("leaves markdown emphasis and unopened brackets outside the link", () => {
-    expect(plainTextToHtml("**https://x.test/b** [docs](https://x.test/c) [https://x.test/d]")).toBe(
+    expect(
+      plainTextToHtml(
+        "**https://x.test/b** [docs](https://x.test/c) [https://x.test/d]",
+      ),
+    ).toBe(
       '<div dir="auto">**<a href="https://x.test/b">https://x.test/b</a>** ' +
         '[docs](<a href="https://x.test/c">https://x.test/c</a>) ' +
         '[<a href="https://x.test/d">https://x.test/d</a>]</div>',

@@ -55,7 +55,12 @@ function startsElement(line: string): boolean {
 
 /** A line whose own layout must survive verbatim, and that nothing is joined onto. */
 function isVerbatim(line: string): boolean {
-  return QUOTE.test(line) || TABLE_ROW.test(line) || RULE.test(line) || HEADING.test(line);
+  return (
+    QUOTE.test(line) ||
+    TABLE_ROW.test(line) ||
+    RULE.test(line) ||
+    HEADING.test(line)
+  );
 }
 
 function firstWordLength(line: string): number {
@@ -78,7 +83,7 @@ function reflowBlock(lines: string[]): string[] {
     ...lines
       .map((l) => l.trimEnd())
       .filter((l) => /\S\s+\S/.test(l))
-      .map((l) => l.length)
+      .map((l) => l.length),
   );
   if (lines.length < 2 || width < MIN_WRAP_WIDTH || width > MAX_WRAP_WIDTH) {
     return lines;
@@ -106,10 +111,11 @@ function reflowBlock(lines: string[]): string[] {
       const wrapped =
         lastLength >= MIN_WRAPPED_LINE &&
         lastLength + 1 + firstWordLength(line) > width &&
-        !out[out.length - 1].endsWith(':');
+        !out[out.length - 1].endsWith(":");
       // Inside a list item a continuation is indented to the item's text, or
       // not at all; outside one, an indented line is code or layout.
-      const continues = indent === 0 || (itemIndent !== null && indent === itemIndent);
+      const continues =
+        indent === 0 || (itemIndent !== null && indent === itemIndent);
       join = wrapped && continues;
     }
 
@@ -119,7 +125,10 @@ function reflowBlock(lines: string[]): string[] {
       out.push(line);
       const item = LIST_ITEM.exec(line);
       itemIndent = item ? item[0].length : null;
-      joinable = !isVerbatim(line) && /\S\s+\S/.test(line) && (indent === 0 || item !== null);
+      joinable =
+        !isVerbatim(line) &&
+        /\S\s+\S/.test(line) &&
+        (indent === 0 || item !== null);
     }
     lastLength = line.length;
   }
@@ -135,7 +144,7 @@ function reflowBlock(lines: string[]): string[] {
  * width. Line endings come back as `\n`.
  */
 export function reflowPlainText(text: string): string {
-  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
   const out: string[] = [];
   let block: string[] = [];
   let inFence = false;
@@ -149,7 +158,7 @@ export function reflowPlainText(text: string): string {
     if (!inFence && SIGNATURE.test(line)) {
       flush();
       out.push(...lines.slice(i));
-      return out.join('\n');
+      return out.join("\n");
     }
     if (FENCE.test(line)) {
       flush();
@@ -157,7 +166,7 @@ export function reflowPlainText(text: string): string {
       inFence = !inFence;
     } else if (inFence) {
       out.push(line);
-    } else if (line.trim() === '') {
+    } else if (line.trim() === "") {
       flush();
       out.push(line);
     } else {
@@ -165,13 +174,13 @@ export function reflowPlainText(text: string): string {
     }
   }
   flush();
-  return out.join('\n');
+  return out.join("\n");
 }
 
 const QP_MAX_LINE = 76;
 
 function qpByte(byte: number): string {
-  return `=${byte.toString(16).toUpperCase().padStart(2, '0')}`;
+  return `=${byte.toString(16).toUpperCase().padStart(2, "0")}`;
 }
 
 /**
@@ -183,7 +192,7 @@ function qpByte(byte: number): string {
  * relay has a reason to fold it.
  */
 export function encodeQuotedPrintable(text: string): string {
-  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
   return lines
     .map((line) => {
       // One token per character, so a soft break never splits the bytes of
@@ -193,39 +202,42 @@ export function encodeQuotedPrintable(text: string): string {
         const code = char.charCodeAt(0);
         const last = i === chars.length - 1;
         const printable =
-          (code >= 33 && code <= 126 && code !== 61) || ((code === 32 || code === 9) && !last);
-        return printable ? char : [...Buffer.from(char, 'utf-8')].map(qpByte).join('');
+          (code >= 33 && code <= 126 && code !== 61) ||
+          ((code === 32 || code === 9) && !last);
+        return printable
+          ? char
+          : [...Buffer.from(char, "utf-8")].map(qpByte).join("");
       });
 
       const wire: string[] = [];
-      let current = '';
+      let current = "";
       for (const token of tokens) {
         // Leave room for the trailing `=` of a soft break.
         if (current.length + token.length > QP_MAX_LINE - 1) {
           wire.push(`${current}=`);
-          current = '';
+          current = "";
         }
         current += token;
       }
       wire.push(current);
-      return wire.join('\r\n');
+      return wire.join("\r\n");
     })
-    .join('\r\n');
+    .join("\r\n");
 }
 
 const URL_IN_TEXT = /\bhttps?:\/\/[^\s<>"]+/gi;
 
 function escapeHtml(text: string): string {
   return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 /** Brackets a URL may close only if it opened them: `(see https://x.test/a)`. */
-const CLOSERS: Record<string, string> = { ')': '(', ']': '[' };
+const CLOSERS: Record<string, string> = { ")": "(", "]": "[" };
 
 function count(text: string, char: string): number {
   return text.split(char).length - 1;
@@ -262,7 +274,7 @@ function splitUrl(match: string): [string, string] | null {
  * every space of an indent) is a non-breaking one, and a tab is four.
  */
 function lineToHtml(line: string): string {
-  let html = '';
+  let html = "";
   let at = 0;
   for (const match of line.matchAll(URL_IN_TEXT)) {
     const split = splitUrl(match[0]);
@@ -274,9 +286,9 @@ function lineToHtml(line: string): string {
   }
   html += escapeHtml(line.slice(at));
   return html
-    .replace(/\t/g, '    ')
-    .replace(/^ +/, (spaces) => '&nbsp;'.repeat(spaces.length))
-    .replace(/ {2,}/g, (spaces) => `${'&nbsp;'.repeat(spaces.length - 1)} `);
+    .replace(/\t/g, "    ")
+    .replace(/^ +/, (spaces) => "&nbsp;".repeat(spaces.length))
+    .replace(/ {2,}/g, (spaces) => `${"&nbsp;".repeat(spaces.length - 1)} `);
 }
 
 /**
@@ -290,38 +302,85 @@ function lineToHtml(line: string): string {
  * links whose text is the URL.
  */
 export function plainTextToHtml(text: string): string {
-  const lines = text.replace(/\r\n?/g, '\n').split('\n');
-  return `<div dir="auto">${lines.map(lineToHtml).join('<br>\n')}</div>`;
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  return `<div dir="auto">${lines.map(lineToHtml).join("<br>\n")}</div>`;
 }
 
+/** The rest of a start tag after its name: attributes, quoted values may hold `>`. */
+const TAG_REST = String.raw`(?=[\s/>])(?:"[^"]*"|'[^']*'|[^'">])*>`;
 /** Wrappers a body's first block may sit inside; none of them has a margin. */
-const WRAPPER_OPEN = /^<(html|body|div|section|article|main|center)\b[^>]*>/i;
+const WRAPPER_OPEN = new RegExp(
+  String.raw`^<(?:html|body|div|section|article|main|center)${TAG_REST}`,
+  "i",
+);
 /** Prologue that renders nothing: a comment, a doctype, the head. */
-const PROLOGUE = /^(<!--[\s\S]*?-->|<!doctype[^>]*>|<head\b[^>]*>[\s\S]*?<\/head\s*>)/i;
-/** What renders as nothing but empty lines: whitespace, `&nbsp;`, `<br>`. */
-const BLANK = String.raw`(?:\s|&nbsp;|&#160;|<br\s*\/?>)*`;
-/** A leading line break, or a paragraph or div that holds nothing else. */
+const PROLOGUE =
+  /^(<!--[\s\S]*?-->|<!doctype[^>]*>|<head(?=[\s>])[^>]*>[\s\S]*?<\/head\s*>)/i;
+/** What renders as nothing but empty lines: whitespace, a no-break space, `<br>`. */
+const BLANK = String.raw`(?:\s|&nbsp;|&#160;|&#x0*a0;|<br\s*\/?>)*`;
+/**
+ * A leading line break, or a `<p>`/`<div>` that holds nothing else and carries
+ * no `style` or `class` (one that does may be a spacer or a rule the caller
+ * drew on purpose).
+ */
 const EMPTY_BLOCK = new RegExp(
-  String.raw`^(?:<br\s*\/?>|<(p|div)\b[^>]*>${BLANK}<\/\1\s*>)`,
-  'i'
+  String.raw`^(?:<br\s*\/?>|<(p|div)((?=[\s/>])(?:"[^"]*"|'[^']*'|[^'">])*)>${BLANK}<\/\1\s*>)`,
+  "i",
 );
 /** Blocks a browser gives a top margin by default (`<p>`'s is 1em). */
-const MARGIN_OPEN = /^<(p|h[1-6]|ul|ol|dl|blockquote|pre|figure|hr)\b[^>]*>/i;
+const MARGIN_OPEN = new RegExp(
+  String.raw`^<(?:p|h[1-6]|ul|ol|dl|blockquote|pre|figure|hr)${TAG_REST}`,
+  "i",
+);
+/** One attribute of a start tag: its name, and its value with any quotes. */
+const ATTRIBUTE = /\s([^\s"'>/=]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s"'>]+))?/g;
+
+function hasStyleOrClass(attributes: string): boolean {
+  return [...attributes.matchAll(ATTRIBUTE)].some(([, name]) =>
+    /^(style|class)$/i.test(name),
+  );
+}
+
+/**
+ * The start tag with `margin-top:0` at the head of its `style` (an unquoted
+ * value is quoted first), or a `style` added when it has none. A tag whose
+ * style already opens with it is returned as it is.
+ */
+function zeroTopMargin(tag: string): string {
+  for (const match of tag.matchAll(ATTRIBUTE)) {
+    const [whole, name, value] = match;
+    if (name.toLowerCase() !== "style") continue;
+    const quote = value && /^["']/.test(value) ? value[0] : '"';
+    const css = value ? (/^["']/.test(value) ? value.slice(1, -1) : value) : "";
+    if (/^\s*margin-top\s*:\s*0\s*(;|$)/i.test(css)) return tag;
+    const start = match.index;
+    return (
+      tag.slice(0, start) +
+      ` ${name}=${quote}margin-top:0;${css}${quote}` +
+      tag.slice(start + whole.length)
+    );
+  }
+  return tag.replace(/^<[a-z0-9]+/i, (name) => `${name} style="margin-top:0"`);
+}
 
 /**
  * Takes the space off the top of a caller's `html_body`. Gmail does not reset
  * the browser's default block margins, so a body that opens with `<p>` — the
  * shape agents write, one `<p>` per paragraph — is shown with an empty line
  * above its first word; so is one that opens with whitespace, a `<br>` or an
- * empty paragraph. Before the first content, this drops whitespace, `<br>`
- * and `<p>`/`<div>` blocks holding only those and `&nbsp;`, looks inside the
- * wrappers a body may open with (`<html>`, `<body>`, `<div>`…), and gives the
- * first block that has a default top margin `margin-top:0`, ahead of any style
- * it already carries so the caller's own margin still wins. The margins BETWEEN
- * paragraphs are untouched, and nothing past the first block is read.
+ * empty paragraph. Before the first content, this drops whitespace, `<br>`,
+ * and unstyled `<p>`/`<div>` blocks holding only those and no-break spaces,
+ * looks inside the wrappers a body may open with (`<html>`, `<body>`,
+ * `<div>`…), and gives the first block that has a default top margin
+ * `margin-top:0`, ahead of any inline style it already carries, so an inline
+ * margin the caller wrote still wins (a margin from a `<style>` sheet or a
+ * class does not). The margins BETWEEN paragraphs are untouched. The scan
+ * stops at the first thing that is none of the above — text, inline markup,
+ * a closing tag, a styled block — so a body that opens with, say, a hidden
+ * preheader keeps whatever space its first paragraph has.
  */
 export function trimLeadingHtmlSpace(html: string): string {
-  let out = '';
+  let out = "";
   let rest = html;
   for (;;) {
     const lead = /^\s*/.exec(rest)![0];
@@ -330,7 +389,7 @@ export function trimLeadingHtmlSpace(html: string): string {
     if (out && lead) out += lead;
 
     const empty = EMPTY_BLOCK.exec(rest);
-    if (empty) {
+    if (empty && !(empty[2] && hasStyleOrClass(empty[2]))) {
       rest = rest.slice(empty[0].length);
       continue;
     }
@@ -342,14 +401,7 @@ export function trimLeadingHtmlSpace(html: string): string {
     }
     const block = MARGIN_OPEN.exec(rest);
     if (block) {
-      const tag = block[0];
-      const style = /(\sstyle\s*=\s*)(["'])/i.exec(tag);
-      const zeroed = style
-        ? tag.slice(0, style.index + style[0].length) +
-          'margin-top:0;' +
-          tag.slice(style.index + style[0].length)
-        : tag.replace(/^<[a-z0-9]+/i, (name) => `${name} style="margin-top:0"`);
-      return out + zeroed + rest.slice(tag.length);
+      return out + zeroTopMargin(block[0]) + rest.slice(block[0].length);
     }
     return out + rest;
   }

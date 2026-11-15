@@ -3800,9 +3800,10 @@ every text part quoted-printable so a long paragraph stays one line.
   the tool descriptions ask for an `html_body` for that.
 - **A caller's `html_body` loses the space at its top.** Gmail shows a leading
   `<p>` with the browser's default margin, an empty line above the first word,
-  so the leading whitespace, `<br>`s and empty paragraphs are dropped and the
-  first paragraph, heading or list gets `margin-top:0`, ahead of any style it
-  already carries. A margin the caller wrote still applies.
+  so the leading whitespace, `<br>`s and unstyled empty paragraphs are dropped
+  and the first paragraph, heading or list gets `margin-top:0`, ahead of any
+  inline style it already carries. An inline margin on that block still
+  applies; one from a `<style>` sheet or a class does not.
 - **The gmail tree is a fork.** Re-vendoring it from upstream would remove the
   reflow and the HTML part. `images/bundle-google/vendor/gmail-shared/FORK.md` lists the delta.
 
