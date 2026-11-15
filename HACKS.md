@@ -6354,12 +6354,19 @@ The fork joins those lines back into paragraphs and sends every text part
    escaped text, a `<br>` per line break, bare URLs linked by their own text.
    It is a rendering, not a rewrite, so it cannot give a link anchor text; the
    tool descriptions ask callers for an `html_body` when there are links.
+6. **A caller's `html_body` is edited at its top.** Gmail keeps the
+   browser's default 1em margin on a leading `<p>`, so a body written one
+   `<p>` per paragraph opened with an empty line. The fork drops leading
+   whitespace, `<br>`s and empty `<p>`/`<div>` blocks, and gives the first
+   block with a default margin `margin-top:0`, ahead of the caller's own
+   style. A caller that wants space above its first line writes the margin
+   itself; an empty paragraph at the top is no longer a way to get it.
 
 **Undo.** 1 and 2 go if every caller writes each paragraph as one line, which
 the tool descriptions ask for, and a reflow is no longer needed. 3 is a
 `preserve_line_breaks` argument, if a caller ever needs it. 5 goes when
 Gmail lays out `text/plain` at the reader's width, or when every caller sends
-its own `html_body`.
+its own `html_body`. 6 goes when Gmail resets a leading block's margin itself.
 
 ## 122. nutrition-facts ships its data in the image, and calls FatSecret only through a proxy
 

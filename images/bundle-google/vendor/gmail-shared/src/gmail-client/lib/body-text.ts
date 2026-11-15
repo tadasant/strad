@@ -293,3 +293,64 @@ export function plainTextToHtml(text: string): string {
   const lines = text.replace(/\r\n?/g, '\n').split('\n');
   return `<div dir="auto">${lines.map(lineToHtml).join('<br>\n')}</div>`;
 }
+
+/** Wrappers a body's first block may sit inside; none of them has a margin. */
+const WRAPPER_OPEN = /^<(html|body|div|section|article|main|center)\b[^>]*>/i;
+/** Prologue that renders nothing: a comment, a doctype, the head. */
+const PROLOGUE = /^(<!--[\s\S]*?-->|<!doctype[^>]*>|<head\b[^>]*>[\s\S]*?<\/head\s*>)/i;
+/** What renders as nothing but empty lines: whitespace, `&nbsp;`, `<br>`. */
+const BLANK = String.raw`(?:\s|&nbsp;|&#160;|<br\s*\/?>)*`;
+/** A leading line break, or a paragraph or div that holds nothing else. */
+const EMPTY_BLOCK = new RegExp(
+  String.raw`^(?:<br\s*\/?>|<(p|div)\b[^>]*>${BLANK}<\/\1\s*>)`,
+  'i'
+);
+/** Blocks a browser gives a top margin by default (`<p>`'s is 1em). */
+const MARGIN_OPEN = /^<(p|h[1-6]|ul|ol|dl|blockquote|pre|figure|hr)\b[^>]*>/i;
+
+/**
+ * Takes the space off the top of a caller's `html_body`. Gmail does not reset
+ * the browser's default block margins, so a body that opens with `<p>` — the
+ * shape agents write, one `<p>` per paragraph — is shown with an empty line
+ * above its first word; so is one that opens with whitespace, a `<br>` or an
+ * empty paragraph. Before the first content, this drops whitespace, `<br>`
+ * and `<p>`/`<div>` blocks holding only those and `&nbsp;`, looks inside the
+ * wrappers a body may open with (`<html>`, `<body>`, `<div>`…), and gives the
+ * first block that has a default top margin `margin-top:0`, ahead of any style
+ * it already carries so the caller's own margin still wins. The margins BETWEEN
+ * paragraphs are untouched, and nothing past the first block is read.
+ */
+export function trimLeadingHtmlSpace(html: string): string {
+  let out = '';
+  let rest = html;
+  for (;;) {
+    const lead = /^\s*/.exec(rest)![0];
+    // Whitespace between tags renders nothing; before the first one, drop it.
+    rest = rest.slice(lead.length);
+    if (out && lead) out += lead;
+
+    const empty = EMPTY_BLOCK.exec(rest);
+    if (empty) {
+      rest = rest.slice(empty[0].length);
+      continue;
+    }
+    const keep = PROLOGUE.exec(rest) ?? WRAPPER_OPEN.exec(rest);
+    if (keep) {
+      out += keep[0];
+      rest = rest.slice(keep[0].length);
+      continue;
+    }
+    const block = MARGIN_OPEN.exec(rest);
+    if (block) {
+      const tag = block[0];
+      const style = /(\sstyle\s*=\s*)(["'])/i.exec(tag);
+      const zeroed = style
+        ? tag.slice(0, style.index + style[0].length) +
+          'margin-top:0;' +
+          tag.slice(style.index + style[0].length)
+        : tag.replace(/^<[a-z0-9]+/i, (name) => `${name} style="margin-top:0"`);
+      return out + zeroed + rest.slice(tag.length);
+    }
+    return out + rest;
+  }
+}

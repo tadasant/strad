@@ -3798,6 +3798,11 @@ every text part quoted-printable so a long paragraph stays one line.
   arrived broken. The HTML part is the reflowed text escaped, a `<br>` per line
   break, bare URLs linked by their own text. It cannot give a link anchor text;
   the tool descriptions ask for an `html_body` for that.
+- **A caller's `html_body` loses the space at its top.** Gmail shows a leading
+  `<p>` with the browser's default margin, an empty line above the first word,
+  so the leading whitespace, `<br>`s and empty paragraphs are dropped and the
+  first paragraph, heading or list gets `margin-top:0`, ahead of any style it
+  already carries. A margin the caller wrote still applies.
 - **The gmail tree is a fork.** Re-vendoring it from upstream would remove the
   reflow and the HTML part. `images/bundle-google/vendor/gmail-shared/FORK.md` lists the delta.
 

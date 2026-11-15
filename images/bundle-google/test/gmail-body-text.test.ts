@@ -12,6 +12,7 @@ import {
   encodeQuotedPrintable,
   plainTextToHtml,
   reflowPlainText,
+  trimLeadingHtmlSpace,
 } from "../vendor/gmail-shared/src/gmail-client/lib/body-text.js";
 import { buildMimeMessage } from "../vendor/gmail-shared/src/gmail-client/lib/mime-utils.js";
 import { sendMessage } from "../vendor/gmail-shared/src/gmail-client/lib/send-message.js";
@@ -351,7 +352,9 @@ describe("buildMimeMessage body parts", () => {
       /^Content-Type: text\/html; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n/,
     );
     expect(decodeQuotedPrintable(bodyOf(parts[0]))).toBe(REFLOWED);
-    expect(decodeQuotedPrintable(bodyOf(parts[1]))).toBe(html);
+    expect(decodeQuotedPrintable(bodyOf(parts[1]))).toBe(
+      html.replace(/^<p>/, '<p style="margin-top:0">'),
+    );
   });
 
   it("still strips leading newlines from the body", () => {
@@ -367,12 +370,92 @@ describe("buildMimeMessage body parts", () => {
     const message = buildMimeMessage("me@example.com", {
       to: "you@example.com",
       subject: "s",
-      htmlBody: "<p>Hi</p>",
+      htmlBody: "<div>Hi</div>",
     });
     expect(message).not.toContain("multipart/alternative");
     expect(message).toContain(
-      "Content-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n<p>Hi</p>",
+      "Content-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n<div>Hi</div>",
     );
+  });
+});
+
+describe("trimLeadingHtmlSpace", () => {
+  it("zeroes the top margin of a leading <p>, and of nothing after it", () => {
+    expect(trimLeadingHtmlSpace("<p>One.</p><p>Two.</p>")).toBe(
+      '<p style="margin-top:0">One.</p><p>Two.</p>',
+    );
+  });
+
+  it("puts the zero ahead of a style the caller wrote, so the caller's margin still wins", () => {
+    expect(trimLeadingHtmlSpace('<p class="x" style="color:red">Hi</p>')).toBe(
+      '<p class="x" style="margin-top:0;color:red">Hi</p>',
+    );
+    expect(trimLeadingHtmlSpace("<P STYLE='margin:8px'>Hi</P>")).toBe(
+      "<P STYLE='margin-top:0;margin:8px'>Hi</P>",
+    );
+  });
+
+  it("covers every block with a default top margin", () => {
+    for (const tag of ["h1", "h3", "ul", "ol", "dl", "blockquote", "pre", "figure"]) {
+      expect(trimLeadingHtmlSpace(`<${tag}>x</${tag}>`)).toBe(
+        `<${tag} style="margin-top:0">x</${tag}>`,
+      );
+    }
+  });
+
+  it("drops leading whitespace, <br>s and empty blocks before the first content", () => {
+    expect(
+      trimLeadingHtmlSpace("\r\n  <br><br/><p>&nbsp;</p>\n<div><br></div><p> </p><p>Hi</p>"),
+    ).toBe('<p style="margin-top:0">Hi</p>');
+    expect(trimLeadingHtmlSpace("\n\n<div>Hi</div>")).toBe("<div>Hi</div>");
+  });
+
+  it("looks inside the wrappers a body opens with", () => {
+    expect(
+      trimLeadingHtmlSpace(
+        '<!DOCTYPE html><html><head><style>p{}</style></head><body>\n<div dir="ltr"><br><p>Hi</p></div></body></html>',
+      ),
+    ).toBe(
+      '<!DOCTYPE html><html><head><style>p{}</style></head><body>\n<div dir="ltr"><p style="margin-top:0">Hi</p></div></body></html>',
+    );
+  });
+
+  it("leaves a body that opens with text or inline markup as it is", () => {
+    for (const html of [
+      "Hi<p>there</p>",
+      "<div>Hi<p>there</p></div>",
+      "<b>Hi</b><p>there</p>",
+      '<div dir="auto">Hi<br>\nthere</div>',
+      "<table><tr><td><p>x</p></td></tr></table>",
+    ]) {
+      expect(trimLeadingHtmlSpace(html)).toBe(html);
+    }
+  });
+
+  it("keeps blank lines that come after the first content", () => {
+    expect(trimLeadingHtmlSpace("<div>Hi</div><br><p></p><p>Bye</p>")).toBe(
+      "<div>Hi</div><br><p></p><p>Bye</p>",
+    );
+  });
+
+  // 2026-11-14: Zimmer's replies, html_body one <p> per paragraph (the shape
+  // its email policy prescribes), each reached Gmail with an empty line above
+  // the first word: the browser's default 1em margin on the leading <p>,
+  // which Gmail does not reset. The bytes on the wire carried no newline.
+  it("regression: a one-<p>-per-paragraph reply goes out with no space above it", () => {
+    const html =
+      '<p>Yes, it is being fixed. The fix is in <a href="https://example.test/pr/1">the PR</a>.</p>' +
+      "<p>What it needs from you: nothing right now.</p>";
+    const message = buildMimeMessage("me@example.com", {
+      to: "you@example.com",
+      subject: "Re: build",
+      plaintextBody:
+        "Yes, it is being fixed. The fix is in the PR: https://example.test/pr/1.\n\nWhat it needs from you: nothing right now.",
+      htmlBody: html,
+    });
+    const sent = partsOf(message).html;
+    expect(sent).toBe(html.replace(/^<p>/, '<p style="margin-top:0">'));
+    expect(wireParts(message).html.startsWith('<p style=3D"margin-top:0">Yes,')).toBe(true);
   });
 });
 

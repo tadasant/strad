@@ -179,7 +179,8 @@ describe("MIME attachments", () => {
       to: "recipient@example.com",
       subject: "Both",
       plaintextBody: "plain",
-      htmlBody: "<p>html</p>",
+      // A <div>, so the body goes out exactly as given: this is about nesting.
+      htmlBody: "<div>html</div>",
       attachments: [
         {
           filename: "a.txt",
@@ -204,7 +205,7 @@ describe("MIME attachments", () => {
       /^Content-Type: multipart\/alternative;\s+boundary="/,
     );
     const altParts = splitParts(partBody(parts[0]), alt);
-    expect(altParts.map(partBody)).toEqual(["plain", "<p>html</p>"]);
+    expect(altParts.map(partBody)).toEqual(["plain", "<div>html</div>"]);
     expect(parts[1]).toContain('filename="a.txt"');
     expect(parts[2]).toContain(
       'Content-Type: text/csv; charset=utf-8; name="b.csv"',

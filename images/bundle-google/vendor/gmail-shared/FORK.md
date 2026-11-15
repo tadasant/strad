@@ -188,7 +188,20 @@ long enough, which a relay is free to fold.
   breaks as `<br>`. The HTML rendering escapes the text, keeps each of its
   line breaks as a `<br>` and each indent as `&nbsp;`, and links bare
   `http(s)` URLs with the URL as their text, so the two parts say the same
-  thing. A caller's own `html_body` is sent as given and nothing is generated.
+  thing. A caller's own `html_body` is sent as given and nothing is generated,
+  with one exception at its top, below.
+- `trimLeadingHtmlSpace` takes the space off the top of a caller's
+  `html_body`. Gmail does not reset the browser's default block margins, so
+  a body that opens with `<p>`, the one-`<p>`-per-paragraph shape agents
+  write, showed an empty line above its first word: on 2026-11-14 every
+  reply from zimmer@ did, with no newline anywhere in the bytes on the wire.
+  Before the first content it drops whitespace, `<br>` and `<p>`/`<div>`
+  blocks that hold nothing but those and `&nbsp;`, looks inside the wrappers
+  a body may open with (`<html>`, `<head>`, `<body>`, `<div>`…), and gives the
+  first block with a default top margin (`<p>`, `<h1>`–`<h6>`, lists,
+  `<blockquote>`, `<pre>`, `<figure>`, `<hr>`) `margin-top:0`, ahead of any
+  style it already has, so a margin the caller wrote still wins. The space
+  between paragraphs is untouched, and nothing past the first block is read.
 - The `send_email` and `upsert_draft_email` descriptions ask callers to write
   each paragraph as one line, and to put links in `html_body` as anchors with
   descriptive text, beside a matching `plaintext_body`.
@@ -198,7 +211,8 @@ What the heuristic gets wrong is `HACKS.md` #121.
 **Tests.** `images/bundle-google/test/gmail-body-text.test.ts`: the reflow
 rules, the HTML rendering, the encoding (wire line lengths and a decode round
 trip), the MIME headers for each body shape, the 2026-10-16 reply as a
-regression, and the raw message `sendMessage` and
+regression, the top-of-body trim and the 2026-11-14 reply it fixes, and the
+raw message `sendMessage` and
 `createDraft` hand Gmail.
 
 ---
