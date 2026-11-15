@@ -11,6 +11,9 @@ export interface TabInfo {
   opened_by_you: boolean;
 }
 
+/** How long a fresh tab may sit on its initial about:blank before that counts as loaded. */
+export const BLANK_GRACE_MS = 5_000;
+
 export const EXTENSION_ABSENT =
   "The strad-hostd Chrome extension is not connected, so the daemon fell back to DevTools. " +
   "On that machine, `strad-hostd extension` says how to install and pair it; the status page says whether it is connected.";
@@ -123,7 +126,8 @@ export class BrowserSession {
     timeoutMs = 15_000,
     pastBlank = false,
   ): Promise<"complete" | "timeout"> {
-    const deadline = Date.now() + timeoutMs;
+    const started = Date.now();
+    const deadline = started + timeoutMs;
     while (Date.now() < deadline) {
       const state = await this.evaluate<string>(
         tabId,
@@ -132,6 +136,12 @@ export class BrowserSession {
           : "document.readyState",
       ).catch(() => "loading");
       if (state === "complete") return "complete";
+      // A URL that never commits a document — a download, a 204, a blocked
+      // navigation — leaves the tab on about:blank for good, and that blank
+      // page IS loaded. Waiting the whole timeout for it would only delay
+      // the same answer.
+      if (state === "blank" && Date.now() - started >= BLANK_GRACE_MS)
+        return "complete";
       await new Promise((r) => setTimeout(r, 150));
     }
     return "timeout";

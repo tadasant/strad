@@ -93,7 +93,7 @@ opened_by_you is true for tabs this grant opened with open_tab; close_tab only c
     description: `Open a new tab in the owner's Chrome and load a URL in it, with their cookies and logins. Prefer this to navigating a tab they already had open.
 
 **Returns:** {"tab_id":"8F2C…","url":"https://…","title":"…","load":"complete"}
-load is "complete", or "timeout" if the page was still loading after 15s (it is usually usable anyway).
+load is "complete", or "timeout" if the page was still loading after 15s (it is usually usable anyway). A URL that loads no page — a download, an empty response — returns after about 5s with url "about:blank".
 
 **Use cases:**
 - Reach a site the owner is signed in to, as them

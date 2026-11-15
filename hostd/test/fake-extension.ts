@@ -19,6 +19,12 @@ export interface FakeTab {
   url: string;
   active: boolean;
   text: string;
+  /**
+   * A tab `create` made starts on about:blank, as Chrome's does, and commits
+   * this URL after `commitAfter` more evaluations — never, for a URL with
+   * `/download` in it, which loads no document.
+   */
+  pending?: { url: string; commitAfter: number };
 }
 
 export class FakeExtension {
@@ -150,7 +156,12 @@ export class FakeExtension {
           })),
         });
       case "create": {
-        const t = this.addTab("New tab", msg.url as string);
+        const url = msg.url as string;
+        const t = this.addTab("", "about:blank");
+        t.pending = {
+          url,
+          commitAfter: url.includes("/download") ? Infinity : 2,
+        };
         t.active = !msg.background;
         return this.reply(msg.id, { tabId: t.id });
       }
@@ -207,6 +218,11 @@ export class FakeExtension {
     if (method.startsWith("Input.")) return {};
     if (method === "Runtime.evaluate") {
       const expr = params.expression as string;
+      if (tab.pending && --tab.pending.commitAfter <= 0) {
+        tab.url = tab.pending.url;
+        tab.title = "New tab";
+        delete tab.pending;
+      }
       const value = (v: unknown) => ({ result: { value: v } });
       if (expr === "document.readyState") return value("complete");
       // `waitForLoad`'s fresh-tab form: still on the initial about:blank?
