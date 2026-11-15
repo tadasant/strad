@@ -122,7 +122,7 @@ Gmail's settings (Settings → Accounts → Send mail as → edit info).
 - **A configured name wins.** `GMAIL_SENDER_DISPLAY_NAME` (the client's
   `senderDisplayName` option) is sent as the name and the send-as settings are
   not read. It is for an account nobody signs in to: zimmer@tadasant.com's
-  send-as name is empty, so the lookup found nothing and its mail went out from
+  send-as name is empty, so the lookup finds nothing and its mail goes out from
   the bare address, and setting that name needs `gmail.settings.basic`, which
   the mount's token does not hold. Blank or unset means the lookup. The name
   goes through the same quoting below, so `Zimmer (Tadas's Assistant)` is sent
@@ -155,7 +155,8 @@ the optional last constructor argument of both clients), `src/index.ts`.
 quoting (the apostrophe case included), the encoded-words, the injection guard,
 the length cap, the send-as match, the timeout, the retry window, and the real OAuth client's send, reply, draft create and
 draft update against a stubbed Gmail, with the name looked up and with it
-configured (no lookup, apostrophe and parentheses intact). It has run against stubs only. No message
+configured (no lookup, apostrophe and parentheses intact). It has run against
+stubs only. No message
 was sent to test it.
 
 ---

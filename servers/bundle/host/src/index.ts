@@ -913,8 +913,8 @@ async function loadGoogleTree(): Promise<GoogleTree> {
  *   - The CONVENTIONAL `/gmail` mount is a SERVICE ACCOUNT with domain-wide
  *     delegation, impersonating one Workspace user. `gmail-ro`, `gmail-rw` and
  *     `gmail-rw-external` are three strad slugs over it, differing only by the
- *     gateway's `tools:` policy. It reads the bare names, exactly as it always
- *     has, and this change does not touch what it serves.
+ *     gateway's `tools:` policy. It reads the bare names, except the sender's
+ *     display name, which it reads only as `GMAIL__GMAIL_SENDER_DISPLAY_NAME`.
  *   - A DISCOVERED mount is a PERSON: an OAuth refresh token minted by that
  *     person, for that account, through the console consent flow an `oauth:`
  *     connector puts on the slug's own page. A refresh token is one account by

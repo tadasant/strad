@@ -101,6 +101,13 @@ describe("the marker names the bundle host looks for", () => {
     expect(host).toContain("gmail.GMAIL_ENV_NAMES");
     expect(tree).toContain("export const GMAIL_OAUTH_APP_ENV_NAMES");
     expect(tree).toContain("export const GMAIL_ENV_NAMES");
+    // The sender's name is one mailbox's, so every gmail mount reads it under
+    // its own slug only. Removing this call leaves `ownNameOnly`'s own tests
+    // green and puts one account's name on every other mount's mail.
+    expect(host).toContain(
+      "ownNameOnly(view, slug, gmail.GMAIL_SENDER_NAME_ENV_NAME)",
+    );
+    expect(tree).toContain("export const GMAIL_SENDER_NAME_ENV_NAME");
   });
 
   it("are google-docs' OAuth app pair, and its drop set spans BOTH auth modes", () => {

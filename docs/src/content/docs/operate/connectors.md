@@ -305,7 +305,9 @@ own slug's name only (`GMAIL__GMAIL_SENDER_DISPLAY_NAME` for `/gmail`). The
 renderer also puts a slug's `env:` on the bare name, and a sibling's name on
 another mailbox's mail would be wrong on every message with nothing failing.
 So on a shared path such as `/gmail`, a name set on `gmail-rw-external` reaches
-no mount; give the slug its own path.
+no mount; give the slug its own path. A draft keeps the `From` it was saved
+with, so `send_email` with `from_draft_id` sends a draft written in Gmail's own
+UI, or before the name was set, under whatever name it was saved with.
 
 **google-docs is the same case.** The conventional `/google-docs` mount
 impersonates a Workspace user through `GOOGLE_DOCS_SERVICE_ACCOUNT_*` and
