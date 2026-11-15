@@ -366,19 +366,23 @@ draft had to work out which account it was in, open it, and go to Drafts.
 **Here.**
 
 - Both tools answer with `**Drafts folder (<email>):**
-  https://mail.google.com/mail/u/?authuser=<email>#drafts` (`buildGmailDraftsUrl`
-  in `src/utils/email-helpers.ts`). `upsert_draft_email` also names the
-  `**Account:**`. `list_draft_emails` gives the link once, above the drafts.
+  https://mail.google.com/mail/?authuser=<email>#drafts` (`buildGmailDraftsUrl`
+  in `src/utils/email-helpers.ts`). `list_draft_emails` gives it once, above
+  the drafts.
 - The account is the one the client acts as, `getAccountEmail()`: the
   impersonated user for a service account, the profile address for OAuth.
-- It is selected by address, never by a `/u/<n>/` index, and the address is
-  percent-encoded (`encodeURIComponent`), so a `+` is not read as a space and a
-  `#` or `&` cannot end the parameter.
+- It is selected by address, never by a `/u/<n>/` index, on the same `/mail/`
+  path `buildGmailUrl` uses for message links. The address is percent-encoded
+  (`encodeURIComponent`), so a `+` is not read as a space and a `#` or `&`
+  cannot end the parameter.
 - The link is to the folder, not the draft. Gmail documents no single-draft URL,
   and `#drafts?compose=<message-id>` was not confirmed against a live mailbox
   (`HACKS.md` #142).
-- The address is read after the draft is saved. If that read fails, the answer
-  carries no link and the draft is still reported as saved, never as an error.
+- The address lookup is bounded at 5 seconds and never fails the call. On
+  `upsert_draft_email` it runs after the draft is saved, and the save has
+  already read the same address for the `From:` header, so in practice it is
+  cached. The case that loses the link is `list_draft_emails` on a cold OAuth
+  client whose profile read fails or stalls.
 - The tools return text only, with no `structuredContent`, so the link is in
   the text and nowhere else.
 
@@ -386,6 +390,7 @@ draft had to work out which account it was in, open it, and go to Drafts.
 `src/tools/list-draft-emails.ts`.
 
 **Tests.** `images/bundle-google/test/gmail-draft-links.test.ts`: the URL shape
-and its encoding (round-tripped through `URL`), both tools on create, update
-and list, and a failed account read costing the link and not the draft. Stubs
-only; no live mailbox was opened.
+and its encoding (round-tripped through `URL`), both tools on create, update,
+list and a thread filter, a failed save reported as an error with no account
+read, and a failed or stalled account read costing the link and not the
+answer. Stubs only; no live mailbox was opened.

@@ -10,6 +10,7 @@ import { describe, it, expect, vi } from "vitest";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   buildGmailDraftsUrl,
+  buildGmailUrl,
   draftsAccountEmail,
 } from "../vendor/gmail-shared/src/utils/email-helpers.js";
 import { upsertDraftEmailTool } from "../vendor/gmail-shared/src/tools/draft-email.js";
@@ -65,17 +66,23 @@ const DRAFT_ARGS = {
 describe("buildGmailDraftsUrl", () => {
   it("selects the account by address, not by index", () => {
     expect(buildGmailDraftsUrl("tadas@tadasant.com")).toBe(
-      "https://mail.google.com/mail/u/?authuser=tadas%40tadasant.com#drafts",
+      "https://mail.google.com/mail/?authuser=tadas%40tadasant.com#drafts",
     );
     expect(buildGmailDraftsUrl("tadas@tadasant.com")).not.toMatch(
       /\/u\/\d/,
     );
   });
 
+  it("uses the same /mail/ path as the tree's other multi-account links", () => {
+    const prefix = "https://mail.google.com/mail/?authuser=";
+    expect(buildGmailDraftsUrl("me@x.com").startsWith(prefix)).toBe(true);
+    expect(buildGmailUrl("me@x.com", "1").startsWith(prefix)).toBe(true);
+  });
+
   it("percent-encodes the address, so + is not a space and # or & cannot end it", () => {
     const url = buildGmailDraftsUrl("tadas+work@example.com");
     expect(url).toBe(
-      "https://mail.google.com/mail/u/?authuser=tadas%2Bwork%40example.com#drafts",
+      "https://mail.google.com/mail/?authuser=tadas%2Bwork%40example.com#drafts",
     );
     const parsed = new URL(url);
     expect(parsed.searchParams.get("authuser")).toBe("tadas+work@example.com");
@@ -108,7 +115,39 @@ describe("draftsAccountEmail", () => {
   });
 });
 
+describe("draftsAccountEmail, bounded", () => {
+  it("gives up on a lookup that never answers", async () => {
+    const stalled = { getAccountEmail: () => new Promise<string>(() => {}) };
+    expect(await draftsAccountEmail(stalled, 20)).toBeUndefined();
+  });
+
+  it("is undefined when getAccountEmail throws synchronously", async () => {
+    expect(
+      await draftsAccountEmail({
+        getAccountEmail: () => {
+          throw new Error("sync");
+        },
+      }),
+    ).toBeUndefined();
+  });
+});
+
 describe("upsert_draft_email", () => {
+  it("reports a failed save as an error and reads no account first", async () => {
+    const client = mailbox(async () => "me@x.com", {
+      createDraft: vi.fn(async () => {
+        throw new Error("Gmail API error 400");
+      }),
+    });
+    const result = await upsertDraftEmailTool(server, () => client).handler(
+      DRAFT_ARGS,
+    );
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("Error creating draft: Gmail API error 400");
+    expect(text(result)).not.toContain("mail.google.com");
+    expect(client.getAccountEmail).not.toHaveBeenCalled();
+  });
+
   it("links the account's Drafts folder on create", async () => {
     const client = mailbox(async () => "tadas412@gmail.com");
     const result = await upsertDraftEmailTool(server, () => client).handler(
@@ -118,9 +157,8 @@ describe("upsert_draft_email", () => {
     const body = text(result);
     expect(body).toContain("Draft created successfully!");
     expect(body).toContain(`**Draft ID:** ${DRAFT.id}`);
-    expect(body).toContain("**Account:** tadas412@gmail.com");
     expect(body).toContain(
-      "**Drafts folder (tadas412@gmail.com):** https://mail.google.com/mail/u/?authuser=tadas412%40gmail.com#drafts",
+      "**Drafts folder (tadas412@gmail.com):** https://mail.google.com/mail/?authuser=tadas412%40gmail.com#drafts",
     );
   });
 
@@ -132,7 +170,7 @@ describe("upsert_draft_email", () => {
     });
     expect(client.updateDraft).toHaveBeenCalledOnce();
     expect(text(result)).toContain(
-      "**Drafts folder (zimmer@tadasant.com):** https://mail.google.com/mail/u/?authuser=zimmer%40tadasant.com#drafts",
+      "**Drafts folder (zimmer@tadasant.com):** https://mail.google.com/mail/?authuser=zimmer%40tadasant.com#drafts",
     );
   });
 
@@ -163,9 +201,22 @@ describe("list_draft_emails", () => {
       await listDraftEmailsTool(server, () => client).handler({}),
     );
     const link =
-      "**Drafts folder (tadas@pulsemcp.com):** https://mail.google.com/mail/u/?authuser=tadas%40pulsemcp.com#drafts";
+      "**Drafts folder (tadas@pulsemcp.com):** https://mail.google.com/mail/?authuser=tadas%40pulsemcp.com#drafts";
     expect(body.split(link)).toHaveLength(2);
     expect(body.indexOf(link)).toBeLessThan(body.indexOf("**Draft ID:**"));
+  });
+
+  it("links it when filtering by thread", async () => {
+    const client = mailbox(async () => "me@x.com");
+    const body = text(
+      await listDraftEmailsTool(server, () => client).handler({
+        thread_id: DRAFT.message.threadId,
+      }),
+    );
+    expect(body).toContain(`**Draft ID:** ${DRAFT.id}`);
+    expect(body).toContain(
+      "**Drafts folder (me@x.com):** https://mail.google.com/mail/?authuser=me%40x.com#drafts",
+    );
   });
 
   it("lists the drafts without the link when the account cannot be read", async () => {

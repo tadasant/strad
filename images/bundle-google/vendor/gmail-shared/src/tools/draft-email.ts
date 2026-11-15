@@ -96,7 +96,7 @@ Use delete_draft_email with the draft_id. Do not leave a superseded draft behind
 - Revise a draft after user feedback (without creating duplicates)
 - Save an email without sending it immediately
 
-**Note:** The draft will be saved in Gmail's Drafts folder. The response names the account and links that account's Drafts folder (\`https://mail.google.com/mail/u/?authuser=<email>#drafts\`); pass the link on to the user so they reach the draft in one click. Use send_email with from_draft_id to send it.`;
+**Note:** The draft will be saved in Gmail's Drafts folder. The response names the account and links that account's Drafts folder (\`https://mail.google.com/mail/?authuser=<email>#drafts\`); pass the link on to the user so they reach the draft in one click. Use send_email with from_draft_id to send it.`;
 
 export function upsertDraftEmailTool(server: Server, clientFactory: ClientFactory) {
   return {
@@ -201,7 +201,6 @@ export function upsertDraftEmailTool(server: Server, clientFactory: ClientFactor
         const accountEmail = await draftsAccountEmail(client);
         let responseText = `Draft ${action} successfully!\n\n**Draft ID:** ${draft.id}`;
         if (accountEmail) {
-          responseText += `\n**Account:** ${accountEmail}`;
           responseText += `\n**Drafts folder (${accountEmail}):** ${buildGmailDraftsUrl(accountEmail)}`;
         }
 

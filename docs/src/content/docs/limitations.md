@@ -4503,7 +4503,7 @@ See `HACKS.md` #141.
 ### 142. gmail's draft links open the Drafts folder, not the draft
 
 `upsert_draft_email` and `list_draft_emails` link the acting account's Drafts
-folder, `https://mail.google.com/mail/u/?authuser=<email>#drafts`. The account
+folder, `https://mail.google.com/mail/?authuser=<email>#drafts`. The account
 is chosen by address, so the link opens the right mailbox in a browser signed
 into several Google accounts. Gmail documents no URL for a single draft, and
 the commonly cited `#drafts?compose=<id>` form has not been checked against a

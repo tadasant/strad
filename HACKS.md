@@ -7384,19 +7384,22 @@ it), or rotate the slug's key in the console. On the Mac,
 ## 142. gmail's draft tools link the account's Drafts folder, not the draft
 
 **What.** `upsert_draft_email` and `list_draft_emails` answer with
-`https://mail.google.com/mail/u/?authuser=<email>#drafts`, the acting account's
+`https://mail.google.com/mail/?authuser=<email>#drafts`, the acting account's
 Drafts folder, with the address percent-encoded
 (`images/bundle-google/vendor/gmail-shared/FORK.md` delta 7).
 
 **Why.** Gmail documents no URL for one draft. The `#drafts?compose=<message-id>`
 fragment is widely repeated, but nothing here could open it against a signed-in
-mailbox, so it is not shipped. The folder link selects the account by address,
+mailbox, so it is not shipped. The folder link was not opened live either; it
+uses the `/mail/?authuser=` form `buildGmailUrl` already ships for message links,
+with `#drafts`, Gmail's own Drafts route. The folder link selects the account by address,
 because the reader is signed into several Google accounts and a `/u/<n>/` index
 opens whichever one has that number.
 
 **What it costs.** One click from the folder to the draft. If the account
-address cannot be read (an OAuth profile lookup that fails), the answer carries
-no link at all; the draft is still saved and reported.
+address cannot be read within 5 seconds (in practice, `list_draft_emails` on a
+cold OAuth client whose profile read fails), the answer carries no link; the
+drafts are still listed.
 
 **Undo.** Confirm `#drafts?compose=<message.id>` against a live mailbox, then add
 it beside the folder link in `src/tools/draft-email.ts`.

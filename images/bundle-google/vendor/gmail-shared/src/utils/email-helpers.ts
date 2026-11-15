@@ -41,27 +41,42 @@ export function buildGmailUrl(accountEmail: string, messageId: string): string {
  * The account is selected by ADDRESS (`?authuser=<email>`), never by a
  * `/u/<n>/` index: a reader signed into several Google accounts has them
  * numbered in sign-in order, and an index opens whichever one happens to sit
- * there. The address is percent-encoded, so a `+` in it is not read as a
- * space and a `#` or `&` cannot end the parameter.
+ * there. The path is `/mail/`, the form {@link buildGmailUrl} uses for its
+ * multi-account links. The address is percent-encoded, so a `+` in it is not
+ * read as a space and a `#` or `&` cannot end the parameter.
  */
 export function buildGmailDraftsUrl(accountEmail: string): string {
-  return `https://mail.google.com/mail/u/?authuser=${encodeURIComponent(accountEmail)}#drafts`;
+  return `https://mail.google.com/mail/?authuser=${encodeURIComponent(accountEmail)}#drafts`;
 }
+
+/** How long a draft tool waits for the account address before linking nothing. */
+export const DRAFTS_ACCOUNT_TIMEOUT_MS = 5_000;
 
 /**
  * The account a draft tool is acting as, or `undefined` when it cannot be
- * read. A draft tool asks AFTER its write has landed, so a failed profile
- * lookup must cost the link and never turn a saved draft into a reported
- * error.
+ * read within {@link DRAFTS_ACCOUNT_TIMEOUT_MS}. The link is a convenience:
+ * a failed or stalled profile lookup costs the link, never the answer, and
+ * `upsert_draft_email` asks only AFTER its write has landed, so a saved draft
+ * is never reported as an error.
  */
-export async function draftsAccountEmail(client: {
-  getAccountEmail(): Promise<string>;
-}): Promise<string | undefined> {
+export async function draftsAccountEmail(
+  client: { getAccountEmail(): Promise<string> },
+  timeoutMs: number = DRAFTS_ACCOUNT_TIMEOUT_MS
+): Promise<string | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), timeoutMs);
+  });
+  const lookup = Promise.resolve()
+    .then(() => client.getAccountEmail())
+    .then(
+      (email) => email.trim() || undefined,
+      () => undefined
+    );
   try {
-    const email = (await client.getAccountEmail()).trim();
-    return email || undefined;
-  } catch {
-    return undefined;
+    return await Promise.race([lookup, timeout]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
