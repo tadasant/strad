@@ -4538,3 +4538,16 @@ screenshot carries every grant's purpose, session and current call (more with
 **Details** open). The audit log on the machine keeps the full summary.
 
 See `HACKS.md` #143.
+
+---
+
+### 144. A gmail sender name only reaches a slug on its own path
+
+`GMAIL_SENDER_DISPLAY_NAME` in a gmail slug's `env:` is the name in
+`From: "Name" <address>`, used instead of the account's Gmail send-as name. Each
+mount reads it under its own slug only, so one mailbox's name never lands on
+another's mail. `gmail-ro`, `gmail-rw` and `gmail-rw-external` share the
+`/gmail` mount, so a name set on one of them is ignored without a warning, and
+their mail carries the send-as name. A slug on `path: /<slug>` gets its name.
+
+See `HACKS.md` #144.

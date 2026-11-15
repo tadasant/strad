@@ -7446,3 +7446,27 @@ see. The audit log on disk keeps the unscrubbed summary.
 **Undo.** If strad forwards a caller identity to `local-tunnel` slugs, read it
 in `buildServer` and drop the argument. A real exclusion from capture would
 need the screenshot op to draw the banner's frame out of its image instead.
+
+## 144. gmail's configured sender name is read under the mount's own slug only, so a shared `/gmail` slug cannot set it
+
+**What.** `GMAIL_SENDER_DISPLAY_NAME` in a gmail slug's `env:` is the name its
+mail is sent under (`images/bundle-google/vendor/gmail-shared/FORK.md` delta 2).
+The bundle host gives each gmail mount the value under its own slug's name and
+never the bare one (`ownNameOnly` in `servers/bundle/host/src/mounts.ts`). The
+conventional `/gmail` mount's own name is `GMAIL__GMAIL_SENDER_DISPLAY_NAME`,
+which only a slug literally named `gmail` produces.
+
+**Why.** The renderer puts every key in a server's `env:` on the bare name as
+well, and `slugEnvView` falls back to the bare name. A name set for
+zimmer@tadasant.com would otherwise be the `From` on every other gmail mount on
+the bundle, Tadas's own included, and nothing would fail. The name exists
+because zimmer@'s Gmail send-as name is empty and setting it needs
+`gmail.settings.basic`, which no strad token holds.
+
+**What it costs.** `gmail-ro`, `gmail-rw` and `gmail-rw-external` share the
+`/gmail` mount, so a name set on one of them reaches no mount and nothing says
+so. Those slugs send under the send-as name. A slug on its own `path: /<slug>`
+is not affected.
+
+**Undo.** Teach the renderer to keep this key off the bare name, then let the
+conventional mount read the bare one.

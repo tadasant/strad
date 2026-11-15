@@ -142,6 +142,7 @@ call.
 | **OAuth2 (refresh token)** — takes precedence if all three set | `GMAIL_OAUTH_CLIENT_ID`, `GMAIL_OAUTH_CLIENT_SECRET`, `GMAIL_OAUTH_REFRESH_TOKEN` |
 | **Capability toggle** | `GMAIL_ENABLED_TOOLGROUPS` = `readonly` \| `readwrite` \| `readwrite_external` (comma-sep; default: all) |
 | **Console reconnect hint** (not a credential) | `GMAIL_RECONNECT_URL` — the page named in an `invalid_grant` error |
+| **Sender name** (optional, not a credential) | `GMAIL_SENDER_DISPLAY_NAME` — the name in `From: "Name" <address>`. Unset, it is read from the account's Gmail send-as settings. In the collapsed bundle a mount reads it only under its own slug's name, never the bare one |
 
 **Attachments.** `send_email` and `upsert_draft_email` take `attachments`: up
 to 10 files, 17 MB decoded in total, each an HTTPS `url` the server downloads

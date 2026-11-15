@@ -90,6 +90,7 @@ import {
   instanceEnv,
   missingCredentialsDegraded,
   onePasswordConfirmsWrites,
+  ownNameOnly,
   remoteFilesystemDegraded,
   scrubCapabilityEnv,
 } from "./mounts.js";
@@ -691,6 +692,11 @@ interface GmailModule {
    * than naming them here.
    */
   GMAIL_OAUTH_APP_ENV_NAMES: readonly string[];
+  /**
+   * The name a mount's mail is sent under. Per mailbox, so read only under the
+   * mount's own slug — see `ownNameOnly`.
+   */
+  GMAIL_SENDER_NAME_ENV_NAME: string;
 }
 
 /**
@@ -951,6 +957,10 @@ function loadGmail(gmail: GmailModule, slug: string, perSlug: boolean): Mount {
       gmail.GMAIL_ENV_NAMES.filter((name) => !app.has(name)),
     );
   }
+  // The sender's name belongs to one mailbox. Every mount, the conventional one
+  // included, reads it under its own slug — `GMAIL__…` for `/gmail` — and never
+  // from the bare name, which is whichever sibling declared one.
+  ownNameOnly(view, slug, gmail.GMAIL_SENDER_NAME_ENV_NAME);
   const env = {
     ...view,
     // WHERE TO GO WHEN THE TOKEN DIES — same as google-sheets, same reason:

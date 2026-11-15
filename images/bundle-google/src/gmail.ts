@@ -43,6 +43,7 @@ import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   createMCPServer as createVendoredMCPServer,
   createRegisterTools,
+  GMAIL_SENDER_DISPLAY_NAME_ENV,
   parseEnabledToolGroups,
   OAuth2GmailClient,
   ServiceAccountGmailClient,
@@ -108,6 +109,19 @@ export const GMAIL_ENV_NAMES = [
   ...GMAIL_SERVICE_ACCOUNT_ENV_NAMES,
 ] as const;
 
+/**
+ * The name this mount's mail goes out under, in `From: "Name" <address>`.
+ *
+ * Optional, and not part of the credential: unset, the name is read from the
+ * account's Gmail send-as settings, which is right for a person's mailbox and
+ * empty for an account nobody signs in to. It belongs to ONE mailbox, which is
+ * why the bundle host reads it only under the mount's own slug and never from
+ * the bare name — a sibling's name on this mailbox's mail would be a wrong name
+ * on every message, and nothing would fail (`ownNameOnly` in
+ * `servers/bundle/host/src/mounts.ts`).
+ */
+export const GMAIL_SENDER_NAME_ENV_NAME = GMAIL_SENDER_DISPLAY_NAME_ENV;
+
 const held = (env: EnvLike, names: readonly string[]): number =>
   names.filter((name) => env[name]).length;
 
@@ -162,8 +176,9 @@ class ReconnectableOAuth2GmailClient extends OAuth2GmailClient {
     clientSecret: string,
     refreshToken: string,
     reconnectUrl?: string,
+    senderDisplayName?: string,
   ) {
-    super(clientId, clientSecret, refreshToken);
+    super(clientId, clientSecret, refreshToken, { senderDisplayName });
     this.reconnectUrl = reconnectUrl;
   }
 
@@ -221,6 +236,10 @@ export function createDefaultClient(env: EnvLike = process.env): IGmailClient {
     );
   }
 
+  // In every key below: two mounts of one credential that name their sender
+  // differently are two clients, or the first one built would name both.
+  const senderDisplayName = env[GMAIL_SENDER_NAME_ENV_NAME]?.trim() || undefined;
+
   if (complete(env, GMAIL_OAUTH_ENV_NAMES)) {
     const clientId = env.GMAIL_OAUTH_CLIENT_ID!;
     const clientSecret = env.GMAIL_OAUTH_CLIENT_SECRET!;
@@ -237,7 +256,7 @@ export function createDefaultClient(env: EnvLike = process.env): IGmailClient {
     // the OTHER slug's Reconnect button, which rotates the other slug's
     // parameter and leaves this one dead. A client per mount rather than per
     // account is still a client per mount, which is all the cache is for.
-    const key = `oauth\u0000${clientId}\u0000${clientSecret}\u0000${refreshToken}\u0000${reconnectUrl ?? ""}`;
+    const key = `oauth\u0000${clientId}\u0000${clientSecret}\u0000${refreshToken}\u0000${reconnectUrl ?? ""}\u0000${senderDisplayName ?? ""}`;
     const existing = clients.get(key);
     if (existing) return existing;
     const client = new ReconnectableOAuth2GmailClient(
@@ -245,6 +264,7 @@ export function createDefaultClient(env: EnvLike = process.env): IGmailClient {
       clientSecret,
       refreshToken,
       reconnectUrl,
+      senderDisplayName,
     );
     clients.set(key, client);
     return client;
@@ -258,7 +278,7 @@ export function createDefaultClient(env: EnvLike = process.env): IGmailClient {
   );
   const impersonateEmail = env.GMAIL_IMPERSONATE_EMAIL!;
 
-  const key = `sa\u0000${clientEmail}\u0000${privateKey}\u0000${impersonateEmail}`;
+  const key = `sa\u0000${clientEmail}\u0000${privateKey}\u0000${impersonateEmail}\u0000${senderDisplayName ?? ""}`;
   const existing = clients.get(key);
   if (existing) return existing;
 
@@ -274,7 +294,9 @@ export function createDefaultClient(env: EnvLike = process.env): IGmailClient {
     auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
     client_x509_cert_url: "",
   };
-  const client = new ServiceAccountGmailClient(credentials, impersonateEmail);
+  const client = new ServiceAccountGmailClient(credentials, impersonateEmail, {
+    senderDisplayName,
+  });
   clients.set(key, client);
   return client;
 }
