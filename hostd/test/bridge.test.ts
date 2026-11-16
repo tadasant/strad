@@ -282,6 +282,82 @@ describe("the browser server through the extension", () => {
   });
 });
 
+describe("a click in a background tab", () => {
+  const sent =
+    (into: string[]) =>
+    (_t: number, method: string, params: Record<string, unknown>) => {
+      into.push(
+        method === "Emulation.setFocusEmulationEnabled"
+          ? `${method}:${params.enabled}`
+          : method === "Input.dispatchMouseEvent"
+            ? `${method}:${params.type}`
+            : method,
+      );
+      return undefined;
+    };
+
+  it("wraps the mouse input in focus emulation, and switches it off again", async () => {
+    const methods: string[] = [];
+    ext.answer = (t, method, params) => {
+      sent(methods)(t, method, params);
+      if (
+        method === "Runtime.evaluate" &&
+        String(params.expression).includes("visibilityState")
+      )
+        return {
+          result: { value: { x: 5, y: 5, tag: "button", hidden: false } },
+        };
+      return undefined;
+    };
+    try {
+      const res = await call("click_element", {
+        tab_id: "100",
+        selector: "#go",
+      });
+      expect(res.isError).toBeFalsy();
+      const relevant = methods.filter((m) => !m.startsWith("Runtime."));
+      expect(relevant).toEqual([
+        "Emulation.setFocusEmulationEnabled:true",
+        "Input.dispatchMouseEvent:mouseMoved",
+        "Input.dispatchMouseEvent:mousePressed",
+        "Input.dispatchMouseEvent:mouseReleased",
+        "Emulation.setFocusEmulationEnabled:false",
+      ]);
+    } finally {
+      ext.answer = undefined;
+    }
+  });
+
+  it("refuses at once, sending no input, when the page still reads hidden under emulation", async () => {
+    const methods: string[] = [];
+    ext.answer = (t, method, params) => {
+      sent(methods)(t, method, params);
+      if (method === "Emulation.setFocusEmulationEnabled") return undefined;
+      if (
+        method === "Runtime.evaluate" &&
+        String(params.expression).includes("visibilityState")
+      )
+        return {
+          result: { value: { x: 5, y: 5, tag: "button", hidden: true } },
+        };
+      return undefined;
+    };
+    try {
+      const res = await call("click_element", {
+        tab_id: "100",
+        selector: "#go",
+      });
+      expect(res.isError).toBe(true);
+      expect(resultText(res)).toMatch(/tab is hidden.*Nothing was clicked/s);
+      expect(methods.some((m) => m.startsWith("Input."))).toBe(false);
+      // Emulation is still switched off on the way out.
+      expect(methods.at(-1)).toBe("Emulation.setFocusEmulationEnabled:false");
+    } finally {
+      ext.answer = undefined;
+    }
+  });
+});
+
 describe("several grants, one extension", () => {
   let second: Awaited<ReturnType<typeof connect>>;
   let secondGrant: string;

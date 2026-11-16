@@ -7348,6 +7348,22 @@ a tool that never returns the value. Design: Zimmer session 27977.
   where to save, or a download that lands elsewhere, times out. Another file
   arriving in the same seconds could be taken instead; the shape (`json_keys`)
   is what shows that.
+- **A background tab is clicked under focus emulation.** Chrome drops
+  DevTools mouse input sent to a hidden page: `mouseMoved` never answers and
+  the click never reaches the page's listeners. That is what timed out the
+  first background-tab captures on the owner's Mac. Every hostd click
+  (`click_element`, `click_and_capture`, `capture_download`) is wrapped in
+  `Emulation.setFocusEmulationEnabled`, which makes the page visible and
+  focused to itself for that one click, without bringing the tab forward or
+  taking the owner's focus. The click lands as a trusted event. Emulation is
+  switched off again straight after, so the page goes back to being a
+  throttled background tab. The page can tell, because `document.visibilityState`
+  reads `visible` during the click. A Chrome where the page still reads hidden
+  under emulation gets no input at all: the call fails at once and says to bring
+  the tab forward, instead of timing out. Verified against a windowed Chrome
+  for Testing 159 on Linux, where the plain click is dropped exactly as on the
+  Mac. It has not yet been run on the owner's Mac, and it has not been run
+  through the extension route's `chrome.debugger`.
 - **The hold blocks other sessions.** From capture to release, every shell and
   computer-use call on the Mac is refused, and browser reads on every tab, for
   whoever makes them. A capture also refuses to start while any shell command

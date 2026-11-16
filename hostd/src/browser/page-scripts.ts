@@ -29,14 +29,17 @@ export const LIST_ELEMENTS = `(() => {
   return out;
 })()`;
 
-/** Scroll an element into view and report where its centre is. */
+/**
+ * Scroll an element into view and report where its centre is, and whether
+ * the page believes it is hidden — a background tab, or an occluded window.
+ */
 export function locate(selector: string): string {
   return `(() => {
   const el = document.querySelector(${JSON.stringify(selector)});
   if (!el) return null;
   el.scrollIntoView({ block: 'center', inline: 'center' });
   const r = el.getBoundingClientRect();
-  return { x: r.left + r.width / 2, y: r.top + r.height / 2, tag: el.tagName.toLowerCase() };
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2, tag: el.tagName.toLowerCase(), hidden: document.visibilityState === 'hidden' };
 })()`;
 }
 

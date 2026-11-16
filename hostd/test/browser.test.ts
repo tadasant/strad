@@ -74,6 +74,11 @@ const PAGE = `<!doctype html><title>Owner's page</title>
 <button id="go" onclick="document.getElementById('out').textContent = 'clicked:' + document.getElementById('q').value">Go</button>
 <p id="out"></p><script>document.cookie = "session=owner-cookie; path=/"</script>`;
 
+/** A page that records each click its listener sees, and how the page saw itself at that moment. */
+const LISTEN = `<!doctype html><title>Listen</title>
+<button id="b" style="margin:40px;width:120px;height:40px">Reveal</button>
+<script>window.hits = []; b.addEventListener('click', (e) => hits.push({ trusted: e.isTrusted, visibility: document.visibilityState }))</script>`;
+
 describe.skipIf(!chrome)(
   "the browser server, against a real running Chrome",
   () => {
@@ -92,7 +97,9 @@ describe.skipIf(!chrome)(
         res.end(
           req.url === "/two"
             ? `<title>Two</title><p>page two, cookie: <span id=c></span></p><script>c.textContent=document.cookie</script>`
-            : PAGE,
+            : req.url === "/listen"
+              ? LISTEN
+              : PAGE,
         );
       });
       await new Promise<void>((r) => site.listen(0, "127.0.0.1", r));
@@ -266,6 +273,37 @@ describe.skipIf(!chrome)(
           }),
         ).url,
       ).toBe(`${origin}/two`);
+    });
+
+    it("clicks a BACKGROUND tab where it is: the page's own listener fires, trusted, and the tab stays hidden", async () => {
+      // Chrome drops DevTools mouse input to a hidden page (in a windowed
+      // Chrome the click never arrives at all), which is what made custody
+      // captures in background tabs time out on the owner's Mac.
+      const opened = resultJson<{ tab_id: string }>(
+        await call("open_tab", { url: `${origin}/listen` }),
+      );
+      const page = (expression: string) =>
+        call("evaluate_script", { tab_id: opened.tab_id, expression }).then(
+          (r) => resultJson<{ value: unknown }>(r).value,
+        );
+      expect(await page("document.visibilityState")).toBe("hidden");
+      const started = Date.now();
+      expect(
+        resultJson(
+          await call("click_element", {
+            tab_id: opened.tab_id,
+            selector: "#b",
+          }),
+        ),
+      ).toMatchObject({ clicked: "button" });
+      // A dropped mouseMoved waits out the call timeout; a delivered one does not.
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(await page("hits")).toEqual([
+        { trusted: true, visibility: "visible" },
+      ]);
+      // Emulation was for the click only: the page is a background tab again.
+      expect(await page("document.visibilityState")).toBe("hidden");
+      await call("close_tab", { tab_id: opened.tab_id });
     });
 
     it("screenshots a foreground tab as an image", async () => {
