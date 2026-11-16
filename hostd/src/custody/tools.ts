@@ -17,6 +17,7 @@ import {
   MAX_DEPOSIT_VALUE_LENGTH,
   parseDepositReceipt,
 } from "./deposit-wire.js";
+import { KEY_COMMENT, KEY_TYPES, mintKeypair } from "./keygen.js";
 import { elementValue, SNAPSHOT_CANDIDATES } from "./page-scripts.js";
 import { shapeOf, type Vault } from "./vault.js";
 
@@ -32,7 +33,7 @@ const P = {
   label:
     'A short note for yourself about what this is, e.g. "Linear API key, read scope". Never the value.',
   handle:
-    'A handle from click_and_capture or capture_download, e.g. "h_3kd9…".',
+    'A handle from click_and_capture, capture_download or generate_keypair, e.g. "h_3kd9…".',
   slug: 'The strad server slug the secret is for, e.g. "linear". Lowercase, dashes.',
   variable:
     'The environment-variable name the server reads it as, e.g. "LINEAR_API_KEY".',
@@ -509,6 +510,75 @@ While this runs the shell server is refused, so nothing can read the file in the
     },
   });
 
+  const generateKeypair = defineTool({
+    name: "generate_keypair",
+    description: `Generate an SSH keypair INSIDE custody. The private key goes straight into a handle, exactly like a captured credential; you get the handle and the PUBLIC key, never the private one.
+
+Use it when strad needs a key it will log in WITH and the matching public half has to be installed somewhere else (an authorized_keys file, a CI variable). Deposit the handle with deposit, put the public key where it belongs, and nothing ever had to show the private key on a page.
+
+The handle is held like any other: while it is held the shell and computer-use servers on this machine refuse every call, it expires, it ends with this grant, discard_handle drops it, and a private key that shows up in any result or argument burns it. Not while a shell command is running, for the same reason as a capture. No tab is involved.
+
+**Returns:** {"handle":"h_3kd9…","shape":{"length":411,"kind":"pem","lines":7},"expires_at":"…","key_type":"ed25519","public_key":"ssh-ed25519 AAAAC3Nza… strad ssh-example","fingerprint":"SHA256:mdqX4Rnp…"}
+public_key is one authorized_keys line. The private key is OpenSSH format, unencrypted, the form ssh-keygen -t ed25519 -N '' writes.
+
+**Use cases:**
+- An SSH login key for a strad ssh slug: generate, deposit as SSH_PRIVATE_KEY, install public_key on the host
+- Any deploy key whose private half only strad should hold`,
+    schema: z.object({
+      key_type: z.enum(KEY_TYPES).default("ed25519"),
+      comment: z.string().regex(KEY_COMMENT),
+      label: z.string().max(120).optional(),
+    }),
+    inputSchema: {
+      type: "object",
+      properties: {
+        key_type: {
+          type: "string",
+          enum: [...KEY_TYPES],
+          default: "ed25519",
+          description: 'The key algorithm. Only "ed25519".',
+        },
+        comment: {
+          type: "string",
+          description:
+            'The comment on the public key line, e.g. "strad ssh-example-staging". Printable ASCII, up to 120 characters, no leading or trailing space. It is public.',
+        },
+        label: { type: "string", description: P.label },
+      },
+      required: ["comment"],
+    },
+    annotations: {
+      title: "Generate an SSH keypair into custody",
+      readOnlyHint: false,
+      destructiveHint: false,
+    },
+    summarize: (a) =>
+      `generate_keypair: ${a.key_type} ${JSON.stringify(a.comment.slice(0, 120))}`,
+    handler: async (a, { grant }) => {
+      const blocked = busy();
+      if (blocked)
+        return text(`Not now: ${blocked}. No key was generated.`, true);
+      // Binds this grant's end to the vault (its handles drop with it). A
+      // BrowserSession connects lazily, so no tab or Chrome is touched.
+      sessionFor(grant);
+      if (grant.signal.aborted)
+        return text("The grant has ended. No key was generated.", true);
+      const minted = mintKeypair(a.key_type, a.comment);
+      const held = vault.hold(grant.id, minted.privateKey, {
+        label: a.label,
+        source: `generated ${a.key_type} keypair ${minted.fingerprint}`,
+      });
+      return json({
+        handle: held.handle,
+        shape: held.shape,
+        expires_at: new Date(held.expiresAt).toISOString(),
+        key_type: a.key_type,
+        public_key: minted.publicKey,
+        fingerprint: minted.fingerprint,
+      });
+    },
+  });
+
   const listHandles = defineTool({
     name: "list_handles",
     description: `List this grant's handles: held, and recently ended (deposited, discarded, burned, expired). Shapes and destinations only, never values.
@@ -657,6 +727,7 @@ The handle ends on success. Confirm through strad's secrets server (list_paramet
       clickAndCapture,
       captureDownload,
       releaseTab,
+      generateKeypair,
       listHandles,
       discardHandle,
       deposit,

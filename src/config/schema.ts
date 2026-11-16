@@ -5,6 +5,8 @@ import {
   confirmationHeaderProblem,
   elicitationPrefixProblem,
 } from "../gateway/elicitation.ts";
+import { DEPOSIT_PROCESS_CONTROL } from "../secrets/deposit-names.ts";
+import { isDepositVariable } from "../secrets/deposit-wire.ts";
 import { bearerToken } from "../secrets/presence.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
 import { normaliseNamespace } from "../secrets/parameters/namespace.ts";
@@ -864,12 +866,22 @@ const LocalTunnelServer = ServerBase.extend({
    *
    *   deposit:
    *     into: [granola, linear]   # optional; omitted, any slug
+   *     paramsVariables:          # optional; exact pairs on params: true slugs
+   *       ssh-example-staging: [SSH_PRIVATE_KEY]
    *
    * What a deposit can do is fixed by the route, not by this block: create a
    * SECRET parameter at `/strad/{env}/mcp/{slug}/static/{VARIABLE}` that does
    * not already exist under `static/` or `oauth/`. Never a gateway name, never
    * `oauth/`, never a plain parameter, never an overwrite, never a read.
    * `into:` only narrows which slugs.
+   *
+   * A `params: true` slug loads its whole namespace into its environment, so a
+   * deposit there is refused unless `into:` names the slug — or
+   * `paramsVariables:` names the exact (slug, VARIABLE) pair. The second form
+   * widens by one name and narrows nothing: a listed pair is allowed even when
+   * `into:` does not name its slug, and every other slug keeps the rule it
+   * had. Each listed slug must be `params: true` and each name one the route
+   * would accept; the route's other refusals all still apply to a listed pair.
    *
    * Honoured from the CHECKED-IN config only: a runtime roster write may not
    * declare or change it (src/config/overlay.ts), and the route reads its
@@ -878,6 +890,9 @@ const LocalTunnelServer = ServerBase.extend({
   deposit: z
     .object({
       into: z.array(SLUG).min(1).optional(),
+      paramsVariables: z
+        .record(SLUG, z.array(z.string().min(1)).min(1))
+        .optional(),
     })
     .strict()
     .optional(),
@@ -1852,6 +1867,41 @@ export const StradConfig = z
             "from that key, so it must be exactly one reference after Bearer.",
           path: ["servers"],
         });
+      }
+    }
+
+    // A `deposit.paramsVariables:` PAIR NAMES A `params: true` SLUG AND A NAME
+    // THE ROUTE WOULD WRITE. On any other slug the entry grants nothing the
+    // route does not already allow, and a process-control name is refused at
+    // the route regardless — either way the config would claim a grant that
+    // is not there.
+    for (const s of cfg.servers) {
+      if (s.kind !== "local-tunnel" || !s.deposit?.paramsVariables) continue;
+      for (const [target, names] of Object.entries(s.deposit.paramsVariables)) {
+        const t = cfg.servers.find((o) => o.slug === target);
+        if (!t || !("params" in t) || t.params !== true) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `server "${s.slug}" lists ${target} in deposit.paramsVariables, ` +
+              `but ${t ? `${target} is not params: true` : `no server is named ${target}`}. ` +
+              "The list exists only for params: true slugs; any other slug is governed by deposit.into alone.",
+            path: ["servers"],
+          });
+        }
+        for (const name of names) {
+          if (!isDepositVariable(name) || DEPOSIT_PROCESS_CONTROL.test(name))
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message:
+                `server "${s.slug}" lists ${target}/${name} in deposit.paramsVariables, ` +
+                "which the deposit route refuses: " +
+                (isDepositVariable(name)
+                  ? "it is a name a process reads as configuration, not a credential."
+                  : "it is not an environment-variable name."),
+              path: ["servers"],
+            });
+        }
       }
     }
 

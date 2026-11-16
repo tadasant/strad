@@ -447,10 +447,15 @@ servers:
   # never a read, never a gateway or oauth/ name. The caller's bearer is an HMAC
   # of the key in this entry's own `Authorization: "Bearer ${NAME}"`, which must
   # be exactly that shape. `into:` narrows the slugs; omitted, any — except a
-  # `params: true` slug, which only an `into:` that names it may reach. It never
-  # shadows a name the slug already resolves, nor writes a `url:` name or a
-  # process-control name (NODE_OPTIONS, *_PROXY, ...). Checked-in config only:
-  # a runtime roster write cannot add or change it.
+  # `params: true` slug, which only an `into:` that names it may reach, or a
+  # `paramsVariables:` entry that names the exact slug and VARIABLE. That one
+  # widens by single names and narrows nothing: a listed pair is allowed even
+  # when `into:` leaves its slug out, and every other slug keeps its rule. The
+  # schema refuses a listed slug that is not `params: true` and a listed name
+  # the route would refuse. It never shadows a name the slug already resolves,
+  # nor writes a `url:` name or a process-control name (NODE_OPTIONS, *_PROXY,
+  # STRAD_*, ...). Checked-in config only: a runtime roster write cannot add or
+  # change it.
   #
   # - slug: custody-my-mbp
   #   kind: local-tunnel
@@ -460,6 +465,8 @@ servers:
   #     Authorization: "Bearer ${HOSTD_CUSTODY_KEY}"
   #   deposit:
   #     into: [linear, granola]
+  #     paramsVariables:
+  #       ssh-example-staging: [SSH_PRIVATE_KEY]
 
   # --- kind: supplementary-image --------------------------------------------
   # A server published as its own container image. strad deploys it as an

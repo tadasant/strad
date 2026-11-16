@@ -13,6 +13,7 @@ import {
   type DepositReceipt,
   type DepositRefusal,
 } from "../secrets/deposit-wire.ts";
+import { DEPOSIT_PROCESS_CONTROL } from "../secrets/deposit-names.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import {
   ParameterStoreError,
@@ -64,7 +65,8 @@ import { asyncRoute, jsonFailure } from "./async-route.ts";
  * trusts — a runtime roster write cannot add one). Its bearer is derived from
  * that entry's own key (`depositToken`), so the caller is identified by which
  * key matched, never by anything it claims, and `deposit.into:` narrows which
- * slugs it may name.
+ * slugs it may name. A `params: true` slug takes one more grant: `into:`
+ * naming it, or `deposit.paramsVariables:` naming the exact (slug, VARIABLE).
  */
 
 export interface DepositHandlerOptions {
@@ -128,16 +130,6 @@ async function callerFor(
 }
 
 /**
- * Names a deposit may never create, on any slug: the ones a process reads as
- * an instruction rather than as a credential. A `params: true` server loads
- * its whole `static/` namespace into its environment, so `NODE_OPTIONS` there
- * is code execution and `HTTPS_PROXY` is every request it makes, read by
- * someone else. A list rather than a rule, so it errs by refusing.
- */
-const PROCESS_CONTROL =
-  /^(NODE_|LD_|DYLD_|STRAD_|OTEL_|NPM_CONFIG_|GIT_|PYTHON|SSL_|SENTRY_|GOOGLE_APPLICATION_CREDENTIALS$|(HTTPS?|ALL|NO)_PROXY$|(PATH|HOME|SHELL|TMPDIR|PORT|HOST|TZ|LANG|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE)$)/i;
-
-/**
  * Why `variable` may not be deposited for `slug`, from the config that RUNS
  * (overlay included — it is what will read the value), or undefined.
  */
@@ -147,7 +139,7 @@ export function refusalForTarget(
   slug: string,
   variable: string,
 ): string | undefined {
-  if (PROCESS_CONTROL.test(variable))
+  if (DEPOSIT_PROCESS_CONTROL.test(variable))
     return `${variable} is a name a process reads as configuration, not a credential; it cannot be deposited`;
   const target = config.servers.find((s) => s.slug === slug);
   if (!target) return undefined;
@@ -164,14 +156,36 @@ export function refusalForTarget(
     return `${variable} is part of ${slug}'s url, which decides where its traffic goes; it cannot be deposited`;
   // A `params: true` server takes its whole namespace into its environment,
   // so a deposit there is a new environment variable on a container. Only a
-  // caller that names the slug in `into:` may do that.
+  // caller that names the slug in `into:`, or this exact pair in
+  // `paramsVariables:`, may do that.
   if (
     "params" in target &&
     target.params === true &&
-    !caller.deposit?.into?.includes(slug)
+    !caller.deposit?.into?.includes(slug) &&
+    !pairGranted(config, caller, slug, variable)
   )
-    return `${slug} loads its whole namespace into its environment; only a caller that lists it in deposit.into may deposit there`;
+    return `${slug} loads its whole namespace into its environment; only a caller that lists it in deposit.into, or lists ${slug}: [${variable}] in deposit.paramsVariables, may deposit there`;
   return undefined;
+}
+
+/**
+ * Whether the caller's `deposit.paramsVariables:` grants exactly this
+ * (slug, VARIABLE) pair: listed there, case-sensitively like the variable a
+ * process reads, AND a `params: true` slug in the config that runs. A pair
+ * whose slug is not `params: true` grants nothing, so it can never carry a
+ * deposit past `into:` to an ordinary slug.
+ */
+function pairGranted(
+  config: StradConfig,
+  caller: Caller,
+  slug: string,
+  variable: string,
+): boolean {
+  const names = caller.deposit?.paramsVariables;
+  if (!names || !Object.hasOwn(names, slug)) return false;
+  if (!(names[slug] ?? []).includes(variable)) return false;
+  const target = config.servers.find((s) => s.slug === slug);
+  return !!target && "params" in target && target.params === true;
 }
 
 /** Whether `path` exists in the store, read NOW rather than from a held listing. */
@@ -211,7 +225,14 @@ export function createDepositHandler(
       );
       return;
     }
-    if (caller.deposit?.into && !caller.deposit.into.includes(slug)) {
+    // `into:` narrows the slugs; an exact `paramsVariables:` pair on a
+    // `params: true` slug is a grant of its own and is not narrowed by it. The
+    // pair still meets every other refusal in refusalForTarget.
+    if (
+      caller.deposit?.into &&
+      !caller.deposit.into.includes(slug) &&
+      !pairGranted(opts.config, caller, slug, variable)
+    ) {
       refuse(
         res,
         403,

@@ -97,9 +97,9 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityInfo> = {
     path: "/custody/mcp",
     mode: "background",
     summary:
-      "Captures a credential shown or downloaded in the owner's Chrome into an opaque handle, and deposits it into strad's secret store. The value is never returned to you: you work with the handle and its shape only.",
+      "Captures a credential shown or downloaded in the owner's Chrome, or generates an SSH keypair, into an opaque handle, and deposits it into strad's secret store. The value is never returned to you: you work with the handle and its shape only, and for a generated keypair its public key.",
     consentNote:
-      "This server can capture a credential your browser shows and send it to strad. While it holds one, shell and computer-use on this machine are refused.",
+      "This server can capture a credential your browser shows, or generate an SSH key, and send it to strad. While it holds one, shell and computer-use on this machine are refused.",
   },
 };
 

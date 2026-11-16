@@ -7,6 +7,7 @@ import { ENV_NAME_SOURCE } from "../src/config/env-name.ts";
 import { SLUG } from "../src/config/schema.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
+import { refusalForTarget } from "../src/http/deposit.ts";
 import {
   DEPOSIT_PROTOCOL,
   depositRoutePath,
@@ -45,6 +46,8 @@ import {
 const CUSTODY_KEY = "custody-slug-key-0123456789abcdef0123456789";
 const NARROW_KEY = "narrow-slug-key-0123456789abcdef0123456789ab";
 const SHELL_KEY = "shell-slug-key-0123456789abcdef0123456789abc";
+const PAIRS_KEY = "pairs-slug-key-0123456789abcdef0123456789abc";
+const NARROW_PAIRS_KEY = "narrow-pairs-key-0123456789abcdef0123456789";
 
 const YAML = `
 version: 1
@@ -69,6 +72,25 @@ servers:
       Authorization: "Bearer \${HOSTD_NARROW_KEY}"
     deposit:
       into: [granola]
+  - slug: custody-pairs-mbp
+    kind: local-tunnel
+    url: https://hostd.example.com/custody/mcp
+    entitlements: [admin]
+    headers:
+      Authorization: "Bearer \${HOSTD_PAIRS_KEY}"
+    deposit:
+      paramsVariables:
+        paramsy: [PAIRED_KEY, PAIRED_TWICE]
+  - slug: custody-narrow-pairs-mbp
+    kind: local-tunnel
+    url: https://hostd.example.com/custody/mcp
+    entitlements: [admin]
+    headers:
+      Authorization: "Bearer \${HOSTD_NARROW_PAIRS_KEY}"
+    deposit:
+      into: [granola]
+      paramsVariables:
+        paramsy: [NARROW_PAIRED_KEY]
   - slug: shell-test-mbp
     kind: local-tunnel
     url: https://hostd.example.com/shell/mcp
@@ -86,6 +108,13 @@ servers:
     image: ghcr.io/tadasant/strad-bundle:latest
     bundle: bundle-secrets
     path: /paramsy
+    entitlements: [admin]
+    params: true
+  - slug: paramsy-other
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle-secrets
+    path: /paramsy-other
     entitlements: [admin]
     params: true
   - slug: secrets
@@ -116,6 +145,8 @@ beforeAll(async () => {
     HOSTD_CUSTODY_KEY: CUSTODY_KEY,
     HOSTD_NARROW_KEY: NARROW_KEY,
     HOSTD_SHELL_KEY: SHELL_KEY,
+    HOSTD_PAIRS_KEY: PAIRS_KEY,
+    HOSTD_NARROW_PAIRS_KEY: NARROW_PAIRS_KEY,
     // A name the gateway already resolves for every slug, e.g. from core's env.
     SHARED_API_KEY: "the-live-shared-one",
   });
@@ -368,7 +399,173 @@ describe("who may deposit", () => {
   });
 });
 
+describe("deposit.paramsVariables: exact pairs on a params: true slug", () => {
+  const pairs = depositToken(PAIRS_KEY);
+  const narrowPairs = depositToken(NARROW_PAIRS_KEY);
+
+  it("creates a listed pair, as a secret under static/", async () => {
+    const res = await deposit("paramsy", "PAIRED_KEY", { bearer: pairs });
+    expect(res.status).toBe(201);
+    const path = serverParameterPath("test", "paramsy", "static", "PAIRED_KEY");
+    expect(await res.json()).toEqual({
+      protocol: DEPOSIT_PROTOCOL,
+      path,
+      version: "v1",
+    });
+    expect(await fake.store.isSecret!(path)).toBe(true);
+  });
+
+  it("refuses a name the pair list does not carry for that slug", async () => {
+    const res = await deposit("paramsy", "UNLISTED_KEY", { bearer: pairs });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: string }).error).toBe(
+      "not_permitted",
+    );
+    // Case-sensitive: the variable a process reads is the exact name.
+    expect(
+      (await deposit("paramsy", "paired_key", { bearer: pairs })).status,
+    ).toBe(403);
+  });
+
+  it("refuses a listed name on a params: true slug it is not listed for", async () => {
+    expect(
+      (await deposit("paramsy-other", "PAIRED_KEY", { bearer: pairs })).status,
+    ).toBe(403);
+    expect(
+      await fake.store.isSecret!(
+        serverParameterPath("test", "paramsy-other", "static", "PAIRED_KEY"),
+      ),
+    ).toBe(undefined);
+  });
+
+  it("is still create-only: a listed pair that exists is a 409", async () => {
+    expect(
+      (await deposit("paramsy", "PAIRED_TWICE", { bearer: pairs })).status,
+    ).toBe(201);
+    const again = await deposit("paramsy", "PAIRED_TWICE", { bearer: pairs });
+    expect(again.status).toBe(409);
+    expect(((await again.json()) as { error: string }).error).toBe("exists");
+  });
+
+  it("narrows nothing: a caller with no into: still reaches every other slug as before", async () => {
+    expect(
+      (await deposit("linear", "PAIRS_ELSEWHERE", { bearer: pairs })).status,
+    ).toBe(201);
+    expect(
+      (await deposit("shell-test-mbp", "PAIRS_KEY_2", { bearer: pairs }))
+        .status,
+    ).toBe(403);
+  });
+
+  it("is a grant of its own beside into:, which keeps fencing every other slug", async () => {
+    expect(
+      (
+        await deposit("paramsy", "NARROW_PAIRED_KEY", {
+          bearer: narrowPairs,
+        })
+      ).status,
+    ).toBe(201);
+    expect(
+      (await deposit("paramsy", "UNLISTED_KEY", { bearer: narrowPairs }))
+        .status,
+    ).toBe(403);
+    expect(
+      (await deposit("linear", "NARROW_PAIRS_TEST", { bearer: narrowPairs }))
+        .status,
+    ).toBe(403);
+    expect(
+      (await deposit("granola", "NARROW_PAIRS_TEST", { bearer: narrowPairs }))
+        .status,
+    ).toBe(201);
+  });
+
+  it("does not open the pair to a caller that does not list it", async () => {
+    expect(
+      (await deposit("paramsy", "NARROW_PAIRED_KEY_2", { bearer: CUSTODY }))
+        .status,
+    ).toBe(403);
+  });
+
+  it("keeps every refusal at the route, even for a name a hand-built caller lists", () => {
+    const caller = {
+      ...CONFIG.servers.find((s) => s.slug === "custody-pairs-mbp")!,
+      deposit: {
+        paramsVariables: {
+          paramsy: ["NODE_OPTIONS", "STRAD_TAILNET_OAUTH_CLIENT_SECRET"],
+          "shell-test-mbp": ["ANOTHER_KEY"],
+          tracker: ["TRACKER_HOST"],
+        },
+      },
+    } as Parameters<typeof refusalForTarget>[1];
+    for (const [slug, variable] of [
+      ["paramsy", "NODE_OPTIONS"],
+      ["paramsy", "STRAD_TAILNET_OAUTH_CLIENT_SECRET"],
+      ["shell-test-mbp", "ANOTHER_KEY"],
+      ["tracker", "TRACKER_HOST"],
+    ] as const)
+      expect(
+        refusalForTarget(CONFIG, caller, slug, variable),
+        `${slug}/${variable}`,
+      ).toBeDefined();
+  });
+});
+
 describe("the config", () => {
+  const withPairs = (pairs: string, extra = "") => `
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+bundles:
+  - name: b
+servers:
+  - slug: custody-x
+    kind: local-tunnel
+    url: https://hostd.example.com/custody/mcp
+    headers: { Authorization: "Bearer \${K}" }
+    deposit:
+      paramsVariables: ${pairs}
+  - slug: ssh-x
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: b
+    path: /ssh-x
+    params: true
+  - slug: plain
+    kind: remote-http
+    url: https://plain.example.com/mcp
+${extra}`;
+
+  it("accepts a paramsVariables pair on a params: true slug", () => {
+    expect(() =>
+      parseConfig(withPairs("{ ssh-x: [SSH_PRIVATE_KEY] }")),
+    ).not.toThrow();
+  });
+
+  it("refuses a paramsVariables slug that is not params: true, or not there", () => {
+    expect(() => parseConfig(withPairs("{ plain: [PLAIN_KEY] }"))).toThrow(
+      /plain is not params: true/,
+    );
+    expect(() => parseConfig(withPairs("{ ghost: [GHOST_KEY] }"))).toThrow(
+      /no server is named ghost/,
+    );
+  });
+
+  it("refuses a paramsVariables name the route would refuse", () => {
+    for (const name of [
+      "NODE_OPTIONS",
+      "STRAD_TAILNET_OAUTH_CLIENT_SECRET",
+      "HTTPS_PROXY",
+    ])
+      expect(
+        () => parseConfig(withPairs(`{ ssh-x: [${name}] }`)),
+        name,
+      ).toThrow(/process reads as configuration/);
+    expect(() => parseConfig(withPairs('{ ssh-x: ["1BAD-NAME"] }'))).toThrow(
+      /not an environment-variable name/,
+    );
+    expect(() => parseConfig(withPairs("{ ssh-x: [] }"))).toThrow();
+  });
+
   it("refuses deposit: on an entry whose key strad cannot name", () => {
     for (const headers of [
       "{}",
@@ -418,6 +615,15 @@ servers:
         kind: "local-tunnel",
         url: "https://h/custody/mcp",
         deposit: { into: ["linear"] },
+      }),
+    ).toThrow(/deposit/);
+    // Adding a pair to it.
+    expect(() =>
+      assertNoAccessControlChange(base, {
+        slug: "custody-test-mbp",
+        kind: "local-tunnel",
+        url: "https://h/custody/mcp",
+        deposit: { paramsVariables: { paramsy: ["SSH_PRIVATE_KEY"] } },
       }),
     ).toThrow(/deposit/);
     // Echoing it unchanged is fine.

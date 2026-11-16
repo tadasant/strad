@@ -354,6 +354,8 @@ server's own docs for the URL it tells clients to connect to, and use that.
       Authorization: "Bearer ${HOSTD_CUSTODY_KEY}"
     deposit:
       into: [linear, granola] # optional; omitted, any slug
+      paramsVariables: # optional; exact pairs on params: true slugs
+        ssh-example-staging: [SSH_PRIVATE_KEY]
 ```
 
 This lets the machine call `POST /_strad/deposit/{slug}/{VARIABLE}`, which
@@ -361,12 +363,17 @@ creates one **secret** parameter at `/strad/{env}/mcp/{slug}/static/{VARIABLE}`
 and never reads, overwrites, shadows a value the slug already resolves, or
 reaches another namespace. It also refuses a name in the target's `url:`, a
 process-control name such as `NODE_OPTIONS`, a `local-tunnel` target, and a
-`params: true` target that `into:` does not name. It exists for
+`params: true` target that `into:` does not name, unless `paramsVariables:`
+names that exact slug and variable. It exists for
 strad-hostd's custody server; see
 [custody and deposit](/servers/hostd-custody/). The caller's bearer is an HMAC
 of this entry's own key, so the `Authorization` header must be exactly
 `Bearer ${NAME}`, and the schema refuses `deposit:` otherwise. `into:` only
-narrows the slugs. The block is read from the checked-in config only, and a
+narrows the slugs. `paramsVariables:` only widens, one (slug, VARIABLE) pair at
+a time: a listed pair is allowed even when `into:` leaves its slug out, and no
+other slug's rule changes. The schema refuses a listed slug that is not
+`params: true` and a listed name the route would refuse (`STRAD_*`,
+`NODE_OPTIONS` and the rest). The block is read from the checked-in config only, and a
 runtime roster write cannot add or change it.
 
 #### `troubleshoot_host`: the tool a machine that is off still serves

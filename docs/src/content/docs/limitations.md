@@ -4479,7 +4479,12 @@ What that leaves:
   config file. The route bounds what they can write: only a new secret, never
   one that already resolves for the slug, never a `url:` name, never a
   process-control name such as `NODE_OPTIONS`, never on a `local-tunnel`, and
-  on a `params: true` slug only if `deposit.into:` names it.
+  on a `params: true` slug only if `deposit.into:` names it or
+  `deposit.paramsVariables:` names that exact slug and variable.
+- **A generated SSH key is held like a captured token.** `generate_keypair`
+  mints an ed25519 key in the daemon and keeps the private half behind a
+  handle. Its bytes pass through JavaScript strings that cannot be zeroed, as a
+  captured value's match forms do. Only ed25519, and only unencrypted.
 - **The clipboard is not cleared.** A value put there by a "Copy" button is
   filtered only until the custody grant ends.
 - **A daemon restart loses every handle**, and a tab still showing the token is
