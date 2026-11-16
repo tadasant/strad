@@ -2,7 +2,8 @@
 
 strad's MCP Events support tracks a **draft**: SEP-3415, the events extension
 (`io.modelcontextprotocol/events`). It is not part of any released MCP
-specification, and its wire, error codes and capability shape can still change.
+specification. Its status reads Accepted, but the PR is unmerged and its wire,
+error codes and capability shape can still change.
 
 | Field                | Value                                                                                       |
 | -------------------- | ------------------------------------------------------------------------------------------- |
@@ -79,6 +80,7 @@ change both.
 ## Changelog
 
 - 2026-10-29 — pinned at `b08e4f9dd684f39d846d94089487fbeb28e666f5`, the first build.
+- 2026-11-11 — re-checked while building webhook mode; head unchanged.
 - 2026-11-16 — `b08e4f9` → `4165cc2e580afa795842002f631edbbe17c63757`. No
   wire-breaking change for poll or webhook, so no code change. The file moved to
   `seps/3415-events-extension.md`, and a docs copy was added. Status went from
