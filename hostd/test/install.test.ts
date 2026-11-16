@@ -99,7 +99,7 @@ switch (args[0]) {
       const log = /<key>StandardOutPath<\\/key><string>([^<]+)/.exec(text)[1];
       const out = fs.openSync(log, "a");
       const job = spawn(argv[0], argv.slice(1), { detached: true, stdio: ["ignore", out, out] });
-      // Its own process group, so the test can end the whole job (afterEach).
+      // Its own process group, so stopJobs() in the test can end the whole job.
       fs.appendFileSync(file("jobs"), job.pid + "\\n");
       job.unref();
     }
@@ -258,9 +258,10 @@ beforeEach(async () => {
 /**
  * A one-shot the fake launchd started outlives the launchctl that started it
  * and, like a real one, the installer too: a helper whose bootstrap launchd keeps
- * refusing leaves one retrying, writing calls.log and sleep.log under $FAKE_DIR.
- * Nothing will stop it, so the test does, and waits for the group to be gone
- * before deleting the tree it writes into.
+ * refusing leaves one making its own pass of retries, writing calls.log,
+ * sleep.log, its reload log and its result file into this test's tree until it
+ * finishes. So the test ends it, and waits for the group to be gone before
+ * deleting that tree.
  */
 async function stopJobs() {
   const jobs = join(fake, "jobs");
@@ -269,6 +270,18 @@ async function stopJobs() {
     .split("\n")
     .filter(Boolean)
     .map(Number);
+  // A group that has exited may have handed its pgid on. Where /proc exists,
+  // only a group whose leader still carries this test's FAKE_DIR is signalled.
+  const ours = (pgid: number) => {
+    if (!existsSync("/proc")) return true;
+    try {
+      return readFileSync(`/proc/${pgid}/environ`, "utf8")
+        .split("\0")
+        .includes(`FAKE_DIR=${fake}`);
+    } catch {
+      return false;
+    }
+  };
   const alive = (pgid: number) => {
     try {
       process.kill(-pgid, 0);
@@ -277,20 +290,20 @@ async function stopJobs() {
       return false;
     }
   };
-  for (const pgid of groups)
+  const mine = groups.filter(ours);
+  for (const pgid of mine)
     try {
       process.kill(-pgid, "SIGKILL");
     } catch {
       // Already gone.
     }
-  await until(() => !groups.some(alive), 5_000);
+  await until(() => !mine.some(alive), 5_000);
 }
 
 afterEach(async () => {
   await stopJobs();
-  // A SIGKILLed group can linger as zombies until it is reaped, which kill(0)
-  // still counts, so the wait above is bounded rather than exact. The retries
-  // cover that window; with the writers stopped there is nothing left to race.
+  // The wait above is bounded, not exact. If a group outlives it, the retries
+  // give its last write a moment rather than failing on the first ENOTEMPTY.
   rmSync(root, {
     recursive: true,
     force: true,
