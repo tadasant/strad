@@ -230,7 +230,7 @@ Turn it on in the checked-in config:
   only widens: each entry lets one `params: true` slug take one named variable,
   even if `into:` leaves the slug out, and it changes nothing for any other
   slug. The schema refuses a listed slug that is not `params: true`, and a
-  listed name the route would refuse anyway.
+  listed name the route would refuse anyway. A listed slug that does not exist grants nothing.
 - `deposit:` is honoured from the **checked-in** config only. A runtime
   roster write that adds or changes it is refused.
 - **To revoke it,** remove the `deposit:` block (a deploy), or rotate the

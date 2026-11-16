@@ -237,7 +237,7 @@ export function createDepositHandler(
         res,
         403,
         "not_permitted",
-        `${caller.slug} may deposit only into: ${caller.deposit.into.join(", ")}`,
+        `${caller.slug} may deposit only into: ${caller.deposit.into.join(", ")}, plus any exact pair in its deposit.paramsVariables`,
       );
       return;
     }

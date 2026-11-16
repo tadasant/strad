@@ -120,6 +120,11 @@ compare fingerprints. `ssh_connection_info` shows the fingerprint of every pin.
 **Allow the key on the host.** The public half goes in the account's
 `~/.ssh/authorized_keys`. A dedicated key per host, generated for strad, is
 better than reusing a person's key: it can be removed without locking anyone out.
+strad-hostd's custody server can make that key without anyone seeing the
+private half: `generate_keypair` holds it and returns the public line, and
+`deposit` writes it as `SSH_PRIVATE_KEY`. An SSH slug is `params: true`, so
+the custody slug's `deposit.paramsVariables:` has to list that exact pair
+([custody and deposit](/servers/hostd-custody/)).
 
 ## Strict host-key checking
 

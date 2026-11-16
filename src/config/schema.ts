@@ -1,6 +1,11 @@
 import { RESERVED_AUTHORIZE_PARAMS } from "../connectors/oauth-flow.ts";
 import { z } from "zod";
-import { MAX_VARIABLE_LENGTH, isEnvName, secretRefsIn } from "./env-name.ts";
+import {
+  MAX_VARIABLE_LENGTH,
+  isEnvName,
+  secretRefsIn,
+  validateVariableName,
+} from "./env-name.ts";
 import {
   confirmationHeaderProblem,
   elicitationPrefixProblem,
@@ -1875,28 +1880,35 @@ export const StradConfig = z
     // route does not already allow, and a process-control name is refused at
     // the route regardless — either way the config would claim a grant that
     // is not there.
+    //
+    // A listed slug that is ABSENT is not an error: the route grants nothing
+    // for it (src/http/deposit.ts reads the target from the running config),
+    // and this refinement also runs over the runtime-merged roster, where a
+    // roster removal of the slug must not invalidate the whole overlay.
     for (const s of cfg.servers) {
       if (s.kind !== "local-tunnel" || !s.deposit?.paramsVariables) continue;
       for (const [target, names] of Object.entries(s.deposit.paramsVariables)) {
         const t = cfg.servers.find((o) => o.slug === target);
-        if (!t || !("params" in t) || t.params !== true) {
+        if (t && (!("params" in t) || t.params !== true)) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             message:
               `server "${s.slug}" lists ${target} in deposit.paramsVariables, ` +
-              `but ${t ? `${target} is not params: true` : `no server is named ${target}`}. ` +
+              `but ${target} is not params: true. ` +
               "The list exists only for params: true slugs; any other slug is governed by deposit.into alone.",
             path: ["servers"],
           });
         }
         for (const name of names) {
-          if (!isDepositVariable(name) || DEPOSIT_PROCESS_CONTROL.test(name))
+          const shaped =
+            isDepositVariable(name) && validateVariableName(name) === null;
+          if (!shaped || DEPOSIT_PROCESS_CONTROL.test(name))
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
               message:
                 `server "${s.slug}" lists ${target}/${name} in deposit.paramsVariables, ` +
                 "which the deposit route refuses: " +
-                (isDepositVariable(name)
+                (shaped
                   ? "it is a name a process reads as configuration, not a credential."
                   : "it is not an environment-variable name."),
               path: ["servers"],

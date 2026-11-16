@@ -541,13 +541,23 @@ ${extra}`;
     ).not.toThrow();
   });
 
-  it("refuses a paramsVariables slug that is not params: true, or not there", () => {
+  it("refuses a paramsVariables slug that is not params: true", () => {
     expect(() => parseConfig(withPairs("{ plain: [PLAIN_KEY] }"))).toThrow(
       /plain is not params: true/,
     );
-    expect(() => parseConfig(withPairs("{ ghost: [GHOST_KEY] }"))).toThrow(
-      /no server is named ghost/,
-    );
+  });
+
+  it("leaves a pair whose slug is absent inert rather than invalid, so a roster removal does not drop the overlay", () => {
+    const cfg = parseConfig(withPairs("{ ghost: [GHOST_KEY] }"));
+    const caller = cfg.servers.find((s) => s.slug === "custody-x")!;
+    expect(
+      refusalForTarget(
+        cfg,
+        caller as Parameters<typeof refusalForTarget>[1],
+        "ghost",
+        "GHOST_KEY",
+      ),
+    ).toBeUndefined(); // no target: the route's other gates decide, as for any unknown slug
   });
 
   it("refuses a paramsVariables name the route would refuse", () => {

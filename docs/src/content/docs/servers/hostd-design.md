@@ -663,7 +663,8 @@ HID tap.
 ### custody — built
 
 Takes a credential the owner's browser shows or downloads into an opaque
-handle, and deposits it into strad through a write-only route. The model sees
+handle, or generates an SSH keypair whose private half goes straight into
+one, and deposits it into strad through a write-only route. The model sees
 only the handle and the value's shape. It is its own server for the reason
 every hostd server is: "may mint and move my credentials" is a different
 grant from "may browse as me". The key strad holds for its slug is also what
