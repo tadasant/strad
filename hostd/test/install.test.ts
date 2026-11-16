@@ -98,7 +98,10 @@ switch (args[0]) {
       // A launchd job: no child of this process, and in no group of the caller's.
       const log = /<key>StandardOutPath<\\/key><string>([^<]+)/.exec(text)[1];
       const out = fs.openSync(log, "a");
-      spawn(argv[0], argv.slice(1), { detached: true, stdio: ["ignore", out, out] }).unref();
+      const job = spawn(argv[0], argv.slice(1), { detached: true, stdio: ["ignore", out, out] });
+      // Its own process group, so the test can end the whole job (afterEach).
+      fs.appendFileSync(file("jobs"), job.pid + "\\n");
+      job.unref();
     }
     break;
   }
@@ -252,8 +255,48 @@ beforeEach(async () => {
   resetCalls();
 });
 
-afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
+/**
+ * A one-shot the fake launchd started outlives the launchctl that started it
+ * and, like a real one, the installer too: a helper whose bootstrap launchd keeps
+ * refusing leaves one retrying, writing calls.log and sleep.log under $FAKE_DIR.
+ * Nothing will stop it, so the test does, and waits for the group to be gone
+ * before deleting the tree it writes into.
+ */
+async function stopJobs() {
+  const jobs = join(fake, "jobs");
+  if (!existsSync(jobs)) return;
+  const groups = readFileSync(jobs, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map(Number);
+  const alive = (pgid: number) => {
+    try {
+      process.kill(-pgid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  for (const pgid of groups)
+    try {
+      process.kill(-pgid, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+  await until(() => !groups.some(alive), 5_000);
+}
+
+afterEach(async () => {
+  await stopJobs();
+  // A SIGKILLed group can linger as zombies until it is reaped, which kill(0)
+  // still counts, so the wait above is bounded rather than exact. The retries
+  // cover that window; with the writers stopped there is nothing left to race.
+  rmSync(root, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
 });
 
 describe("a re-run on a machine that has strad-hostd", () => {
