@@ -1,4 +1,4 @@
-// MCP Events webhook delivery (draft SEP-3415 @ b08e4f9) for `message_posted`.
+// MCP Events webhook delivery (draft SEP-3415 @ 4165cc2) for `message_posted`.
 //
 // The contract with a receiver — Zimmer's, tadasant/zimmer#1484 — pinned here:
 //

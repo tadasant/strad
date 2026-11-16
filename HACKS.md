@@ -6729,7 +6729,7 @@ Withhold the tool from a slug with its `tools: allow` list in the meantime.
 
 **What.** strad serves MCP Events (`events/list`, `events/poll`, the
 `io.modelcontextprotocol/events` extension) from draft SEP-3415, pinned at
-commit `b08e4f9dd684f39d846d94089487fbeb28e666f5` in
+commit `4165cc2e580afa795842002f631edbbe17c63757` in
 `docs/mcp-events-spec-pin.md`. Poll and webhook mode are built (#140 is the
 webhook half): no `events/stream`, no `list_changed`, no `server/discover`. The error codes (`-32023`,
 `-32024`) are the draft's provisional numbers. The `Mcp-Method` / `Mcp-Name`
