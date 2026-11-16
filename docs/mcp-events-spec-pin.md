@@ -4,14 +4,14 @@ strad's MCP Events support tracks a **draft**: SEP-3415, the events extension
 (`io.modelcontextprotocol/events`). It is not part of any released MCP
 specification, and its wire, error codes and capability shape can still change.
 
-| Field                | Value                                                                                      |
-| -------------------- | ------------------------------------------------------------------------------------------ |
-| SEP                  | SEP-3415, `seps/0000-events-extension.md`                                                  |
-| Pinned head commit   | `b08e4f9dd684f39d846d94089487fbeb28e666f5`                                                 |
-| Pinned on            | 2026-10-29                                                                                 |
-| Delivery modes built | poll (`events/list`, `events/poll`) and webhook (`events/subscribe`, `events/unsubscribe`) |
-| Not built            | push (`events/stream`), `notifications/events/list_changed`, `server/discover`             |
-| Re-checked           | 2026-11-11, building webhook mode: the SEP's head is still the pinned commit               |
+| Field                | Value                                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------- |
+| SEP                  | SEP-3415, `seps/3415-events-extension.md` (docs copy `docs/seps/3415-events-extension.mdx`) |
+| Pinned head commit   | `4165cc2e580afa795842002f631edbbe17c63757`                                                  |
+| Pinned on            | 2026-11-16                                                                                  |
+| Delivery modes built | poll (`events/list`, `events/poll`) and webhook (`events/subscribe`, `events/unsubscribe`)  |
+| Not built            | push (`events/stream`), `notifications/events/list_changed`, `server/discover`              |
+| Re-checked           | 2026-11-16: SEP still an open PR, status Accepted                                           |
 
 Before changing anything under MCP Events, compare this commit with the live
 SEP. If the draft moved, decide what the change means for the wire here, then
@@ -75,6 +75,22 @@ change both.
 - `terminated` envelopes: nothing here revokes a subscription. A subscriber
   that loses access stops being able to refresh, and the grant expires.
 - `v1a,` server-identity signatures, and `deliveryStatus.throttled`.
+
+## Changelog
+
+- 2026-10-29 — pinned at `b08e4f9dd684f39d846d94089487fbeb28e666f5`, the first build.
+- 2026-11-16 — `b08e4f9` → `4165cc2e580afa795842002f631edbbe17c63757`. No
+  wire-breaking change for poll or webhook, so no code change. The file moved to
+  `seps/3415-events-extension.md`, and a docs copy was added. Status went from
+  Draft to Accepted, which is editorial. Push now negotiates the heartbeat
+  interval (`heartbeatMs` on `events/stream`, granted on
+  `notifications/events/active`, dead after 3× the grant) and asks clients to
+  jitter reconnects. That is additive and out of scope, because push is not
+  built. The Server Card members `signingKeys` and `egressIpRanges` moved from
+  `remotes[].extensions[…]` to `remotes[].extensionsInfo[…]`, with a same-origin
+  rule for keys. That is webhook-side but out of scope, because strad builds no
+  `v1a,` signatures and publishes no card. Open Question 6 and a rationale
+  paragraph were added (non-normative).
 
 Code: `src/gateway/events.ts` (core), `servers/bundle-api/fork/slack/src/events/`
 (the Slack `message_posted` event). Prose: `docs/src/content/docs/servers/events.md`.
