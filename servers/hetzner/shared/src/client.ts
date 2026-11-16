@@ -209,27 +209,44 @@ export function createClient(options: CreateClientOptions): HetznerClient {
         }
       }
 
+      const what = `Hetzner Cloud (${method} ${path})`;
       const { status, text } = await withTimeout(
-        `Hetzner Cloud (${method} ${path})`,
+        what,
         timeoutMs,
         async (signal) => {
-          const response = await hFetch(url.toString(), {
-            method,
-            signal,
-            // The token goes to the API origin and nowhere else; a redirect
-            // to another host is refused rather than followed with it.
-            redirect: "error",
-            headers: {
-              Authorization: `Bearer ${config.apiToken}`,
-              Accept: "application/json",
+          let response: Response;
+          try {
+            response = await hFetch(url.toString(), {
+              method,
+              signal,
+              // The token goes to the API origin and nowhere else; a redirect
+              // to another host is refused rather than followed with it.
+              redirect: "error",
+              headers: {
+                Authorization: `Bearer ${config.apiToken}`,
+                Accept: "application/json",
+                ...(opts.body === undefined
+                  ? {}
+                  : { "Content-Type": "application/json" }),
+              },
               ...(opts.body === undefined
                 ? {}
-                : { "Content-Type": "application/json" }),
-            },
-            ...(opts.body === undefined
-              ? {}
-              : { body: JSON.stringify(opts.body) }),
-          });
+                : { body: JSON.stringify(opts.body) }),
+            });
+          } catch (err) {
+            if (signal.aborted) throw err;
+            // No answer at all: DNS, TLS, a dropped connection, or a redirect
+            // this client refuses to follow with the token attached.
+            const cause = err instanceof Error ? err.message : String(err);
+            throw new HetznerApiError(
+              scrub(
+                `${what} failed before any answer: ${cause}. A read is safe ` +
+                  `to retry; a WRITE may still have been applied — read the ` +
+                  `resource back before sending it again.`,
+              ),
+              0,
+            );
+          }
           return { status: response.status, text: await response.text() };
         },
       );

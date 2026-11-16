@@ -32,7 +32,7 @@
  * and on the first request for one this process does not hold yet, which is what
  * makes a slug created at runtime servable on that request.
  *
- * THIRTY-NINE of those are on one component. The other two each run this same
+ * FORTY-ONE of those are on one component. The other two each run this same
  * image on a component of their own. `zimmer-secrets` is one, and what makes it
  * one is the SLUG rather than the store: a second entitlement and a second
  * console page. `whatsapp-zimmer` is the other, on `bundle-whatsapp`, because
@@ -2533,7 +2533,7 @@ async function main(): Promise<void> {
   });
 
   // One stray rejection from one of thirty-three servers must not kill the other
-  // thirty. The standalone images exit here (correct, when the process IS the
+  // thirty-two. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {
     logError("unhandledRejection", reason);

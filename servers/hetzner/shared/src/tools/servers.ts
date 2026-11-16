@@ -78,8 +78,10 @@ export const SERVER_STATUSES = [
 export function summariseServer(raw: unknown): Row {
   const s = (raw && typeof raw === "object" ? raw : {}) as Row;
   const type = (s.server_type ?? {}) as Row;
+  // Hetzner has deprecated `datacenter` on servers in favour of a top-level
+  // `location`; read the new field first so the summary survives its removal.
   const dc = (s.datacenter ?? {}) as Row;
-  const location = (dc.location ?? {}) as Row;
+  const location = (s.location ?? dc.location ?? {}) as Row;
   const image = s.image as Row | null | undefined;
   const pub = (s.public_net ?? {}) as Row;
   const v4 = pub.ipv4 as Row | null | undefined;
@@ -96,7 +98,7 @@ export function summariseServer(raw: unknown): Row {
     disk_gb: s.primary_disk_size ?? type.disk,
     architecture: type.architecture,
     location: location.name,
-    datacenter: dc.name,
+    ...(dc.name === undefined ? {} : { datacenter: dc.name }),
     image: image ? (image.name ?? image.description) : null,
     public_ipv4: v4?.ip ?? null,
     public_ipv6: v6?.ip ?? null,
@@ -497,7 +499,7 @@ export function createServerTool(factory: ClientFactory): ToolDefinition {
         },
         ssh_keys: {
           type: "array",
-          items: { type: "string" },
+          items: { type: ["string", "integer"] },
           minItems: 1,
           description: "SSH key names or ids from list_ssh_keys. At least one.",
         },
@@ -518,7 +520,8 @@ export function createServerTool(factory: ClientFactory): ToolDefinition {
         },
         user_data: {
           type: "string",
-          description: "cloud-init user data, run on first boot.",
+          description:
+            "cloud-init user data, run as root on first boot. With `network_ids` it runs inside that private network, beside whatever else is on it.",
         },
         start_after_create: {
           type: "boolean",
@@ -532,7 +535,7 @@ export function createServerTool(factory: ClientFactory): ToolDefinition {
     handler: (raw) =>
       guard(factory, async (api) => {
         const input = args(raw);
-        const keys = optionalStringArray(input, "ssh_keys");
+        const keys = sshKeyList(input);
         if (!keys || keys.length === 0) {
           throw new InputError(
             "`ssh_keys` is required (at least one name or id from list_ssh_keys). " +
@@ -542,8 +545,8 @@ export function createServerTool(factory: ClientFactory): ToolDefinition {
         const body: Row = {
           name: requiredString(input, "name"),
           server_type: requiredString(input, "server_type"),
-          image: requiredString(input, "image"),
-          ssh_keys: keys.map(idOrName),
+          image: idOrName(requiredString(input, "image")),
+          ssh_keys: keys,
         };
         const location = optionalString(input, "location");
         if (location) body.location = location;
@@ -568,6 +571,30 @@ export function createServerTool(factory: ClientFactory): ToolDefinition {
         });
       }),
   };
+}
+
+/**
+ * `ssh_keys`: names stay strings, ids become numbers — an integer as given, or
+ * an all-digit string as list_ssh_keys' `id` would be typed back.
+ */
+function sshKeyList(
+  input: Record<string, unknown>,
+): Array<string | number> | undefined {
+  const value = input.ssh_keys;
+  if (value === undefined || value === null) return undefined;
+  if (
+    !Array.isArray(value) ||
+    value.some(
+      (v) =>
+        !(typeof v === "string" && v.trim() !== "") &&
+        !(typeof v === "number" && Number.isSafeInteger(v) && v > 0),
+    )
+  ) {
+    throw new InputError(
+      "`ssh_keys` must be an array of SSH key names or numeric ids from list_ssh_keys.",
+    );
+  }
+  return value.map((v) => (typeof v === "number" ? v : idOrName(v.trim())));
 }
 
 /** An optional array of positive integer ids. */

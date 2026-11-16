@@ -331,6 +331,34 @@ describe("staging config", () => {
     expect(server?.tools).toBeUndefined();
   });
 
+  it("hetzner-pulse-ro allows exactly the Hetzner server's read tools, by name", () => {
+    // A count cannot see a read swapped for a write — `list_volumes` out,
+    // `delete_server` in is still fourteen, and policy:check passes it because
+    // the tool exists. The project this token reaches runs another company's
+    // production CI, so the names are pinned. They are
+    // `toolNames(["readonly"])` in servers/hetzner/shared/src/tools.ts, which
+    // that tree's own suite asserts against its annotations.
+    const server = CONFIG.servers.find((s) => s.slug === "hetzner-pulse-ro");
+    expect([...(server?.tools?.allow ?? [])].sort()).toEqual(
+      [
+        "list_servers",
+        "get_server",
+        "get_server_metrics",
+        "list_server_actions",
+        "get_action",
+        "list_images",
+        "list_server_types",
+        "list_locations",
+        "list_datacenters",
+        "list_ssh_keys",
+        "list_firewalls",
+        "list_networks",
+        "list_primary_ips",
+        "list_volumes",
+      ].sort(),
+    );
+  });
+
   it("each tier is a superset of the one below it", () => {
     const allow = (slug: string): string[] =>
       CONFIG.servers.find((s) => s.slug === slug)?.tools?.allow ?? [];

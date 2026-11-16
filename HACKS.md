@@ -789,7 +789,7 @@ still what makes prod's read-only variants read-only.
 policies) → confirm → _then_ delete the per-server images, their workflows and the
 toggle plumbing.
 
-## 24. Twenty-eight servers share one process, and one Chromium
+## 24. Thirty-three servers share one process, and one Chromium
 
 The collapsed bundle is one container running thirty-three MCP servers and one
 headless Chromium. An OOM there is a thirty-three-server outage; it used to be a
@@ -7521,8 +7521,19 @@ is written against the Cloud API.
    tool that can take a box down says so in its description, no tool can lift
    Hetzner's delete or rebuild protection, `set_firewall_rules` refuses an empty
    rule set without `clear_all`, and `create_server` refuses to run without an
-   SSH key.
-4. **Root passwords are redacted by field name.** `create_server` and
+   SSH key. Those are ALL the fences. No call is held for a human's
+   confirmation (strad's `confirmations:` channel is not wired to this tree),
+   and Hetzner's protection guards only delete and rebuild, and only on a box a
+   human switched it on for: `power_server` `poweroff` / `reset`, the firewall
+   writes and `detach_volume` act the moment they are called. `create_server`
+   with `network_ids` and `user_data` boots code of the caller's choosing
+   inside that project's private network.
+4. **The token is visible to the whole bundle.** `HCLOUD_TOKEN` and its
+   per-slug copies land in the bundle container's one `process.env`, which the
+   eleven vendored trees that read `process.env` directly can see — the same as
+   every other bundle credential (#56), but here the credential reaches a
+   project another company runs production on.
+5. **Root passwords are redacted by field name.** `create_server` and
    `rebuild_server` can return a generated `root_password`; every result is
    walked and credential-named fields become `[redacted]`
    (`servers/hetzner/shared/src/secrets.ts`). A credential Hetzner returns
@@ -7530,4 +7541,6 @@ is written against the Cloud API.
 
 **Undo.** 1 lapses with the first real call on each slug; anything it finds is a
 fix here. 2 goes if the `-ro` slug gets a Read token of its own, which needs a
-second mount. 3 and 4 are the design.
+second mount. 3 narrows if the destructive tools are gated behind strad's
+confirmation channel. 4 is the design. 5 goes with a component of its own for
+this slug pair, which costs a billed component.

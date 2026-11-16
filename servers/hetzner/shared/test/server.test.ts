@@ -14,6 +14,7 @@ import {
   ACTION_ID,
   BASE,
   FakeHetzner,
+  SERVER,
   FIREWALL_ID,
   IMAGE_ID,
   ROOT_PASSWORD,
@@ -557,7 +558,7 @@ describe("servers", () => {
     expect(fake.calls[0]!.body).toEqual({
       name: "build-3",
       server_type: "cpx31",
-      image: "123",
+      image: 123,
       location: "fsn1",
       ssh_keys: ["ci-deploy", 7],
       labels: { role: "ci" },
@@ -596,6 +597,85 @@ describe("servers", () => {
     const q = fake.calls[0]!.url.searchParams;
     expect(q.get("sort")).toBe("id:desc");
     expect(q.get("status")).toBe("error");
+  });
+});
+
+describe("more request shapes", () => {
+  it("rebuild_server sends a snapshot id as a number and a name as a string", async () => {
+    const { call, fake } = await harness();
+    await call("rebuild_server", { server_id: SERVER_ID, image: "9100" });
+    await call("rebuild_server", {
+      server_id: SERVER_ID,
+      image: "ubuntu-24.04",
+    });
+    expect(fake.calls[0]!.body).toEqual({ image: 9100 });
+    expect(fake.calls[1]!.body).toEqual({ image: "ubuntu-24.04" });
+  });
+
+  it("attach_volume and detach_volume send what Hetzner takes", async () => {
+    const { call, fake } = await harness();
+    const attached = await call("attach_volume", {
+      volume_id: VOLUME_ID,
+      server_id: SERVER_ID,
+      automount: true,
+    });
+    await call("detach_volume", { volume_id: VOLUME_ID });
+    expect(fake.calls[0]!.body).toEqual({ server: SERVER_ID, automount: true });
+    expect(fake.calls[1]!.body).toEqual({});
+    expect(attached.json.action_ids).toEqual([ACTION_ID]);
+  });
+
+  it("create_server takes SSH key ids as integers, as list_ssh_keys returns them", async () => {
+    const { call, fake } = await harness();
+    const result = await call("create_server", {
+      name: "x",
+      server_type: "cpx11",
+      image: "ubuntu-24.04",
+      ssh_keys: [SSH_KEY_ID, "ci-deploy"],
+    });
+    expect(result.isError, result.text).toBe(false);
+    expect((fake.calls[0]!.body as { ssh_keys: unknown }).ssh_keys).toEqual([
+      SSH_KEY_ID,
+      "ci-deploy",
+    ]);
+  });
+
+  it("reads a server's top-level location when the deprecated datacenter is gone", async () => {
+    const fake = new FakeHetzner();
+    const { datacenter: _dropped, ...rest } = SERVER;
+    void _dropped;
+    fake.on("GET /v1/servers", {
+      body: { servers: [{ ...rest, location: { name: "hel1" } }], meta: {} },
+    });
+    const { call } = await harness({ fake });
+    const row = (await call("list_servers")).json.items[0];
+    expect(row.location).toBe("hel1");
+    expect(row.datacenter).toBeUndefined();
+  });
+
+  it("a request that gets no answer names the call and says a write may have landed", async () => {
+    const broken: typeof fetch = async () => {
+      throw new TypeError("fetch failed");
+    };
+    const { server, registerHandlers } = createMCPServer({
+      version: "t",
+      env: { [ENV.apiToken]: TOKEN },
+      fetch: broken,
+      baseUrl: BASE,
+    });
+    await registerHandlers(server);
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "t", version: "t" });
+    await Promise.all([server.connect(a), client.connect(b)]);
+    clients.push(client);
+    const result = (await client.callTool({
+      name: "delete_server",
+      arguments: { server_id: SERVER_ID },
+    })) as { content: Array<{ text: string }>; isError?: boolean };
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("DELETE /servers/42");
+    expect(result.content[0]!.text).toContain("fetch failed");
+    expect(result.content[0]!.text).toContain("WRITE");
   });
 });
 
@@ -670,6 +750,9 @@ describe("firewalls", () => {
       { direction: "in", protocol: "tcp", port: "22" },
       { direction: "in", protocol: "icmp", port: "22", source_ips: ["::/0"] },
       { direction: "sideways", protocol: "tcp", port: "22" },
+      { direction: "in", protocol: "tcp", port: "0", source_ips: ["::/0"] },
+      { direction: "in", protocol: "tcp", port: "70000", source_ips: ["::/0"] },
+      { direction: "in", protocol: "tcp", port: "90-80", source_ips: ["::/0"] },
     ]) {
       const result = await call("set_firewall_rules", {
         firewall_id: FIREWALL_ID,

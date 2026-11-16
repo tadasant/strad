@@ -614,7 +614,7 @@ nothing warns beforehand. Publishing the OAuth app removes the expiry.
 
 ## The deployment
 
-### 24. Twenty-eight servers share one process and one CPU
+### 24. Thirty-three servers share one process and one CPU
 
 The `bundle` component runs one Node process that mounts thirty-three MCP servers,
 launches one shared Chromium and supervises one `mcp-grafana` child process, on
@@ -4583,7 +4583,13 @@ See `HACKS.md` #144.
 - **The project is shared with PulseMCP's production CI runners.** The `-rw`
   tools that can take a box down say so in their descriptions, none can lift
   delete or rebuild protection, and an empty firewall rule set or a server with
-  no SSH key is refused.
+  no SSH key is refused. That is all: nothing waits for a human to confirm, so
+  a hard power-off, a firewall change or a volume detach happens when it is
+  called, and `create_server` can boot arbitrary code inside the project's
+  private network.
+- **The token is visible to the whole bundle.** Like every bundle credential,
+  `HCLOUD_TOKEN` sits in the one container's environment, where the vendored
+  trees that read `process.env` can see it.
 - **Root passwords are redacted by field name.** A credential Hetzner starts
   returning under a name the pattern does not match passes through until the
   pattern learns it.

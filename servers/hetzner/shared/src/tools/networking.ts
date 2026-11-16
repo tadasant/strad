@@ -146,7 +146,7 @@ export function listPrimaryIpsTool(factory: ClientFactory): ToolDefinition {
       "box's public address is a console job.\n\n" +
       'Example row: {"id":101,"name":"ci-runner-2-v4","type":"ipv4",' +
       '"ip":"203.0.113.10","assignee_id":42,"assignee_type":"server",' +
-      '"auto_delete":false,"datacenter":"fsn1-dc14",' +
+      '"auto_delete":false,"location":"fsn1",' +
       '"protection":{"delete":true},"dns_ptr":[…]}',
     inputSchema: {
       type: "object",
@@ -190,7 +190,9 @@ export function listPrimaryIpsTool(factory: ClientFactory): ToolDefinition {
               "auto_delete",
               "blocked",
             ]),
-            datacenter: ((p.datacenter ?? {}) as Row).name,
+            location:
+              ((p.location ?? {}) as Row).name ??
+              (((p.datacenter ?? {}) as Row).location as Row | undefined)?.name,
             ...pick(p, ["protection", "dns_ptr", "labels", "created"]),
           })),
         };
@@ -257,6 +259,16 @@ export function listVolumesTool(factory: ClientFactory): ToolDefinition {
   };
 }
 
+/** "any", one port 1-65535, or a range lo-hi within it with lo < hi. */
+function validPort(port: string): boolean {
+  if (port === "any") return true;
+  const m = /^(\d{1,5})(?:-(\d{1,5}))?$/.exec(port);
+  if (!m) return false;
+  const lo = Number(m[1]);
+  const hi = m[2] === undefined ? lo : Number(m[2]);
+  return lo >= 1 && hi <= 65535 && lo <= hi && (m[2] === undefined || lo < hi);
+}
+
 export const RULE_DIRECTIONS = ["in", "out"] as const;
 export const RULE_PROTOCOLS = ["tcp", "udp", "icmp", "esp", "gre"] as const;
 
@@ -281,7 +293,7 @@ function firewallRule(raw: unknown, i: number): Row {
   const rule: Row = { direction, protocol };
   const port = optionalString(r, "port");
   if (protocol === "tcp" || protocol === "udp") {
-    if (!port || !/^(\d{1,5}(-\d{1,5})?|any)$/.test(port)) {
+    if (!port || !validPort(port)) {
       throw new InputError(
         `\`rules[${i}].port\` is required for ${protocol}: "22", "8000-9000" or "any".`,
       );
