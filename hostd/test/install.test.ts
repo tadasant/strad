@@ -98,7 +98,10 @@ switch (args[0]) {
       // A launchd job: no child of this process, and in no group of the caller's.
       const log = /<key>StandardOutPath<\\/key><string>([^<]+)/.exec(text)[1];
       const out = fs.openSync(log, "a");
-      spawn(argv[0], argv.slice(1), { detached: true, stdio: ["ignore", out, out] }).unref();
+      const job = spawn(argv[0], argv.slice(1), { detached: true, stdio: ["ignore", out, out] });
+      // Its own process group, so stopJobs() in the test can end the whole job.
+      fs.appendFileSync(file("jobs"), job.pid + "\\n");
+      job.unref();
     }
     break;
   }
@@ -252,8 +255,61 @@ beforeEach(async () => {
   resetCalls();
 });
 
-afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
+/**
+ * A one-shot the fake launchd started outlives the launchctl that started it
+ * and, like a real one, the installer too: a helper whose bootstrap launchd keeps
+ * refusing leaves one making its own pass of retries, writing calls.log,
+ * sleep.log, its reload log and its result file into this test's tree until it
+ * finishes. So the test ends it, and waits for the group to be gone before
+ * deleting that tree.
+ */
+async function stopJobs() {
+  const jobs = join(fake, "jobs");
+  if (!existsSync(jobs)) return;
+  const groups = readFileSync(jobs, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map(Number);
+  // A group that has exited may have handed its pgid on. Where /proc exists,
+  // only a group whose leader still carries this test's FAKE_DIR is signalled.
+  const ours = (pgid: number) => {
+    if (!existsSync("/proc")) return true;
+    try {
+      return readFileSync(`/proc/${pgid}/environ`, "utf8")
+        .split("\0")
+        .includes(`FAKE_DIR=${fake}`);
+    } catch {
+      return false;
+    }
+  };
+  const alive = (pgid: number) => {
+    try {
+      process.kill(-pgid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const mine = groups.filter(ours);
+  for (const pgid of mine)
+    try {
+      process.kill(-pgid, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+  await until(() => !mine.some(alive), 5_000);
+}
+
+afterEach(async () => {
+  await stopJobs();
+  // The wait above is bounded, not exact. If a group outlives it, the retries
+  // give its last write a moment rather than failing on the first ENOTEMPTY.
+  rmSync(root, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
 });
 
 describe("a re-run on a machine that has strad-hostd", () => {
