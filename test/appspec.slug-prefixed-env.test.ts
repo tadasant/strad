@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
 import { parseImage, renderAppSpec } from "../src/deploy/appspec.ts";
-import { slugsWithPrefixedNames } from "../src/secrets/env-prefix.ts";
+import {
+  applyEnvCopies,
+  slugsWithPrefixedNames,
+} from "../src/secrets/env-prefix.ts";
 
 /**
  * PER-SLUG BOX NAMES, at the renderer.
@@ -12,8 +15,11 @@ import { slugsWithPrefixedNames } from "../src/secrets/env-prefix.ts";
  * one `process.env`, and two servers that both want `TELEGRAM_API_HASH` need two
  * names, not two namespaces.
  *
- * THE RULE IS FLAT: every enabled supplementary server's `env:` is emitted twice,
- * under the bare name and under `<SLUG>__<NAME>`, with no condition attached.
+ * THE RULE IS FLAT: every enabled supplementary server's `env:` lands twice in
+ * the container's environment, under the bare name and under `<SLUG>__<NAME>`,
+ * with no condition attached. "The container's environment" is the spec plus
+ * the copies the bundle host restores at boot (`STRAD_ENV_COPIES`), which is why
+ * `envOf` below applies them: these tests are about what a server can READ.
  * Given a config you can compute the whole set by hand, per server, without
  * looking at any other server. An earlier version minted the second name only
  * where two values disagreed, which was correct and unreadable — what a variable
@@ -77,13 +83,17 @@ function render(
   });
 }
 
-const envOf = (spec: ReturnType<typeof renderAppSpec>, component: string) =>
-  Object.fromEntries(
+/** A component's environment as its processes see it: the spec, copies restored. */
+const envOf = (spec: ReturnType<typeof renderAppSpec>, component: string) => {
+  const env: Record<string, string | undefined> = Object.fromEntries(
     (spec.services.find((s) => s.name === component)?.envs ?? []).map((e) => [
       e.key,
       e.value,
     ]),
   );
+  applyEnvCopies(env);
+  return env;
+};
 
 const perSlugKeys = (
   spec: ReturnType<typeof renderAppSpec>,
@@ -154,7 +164,15 @@ describe("every supplementary server is named, with no condition attached", () =
   });
 
   it("emits per-slug names as SECRETs, and keeps them off core", () => {
-    const spec = render(CONFIG(TELEGRAM("telegram-ro", "/telegram")));
+    // A value of its own, beside a sibling holding the bare name, so the
+    // per-slug name travels literally rather than as a copy of the bare one.
+    const spec = render(
+      CONFIG(
+        TELEGRAM("telegram", "/telegram") +
+          TELEGRAM("telegram-ro", "/telegram-ro"),
+      ),
+      { serverSecrets: { "telegram-ro": RO } },
+    );
     const alias = spec.services
       .find((s) => s.name === "bundle")!
       .envs.find((e) => e.key === "TELEGRAM_RO__TELEGRAM_API_HASH")!;

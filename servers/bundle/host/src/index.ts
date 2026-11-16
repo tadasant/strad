@@ -72,6 +72,9 @@
  * rejection is logged, not fatal. What remains fatal is a genuine process-level
  * failure (OOM), and that is the risk the telemetry is there to watch.
  */
+// FIRST, before any other import is evaluated: restores the per-slug variables
+// the render baked once. See ./env-copies.ts.
+import "./env-copies.js";
 import express, { type Request, type Response } from "express";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";

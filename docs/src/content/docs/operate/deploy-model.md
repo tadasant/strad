@@ -529,6 +529,18 @@ For prod's spec at the moment it was refused:
 | `bundle` (prod's 35 slugs, resolved credentials) | ~64,000 | 45%   |
 | `bundle-internal` (1 server)                     | ~1,900  | 1%    |
 
+**A credential that several slugs share is baked once.** Every supplementary
+variable exists twice in its bundle's environment, under its bare name and under
+its slug's per-slug name ([what a server's variables are called on the box](/operate/secrets/#what-a-servers-variables-are-called-on-the-box)),
+and on prod most of those pairs hold one value. On a `strad-bundle` component
+the renderer bakes each such value once and lists the other names in
+`STRAD_ENV_COPIES`, which the host restores at boot. Measured against prod's
+config at 0.4.167 with placeholder values, that takes the `bundle` component
+from 184 baked variables to 116 and the spec down by roughly 11 to 27 KB,
+depending on how long the real values are. `render-spec` logs how many names each
+component folded. It needs a bundle image that restores the copies, which is
+the one built from the same commit (`HACKS.md` #146).
+
 **Under `gcp-parameter-store`, adding a component costs that component's own
 environment and nothing else.** The spec carries one credential, the bootstrap
 one, and that one is [scoped to the strad image](/operate/secrets/) — so a

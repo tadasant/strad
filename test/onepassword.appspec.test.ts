@@ -2,6 +2,7 @@ import { CORE_URL_ENV } from "../src/secrets/param-route.ts";
 import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
 import { parseImage, renderAppSpec } from "../src/deploy/appspec.ts";
+import { applyEnvCopies } from "../src/secrets/env-prefix.ts";
 
 /**
  * onepassword is a `supplementary-image` server, like good-eggs: its own
@@ -211,7 +212,11 @@ servers:${[
     },
   });
   const bundles = spec.services.filter((s) => s.name.startsWith("bundle"));
-  const env = Object.fromEntries(bundles[0]!.envs.map((e) => [e.key, e.value]));
+  // The environment the host sees: the spec, with STRAD_ENV_COPIES restored.
+  const env: Record<string, string | undefined> = Object.fromEntries(
+    bundles[0]!.envs.map((e) => [e.key, e.value]),
+  );
+  applyEnvCopies(env);
 
   it("is still ONE component", () => {
     expect(bundles.map((b) => b.name)).toEqual(["bundle"]);

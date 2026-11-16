@@ -115,6 +115,7 @@ import {
 } from "../src/deploy/instance-size.ts";
 import { unusedWaivers, waivedNames } from "../src/deploy/unseeded.ts";
 import { isInstancePath } from "../src/secrets/param-route.ts";
+import { ENV_COPIES_VAR, parseEnvCopies } from "../src/secrets/env-prefix.ts";
 
 const { values } = parseArgs({
   options: {
@@ -1128,6 +1129,24 @@ if (mutable.length > 0) {
   console.error(
     `::warning::${mutable.length} component(s) ship a mutable tag: ${detail}. ` +
       `${why} This deploy cannot verify which image those components will run.`,
+  );
+}
+
+// What the per-slug fold saved, by component: names only. A strad-bundle
+// component carries a per-slug name whose value it already bakes as a line in
+// STRAD_ENV_COPIES rather than as a second copy of the value (`foldEnvCopies`
+// in src/deploy/appspec.ts), and the host restores it at boot.
+for (const service of spec.services) {
+  const copies = service.envs.find((e) => e.key === ENV_COPIES_VAR);
+  if (!copies) continue;
+  const count = parseEnvCopies(copies.value).reduce(
+    (n, [, targets]) => n + targets.length,
+    0,
+  );
+  console.error(
+    `[render-spec] ${service.name}: ${count} per-slug variable(s) baked once ` +
+      `and restored at boot from ${ENV_COPIES_VAR} ` +
+      `(${copies.value.length} bytes of names).`,
   );
 }
 
