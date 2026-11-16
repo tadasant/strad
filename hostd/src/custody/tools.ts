@@ -48,7 +48,6 @@ interface Candidate {
   token: string;
 }
 
-/** Where Chrome saves downloads. */
 /** Why a capture's click did not happen. Nothing was clicked, so nothing was captured. */
 function notClicked(reason: "no-match" | "hidden", selector: string): string {
   return reason === "hidden"
@@ -56,6 +55,7 @@ function notClicked(reason: "no-match" | "hidden", selector: string): string {
     : `No element matches ${JSON.stringify(selector)}. Nothing was clicked or captured.`;
 }
 
+/** Where Chrome saves downloads. */
 function downloadsDir(config: Config): string {
   return config.custody.downloadsDir ?? join(homedir(), "Downloads");
 }

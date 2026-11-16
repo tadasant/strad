@@ -4477,8 +4477,11 @@ What that leaves:
   trusted. The tab is not brought forward, and emulation is switched off
   straight after. On a Chrome where the page still reads hidden under
   emulation, the click is refused at once with an error that says to bring
-  the tab forward. This has been tested in a windowed Chrome on Linux. It has
-  not been tested on the owner's Mac or through the extension route.
+  the tab forward. Once emulation is off the page gets `blur`, so a page that
+  drops its reveal on blur, or writes the clipboard only while focused, can
+  still defeat a background capture. This has been tested in a windowed
+  Chrome on Linux. It has not been tested on the owner's Mac or through the
+  extension route.
 - **The hold blocks other sessions on the Mac.** From capture to release, every
   shell and computer-use call is refused, and so are browser reads on every
   tab. A capture will not start while a shell command is running. Ending the

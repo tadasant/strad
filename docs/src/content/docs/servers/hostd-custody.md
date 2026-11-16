@@ -237,7 +237,7 @@ does not come forward, and emulation is switched off as soon as the click is
 sent. A page that checks `document.visibilityState` during the click sees
 `visible`. If the page still reads hidden under emulation, hostd sends no input
 and the call fails at once: "The tab is hidden … Bring the tab to the front".
-The taint is lifted, because nothing was clicked. The fix has been tested
+The taint is lifted, because nothing was clicked. Emulation is for the click only: once it is sent, the page gets `blur` and reads `hidden` again. A provider that closes its reveal dialog on blur, or puts the token only on the clipboard, can still defeat a background capture. Bring that tab forward with the browser server's `activate_tab` and capture there. The fix has been tested
 against a windowed Chrome on Linux. It has not yet been tested on the owner's
 Mac or through the extension route.
 

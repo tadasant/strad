@@ -476,7 +476,8 @@ and custody's clicks through the same function, switch on
 visible and focused, and the input lands as a trusted click without the tab
 coming forward. Emulation goes off again straight after. A page that still
 reads hidden is refused before any input is sent. Keyboard input (`type_text`)
-reaches a hidden page without it.
+reached a hidden page without it in a windowed Chrome on Linux, so typing is
+not wrapped.
 
 ### The native helper: `strad-hostd-ax`
 

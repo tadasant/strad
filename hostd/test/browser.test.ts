@@ -276,9 +276,9 @@ describe.skipIf(!chrome)(
     });
 
     it("clicks a BACKGROUND tab where it is: the page's own listener fires, trusted, and the tab stays hidden", async () => {
-      // Chrome drops DevTools mouse input to a hidden page (in a windowed
-      // Chrome the click never arrives at all), which is what made custody
-      // captures in background tabs time out on the owner's Mac.
+      // Chrome drops DevTools mouse input to a hidden page; in a windowed
+      // Chrome the click never arrives at all, and a custody capture waiting
+      // on its effect times out.
       const opened = resultJson<{ tab_id: string }>(
         await call("open_tab", { url: `${origin}/listen` }),
       );

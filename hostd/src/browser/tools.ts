@@ -44,17 +44,27 @@ export function checkUrl(raw: string): string | undefined {
 
 /**
  * What a click in a tab that is still hidden says. Chrome drops mouse input
- * sent to a hidden tab's page — `mouseMoved` never answers and the click never
- * arrives — so a click there would be a silent no-op, and a caller waiting on
- * its effect would wait out its whole timeout instead.
+ * sent to a hidden tab's page, so a click there would be a silent no-op, and a
+ * caller waiting on its effect would wait out its whole timeout instead.
  */
 export const HIDDEN_TAB_CLICK =
   "The tab is hidden (in the background, or its window is covered or minimised) and Chrome would not deliver a click to it, " +
-  "even with focus emulation on. Nothing was clicked. Bring the tab to the front (open_tab with foreground true, or ask the owner) and call again.";
+  "even with focus emulation on. Nothing was clicked. Bring the tab to the front with the browser server's activate_tab " +
+  "(it takes the owner's focus) or ask the owner to, then call again.";
 
 export type ClickResult =
   | { clicked: true; tag: string }
   | { clicked: false; reason: "no-match" | "hidden" };
+
+/** How long a page may take to read itself visible once emulation is on. */
+const VISIBLE_GRACE_MS = 500;
+
+/**
+ * One click at a time per tab. Focus emulation is per tab, and on the
+ * extension route every grant shares the tab's one attachment, so one click's
+ * switch-off could land between another's switch-on and its input.
+ */
+const clicking = new Map<string, Promise<unknown>>();
 
 /**
  * Click one element with a real mouse event at its centre, scrolled into view
@@ -70,7 +80,25 @@ export type ClickResult =
  * page still reads hidden under emulation is refused before any input is sent,
  * rather than clicked into nothing.
  */
-export async function clickSelector(
+export function clickSelector(
+  s: BrowserSession,
+  tabId: string,
+  selector: string,
+): Promise<ClickResult> {
+  const prior = clicking.get(tabId) ?? Promise.resolve();
+  const run = prior.then(
+    () => clickOnce(s, tabId, selector),
+    () => clickOnce(s, tabId, selector),
+  );
+  const tail = run.catch(() => {});
+  clicking.set(tabId, tail);
+  void tail.then(() => {
+    if (clicking.get(tabId) === tail) clicking.delete(tabId);
+  });
+  return run;
+}
+
+async function clickOnce(
   s: BrowserSession,
   tabId: string,
   selector: string,
@@ -83,12 +111,15 @@ export async function clickSelector(
       () => false,
     );
   try {
-    const at = await s.evaluate<{
-      x: number;
-      y: number;
-      tag: string;
-      hidden?: boolean;
-    } | null>(tabId, locate(selector));
+    type At = { x: number; y: number; tag: string; hidden?: boolean };
+    let at = await s.evaluate<At | null>(tabId, locate(selector));
+    // The browser answers the switch-on before the page has necessarily
+    // heard it; give the page a moment to read itself visible.
+    const deadline = Date.now() + VISIBLE_GRACE_MS;
+    while (emulating && at?.hidden && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+      at = await s.evaluate<At | null>(tabId, locate(selector));
+    }
     if (!at) return { clicked: false, reason: "no-match" };
     if (at.hidden) return { clicked: false, reason: "hidden" };
     const base = { x: at.x, y: at.y, button: "left", clickCount: 1 };
