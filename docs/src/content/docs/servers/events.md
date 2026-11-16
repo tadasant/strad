@@ -25,7 +25,10 @@ Three things, all on the ordinary `/mcp` endpoint:
   `capabilities.extensions["io.modelcontextprotocol/events"] = {}` when a slug
   selected for the request serves events. Core does not decide that from config.
   It asks each selected upstream's own handshake, in parallel, with a 3-second
-  bound per slug. A slow or failing slug counts as "no" for that request. A
+  bound per slug. A slow or failing slug counts as "no" for that request. The
+  handshake is the cached connection's, and is believed for at most five
+  minutes, so a bundle redeployed with events switched on is advertised within
+  that window without a core restart. A
   `local-tunnel` slug is never asked: it is a machine that is often off, and
   nothing on one serves events.
 - **`events/list`** only asks a slug whose handshake advertised events, so an

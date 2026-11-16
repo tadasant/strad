@@ -329,6 +329,21 @@ would be pointless churn. Retirement is also scoped to the exact connection that
 failed, so a slow failure cannot evict a fresh one another caller has since
 installed.
 
+### A handshake is believed for five minutes
+
+What `initialize` answered — the upstream's capabilities, the events extension
+among them — is cached with the connection. Every upstream strad proxies is
+stateless Streamable HTTP, so a container replaced behind the same URL does not
+break the connection: the next request simply reaches the new container, tools
+keep working, and the cached capabilities keep describing the container that is
+gone. A deploy that switches events on for a bundle would otherwise stay
+invisible to `initialize` and `events/list` until core restarted.
+
+So a connection whose handshake is older than `HANDSHAKE_MAX_AGE_MS` (five
+minutes) is retired at its next lease, and the one after it shakes hands again.
+Requests already running on the old one finish on it. The cost is one
+`initialize` per slug per five minutes, paid only by a slug that is in use.
+
 ### A minted bearer is an endpoint that changes
 
 The adapter resolves its endpoint — URL plus headers — on every operation, and

@@ -77,6 +77,26 @@ import {
  */
 const callSignal = new AsyncLocalStorage<AbortSignal>();
 
+/**
+ * How long a cached connection's HANDSHAKE is believed.
+ *
+ * The connection is cached so a tool call does not pay for `initialize`, and
+ * what `initialize` answered — the upstream's capabilities, the events
+ * extension among them — is cached with it. Every upstream strad proxies is
+ * stateless Streamable HTTP, so a container replaced behind the same URL does
+ * not break the connection: the next POST simply reaches the new container,
+ * tools keep working, and the capabilities keep describing the container that
+ * is gone. That is how `slack-zimmer` served events while core advertised none:
+ * core shook hands with the `bundle-slack-zimmer` that predated the deploy
+ * switching its events on, and nothing ever asked again.
+ *
+ * So a connection older than this is retired at the next lease and the one
+ * after it handshakes afresh. Requests already running on the old one finish
+ * on it. The cost is one `initialize` per slug per interval, paid only by a
+ * slug that is being used.
+ */
+export const HANDSHAKE_MAX_AGE_MS = 5 * 60_000;
+
 /** Where this adapter connects, and with what credential. */
 export interface HttpEndpoint {
   url: string;
@@ -129,6 +149,8 @@ class Conn {
      */
     readonly endpoint: HttpEndpoint,
     private readonly onClosed: () => void,
+    /** When this connection's handshake completed — what its capabilities describe. */
+    readonly handshakeAt: number,
   ) {}
 
   /**
@@ -333,6 +355,10 @@ export class HttpServerAdapter implements ServerAdapter {
        * Unset, a `401` is an ordinary upstream failure, as it always was.
        */
       onUnauthorized?: (rejected: HttpEndpoint) => void;
+      /** Overrides `HANDSHAKE_MAX_AGE_MS`. Tests only. */
+      handshakeMaxAgeMs?: number;
+      /** The clock a handshake's age is measured on. Tests only. */
+      now?: () => number;
     },
   ) {
     this.slug = opts.slug;
@@ -395,6 +421,16 @@ export class HttpServerAdapter implements ServerAdapter {
       this.connecting = null;
     } else if (this.fingerprint === null) {
       this.fingerprint = fingerprint;
+    }
+
+    // A handshake past its age is not trusted to describe the upstream any
+    // more (see HANDSHAKE_MAX_AGE_MS): retire it, and build the next one below.
+    if (
+      this.conn &&
+      this.clock() - this.conn.handshakeAt >=
+        (this.opts.handshakeMaxAgeMs ?? HANDSHAKE_MAX_AGE_MS)
+    ) {
+      this.retireCurrent();
     }
 
     if (this.conn) return this.conn;
@@ -515,8 +551,11 @@ export class HttpServerAdapter implements ServerAdapter {
         void client.close().catch(() => {});
         throw new StaleCredentialError(this.slug);
       }
-      const conn: Conn = new Conn(client, endpoint, () =>
-        this.live.delete(conn),
+      const conn: Conn = new Conn(
+        client,
+        endpoint,
+        () => this.live.delete(conn),
+        this.clock(),
       );
       this.live.add(conn);
       this.conn = conn;
@@ -1351,6 +1390,10 @@ export class HttpServerAdapter implements ServerAdapter {
   }
 
   /** Retire whatever is cached, if anything. */
+  private clock(): number {
+    return (this.opts.now ?? Date.now)();
+  }
+
   private retireCurrent(): void {
     const conn = this.conn;
     this.conn = null;
