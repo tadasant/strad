@@ -123,6 +123,7 @@ export default defineConfig({
             { label: "Airtable", slug: "servers/airtable" },
             { label: "FlightAware AeroAPI", slug: "servers/flightaware" },
             { label: "DigitalOcean", slug: "servers/digitalocean" },
+            { label: "Hetzner Cloud", slug: "servers/hetzner" },
             { label: "AWS Device Farm", slug: "servers/aws-device-farm" },
             {
               label: "AWS Device Farm: first-time setup",

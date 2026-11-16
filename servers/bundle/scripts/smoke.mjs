@@ -15,7 +15,7 @@
  * credential-dependent. CI has no credential, the probe fails closed, and the
  * count is the read-only 4 below.
  *
- * What it is really checking is that thirty-two servers, twenty-three dependency trees and
+ * What it is really checking is that thirty-three servers, twenty-four dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  *
@@ -127,6 +127,10 @@ const EXPECT = {
   // Droplets, App Platform, managed databases and account: nineteen reads, which
   // `digitalocean-tadasant-ro` allows, and ten creates, actions and deletes.
   digitalocean: 29,
+  // Hetzner Cloud: fourteen reads, which `hetzner-pulse-ro` allows, and fourteen
+  // writes. None turns delete protection off or returns a root password; a
+  // twenty-ninth tool is the place to check that it still does not.
+  hetzner: 28,
   // One tool each, and the count is the claim that neither grew a tool that
   // writes a file: these replace npx packages that wrote to the agent's disk,
   // and here they write nothing anywhere.
@@ -292,7 +296,7 @@ if (unchecked.length || absent.length) {
 
 // Two trees registering the SAME slug is the collision a twelve-tree single process
 // invites, and it collapses to one route — the set above cannot see it, because a
-// Set of 32 mounts' slugs is 31 entries wide and matches EXPECT exactly.
+// Set of 33 mounts' slugs is 32 entries wide and matches EXPECT exactly.
 if (health.servers.length !== mounted.size) {
   failed += 1;
   console.log(

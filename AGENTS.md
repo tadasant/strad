@@ -245,6 +245,7 @@ not a confession.
 | `servers/image-tools/**` — a tool, the URL guard, a bound in `limits.ts`, the alignment                             | `servers/image-tools.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                     |
 | `servers/nutrition-facts/**` — a tool, a pinned source, the matching or range rules, the FatSecret budget           | `servers/nutrition-facts.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                 |
 | `servers/{airtable,flightaware,digitalocean}/**` — a tool, a tier, what a result may carry                          | `servers/airtable.md`, `servers/flightaware.md`, `servers/digitalocean.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                   |
+| `servers/hetzner/**` — a tool, a tier, the blast-radius text, what a result may carry                               | `servers/hetzner.md`, `limitations.md`, the `hetzner-pulse-ro` allow list in `infra/strad.staging.yaml`, and the counts in `servers/bundle/scripts/smoke.mjs`                        |
 | `servers/grafana/**` — the pinned version, the read-only flags, the env allowlist                                   | `servers/grafana.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                         |
 | `servers/good-eggs/**` — the basket read, a cart tool, what a result may claim                                      | `limitations.md`, and `servers/good-eggs/FORK.md`                                                                                                                                    |
 | `servers/strad-fetch/**` — a strategy, the cache bounds, an env name, the tool                                      | `servers/strad-fetch.md`, `limitations.md`, and `servers/strad-fetch/FORK.md`                                                                                                        |
@@ -290,10 +291,10 @@ numbers describe "how many servers," and they count different things:
 | The number | What it counts                                                                                     |
 | ---------- | -------------------------------------------------------------------------------------------------- |
 | **3**      | App Platform components: `core`, `bundle`, `bundle-zimmer-secrets`                                 |
-| **23**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
-| **32**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
-| **41**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included)         |
-| **44**     | total server slugs in staging (41 + `echo` builtin + `deepwiki` remote-http + `anki` local-tunnel) |
+| **24**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
+| **33**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
+| **43**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included)         |
+| **46**     | total server slugs in staging (43 + `echo` builtin + `deepwiki` remote-http + `anki` local-tunnel) |
 
 A slug is not a mount, and a mount is not a component. Before you write a number,
 grep for the others.
@@ -358,8 +359,8 @@ slop behind when you fix a stale fact.
   "did I typo a key" is answered here, by `scripts/check-config.ts`.
 - `src/deploy/appspec.ts` — turns the config into a DigitalOcean App Platform spec.
   The server list decides the container topology.
-- `servers/bundle/` — one image, 32 mounted MCP servers, one shared Chromium,
-  assembled from TWENTY-THREE independently-built dependency trees.
+- `servers/bundle/` — one image, 33 mounted MCP servers, one shared Chromium,
+  assembled from TWENTY-FOUR independently-built dependency trees.
 - `servers/remote-filesystem/` — strad's own artifact store, behind the
   `remote-filesystem-tmp-public` slug. `is_sensitive` picks the KIND of link;
   GCS's 7-day V4 ceiling is why the 14-day default is signed with V2.
@@ -418,6 +419,13 @@ slop behind when you fix a stale fact.
   and returns a cursor; digitalocean is two slugs on one mount (`-ro` allows the
   nineteen reads) and redacts database passwords from every result. All three
   have met only fakes — `HACKS.md` #119.
+- `servers/hetzner/` — strad's own Hetzner Cloud server, behind `hetzner-pulse-ro`
+  and `hetzner-pulse-rw` on one mount and one `HCLOUD_TOKEN`. Hetzner publishes
+  no MCP server, so it is written against the Cloud API. The project it reaches
+  holds PulseMCP's production CI runners, so every tool that can take a box down
+  says so in its description, nothing here can lift delete or rebuild
+  protection, and no result carries a root password. Met only fakes —
+  `HACKS.md` #145.
 - `servers/image-tools/` — strad's own `image-diff` and `svg-tracer`, two
   mounts over one tree, replacing two npx packages that read the agent's disk.
   Inputs are URLs, fetched behind an SSRF guard at the connector (derived from

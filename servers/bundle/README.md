@@ -1,12 +1,12 @@
 # bundle — THE strad supplementary image
 
-Thirty-two MCP servers. One container. One Chromium. One `op` binary. One
+Thirty-three MCP servers. One container. One Chromium. One `op` binary. One
 `mcp-grafana` binary.
 
 ```
 /slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-filesystem-tmp-public
 /x-twitter /telegram /whatsapp /bill-spend /aws-device-farm /liveoak /ssh /image-diff
-/svg-tracer /nutrition-facts
+/svg-tracer /nutrition-facts /airtable /flightaware /digitalocean /hetzner
 /pulse-subregistry
 /strad-fetch /grafana
 /google-flights /gmail /google-calendar /google-docs /google-sheets
@@ -14,7 +14,7 @@ Thirty-two MCP servers. One container. One Chromium. One `op` binary. One
 /good-eggs /fetchpet /pointsyeah
 ```
 
-Thirty-two is the floor, not a constant: four of those mounts (`/telegram`,
+Thirty-three is the floor, not a constant: four of those mounts (`/telegram`,
 `/remote-filesystem-tmp-public`, `/google-sheets`, `/grafana`) are re-mounted once
 more per slug the container holds a separate credential for, and four trees
 (telegram, google-sheets, grafana, ssh) also serve store-served instances at
@@ -69,10 +69,10 @@ binaries sit in the image unused. `/healthz` reports the sidecar under
 `tailnet` and never folds it into `ok`. See
 [`docs/operate/tailnet`](../../docs/src/content/docs/operate/tailnet.md).
 
-## How twenty-three projects become one image
+## How twenty-four projects become one image
 
 `Dockerfile`'s build context is the **repo root**, because the servers live in
-twenty-three different places:
+twenty-four different places:
 
 | tree | source | servers |
 | --- | --- | --- |
@@ -94,6 +94,7 @@ twenty-three different places:
 | `airtable` | `servers/airtable` | airtable (bases, tables, records and comments) |
 | `flightaware` | `servers/flightaware` | flightaware (FlightAware AeroAPI v4 flight and airport data, read-only) |
 | `digitalocean` | `servers/digitalocean` | digitalocean (droplets, App Platform apps, managed databases) |
+| `hetzner` | `servers/hetzner` | hetzner (Hetzner Cloud servers, power, metrics, firewalls, volumes; strad's own — Hetzner publishes no MCP server) |
 | `image-tools` | `servers/image-tools` | image-diff, svg-tracer (compare two images; trace a bitmap to SVG — inputs are URLs) |
 | `nutrition-facts` | `servers/nutrition-facts` | nutrition-facts (USDA FDC + MenuStat data built into the image; FatSecret live) |
 | `good-eggs` | `servers/good-eggs` | good-eggs |
@@ -102,7 +103,7 @@ twenty-three different places:
 
 Each is built **in its own stage, with its own lockfile and its own
 `node_modules`**, exactly as its standalone image builds it, and lands at
-`/app/trees/<name>`. Nothing is merged. Merging twenty-three dependency trees is how
+`/app/trees/<name>`. Nothing is merged. Merging twenty-four dependency trees is how
 you find out in production that two of them wanted different Playwright versions.
 
 `host/` imports across the trees **by path** (`src/trees.ts`). Node resolves each
@@ -188,12 +189,12 @@ could perform one. See [`servers/secrets/README.md`](../secrets/README.md).
 
 ## Blast radius, honestly
 
-Thirty-two servers share a process. A crash is a thirty-two-server outage. Everything
+Thirty-three servers share a process. A crash is a thirty-three-server outage. Everything
 that *can* be made survivable is:
 
 - a browser server whose **login fails** is marked `degraded` in `/healthz`; the
   container keeps serving. (The standalone images `process.exit(1)` here — correct
-  when the process *is* the server, catastrophic when it is thirty-one others too.)
+  when the process *is* the server, catastrophic when it is thirty-two others too.)
   For fetchpet the mark is a report on the last attempt: the next tool call retries
   the login and a success clears it, so a form that changed and was fixed does not
   cost a redeploy. good-eggs still holds its first failure until the container

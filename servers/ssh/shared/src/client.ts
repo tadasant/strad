@@ -6,7 +6,7 @@
  * standing authenticated session on a production root account inside a shared
  * container, and the handshake it saves is a few hundred milliseconds.
  *
- * BOUNDED, because this process is thirty-one other servers too. A command's
+ * BOUNDED, because this process is thirty-two other servers too. A command's
  * output and a file read are capped in memory as they arrive, not after, so
  * `cat` of a 4 GB log costs a fixed amount of this container's memory and comes
  * back marked as truncated.

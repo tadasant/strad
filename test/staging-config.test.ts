@@ -48,7 +48,7 @@ const IMAGE = "ghcr.io/tadasant/strad-bundle:latest";
  *
  * This is not decoration. `render-spec` resolves an `env:`/`consoleEnv:` ref at
  * RENDER time and exits 1 on one it cannot find, so a single unseeded name does
- * not degrade one slug — it fails the spec and takes all forty-four down. That is
+ * not degrade one slug — it fails the spec and takes all forty-six down. That is
  * the fail-loud property the store-backed deploy is built around, and it is
  * worth keeping; what it costs is that "declare the server" and "seed the
  * secret" are one atomic step, and a PR can only do the first half.
@@ -181,7 +181,7 @@ describe("staging config", () => {
     expect(credentials.every((e) => e.type === "SECRET")).toBe(true);
 
     // And it is INSTRUMENTED. The collapsed container is the one this telemetry
-    // exists for — it is where Chromium, `op` and thirty-two servers share a
+    // exists for — it is where Chromium, `op` and thirty-three servers share a
     // vCPU — so a bundle that renders without its identity vars is a bundle we
     // could not tell apart from the core in a dashboard.
     expect(bundle.envs.find((e) => e.key === "STRAD_COMPONENT")?.value).toBe(
@@ -253,7 +253,7 @@ describe("staging config", () => {
     const supplementary = CONFIG.servers.filter(
       (s) => s.kind === "supplementary-image",
     );
-    expect(supplementary.length).toBe(41);
+    expect(supplementary.length).toBe(43);
     for (const server of supplementary) {
       expect(server.image).toBe(IMAGE);
       // ONE image, and one bundle for everything whose difference is
@@ -299,6 +299,7 @@ describe("staging config", () => {
     "telegram-ro": 5,
     "bill-spend-ro": 4,
     "digitalocean-tadasant-ro": 19,
+    "hetzner-pulse-ro": 14,
   };
 
   it.each(Object.entries(ALLOW_COUNTS))(
@@ -323,6 +324,7 @@ describe("staging config", () => {
     "telegram-rw",
     "bill-spend-rw",
     "digitalocean-tadasant-rw",
+    "hetzner-pulse-rw",
   ])("%s is the full-capability tier (no policy)", (slug) => {
     const server = CONFIG.servers.find((s) => s.slug === slug);
     expect(server).toBeDefined();
@@ -350,6 +352,7 @@ describe("staging config", () => {
       ["gmail-ro", "gmail-rw-external"],
       ["onepassword-ro", "onepassword-rw"],
       ["digitalocean-tadasant-ro", "digitalocean-tadasant-rw"],
+      ["hetzner-pulse-ro", "hetzner-pulse-rw"],
     ] as const) {
       const a = CONFIG.servers.find((s) => s.slug === ro);
       const b = CONFIG.servers.find((s) => s.slug === rw);

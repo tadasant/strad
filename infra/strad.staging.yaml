@@ -12,13 +12,13 @@
 # ---------------------------------------------------------------------------
 # CAPABILITY LIVES AT THE GATEWAY. THREE COMPONENTS, NOT THIRTEEN.
 # ---------------------------------------------------------------------------
-# This file declares forty-four server SLUGS: forty-one supplementary-image
+# This file declares forty-six server SLUGS: forty-three supplementary-image
 # entries, the `echo` builtin in core, the `deepwiki` remote-http canary, and
 # the `anki` local-tunnel, which ships disabled — see its entry below.
-# Thirty-nine of the forty-one land on twenty-seven upstream mounts inside the
+# Forty-one of the forty-three land on twenty-eight upstream mounts inside the
 # one bundle image, because capability variants share a mount; the other two
 # (`zimmer-secrets` and `whatsapp-zimmer`) each run that same image on a
-# bundle of their own. The image serves thirty-two mounts: `/x-twitter`,
+# bundle of their own. The image serves thirty-three mounts: `/x-twitter`,
 # `/google-sheets`, `/grafana`, `/aws-device-farm` and `/ssh` are in it with no
 # staging slug pointing at any of them — every SSH host is a store-served
 # instance at `/_instance/ssh/{slug}` rather than the conventional `/ssh`, and
@@ -28,9 +28,10 @@
 # environment yet because its AWS credential has not been minted. The block to
 # paste once it has is in docs/servers/aws-device-farm-setup.
 #
-# TEN of the forty-one carry `enabled: false` — telegram-ro, telegram-rw,
+# TWELVE of the forty-three carry `enabled: false` — telegram-ro, telegram-rw,
 # pulse-subregistry, grafana-registry, whatsapp-zimmer, liveoak, airtable,
-# flightaware, digitalocean-tadasant-ro and digitalocean-tadasant-rw — because
+# flightaware, digitalocean-tadasant-ro, digitalocean-tadasant-rw,
+# hetzner-pulse-ro and hetzner-pulse-rw — because
 # their credentials are not in the store yet.
 # A `${NAME}` the store does not hold fails the RENDER, and the render is the
 # whole spec, so an entry that ships enabled before its secret is seeded takes
@@ -78,7 +79,8 @@
 # The allow-lists below are derived from each upstream's own tool-group
 # definitions, so the counts stay honest: slack 8/14 · tailscale 7/15 ·
 # monarch 10/24 · gmail 5/8/9 · google-docs 4/13/14 · google-calendar 4/7 ·
-# 1Password 5/9 · telegram 5/6 · bill-spend 4/5 · digitalocean 19/29.
+# 1Password 5/9 · telegram 5/6 · bill-spend 4/5 · digitalocean 19/29 ·
+# hetzner 14/28.
 # test/staging-config.test.ts
 # asserts every one of those numbers.
 
@@ -178,11 +180,11 @@ roles:
     servers: [zimmer-secrets, secrets, echo]
 
 bundles:
-  # THE bundle. One image, one component, and twenty-five of the image's thirty
-  # upstream MCP servers — the bundle-api fleet, the Google servers, 1Password
-  # (with the `op` CLI baked in), telegram, liveoak, airtable, flightaware,
-  # digitalocean, image-diff, svg-tracer and the three browser servers, which
-  # share ONE Chromium (never one per server: see
+  # THE bundle. One image, one component, and twenty-seven of the image's
+  # thirty-three upstream MCP servers — the bundle-api fleet, the Google
+  # servers, 1Password (with the `op` CLI baked in), telegram, liveoak,
+  # airtable, flightaware, digitalocean, hetzner, image-diff, svg-tracer and the
+  # three browser servers, which share ONE Chromium (never one per server: see
   # servers/bundle/host/src/browser.ts). Six mounts have no slug here:
   # `/x-twitter`, `/google-sheets` — registered in prod, where its six slugs each
   # carry one Google account's OAuth token, and where `/gmail` takes the same
@@ -191,10 +193,10 @@ bundles:
   # `/grafana-registry` below, `/aws-device-farm`, whose AWS credential does
   # not exist yet, `/whatsapp`, whose one slug is served from
   # `bundle-whatsapp`, and `/ssh`, whose hosts are store-served instances.
-  # The PROCESS registers all thirty-two either way — including `/telegram`,
-  # `/liveoak`, `/airtable`, `/flightaware` and `/digitalocean`, whose slugs are
-  # disabled until their secrets are seeded — which is what the sizing below is
-  # about.
+  # The PROCESS registers all thirty-three either way — including `/telegram`,
+  # `/liveoak`, `/airtable`, `/flightaware`, `/digitalocean` and `/hetzner`,
+  # whose slugs are disabled until their secrets are seeded — which is what the
+  # sizing below is about.
   #
   # SIZE. 2GB, and the reasoning is measured, not guessed. With two browser
   # servers logging in concurrently the container's working set is ~760MB (the
@@ -1481,6 +1483,64 @@ servers:
     env:
       DIGITALOCEAN_API_TOKEN: "${DIGITALOCEAN_API_TOKEN}"
     # No `tools:` — all twenty-nine.
+
+  # ---------------------------------------------------------------------------
+  # hetzner — strad's own Hetzner Cloud server (servers/hetzner). Hetzner
+  # publishes no MCP server, so this one is written against the Cloud API.
+  #
+  # "PULSE" IS THE PROJECT, not the owner. A Hetzner token reaches exactly one
+  # project, and this one holds the CI runners PulseMCP owns and operates and
+  # tadasant shares as a guest. So the blast radius of the -rw slug is other
+  # people's production CI: every tool that can take a box down says so in its
+  # description, none can lift Hetzner's delete or rebuild protection, and none
+  # returns a root password.
+  #
+  # DISABLED UNTIL SEEDED, like DigitalOcean above, and the same shape: two
+  # slugs on one mount and one `HCLOUD_TOKEN`, which therefore has to be a
+  # Read & Write token (Hetzner has nothing finer), and the `-ro` allow list
+  # is the only fence. Seed the token under both slugs' namespaces, then delete
+  # `enabled: false` from both and deploy.
+  - slug: hetzner-pulse-ro
+    kind: supplementary-image
+    title: Hetzner Cloud — Pulse project (read-only)
+    description: Read servers, their metrics and actions, images, firewalls, networks, volumes and primary IPs.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /hetzner
+    entitlements: [admin]
+    enabled: false
+    env:
+      HCLOUD_TOKEN: "${HCLOUD_TOKEN}"
+    tools:
+      allow:
+        - list_servers
+        - get_server
+        - get_server_metrics
+        - list_server_actions
+        - get_action
+        - list_images
+        - list_server_types
+        - list_locations
+        - list_datacenters
+        - list_ssh_keys
+        - list_firewalls
+        - list_networks
+        - list_primary_ips
+        - list_volumes
+
+  # Shares PulseMCP's production CI runners. Hand this one out deliberately.
+  - slug: hetzner-pulse-rw
+    kind: supplementary-image
+    title: Hetzner Cloud — Pulse project (read-write)
+    description: Power, rebuild, resize, snapshot and delete servers; edit firewalls; attach volumes; manage SSH keys.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /hetzner
+    entitlements: [admin]
+    enabled: false
+    env:
+      HCLOUD_TOKEN: "${HCLOUD_TOKEN}"
+    # No `tools:` — all twenty-eight.
 
   # ---------------------------------------------------------------------------
   # image-diff and svg-tracer — strad's own image servers, two mounts over one

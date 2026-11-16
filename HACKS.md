@@ -392,7 +392,7 @@ one (hack #4).
 **✅ RESOLVED.** Core presents the internal token to every `supplementary-image`
 component, and the `strad-bundle` host refuses a mount request without it.
 
-**What.** The `strad-bundle` container — thirty-two mounts, and every upstream
+**What.** The `strad-bundle` container — thirty-three mounts, and every upstream
 credential behind them — serves every mount unauthenticated. Its only protection
 is the network boundary: an internal-only App Platform component
 (`internal_ports: [8080]`, no public route), reachable by core over the private
@@ -791,8 +791,8 @@ toggle plumbing.
 
 ## 24. Twenty-eight servers share one process, and one Chromium
 
-The collapsed bundle is one container running thirty-two MCP servers and one
-headless Chromium. An OOM there is a thirty-two-server outage; it used to be a
+The collapsed bundle is one container running thirty-three MCP servers and one
+headless Chromium. An OOM there is a thirty-three-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -2645,7 +2645,7 @@ both `infra/strad.staging.yaml` and `strad.config.example.yaml` — plus the cou
 in `servers/bundle/scripts/smoke.mjs`, `test/staging-config.test.ts` and
 `.github/workflows/ci.yml`.
 
-## 56. Per-slug box names are emitted for every server; twelve of twenty-three trees can read one
+## 56. Per-slug box names are emitted for every server; thirteen of twenty-four trees can read one
 
 **What.** Every enabled `supplementary-image` server's resolved `env:` is emitted
 onto its bundle TWICE: under the bare name it always had, and under
@@ -2701,7 +2701,7 @@ DigitalOcean both times.
 
 - **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
   `grafana`, `bill-spend`, `aws-device-farm`, `whatsapp`, `liveoak`, `airtable`,
-  `flightaware`, `digitalocean` and `ssh` read an injected env.** The other eleven trees
+  `flightaware`, `digitalocean`, `hetzner` and `ssh` read an injected env.** The other eleven trees
   are vendored upstream code reading `process.env`, often lazily at call time
   (`onepassword` builds its client per call off `OP_SERVICE_ACCOUNT_TOKEN`). A single process cannot overlay `process.env`
   per-request without a race, so each tree needs its own seam and gets it when it
@@ -3744,7 +3744,7 @@ behaviour, which is the pre-change one.
 a listed parameter current in a supplementary container's `process.env` without a
 redeploy. What it cannot do is make the MCP server inside that container LOOK at
 the new value. That is a property of the upstream, and this image runs
-thirty-two of them, most written by other people.
+thirty-three of them, most written by other people.
 
 The split is real and it is not subtle:
 
@@ -5421,7 +5421,7 @@ Workspace documents and cannot touch an uploaded binary. `files.copy` with
 file in the owner's Drive every time an agent reads a spreadsheet — a write, in a
 read tier. The npm packages that read xlsx are large, and the popular one has
 been unmaintained on npm since 0.18.5 with a live prototype-pollution advisory;
-this process holds three Google accounts' refresh tokens beside thirty-one other
+this process holds three Google accounts' refresh tokens beside thirty-two other
 MCP servers.
 
 **What it costs, and what a caller is told.** Every Office-backed result carries
@@ -7499,3 +7499,35 @@ is not affected.
 
 **Undo.** Teach the renderer to keep this key off the bare name, then let the
 conventional mount read the bare one.
+
+## 145. The Hetzner server has met only fakes, and its -ro slug is read-only by policy alone
+
+**What.** `servers/hetzner/` is strad's own Hetzner Cloud server, behind
+`hetzner-pulse-ro` and `hetzner-pulse-rw`. Hetzner publishes no MCP server, so it
+is written against the Cloud API.
+
+1. **Untested against the real API.** The suite drives a real MCP client against
+   an injected fake `fetch` in Hetzner's documented shapes. The request bodies,
+   the `{"error": {code, message, details}}` envelope, `meta.pagination` and the
+   metrics format come from https://docs.hetzner.cloud/, not observed traffic.
+2. **One token, two slugs.** A Hetzner token is Read or Read & Write for one
+   project, nothing finer, and both slugs share one mount and one
+   `HCLOUD_TOKEN`. So the token is Read & Write, and the gateway's `tools:`
+   allow list is the only thing keeping `-ro` read-only — the same trade as
+   #22, and as DigitalOcean in #119.
+3. **The project is shared.** It holds the CI runners PulseMCP owns and operates
+   and tadasant uses as a guest, so `-rw`'s blast radius is other people's
+   production CI. The fences are in the tool surface, not the credential: every
+   tool that can take a box down says so in its description, no tool can lift
+   Hetzner's delete or rebuild protection, `set_firewall_rules` refuses an empty
+   rule set without `clear_all`, and `create_server` refuses to run without an
+   SSH key.
+4. **Root passwords are redacted by field name.** `create_server` and
+   `rebuild_server` can return a generated `root_password`; every result is
+   walked and credential-named fields become `[redacted]`
+   (`servers/hetzner/shared/src/secrets.ts`). A credential Hetzner returns
+   under a name the pattern does not match passes through until it is added.
+
+**Undo.** 1 lapses with the first real call on each slug; anything it finds is a
+fix here. 2 goes if the `-ro` slug gets a Read token of its own, which needs a
+second mount. 3 and 4 are the design.

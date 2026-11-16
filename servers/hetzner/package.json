@@ -1,0 +1,14 @@
+{
+  "name": "hetzner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "strad's Hetzner Cloud MCP server — servers, their power and metrics, images, firewalls, networks, volumes, primary IPs and SSH keys, over one API token, with root passwords redacted out of every result. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared",
+    "test": "npm run test --workspace shared"
+  }
+}

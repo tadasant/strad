@@ -413,6 +413,7 @@ describe("infra/strad.staging.yaml", () => {
       "telegram-ro -> /telegram",
       "bill-spend-ro -> /bill-spend",
       "digitalocean-tadasant-ro -> /digitalocean",
+      "hetzner-pulse-ro -> /hetzner",
     ]);
   });
 
