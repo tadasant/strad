@@ -329,6 +329,29 @@ would be pointless churn. Retirement is also scoped to the exact connection that
 failed, so a slow failure cannot evict a fresh one another caller has since
 installed.
 
+### A bundle's handshake is believed for five minutes
+
+What `initialize` answered — the upstream's capabilities, the events extension
+among them — is cached with the connection. A bundle component is stateless
+Streamable HTTP, so a deploy that replaces its container behind the same URL
+does not break the connection: the next request simply reaches the new
+container, tools keep working, and the cached capabilities keep describing the
+container that is gone. A bundle redeployed with events switched on would
+otherwise stay invisible to `initialize` and `events/list` until core restarted.
+
+So for a `supplementary-image` slug, the first lease after `HANDSHAKE_MAX_AGE_MS`
+(five minutes) shakes hands again, and the new connection replaces the old one
+only once that handshake succeeds. Requests already running on the old one
+finish there. A re-handshake that fails keeps the old connection, which still
+works, and tries again an interval later. The reachability prober lists every
+slug every minute, so each bundle slug pays one `initialize` per five minutes.
+
+`remote-http` and `local-tunnel` connections are not re-asked on age: a strad
+deploy does not replace either behind its URL, a third-party server may hold a
+session per connection that a periodic reconnect would orphan, and a
+local-tunnel handshake is the one bounded as "is the machine on". Their
+handshake lasts until the connection is retired by a failure or a rotation.
+
 ### A minted bearer is an endpoint that changes
 
 The adapter resolves its endpoint — URL plus headers — on every operation, and
