@@ -300,6 +300,16 @@ describe("a component replaced behind its URL with events switched on", () => {
     ]);
     await c.close();
 
+    // ...and the advertisement is still the old container's, until the
+    // handshake has aged out. This is the state prod was in.
+    vi.setSystemTime(
+      new Date(Date.parse("2026-11-16T01:00:00Z") + HANDSHAKE_MAX_AGE_MS - 1),
+    );
+    expect(await discover(base, "slack-zimmer")).toEqual({
+      advertised: false,
+      listed: [],
+    });
+
     // Past the handshake's age, the next use re-handshakes and sees events.
     vi.setSystemTime(
       new Date(Date.parse("2026-11-16T01:00:00Z") + HANDSHAKE_MAX_AGE_MS),

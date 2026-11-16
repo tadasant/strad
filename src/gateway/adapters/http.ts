@@ -78,22 +78,28 @@ import {
 const callSignal = new AsyncLocalStorage<AbortSignal>();
 
 /**
- * How long a cached connection's HANDSHAKE is believed.
+ * How long a `supplementary-image` connection's HANDSHAKE is believed.
  *
  * The connection is cached so a tool call does not pay for `initialize`, and
  * what `initialize` answered — the upstream's capabilities, the events
- * extension among them — is cached with it. Every upstream strad proxies is
- * stateless Streamable HTTP, so a container replaced behind the same URL does
- * not break the connection: the next POST simply reaches the new container,
- * tools keep working, and the capabilities keep describing the container that
- * is gone. That is how `slack-zimmer` served events while core advertised none:
- * core shook hands with the `bundle-slack-zimmer` that predated the deploy
- * switching its events on, and nothing ever asked again.
+ * extension among them — is cached with it. A bundle component is stateless
+ * Streamable HTTP, so a deploy that replaces its container behind the same URL
+ * does not break the connection: the next POST reaches the new container,
+ * tools keep working, and the cached capabilities keep describing the container
+ * that is gone — a bundle redeployed with events switched on would stay
+ * unadvertised until core restarted.
  *
- * So a connection older than this is retired at the next lease and the one
- * after it handshakes afresh. Requests already running on the old one finish
- * on it. The cost is one `initialize` per slug per interval, paid only by a
- * slug that is being used.
+ * So the first lease after this age shakes hands again, and the new connection
+ * replaces the old one only once its handshake has succeeded; requests already
+ * on the old one finish there. A re-handshake that fails keeps the old
+ * connection, which still works, and tries again an interval later.
+ *
+ * `supplementary-image` only: that is the kind strad redeploys behind a fixed
+ * URL. A `remote-http` upstream may hold a session per connection, which a
+ * periodic reconnect would orphan, and a `local-tunnel` handshake is the one
+ * bounded as "is the machine on" — neither is replaced under core by a strad
+ * deploy. The reachability prober lists every slug every minute, so this costs
+ * each bundle slug one `initialize` per interval whether or not anyone calls it.
  */
 export const HANDSHAKE_MAX_AGE_MS = 5 * 60_000;
 
@@ -149,8 +155,12 @@ class Conn {
      */
     readonly endpoint: HttpEndpoint,
     private readonly onClosed: () => void,
-    /** When this connection's handshake completed — what its capabilities describe. */
-    readonly handshakeAt: number,
+    /**
+     * When this connection's handshake was last believed: when it completed,
+     * or when a re-handshake failed and it was kept anyway. What
+     * `HANDSHAKE_MAX_AGE_MS` is measured from.
+     */
+    public checkedAt: number,
   ) {}
 
   /**
@@ -355,8 +365,6 @@ export class HttpServerAdapter implements ServerAdapter {
        * Unset, a `401` is an ordinary upstream failure, as it always was.
        */
       onUnauthorized?: (rejected: HttpEndpoint) => void;
-      /** Overrides `HANDSHAKE_MAX_AGE_MS`. Tests only. */
-      handshakeMaxAgeMs?: number;
       /** The clock a handshake's age is measured on. Tests only. */
       now?: () => number;
     },
@@ -424,23 +432,18 @@ export class HttpServerAdapter implements ServerAdapter {
     }
 
     // A handshake past its age is not trusted to describe the upstream any
-    // more (see HANDSHAKE_MAX_AGE_MS): retire it, and build the next one below.
-    if (
-      this.conn &&
-      this.clock() - this.conn.handshakeAt >=
-        (this.opts.handshakeMaxAgeMs ?? HANDSHAKE_MAX_AGE_MS)
-    ) {
-      this.retireCurrent();
-    }
-
-    if (this.conn) return this.conn;
+    // more (see HANDSHAKE_MAX_AGE_MS). It stays cached, and is what a failed
+    // re-handshake falls back to; a successful one replaces it below.
+    const stale =
+      this.conn && this.handshakeExpired(this.conn) ? this.conn : null;
+    if (this.conn && !stale) return this.conn;
 
     // Join an in-flight attempt — but through the same handler below, not by
     // returning its promise raw. A raw return skips the retry and the
     // UpstreamError wrap, so a joiner would receive a StaleCredentialError
     // verbatim out of listTools()/callTool().
     const existing = this.connecting;
-    if (existing) return this.settle(existing, attemptsLeft);
+    if (existing) return this.settle(existing, attemptsLeft, stale);
 
     const epoch = this.epoch;
     const connectTimeoutMs = this.opts.connectTimeoutMs;
@@ -558,7 +561,11 @@ export class HttpServerAdapter implements ServerAdapter {
         this.clock(),
       );
       this.live.add(conn);
+      // A re-handshake replaces the connection it refreshed. Requests leased
+      // on that one finish there, and its socket closes with the last of them.
+      const previous = this.conn;
       this.conn = conn;
+      previous?.retire();
       return conn;
     })();
 
@@ -572,7 +579,7 @@ export class HttpServerAdapter implements ServerAdapter {
         if (this.connecting === attempt) this.connecting = null;
       });
 
-    return this.settle(attempt, attemptsLeft);
+    return this.settle(attempt, attemptsLeft, stale);
   }
 
   /**
@@ -587,6 +594,8 @@ export class HttpServerAdapter implements ServerAdapter {
   private async settle(
     attempt: Promise<Conn>,
     attemptsLeft: number,
+    /** The aged connection this attempt refreshes, if it is a re-handshake. */
+    stale: Conn | null = null,
   ): Promise<Conn> {
     try {
       return await attempt;
@@ -599,6 +608,14 @@ export class HttpServerAdapter implements ServerAdapter {
         // Bounded, so a rotation arriving faster than a handshake completes
         // fails loudly rather than spinning.
         return this.connect(attemptsLeft - 1);
+      }
+      // A re-handshake that failed costs nothing the caller had: the aged
+      // connection still works, so it serves this request and is believed
+      // for another interval. Only while it is still the cached one — a
+      // rotation or a failure on it has already taken it out of service.
+      if (stale && this.conn === stale && !this.closed) {
+        stale.checkedAt = this.clock();
+        return stale;
       }
       throw this.wrap(err, "connect");
     }
@@ -1389,11 +1406,19 @@ export class HttpServerAdapter implements ServerAdapter {
     conn.retire();
   }
 
-  /** Retire whatever is cached, if anything. */
   private clock(): number {
     return (this.opts.now ?? Date.now)();
   }
 
+  /** See `HANDSHAKE_MAX_AGE_MS`. */
+  private handshakeExpired(conn: Conn): boolean {
+    return (
+      this.kind === "supplementary-image" &&
+      this.clock() - conn.checkedAt >= HANDSHAKE_MAX_AGE_MS
+    );
+  }
+
+  /** Retire whatever is cached, if anything. */
   private retireCurrent(): void {
     const conn = this.conn;
     this.conn = null;
