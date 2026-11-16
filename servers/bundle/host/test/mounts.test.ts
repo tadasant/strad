@@ -7,6 +7,7 @@ import {
   instanceEnv,
   missingCredentialsDegraded,
   onePasswordConfirmsWrites,
+  ownNameOnly,
   remoteFilesystemDegraded,
   scrubCapabilityEnv,
 } from "../src/mounts.js";
@@ -810,5 +811,37 @@ describe("1Password per slug", () => {
     // The old posture check is gone: the mount no longer needs a container-wide
     // elicitation URL or DANGEROUSLY_SKIP_ELICITATIONS to exist.
     expect(host).not.toContain("checkElicitationSafety");
+  });
+});
+
+describe("ownNameOnly", () => {
+  const NAME = "GMAIL_SENDER_DISPLAY_NAME";
+  // What the renderer emits when gmail-zimmer-rw-external declares the name in
+  // its env: the per-slug alias AND the bare name, on the same container as
+  // Tadas's own mounts.
+  const env = {
+    GMAIL_SENDER_DISPLAY_NAME: "Zimmer (Tadas's Assistant)",
+    GMAIL_ZIMMER_RW_EXTERNAL__GMAIL_SENDER_DISPLAY_NAME: "Zimmer (Tadas's Assistant)",
+  } as NodeJS.ProcessEnv;
+
+  it("gives a slug the value declared under its own name", () => {
+    const view: Record<string, string | undefined> = { ...env };
+    ownNameOnly(view, "gmail-zimmer-rw-external", NAME, env);
+    expect(view[NAME]).toBe("Zimmer (Tadas's Assistant)");
+  });
+
+  it("never lets a sibling's bare value name another mailbox's mail", () => {
+    for (const slug of ["gmail-tadas412-rw-external", "gmail"]) {
+      const view: Record<string, string | undefined> = { ...env };
+      ownNameOnly(view, slug, NAME, env);
+      expect(view).not.toHaveProperty(NAME);
+    }
+  });
+
+  it("reads the conventional mount's own name, GMAIL__…", () => {
+    const own = { ...env, GMAIL__GMAIL_SENDER_DISPLAY_NAME: "Tadas" } as NodeJS.ProcessEnv;
+    const view: Record<string, string | undefined> = { ...own };
+    ownNameOnly(view, "gmail", NAME, own);
+    expect(view[NAME]).toBe("Tadas");
   });
 });

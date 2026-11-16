@@ -156,6 +156,33 @@ export function dropInheritedNames(
 }
 
 /**
+ * A variable this mount reads under its OWN slug's name or not at all — and,
+ * unlike {@link dropInheritedNames}, one that is not a credential.
+ *
+ * The renderer gives every key in a server's `env:` its bare name as well as
+ * its per-slug one, and `slugEnvView` falls back to the bare name. For a
+ * credential that fallback is guarded by `dropInheritedNames`. For a setting
+ * that describes ONE mailbox, such as the name its mail is sent under, the
+ * fallback is just as wrong and fails more quietly: every other mount on the
+ * bundle, the conventional one included, would send under a sibling's name, and
+ * nothing would fail. So the bare name is never read for it.
+ *
+ * Silent, because a mount that configures no such setting is the ordinary case
+ * and a bare one on the box is a sibling's own, correctly declared, value.
+ */
+export function ownNameOnly(
+  view: Record<string, string | undefined>,
+  slug: string,
+  name: string,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const own = prefixedEnvName(slug, name);
+  const value = own === null ? undefined : env[own];
+  if (value) view[name] = value;
+  else delete view[name];
+}
+
+/**
  * remote-filesystem, degraded rather than unmounted.
  *
  * The tools must still LIST so an agent can see what this deployment would

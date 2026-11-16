@@ -283,3 +283,99 @@ describe("the client's sends and drafts carry the name", () => {
     );
   });
 });
+
+/**
+ * A name the deployment configures, rather than one read from Gmail.
+ *
+ * An account nobody signs in to (zimmer@tadasant.com) has an empty send-as
+ * name, so the lookup above finds nothing and the mail goes out from the bare
+ * address. Setting the send-as name needs `gmail.settings.basic`, which the
+ * mount's token does not hold. So the name can also be configured per mount,
+ * and then nothing is looked up.
+ */
+describe("a configured sender name", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const NAME = "Zimmer (Tadas's Assistant)";
+  const EXPECTED = `From: "Zimmer (Tadas's Assistant)" <zimmer@tadasant.com>`;
+
+  class NamedClient extends OAuth2GmailClient {
+    constructor(name: string | undefined) {
+      super("id", "secret", "refresh", { senderDisplayName: name });
+    }
+    protected async refreshTokenImpl() {
+      return { token: "t", expiryDate: Date.now() + 3_600_000 };
+    }
+  }
+
+  /** A fake Gmail whose send-as entry for zimmer@ has no name, as in prod. */
+  const fakeGmail = () => {
+    const raws: { path: string; from: string }[] = [];
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      const path = input.replace(BASE, "");
+      if (path === "/profile") return new Response(JSON.stringify({ emailAddress: ZIMMER }));
+      if (path === "/settings/sendAs") {
+        return new Response(JSON.stringify({ sendAs: [{ sendAsEmail: ZIMMER, displayName: "" }] }));
+      }
+      if (path === "/drafts/d1/send" || path === "/drafts/send") {
+        return new Response(JSON.stringify({ id: "m", threadId: "t" }));
+      }
+      const body = JSON.parse(String(init?.body));
+      const raw = Buffer.from(body.raw ?? body.message.raw, "base64url").toString("utf-8");
+      raws.push({ path, from: raw.split("\r\n")[0] });
+      return new Response(JSON.stringify({ id: "x", threadId: "t", message: { id: "m" } }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const sendAsCalls = () =>
+      fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/settings/sendAs")).length;
+    return { raws, sendAsCalls };
+  };
+
+  it("is the From on a send, a reply, a new draft and a draft update, parentheses and apostrophe intact", async () => {
+    const gmail = fakeGmail();
+    const client = new NamedClient(NAME);
+    const message = { to: "tadas@tadasant.com", subject: "hi", plaintextBody: "b" };
+
+    await client.sendMessage(message);
+    await client.sendMessage({
+      ...message,
+      threadId: "t1",
+      inReplyTo: "<a@mail.gmail.com>",
+      references: "<a@mail.gmail.com>",
+    });
+    await client.createDraft(message);
+    await client.updateDraft("d1", message);
+
+    expect(gmail.raws.map((r) => r.path)).toEqual([
+      "/messages/send",
+      "/messages/send",
+      "/drafts",
+      "/drafts/d1",
+    ]);
+    for (const { from } of gmail.raws) expect(from).toBe(EXPECTED);
+    // Configured means nothing is looked up, so neither an empty send-as name
+    // nor a credential that cannot read settings can take it away.
+    expect(gmail.sendAsCalls()).toBe(0);
+  });
+
+  it("is trimmed, and a blank one falls back to the send-as lookup", async () => {
+    const gmail = fakeGmail();
+    await new NamedClient(`  ${NAME}  `).sendMessage({ to: "a@example.com", subject: "s", plaintextBody: "b" });
+    await new NamedClient("   ").sendMessage({ to: "a@example.com", subject: "s", plaintextBody: "b" });
+    expect(gmail.raws.map((r) => r.from)).toEqual([EXPECTED, `From: ${ZIMMER}`]);
+    expect(gmail.sendAsCalls()).toBe(1);
+  });
+
+  it("keeps the injection guard: a line break in the configured name cannot add a header", async () => {
+    const gmail = fakeGmail();
+    await new NamedClient("Eve\r\nBcc: victim@example.com").sendMessage({
+      to: "a@example.com",
+      subject: "s",
+      plaintextBody: "b",
+    });
+    expect(gmail.raws[0].from).toBe(`From: "Eve Bcc: victim@example.com" <${ZIMMER}>`);
+  });
+});

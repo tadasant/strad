@@ -12,6 +12,24 @@ export const SENDER_NAME_TTL_MS = 10 * 60 * 1000;
 export const SENDER_NAME_RETRY_MS = 60 * 1000;
 
 /**
+ * The variable that names the sender, for a deployment that would rather say it
+ * than have it read from Gmail's settings. See {@link GmailClientOptions}.
+ */
+export const GMAIL_SENDER_DISPLAY_NAME_ENV = 'GMAIL_SENDER_DISPLAY_NAME';
+
+/** What a client is told beyond its credential. */
+export interface GmailClientOptions {
+  /**
+   * The display name every message this client composes carries in `From`.
+   * When it is set, the send-as settings are not read at all: the name is the
+   * one the operator configured, and a credential that cannot read settings,
+   * or an account whose send-as name was never set, still sends it. Unset, or
+   * blank, means the name comes from the send-as settings.
+   */
+  senderDisplayName?: string;
+}
+
+/**
  * Gmail API scopes required by this server.
  * Shared between service account JWT, OAuth2 consent flow, and documentation.
  */
@@ -188,6 +206,11 @@ abstract class BaseGmailClient implements IGmailClient {
   private tokenExpiry: number = 0;
   private refreshPromise: Promise<void> | null = null;
   private senderName: { email: string; name: string | undefined; expiry: number } | null = null;
+  private readonly configuredSenderName: string | undefined;
+
+  constructor(options?: GmailClientOptions) {
+    this.configuredSenderName = options?.senderDisplayName?.trim() || undefined;
+  }
 
   /**
    * Perform the authentication-specific token refresh.
@@ -206,9 +229,12 @@ abstract class BaseGmailClient implements IGmailClient {
 
   /**
    * The From header for a message this client composes: the sender's address
-   * with the display name Gmail holds for it (see `gmail-client/lib/send-as.ts`).
-   * Without the name, the recipient sees the bare address, because Gmail sends
-   * the header the raw MIME spells.
+   * with its display name. Without the name, the recipient sees the bare
+   * address, because Gmail sends the header the raw MIME spells.
+   *
+   * A configured name ({@link GmailClientOptions.senderDisplayName}) wins and
+   * nothing is looked up. Otherwise the name is the one Gmail holds for the
+   * address (see `gmail-client/lib/send-as.ts`).
    *
    * The name is remembered for {@link SENDER_NAME_TTL_MS}, so a rename in
    * Gmail's settings takes effect without a restart. A failed lookup costs only
@@ -218,6 +244,7 @@ abstract class BaseGmailClient implements IGmailClient {
    */
   protected async getFromHeader(headers: Record<string, string>): Promise<string> {
     const email = await this.getSenderEmail();
+    if (this.configuredSenderName) return formatFromHeader(email, this.configuredSenderName);
     const cached = this.senderName;
     if (cached && cached.email === email && Date.now() < cached.expiry) {
       return formatFromHeader(email, cached.name);
@@ -416,8 +443,12 @@ export class ServiceAccountGmailClient extends BaseGmailClient {
   private jwtClient: JWT;
   private impersonateEmail: string;
 
-  constructor(credentials: ServiceAccountCredentials, impersonateEmail: string) {
-    super();
+  constructor(
+    credentials: ServiceAccountCredentials,
+    impersonateEmail: string,
+    options?: GmailClientOptions
+  ) {
+    super(options);
     this.impersonateEmail = impersonateEmail;
     this.jwtClient = new JWT({
       email: credentials.client_email,
@@ -453,8 +484,13 @@ export class OAuth2GmailClient extends BaseGmailClient {
   private oauth2Client: OAuth2Client;
   private userEmail: string | null = null;
 
-  constructor(clientId: string, clientSecret: string, refreshToken: string) {
-    super();
+  constructor(
+    clientId: string,
+    clientSecret: string,
+    refreshToken: string,
+    options?: GmailClientOptions
+  ) {
+    super(options);
     this.oauth2Client = new OAuth2Client(clientId, clientSecret);
     this.oauth2Client.setCredentials({ refresh_token: refreshToken });
   }
@@ -522,15 +558,21 @@ export interface CreateMCPServerOptions {
  *   - GMAIL_IMPERSONATE_EMAIL: Email address to impersonate
  *
  * If OAuth2 credentials are present, OAuth2 mode is used. Otherwise, service account mode is used.
+ *
+ * Either mode reads GMAIL_SENDER_DISPLAY_NAME, the name sent in `From`. Unset,
+ * the name is read from the account's send-as settings.
  */
 export function createDefaultClient(): IGmailClient {
+  const options: GmailClientOptions = {
+    senderDisplayName: process.env[GMAIL_SENDER_DISPLAY_NAME_ENV],
+  };
   // Check for OAuth2 credentials first
   const oauthClientId = process.env.GMAIL_OAUTH_CLIENT_ID;
   const oauthClientSecret = process.env.GMAIL_OAUTH_CLIENT_SECRET;
   const oauthRefreshToken = process.env.GMAIL_OAUTH_REFRESH_TOKEN;
 
   if (oauthClientId && oauthClientSecret && oauthRefreshToken) {
-    return new OAuth2GmailClient(oauthClientId, oauthClientSecret, oauthRefreshToken);
+    return new OAuth2GmailClient(oauthClientId, oauthClientSecret, oauthRefreshToken, options);
   }
 
   // Warn if some OAuth2 vars are set but not all (likely misconfiguration)
@@ -585,7 +627,7 @@ export function createDefaultClient(): IGmailClient {
     client_x509_cert_url: '',
   };
 
-  return new ServiceAccountGmailClient(credentials, impersonateEmail);
+  return new ServiceAccountGmailClient(credentials, impersonateEmail, options);
 }
 
 export function createMCPServer(options: CreateMCPServerOptions) {

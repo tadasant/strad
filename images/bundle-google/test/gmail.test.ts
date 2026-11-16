@@ -22,7 +22,7 @@ import {
   ServiceAccountGmailClient,
 } from "gmail-workspace-mcp-server-shared";
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 
 import {
   createDefaultClient,
@@ -316,4 +316,42 @@ test("any other refresh failure passes through untouched", async () => {
     assert.equal(error.message, "ETIMEDOUT");
     return true;
   });
+});
+
+test("GMAIL_SENDER_DISPLAY_NAME is the From name, and two names on one credential are two clients", async () => {
+  const env = { ...account("named"), GMAIL_SENDER_DISPLAY_NAME: "Zimmer (Tadas's Assistant)" };
+  const named = createDefaultClient(env);
+  assert.equal(createDefaultClient(env), named);
+  assert.notEqual(createDefaultClient(account("named")), named);
+  assert.notEqual(
+    createDefaultClient({ ...SERVICE_ACCOUNT, GMAIL_SENDER_DISPLAY_NAME: "A" }),
+    createDefaultClient(SERVICE_ACCOUNT),
+  );
+
+  // The token exchange and Gmail are stubbed; the MIME is the real one.
+  const refresh = vi
+    .spyOn(OAuth2GmailClient.prototype as unknown as { refreshTokenImpl: () => unknown }, "refreshTokenImpl")
+    .mockResolvedValue({ token: "t", expiryDate: Date.now() + 3_600_000 });
+  const froms: string[] = [];
+  const urls: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, init?: RequestInit) => {
+      urls.push(url);
+      if (url.endsWith("/profile")) {
+        return new Response(JSON.stringify({ emailAddress: "zimmer@tadasant.com" }));
+      }
+      const raw = Buffer.from(JSON.parse(String(init?.body)).raw, "base64url").toString("utf-8");
+      froms.push(raw.split("\r\n")[0]);
+      return new Response(JSON.stringify({ id: "m", threadId: "t" }));
+    }),
+  );
+  try {
+    await named.sendMessage({ to: "tadas@tadasant.com", subject: "hi", plaintextBody: "b" });
+  } finally {
+    vi.unstubAllGlobals();
+    refresh.mockRestore();
+  }
+  assert.deepEqual(froms, [`From: "Zimmer (Tadas's Assistant)" <zimmer@tadasant.com>`]);
+  assert.ok(!urls.some((u) => u.endsWith("/settings/sendAs")));
 });

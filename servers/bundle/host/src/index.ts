@@ -90,6 +90,7 @@ import {
   instanceEnv,
   missingCredentialsDegraded,
   onePasswordConfirmsWrites,
+  ownNameOnly,
   remoteFilesystemDegraded,
   scrubCapabilityEnv,
 } from "./mounts.js";
@@ -691,6 +692,11 @@ interface GmailModule {
    * than naming them here.
    */
   GMAIL_OAUTH_APP_ENV_NAMES: readonly string[];
+  /**
+   * The name a mount's mail is sent under. Per mailbox, so read only under the
+   * mount's own slug — see `ownNameOnly`.
+   */
+  GMAIL_SENDER_NAME_ENV_NAME: string;
 }
 
 /**
@@ -907,8 +913,8 @@ async function loadGoogleTree(): Promise<GoogleTree> {
  *   - The CONVENTIONAL `/gmail` mount is a SERVICE ACCOUNT with domain-wide
  *     delegation, impersonating one Workspace user. `gmail-ro`, `gmail-rw` and
  *     `gmail-rw-external` are three strad slugs over it, differing only by the
- *     gateway's `tools:` policy. It reads the bare names, exactly as it always
- *     has, and this change does not touch what it serves.
+ *     gateway's `tools:` policy. It reads the bare names, except the sender's
+ *     display name, which it reads only as `GMAIL__GMAIL_SENDER_DISPLAY_NAME`.
  *   - A DISCOVERED mount is a PERSON: an OAuth refresh token minted by that
  *     person, for that account, through the console consent flow an `oauth:`
  *     connector puts on the slug's own page. A refresh token is one account by
@@ -951,6 +957,10 @@ function loadGmail(gmail: GmailModule, slug: string, perSlug: boolean): Mount {
       gmail.GMAIL_ENV_NAMES.filter((name) => !app.has(name)),
     );
   }
+  // The sender's name belongs to one mailbox. Every mount, the conventional one
+  // included, reads it under its own slug — `GMAIL__…` for `/gmail` — and never
+  // from the bare name, which is whichever sibling declared one.
+  ownNameOnly(view, slug, gmail.GMAIL_SENDER_NAME_ENV_NAME);
   const env = {
     ...view,
     // WHERE TO GO WHEN THE TOKEN DIES — same as google-sheets, same reason:
