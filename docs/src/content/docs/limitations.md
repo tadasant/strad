@@ -614,11 +614,11 @@ nothing warns beforehand. Publishing the OAuth app removes the expiry.
 
 ## The deployment
 
-### 24. Twenty-eight servers share one process and one CPU
+### 24. Thirty-three servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts thirty-two MCP servers,
+The `bundle` component runs one Node process that mounts thirty-three MCP servers,
 launches one shared Chromium and supervises one `mcp-grafana` child process, on
-`apps-s-1vcpu-2gb`. A crash in the host takes all thirty-two down together, and
+`apps-s-1vcpu-2gb`. A crash in the host takes all thirty-three down together, and
 Chromium contends with every other server for the single vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -1009,7 +1009,7 @@ a store-wide read.
 keeps a listed parameter current in a supplementary container's environment
 without a redeploy. It cannot make the MCP server inside that container **look**
 at the new value — that is a property of the upstream, and the bundle image runs
-thirty-two of them, most written by other people.
+thirty-three of them, most written by other people.
 
 `strad-fetch` builds its scraping clients inside a factory the host invokes per
 request, so a rotated key is used by the next tool call; that is the case the
@@ -2197,7 +2197,7 @@ ever rebuilt with a rootless or hand-installed docker, where buildx lives in
 
 **Serialising the workflows was the alternative.** A `concurrency:` group would
 have ended it too, at the cost of every push taking the sum of its builds rather
-than the longest — the bundle alone is twenty-three dependency trees. Isolation costs a
+than the longest — the bundle alone is twenty-four dependency trees. Isolation costs a
 `mkdir`.
 
 ### 49. The Telegram MTProto library is archived upstream
@@ -2297,7 +2297,7 @@ for the telegram pair, `BILL_SPEND_API_TOKEN` for the bill-spend pair,
 then delete that entry's `enabled:` line and add each seeded name to
 `PROVISIONED_STATICS` in `test/staging-config.test.ts`.
 
-### 56. Per-slug variable names are emitted for every server; only twelve of the twenty-three trees can read one
+### 56. Per-slug variable names are emitted for every server; only thirteen of the twenty-four trees can read one
 
 Every supplementary server's `env:` lands on its bundle twice — under the bare
 name and under `<SLUG>__<NAME>` — with no condition attached, so what a server's
@@ -2314,7 +2314,7 @@ whatever the variables are called.
 
 **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
 `grafana`, `bill-spend`, `aws-device-farm`, `whatsapp`, `liveoak`, `airtable`,
-`flightaware`, `digitalocean` and `ssh` read an injected environment.** The other eleven
+`flightaware`, `digitalocean`, `hetzner` and `ssh` read an injected environment.** The other eleven
 trees in the bundle image are vendored upstream code that reads `process.env` directly,
 often lazily at call time, so they see the bare names only. `bill-spend` reads
 the injected view for one mount rather than one per slug: one BILL token is one
@@ -2594,7 +2594,7 @@ leak. Nothing in the cache is a credential; it is public pages someone fetched.
 
 **What the fork DID bound is the memory.** Upstream's store grows for the life of
 the process, which is fine for a subprocess the OS reclaims and an out-of-memory
-kill in a container that hosts thirty-two mounts. The cache is LRU-bounded on both
+kill in a container that hosts thirty-three mounts. The cache is LRU-bounded on both
 entry count and bytes, and the filesystem backend is gone (App Platform gives the
 container no persistent volume, so it was memory with extra steps).
 
@@ -4568,3 +4568,30 @@ another's mail. `gmail-ro`, `gmail-rw` and `gmail-rw-external` share the
 their mail carries the send-as name. A slug on `path: /<slug>` gets its name.
 
 See `HACKS.md` #144.
+
+### 145. The Hetzner server has only met fakes, and its read-only slug is read-only by policy
+
+[Hetzner Cloud](/servers/hetzner/) is strad's own server, behind
+`hetzner-pulse-ro` and `hetzner-pulse-rw`. What it costs:
+
+- **Untested against the real API.** CI drives it through a real MCP client
+  against a fake built from Hetzner's API reference. The first real call on
+  each slug is the first time it meets Hetzner.
+- **One Read & Write token for both slugs.** Hetzner tokens are Read or Read &
+  Write per project and nothing finer, and the two slugs share a mount, so the
+  `-ro` allow list is the only thing between it and a write.
+- **The project is shared with PulseMCP's production CI runners.** The `-rw`
+  tools that can take a box down say so in their descriptions, none can lift
+  delete or rebuild protection, and an empty firewall rule set or a server with
+  no SSH key is refused. That is all: nothing waits for a human to confirm, so
+  a hard power-off, a firewall change or a volume detach happens when it is
+  called, and `create_server` can boot arbitrary code inside the project's
+  private network.
+- **The token is visible to the whole bundle.** Like every bundle credential,
+  `HCLOUD_TOKEN` sits in the one container's environment, where the vendored
+  trees that read `process.env` can see it.
+- **Root passwords are redacted by field name.** A credential Hetzner starts
+  returning under a name the pattern does not match passes through until the
+  pattern learns it.
+
+See `HACKS.md` #145.

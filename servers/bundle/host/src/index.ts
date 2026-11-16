@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * bundle — THE strad supplementary image. All 32 upstream MCP servers (32
+ * bundle — THE strad supplementary image. All 33 upstream MCP servers (33
  * mounts, see `buildMounts`), one container, one process, one Chromium, one
- * mcp-grafana child. The gateway's config names more SLUGS than that — 41
+ * mcp-grafana child. The gateway's config names more SLUGS than that — 43
  * supplementary-image entries in infra/strad.staging.yaml — because capability
  * variants (gmail-ro, gmail-rw, …) are several slugs pointing at ONE mount here.
  * `/aws-device-farm` is the one that runs the other way round: it is mounted
@@ -10,7 +10,7 @@
  * is named by none BY DESIGN: every SSH host is its own store-served instance
  * at `/_instance/ssh/{slug}`, and the conventional mount is the degraded one.
  *
- * THIRTY-TWO IS THE FLOOR, not a constant. Seven trees (telegram,
+ * THIRTY-THREE IS THE FLOOR, not a constant. Seven trees (telegram,
  * remote-filesystem, google-sheets, gmail, google-docs, grafana, onepassword)
  * mount ONE INSTANCE PER SLUG the environment carries per-slug values for — see
  * `extraSlugs` — so a container told about `telegram-ro` and `telegram-rw`
@@ -20,7 +20,7 @@
  * a service-account token IS one Grafana, and a 1Password service-account token
  * IS one 1Password account at one vault scope, so each extra account is another
  * mount here. The conventional path is always mounted, so a config that asks for
- * none of this sees exactly the thirty-two it saw before.
+ * none of this sees exactly the thirty-three it saw before.
  *
  * STORE-SERVED INSTANCES are the other way in, and the one that needs no deploy.
  * A strad server on `path: /_instance/{tree}/{slug}` puts nothing on this
@@ -32,7 +32,7 @@
  * and on the first request for one this process does not hold yet, which is what
  * makes a slug created at runtime servable on that request.
  *
- * THIRTY-NINE of those are on one component. The other two each run this same
+ * FORTY-ONE of those are on one component. The other two each run this same
  * image on a component of their own. `zimmer-secrets` is one, and what makes it
  * one is the SLUG rather than the store: a second entitlement and a second
  * console page. `whatsapp-zimmer` is the other, on `bundle-whatsapp`, because
@@ -64,8 +64,8 @@
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
  *
- * BLAST RADIUS, honestly. Thirty-two servers share a process. A crash is
- * a 32-server outage, not a 1-server outage. Everything below that CAN be made
+ * BLAST RADIUS, honestly. Thirty-three servers share a process. A crash is
+ * a 33-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
  * catastrophic here); a dead Chromium is relaunched on next use; an unhandled
@@ -350,12 +350,13 @@ async function buildMounts(): Promise<Mount[]> {
   // alias, and who may reach a shell is the checked-in config's call alone.
   mounts.push(await loadSsh("ssh", {}));
 
-  // Three API-key servers, one credential each and one mount each. Read-only
+  // Four API-key servers, one credential each and one mount each. Read-only
   // and read-write variants are separate slugs on the same path, told apart by
   // the gateway's `tools:` policy.
   mounts.push(await loadKeyedApiServer("airtable", "strad-airtable"));
   mounts.push(await loadKeyedApiServer("flightaware", "strad-flightaware"));
   mounts.push(await loadKeyedApiServer("digitalocean", "strad-digitalocean"));
+  mounts.push(await loadKeyedApiServer("hetzner", "strad-hetzner"));
 
   mounts.push(...(await loadImageTools()));
   mounts.push(await loadNutritionFacts());
@@ -1260,7 +1261,7 @@ async function loadXTwitter(): Promise<Mount> {
     // The client caches its OAuth provider for the host process, so the factory
     // is built once here and memoised inside registerHandlers. Building it
     // LAZILY matters: `createXClientFromEnv` throws when no X credential is
-    // configured at all, and a throw at boot would take all thirty-two mounts down
+    // configured at all, and a throw at boot would take all thirty-three mounts down
     // over one unconfigured server.
     register: (s) =>
       created.registerHandlers(s, () =>
@@ -1455,18 +1456,18 @@ async function loadBillSpend(): Promise<Mount> {
 }
 
 /**
- * airtable, flightaware, digitalocean — strad's own servers over three plain
- * HTTPS APIs, each run on one static key (`AIRTABLE_API_KEY`,
- * `AEROAPI_API_KEY`, `DIGITALOCEAN_API_TOKEN`).
+ * airtable, flightaware, digitalocean, hetzner — strad's own servers over four
+ * plain HTTPS APIs, each run on one static key (`AIRTABLE_API_KEY`,
+ * `AEROAPI_API_KEY`, `DIGITALOCEAN_API_TOKEN`, `HCLOUD_TOKEN`).
  *
- * One loader because the three are the same shape as bill-spend and differ only
+ * One loader because the four are the same shape as bill-spend and differ only
  * in the tree: the env view is the mount's, so `<SLUG>__<NAME>` is read ahead of
  * the bare name; the key is read on each call rather than at boot; and with no
  * key the mount is degraded rather than dropped, so its tools still list and
  * every call fails naming the variable.
  */
 async function loadKeyedApiServer(
-  tree: "airtable" | "flightaware" | "digitalocean",
+  tree: "airtable" | "flightaware" | "digitalocean" | "hetzner",
   serverName: string,
 ): Promise<Mount> {
   const mod = (await loadFromTree(tree, "shared/build/index.js")) as {
@@ -2241,7 +2242,7 @@ async function main(): Promise<void> {
   //
   // NOT AWAITED, and that is deliberate. A pass is one sequential read per
   // listed variable, each with its own timeout, so awaiting it would put a slow
-  // or unreachable core directly in front of `listen()` below — thirty-two
+  // or unreachable core directly in front of `listen()` below — thirty-three
   // mounts held off serving because one credential could not be re-read. The
   // container starting with the value the deploy baked is exactly the behaviour
   // every deployment has today, so falling back to it costs nothing; blocking
@@ -2254,7 +2255,7 @@ async function main(): Promise<void> {
   // STORE-SERVED INSTANCES — the mounts no deploy named. See the header.
   //
   // The first sync is NOT awaited, for the reason the refresh pass above is
-  // not: a slow core must not stand in front of `listen()` for thirty-two
+  // not: a slow core must not stand in front of `listen()` for thirty-three
   // mounts that need nothing from it. A request that arrives before the sync
   // lands takes the miss path in the route below, which syncs then.
   const instances = createInstanceReconciler<Mount>({
@@ -2307,7 +2308,7 @@ async function main(): Promise<void> {
   const internalOnly = requireInternalToken(process.env, timingSafeEqual);
 
   // Liveness for App Platform. Reports every mount and whether it is degraded —
-  // with 32 servers behind one health check, "ok: true" alone is not information.
+  // with 33 servers behind one health check, "ok: true" alone is not information.
   //
   // Deliberately OUTSIDE `internalOnly`. The platform's health prober holds no
   // token, and a 401 here is a component App Platform takes out of service — an
@@ -2531,8 +2532,8 @@ async function main(): Promise<void> {
     });
   });
 
-  // One stray rejection from one of thirty-two servers must not kill the other
-  // thirty. The standalone images exit here (correct, when the process IS the
+  // One stray rejection from one of thirty-three servers must not kill the other
+  // thirty-two. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {
     logError("unhandledRejection", reason);
