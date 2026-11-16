@@ -43,24 +43,95 @@ export function checkUrl(raw: string): string | undefined {
 }
 
 /**
- * Click one element with a real mouse event at its centre, scrolled into view
- * first. Null when nothing matches. Shared with the custody server, whose
- * click has to be the same click the owner's page sees from this one.
+ * What a click in a tab that is still hidden says. Chrome drops mouse input
+ * sent to a hidden tab's page, so a click there would be a silent no-op, and a
+ * caller waiting on its effect would wait out its whole timeout instead.
  */
-export async function clickSelector(
+export const HIDDEN_TAB_CLICK =
+  "The tab is hidden (in the background, or its window is covered or minimised) and Chrome would not deliver a click to it, " +
+  "even with focus emulation on. Nothing was clicked. Bring the tab to the front with the browser server's activate_tab " +
+  "(it takes the owner's focus) or ask the owner to, then call again.";
+
+export type ClickResult =
+  | { clicked: true; tag: string }
+  | { clicked: false; reason: "no-match" | "hidden" };
+
+/** How long a page may take to read itself visible once emulation is on. */
+const VISIBLE_GRACE_MS = 500;
+
+/**
+ * One click at a time per tab. Focus emulation is per tab, and on the
+ * extension route every grant shares the tab's one attachment, so one click's
+ * switch-off could land between another's switch-on and its input.
+ */
+const clicking = new Map<string, Promise<unknown>>();
+
+/**
+ * Click one element with a real mouse event at its centre, scrolled into view
+ * first. Shared with the custody server, whose click has to be the same click
+ * the owner's page sees from this one.
+ *
+ * Background tabs: Chrome does not route DevTools mouse input to a hidden
+ * page, so the click is wrapped in `Emulation.setFocusEmulationEnabled`, which
+ * makes the page focused AND visible to itself for this session — the input
+ * then lands as a trusted click, without bringing the tab to the front and
+ * without taking the owner's focus. It is switched off again straight after,
+ * so the page goes back to throttling as a background tab. A Chrome where the
+ * page still reads hidden under emulation is refused before any input is sent,
+ * rather than clicked into nothing.
+ */
+export function clickSelector(
   s: BrowserSession,
   tabId: string,
   selector: string,
-): Promise<{ tag: string } | null> {
-  const at = await s.evaluate<{ x: number; y: number; tag: string } | null>(
-    tabId,
-    locate(selector),
+): Promise<ClickResult> {
+  const prior = clicking.get(tabId) ?? Promise.resolve();
+  const run = prior.then(
+    () => clickOnce(s, tabId, selector),
+    () => clickOnce(s, tabId, selector),
   );
-  if (!at) return null;
-  const base = { x: at.x, y: at.y, button: "left", clickCount: 1 };
-  for (const type of ["mouseMoved", "mousePressed", "mouseReleased"])
-    await s.send(tabId, "Input.dispatchMouseEvent", { ...base, type });
-  return { tag: at.tag };
+  const tail = run.catch(() => {});
+  clicking.set(tabId, tail);
+  void tail.then(() => {
+    if (clicking.get(tabId) === tail) clicking.delete(tabId);
+  });
+  return run;
+}
+
+async function clickOnce(
+  s: BrowserSession,
+  tabId: string,
+  selector: string,
+): Promise<ClickResult> {
+  // A route that refuses the method still gets the visibility check below.
+  const emulating = await s
+    .send(tabId, "Emulation.setFocusEmulationEnabled", { enabled: true })
+    .then(
+      () => true,
+      () => false,
+    );
+  try {
+    type At = { x: number; y: number; tag: string; hidden?: boolean };
+    let at = await s.evaluate<At | null>(tabId, locate(selector));
+    // The browser answers the switch-on before the page has necessarily
+    // heard it; give the page a moment to read itself visible.
+    const deadline = Date.now() + VISIBLE_GRACE_MS;
+    while (emulating && at?.hidden && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+      at = await s.evaluate<At | null>(tabId, locate(selector));
+    }
+    if (!at) return { clicked: false, reason: "no-match" };
+    if (at.hidden) return { clicked: false, reason: "hidden" };
+    const base = { x: at.x, y: at.y, button: "left", clickCount: 1 };
+    for (const type of ["mouseMoved", "mousePressed", "mouseReleased"])
+      await s.send(tabId, "Input.dispatchMouseEvent", { ...base, type });
+    return { clicked: true, tag: at.tag };
+  } finally {
+    if (emulating)
+      await s
+        .send(tabId, "Emulation.setFocusEmulationEnabled", { enabled: false })
+        .catch(() => {});
+  }
 }
 
 export function browserCapability(
@@ -262,7 +333,7 @@ load is "complete", or "timeout" if the page was still loading after 15s (it is 
 
   const clickElement = defineTool({
     name: "click_element",
-    description: `Click one element in a tab, with a real mouse event at the element's centre (scrolled into view first).
+    description: `Click one element in a tab, with a real mouse event at the element's centre (scrolled into view first). A background tab is clicked where it is: it is not brought to the front.
 
 **Returns:** {"clicked":"button","url":"https://…"} — url is where the tab is after the click, so a navigation shows.
 
@@ -294,9 +365,11 @@ If the selector matches nothing the result is an error and nothing is clicked; r
     handler: async (a, { grant }) => {
       const s = sessions.for(grant);
       const at = await clickSelector(s, a.tab_id, a.selector);
-      if (!at)
+      if (!at.clicked)
         return text(
-          `No element matches ${JSON.stringify(a.selector)}. Nothing was clicked.`,
+          at.reason === "hidden"
+            ? HIDDEN_TAB_CLICK
+            : `No element matches ${JSON.stringify(a.selector)}. Nothing was clicked.`,
           true,
         );
       await new Promise((r) => setTimeout(r, 250));

@@ -470,6 +470,15 @@ half the point.
 Chrome does not paint a tab in the background of its window, so `take_screenshot`
 of one hangs. The tool bounds that at ten seconds and names the way out.
 
+Chrome does not deliver DevTools mouse input to a hidden page either. `click_element`,
+and custody's clicks through the same function, switch on
+`Emulation.setFocusEmulationEnabled` for the one click. The page reads itself as
+visible and focused, and the input lands as a trusted click without the tab
+coming forward. Emulation goes off again straight after. A page that still
+reads hidden is refused before any input is sent. Keyboard input (`type_text`)
+reached a hidden page without it in a windowed Chrome on Linux, so typing is
+not wrapped.
+
 ### The native helper: `strad-hostd-ax`
 
 Both computer-use servers, and the banner, go through one small Swift program

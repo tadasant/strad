@@ -5,7 +5,7 @@ import { z } from "zod";
 
 import type { ExtensionBridge } from "../browser/bridge.js";
 import { BrowserSession } from "../browser/session.js";
-import { clickSelector } from "../browser/tools.js";
+import { clickSelector, HIDDEN_TAB_CLICK } from "../browser/tools.js";
 import type { Config } from "../config.js";
 import type { Grant } from "../consent/grants.js";
 import { defineTool, json, text, type Capability } from "../mcp/tool.js";
@@ -46,6 +46,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 interface Candidate {
   selector: string;
   token: string;
+}
+
+/** Why a capture's click did not happen. Nothing was clicked, so nothing was captured. */
+function notClicked(reason: "no-match" | "hidden", selector: string): string {
+  return reason === "hidden"
+    ? `${HIDDEN_TAB_CLICK} Nothing was captured.`
+    : `No element matches ${JSON.stringify(selector)}. Nothing was clicked or captured.`;
 }
 
 /** Where Chrome saves downloads. */
@@ -246,13 +253,10 @@ shape.kind is "token", "json", "pem" or "text". Check length and prefix against 
             );
         if (a.click_selector) {
           const clicked = await clickSelector(s, a.tab_id, a.click_selector);
-          if (!clicked) {
+          if (!clicked.clicked) {
             // Nothing was clicked, so the page is as readable as it was.
             if (!wasTainted) vault.untaint(a.tab_id);
-            return text(
-              `No element matches ${JSON.stringify(a.click_selector)}. Nothing was clicked or captured.`,
-              true,
-            );
+            return text(notClicked(clicked.reason, a.click_selector), true);
           }
         }
 
@@ -398,12 +402,9 @@ While this runs the shell server is refused, so nothing can read the file in the
         const before = settledFiles(dir);
         const started = Date.now();
         const clicked = await clickSelector(s, a.tab_id, a.click_selector);
-        if (!clicked) {
+        if (!clicked.clicked) {
           if (!wasTainted) vault.untaint(a.tab_id);
-          return text(
-            `No element matches ${JSON.stringify(a.click_selector)}. Nothing was clicked or captured.`,
-            true,
-          );
+          return text(notClicked(clicked.reason, a.click_selector), true);
         }
         const deadline = started + a.wait_seconds * 1000;
         let found: string | undefined;

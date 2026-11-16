@@ -226,6 +226,21 @@ download events; a value that reached the model in some way the filter does
 not cover is not caught; and the macOS halves have run only on the owner's
 Mac, not in CI.
 
+**Background tabs.** A capture is meant to run in a background tab, so it
+never takes the owner's focus. Chrome does not deliver DevTools mouse input to
+a hidden page: `mouseMoved` never answers, and the page's click listener never
+fires. That is why the first background-tab captures on the owner's Mac timed
+out after 30 seconds. hostd works around it by wrapping each click in
+`Emulation.setFocusEmulationEnabled`. For that one click, the page sees itself
+as visible and focused, and the click arrives with `isTrusted: true`. The tab
+does not come forward, and emulation is switched off as soon as the click is
+sent. A page that checks `document.visibilityState` during the click sees
+`visible`. If the page still reads hidden under emulation, hostd sends no input
+and the call fails at once: "The tab is hidden … Bring the tab to the front".
+The taint is lifted, because nothing was clicked. Emulation is for the click only: once it is sent, the page gets `blur` and reads `hidden` again. A provider that closes its reveal dialog on blur, or puts the token only on the clipboard, can still defeat a background capture. Bring that tab forward with the browser server's `activate_tab` and capture there. The fix has been tested
+against a windowed Chrome on Linux. It has not yet been tested on the owner's
+Mac or through the extension route.
+
 ## Not built yet
 
 - **A CI caller.** A second kind of caller with its own bearer and its own
