@@ -247,8 +247,14 @@ recording the screen. That is macOS's rule for every capture that skips its
 picker, and there is no setting for it.
 
 While a grant is live the helper shows a banner at the top of the screen and a
-menu-bar item, each with Kill and Disable buttons. A foreground (`computer`)
-grant is red and ends on your first key or click.
+menu-bar item, each with a Kill button (and, except on the banner's sliver, a
+Disable button). A foreground (`computer`) grant is red and ends on your first
+key or click. The banner has three sizes —
+a sliver with a count and Kill, a compact strip with each grant's server,
+claimed session, purpose and current call, and a details view adding timing,
+commands left running and the last five calls — and remembers the one you
+picked (`defaults read strad-hostd-ax bannerMode`). Call text is scrubbed of
+obvious secrets before it is drawn, and typed text is shown only as its length.
 
 ### The Messages helper (macOS): `strad-hostd-messages`
 

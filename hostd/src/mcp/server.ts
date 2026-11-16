@@ -9,6 +9,7 @@ import {
 import type { AuditLog } from "../audit.js";
 import { CAPABILITIES, type CapabilityId } from "../capabilities.js";
 import { displayName, onTimeoutFor, type Config } from "../config.js";
+import { screenText } from "../consent/display.js";
 import type { ConsentGate } from "../consent/gate.js";
 import {
   custodyAfter,
@@ -29,6 +30,11 @@ const PURPOSE_DESCRIPTION =
   "dialog, to the person sitting at the machine, who has a few seconds to reject it — so say concretely what you " +
   'are about to do, e.g. "Find the Q3 invoice PDFs in ~/Documents and report their file names." ' +
   "A vague, missing or over-long purpose is refused.";
+
+const SESSION_DESCRIPTION =
+  "Optional. The session you are acting for, so the owner can tell whose work this is: its URL (https only, e.g. " +
+  '"https://zimmer.example.com/sessions/1234"), or an id or short title. Shown on the machine\'s on-screen banner, ' +
+  "linked when it is an https URL. It is your claim, labelled as one, and grants nothing.";
 
 const MINUTES_DESCRIPTION =
   "How long the grant should last, in minutes. Defaults to the machine's setting (30 unless its owner changed it) " +
@@ -102,6 +108,7 @@ The owner can see your grant and kill it at any moment; a killed grant stops wha
         type: "object",
         properties: {
           purpose: { type: "string", description: PURPOSE_DESCRIPTION },
+          session: { type: "string", description: SESSION_DESCRIPTION },
           minutes: {
             type: "integer",
             description: MINUTES_DESCRIPTION,
@@ -236,6 +243,7 @@ Idempotent: ending a grant that is already gone returns {"ended":false}.`,
           server: caller,
           purpose: args.purpose,
           minutes: typeof args.minutes === "number" ? args.minutes : undefined,
+          session: args.session,
           signal: extra.signal,
         });
         if (!decision.ok)
@@ -341,18 +349,22 @@ Idempotent: ending a grant that is already gone returns {"ended":false}.`,
         });
         return text(held, true);
       }
+      const detail = def.summarize ? def.summarize(parsed.data) : tool;
       audit.record({
         kind: "tool",
         capability: id,
         grantId: used.grant.id,
-        detail: def.summarize ? def.summarize(parsed.data) : tool,
+        detail,
       });
+      // The banner's "now" line: display only, scrubbed for the screen.
+      const done = gate.grants.begin(used.grant.id, tool, screenText(detail));
       let result: CallToolResult;
       try {
         result = await def.handler(parsed.data, { grant: used.grant });
       } catch (err) {
         result = text(`${tool} failed: ${(err as Error).message}`, true);
       }
+      done(!result.isError);
       if (!vault) return result;
       // THE ONE RETURN POINT. Whatever a tool produced — a page, a command's
       // output, an error carrying a page's text — is checked against every

@@ -5,6 +5,7 @@ import type { KillSwitch } from "../killswitch.js";
 import { GrantStore, type Grant } from "./grants.js";
 import type { Notifier } from "./notifier.js";
 import type { Prompter } from "./prompter.js";
+import { normalizeSession } from "./display.js";
 import { normalizePurpose } from "./purpose.js";
 
 export type GateDecision =
@@ -115,6 +116,8 @@ export class ConsentGate {
     server: string;
     purpose: unknown;
     minutes?: number;
+    /** The caller's optional claim of the session it acts for. Display only. */
+    session?: unknown;
     signal?: AbortSignal;
   }): Promise<GateDecision> {
     const { config, killSwitch, audit, prompter } = this.deps;
@@ -235,17 +238,21 @@ export class ConsentGate {
       Math.max(1, Math.floor(input.minutes ?? consent.grantMinutes)),
       consent.maxGrantMinutes,
     );
+    const session = normalizeSession(input.session);
     const grant = this.grants.create({
       capability: input.capability,
       server: input.server,
       purpose: purpose.purpose,
       ttlMs: minutes * 60_000,
+      session,
     });
     audit.record({
       kind: "granted",
       capability: input.capability,
       grantId: grant.id,
-      detail: `${how}, ${minutes} min: ${purpose.purpose}`,
+      detail: `${how}, ${minutes} min: ${purpose.purpose}${
+        session ? ` (for ${session.url ?? session.label})` : ""
+      }`,
     });
     this.deps.notifier?.notify(
       `${input.server} has control of ${config.machine}`,

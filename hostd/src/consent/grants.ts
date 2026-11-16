@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import type { CapabilityId } from "../capabilities.js";
+import type { SessionClaim } from "./display.js";
 
 export type EndReason =
   | "ended"
@@ -21,7 +22,28 @@ export interface GrantView {
   lastUsedAt: number;
   calls: number;
   lastTool?: string;
+  /** The session the caller says it acts for. A claim, shown as one; it authorizes nothing. */
+  session?: SessionClaim;
+  /** The tool calls running under this grant right now, oldest first. */
+  inFlight: CallView[];
+  /** The last few finished calls, newest first. */
+  recent: FinishedCall[];
 }
+
+/** One tool call, as the owner's screen shows it. `summary` is already scrubbed. */
+export interface CallView {
+  tool: string;
+  summary: string;
+  startedAt: number;
+}
+
+export interface FinishedCall extends CallView {
+  endedAt: number;
+  ok: boolean;
+}
+
+/** How many finished calls a grant remembers for the banner. */
+export const RECENT_CALLS = 5;
 
 export interface Grant extends GrantView {
   /**
@@ -34,6 +56,7 @@ export interface Grant extends GrantView {
 
 interface Held extends Grant {
   controller: AbortController;
+  running: Map<number, CallView>;
 }
 
 /**
@@ -43,6 +66,7 @@ interface Held extends Grant {
  */
 export class GrantStore {
   private readonly grants = new Map<string, Held>();
+  private callSeq = 0;
 
   constructor(
     private readonly opts: {
@@ -63,6 +87,7 @@ export class GrantStore {
     server: string;
     purpose: string;
     ttlMs: number;
+    session?: SessionClaim;
   }): Grant {
     const controller = new AbortController();
     const now = this.now();
@@ -75,8 +100,12 @@ export class GrantStore {
       expiresAt: now + input.ttlMs,
       lastUsedAt: now,
       calls: 0,
+      ...(input.session ? { session: input.session } : {}),
+      inFlight: [],
+      recent: [],
       controller,
       signal: controller.signal,
+      running: new Map(),
     };
     this.grants.set(grant.id, grant);
     this.opts.onChange?.();
@@ -108,6 +137,27 @@ export class GrantStore {
     grant.calls += 1;
     grant.lastTool = tool;
     return { ok: true, grant };
+  }
+
+  /**
+   * A call under this grant started; the returned function says it finished.
+   * Display only — the banner's "now" and "recent" lines. It decides nothing:
+   * `use` has already allowed the call, and a grant that ends meanwhile just
+   * forgets it.
+   */
+  begin(id: string, tool: string, summary: string): (ok: boolean) => void {
+    const grant = this.grants.get(id);
+    if (!grant) return () => {};
+    const seq = ++this.callSeq;
+    const call: CallView = { tool, summary, startedAt: this.now() };
+    grant.running.set(seq, call);
+    this.opts.onChange?.();
+    return (ok) => {
+      if (!grant.running.delete(seq)) return;
+      grant.recent.unshift({ ...call, endedAt: this.now(), ok });
+      grant.recent.length = Math.min(grant.recent.length, RECENT_CALLS);
+      if (this.grants.has(id)) this.opts.onChange?.();
+    };
   }
 
   end(id: string, reason: EndReason): boolean {
@@ -144,6 +194,6 @@ export class GrantStore {
 }
 
 function view(g: Held): GrantView {
-  const { controller: _c, signal: _s, ...rest } = g;
-  return rest;
+  const { controller: _c, signal: _s, running, recent, ...rest } = g;
+  return { ...rest, inFlight: [...running.values()], recent: [...recent] };
 }

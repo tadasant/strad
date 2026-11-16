@@ -4519,3 +4519,22 @@ If the account's address cannot be read, the answer has no link. The draft is
 still saved.
 
 See `HACKS.md` #142.
+
+### 143. The hostd banner's session is the caller's claim, and its call text is scrubbed by heuristic
+
+[strad-hostd's banner](/servers/hostd/#see-it-stop-it-turn-it-off) shows the
+session a grant says it acts for and the call it is running. Nothing strad
+forwards identifies the caller, so the session is whatever the caller passed
+to `request_control`'s optional `session`, drawn as `says it's for: …` with the
+link's host in the label. Only an https URL becomes a link, and it authorizes
+nothing.
+
+The call text is scrubbed of obvious secrets (headers, credential-named pairs
+and flags, URL userinfo, known token prefixes, JWTs, private keys, long opaque
+runs) and capped, and typed text is shown as its length. A password passed as
+a plain word in a shell command is still shown, and some harmless long tokens
+are redacted. The banner appears in a foreground grant's screenshots, so a
+screenshot carries every grant's purpose, session and current call (more with
+**Details** open). The audit log on the machine keeps the full summary.
+
+See `HACKS.md` #143.

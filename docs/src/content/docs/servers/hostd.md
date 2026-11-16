@@ -303,7 +303,13 @@ Every server starts the same way:
    on the machine and the call blocks for up to ten seconds. Only a mouse
    click on **Allow**, **Reject** or **Disallow and cool down** answers it: no
    key does, so someone typing in another app when it appears cannot decide it
-   by accident.
+   by accident. Pass the optional `session` too — the URL of the session you
+   act for (`https://…/sessions/1234`), or an id or title — and the banner
+   says whose work this is, as `says it's for: zimmer.example.com · session
+   1234 ↗`, linked only when it is an https URL (its query and fragment are
+   dropped, and the host is always in the label). It is the caller's own
+   claim, shown as one: nothing on the wire carries who is calling, and it
+   grants nothing.
 2. Pass the returned `grant_id` to every other tool.
 3. `end_control` when done.
 
@@ -414,11 +420,35 @@ so, its banner is red, and your first key or click ends the grant.
 The machine posts a notification when a grant starts and when it ends, naming
 the server and the purpose. With the helper installed, a banner also sits at
 the top of the screen for the life of every grant, on every Space and above
-every window, naming the server and the purpose, with **Kill** and **Disable
-everything** buttons, and the menu bar shows the same state with the same
-buttons. Orange means background control (shell, browser, Accessibility, Messages); red
-means the mouse and keyboard are taken, and any key or click you make ends
-that grant. The daemon re-sends the banner's state every two seconds, so a
+every window. Orange means background control (shell, browser, Accessibility,
+Messages); red means the mouse and keyboard are taken, and any key or click you
+make ends that grant. It has three sizes, and the helper remembers the one you
+picked for the next grant:
+
+| Size | What it shows |
+| --- | --- |
+| **Sliver** (**Minimize**) | a fixed-width pill: how many grants, the tool running now, **Show** (back to the size you left) and **Kill** |
+| **Compact** (the default) | each grant's server, the session it says it acts for, its whole purpose, and ONE line for what it is doing — `▶ run_command: npm test — running 12s`, plus how many more calls or left-running commands there are — with **Details**, **Minimize**, **Kill** and **Disable everything**, and a **Kill** per grant when there is more than one |
+| **Details** | adds, per grant, when it started, when it expires and how many calls it has made, up to three calls in flight and three shell commands still running after the call that started them returned (with the count of any more), the last five calls with ✓ or ✗ and how long each took, and a **Kill** per grant |
+
+**Kill** is on all three. The menu bar carries the same state: a Kill per
+grant with its session and current call, and the three sizes. The text of a
+call is caller-authored, so before it reaches the screen the daemon scrubs
+the obvious secrets — `Authorization` and cookie headers, `password=`-shaped
+pairs, credential-looking flags, `curl -u` passwords, URL userinfo,
+well-known token prefixes, JWTs, private keys, long opaque runs — and caps it
+at 240 characters. Text typed or set into a field (`type_text`, `set_value`)
+is shown only as its length. That is a heuristic: a password passed as a bare
+word in a shell command is shown as written. The audit log keeps the
+unscrubbed summary, on the machine. The banner is part of the screen, so a
+screenshot a foreground grant takes includes it: in compact that is every
+grant's purpose, session and current call, and in **Details** the rest. In
+compact the banner's height changes only when a grant starts or ends, not per
+call; it is still taller than a single line, and **Minimize** is the size that
+stays out of a foreground grant's way.
+
+The daemon re-sends the banner's state every two seconds, and whenever a call
+starts or finishes, so a
 helper that restarts redraws it on the next tick, and the helper acts for one
 connection only: it refuses to read a tree, capture the screen or post input
 unless the daemon that reported the grants is the one asking, and unless a

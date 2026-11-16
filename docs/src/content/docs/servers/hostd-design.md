@@ -503,7 +503,17 @@ Two consequences shaped it, and the second changed the original design.
 
 The protocol is newline-delimited JSON: `{id, op, args}` in, `{id, ok, result}`
 or `{id, ok:false, error:{code,message}}` out, and lines with an `event` and no
-`id` from the helper when the person at the machine presses a button. Input
+`id` from the helper when the person at the machine presses a button. The
+banner's state is one idempotent `set_state`: each grant's id, server,
+purpose and mode, when it started and expires, its call count, the session
+its caller claimed in `request_control` (a label, and a link only when it is
+https — the helper checks the scheme again before it opens anything), the
+calls in flight and the shell commands it left running (the oldest three of
+each, with their totals), and its last five calls.
+The call text is the tool's own audit summary, scrubbed for the screen by
+`hostd/src/consent/display.ts`. None of it is read by `Banner.authorize`, which
+still asks only whether the connection is the controller and whether a grant,
+or a foreground grant, is in force. Input
 and the banner run on the helper's main thread, which AppKit needs; reading an
 Accessibility tree and capturing the screen run on a serial queue of their own,
 so a stuck app cannot freeze the Kill button. `hello` reports the two grants, and the
