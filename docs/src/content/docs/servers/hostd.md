@@ -9,8 +9,8 @@ open, a computer-use server that operates apps through macOS Accessibility
 without touching your mouse, a computer-use server that sees the screen and
 drives the real mouse and keyboard, and a read-only Messages server that reads
 your iMessage and SMS history. A sixth, `custody`, is opt-in: it captures a
-credential in your browser and deposits it into strad without the agent ever
-seeing it ([custody and deposit](/servers/hostd-custody/)). strad reaches them as
+credential in your browser, or generates an SSH key, and deposits it into
+strad without the agent ever seeing it ([custody and deposit](/servers/hostd-custody/)). strad reaches them as
 [`kind: local-tunnel`](/servers/local-tunnel-host/) slugs.
 [The design page](/servers/hostd-design/) has the reasoning. To run it on any
 machine with no tunnel, read `hostd/README.md`.

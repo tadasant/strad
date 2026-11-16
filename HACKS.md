@@ -7399,8 +7399,16 @@ a tool that never returns the value. Design: Zimmer session 27977.
   a caller can do is bounded by the route: create a secret parameter that does
   not exist and does not resolve in any layer for that slug, not in a `url:`,
   not a process-control name, not on a `local-tunnel`, and on a `params: true`
-  slug only if `into:` names it. Keeping the key where the shell server cannot
-  read it (a Keychain item behind the helper) is the follow-up that closes it.
+  slug only if `into:` names it or `paramsVariables:` names the exact slug and
+  variable. A listed pair is a new environment variable on that container,
+  which is why it is one name at a time and never a process-control name.
+  Keeping the key where the shell server cannot read it (a Keychain item behind
+  the helper) is the follow-up that closes it.
+- **A generated keypair is only as private as a captured token.**
+  `generate_keypair` mints an ed25519 key in the daemon and holds the private
+  half like a capture; its bytes pass through JavaScript strings (the OpenSSH
+  encoding, the match forms) that cannot be zeroed. The public half is returned
+  and is meant to travel. Only ed25519, unencrypted.
 - **The macOS halves are untested in CI.** The suite drives a real headless
   Chromium on Linux against a fake strad; the owner's Chrome, the extension
   route and a real provider page have not been exercised by anything but the

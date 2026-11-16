@@ -45,6 +45,7 @@ strad.
 | `click_and_capture` | Taints the tab, clicks, and captures the value that appears. Returns a handle and a shape.                         |
 | `capture_download`  | Clicks a download, reads the new file from the Downloads folder into a handle, and deletes the file.               |
 | `release_tab`       | Navigates a tainted tab to `about:blank` and lifts its taint.                                                      |
+| `generate_keypair`  | Generates an ed25519 SSH keypair. Holds the private key as a handle; returns the public key and its fingerprint.  |
 | `list_handles`      | This grant's handles: held, deposited (with path and version), discarded, burned or expired.                       |
 | `discard_handle`    | Drops a handle and zeroes its bytes.                                                                               |
 | `deposit`           | Posts a handle's value to strad as `/strad/<env>/mcp/<slug>/static/<VARIABLE>`. Returns the path and the version.  |
@@ -61,6 +62,33 @@ credential-shaped string the click produced: 16 or more printable characters,
 letters and digits, no spaces, not a URL. If several appear it keeps none and
 returns their selectors, so the next call can name one. Navigation to the
 provider's page is the browser server's job, as before.
+
+### Generating a key instead of capturing one
+
+Some credentials are not shown on any page. strad's [SSH server](/servers/ssh/)
+logs in with a private key, and its public half has to be installed on the
+host. `generate_keypair` makes that key inside custody:
+
+```text
+generate_keypair(comment: "strad ssh-example-staging", label: "staging login key")
+→ {"handle":"h_…","shape":{"kind":"pem","length":411,"lines":7},
+   "key_type":"ed25519",
+   "public_key":"ssh-ed25519 AAAAC3Nza… strad ssh-example-staging",
+   "fingerprint":"SHA256:…"}
+```
+
+The private key is an unencrypted OpenSSH `ed25519` key, the same thing
+`ssh-keygen -t ed25519 -N ''` writes. It goes straight into the vault and is
+held exactly like a captured value: the same hold, the same egress filter, the
+same expiry, ended by `discard_handle` or the grant, burned if it shows up in
+a result or an argument. It is refused while a shell command is running, for
+the same reason a capture is. No tab is involved, so nothing is tainted.
+
+The public key and fingerprint are public and meant to travel. Deposit the
+handle (for an SSH slug, as `SSH_PRIVATE_KEY`), and put `public_key` in the
+host's `authorized_keys`, or in whatever installs it there. The filter only
+matches the private key's forms, so the public line passes through results
+and arguments untouched. Only `ed25519` is offered.
 
 ## What hostd enforces
 
@@ -138,9 +166,13 @@ tainted.
     `NODE_*`, `LD_*`, `DYLD_*`, `STRAD_*`, `OTEL_*`, the `*_PROXY` names, `PATH`
     and similar.
   - A slug that is itself a `local-tunnel` machine, whose keys a human places.
-  - A `params: true` slug, unless the caller names it in `deposit.into:`. Such a
+  - A `params: true` slug, unless the caller names it in `deposit.into:` or
+    names that exact slug and variable in `deposit.paramsVariables:`. Such a
     slug loads its whole namespace into its container's environment, so a
-    deposit there is a new environment variable on a container.
+    deposit there is a new environment variable on a container. A
+    `paramsVariables:` pair grants exactly one name. It still meets every
+    other refusal on this list, so it can never be a `STRAD_*`, `NODE_*` or
+    proxy name.
 - **One namespace.** The path is always `/strad/<env>/mcp/<slug>/static/<VAR>`,
   built from the literal `static` kind and two shape-checked segments. No
   spelling reaches a gateway name or `oauth/`.
@@ -188,10 +220,17 @@ Turn it on in the checked-in config:
     Authorization: "Bearer ${HOSTD_CUSTODY_KEY}"
   deposit:
     into: [linear, granola] # optional; omitted, any slug
+    paramsVariables: # optional; exact pairs on params: true slugs
+      ssh-example-staging: [SSH_PRIVATE_KEY]
 ```
 
 - The `Authorization` header must be exactly `Bearer ${NAME}`. The schema
   refuses `deposit:` otherwise.
+- `into:` narrows the slugs the machine may deposit into. `paramsVariables:`
+  only widens: each entry lets one `params: true` slug take one named variable,
+  even if `into:` leaves the slug out, and it changes nothing for any other
+  slug. The schema refuses a listed slug that is not `params: true`, and a
+  listed name the route would refuse anyway. A listed slug that does not exist grants nothing.
 - `deposit:` is honoured from the **checked-in** config only. A runtime
   roster write that adds or changes it is refused.
 - **To revoke it,** remove the `deposit:` block (a deploy), or rotate the

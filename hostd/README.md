@@ -9,7 +9,7 @@ MCP servers that operate the machine they run on.
 | `computer-headless` | `list_apps`, `read_ui_tree`, `find_elements`, `get_element`, `perform_action`, `set_value`, `read_text`                                               |
 | `computer`          | `take_screenshot`, `list_displays`, `click`, `move_mouse`, `drag`, `scroll`, `type_text`, `press_keys`                                                |
 | `messages`          | `imessage_list_chats`, `imessage_get_messages`, `imessage_get_attachment`                                                                             |
-| `custody`           | `list_tabs`, `click_and_capture`, `capture_download`, `release_tab`, `list_handles`, `discard_handle`, `deposit`                                      |
+| `custody`           | `list_tabs`, `click_and_capture`, `capture_download`, `release_tab`, `generate_keypair`, `list_handles`, `discard_handle`, `deposit`                  |
 
 The two `computer-*` servers are macOS only and need the native helper below.
 `computer-headless` works through the Accessibility tree and never touches the
