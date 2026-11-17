@@ -335,14 +335,14 @@ export function pageArgs(raw: Record<string, unknown>): {
 /**
  * Appended to every tool that can take a running machine down or lose data.
  * A Hetzner token reaches a whole project, and the project strad's deployment
- * points this server at is not one person's: it holds the CI runners PulseMCP's
- * production pipelines run on, which tadasant shares as a guest. A mistake
- * here stops other people's work, so every such tool says so where the agent
- * reads it — the description — and not only in a README.
+ * points this server at holds one machine: the CI runner box that runs
+ * PulseMCP's production CI runners and tadasant's. A mistake here stops other
+ * people's work, so every such tool says so where the agent reads it — the
+ * description — and not only in a README.
  */
 export const BLAST_RADIUS =
   "\n\nBLAST RADIUS: a token reaches its whole Hetzner project, and a project " +
   "can hold machines other people depend on — in strad's deployment, the CI " +
-  "runners PulseMCP's production pipelines run on, shared with tadasant. " +
-  "Taking one down stops every job on it, for both. Confirm the id with a " +
-  "read first and say what you are about to do before you do it.";
+  "runner box that runs PulseMCP's production pipelines and tadasant's. " +
+  "Taking it down stops every job on it, for both. Confirm the id " +
+  "with a read first and say what you are about to do before you do it.";

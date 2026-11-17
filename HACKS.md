@@ -7515,16 +7515,18 @@ is written against the Cloud API.
    `HCLOUD_TOKEN`. So the token is Read & Write, and the gateway's `tools:`
    allow list is the only thing keeping `-ro` read-only — the same trade as
    #22, and as DigitalOcean in #119.
-3. **The project is shared.** It holds the CI runners PulseMCP owns and operates
-   and tadasant uses as a guest, so `-rw`'s blast radius is other people's
-   production CI. The fences are in the tool surface, not the credential: every
-   tool that can take a box down says so in its description, no tool can lift
-   Hetzner's delete or rebuild protection, `set_firewall_rules` refuses an empty
-   rule set without `clear_all`, and `create_server` refuses to run without an
-   SSH key. Those are ALL the fences. No call is held for a human's
-   confirmation (strad's `confirmations:` channel is not wired to this tree),
-   and Hetzner's protection guards only delete and rebuild, and only on a box a
-   human switched it on for: `power_server` `poweroff` / `reset`, the firewall
+3. **The box is shared.** Hetzner issues tokens per project, and this token's
+   project, `pulsemcp-ci`, holds one server: `ci-runner-2`, the CI runner box
+   that runs PulseMCP's production CI runners and tadasant's. So `-rw`'s blast
+   radius is that box, other people's production CI included. The fences are in
+   the tool surface, not the credential: every tool that can take a box down
+   says so in its description, no tool can lift Hetzner's delete or rebuild
+   protection, `set_firewall_rules` refuses an empty rule set without
+   `clear_all`, and `create_server` refuses to run without an SSH key. Those
+   are ALL the fences. No call is held for a human's confirmation (strad's
+   `confirmations:` channel is not wired to this tree), and Hetzner's
+   protection guards only delete and rebuild, and only on a box a human
+   switched it on for: `power_server` `poweroff` / `reset`, the firewall
    writes and `detach_volume` act the moment they are called. `create_server`
    with `network_ids` and `user_data` boots code of the caller's choosing
    inside that project's private network.
@@ -7532,7 +7534,7 @@ is written against the Cloud API.
    per-slug copies land in the bundle container's one `process.env`, which the
    eleven vendored trees that read `process.env` directly can see — the same as
    every other bundle credential (#56), but here the credential reaches a
-   project another company runs production on.
+   box another company runs production CI on.
 5. **Root passwords are redacted by field name.** `create_server` and
    `rebuild_server` can return a generated `root_password`; every result is
    walked and credential-named fields become `[redacted]`

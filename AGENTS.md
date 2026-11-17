@@ -424,11 +424,11 @@ slop behind when you fix a stale fact.
   have met only fakes — `HACKS.md` #119.
 - `servers/hetzner/` — strad's own Hetzner Cloud server, behind `hetzner-pulse-ro`
   and `hetzner-pulse-rw` on one mount and one `HCLOUD_TOKEN`. Hetzner publishes
-  no MCP server, so it is written against the Cloud API. The project it reaches
-  holds PulseMCP's production CI runners, so every tool that can take a box down
-  says so in its description, nothing here can lift delete or rebuild
-  protection, and no result carries a root password. Met only fakes —
-  `HACKS.md` #145.
+  no MCP server, so it is written against the Cloud API. Its token's project
+  holds one box, the CI runner that runs PulseMCP's production CI and tadasant's,
+  so every tool that can take it down says so in its description, nothing here
+  can lift delete or rebuild protection, and no result carries a root password.
+  Met only fakes — `HACKS.md` #145.
 - `servers/image-tools/` — strad's own `image-diff` and `svg-tracer`, two
   mounts over one tree, replacing two npx packages that read the agent's disk.
   Inputs are URLs, fetched behind an SSRF guard at the connector (derived from

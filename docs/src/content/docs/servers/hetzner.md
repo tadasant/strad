@@ -10,8 +10,10 @@ read-only, and both must resolve the same `HCLOUD_TOKEN`: seed it at
 `/strad/{env}/mcp/{slug}/static/HCLOUD_TOKEN` under each slug, through the
 console's `/ui/secrets`. Staging ships both `enabled: false` until then.
 
-"Pulse" names the Hetzner project the slugs reach, not who owns the server: that
-project holds the CI runners PulseMCP owns and operates and tadasant shares.
+The slugs cover the CI runner box: `ci-runner-2`, which runs PulseMCP's
+production CI runners and tadasant's. Hetzner issues API tokens per project,
+and the token's project, `pulsemcp-ci` ("pulse" in the slug), holds no other
+server.
 
 strad's server for a Hetzner Cloud project: servers and their power, metrics
 and actions; the images, types and locations they are built from; and the
@@ -54,10 +56,10 @@ for `-rw`, so the gateway's per-slug `tools:` policy is the only thing keeping
 
 ## Blast radius
 
-A token reaches its whole project, and strad's `hetzner-pulse-*` slugs point at
-a project that is not one person's: it holds the CI runners PulseMCP owns and
-operates, which tadasant shares as a guest. A mistake on `-rw` stops other
-people's production CI. So:
+A token reaches its whole project. strad's `hetzner-pulse-*` slugs reach the
+`pulsemcp-ci` project, whose one server is the CI runner box that runs
+PulseMCP's production CI runners and tadasant's. A mistake on `-rw` stops every
+pipeline on that box, other people's production CI included. So:
 
 - every tool that can take a machine down or lose data ends its description
   with a **BLAST RADIUS** paragraph saying so, where the agent reads it;

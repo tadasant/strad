@@ -41,10 +41,10 @@ for `-rw`, so the gateway's per-slug `tools:` policy is the only thing keeping
 
 ## Blast radius
 
-A token reaches its whole project, and strad's `hetzner-pulse-*` slugs point at
-a project that is not one person's: it holds the CI runners PulseMCP owns and
-operates, which tadasant shares as a guest. A mistake on `-rw` stops other
-people's production CI. So:
+A token reaches its whole project. strad's `hetzner-pulse-*` slugs reach the
+`pulsemcp-ci` project, whose one server is the CI runner box that runs
+PulseMCP's production CI runners and tadasant's. A mistake on `-rw` stops every
+pipeline on that box, other people's production CI included. So:
 
 - every tool that can take a machine down or lose data ends its description
   with a **BLAST RADIUS** paragraph saying so, where the agent reads it;

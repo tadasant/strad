@@ -323,7 +323,7 @@ describe("tools/list", () => {
     }
   });
 
-  it("names the shared project's blast radius on every tool that can take a machine down", async () => {
+  it("names the shared CI runner box's blast radius on every tool that can take a machine down", async () => {
     const { client } = await harness();
     for (const tool of (await client.listTools()).tools) {
       expect(
