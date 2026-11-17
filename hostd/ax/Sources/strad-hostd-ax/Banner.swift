@@ -93,8 +93,15 @@ final class Banner: NSObject {
     }
 
     private static let modeKey = "bannerMode"
-    /// What Show goes back to from the sliver.
+    /// What Show goes back to from the sliver or the menu bar.
     private static let openModeKey = "bannerOpenMode"
+    /// `always`, `never`, or `auto` (the default: animate unless the owner has
+    /// Reduce motion on). `defaults write strad-hostd-ax statusIconAnimation never`.
+    private static let animationKey = "statusIconAnimation"
+
+    enum Animation: String {
+        case auto, always, never
+    }
 
     private var grants: [GrantRow] = []
     private var disabled = false
@@ -128,6 +135,18 @@ final class Banner: NSObject {
 
     var isEmpty: Bool { grants.isEmpty }
 
+    private var animation: Animation {
+        Animation(rawValue: UserDefaults.standard.string(forKey: Banner.animationKey) ?? "") ?? .auto
+    }
+
+    private var mayAnimate: Bool {
+        switch animation {
+        case .always: return true
+        case .never: return false
+        case .auto: return !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        }
+    }
+
     /// A call is running, or a command one started still is.
     var isActive: Bool { grants.contains { $0.inFlightCount > 0 || $0.backgroundCount > 0 } }
 
@@ -138,7 +157,9 @@ final class Banner: NSObject {
             "mode": mode.rawValue,
             "panel_visible": panel?.isVisible ?? false,
             "animating": animator != nil,
+            "animation": animation.rawValue,
             "reduce_motion": NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+            "open_mode": UserDefaults.standard.string(forKey: Banner.openModeKey) ?? Mode.compact.rawValue,
             "icon": iconName,
         ]
     }
@@ -179,6 +200,9 @@ final class Banner: NSObject {
             throw HelperError(code: "busy", message: "another connection already controls this helper; it is released when that connection closes")
         }
         controller = channel
+        // Re-read on each push, so a `defaults write` lands within a tick
+        // rather than on the helper's next restart.
+        if let stored = Mode(rawValue: UserDefaults.standard.string(forKey: Banner.modeKey) ?? "") { mode = stored }
         disabled = args.bool("disabled", default: false)
         controlUrl = args.string("control_url")
         grants = ((args.raw["grants"] as? [[String: Any]]) ?? []).compactMap { g in
@@ -261,12 +285,10 @@ final class Banner: NSObject {
 
     /// Set the size from the daemon (or the smoke test), as a menu pick would.
     func applyMode(_ args: Args) throws {
-        if let raw = args.string("mode") {
-            guard let m = Mode(rawValue: raw) else {
-                throw HelperError(code: "bad_args", message: "mode must be one of sliver, compact, expanded, menubar")
-            }
-            setMode(m)
+        guard let m = Mode(rawValue: try args.requireString("mode")) else {
+            throw HelperError(code: "bad_args", message: "mode must be one of sliver, compact, expanded, menubar")
         }
+        setMode(m)
     }
 
     private func showPanel(foreground: Bool) {
@@ -640,8 +662,8 @@ final class Banner: NSObject {
     private func renderStatusItem(foreground: Bool) {
         guard let item = statusItem else { return }
         item.button?.title = grants.isEmpty || disabled ? "" : " \(grants.count)"
-        item.button?.contentTintColor = grants.isEmpty ? nil : (foreground ? .systemRed : .systemOrange)
-        if !disabled && !grants.isEmpty && isActive && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        item.button?.contentTintColor = grants.isEmpty || disabled ? nil : (foreground ? .systemRed : .systemOrange)
+        if !disabled && !grants.isEmpty && isActive && mayAnimate {
             startAnimating(foreground: foreground)
         } else {
             stopAnimating()
@@ -654,7 +676,7 @@ final class Banner: NSObject {
         let head = NSMenuItem(title: disabled ? "strad-hostd: remote control is OFF" : "strad-hostd: remote control is on", action: nil, keyEquivalent: "")
         head.isEnabled = false
         menu.addItem(head)
-        if !grants.isEmpty && !mode.isOpen {
+        if !grants.isEmpty && mode == .menubar {
             let show = NSMenuItem(title: "Show banner", action: #selector(restoreTapped), keyEquivalent: "")
             show.target = self
             menu.addItem(show)
@@ -775,7 +797,7 @@ final class Banner: NSObject {
     }
 
     @objc private func minimizeTapped() {
-        setMode(.sliver)
+        setMode(.menubar)
     }
 
     @objc private func restoreTapped() {

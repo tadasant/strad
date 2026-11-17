@@ -106,7 +106,11 @@ jobs:
         run: .build/release/strad-hostd-ax --status
       - name: Smoke over stdio
         working-directory: hostd/ax
-        run: node smoke.mjs .build/release/strad-hostd-ax
+        # The runner has Reduce motion on, which would skip the menu-bar
+        # icon's animation; `always` makes the smoke test drive it.
+        run: |
+          defaults write strad-hostd-ax statusIconAnimation always
+          SMOKE_REQUIRE_ANIMATION=1 node smoke.mjs .build/release/strad-hostd-ax
       - name: Render the menu-bar icon's stills and animation frames
         working-directory: hostd/ax
         run: .build/release/strad-hostd-ax --render-status-icons "$RUNNER_TEMP/status-icons"

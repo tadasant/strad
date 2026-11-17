@@ -521,7 +521,12 @@ purpose and mode, when it started and expires, its call count, the session
 its caller claimed in `request_control` (a label, and a link only when it is
 https — the helper checks the scheme again before it opens anything), the
 calls in flight and the shell commands it left running (the oldest three of
-each, with their totals), and its last five calls.
+each, with their totals), and its last five calls. It answers with what the
+owner can see — whether the strip is on screen, its size, and whether the
+menu-bar icon is animating — which only the smoke test reads. One more op,
+`banner_mode`, sets the size the way a menu pick does; it is controller-only,
+the daemon never sends it, and it is there so the smoke test can drive the
+put-away path.
 The call text is the tool's own audit summary, scrubbed for the screen by
 `hostd/src/consent/display.ts`. None of it is read by `Banner.authorize`, which
 still asks only whether the connection is the controller and whether a grant,

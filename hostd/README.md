@@ -256,8 +256,9 @@ commands left running and the last five calls — and **Minimize** puts it away
 into the menu bar entirely (**Show banner** in the menu brings it back). It
 remembers the pick (`defaults read strad-hostd-ax bannerMode`: `menubar`,
 `sliver`, `compact` or `expanded`). The menu-bar icon animates while a call or
-a command a call started is running, and holds still otherwise (never under
-Reduce motion). Call text is scrubbed of
+a command a call started is running, and holds still otherwise — not under
+Reduce motion, unless `defaults write strad-hostd-ax statusIconAnimation
+always` (or `never`) says otherwise. Call text is scrubbed of
 obvious secrets before it is drawn, and typed text is shown only as its length.
 
 ### The Messages helper (macOS): `strad-hostd-messages`

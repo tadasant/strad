@@ -149,6 +149,7 @@ try {
   // The owner's banner size lives in this helper's preferences, and this
   // script also runs on the owner's Mac: note it, and put it back at the end.
   const ownersMode = fg.result?.mode;
+  const ownersOpenMode = fg.result?.open_mode;
   const compact = await call("banner_mode", { mode: "compact" });
   check(
     "banner_mode compact shows the strip",
@@ -215,15 +216,27 @@ try {
     rich.ok === true && rich.result?.shown === true,
     JSON.stringify(rich.result ?? rich.error),
   );
+  // `statusIconAnimation`: always, never, or auto (animate unless Reduce
+  // motion is on). CI's runner has Reduce motion on, so the workflow sets
+  // `always` and SMOKE_REQUIRE_ANIMATION=1 makes a skipped animation a failure.
+  const shouldMove = (r) =>
+    r?.animation === "always" ||
+    (r?.animation === "auto" && r?.reduce_motion === false);
   const moving = (r) =>
-    r?.reduce_motion === true
-      ? r?.animating === false
-      : r?.animating === true && /^cursorarrow\.motionlines/.test(r?.icon);
+    shouldMove(r)
+      ? r?.animating === true && /^cursorarrow\.motionlines/.test(r?.icon)
+      : r?.animating === false;
   check(
-    "a call in flight animates the menu-bar icon (still under Reduce Motion)",
+    "a call in flight animates the menu-bar icon (unless the setting or Reduce motion says not to)",
     moving(rich.result),
     JSON.stringify(rich.result),
   );
+  if (process.env.SMOKE_REQUIRE_ANIMATION === "1")
+    check(
+      "the animation path actually ran (SMOKE_REQUIRE_ANIMATION)",
+      rich.result?.animating === true,
+      JSON.stringify(rich.result),
+    );
 
   const tucked = await call("banner_mode", { mode: "menubar" });
   check(
@@ -261,7 +274,7 @@ try {
   const back = await call("banner_mode", { mode: "compact" });
   check(
     "banner_mode compact brings the strip back",
-    back.result?.panel_visible === true,
+    back.ok === true && back.result?.panel_visible === true,
     JSON.stringify(back.result),
   );
 
@@ -304,6 +317,14 @@ try {
     );
   }
 
+  const missing = await call("banner_mode", {});
+  check(
+    "banner_mode with no mode is refused",
+    missing.ok === false && missing.error?.code === "bad_args",
+    missing.error?.code,
+  );
+  // Show's target first (an open size records it), then the size itself.
+  if (ownersOpenMode) await call("banner_mode", { mode: ownersOpenMode });
   if (ownersMode) await call("banner_mode", { mode: ownersMode });
   const cleared = await call("set_state", { disabled: false, grants: [] });
   check(

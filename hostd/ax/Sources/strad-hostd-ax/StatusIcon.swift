@@ -99,7 +99,16 @@ enum StatusIcon {
         for dark in [false, true] {
             for (setName, set, tint) in sets {
                 let path = "\(dir)/\(setName)-\(dark ? "dark" : "light").png"
-                try strip(set.map { $0.image }, tint: tint, dark: dark).write(to: URL(fileURLWithPath: path))
+                // Under the strip's own appearance, so the system tints
+                // resolve to their dark-mode shades on the dark strip.
+                var data: Data?
+                var failure: Error?
+                NSAppearance(named: dark ? .darkAqua : .aqua)?.performAsCurrentDrawingAppearance {
+                    do { data = try strip(set.map { $0.image }, tint: tint, dark: dark) } catch { failure = error }
+                }
+                if let failure = failure { throw failure }
+                guard let png = data else { throw HelperError(code: "render_failed", message: "no appearance to draw under") }
+                try png.write(to: URL(fileURLWithPath: path))
                 written.append(path)
             }
         }
