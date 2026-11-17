@@ -4580,10 +4580,11 @@ See `HACKS.md` #144.
 - **One Read & Write token for both slugs.** Hetzner tokens are Read or Read &
   Write per project and nothing finer, and the two slugs share a mount, so the
   `-ro` allow list is the only thing between it and a write.
-- **The project is shared with PulseMCP's production CI runners.** The `-rw`
-  tools that can take a box down say so in their descriptions, none can lift
-  delete or rebuild protection, and an empty firewall rule set or a server with
-  no SSH key is refused. That is all: nothing waits for a human to confirm, so
+- **The CI runner box is shared with PulseMCP's production CI runners.** The
+  slugs reach one server, `ci-runner-2`, and the `-rw` tools that can take it
+  down say so in their descriptions, none can lift delete or rebuild
+  protection, and an empty firewall rule set or a server with no SSH key is
+  refused. That is all: nothing waits for a human to confirm, so
   a hard power-off, a firewall change or a volume detach happens when it is
   called, and `create_server` can boot arbitrary code inside the project's
   private network.
