@@ -317,13 +317,13 @@ does not surface them.
 ## The full worked example
 
 `infra/strad.staging.yaml` in the repo deliberately exercises all four kinds at
-once. It declares forty-six server slugs: a core builtin (`echo`), a
+once. It declares forty-eight server slugs: a core builtin (`echo`), a
 credential-free `remote-http` canary (`deepwiki` → `https://mcp.deepwiki.com/mcp`),
 a `local-tunnel` (`anki`, which ships disabled),
-and forty-three `supplementary-image` entries — forty-one sharing ONE bundle
+and forty-five `supplementary-image` entries — forty-one sharing ONE bundle
 over the private network, which resolve onto twenty-eight paths because every
 read-only / read-write pair is two entries on one path. Twenty-seven of those are
-among the bundle image's thirty-three baked mounts; the twenty-eighth,
+among the bundle image's thirty-four baked mounts; the twenty-eighth,
 `/grafana-registry`, is a per-slug instance the host stands up because the
 container carries that slug's own Grafana credential. One of
 those, `secrets`, is also the worked example for the split `env:` / `consoleEnv:`
@@ -337,7 +337,8 @@ which store it points at. [Two stores, one
 gateway](/operate/secrets/#two-stores-one-gateway) explains why sharing a bundle
 there is silently wrong. The thirty-third, `whatsapp-zimmer`, is on a bundle of
 its own for a different reason: `bundle-whatsapp` runs at one instance, because a
-second replica would open a second socket on the same WhatsApp device. It also keeps two deliberately narrow roles, `echo-only` and `zimmer`, so
+second replica would open a second socket on the same WhatsApp device. The two
+Messenger slugs share `bundle-messenger` for the same reason. It also keeps two deliberately narrow roles, `echo-only` and `zimmer`, so
 the [424 fail-closed path](/intro/concepts/#the-424-contract) stays exercised. Read
 it alongside
 [`strad.config.example.yaml`](https://github.com/tadasant/strad/blob/main/strad.config.example.yaml)

@@ -243,7 +243,7 @@ allow strad's address through.
 ## Risks
 
 - **strad becomes a tailnet node.** Anything that can run code in the bundle
-  container (one of its thirty-three servers, a compromised dependency) can
+  container (one of its thirty-four servers, a compromised dependency) can
   dial the SOCKS5 listener. Code running inside the host process could also
   read the key from the host's memory before it is used; keeping it out of
   the environment and off disk closes the easy routes, not that one. What that buys is what `tag:strad` is granted:

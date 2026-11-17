@@ -221,7 +221,7 @@ describe("the real staging config, which is the false-positive canary", () => {
    * `main` — no image publish, no version bump, no dispatch in between — so a
    * ceiling that trips on a real config turns a working pipeline into a broken
    * one within minutes of a merge. `infra/strad.staging.yaml` is the largest
-   * real config this repo owns: 46 slugs across three components.
+   * real config this repo owns: 48 slugs across three components.
    *
    * Placeholder secret values, as the issue's own measurement used, so the
    * number is comparable and reproducible without credentials.

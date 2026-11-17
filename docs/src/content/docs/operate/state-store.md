@@ -8,10 +8,11 @@ has to remember something across a restart keeps it in **one GCS bucket**: the
 state store. There is one bucket and one service account for a deployment.
 Each server gets its own folder and its own encryption key.
 
-| Consumer                                | Folder: the root, or one under it                | Its own key                         | Folder variable             |
-| --------------------------------------- | ------------------------------------------------ | ----------------------------------- | --------------------------- |
-| [WhatsApp](/servers/whatsapp/) bridge   | `whatsapp` (`whatsapp/prod`, `whatsapp/staging`) | `WHATSAPP_STATE_ENCRYPTION_KEY`     | `WHATSAPP_STATE_PREFIX`     |
-| [Slack events](/servers/events/) ingest | `slack-events`                                   | `SLACK_EVENTS_STATE_ENCRYPTION_KEY` | `SLACK_EVENTS_STATE_PREFIX` |
+| Consumer                                | Folder: the root, or one under it                   | Its own key                         | Folder variable             |
+| --------------------------------------- | --------------------------------------------------- | ----------------------------------- | --------------------------- |
+| [WhatsApp](/servers/whatsapp/) bridge   | `whatsapp` (`whatsapp/prod`, `whatsapp/staging`)    | `WHATSAPP_STATE_ENCRYPTION_KEY`     | `WHATSAPP_STATE_PREFIX`     |
+| [Slack events](/servers/events/) ingest | `slack-events`                                      | `SLACK_EVENTS_STATE_ENCRYPTION_KEY` | `SLACK_EVENTS_STATE_PREFIX` |
+| [Messenger](/servers/messenger/) bridge | `messenger` (`messenger/prod`, `messenger/staging`) | `MESSENGER_STATE_ENCRYPTION_KEY`    | `MESSENGER_STATE_PREFIX`    |
 
 The code is one module, `src/state/store.ts`: the GCS client, the seal, the
 single-writer lease and the rules on this page. Each consumer is its own npm
@@ -47,8 +48,8 @@ Each consumer's **key** belongs in that consumer's own namespace,
 ## Folders and keys
 
 **A folder cannot leave its consumer's root.** The WhatsApp bridge refuses a
-prefix that is not `whatsapp` or `whatsapp/…`, and the Slack ingest one outside
-`slack-events/`. The check runs at boot and names the variable, so no
+prefix that is not `whatsapp` or `whatsapp/…`, the Messenger bridge one
+outside `messenger/`, and the Slack ingest one outside `slack-events/`. The check runs at boot and names the variable, so no
 configuration can point one server at another's objects.
 
 **Every consumer has its own key.** A WhatsApp key together with its state is

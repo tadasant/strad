@@ -392,7 +392,7 @@ one (hack #4).
 **✅ RESOLVED.** Core presents the internal token to every `supplementary-image`
 component, and the `strad-bundle` host refuses a mount request without it.
 
-**What.** The `strad-bundle` container — thirty-three mounts, and every upstream
+**What.** The `strad-bundle` container — thirty-four mounts, and every upstream
 credential behind them — serves every mount unauthenticated. Its only protection
 is the network boundary: an internal-only App Platform component
 (`internal_ports: [8080]`, no public route), reachable by core over the private
@@ -403,7 +403,7 @@ seam. Anything else that gets into the VPC can talk to the mounts directly.
 **Why.** The core→supplementary proxy path sends no internal token, unlike the
 builtin-in-bundle path, so the entry described the remedy as a config change:
 a `headers:` entry on the server entry plus a check in the image. That was the
-wrong shape. Thirty-three `supplementary-image` entries would each have had to
+wrong shape. Thirty-four `supplementary-image` entries would each have had to
 remember the block, and the one that forgot would be silently open.
 
 **Undone by.** Two halves, in code rather than in config:
@@ -789,10 +789,10 @@ still what makes prod's read-only variants read-only.
 policies) → confirm → _then_ delete the per-server images, their workflows and the
 toggle plumbing.
 
-## 24. Thirty-three servers share one process, and one Chromium
+## 24. Thirty-four servers share one process, and one Chromium
 
-The collapsed bundle is one container running thirty-three MCP servers and one
-headless Chromium. An OOM there is a thirty-three-server outage; it used to be a
+The collapsed bundle is one container running thirty-four MCP servers and one
+headless Chromium. An OOM there is a thirty-four-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -2645,7 +2645,7 @@ both `infra/strad.staging.yaml` and `strad.config.example.yaml` — plus the cou
 in `servers/bundle/scripts/smoke.mjs`, `test/staging-config.test.ts` and
 `.github/workflows/ci.yml`.
 
-## 56. Per-slug box names are emitted for every server; thirteen of twenty-four trees can read one
+## 56. Per-slug box names are emitted for every server; thirteen of twenty-five trees can read one
 
 **What.** Every enabled `supplementary-image` server's resolved `env:` is emitted
 onto its bundle TWICE: under the bare name it always had, and under
@@ -3744,7 +3744,7 @@ behaviour, which is the pre-change one.
 a listed parameter current in a supplementary container's `process.env` without a
 redeploy. What it cannot do is make the MCP server inside that container LOOK at
 the new value. That is a property of the upstream, and this image runs
-thirty-three of them, most written by other people.
+thirty-four of them, most written by other people.
 
 The split is real and it is not subtle:
 
@@ -7614,3 +7614,47 @@ window closes; or have the alert rule skip `_failed` records from a
 supplementary-image slug inside a deploy window that the deploy workflow
 publishes, so a refusal outside that window still pages. Demoting the record's
 severity is not an option: a bundle that stays down must page.
+
+## 148. The Messenger bridge is unofficial, runs from a datacenter IP, and has met Meta only up to the login form
+
+**What.** `servers/messenger` reads one personal Facebook Messenger account
+through `strad-messenger-bridge`, a Go program that runs mautrix-meta's network
+connector headless: bridgev2's Matrix side is implemented against a SQLite table
+(`servers/messenger/bridge/headless.go`) instead of a homeserver. Its whole state,
+the Meta session and the encryption keys of the device it registers included, is
+one SQLite file, copied with `VACUUM INTO` every minute and on SIGTERM, sealed,
+and written to `messenger/{env}` in the shared state bucket.
+
+**Why.** Meta offers no API to a personal inbox. mautrix-meta is the maintained
+implementation of what the Messenger apps speak (the Lightspeed socket, and the
+WhatsApp-protocol end-to-end encryption Messenger chats run on), and it is
+AGPL-3.0, so it runs as a separate program over loopback rather than being
+linked into strad (MIT). Running it headless instead of beside a Matrix
+homeserver keeps strad's no-database, one-component shape.
+
+**What it costs.**
+
+- Automated access is against Facebook's Terms; Meta can checkpoint or disable
+  the account. The bridge runs in a DigitalOcean container, so Meta sees a
+  datacenter IP, which raises that risk. `MESSENGER_PROXY` routes everything
+  through a proxy if checkpoints happen; nothing ships with one.
+- CI tests the Go program's recorder against a real SQLite file and the
+  TypeScript tree against a fake of the Go program. Against Meta, it has been
+  run only as far as the first login step (the Android flow's credential form,
+  and the cookie flow's cookie list). A real login, the encrypted-history
+  restore and live delivery are first exercised by the owner's own login.
+- A crash (not a deploy) loses up to a minute of encryption state; whatsmeow
+  asks the sender to re-send what it cannot decrypt, and a message that stays
+  undecryptable becomes a `notice` placeholder row.
+- End-to-end encrypted messages sent before the device was registered are
+  only readable if the owner enters their secure-storage PIN at login, which
+  restores Meta's encrypted history backup (mautrix-meta v26.10+). Without it,
+  history starts at login.
+- A `replace` in mautrix-meta's `go.mod` (Beeper's fork of `req`) does not carry
+  over to a dependent module, so `bridge/go.mod` repeats it and must move with
+  the mautrix-meta pin.
+
+**Undo.** If Meta ever ships an API for personal inboxes, replace the Go program.
+If datacenter checkpoints become routine, either set `MESSENGER_PROXY` to a
+residential egress, or move the bridge to strad-hostd on the owner's Mac, where
+the same Go program can run beside the daemon.

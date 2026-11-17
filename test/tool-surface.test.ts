@@ -410,6 +410,7 @@ describe("infra/strad.staging.yaml", () => {
       "google-docs-rw -> /google-docs",
       "google-calendar-ro -> /google-calendar",
       "onepassword-ro -> /onepassword",
+      "messenger-tadas -> /messenger",
       "telegram-ro -> /telegram",
       "bill-spend-ro -> /bill-spend",
       "digitalocean-tadasant-ro -> /digitalocean",

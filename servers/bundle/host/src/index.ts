@@ -10,7 +10,7 @@
  * is named by none BY DESIGN: every SSH host is its own store-served instance
  * at `/_instance/ssh/{slug}`, and the conventional mount is the degraded one.
  *
- * THIRTY-THREE IS THE FLOOR, not a constant. Seven trees (telegram,
+ * THIRTY-FOUR IS THE FLOOR, not a constant. Seven trees (telegram,
  * remote-filesystem, google-sheets, gmail, google-docs, grafana, onepassword)
  * mount ONE INSTANCE PER SLUG the environment carries per-slug values for — see
  * `extraSlugs` — so a container told about `telegram-ro` and `telegram-rw`
@@ -20,7 +20,7 @@
  * a service-account token IS one Grafana, and a 1Password service-account token
  * IS one 1Password account at one vault scope, so each extra account is another
  * mount here. The conventional path is always mounted, so a config that asks for
- * none of this sees exactly the thirty-three it saw before.
+ * none of this sees exactly the thirty-four it saw before.
  *
  * STORE-SERVED INSTANCES are the other way in, and the one that needs no deploy.
  * A strad server on `path: /_instance/{tree}/{slug}` puts nothing on this
@@ -64,7 +64,7 @@
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
  *
- * BLAST RADIUS, honestly. Thirty-three servers share a process. A crash is
+ * BLAST RADIUS, honestly. Thirty-four servers share a process. A crash is
  * a 33-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
@@ -338,6 +338,8 @@ async function buildMounts(): Promise<Mount[]> {
     deferred.push({ slug, load: () => loadTelegram(slug) });
 
   mounts.push(await loadWhatsApp());
+
+  mounts.push(await loadMessenger());
 
   mounts.push(await loadBillSpend());
 
@@ -1264,7 +1266,7 @@ async function loadXTwitter(): Promise<Mount> {
     // The client caches its OAuth provider for the host process, so the factory
     // is built once here and memoised inside registerHandlers. Building it
     // LAZILY matters: `createXClientFromEnv` throws when no X credential is
-    // configured at all, and a throw at boot would take all thirty-three mounts down
+    // configured at all, and a throw at boot would take all thirty-four mounts down
     // over one unconfigured server.
     register: (s) =>
       created.registerHandlers(s, () =>
@@ -1394,6 +1396,44 @@ async function loadWhatsApp(): Promise<Mount> {
     // `/mcp-download/:slug/:token`. The tree verifies the token, fetches and
     // decrypts the file from WhatsApp, and stores nothing.
     download: created.handleDownload,
+    close: () => created.close(),
+  };
+}
+
+/**
+ * messenger — strad's own Facebook Messenger server, read-only: a supervised
+ * Go child (strad-messenger-bridge, mautrix-meta run headless) logged in as a
+ * device of one account, behind four read tools and four admin tools.
+ *
+ * MOUNTED IN EVERY CONTAINER, RUNNING IN AT MOST ONE, for whatsapp's reason:
+ * the tree spawns its child only when its four variables are present, and a
+ * component's environment is its own servers' `env:` maps — so the container a
+ * `path: /messenger` slug is bundled onto runs the bridge, and every other one
+ * lists the eight tools degraded and never starts a process. One Messenger
+ * device is one connection, which is why the component that holds it must run
+ * one instance (the renderer refuses more — SINGLE_SOCKET_PATHS).
+ *
+ * `close` is what the shutdown path calls, so a deploy's SIGTERM snapshots the
+ * bridge's database to GCS and stops the child before the process exits.
+ */
+async function loadMessenger(): Promise<Mount> {
+  const mod = (await loadFromTree("messenger", "shared/build/index.js")) as {
+    createMCPServer: (options: { version: string; env: NodeJS.ProcessEnv }) => Created & {
+      close: () => Promise<void>;
+    };
+    missingCredentials: (env?: NodeJS.ProcessEnv) => string[];
+  };
+
+  const env = slugEnvView(process.env, "messenger");
+  const created = mod.createMCPServer({ version: VERSION, env });
+
+  return {
+    slug: "messenger",
+    tree: "messenger",
+    serverName: "strad-messenger",
+    capabilities: { tools: {} },
+    degraded: missingCredentialsDegraded(mod.missingCredentials(env)),
+    register: (s) => created.registerHandlers(s),
     close: () => created.close(),
   };
 }
@@ -2245,7 +2285,7 @@ async function main(): Promise<void> {
   //
   // NOT AWAITED, and that is deliberate. A pass is one sequential read per
   // listed variable, each with its own timeout, so awaiting it would put a slow
-  // or unreachable core directly in front of `listen()` below — thirty-three
+  // or unreachable core directly in front of `listen()` below — thirty-four
   // mounts held off serving because one credential could not be re-read. The
   // container starting with the value the deploy baked is exactly the behaviour
   // every deployment has today, so falling back to it costs nothing; blocking
@@ -2258,7 +2298,7 @@ async function main(): Promise<void> {
   // STORE-SERVED INSTANCES — the mounts no deploy named. See the header.
   //
   // The first sync is NOT awaited, for the reason the refresh pass above is
-  // not: a slow core must not stand in front of `listen()` for thirty-three
+  // not: a slow core must not stand in front of `listen()` for thirty-four
   // mounts that need nothing from it. A request that arrives before the sync
   // lands takes the miss path in the route below, which syncs then.
   const instances = createInstanceReconciler<Mount>({
@@ -2311,7 +2351,7 @@ async function main(): Promise<void> {
   const internalOnly = requireInternalToken(process.env, timingSafeEqual);
 
   // Liveness for App Platform. Reports every mount and whether it is degraded —
-  // with 33 servers behind one health check, "ok: true" alone is not information.
+  // with 34 servers behind one health check, "ok: true" alone is not information.
   //
   // Deliberately OUTSIDE `internalOnly`. The platform's health prober holds no
   // token, and a 401 here is a component App Platform takes out of service — an
@@ -2535,7 +2575,7 @@ async function main(): Promise<void> {
     });
   });
 
-  // One stray rejection from one of thirty-three servers must not kill the other
+  // One stray rejection from one of thirty-four servers must not kill the other
   // thirty-two. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {

@@ -12,13 +12,13 @@
 # ---------------------------------------------------------------------------
 # CAPABILITY LIVES AT THE GATEWAY. THREE COMPONENTS, NOT THIRTEEN.
 # ---------------------------------------------------------------------------
-# This file declares forty-six server SLUGS: forty-three supplementary-image
+# This file declares forty-eight server SLUGS: forty-five supplementary-image
 # entries, the `echo` builtin in core, the `deepwiki` remote-http canary, and
 # the `anki` local-tunnel, which ships disabled — see its entry below.
-# Forty-one of the forty-three land on twenty-eight upstream mounts inside the
-# one bundle image, because capability variants share a mount; the other two
-# (`zimmer-secrets` and `whatsapp-zimmer`) each run that same image on a
-# bundle of their own. The image serves thirty-three mounts: `/x-twitter`,
+# Forty-one of the forty-five land on twenty-eight upstream mounts inside the
+# one bundle image, because capability variants share a mount; the other four
+# (`zimmer-secrets`, `whatsapp-zimmer`, and the two Messenger slugs) run that
+# same image on three bundles of their own. The image serves thirty-four mounts: `/x-twitter`,
 # `/google-sheets`, `/grafana`, `/aws-device-farm` and `/ssh` are in it with no
 # staging slug pointing at any of them — every SSH host is a store-served
 # instance at `/_instance/ssh/{slug}` rather than the conventional `/ssh`, and
@@ -28,10 +28,11 @@
 # environment yet because its AWS credential has not been minted. The block to
 # paste once it has is in docs/servers/aws-device-farm-setup.
 #
-# TWELVE of the forty-three carry `enabled: false` — telegram-ro, telegram-rw,
-# pulse-subregistry, grafana-registry, whatsapp-zimmer, liveoak, airtable,
-# flightaware, digitalocean-tadasant-ro, digitalocean-tadasant-rw,
-# hetzner-pulse-ro and hetzner-pulse-rw — because
+# FOURTEEN of the forty-five carry `enabled: false` — telegram-ro, telegram-rw,
+# pulse-subregistry, grafana-registry, whatsapp-zimmer, messenger-tadas,
+# messenger-tadas-admin, liveoak, airtable, flightaware,
+# digitalocean-tadasant-ro, digitalocean-tadasant-rw, hetzner-pulse-ro and
+# hetzner-pulse-rw — because
 # their credentials are not in the store yet.
 # A `${NAME}` the store does not hold fails the RENDER, and the render is the
 # whole spec, so an entry that ships enabled before its secret is seeded takes
@@ -41,8 +42,9 @@
 # `bundle-zimmer-secrets`, a second copy of the bundle image fronting a SECOND
 # parameter store. Capability is config; a STORE is `process.env`, and one
 # container has one of those. See the bundles block below. `bundle-whatsapp`
-# becomes a fourth once `whatsapp-zimmer` is enabled; while it is disabled the
-# bundle renders no component.
+# becomes a fourth once `whatsapp-zimmer` is enabled, and `bundle-messenger`
+# another once the Messenger slugs are; while disabled, neither bundle renders
+# a component.
 #
 # It used to be twelve bundles for twenty-six slugs, and the reason was
 # small and stupid: a server's capability was a CONTAINER env var
@@ -181,7 +183,7 @@ roles:
 
 bundles:
   # THE bundle. One image, one component, and twenty-seven of the image's
-  # thirty-three upstream MCP servers — the bundle-api fleet, the Google
+  # thirty-four upstream MCP servers — the bundle-api fleet, the Google
   # servers, 1Password (with the `op` CLI baked in), telegram, liveoak,
   # airtable, flightaware, digitalocean, hetzner, image-diff, svg-tracer and the
   # three browser servers, which share ONE Chromium (never one per server: see
@@ -193,7 +195,7 @@ bundles:
   # `/grafana-registry` below, `/aws-device-farm`, whose AWS credential does
   # not exist yet, `/whatsapp`, whose one slug is served from
   # `bundle-whatsapp`, and `/ssh`, whose hosts are store-served instances.
-  # The PROCESS registers all thirty-three either way — including `/telegram`,
+  # The PROCESS registers all thirty-four either way — including `/telegram`,
   # `/liveoak`, `/airtable`, `/flightaware`, `/digitalocean` and `/hetzner`,
   # whose slugs are disabled until their secrets are seeded — which is what the
   # sizing below is about.
@@ -264,6 +266,15 @@ bundles:
   # container running this image lists /whatsapp degraded and never connects.
   # No component exists while whatsapp-zimmer below is disabled.
   - name: bundle-whatsapp
+    instanceCount: 1
+
+  # THE MESSENGER BRIDGE'S BUNDLE, for bundle-whatsapp's reason: `/messenger`
+  # holds ONE Messenger device connection (a Go child process the mount
+  # supervises), two replicas would be two connections fighting over one
+  # device, and SINGLE_SOCKET_PATHS makes the renderer refuse instanceCount > 1.
+  # Its env is its own, so the bridge runs here and nowhere else. No component
+  # exists while messenger-tadas and messenger-tadas-admin below are disabled.
+  - name: bundle-messenger
     instanceCount: 1
 
 servers:
@@ -1240,6 +1251,71 @@ servers:
       # The slug whatsapp_get_attachment's download links are addressed to. Not
       # derivable: every WhatsApp slug is `path: /whatsapp`.
       WHATSAPP_PUBLIC_SLUG: whatsapp-zimmer
+
+  # ---------------------------------------------------------------------------
+  # messenger — strad's own Facebook Messenger server, READ-ONLY: a headless
+  # mautrix-meta (servers/messenger/bridge, AGPL-3.0, a separate process)
+  # logged in as a device of one account, buffering what it sees.
+  #
+  # UNOFFICIAL, and said in every tool description: Meta has no API to a
+  # personal inbox, automated access is against Facebook's Terms, and Meta can
+  # checkpoint or disable the account for it.
+  #
+  # NO CREDENTIAL FOR FACEBOOK ITSELF. The login is made by a human through
+  # messenger_login_start / messenger_login_submit on the ADMIN slug, from the
+  # console playground. What it mints lives in the bridge's database, which is
+  # snapshotted to strad's shared state bucket under MESSENGER_STATE_PREFIX,
+  # sealed under MESSENGER_STATE_ENCRYPTION_KEY. Seeded here: that key, and
+  # the three deployment-wide STRAD_STATE_GCS_* at /strad/staging/gateway/static/.
+  #
+  # TWO SLUGS, ONE MOUNT, the gmail-ro/gmail-rw shape: `messenger-tadas` is the
+  # four read tools (what the nightly sweep is given); `messenger-tadas-admin`
+  # has no policy, so it alone can log in and log out. Each declares the same
+  # credentials, so disabling one cannot strip them from the other.
+  #
+  # DISABLED UNTIL SEEDED: seed MESSENGER_STATE_ENCRYPTION_KEY (and the shared
+  # STRAD_STATE_GCS_* if absent), delete both `enabled: false`, deploy, then
+  # log in from the console playground. docs/servers/messenger has the rest.
+  - slug: messenger-tadas
+    kind: supplementary-image
+    title: Messenger (read-only)
+    description: Read Tadas's Facebook Messenger threads, messages and attachments.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle-messenger
+    path: /messenger
+    entitlements: [admin]
+    enabled: false
+    env:
+      MESSENGER_STATE_ENCRYPTION_KEY: "${MESSENGER_STATE_ENCRYPTION_KEY}"
+      STRAD_STATE_GCS_BUCKET: "${STRAD_STATE_GCS_BUCKET}"
+      STRAD_STATE_GCS_CLIENT_EMAIL: "${STRAD_STATE_GCS_CLIENT_EMAIL}"
+      STRAD_STATE_GCS_PRIVATE_KEY: "${STRAD_STATE_GCS_PRIVATE_KEY}"
+      # Plain config. Staging's own folder under `messenger/`, so it can never
+      # share a login with production even if both point at one bucket.
+      MESSENGER_STATE_PREFIX: messenger/staging
+    tools:
+      allow:
+        - messenger_status
+        - messenger_list_threads
+        - messenger_get_messages
+        - messenger_get_attachment
+
+  # Logs the bridge in and out. Same credentials, declared again.
+  - slug: messenger-tadas-admin
+    kind: supplementary-image
+    title: Messenger (admin)
+    description: Log the Messenger bridge in or out, and read it.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle-messenger
+    path: /messenger
+    entitlements: [admin]
+    enabled: false
+    env:
+      MESSENGER_STATE_ENCRYPTION_KEY: "${MESSENGER_STATE_ENCRYPTION_KEY}"
+      STRAD_STATE_GCS_BUCKET: "${STRAD_STATE_GCS_BUCKET}"
+      STRAD_STATE_GCS_CLIENT_EMAIL: "${STRAD_STATE_GCS_CLIENT_EMAIL}"
+      STRAD_STATE_GCS_PRIVATE_KEY: "${STRAD_STATE_GCS_PRIVATE_KEY}"
+      MESSENGER_STATE_PREFIX: messenger/staging
 
   # ---------------------------------------------------------------------------
   # telegram — strad's own server, and the one that speaks MTProto as a PERSON.

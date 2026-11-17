@@ -294,10 +294,10 @@ numbers describe "how many servers," and they count different things:
 | The number | What it counts                                                                                     |
 | ---------- | -------------------------------------------------------------------------------------------------- |
 | **3**      | App Platform components: `core`, `bundle`, `bundle-zimmer-secrets`                                 |
-| **24**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
-| **33**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
-| **43**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included)         |
-| **46**     | total server slugs in staging (43 + `echo` builtin + `deepwiki` remote-http + `anki` local-tunnel) |
+| **25**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
+| **34**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
+| **45**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included)         |
+| **48**     | total server slugs in staging (45 + `echo` builtin + `deepwiki` remote-http + `anki` local-tunnel) |
 
 A slug is not a mount, and a mount is not a component. Before you write a number,
 grep for the others.
@@ -310,7 +310,9 @@ namespaces, viewer credential and probed capability, rendered onto the bundle as
 a `SECRETS_STORES` descriptor. `bundle-whatsapp` becomes a fourth once
 `whatsapp-zimmer` is enabled, and it is not there for capability either: it holds
 the one WhatsApp linked-device socket, at one instance. While that slug is
-disabled it renders no component.
+disabled it renders no component. `bundle-messenger` is the same shape for the
+same reason: it holds the one Messenger device connection (`messenger-tadas`,
+`messenger-tadas-admin`), at one instance, and renders nothing while disabled.
 
 Two secrets SLUGS in ONE bundle is still silently wrong, and for the same reason
 it always was: a bundle is a container is one `process.env`, the secrets tree
@@ -363,7 +365,7 @@ slop behind when you fix a stale fact.
 - `src/deploy/appspec.ts` — turns the config into a DigitalOcean App Platform spec.
   The server list decides the container topology.
 - `servers/bundle/` — one image, 33 mounted MCP servers, one shared Chromium,
-  assembled from TWENTY-FOUR independently-built dependency trees.
+  assembled from TWENTY-FIVE independently-built dependency trees.
 - `servers/remote-filesystem/` — strad's own artifact store, behind the
   `remote-filesystem-tmp-public` slug. `is_sensitive` picks the KIND of link;
   GCS's 7-day V4 ceiling is why the 14-day default is signed with V2.
@@ -451,6 +453,15 @@ slop behind when you fix a stale fact.
   created at runtime (`assertCreatable`), so its roles only ever come from
   checked-in config — and `ssh-tadasant-zimmer-prod` stays `[admin]`, because
   Zimmer sessions run on that host. `HACKS.md` #137.
+- `servers/messenger/` — strad's own Facebook Messenger server, READ-ONLY,
+  behind `messenger-tadas` (four reads) and `messenger-tadas-admin` (+ login and
+  logout). Two halves: the TypeScript MCP tree, and `bridge/`, a Go program that
+  runs mautrix-meta's network connector HEADLESS — bridgev2's Matrix side
+  implemented against a SQLite table instead of a homeserver — on loopback. The
+  bridge is AGPL-3.0 and a separate process, never linked; its whole state is one
+  SQLite file, snapshotted sealed to the shared state bucket. The login is a
+  human driving Meta's own app-login steps through the admin tools.
+  `HACKS.md` #148.
 - `servers/bill-spend/` — strad's own BILL Spend & Expense server, behind
   `bill-spend-ro` and `bill-spend-rw`. Re-codes card transactions to the right
   chart-of-accounts value, which BILL carries as CUSTOM-FIELD VALUES rather than

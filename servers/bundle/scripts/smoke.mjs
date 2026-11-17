@@ -15,7 +15,7 @@
  * credential-dependent. CI has no credential, the probe fails closed, and the
  * count is the read-only 4 below.
  *
- * What it is really checking is that thirty-three servers, twenty-four dependency trees and
+ * What it is really checking is that thirty-four servers, twenty-five dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  *
@@ -95,6 +95,11 @@ const EXPECT = {
   // well as counted — Zimmer calls these by name every minute, so a rename is
   // an outage there, not a new count here.
   whatsapp: 7,
+  // Messenger: four reads (status, threads, messages, attachment) and four
+  // admin tools (login start/submit/cancel, logout). There is NO send tool, and
+  // eight is also the claim that none has crept in. Named below too: the
+  // nightly sweep and the `messenger-tadas` allow-list call these by name.
+  messenger: 8,
   // list_coding_fields, list_coding_options, list_transactions,
   // get_transaction_coding, and the one write tool, set_transaction_coding —
   // which `bill-spend-ro` is the allow-list without. The count is also a
@@ -176,6 +181,12 @@ const WHATSAPP_TOOLS = new Set([
   "whatsapp_status", "whatsapp_list_chats", "whatsapp_get_messages",
   "whatsapp_get_attachment", "whatsapp_send_message", "whatsapp_pair",
   "whatsapp_logout",
+]);
+
+const MESSENGER_TOOLS = new Set([
+  "messenger_status", "messenger_list_threads", "messenger_get_messages",
+  "messenger_get_attachment", "messenger_login_start", "messenger_login_submit",
+  "messenger_login_cancel", "messenger_logout",
 ]);
 
 const BILL_SPEND_TOOLS = new Set([
@@ -296,7 +307,7 @@ if (unchecked.length || absent.length) {
 
 // Two trees registering the SAME slug is the collision a twelve-tree single process
 // invites, and it collapses to one route — the set above cannot see it, because a
-// Set of 33 mounts' slugs is 32 entries wide and matches EXPECT exactly.
+// Set of 34 mounts' slugs is 33 entries wide and matches EXPECT exactly.
 if (health.servers.length !== mounted.size) {
   failed += 1;
   console.log(
@@ -321,9 +332,11 @@ for (const [slug, expected] of Object.entries(EXPECT)) {
       tools.length === BILL_SPEND_TOOLS.size && tools.every((tool) => BILL_SPEND_TOOLS.has(tool));
     const isExactWhatsAppSurface = slug !== "whatsapp" ||
       tools.length === WHATSAPP_TOOLS.size && tools.every((tool) => WHATSAPP_TOOLS.has(tool));
+    const isExactMessengerSurface = slug !== "messenger" ||
+      tools.length === MESSENGER_TOOLS.size && tools.every((tool) => MESSENGER_TOOLS.has(tool));
     const ok = (expected === null || tools.length === expected) &&
       isExactXSurface && isExactTelegramSurface && isExactBillSpendSurface &&
-      isExactWhatsAppSurface;
+      isExactWhatsAppSurface && isExactMessengerSurface;
     if (!ok) failed += 1;
     console.log(
       `${ok ? "ok  " : "FAIL"} /${slug}: ${tools.length} tools${expected === null ? "" : ` (expected ${expected})`}`,

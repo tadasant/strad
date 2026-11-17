@@ -54,9 +54,14 @@ import { componentToken } from "../auth/internal-token.ts";
 /**
  * Bundle mounts that hold ONE upstream session, which a second replica of their
  * component would fight over. `renderAppSpec` refuses `instanceCount > 1` for a
- * bundle serving any of them. See servers/whatsapp/README.md.
+ * bundle serving any of them. See servers/whatsapp/README.md and
+ * servers/messenger/README.md: a WhatsApp linked device and a Messenger device
+ * are each one connection, and two kick each other off.
  */
-export const SINGLE_SOCKET_PATHS: readonly string[] = ["/whatsapp"];
+export const SINGLE_SOCKET_PATHS: readonly string[] = [
+  "/whatsapp",
+  "/messenger",
+];
 
 export interface RenderOptions {
   config: StradConfig;
@@ -296,7 +301,7 @@ const STRAD_BUNDLE_REPOSITORY = "strad-bundle";
  * about two minutes in. The 5-second timeout is generous on purpose: a loop that
  * is merely busy for a moment must not cost 66 slugs a restart.
  *
- * `initial_delay_seconds` covers boot: thirty-three mounts load before `listen()`.
+ * `initial_delay_seconds` covers boot: thirty-four mounts load before `listen()`.
  * `port` is explicit because the component has `internal_ports` and no
  * `http_port`, which is what the check would otherwise default to.
  */

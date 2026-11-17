@@ -298,7 +298,7 @@ jobs:
   #               repo would say so.
   #
   #   bundle/host test. THE host: the process every bundle container runs. It
-  #               mounts every tree in the image — 33 mounts, which staging's 43
+  #               mounts every tree in the image — 34 mounts, which staging's 45
   #               supplementary-image slugs resolve to, since a capability
   #               variant is another slug on the same mount. Its `tree:` carries
   #               a slash because it is a tree one level deeper than the rest —
@@ -363,6 +363,10 @@ jobs:
             test: true
             skip-browser: false
           - tree: whatsapp
+            build: false
+            test: true
+            skip-browser: false
+          - tree: messenger
             build: false
             test: true
             skip-browser: false
@@ -461,6 +465,25 @@ jobs:
         working-directory: servers/${{ matrix.tree }}
         run: npm test
 
+  # The Go half of the messenger tree: strad-messenger-bridge, mautrix-meta run
+  # headless (servers/messenger/bridge, AGPL-3.0). The `servers (messenger)` leg
+  # above tests the TypeScript half against a fake of this program; this one
+  # vets and tests the program itself — the recorder, the cursor, the headless
+  # Matrix side — against a real SQLite file. Run in the same golang image the
+  # bundle Dockerfile builds it in, so the runner needs Docker and no Go
+  # toolchain, and cgo (SQLite) builds the way it does for the image. Nothing
+  # here talks to Meta.
+  messenger_bridge:
+    name: messenger bridge (go)
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - name: gofmt, vet, test
+        run: |
+          docker run --rm -v "$PWD/servers/messenger/bridge:/src:ro" -w /src \
+            -e GOFLAGS=-buildvcs=false -e GOCACHE=/tmp/gocache golang:1.27-bookworm \
+            sh -c 'test -z "$(gofmt -l .)" || { gofmt -l .; echo "gofmt: the files above are not formatted"; exit 1; }; go vet ./... && go test ./...'
+
   # strad-hostd: the daemon that runs on a machine a person owns and serves the
   # shell and browser MCP servers behind a consent dialog. It is NOT a leg of the
   # `servers` matrix above — that matrix is the set of trees the bundle image
@@ -501,7 +524,7 @@ jobs:
           node "$STRAD_HOSTD_HOME/app/build/cli.js" keys | awk '{ if (length($2) < 32) exit 1 }'
           ./install/uninstall.sh --purge
 
-  # THE bundle: thirty-three MCP servers, twenty-four dependency trees, one Chromium and the
+  # THE bundle: thirty-four MCP servers, twenty-five dependency trees, one Chromium and the
   # `op` CLI in one container. It is now the only supplementary component strad
   # deploys, so a PR that cannot build it — or that builds one where a server
   # silently lost half its tools — is a failing PR.

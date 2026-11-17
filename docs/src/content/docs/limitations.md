@@ -614,11 +614,11 @@ nothing warns beforehand. Publishing the OAuth app removes the expiry.
 
 ## The deployment
 
-### 24. Thirty-three servers share one process and one CPU
+### 24. Thirty-four servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts thirty-three MCP servers,
+The `bundle` component runs one Node process that mounts thirty-four MCP servers,
 launches one shared Chromium and supervises one `mcp-grafana` child process, on
-`apps-s-1vcpu-2gb`. A crash in the host takes all thirty-three down together, and
+`apps-s-1vcpu-2gb`. A crash in the host takes all thirty-four down together, and
 Chromium contends with every other server for the single vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -1009,7 +1009,7 @@ a store-wide read.
 keeps a listed parameter current in a supplementary container's environment
 without a redeploy. It cannot make the MCP server inside that container **look**
 at the new value — that is a property of the upstream, and the bundle image runs
-thirty-three of them, most written by other people.
+thirty-four of them, most written by other people.
 
 `strad-fetch` builds its scraping clients inside a factory the host invokes per
 request, so a rotated key is used by the next tool call; that is the case the
@@ -2197,7 +2197,7 @@ ever rebuilt with a rootless or hand-installed docker, where buildx lives in
 
 **Serialising the workflows was the alternative.** A `concurrency:` group would
 have ended it too, at the cost of every push taking the sum of its builds rather
-than the longest — the bundle alone is twenty-four dependency trees. Isolation costs a
+than the longest — the bundle alone is twenty-five dependency trees. Isolation costs a
 `mkdir`.
 
 ### 49. The Telegram MTProto library is archived upstream
@@ -2297,7 +2297,7 @@ for the telegram pair, `BILL_SPEND_API_TOKEN` for the bill-spend pair,
 then delete that entry's `enabled:` line and add each seeded name to
 `PROVISIONED_STATICS` in `test/staging-config.test.ts`.
 
-### 56. Per-slug variable names are emitted for every server; only thirteen of the twenty-four trees can read one
+### 56. Per-slug variable names are emitted for every server; only thirteen of the twenty-five trees can read one
 
 Every supplementary server's `env:` lands on its bundle twice — under the bare
 name and under `<SLUG>__<NAME>` — with no condition attached, so what a server's
@@ -2594,7 +2594,7 @@ leak. Nothing in the cache is a credential; it is public pages someone fetched.
 
 **What the fork DID bound is the memory.** Upstream's store grows for the life of
 the process, which is fine for a subprocess the OS reclaims and an out-of-memory
-kill in a container that hosts thirty-three mounts. The cache is LRU-bounded on both
+kill in a container that hosts thirty-four mounts. The cache is LRU-bounded on both
 entry count and bytes, and the filesystem backend is gone (App Platform gives the
 container no persistent volume, so it was memory with extra steps).
 
@@ -4640,3 +4640,20 @@ for real, so the fix belongs to the deploy: drain the outgoing bundle before it
 stops listening, or have the alert skip that window. Neither is built.
 
 See `HACKS.md` #147.
+
+### 148. The Messenger bridge is unofficial, and has met Meta only up to its login form
+
+[Messenger](/servers/messenger/) reads one personal account through mautrix-meta,
+run headless in a separate AGPL-3.0 process. What that costs:
+
+- **Against Facebook's Terms.** Meta can checkpoint or disable the account, and
+  the bridge connects from a datacenter IP, which makes that more likely.
+  `MESSENGER_PROXY` sends everything through a proxy if it happens.
+- **Untested against a real login.** CI runs the Go program against SQLite and
+  the TypeScript tree against a fake of it. Against Meta it has only fetched the
+  first login step. The first real login is the owner's.
+- **Encrypted history before login needs the PIN.** Without the 6-digit
+  secure-storage PIN at login, encrypted chats start at the moment of login.
+- **A crash loses up to a minute of encryption state.** A deploy does not.
+  Messages that cannot be decrypted arrive as placeholders.
+- **Read-only.** There is no send tool.

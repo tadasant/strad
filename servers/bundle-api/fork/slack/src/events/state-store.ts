@@ -10,6 +10,7 @@
  *   {bucket}/whatsapp/prod/…         the WhatsApp bridge (servers/whatsapp)
  *   {bucket}/whatsapp/prod-tadas/…   a second WhatsApp account
  *   {bucket}/slack-events/…          the Slack events ingest (fork/slack)
+ *   {bucket}/messenger/prod/…        the Messenger bridge (servers/messenger)
  *
  * WHAT IS SHARED, AND WHAT IS NOT.
  *
