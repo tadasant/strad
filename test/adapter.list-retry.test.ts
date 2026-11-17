@@ -62,6 +62,12 @@ interface Stub {
   drop: (method: string, times: number) => void;
   /** Answer the next `times` requests for `method` with a JSON-RPC error. */
   rpcError: (method: string, code: number, times: number) => void;
+  /**
+   * Make every request for `method` that the stub FAILS (status, drop or
+   * JSON-RPC error) look as if it took `ms`: `Date.now()` jumps forward by that
+   * much before the failure is sent. A slow attempt, without a slow test.
+   */
+  slowFailures: (method: string, ms: number) => void;
 }
 
 function startStub(): Promise<Stub> {
@@ -69,6 +75,14 @@ function startStub(): Promise<Stub> {
   const failing = new Map<string, { status: number; left: number }>();
   const dropping = new Map<string, number>();
   const erroring = new Map<string, { code: number; left: number }>();
+  const slow = new Map<string, number>();
+  let skewMs = 0;
+  const realNow = Date.now.bind(Date);
+  // Restored by the `vi.restoreAllMocks()` in `afterEach`.
+  vi.spyOn(Date, "now").mockImplementation(() => realNow() + skewMs);
+  const stall = (method: string | undefined): void => {
+    if (method) skewMs += slow.get(method) ?? 0;
+  };
 
   const build = (): McpServer => {
     const server = new McpServer({ name: "stub", version: "0" });
@@ -92,12 +106,14 @@ function startStub(): Promise<Stub> {
     const d = method ? (dropping.get(method) ?? 0) : 0;
     if (method && d > 0) {
       dropping.set(method, d - 1);
+      stall(method);
       req.socket.destroy();
       return;
     }
     const e = method ? erroring.get(method) : undefined;
     if (e && e.left > 0) {
       e.left--;
+      stall(method);
       // A real JSON-RPC error response over a working transport: HTTP 200,
       // the code in the body. The message is upstream prose.
       res.status(200).json({
@@ -110,6 +126,7 @@ function startStub(): Promise<Stub> {
     const f = method ? failing.get(method) : undefined;
     if (f && f.left > 0) {
       f.left--;
+      stall(method);
       res.status(f.status).send("upstream says no");
       return;
     }
@@ -142,6 +159,7 @@ function startStub(): Promise<Stub> {
         fail: (m, status, times) => failing.set(m, { status, left: times }),
         drop: (m, times) => dropping.set(m, times),
         rpcError: (m, code, times) => erroring.set(m, { code, left: times }),
+        slowFailures: (m, ms) => slow.set(m, ms),
       });
     });
   });
@@ -163,6 +181,7 @@ servers:
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const f of cleanup.splice(0).reverse()) await f();
+  vi.restoreAllMocks();
 });
 
 /** A registry over one remote-http slug, and the fault stream it writes. */
@@ -325,6 +344,62 @@ describe("a listing rides out a transient upstream failure", () => {
     expect(await listTools(registry)).toEqual(["apify__ping"]);
     expect(stub.seen("initialize")).toBe(2);
     expect(faults().filter((l) => l.includes("_failed"))).toEqual([]);
+  });
+});
+
+/**
+ * #494: the 5s retry deadline is measured from the start of the listing, so it
+ * includes the first attempt. A connection to a bundle being replaced hung for
+ * longer than that before it was reset, and the transient failure got
+ * `attempts: 1, retry: deadline` — paged, with the budget never spent.
+ */
+describe("a slow first attempt still gets its retry (#494)", () => {
+  it("a socket that hangs past the deadline and drops is retried once, and pages nobody", async () => {
+    const { stub, registry, faults, retries } = await setup();
+    stub.slowFailures("tools/list", 6_000);
+    stub.drop("tools/list", 1);
+
+    expect(await listTools(registry)).toEqual(["apify__ping"]);
+    expect(stub.seen("tools/list")).toBe(2);
+    expect(faults().filter((l) => l.includes("_failed"))).toEqual([]);
+    expect(retries()).toEqual([
+      expect.objectContaining({ evt: "mcp.list_retry", attempt: 1 }),
+    ]);
+  });
+
+  it("a slow sustained failure still pages, after ONE retry, as a deadline", async () => {
+    // The exemption is for the first retry only: a second attempt that also
+    // fails past the deadline stops there rather than spending the budget.
+    const { stub, registry, faults, retries } = await setup();
+    stub.slowFailures("tools/list", 6_000);
+    stub.fail("tools/list", 503, 100);
+
+    expect(await listTools(registry)).toEqual([]);
+    expect(stub.seen("tools/list")).toBe(2);
+    const failed = faults().filter((l) => l.includes("mcp.list_tools_failed"));
+    expect(failed).toHaveLength(1);
+    expect(JSON.parse(failed[0]!)).toMatchObject({
+      attempts: 2,
+      retry: "deadline",
+      status: 503,
+    });
+    expect(retries().map((r) => r.attempt)).toEqual([1]);
+  });
+
+  it("a slow real answer still fails on the first attempt", async () => {
+    const { stub, registry, faults, retries } = await setup();
+    stub.slowFailures("tools/list", 6_000);
+    stub.fail("tools/list", 404, 100);
+
+    expect(await listTools(registry)).toEqual([]);
+    expect(stub.seen("tools/list")).toBe(1);
+    const failed = faults().filter((l) => l.includes("mcp.list_tools_failed"));
+    expect(failed).toHaveLength(1);
+    expect(JSON.parse(failed[0]!)).toMatchObject({
+      attempts: 1,
+      retry: "not_transient",
+    });
+    expect(retries()).toEqual([]);
   });
 });
 

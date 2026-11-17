@@ -884,7 +884,13 @@ export class HttpServerAdapter implements ServerAdapter {
         // The wall clock, not just the sleeps: a `504` can take as long as the
         // proxy that emitted it was willing to wait, and three of those in a row
         // is a listing the client has already given up on.
-        if (Date.now() - startedAt >= LIST_RETRY_DEADLINE_MS) {
+        //
+        // Not before the FIRST retry. The clock includes the first attempt's own
+        // duration, and a connection to a component being replaced can hang for
+        // seconds before it is reset — a failure classified transient that would
+        // otherwise get zero retries (#494). So a transient failure always gets
+        // one more look; the deadline gates the second retry and later ones.
+        if (attempt > 0 && Date.now() - startedAt >= LIST_RETRY_DEADLINE_MS) {
           throw stop("deadline");
         }
         const delay = retryDelayMs({
@@ -1580,12 +1586,21 @@ const LIST_RETRY_BUDGET: RetryBudget = {
 };
 
 /**
- * No retry STARTS once a listing has spent this long, sleeps included.
+ * No retry after the first STARTS once a listing has spent this long, sleeps
+ * and the first attempt included.
  *
  * Under the 10s deadline the reachability probe and the troubleshoot probe put
  * around `listTools()`, so a retry does not turn an upstream's `503` into
  * their deadline error. It bounds when a retry may start, not how long the one
  * it starts may take — that is `timeoutMs`, as it is for any listing.
+ *
+ * The first retry is exempt (#494): a transient failure always gets one more
+ * look, however long the attempt that failed took. Without that, an attempt
+ * that hung for 5s before its socket was reset was classified transient and
+ * retried zero times. The cost is that a first attempt failing late in a 10s
+ * probe can have its one retry cut by the probe's deadline, which reports the
+ * slug unreachable either way. The worst case is two attempts, each bounded by
+ * `timeoutMs`, and one backoff — never a third attempt past the deadline.
  */
 const LIST_RETRY_DEADLINE_MS = 5_000;
 
