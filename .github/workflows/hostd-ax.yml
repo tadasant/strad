@@ -110,11 +110,13 @@ jobs:
         # icon's animation; `always` makes the smoke test drive it.
         run: |
           defaults write strad-hostd-ax statusIconAnimation always
-          SMOKE_REQUIRE_ANIMATION=1 node smoke.mjs .build/release/strad-hostd-ax
+          SMOKE_REQUIRE_ANIMATION=1 SMOKE_SCREENSHOT_DIR="$RUNNER_TEMP/status-icons/screen" \
+            node smoke.mjs .build/release/strad-hostd-ax
       - name: Render the menu-bar icon's stills and animation frames
         working-directory: hostd/ax
         run: .build/release/strad-hostd-ax --render-status-icons "$RUNNER_TEMP/status-icons"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: status-icons
           path: ${{ runner.temp }}/status-icons

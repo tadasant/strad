@@ -6,6 +6,7 @@
 // from CI's hostd-ax workflow; locally:
 // `node ax/smoke.mjs .build/release/strad-hostd-ax`.
 import { spawn } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const binary = process.argv[2];
@@ -38,6 +39,28 @@ const call = (op, args = {}) =>
   });
 
 let failed = 0;
+
+// SMOKE_SCREENSHOT_DIR: save real screenshots of the banner and the menu bar
+// at the moments that matter, when the helper holds Screen Recording (GitHub's
+// macOS images do). Evidence, not a check: a capture that fails is logged.
+const shotDir = process.env.SMOKE_SCREENSHOT_DIR;
+const snap = async (name) => {
+  if (!shotDir) return;
+  const r = await call("screen_capture", { max_width: 2048, format: "png" });
+  if (r.ok !== true) {
+    console.log(`note screenshot ${name} not taken — ${r.error?.code}`);
+    return;
+  }
+  mkdirSync(shotDir, { recursive: true });
+  writeFileSync(
+    `${shotDir}/${name}.png`,
+    Buffer.from(r.result.image_base64, "base64"),
+  );
+  console.log(
+    `note screenshot ${name}.png ${r.result.width}x${r.result.height}`,
+  );
+};
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 const check = (name, ok, detail) => {
   console.log(`${ok ? "ok  " : "FAIL"} ${name}${detail ? ` — ${detail}` : ""}`);
   if (!ok) failed++;
@@ -231,6 +254,7 @@ try {
     moving(rich.result),
     JSON.stringify(rich.result),
   );
+  await snap("1-banner-compact-call-running");
   if (process.env.SMOKE_REQUIRE_ANIMATION === "1")
     check(
       "the animation path actually ran (SMOKE_REQUIRE_ANIMATION)",
@@ -248,6 +272,10 @@ try {
       moving(tucked.result),
     JSON.stringify(tucked.result ?? tucked.error),
   );
+  // Two captures a beat apart: the strip gone, the icon on two frames.
+  await snap("2-put-away-icon-animating-a");
+  await pause(500);
+  await snap("3-put-away-icon-animating-b");
   const stillTucked = await call("set_state", {
     disabled: false,
     grants: [

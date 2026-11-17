@@ -412,7 +412,9 @@ bar and back through the `banner_mode` op, and checks the menu-bar icon
 animates while a call runs and holds still otherwise. The runner has Reduce
 motion on, so the job sets `statusIconAnimation always` first and runs the
 smoke test with `SMOKE_REQUIRE_ANIMATION=1`, which fails if the animation was
-skipped. It then draws every
+skipped. The runner's image grants Screen Recording, so with
+`SMOKE_SCREENSHOT_DIR` set the smoke test also saves real screenshots of the
+banner shown and put away, which go into the same artifact under `screen/`. It then draws every
 still and animation frame of that icon offscreen with
 `strad-hostd-ax --render-status-icons` and uploads them as the run's
 `status-icons` artifact, light and dark: what the icon looks like, without a
