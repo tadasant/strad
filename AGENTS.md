@@ -366,7 +366,7 @@ slop behind when you fix a stale fact.
   "did I typo a key" is answered here, by `scripts/check-config.ts`.
 - `src/deploy/appspec.ts` — turns the config into a DigitalOcean App Platform spec.
   The server list decides the container topology.
-- `servers/bundle/` — one image, 33 mounted MCP servers, one shared Chromium,
+- `servers/bundle/` — one image, 34 mounted MCP servers, one shared Chromium,
   assembled from TWENTY-FIVE independently-built dependency trees.
 - `servers/remote-filesystem/` — strad's own artifact store, behind the
   `remote-filesystem-tmp-public` slug. `is_sensitive` picks the KIND of link;
