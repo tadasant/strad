@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"maunium.net/go/mautrix/bridgev2"
@@ -49,6 +50,9 @@ type Login struct {
 	process bridgev2.LoginProcess
 	step    *bridgev2.LoginStep
 	started time.Time
+	// pending mirrors the current step for InProgress, which must not wait on
+	// lock: a display-and-wait step holds it for up to waitStepTimeout.
+	pending atomic.Pointer[StepView]
 	// onComplete runs after a step reaches complete — the host snapshots then,
 	// so a fresh login reaches durable storage without waiting for the timer.
 	onComplete func()
@@ -235,7 +239,9 @@ func (l *Login) Submit(ctx context.Context, input map[string]string) (*StepView,
 
 func (l *Login) advanceLocked(_ context.Context) (*StepView, error) {
 	v := view(l.flow, l.step)
+	l.pending.Store(v)
 	if l.step.Type == bridgev2.LoginStepTypeComplete {
+		l.pending.Store(nil)
 		l.process, l.step = nil, nil
 		if l.onComplete != nil {
 			go l.onComplete()
@@ -255,14 +261,10 @@ func (l *Login) cancelLocked() {
 		l.process.Cancel()
 	}
 	l.process, l.step, l.flow = nil, nil, ""
+	l.pending.Store(nil)
 }
 
 // InProgress reports the pending step, if any, for messenger_status.
 func (l *Login) InProgress() *StepView {
-	l.lock.Lock()
-	defer l.lock.Unlock()
-	if l.step == nil {
-		return nil
-	}
-	return view(l.flow, l.step)
+	return l.pending.Load()
 }

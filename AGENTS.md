@@ -151,8 +151,9 @@ does not use it.
     `src/state/store.ts` — strad's STATE STORE: the GCS client, the AES-256-GCM
     seal, the single-writer lease, and the rules for the ONE shared bucket
     (`STRAD_STATE_GCS_*`, a folder per consumer under its own root, a key per
-    consumer) — into `servers/whatsapp/shared/src/state-store.ts` and
-    `servers/bundle-api/fork/slack/src/events/state-store.ts`. Core does not run
+    consumer) — into `servers/whatsapp/shared/src/state-store.ts`,
+    `servers/bundle-api/fork/slack/src/events/state-store.ts` and
+    `servers/messenger/shared/src/state-store.ts`. Core does not run
     it; it lives under `src/` so the root `tsc`, ESLint and Vitest cover the one
     copy that is edited. A drift is two servers disagreeing about the bucket they
     share — whose folder is whose, what a lease means — and its first symptom is
@@ -241,6 +242,7 @@ not a confession.
 | `hostd/**` — a tool, the consent gate, the kill switch, the banner, the helper, the install                         | `servers/hostd.md`, `servers/hostd-design.md`, `hostd/README.md`, `limitations.md`, and `operate/operations.md` if `hostd-ax.yml` moves with it                                      |
 | `hostd/src/custody/**`, `src/http/deposit.ts`, `src/secrets/deposit-wire.ts` — custody, the hold, the deposit route | `servers/hostd-custody.md`, `operate/secrets.md`, `operate/secrets-iam.md`, `limitations.md`, and `npm run deposit:sync`                                                             |
 | `servers/telegram/**` — a tool, the credential model, the read/write split                                          | `servers/telegram.md`, `limitations.md`                                                                                                                                              |
+| `servers/messenger/**` — a tool, the login steps, the snapshot, the bridge or its pin                               | `servers/messenger.md`, `limitations.md`, `servers/messenger/README.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                        |
 | `servers/bill-spend/**` — a tool, the write's body shapes, the read-back rule                                       | `servers/bill-spend.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                      |
 | `servers/aws-device-farm/**` — a tool, the driving wire, the cost model                                             | `servers/aws-device-farm.md`, `servers/aws-device-farm-setup.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                             |
 | `servers/liveoak/**` — a tool, the login or device flow, what the bank's API is sent                                | `servers/liveoak.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                         |

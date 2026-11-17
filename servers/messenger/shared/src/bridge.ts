@@ -112,8 +112,15 @@ export class MessengerBridge {
   private async boot(): Promise<void> {
     await this.lease.claim();
     this.dataDir = await mkdtemp(join(tmpdir(), "strad-messenger-"));
-    await this.restore();
-    await this.spawn();
+    try {
+      await this.restore();
+      await this.spawn();
+    } catch (err) {
+      // The next tool call boots again from scratch, with a directory of its own.
+      await rm(this.dataDir, { recursive: true, force: true });
+      this.dataDir = undefined;
+      throw err;
+    }
     const interval = this.options.snapshotIntervalMs ?? 60_000;
     this.timer = setInterval(() => {
       void this.snapshot().catch((err: unknown) => logWarning(`snapshot failed: ${errMessage(err)}`));
