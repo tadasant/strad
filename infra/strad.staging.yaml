@@ -1279,7 +1279,7 @@ servers:
   - slug: messenger-tadas
     kind: supplementary-image
     title: Messenger (read-only)
-    description: Read Tadas's Facebook Messenger threads, messages and attachments.
+    description: Read one person's Facebook Messenger threads, messages and attachments.
     image: ghcr.io/tadasant/strad-bundle:latest
     bundle: bundle-messenger
     path: /messenger
