@@ -4,10 +4,14 @@ import Foundation
 /// The menu-bar icon: one still image per state, and the frames it cycles
 /// through while work is running.
 ///
-/// Every image is a TEMPLATE drawn into the same fixed canvas. Template, so
-/// the menu bar draws it black or white for its appearance and the status
-/// item's tint (orange, red) still applies; a fixed canvas, so swapping frames
-/// never changes the item's width and nudges the icons beside it.
+/// Every image is drawn into the same fixed canvas, so swapping frames never
+/// changes the item's width and nudges the icons beside it. The idle and off
+/// icons are TEMPLATES, so the menu bar draws them black or white for its
+/// appearance. A grant's icons carry their own colour — orange for background
+/// control, red for the mouse and keyboard — because the menu bar ignores a
+/// status button's `contentTintColor` and draws a template in its own ink;
+/// the colour is resolved when the image is drawn, so it is the light or dark
+/// shade the menu bar's appearance calls for.
 enum StatusIcon {
     struct Frame {
         /// What the smoke test and `--render-status-icons` call this frame.
@@ -26,8 +30,8 @@ enum StatusIcon {
         if disabled { return frame("power.circle", label: "remote control is off") }
         if !hasGrants { return frame(idleName, label: "nobody has control") }
         return foreground
-            ? frame("cursorarrow.motionlines", label: "a caller holds the mouse and keyboard")
-            : frame("dot.radiowaves.left.and.right", label: "a caller has background control")
+            ? frame("cursorarrow.motionlines", label: "a caller holds the mouse and keyboard", tint: .systemRed)
+            : frame("dot.radiowaves.left.and.right", label: "a caller has background control", tint: .systemOrange)
     }
 
     /// The animation while a call (or a command a call started) is running.
@@ -40,19 +44,19 @@ enum StatusIcon {
         if foreground {
             let label = "a caller is driving the mouse and keyboard"
             return [
-                frame("cursorarrow.motionlines", label: label),
-                frame("cursorarrow.motionlines", label: label),
-                frame("cursorarrow.motionlines.click", label: label),
-                frame("cursorarrow.motionlines.click", label: label),
+                frame("cursorarrow.motionlines", label: label, tint: .systemRed),
+                frame("cursorarrow.motionlines", label: label, tint: .systemRed),
+                frame("cursorarrow.motionlines.click", label: label, tint: .systemRed),
+                frame("cursorarrow.motionlines.click", label: label, tint: .systemRed),
             ]
         }
         let label = "a caller is working in the background"
         return [0.0, 0.34, 0.67, 1.0].map { v in
-            frame("dot.radiowaves.left.and.right", variable: v, label: label)
+            frame("dot.radiowaves.left.and.right", variable: v, label: label, tint: .systemOrange)
         }
     }
 
-    private static func frame(_ symbol: String, variable: Double? = nil, label: String) -> Frame {
+    private static func frame(_ symbol: String, variable: Double? = nil, label: String, tint: NSColor? = nil) -> Frame {
         let name = variable.map { "\(symbol)@\(String(format: "%.2f", $0))" } ?? symbol
         let description = "strad-hostd: \(label)"
         let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
@@ -72,10 +76,21 @@ enum StatusIcon {
             let s = symbolImage.size
             let scale = min(1, rect.width / max(s.width, 1), rect.height / max(s.height, 1))
             let w = s.width * scale, h = s.height * scale
-            symbolImage.draw(in: NSRect(x: (rect.width - w) / 2, y: (rect.height - h) / 2, width: w, height: h))
+            let target = NSRect(x: (rect.width - w) / 2, y: (rect.height - h) / 2, width: w, height: h)
+            guard let tint = tint, let cg = NSGraphicsContext.current?.cgContext else {
+                symbolImage.draw(in: target)
+                return true
+            }
+            // Its own layer, so the colour lands on the symbol's pixels only
+            // and never on whatever is already under the image.
+            cg.beginTransparencyLayer(auxiliaryInfo: nil)
+            symbolImage.draw(in: target)
+            tint.set()
+            target.fill(using: .sourceAtop)
+            cg.endTransparencyLayer()
             return true
         }
-        image.isTemplate = true
+        image.isTemplate = tint == nil
         image.accessibilityDescription = description
         return Frame(name: name, image: image)
     }
@@ -87,24 +102,24 @@ enum StatusIcon {
     /// shows what the icon looks like without a menu bar to photograph.
     static func render(to dir: String) throws -> [String] {
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        let sets: [(String, [Frame], NSColor?)] = [
-            ("off", [still(disabled: true, hasGrants: false, foreground: false)], nil),
-            ("idle", [still(disabled: false, hasGrants: false, foreground: false)], nil),
-            ("background-still", [still(disabled: false, hasGrants: true, foreground: false)], .systemOrange),
-            ("foreground-still", [still(disabled: false, hasGrants: true, foreground: true)], .systemRed),
-            ("background-active", frames(foreground: false), .systemOrange),
-            ("foreground-active", frames(foreground: true), .systemRed),
+        let sets: [(String, [Frame])] = [
+            ("off", [still(disabled: true, hasGrants: false, foreground: false)]),
+            ("idle", [still(disabled: false, hasGrants: false, foreground: false)]),
+            ("background-still", [still(disabled: false, hasGrants: true, foreground: false)]),
+            ("foreground-still", [still(disabled: false, hasGrants: true, foreground: true)]),
+            ("background-active", frames(foreground: false)),
+            ("foreground-active", frames(foreground: true)),
         ]
         var written: [String] = []
         for dark in [false, true] {
-            for (setName, set, tint) in sets {
+            for (setName, set) in sets {
                 let path = "\(dir)/\(setName)-\(dark ? "dark" : "light").png"
                 // Under the strip's own appearance, so the system tints
                 // resolve to their dark-mode shades on the dark strip.
                 var data: Data?
                 var failure: Error?
                 NSAppearance(named: dark ? .darkAqua : .aqua)?.performAsCurrentDrawingAppearance {
-                    do { data = try strip(set.map { $0.image }, tint: tint, dark: dark) } catch { failure = error }
+                    do { data = try strip(set.map { $0.image }, dark: dark) } catch { failure = error }
                 }
                 if let failure = failure { throw failure }
                 guard let png = data else { throw HelperError(code: "render_failed", message: "no appearance to draw under") }
@@ -116,7 +131,7 @@ enum StatusIcon {
     }
 
     /// The frames side by side at 4x, on a menu-bar background.
-    private static func strip(_ images: [NSImage], tint: NSColor?, dark: Bool) throws -> Data {
+    private static func strip(_ images: [NSImage], dark: Bool) throws -> Data {
         let scale: CGFloat = 4
         let pad: CGFloat = 6
         let cell = NSSize(width: canvas.width + 2 * pad, height: canvas.height + 2 * pad)
@@ -135,11 +150,15 @@ enum StatusIcon {
         ctx.cgContext.scaleBy(x: scale, y: scale)
         (dark ? NSColor(white: 0.16, alpha: 1) : NSColor(white: 0.93, alpha: 1)).setFill()
         NSRect(x: 0, y: 0, width: cell.width * CGFloat(images.count), height: cell.height).fill()
-        // What the menu bar does with a template: its own foreground colour,
-        // or the item's tint.
-        let ink = tint ?? (dark ? NSColor.white : NSColor.black)
+        // What the menu bar does with a template: draws it in its own ink.
+        // A coloured image is drawn as it is.
+        let ink = dark ? NSColor.white : NSColor.black
         for (i, image) in images.enumerated() {
             let rect = NSRect(x: CGFloat(i) * cell.width + pad, y: pad, width: canvas.width, height: canvas.height)
+            guard image.isTemplate else {
+                image.draw(in: rect)
+                continue
+            }
             let tinted = NSImage(size: canvas, flipped: false) { r in
                 image.draw(in: r)
                 ink.set()

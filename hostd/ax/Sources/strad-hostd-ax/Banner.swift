@@ -662,7 +662,8 @@ final class Banner: NSObject {
     private func renderStatusItem(foreground: Bool) {
         guard let item = statusItem else { return }
         item.button?.title = grants.isEmpty || disabled ? "" : " \(grants.count)"
-        item.button?.contentTintColor = grants.isEmpty || disabled ? nil : (foreground ? .systemRed : .systemOrange)
+        // The colour is in the image (see StatusIcon): the menu bar ignores
+        // a status button's tint, and draws the count in its own ink.
         if !disabled && !grants.isEmpty && isActive && mayAnimate {
             startAnimating(foreground: foreground)
         } else {
