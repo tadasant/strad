@@ -1,0 +1,15 @@
+{
+  "name": "messenger",
+  "version": "0.1.0",
+  "private": true,
+  "description": "strad's Facebook Messenger MCP server — a read-only bridge to one personal account, through a headless mautrix-meta process (bridge/, AGPL-3.0) whose state persists to GCS sealed. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared",
+    "test": "npm run test --workspace shared"
+  },
+  "license": "MIT"
+}

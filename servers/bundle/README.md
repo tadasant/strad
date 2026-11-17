@@ -1,11 +1,11 @@
 # bundle — THE strad supplementary image
 
-Thirty-three MCP servers. One container. One Chromium. One `op` binary. One
+Thirty-four MCP servers. One container. One Chromium. One `op` binary. One
 `mcp-grafana` binary.
 
 ```
 /slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-filesystem-tmp-public
-/x-twitter /telegram /whatsapp /bill-spend /aws-device-farm /liveoak /ssh /image-diff
+/x-twitter /telegram /whatsapp /messenger /bill-spend /aws-device-farm /liveoak /ssh /image-diff
 /svg-tracer /nutrition-facts /airtable /flightaware /digitalocean /hetzner
 /pulse-subregistry
 /strad-fetch /grafana
@@ -14,7 +14,7 @@ Thirty-three MCP servers. One container. One Chromium. One `op` binary. One
 /good-eggs /fetchpet /pointsyeah
 ```
 
-Thirty-three is the floor, not a constant: four of those mounts (`/telegram`,
+Thirty-four is the floor, not a constant: four of those mounts (`/telegram`,
 `/remote-filesystem-tmp-public`, `/google-sheets`, `/grafana`) are re-mounted once
 more per slug the container holds a separate credential for, and four trees
 (telegram, google-sheets, grafana, ssh) also serve store-served instances at
@@ -69,10 +69,10 @@ binaries sit in the image unused. `/healthz` reports the sidecar under
 `tailnet` and never folds it into `ok`. See
 [`docs/operate/tailnet`](../../docs/src/content/docs/operate/tailnet.md).
 
-## How twenty-four projects become one image
+## How twenty-five projects become one image
 
 `Dockerfile`'s build context is the **repo root**, because the servers live in
-twenty-four different places:
+twenty-five different places:
 
 | tree | source | servers |
 | --- | --- | --- |
@@ -87,6 +87,7 @@ twenty-four different places:
 | `grafana` | `servers/grafana` | grafana (proxies the pinned `mcp-grafana` Go binary, baked in) |
 | `telegram` | `servers/telegram` | telegram (MTProto, a user session) |
 | `whatsapp` | `servers/whatsapp` | whatsapp (a WhatsApp linked device, Baileys) |
+| `messenger` | `servers/messenger` | messenger (Facebook Messenger, read-only; supervises the Go `strad-messenger-bridge`, AGPL-3.0, built in its own stage) |
 | `bill-spend` | `servers/bill-spend` | bill-spend (BILL Spend & Expense transaction coding) |
 | `aws-device-farm` | `servers/aws-device-farm` | aws-device-farm (a real iPhone, driven over the session's Appium endpoint) |
 | `liveoak` | `servers/liveoak` | liveoak (LiveOak Bank statements, read-only, as a remembered Cognito device) |
@@ -103,7 +104,7 @@ twenty-four different places:
 
 Each is built **in its own stage, with its own lockfile and its own
 `node_modules`**, exactly as its standalone image builds it, and lands at
-`/app/trees/<name>`. Nothing is merged. Merging twenty-four dependency trees is how
+`/app/trees/<name>`. Nothing is merged. Merging twenty-five dependency trees is how
 you find out in production that two of them wanted different Playwright versions.
 
 `host/` imports across the trees **by path** (`src/trees.ts`). Node resolves each
@@ -189,7 +190,7 @@ could perform one. See [`servers/secrets/README.md`](../secrets/README.md).
 
 ## Blast radius, honestly
 
-Thirty-three servers share a process. A crash is a thirty-three-server outage. Everything
+Thirty-four servers share a process. A crash is a thirty-four-server outage. Everything
 that *can* be made survivable is:
 
 - a browser server whose **login fails** is marked `degraded` in `/healthz`; the

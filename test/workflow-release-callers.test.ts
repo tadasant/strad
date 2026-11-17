@@ -64,13 +64,13 @@ interface Caller {
  * The tree a caller's image IS — the directory that identifies it.
  *
  * `context:` is that directory for a one-tree image, and is not for the bundle:
- * its context is the REPO ROOT, because its Dockerfile `COPY`s from twenty-four
+ * its context is the REPO ROOT, because its Dockerfile `COPY`s from twenty-five
  * trees, so `${context}/**` would be `.//**` and name nothing. The Dockerfile's
  * own directory is the answer in both shapes, and a caller that names no `file:`
  * is building the context's own.
  *
  * Watching that one tree is the floor, not the whole rule, for a caller that
- * builds from the root: the bundle's twenty-four are compared against the
+ * builds from the root: the bundle's twenty-five are compared against the
  * Dockerfile's `COPY` stages by `test/bundle-release-paths.test.ts`, which is
  * the guard that would notice a twenty-fifth tree added and not watched.
  */
@@ -305,7 +305,7 @@ describe("the shared supplementary release body", () => {
     // Both branches have a caller, and neither is asserted by having run. The
     // four one-tree images leave `cache-scope` empty and take `--cache-from
     // type=gha --cache-to type=gha,mode=max`; release-bundle-image.yml passes
-    // `bundle` and takes `,scope=bundle`, because one build of twenty-four trees
+    // `bundle` and takes `,scope=bundle`, because one build of twenty-five trees
     // and a Chromium evicts the other four out of a shared scope. The release
     // path has no pre-merge execution (#134), so the expression is pinned here
     // rather than read for the first time by a real release.
@@ -362,7 +362,7 @@ describe("the shared supplementary release body", () => {
  *     tracks — and nothing errors. The guard is in the body; whether it applies
  *     is written here.
  *   - `cache-scope:` defaults to the SHARED gha scope. Dropped, this build —
- *     twenty-four trees and a Chromium — evicts every one-tree image out of it, and
+ *     twenty-five trees and a Chromium — evicts every one-tree image out of it, and
  *     the symptom is four unrelated releases that got slower.
  *   - `file:` defaults to the context's own `Dockerfile`. Dropped, with a
  *     repo-root context, the build reads `./Dockerfile` — the CORE image's — and

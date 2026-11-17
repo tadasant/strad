@@ -234,6 +234,7 @@ export const VENDORED = [
     targets: [
       "servers/whatsapp/shared/src/state-store.ts",
       "servers/bundle-api/fork/slack/src/events/state-store.ts",
+      "servers/messenger/shared/src/state-store.ts",
     ],
   },
   {

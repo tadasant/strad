@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# bundle — THE strad supplementary image. Thirty-three MCP servers, one container.
+# bundle — THE strad supplementary image. Thirty-four MCP servers, one container.
 #
 # BUILD CONTEXT IS THE REPO ROOT (not servers/bundle/), because this image is
-# assembled from twenty-four existing projects that live in different places:
+# assembled from twenty-five existing projects that live in different places:
 #
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
 #                           gcs, google-flights
@@ -17,6 +17,8 @@
 #   servers/x-twitter       X
 #   servers/telegram        telegram               (MTProto, USER session)
 #   servers/whatsapp        whatsapp               (WhatsApp linked device; Baileys)
+#   servers/messenger       messenger              (Facebook Messenger, read-only;
+#                                                  supervises the Go bridge built below)
 #   servers/bill-spend      bill-spend             (BILL Spend & Expense coding)
 #   servers/aws-device-farm aws-device-farm        (real iOS hardware, driven over
 #                                                  the session's Appium endpoint)
@@ -40,7 +42,7 @@
 #
 # Each is built in its OWN stage with its OWN lockfile and its OWN node_modules,
 # exactly as its standalone image builds it, and copied into /app/trees/<name>.
-# Nothing is merged. That is on purpose: merging twenty-four dependency trees is how you
+# Nothing is merged. That is on purpose: merging twenty-five dependency trees is how you
 # discover in production that two of them wanted different Playwright versions.
 # The host (servers/bundle/host) imports across them by path — Node resolves each
 # package's own imports from its own tree — and owns the one thing that MUST be
@@ -148,6 +150,32 @@ COPY servers/whatsapp/shared/package.json ./shared/
 RUN npm ci --no-audit --no-fund
 COPY servers/whatsapp/shared ./shared
 RUN npm run build && npm prune --omit=dev
+
+# ---- messenger ----------------------------------------------------------------
+# strad's own Facebook Messenger server, read-only. Two halves: the TypeScript
+# MCP tree (the MCP SDK and nothing else; it reaches GCS on Node's own fetch),
+# and strad-messenger-bridge, the Go program it supervises, which runs
+# mautrix-meta headless. The bridge is AGPL-3.0 (servers/messenger/bridge/LICENSE)
+# and is a separate program spoken to over loopback — never linked.
+FROM ${PW} AS build-messenger
+WORKDIR /src
+COPY servers/messenger/package.json servers/messenger/package-lock.json ./
+COPY servers/messenger/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/messenger/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
+# The Go half. Built with cgo, because its database is SQLite (mattn/go-sqlite3),
+# on bookworm, whose glibc (2.36) is older than the noble runtime's (2.39), so
+# the binary runs there. go.sum pins every module; `go build` verifies it.
+FROM golang:1.27-bookworm AS build-messenger-bridge
+WORKDIR /src
+COPY servers/messenger/bridge/go.mod servers/messenger/bridge/go.sum ./
+RUN go mod download
+COPY servers/messenger/bridge ./
+RUN CGO_ENABLED=1 go build -trimpath -buildvcs=false -ldflags="-s -w" \
+      -o /out/strad-messenger-bridge . && \
+    test -x /out/strad-messenger-bridge
 
 # ---- bill-spend ---------------------------------------------------------------
 # strad's own BILL Spend & Expense server: re-codes card transactions to the
@@ -434,7 +462,7 @@ RUN npm run build && npm prune --omit=dev
 FROM ${PW}
 
 LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
-LABEL org.opencontainers.image.description="strad's single supplementary image — 33 MCP servers (API, Google, X.com, Telegram, WhatsApp, web fetching, Grafana, banking, Airtable, FlightAware, DigitalOcean, Hetzner Cloud, image diff/tracing, nutrition facts, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
+LABEL org.opencontainers.image.description="strad's single supplementary image — 34 MCP servers (API, Google, X.com, Telegram, WhatsApp, Messenger, web fetching, Grafana, banking, Airtable, FlightAware, DigitalOcean, Hetzner Cloud, image diff/tracing, nutrition facts, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
 LABEL org.opencontainers.image.licenses="MIT"
 
 # --- 1Password CLI (op), pinned ----------------------------------------------
@@ -466,7 +494,7 @@ RUN set -eux; \
 ENV NODE_ENV=production
 WORKDIR /app
 
-# The twenty-four trees, each with the node_modules it was built against.
+# The twenty-five trees, each with the node_modules it was built against.
 COPY --from=build-api /src /app/trees/bundle-api
 COPY --from=build-google /src /app/trees/bundle-google
 COPY --from=build-op /src /app/trees/onepassword
@@ -478,6 +506,10 @@ COPY --from=build-pointsyeah /src /app/trees/pointsyeah
 COPY --from=build-x-twitter /src /app/trees/x-twitter
 COPY --from=build-telegram /src /app/trees/telegram
 COPY --from=build-whatsapp /src /app/trees/whatsapp
+COPY --from=build-messenger /src /app/trees/messenger
+# Where the messenger tree's supervisor looks for it (DEFAULT_BINARY in
+# servers/messenger/shared/src/sidecar.ts), next to the tree that runs it.
+COPY --from=build-messenger-bridge /out/strad-messenger-bridge /app/trees/messenger/bin/strad-messenger-bridge
 COPY --from=build-bill-spend /src /app/trees/bill-spend
 COPY --from=build-aws-device-farm /src /app/trees/aws-device-farm
 COPY --from=build-liveoak /src /app/trees/liveoak
