@@ -16,10 +16,17 @@ final class GrantButton: NSButton {
 /// COMPACT (each grant's server, session, full purpose and the call it is in
 /// the middle of), and DETAILS (adds when it started, when it expires, the
 /// commands left running and the last few calls, with a Kill per grant). Kill
-/// is on every size. The menu bar carries the same state. A
-/// foreground grant (the one that moves the mouse) is red; background control
-/// is orange. A grant that takes the mouse also ends on the first key or click
-/// from the real keyboard: the person is back, and the machine is theirs.
+/// is on every size. Minimize puts the strip away entirely, into the menu bar
+/// (MENUBAR), and the status item's menu brings it back.
+///
+/// The menu bar carries the same state whatever the strip is doing: tinted
+/// while a grant is in force, and animated while a call is running or a
+/// command a call started is still running — the "it is doing something
+/// right now" signal, which is the one thing a hidden strip would otherwise
+/// take away. A foreground grant (the one that moves the mouse) is red;
+/// background control is orange. A grant that takes the mouse also ends on the
+/// first key or click from the real keyboard, whether or not the strip is
+/// shown: the person is back, and the machine is theirs.
 ///
 /// The daemon owns the truth and pushes it here with `set_state`; buttons go
 /// back to the daemon as events, and the daemon ends the grant. Nothing here
@@ -78,12 +85,23 @@ final class Banner: NSObject {
     }
 
     enum Mode: String {
-        case sliver, compact, expanded
+        /// `menubar` is the strip put away: nothing on screen but the status item.
+        case sliver, compact, expanded, menubar
+
+        /// The sizes Show goes back to.
+        var isOpen: Bool { self == .compact || self == .expanded }
     }
 
     private static let modeKey = "bannerMode"
-    /// What Show goes back to from the sliver.
+    /// What Show goes back to from the sliver or the menu bar.
     private static let openModeKey = "bannerOpenMode"
+    /// `always`, `never`, or `auto` (the default: animate unless the owner has
+    /// Reduce motion on). `defaults write strad-hostd-ax statusIconAnimation never`.
+    private static let animationKey = "statusIconAnimation"
+
+    enum Animation: String {
+        case auto, always, never
+    }
 
     private var grants: [GrantRow] = []
     private var disabled = false
@@ -108,8 +126,43 @@ final class Banner: NSObject {
     private var ticker: Timer?
     private var statusItem: NSStatusItem?
     private var monitor: Any?
+    /// The status item's activity animation: its timer and where it is.
+    private var animator: Timer?
+    private var animatingForeground = false
+    private var frameIndex = 0
+    /// The icon name last drawn, for the smoke test's report.
+    private var iconName = StatusIcon.idleName
 
     var isEmpty: Bool { grants.isEmpty }
+
+    private var animation: Animation {
+        Animation(rawValue: UserDefaults.standard.string(forKey: Banner.animationKey) ?? "") ?? .auto
+    }
+
+    private var mayAnimate: Bool {
+        switch animation {
+        case .always: return true
+        case .never: return false
+        case .auto: return !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        }
+    }
+
+    /// A call is running, or a command one started still is.
+    var isActive: Bool { grants.contains { $0.inFlightCount > 0 || $0.backgroundCount > 0 } }
+
+    /// What `set_state` and `banner_mode` answer: what the owner can see.
+    var report: [String: Any] {
+        [
+            "shown": !grants.isEmpty,
+            "mode": mode.rawValue,
+            "panel_visible": panel?.isVisible ?? false,
+            "animating": animator != nil,
+            "animation": animation.rawValue,
+            "reduce_motion": NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+            "open_mode": UserDefaults.standard.string(forKey: Banner.openModeKey) ?? Mode.compact.rawValue,
+            "icon": iconName,
+        ]
+    }
 
     /// What a request needs from the controller's last state to be allowed.
     enum Need {
@@ -147,6 +200,9 @@ final class Banner: NSObject {
             throw HelperError(code: "busy", message: "another connection already controls this helper; it is released when that connection closes")
         }
         controller = channel
+        // Re-read on each push, so a `defaults write` lands within a tick
+        // rather than on the helper's next restart.
+        if let stored = Mode(rawValue: UserDefaults.standard.string(forKey: Banner.modeKey) ?? "") { mode = stored }
         disabled = args.bool("disabled", default: false)
         controlUrl = args.string("control_url")
         grants = ((args.raw["grants"] as? [[String: Any]]) ?? []).compactMap { g in
@@ -214,16 +270,25 @@ final class Banner: NSObject {
     private func render() {
         ensureStatusItem()
         let foreground = grants.contains { $0.foreground }
-        if grants.isEmpty {
+        if grants.isEmpty || mode == .menubar {
             panel?.orderOut(nil)
-            stopMonitor()
             stopTicker()
         } else {
             showPanel(foreground: foreground)
-            if foreground { startMonitor() } else { stopMonitor() }
             startTicker()
         }
+        // The owner's first key or click ends a foreground grant with the
+        // strip shown or put away: hiding it is not consenting to more.
+        if foreground { startMonitor() } else { stopMonitor() }
         renderStatusItem(foreground: foreground)
+    }
+
+    /// Set the size from the daemon (or the smoke test), as a menu pick would.
+    func applyMode(_ args: Args) throws {
+        guard let m = Mode(rawValue: try args.requireString("mode")) else {
+            throw HelperError(code: "bad_args", message: "mode must be one of sliver, compact, expanded, menubar")
+        }
+        setMode(m)
     }
 
     private func showPanel(foreground: Bool) {
@@ -280,8 +345,10 @@ final class Banner: NSObject {
         sliverText.widthAnchor.constraint(equalToConstant: 160).isActive = true
         let restore = button("Show", #selector(restoreTapped), small: true)
         restore.toolTip = "Show what has control of this Mac"
+        let hide = button("Hide", #selector(minimizeTapped), small: true)
+        hide.toolTip = "Put this away into the menu bar; Kill stays in its menu"
         let sliverKill = button("Kill", #selector(killTapped), small: true)
-        let sliver = NSStackView(views: [sliverText, restore, sliverKill])
+        let sliver = NSStackView(views: [sliverText, restore, hide, sliverKill])
         sliver.orientation = .horizontal
         sliver.spacing = 6
         stack.addArrangedSubview(sliver)
@@ -290,7 +357,7 @@ final class Banner: NSObject {
         let title = label(.boldSystemFont(ofSize: 13), wraps: false)
         let details = button("Details", #selector(detailsTapped))
         let minimize = button("Minimize", #selector(minimizeTapped))
-        minimize.toolTip = "Shrink this to a sliver; Kill stays on it"
+        minimize.toolTip = "Put this away into the menu bar; Kill stays in its menu"
         let kill = button("Kill", #selector(killTapped))
         let off = button("Disable everything", #selector(disableTapped))
         let header = NSStackView(views: [title, details, minimize, kill, off])
@@ -535,7 +602,7 @@ final class Banner: NSObject {
     private func setMode(_ next: Mode) {
         mode = next
         UserDefaults.standard.set(next.rawValue, forKey: Banner.modeKey)
-        if next != .sliver { UserDefaults.standard.set(next.rawValue, forKey: Banner.openModeKey) }
+        if next.isOpen { UserDefaults.standard.set(next.rawValue, forKey: Banner.openModeKey) }
         render()
     }
 
@@ -587,33 +654,34 @@ final class Banner: NSObject {
     private func ensureStatusItem() {
         if statusItem != nil { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "circle.dashed", accessibilityDescription: "strad-hostd")
+        item.button?.image = StatusIcon.still(disabled: false, hasGrants: false, foreground: false).image
         item.button?.imagePosition = .imageLeading
         statusItem = item
     }
 
     private func renderStatusItem(foreground: Bool) {
         guard let item = statusItem else { return }
-        let symbol: String
-        let title: String
-        if disabled {
-            symbol = "power.circle"
-            title = ""
-        } else if grants.isEmpty {
-            symbol = "circle.dashed"
-            title = ""
+        item.button?.title = grants.isEmpty || disabled ? "" : " \(grants.count)"
+        // The colour is in the image (see StatusIcon): the menu bar ignores
+        // a status button's tint, and draws the count in its own ink.
+        if !disabled && !grants.isEmpty && isActive && mayAnimate {
+            startAnimating(foreground: foreground)
         } else {
-            symbol = foreground ? "cursorarrow.motionlines" : "dot.radiowaves.left.and.right"
-            title = " \(grants.count)"
+            stopAnimating()
+            let still = StatusIcon.still(disabled: disabled, hasGrants: !grants.isEmpty, foreground: foreground)
+            item.button?.image = still.image
+            iconName = still.name
         }
-        item.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "strad-hostd")
-        item.button?.title = title
-        item.button?.contentTintColor = grants.isEmpty ? nil : (foreground ? .systemRed : .systemOrange)
 
         let menu = NSMenu()
         let head = NSMenuItem(title: disabled ? "strad-hostd: remote control is OFF" : "strad-hostd: remote control is on", action: nil, keyEquivalent: "")
         head.isEnabled = false
         menu.addItem(head)
+        if !grants.isEmpty && mode == .menubar {
+            let show = NSMenuItem(title: "Show banner", action: #selector(restoreTapped), keyEquivalent: "")
+            show.target = self
+            menu.addItem(show)
+        }
         menu.addItem(.separator())
         if grants.isEmpty {
             let none = NSMenuItem(title: "Nobody has control of this Mac", action: nil, keyEquivalent: "")
@@ -635,7 +703,7 @@ final class Banner: NSObject {
         }
         if !grants.isEmpty {
             menu.addItem(.separator())
-            for (m, name) in [(Mode.sliver, "Banner: sliver"), (Mode.compact, "Banner: compact"), (Mode.expanded, "Banner: details")] {
+            for (m, name) in [(Mode.menubar, "Banner: hidden (menu bar only)"), (Mode.sliver, "Banner: sliver"), (Mode.compact, "Banner: compact"), (Mode.expanded, "Banner: details")] {
                 let pick = NSMenuItem(title: name, action: #selector(pickMode(_:)), keyEquivalent: "")
                 pick.target = self
                 pick.representedObject = m.rawValue
@@ -654,6 +722,39 @@ final class Banner: NSObject {
             menu.addItem(open)
         }
         item.menu = menu
+    }
+
+    // MARK: the status item's activity animation
+
+    /// Cycle the frames while work is running. One timer, kept across the
+    /// daemon's two-second pushes so the animation does not restart on each;
+    /// a switch between foreground and background swaps the frame set.
+    private func startAnimating(foreground: Bool) {
+        if animator != nil && animatingForeground == foreground { return }
+        stopAnimating()
+        animatingForeground = foreground
+        let frames = StatusIcon.frames(foreground: foreground)
+        frameIndex = 0
+        showFrame(frames)
+        let t = Timer(timeInterval: StatusIcon.frameInterval, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            self.frameIndex = (self.frameIndex + 1) % frames.count
+            self.showFrame(frames)
+        }
+        // Common modes, so it keeps moving while the status menu is open.
+        RunLoop.main.add(t, forMode: .common)
+        animator = t
+    }
+
+    private func showFrame(_ frames: [StatusIcon.Frame]) {
+        let frame = frames[frameIndex % frames.count]
+        statusItem?.button?.image = frame.image
+        iconName = frame.name
+    }
+
+    private func stopAnimating() {
+        animator?.invalidate()
+        animator = nil
     }
 
     // MARK: the owner's input during a foreground grant
@@ -697,12 +798,12 @@ final class Banner: NSObject {
     }
 
     @objc private func minimizeTapped() {
-        setMode(.sliver)
+        setMode(.menubar)
     }
 
     @objc private func restoreTapped() {
         let open = Mode(rawValue: UserDefaults.standard.string(forKey: Banner.openModeKey) ?? "") ?? .compact
-        setMode(open == .sliver ? .compact : open)
+        setMode(open.isOpen ? open : .compact)
     }
 
     @objc private func pickMode(_ sender: NSMenuItem) {

@@ -6,6 +6,7 @@
 // from CI's hostd-ax workflow; locally:
 // `node ax/smoke.mjs .build/release/strad-hostd-ax`.
 import { spawn } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const binary = process.argv[2];
@@ -38,6 +39,28 @@ const call = (op, args = {}) =>
   });
 
 let failed = 0;
+
+// SMOKE_SCREENSHOT_DIR: save real screenshots of the banner and the menu bar
+// at the moments that matter, when the helper holds Screen Recording (GitHub's
+// macOS images do). Evidence, not a check: a capture that fails is logged.
+const shotDir = process.env.SMOKE_SCREENSHOT_DIR;
+const snap = async (name) => {
+  if (!shotDir) return;
+  const r = await call("screen_capture", { max_width: 2048, format: "png" });
+  if (r.ok !== true) {
+    console.log(`note screenshot ${name} not taken — ${r.error?.code}`);
+    return;
+  }
+  mkdirSync(shotDir, { recursive: true });
+  writeFileSync(
+    `${shotDir}/${name}.png`,
+    Buffer.from(r.result.image_base64, "base64"),
+  );
+  console.log(
+    `note screenshot ${name}.png ${r.result.width}x${r.result.height}`,
+  );
+};
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 const check = (name, ok, detail) => {
   console.log(`${ok ? "ok  " : "FAIL"} ${name}${detail ? ` — ${detail}` : ""}`);
   if (!ok) failed++;
@@ -91,6 +114,12 @@ try {
     noTree.ok === false && noTree.error?.code === "not_controller",
     noTree.error?.code,
   );
+  const noMode = await call("banner_mode", { mode: "menubar" });
+  check(
+    "banner_mode before any set_state is refused as not_controller",
+    noMode.ok === false && noMode.error?.code === "not_controller",
+    noMode.error?.code,
+  );
 
   const bg = await call("set_state", {
     disabled: false,
@@ -133,6 +162,24 @@ try {
     "set_state with a foreground grant shows the banner",
     fg.ok === true && fg.result?.shown === true,
     JSON.stringify(fg.result ?? fg.error),
+  );
+  check(
+    "a grant with nothing running holds the menu-bar icon still",
+    fg.result?.animating === false &&
+      fg.result?.icon === "cursorarrow.motionlines",
+    JSON.stringify(fg.result),
+  );
+  // The owner's banner size lives in this helper's preferences, and this
+  // script also runs on the owner's Mac: note it, and put it back at the end.
+  const ownersMode = fg.result?.mode;
+  const ownersOpenMode = fg.result?.open_mode;
+  const compact = await call("banner_mode", { mode: "compact" });
+  check(
+    "banner_mode compact shows the strip",
+    compact.ok === true &&
+      compact.result?.mode === "compact" &&
+      compact.result?.panel_visible === true,
+    JSON.stringify(compact.result ?? compact.error),
   );
 
   // The detailed payload the daemon sends: two grants, a session link, a
@@ -192,6 +239,72 @@ try {
     rich.ok === true && rich.result?.shown === true,
     JSON.stringify(rich.result ?? rich.error),
   );
+  // `statusIconAnimation`: always, never, or auto (animate unless Reduce
+  // motion is on). CI's runner has Reduce motion on, so the workflow sets
+  // `always` and SMOKE_REQUIRE_ANIMATION=1 makes a skipped animation a failure.
+  const shouldMove = (r) =>
+    r?.animation === "always" ||
+    (r?.animation === "auto" && r?.reduce_motion === false);
+  const moving = (r) =>
+    shouldMove(r)
+      ? r?.animating === true && /^cursorarrow\.motionlines/.test(r?.icon)
+      : r?.animating === false;
+  check(
+    "a call in flight animates the menu-bar icon (unless the setting or Reduce motion says not to)",
+    moving(rich.result),
+    JSON.stringify(rich.result),
+  );
+  await snap("1-banner-compact-call-running");
+  if (process.env.SMOKE_REQUIRE_ANIMATION === "1")
+    check(
+      "the animation path actually ran (SMOKE_REQUIRE_ANIMATION)",
+      rich.result?.animating === true,
+      JSON.stringify(rich.result),
+    );
+
+  const tucked = await call("banner_mode", { mode: "menubar" });
+  check(
+    "banner_mode menubar puts the strip away and keeps the menu-bar icon going",
+    tucked.ok === true &&
+      tucked.result?.mode === "menubar" &&
+      tucked.result?.panel_visible === false &&
+      tucked.result?.shown === true &&
+      moving(tucked.result),
+    JSON.stringify(tucked.result ?? tucked.error),
+  );
+  // Two captures a beat apart: the strip gone, the icon on two frames.
+  await snap("2-put-away-icon-animating-a");
+  await pause(500);
+  await snap("3-put-away-icon-animating-b");
+  const stillTucked = await call("set_state", {
+    disabled: false,
+    grants: [
+      {
+        id: "g_smoke",
+        server: "computer-use-ci",
+        purpose: "Smoke-test the banner.",
+        foreground: true,
+      },
+    ],
+  });
+  check(
+    "a push while put away keeps the strip away, and stops the animation when nothing runs",
+    stillTucked.result?.panel_visible === false &&
+      stillTucked.result?.animating === false,
+    JSON.stringify(stillTucked.result),
+  );
+  const badMode = await call("banner_mode", { mode: "huge" });
+  check(
+    "banner_mode refuses a size it does not know",
+    badMode.ok === false && badMode.error?.code === "bad_args",
+    badMode.error?.code,
+  );
+  const back = await call("banner_mode", { mode: "compact" });
+  check(
+    "banner_mode compact brings the strip back",
+    back.ok === true && back.result?.panel_visible === true,
+    JSON.stringify(back.result),
+  );
 
   const badArgs = await call("click", {});
   check(
@@ -232,10 +345,24 @@ try {
     );
   }
 
+  const missing = await call("banner_mode", {});
+  check(
+    "banner_mode with no mode is refused",
+    missing.ok === false && missing.error?.code === "bad_args",
+    missing.error?.code,
+  );
+  // Show's target first (an open size records it), then the size itself.
+  if (ownersOpenMode) await call("banner_mode", { mode: ownersOpenMode });
+  if (ownersMode) await call("banner_mode", { mode: ownersMode });
   const cleared = await call("set_state", { disabled: false, grants: [] });
   check(
     "set_state with no grants clears the banner",
-    cleared.ok === true && cleared.result?.shown === false,
+    cleared.ok === true &&
+      cleared.result?.shown === false &&
+      cleared.result?.panel_visible === false &&
+      cleared.result?.animating === false &&
+      cleared.result?.icon === "circle.dashed",
+    JSON.stringify(cleared.result),
   );
   const afterClear = await call("mouse_move", { x: 1, y: 1 });
   check(

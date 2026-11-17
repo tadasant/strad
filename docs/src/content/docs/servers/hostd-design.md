@@ -281,7 +281,10 @@ comes back. It says so when nobody answered.
 installed, a strip sits at the top of the main display above every window and
 on every Space, naming the server and the purpose, with a **Kill** button and a
 **Disable everything** button, and the menu bar carries the same state with the
-same buttons. Orange is background control; red is a foreground grant that
+same buttons. The owner can put the strip away into the menu bar; the menu-bar
+icon then still shows the grant's colour and count, animates while a call is
+running, keeps Kill in its menu, and a foreground grant still ends on the
+owner's first key or click. Orange is background control; red is a foreground grant that
 holds the mouse. The helper draws it and decides nothing: the daemon pushes the
 full set of grants as one idempotent `set_state` message whenever the set
 changes and again every two seconds, unconditionally, and the buttons come back
@@ -518,7 +521,12 @@ purpose and mode, when it started and expires, its call count, the session
 its caller claimed in `request_control` (a label, and a link only when it is
 https — the helper checks the scheme again before it opens anything), the
 calls in flight and the shell commands it left running (the oldest three of
-each, with their totals), and its last five calls.
+each, with their totals), and its last five calls. It answers with what the
+owner can see — whether the strip is on screen, its size, and whether the
+menu-bar icon is animating — which only the smoke test reads. One more op,
+`banner_mode`, sets the size the way a menu pick does; it is controller-only,
+the daemon never sends it, and it is there so the smoke test can drive the
+put-away path.
 The call text is the tool's own audit summary, scrubbed for the screen by
 `hostd/src/consent/display.ts`. None of it is read by `Banner.authorize`, which
 still asks only whether the connection is the controller and whether a grant,

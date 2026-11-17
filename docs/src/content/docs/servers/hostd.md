@@ -422,17 +422,29 @@ the server and the purpose. With the helper installed, a banner also sits at
 the top of the screen for the life of every grant, on every Space and above
 every window. Orange means background control (shell, browser, Accessibility,
 Messages); red means the mouse and keyboard are taken, and any key or click you
-make ends that grant. It has three sizes, and the helper remembers the one you
-picked for the next grant:
+make ends that grant — with the banner shown or put away. It has three sizes,
+or it can be put away into the menu bar, and the helper remembers your pick for
+the next grant:
 
 | Size | What it shows |
 | --- | --- |
-| **Sliver** (**Minimize**) | a fixed-width pill: how many grants, the tool running now, **Show** (back to the size you left) and **Kill** |
+| **Hidden** (**Minimize**) | nothing on screen: the banner is put away into the menu bar, and the menu-bar icon's **Show banner** brings it back as compact or details, whichever you used last |
+| **Sliver** | a fixed-width pill: how many grants, the tool running now, **Show** (compact or details, whichever you used last), **Hide** (into the menu bar) and **Kill** |
 | **Compact** (the default) | each grant's server, the session it says it acts for, its whole purpose, and ONE line for what it is doing — `▶ run_command: npm test — running 12s`, plus how many more calls or left-running commands there are — with **Details**, **Minimize**, **Kill** and **Disable everything**, and a **Kill** per grant when there is more than one |
 | **Details** | adds, per grant, when it started, when it expires and how many calls it has made, up to three calls in flight and three shell commands still running after the call that started them returned (with the count of any more), the last five calls with ✓ or ✗ and how long each took, and a **Kill** per grant |
 
-**Kill** is on all three. The menu bar carries the same state: a Kill per
-grant with its session and current call, and the three sizes. The text of a
+**Kill** is on the three sizes, and in the menu bar whatever the banner is
+doing. The menu-bar icon carries the same state: a dashed circle when nobody
+has control, a power symbol when everything is disabled, and while a grant is
+in force the grant's colour and count — radio waves for background control, a
+moving cursor for the mouse and keyboard. While a call is running, or a
+command a call started is still running, the icon ANIMATES (the waves fill
+outward; the cursor clicks), four frames a second, and it holds still between
+calls. With **Reduce motion** on in Accessibility settings it does not
+animate; `defaults write strad-hostd-ax statusIconAnimation never` (or
+`always`, or `auto`, the default) overrides that either way.
+Its menu has **Show banner** when the banner is put away, a Kill per grant with
+its session and current call, and the four choices. The text of a
 call is caller-authored, so before it reaches the screen the daemon scrubs
 the obvious secrets — `Authorization` and cookie headers, `password=`-shaped
 pairs, credential-looking flags, `curl -u` passwords, URL userinfo,
@@ -444,8 +456,8 @@ unscrubbed summary, on the machine. The banner is part of the screen, so a
 screenshot a foreground grant takes includes it: in compact that is every
 grant's purpose, session and current call, and in **Details** the rest. In
 compact the banner's height changes only when a grant starts or ends, not per
-call; it is still taller than a single line, and **Minimize** is the size that
-stays out of a foreground grant's way.
+call; it is still taller than a single line, and **Minimize** (put away) and
+the sliver are what stay out of a foreground grant's way.
 
 The daemon re-sends the banner's state every two seconds, and whenever a call
 starts or finishes, so a

@@ -407,7 +407,18 @@ path and itself, and runs on a PR and on `main`.
 It proves the helper compiles, ad-hoc signs, speaks its JSON-lines protocol over
 stdio (`hostd/ax/smoke.mjs`), answers `hello`, lists apps and displays, and
 refuses every guarded op with the right code on a runner that holds no
-Accessibility or Screen Recording grant. It also lints both LaunchAgent plists.
+Accessibility or Screen Recording grant. It puts the banner away into the menu
+bar and back through the `banner_mode` op, and checks the menu-bar icon
+animates while a call runs and holds still otherwise. The runner has Reduce
+motion on, so the job sets `statusIconAnimation always` first and runs the
+smoke test with `SMOKE_REQUIRE_ANIMATION=1`, which fails if the animation was
+skipped. The runner's image grants Screen Recording, so with
+`SMOKE_SCREENSHOT_DIR` set the smoke test also saves real screenshots of the
+banner shown and put away, which go into the same artifact under `screen/`. It then draws every
+still and animation frame of that icon offscreen with
+`strad-hostd-ax --render-status-icons` and uploads them as the run's
+`status-icons` artifact, light and dark: what the icon looks like, without a
+menu bar to photograph. It also lints both LaunchAgent plists.
 A runner has nobody to click a grant, so reading a real Accessibility tree, a
 real screenshot and the banner under a real grant are exercised on the owner's
 Mac and nowhere else; [limitation #108](/limitations/) says so.

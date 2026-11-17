@@ -252,8 +252,13 @@ Disable button). A foreground (`computer`) grant is red and ends on your first
 key or click. The banner has three sizes —
 a sliver with a count and Kill, a compact strip with each grant's server,
 claimed session, purpose and current call, and a details view adding timing,
-commands left running and the last five calls — and remembers the one you
-picked (`defaults read strad-hostd-ax bannerMode`). Call text is scrubbed of
+commands left running and the last five calls — and **Minimize** puts it away
+into the menu bar entirely (**Show banner** in the menu brings it back). It
+remembers the pick (`defaults read strad-hostd-ax bannerMode`: `menubar`,
+`sliver`, `compact` or `expanded`). The menu-bar icon animates while a call or
+a command a call started is running, and holds still otherwise — not under
+Reduce motion, unless `defaults write strad-hostd-ax statusIconAnimation
+always` (or `never`) says otherwise. Call text is scrubbed of
 obvious secrets before it is drawn, and typed text is shown only as its length.
 
 ### The Messages helper (macOS): `strad-hostd-messages`

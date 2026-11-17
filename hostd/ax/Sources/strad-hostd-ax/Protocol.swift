@@ -86,6 +86,10 @@ final class Dispatcher {
             // Letting go of the keys is what a grant's END asks for, so it needs
             // the controller and no grant.
             try banner.authorize(channel, .controller)
+        case "banner_mode":
+            // The banner's size is the owner's pick; only the controller may
+            // change it from outside, the way a menu pick would.
+            try banner.authorize(channel, .controller)
         default:
             // hello, request_permissions, set_state, list_apps, displays — and
             // an unknown op, which `handle` refuses by name.
@@ -159,7 +163,10 @@ final class Dispatcher {
 
         case "set_state":
             try banner.setState(args, channel: channel)
-            return ["shown": !banner.isEmpty]
+            return banner.report
+        case "banner_mode":
+            try banner.applyMode(args)
+            return banner.report
 
         default:
             throw HelperError(code: "unknown_op", message: "unknown op \"\(op)\"")

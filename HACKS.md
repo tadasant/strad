@@ -5688,6 +5688,15 @@ a LaunchAgent or replace the helper binary. That is the shell slug's blast
 radius, named in #159 from the start, and why every hostd slug stays
 `admin`-only.
 
+**A banner the owner put away.** **Minimize** puts the banner away into the
+menu bar, remembered for every grant after. The menu-bar icon then carries it
+alone — tinted, counting, animating while a call runs — and macOS drops status
+items that do not fit, so on a notched MacBook with a crowded menu bar there
+can be nothing on screen at all. The start and end notifications still post,
+a foreground grant still ends on the owner's first key or click, and **Show
+banner** in the icon's menu (or `defaults write strad-hostd-ax bannerMode
+compact`) brings the strip back.
+
 **What stays off the box.** As #101: the slugs, their entitlements and
 `recovery:` text ship by deploy, the keys are seeded at `/ui/secrets`, and
 `get_control_status` on either server reports `helper: {running, accessibility,
