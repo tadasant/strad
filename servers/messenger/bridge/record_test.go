@@ -188,3 +188,73 @@ func TestBatchSendAndGhostIDs(t *testing.T) {
 		t.Fatal("room IDs collide")
 	}
 }
+
+func TestBumpedCursorIsNeverReused(t *testing.T) {
+	rec, h := newRecorder(t)
+	ctx := context.Background()
+	send(t, h, "!b:strad.invalid", "200", text("keep1"), now, "k1")
+	send(t, h, "!b:strad.invalid", "200", text("keep2"), now, "k2")
+	victim := send(t, h, "!a:strad.invalid", "200", text("x"), now, "v")
+	edit := &event.MessageEventContent{MsgType: event.MsgText, Body: " * y", NewContent: &event.MessageEventContent{MsgType: event.MsgText, Body: "y"}}
+	edit.SetEdit(victim)
+	send(t, h, "!a:strad.invalid", "200", &event.Content{Parsed: edit}, now, "v")
+	cursor, _ := rec.MaxSeq(ctx) // a reader has seen the bumped row
+	if err := rec.ForgetRoom(ctx, "!a:strad.invalid"); err != nil {
+		t.Fatal(err)
+	}
+	send(t, h, "!b:strad.invalid", "200", text("new"), now, "n")
+	rows, _, _ := rec.Messages(ctx, MessageQuery{AfterSeq: cursor, Limit: 10})
+	if len(rows) != 1 || rows[0].Body != "new" {
+		t.Fatalf("a row inserted after a bumped row was deleted must still be after the cursor: %+v", rows)
+	}
+}
+
+func TestBotRedactionAndUnreact(t *testing.T) {
+	rec, h := newRecorder(t)
+	ctx := context.Background()
+	evt := send(t, h, "!a:strad.invalid", "200", text("disappearing"), now, "d")
+	if _, err := h.BotIntent().SendMessage(ctx, "!a:strad.invalid", event.EventRedaction,
+		&event.Content{Parsed: &event.RedactionEventContent{Redacts: evt}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := rec.Message(ctx, string(evt))
+	if !row.Deleted || row.Body != "" {
+		t.Fatalf("a redaction sent as the bot must delete: %+v", row)
+	}
+
+	target := send(t, h, "!a:strad.invalid", "200", text("react to me"), now, "r")
+	react := &event.ReactionEventContent{RelatesTo: event.RelatesTo{Type: event.RelAnnotation, EventID: target, Key: "❤️"}}
+	resp, err := h.GhostIntent("300").SendMessage(ctx, "!a:strad.invalid", event.EventReaction, &event.Content{Parsed: react}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := rec.Message(ctx, string(target))
+	if before.Reactions["300"].Key != "❤️" {
+		t.Fatalf("reaction: %+v", before.Reactions)
+	}
+	if _, err = h.GhostIntent("300").SendMessage(ctx, "!a:strad.invalid", event.EventRedaction,
+		&event.Content{Parsed: &event.RedactionEventContent{Redacts: resp.EventID}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := rec.Message(ctx, string(target))
+	if len(after.Reactions) != 0 || after.Seq <= before.Seq {
+		t.Fatalf("unreact must remove the reaction and move the row past the cursor: %+v -> %+v", before, after)
+	}
+}
+
+func TestLateDecryptionEditCarriesMedia(t *testing.T) {
+	rec, h := newRecorder(t)
+	ctx := context.Background()
+	placeholder := send(t, h, "!a:strad.invalid", "200",
+		&event.Content{Parsed: &event.MessageEventContent{MsgType: event.MsgNotice, Body: "Decrypting message failed"}}, now, "p")
+	uri, _ := h.GenerateContentURI(ctx, networkid.MediaID("late-image"))
+	img := &event.MessageEventContent{MsgType: event.MsgImage, Body: "late.jpg", URL: uri, Info: &event.FileInfo{MimeType: "image/jpeg", Size: 9}}
+	edit := &event.MessageEventContent{MsgType: event.MsgImage, Body: " * late.jpg"}
+	edit.SetEdit(placeholder) // SetEdit copies the outer content into NewContent
+	edit.NewContent = img
+	send(t, h, "!a:strad.invalid", "200", &event.Content{Parsed: edit}, now, "p")
+	row, _ := rec.Message(ctx, string(placeholder))
+	if row.Kind != "image" || row.MediaURI != string(uri) || row.MediaMime != "image/jpeg" || row.Body != "" {
+		t.Fatalf("the decrypted message must replace the placeholder whole: %+v", row)
+	}
+}

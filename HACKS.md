@@ -7643,7 +7643,9 @@ homeserver keeps strad's no-database, one-component shape.
   run only as far as the first login step (the Android flow's credential form,
   and the cookie flow's cookie list). A real login, the encrypted-history
   restore and live delivery are first exercised by the owner's own login.
-- A crash (not a deploy) loses up to a minute of encryption state; whatsmeow
+- A deploy is a handoff: the new container waits (up to five minutes, and its
+  tool calls with it) until the old one has snapshotted on SIGTERM and released
+  the lease. A crash (not a deploy) loses up to a minute of encryption state; whatsmeow
   asks the sender to re-send what it cannot decrypt, and a message that stays
   undecryptable becomes a `notice` placeholder row.
 - End-to-end encrypted messages sent before the device was registered are

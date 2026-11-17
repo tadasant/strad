@@ -108,7 +108,7 @@ const server = createServer(async (req, res) => {
       const m = state.messages.find((x) => x.id === url.searchParams.get("id"));
       if (!m) return json(res, 404, { error: "no message with that id" });
       if (!m.attachment) return json(res, 404, { error: "that message has no attachment this bridge can fetch" });
-      res.writeHead(200, { "content-type": m.attachment.mime_type, "x-file-name": m.attachment.name });
+      res.writeHead(200, { "content-type": m.attachment.mime_type, "x-file-name": encodeURIComponent(m.attachment.name) });
       return res.end(Buffer.from(m.attachment.bytes, "base64"));
     }
     case "POST /login/start": {

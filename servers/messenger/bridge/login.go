@@ -53,6 +53,10 @@ type Login struct {
 	// pending mirrors the current step for InProgress, which must not wait on
 	// lock: a display-and-wait step holds it for up to waitStepTimeout.
 	pending atomic.Pointer[StepView]
+	// waitCancel ends an in-flight display-and-wait step; cancelRequested
+	// tells that step it was ended on purpose rather than timed out.
+	waitCancel      atomic.Pointer[context.CancelFunc]
+	cancelRequested atomic.Bool
 	// onComplete runs after a step reaches complete — the host snapshots then,
 	// so a fresh login reaches durable storage without waiting for the timer.
 	onComplete func()
@@ -100,8 +104,9 @@ type AccountView struct {
 
 var (
 	ErrNoLoginInProgress = errors.New("no login is in progress: call messenger_login_start first")
-	ErrAlreadyConnected  = errors.New("an account is already logged in and connected: call messenger_logout first to replace it")
+	ErrAlreadyConnected  = errors.New("an account is already logged in: call messenger_logout first to replace it")
 	ErrUnknownFlow       = errors.New(`unknown flow: use "android", "ios" or "cookies"`)
+	ErrLoginCancelled    = errors.New("the login was cancelled")
 )
 
 func view(flow string, step *bridgev2.LoginStep) *StepView {
@@ -144,9 +149,15 @@ func view(flow string, step *bridgev2.LoginStep) *StepView {
 	return v
 }
 
-func (l *Login) connected() bool {
+// live: an account is logged in and not known to be dead. Anything but a
+// login Meta ended counts — CONNECTING right after boot, a transient
+// disconnect, a backfill — because a phone-app login registers a NEW device
+// and would replace the one that is merely reconnecting.
+func (l *Login) live() bool {
 	for _, ul := range l.user.GetUserLogins() {
-		if ul.BridgeState.GetPrev().StateEvent == status.StateConnected {
+		switch ul.BridgeState.GetPrev().StateEvent {
+		case status.StateBadCredentials, status.StateLoggedOut, status.StateUnknownError:
+		default:
 			return true
 		}
 	}
@@ -161,7 +172,7 @@ func (l *Login) Start(ctx context.Context, flow string) (*StepView, error) {
 	}
 	l.lock.Lock()
 	defer l.lock.Unlock()
-	if l.connected() {
+	if l.live() {
 		return nil, ErrAlreadyConnected
 	}
 	l.cancelLocked()
@@ -219,10 +230,18 @@ func (l *Login) Submit(ctx context.Context, input map[string]string) (*StepView,
 			return nil, fmt.Errorf("this login cannot wait")
 		}
 		waitCtx, cancel := context.WithTimeout(ctx, waitStepTimeout)
+		// Cancel interrupts the wait without the lock this call holds.
+		l.waitCancel.Store(&cancel)
 		next, err = p.Wait(waitCtx)
+		l.waitCancel.Store(nil)
 		cancel()
-		if err != nil && errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
-			// Still waiting is not a failure: the same step stands.
+		if l.cancelRequested.Swap(false) {
+			l.cancelLocked()
+			return nil, ErrLoginCancelled
+		}
+		if err != nil && waitCtx.Err() != nil {
+			// Still waiting is not a failure, and neither is the caller hanging
+			// up: the same step stands.
 			return view(l.flow, l.step), nil
 		}
 	default:
@@ -251,6 +270,10 @@ func (l *Login) advanceLocked(_ context.Context) (*StepView, error) {
 }
 
 func (l *Login) Cancel() {
+	if stop := l.waitCancel.Load(); stop != nil {
+		l.cancelRequested.Store(true)
+		(*stop)()
+	}
 	l.lock.Lock()
 	defer l.lock.Unlock()
 	l.cancelLocked()

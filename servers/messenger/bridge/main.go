@@ -196,6 +196,7 @@ func run() error {
 
 	api := &API{
 		token:    s.token,
+		dataDir:  s.dataDir,
 		bridge:   br,
 		user:     user,
 		rec:      rec,

@@ -159,23 +159,7 @@ func (r *Recorder) Record(ctx context.Context, roomID id.RoomID, eventID id.Even
 		if msg.RelatesTo != nil && msg.RelatesTo.InReplyTo != nil {
 			replyTo = string(msg.RelatesTo.InReplyTo.EventID)
 		}
-		body := msg.Body
-		mediaName := ""
-		var mediaMime string
-		var mediaSize int
-		if msg.URL != "" {
-			mediaName = msg.FileName
-			if mediaName == "" {
-				mediaName = msg.Body
-			}
-			if msg.FileName == "" || msg.FileName == msg.Body {
-				body = "" // the body of a captionless file is its name
-			}
-			if msg.Info != nil {
-				mediaMime = msg.Info.MimeType
-				mediaSize = msg.Info.Size
-			}
-		}
+		body, mediaName, mediaMime, mediaSize := splitMedia(msg)
 		fromMe := sender != "" && sender == r.ownerID()
 		_, err := r.db.Exec(ctx, `
 			INSERT INTO strad_message (event_id, room_id, message_id, part_id, sender_id, from_me, ts, kind, body, reply_to, media_uri, media_mime, media_name, media_size)
@@ -189,7 +173,7 @@ func (r *Recorder) Record(ctx context.Context, roomID id.RoomID, eventID id.Even
 		if !ok || react.RelatesTo.EventID == "" {
 			return nil
 		}
-		return r.react(ctx, react.RelatesTo.EventID, sender, react.RelatesTo.Key, ts)
+		return r.react(ctx, react.RelatesTo.EventID, eventID, sender, react.RelatesTo.Key)
 	case event.EventRedaction:
 		red, ok := content.Parsed.(*event.RedactionEventContent)
 		if !ok || red.Redacts == "" {
@@ -200,21 +184,63 @@ func (r *Recorder) Record(ctx context.Context, roomID id.RoomID, eventID id.Even
 	return nil
 }
 
-// bumpSeq moves a changed row to the end of the cursor order.
-func (r *Recorder) bumpSeq(ctx context.Context, eventID id.EventID) error {
-	_, err := r.db.Exec(ctx, `
-		UPDATE strad_message SET seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM strad_message)
-		WHERE event_id = $1`, eventID)
-	return err
+// splitMedia separates a message's text from its attachment descriptor. The
+// body of a captionless file is its name, which is not text anyone wrote.
+func splitMedia(msg *event.MessageEventContent) (body, name, mime string, size int) {
+	body = msg.Body
+	if msg.URL == "" {
+		return
+	}
+	name = msg.FileName
+	if name == "" {
+		name = msg.Body
+	}
+	if msg.FileName == "" || msg.FileName == msg.Body {
+		body = ""
+	}
+	if msg.Info != nil {
+		mime, size = msg.Info.MimeType, msg.Info.Size
+	}
+	return
 }
 
+// bumpSeq moves a changed row to the end of the cursor order. The new value
+// is drawn from sqlite_sequence — the AUTOINCREMENT counter itself — so it is
+// never reused: a MAX(seq)+1 would be handed out again by the next INSERT once
+// the bumped row was pruned, and a reader already past it would skip a row.
+func (r *Recorder) bumpSeq(ctx context.Context, eventID id.EventID) error {
+	return r.db.DoTxn(ctx, nil, func(ctx context.Context) error {
+		var next int64
+		err := r.db.QueryRow(ctx, `
+			UPDATE sqlite_sequence SET seq = MAX(seq, (SELECT COALESCE(MAX(seq), 0) FROM strad_message)) + 1
+			WHERE name = 'strad_message' RETURNING seq`).Scan(&next)
+		if err != nil {
+			return err
+		}
+		_, err = r.db.Exec(ctx, `UPDATE strad_message SET seq = $2 WHERE event_id = $1`, eventID, next)
+		return err
+	})
+}
+
+// edit applies a replacement. The replacement can carry media and a different
+// type: mautrix-meta delivers a message that could only be decrypted later as
+// an edit of its "could not decrypt" placeholder, so the row takes the new
+// type and attachment, not only the text.
 func (r *Recorder) edit(ctx context.Context, target id.EventID, msg *event.MessageEventContent, ts time.Time) error {
 	newContent := msg.NewContent
 	if newContent == nil {
 		newContent = msg
 	}
-	body := strings.TrimPrefix(newContent.Body, " * ")
-	res, err := r.db.Exec(ctx, `UPDATE strad_message SET body = $2, edited_at = $3 WHERE event_id = $1`, target, body, ts.UnixMilli())
+	body, name, mime, size := splitMedia(newContent)
+	body = strings.TrimPrefix(body, " * ")
+	res, err := r.db.Exec(ctx, `
+		UPDATE strad_message SET body = $2, edited_at = $3, kind = $4,
+			media_uri = CASE WHEN $5 <> '' THEN $5 ELSE media_uri END,
+			media_mime = CASE WHEN $5 <> '' THEN $6 ELSE media_mime END,
+			media_name = CASE WHEN $5 <> '' THEN $7 ELSE media_name END,
+			media_size = CASE WHEN $5 <> '' THEN $8 ELSE media_size END
+		WHERE event_id = $1`,
+		target, body, ts.UnixMilli(), kindOf(newContent), string(newContent.URL), mime, name, size)
 	if err != nil {
 		return err
 	}
@@ -239,24 +265,40 @@ func (r *Recorder) redact(ctx context.Context, target id.EventID, ts time.Time) 
 }
 
 // Reactions are a map of sender -> emoji, stored as JSON on the target row,
-// with the reaction's own event ID kept so an unreact can find it.
+// with the reaction's own event ID kept so an unreact can find it. A change
+// bumps the row, so a sweep past the message still sees the reaction.
 type reactionEntry struct {
 	Key     string `json:"key"`
 	EventID string `json:"event_id,omitempty"`
 }
 
-func (r *Recorder) react(ctx context.Context, target id.EventID, sender networkid.UserID, key string, _ time.Time) error {
+func (r *Recorder) react(ctx context.Context, target, reactionID id.EventID, sender networkid.UserID, key string) error {
 	return r.updateReactions(ctx, target, func(m map[string]reactionEntry) bool {
-		m[string(sender)] = reactionEntry{Key: key}
+		m[string(sender)] = reactionEntry{Key: key, EventID: string(reactionID)}
 		return true
 	})
 }
 
-func (r *Recorder) unreact(ctx context.Context, _ id.EventID) error {
-	// bridgev2 sends reaction removals as redactions of the reaction event,
-	// whose ID this table never saw (reactions are folded into their target).
-	// Losing a removed reaction is a cosmetic gap, not worth a second table.
-	return nil
+// unreact: bridgev2 removes a reaction by redacting the reaction's own event,
+// so find the row carrying that event ID in its reactions.
+func (r *Recorder) unreact(ctx context.Context, reactionID id.EventID) error {
+	var target id.EventID
+	err := r.db.QueryRow(ctx, `SELECT event_id FROM strad_message WHERE instr(reactions, $1) > 0 LIMIT 1`,
+		`"event_id":"`+string(reactionID)+`"`).Scan(&target)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return r.updateReactions(ctx, target, func(m map[string]reactionEntry) bool {
+		for sender, e := range m {
+			if e.EventID == string(reactionID) {
+				delete(m, sender)
+				return true
+			}
+		}
+		return false
+	})
 }
 
 func (r *Recorder) updateReactions(ctx context.Context, target id.EventID, fn func(map[string]reactionEntry) bool) error {
@@ -273,8 +315,10 @@ func (r *Recorder) updateReactions(ctx context.Context, target id.EventID, fn fu
 		return nil
 	}
 	out, _ := json.Marshal(m)
-	_, err = r.db.Exec(ctx, `UPDATE strad_message SET reactions = $2 WHERE event_id = $1`, target, string(out))
-	return err
+	if _, err = r.db.Exec(ctx, `UPDATE strad_message SET reactions = $2 WHERE event_id = $1`, target, string(out)); err != nil {
+		return err
+	}
+	return r.bumpSeq(ctx, target)
 }
 
 func (r *Recorder) ForgetRoom(ctx context.Context, roomID id.RoomID) error {

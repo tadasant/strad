@@ -77,6 +77,15 @@ function childEnv(options: SidecarOptions, token: string): NodeJS.ProcessEnv {
   return env;
 }
 
+/** The bridge percent-encodes file names: a header is latin1 on the wire. */
+function safeDecode(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 export async function startSidecar(options: SidecarOptions): Promise<Sidecar> {
   const token = randomBytes(32).toString("hex");
   const child: ChildProcess = spawnChild(options.command, options.args ?? [], {
@@ -172,7 +181,7 @@ export async function startSidecar(options: SidecarOptions): Promise<Sidecar> {
       return {
         data: Buffer.from(await res.arrayBuffer()),
         mimeType: res.headers.get("content-type") ?? "application/octet-stream",
-        fileName: res.headers.get("x-file-name") ?? "",
+        fileName: safeDecode(res.headers.get("x-file-name") ?? ""),
       };
     },
     async stop() {

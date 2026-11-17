@@ -238,7 +238,8 @@ function getMessagesTool(bridge: BridgeFactory): ToolDefinition {
       "`cursor` next time to get only what is new — including an earlier message that was " +
       "edited or unsent since (it comes back with `edited_at` or `deleted: true`), and history " +
       "the bridge backfilled late, whose `timestamp` is older than the sweep. Loop while " +
-      "`has_more` is true. The buffer keeps the last MESSENGER_BUFFER_MAX_AGE_DAYS days (30 by " +
+      "`has_more` is true. A cursor from a call filtered by `thread_id` or `since` is only " +
+      "valid for the same filter: an every-thread sweep keeps its own. The buffer keeps the last MESSENGER_BUFFER_MAX_AGE_DAYS days (30 by " +
       "default). `from_me` marks the account's own messages. A message with an `attachment` " +
       "can be fetched with messenger_get_attachment.\n\n" +
       'Example: {"cursor":1234,"limit":200}\n\n' +
@@ -291,8 +292,9 @@ function getAttachmentTool(bridge: BridgeFactory): ToolDefinition {
     description:
       "Fetch one message's attachment from Meta, by the message `id` messenger_get_messages " +
       "returned. An image comes back as an image (up to 5 MB); text as text; anything else as " +
-      "an embedded file (up to 25 MB). Media is fetched on demand, never stored, so an old " +
-      "attachment Meta has expired can fail.\n\n" +
+      "an embedded file (up to 25 MB). Media is fetched from Meta on demand (only the rare " +
+      "file Meta cannot hand over that way is kept, up to 2 MB), so an old attachment Meta " +
+      "has expired can fail.\n\n" +
       UNOFFICIAL,
     inputSchema: {
       type: "object",

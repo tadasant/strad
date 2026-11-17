@@ -22,7 +22,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -39,6 +41,7 @@ import (
 
 type API struct {
 	token    string
+	dataDir  string
 	bridge   *bridgev2.Bridge
 	user     *bridgev2.User
 	rec      *Recorder
@@ -273,10 +276,17 @@ func (a *API) messages(w http.ResponseWriter, r *http.Request) {
 	next := query.AfterSeq
 	for _, row := range rows {
 		next = row.Seq
+		p := portals[id.RoomID(row.RoomID)]
+		if p == nil {
+			// Not a chat: a bridge notice to a management room. The cursor
+			// still moves past it.
+			continue
+		}
 		mv := messageView{Row: row, SenderName: a.ghostName(ctx, names, networkid.UserID(row.SenderID))}
-		if p := portals[id.RoomID(row.RoomID)]; p != nil {
-			mv.ThreadID = string(p.ID)
-			mv.ThreadName = p.Name
+		mv.ThreadID = string(p.ID)
+		mv.ThreadName = p.Name
+		if mv.ThreadName == "" && p.OtherUserID != "" {
+			mv.ThreadName = a.ghostName(ctx, names, p.OtherUserID)
 		}
 		if row.MediaURI != "" && !strings.Contains(row.MediaURI, "/dropped_") {
 			mv.Attachment = &attachmentView{Name: row.MediaName, MimeType: row.MediaMime, Size: row.MediaSize}
@@ -284,6 +294,7 @@ func (a *API) messages(w http.ResponseWriter, r *http.Request) {
 		for sender, re := range row.Reactions {
 			mv.Reactions = append(mv.Reactions, reactionView{SenderID: sender, Emoji: re.Key})
 		}
+		slices.SortFunc(mv.Reactions, func(x, y reactionView) int { return strings.Compare(x.SenderID, y.SenderID) })
 		out = append(out, mv)
 	}
 	writeJSON(w, map[string]any{"messages": out, "next_cursor": next, "has_more": more})
@@ -314,9 +325,26 @@ func (a *API) attachment(w http.ResponseWriter, r *http.Request) {
 	if mime == "" {
 		mime = row.MediaMime
 	}
+	if mime == "" {
+		mime = "application/octet-stream"
+	}
 	w.Header().Set("Content-Type", mime)
-	w.Header().Set("X-File-Name", row.MediaName)
+	// Percent-encoded: a header is latin1 on the wire, and file names are not.
+	w.Header().Set("X-File-Name", url.PathEscape(row.MediaName))
 	_, _ = w.Write(data)
+}
+
+var errTooLarge = fmt.Errorf("file is larger than %d MB", maxMediaBytes>>20)
+
+// cappedBuffer refuses to grow past maxMediaBytes, so a callback-style
+// download cannot fill memory before the size is checked.
+type cappedBuffer struct{ bytes.Buffer }
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	if c.Len()+len(p) > maxMediaBytes {
+		return 0, errTooLarge
+	}
+	return c.Buffer.Write(p)
 }
 
 func readCapped(rd io.Reader) ([]byte, error) {
@@ -325,7 +353,7 @@ func readCapped(rd io.Reader) ([]byte, error) {
 		return nil, err
 	}
 	if len(data) > maxMediaBytes {
-		return nil, fmt.Errorf("file is larger than %d MB", maxMediaBytes>>20)
+		return nil, errTooLarge
 	}
 	return data, nil
 }
@@ -353,12 +381,11 @@ func (a *API) fetchMedia(ctx context.Context, row *Row) ([]byte, string, error) 
 		data, err := readCapped(m.Reader)
 		return data, m.ContentType, err
 	case *mediaproxy.GetMediaResponseCallback:
-		var buf bytes.Buffer
-		if _, err := m.Callback(&buf); err != nil {
+		buf := &cappedBuffer{}
+		if _, err := m.Callback(buf); err != nil {
 			return nil, "", err
 		}
-		data, err := readCapped(&buf)
-		return data, m.ContentType, err
+		return buf.Bytes(), m.ContentType, nil
 	case *mediaproxy.GetMediaResponseFile:
 		f, err := os.CreateTemp("", "strad-messenger-dl-*")
 		if err != nil {
@@ -445,7 +472,7 @@ func (a *API) loginSubmit(w http.ResponseWriter, r *http.Request) {
 
 func loginErrCode(err error) int {
 	switch {
-	case errors.Is(err, ErrNoLoginInProgress), errors.Is(err, ErrAlreadyConnected):
+	case errors.Is(err, ErrNoLoginInProgress), errors.Is(err, ErrAlreadyConnected), errors.Is(err, ErrLoginCancelled):
 		return http.StatusConflict
 	case errors.Is(err, ErrUnknownFlow):
 		return http.StatusBadRequest
@@ -480,6 +507,10 @@ func (a *API) snapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := readBody(r, &body); err != nil || body.Path == "" {
 		writeErr(w, 400, "path required")
+		return
+	}
+	if rel, err := filepath.Rel(a.dataDir, body.Path); err != nil || !filepath.IsLocal(rel) {
+		writeErr(w, 400, "path must be inside the data directory")
 		return
 	}
 	_ = os.Remove(body.Path)

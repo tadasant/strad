@@ -105,9 +105,15 @@ or unsent since (it comes back with `edited_at` or `deleted: true`), and history
 the bridge backfilled late, whose `timestamp` is older than the sweep. A
 timestamp cannot be the cursor for exactly that reason. Loop while `has_more`.
 
+A cursor from a call filtered by `thread_id` or `since` belongs to that filter;
+an every-thread sweep keeps its own. A reaction added or removed later also
+moves its message past the cursor.
+
 The buffer keeps 30 days (`MESSENGER_BUFFER_MAX_AGE_DAYS`). Attachments are not
 stored: a message carries a descriptor, and `messenger_get_attachment` fetches
-the file from Meta when asked. An image comes back as an image (up to 5 MB),
+the file from Meta when asked. The exception is the rare file Meta cannot hand
+over that way, which is kept in the snapshot if it is 2 MB or less and listed
+without an attachment if it is larger. An image comes back as an image (up to 5 MB),
 anything else as an embedded file (up to 25 MB).
 
 ## State
@@ -127,12 +133,17 @@ A crash (not a deploy) loses up to a minute of encryption state. whatsmeow asks
 a sender's device to re-send what it cannot decrypt, so that is usually a delay;
 a message that stays undecryptable arrives as a placeholder.
 
-**One instance.** One device is one connection, and two processes on it kick
-each other off. `/messenger` is in `SINGLE_SOCKET_PATHS`, so the renderer refuses
-`instanceCount > 1` for its bundle. A deploy still overlaps two containers for a
-while: the newer one claims a lease (`{prefix}/lease.json`), snapshot writes are
-conditional on the generation last written, and the older one stops its bridge
-as soon as it sees the lease gone.
+**One instance, and a handoff.** One device is one connection, and two
+processes on it kick each other off. `/messenger` is in `SINGLE_SOCKET_PATHS`,
+so the renderer refuses `instanceCount > 1` for its bundle. A deploy still
+overlaps two containers until the old one gets SIGTERM, so the new one does not
+connect while the old one holds the lease (`{prefix}/lease.json`) and is
+heartbeating. The old one takes a final snapshot on SIGTERM and releases the
+lease. The new one then restores that snapshot and starts. It takes over anyway
+after five minutes, or once the holder's heartbeat goes stale. Tool calls to the
+new container wait during the handoff. Snapshot writes are conditional on the
+generation last written. A process that finds the lease taken stops its bridge,
+and takes the lease back if the new holder goes quiet.
 
 ## Configuration
 

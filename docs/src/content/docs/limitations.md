@@ -4654,6 +4654,8 @@ run headless in a separate AGPL-3.0 process. What that costs:
   first login step. The first real login is the owner's.
 - **Encrypted history before login needs the PIN.** Without the 6-digit
   secure-storage PIN at login, encrypted chats start at the moment of login.
-- **A crash loses up to a minute of encryption state.** A deploy does not.
+- **A crash loses up to a minute of encryption state.** A deploy does not: the
+  new container waits for the old one's final snapshot, and tool calls wait
+  with it, for up to five minutes.
   Messages that cannot be decrypted arrive as placeholders.
 - **Read-only.** There is no send tool.

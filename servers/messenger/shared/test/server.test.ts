@@ -16,7 +16,9 @@ import {
   MemoryBlobStore,
   missingCredentials,
   SEAL_FORMAT,
+  startSidecar,
   toolNames,
+  type BridgeOptions,
   type MessengerConfig,
 } from "../src/index.js";
 import { open as unseal } from "../src/state-store.js";
@@ -39,14 +41,28 @@ afterEach(async () => {
   while (cleanups.length) await cleanups.pop()!();
 });
 
-async function connect(options: { blobs?: MemoryBlobStore; cfg?: MessengerConfig; groups?: ("readonly" | "admin")[] } = {}) {
+async function connect(
+  options: {
+    blobs?: MemoryBlobStore;
+    cfg?: MessengerConfig;
+    groups?: ("readonly" | "admin")[];
+    bridge?: Partial<BridgeOptions>;
+  } = {},
+) {
   const blobs = options.blobs ?? new MemoryBlobStore();
   const created = createMCPServer({
     version: "test",
     config: options.cfg ?? config(),
     blobs,
     ...(options.groups ? { toolGroups: options.groups } : {}),
-    bridgeOptions: { command: process.execPath, args: [FAKE], snapshotIntervalMs: 3_600_000, restartBaseMs: 10 },
+    bridgeOptions: {
+      command: process.execPath,
+      args: [FAKE],
+      snapshotIntervalMs: 3_600_000,
+      restartBaseMs: 10,
+      handoffPollMs: 20,
+      ...options.bridge,
+    },
   });
   await created.registerHandlers(created.server);
   const mcp = new Client({ name: "test", version: "1" }, { capabilities: {} });
@@ -183,14 +199,14 @@ describe("reading", () => {
     await logIn(call);
     const png = Buffer.from("89504e470d0a1a0a", "hex");
     await inject({ thread_id: "7001", text: "", type: "image", timestamp_ms: 1, attachment: { name: "p.png", mime_type: "image/png", bytes: png.toString("base64") } });
-    await inject({ thread_id: "7001", text: "", type: "file", timestamp_ms: 2, attachment: { name: "a.pdf", mime_type: "application/pdf", bytes: Buffer.from("%PDF").toString("base64") } });
+    await inject({ thread_id: "7001", text: "", type: "file", timestamp_ms: 2, attachment: { name: "résumé.pdf", mime_type: "application/pdf", bytes: Buffer.from("%PDF").toString("base64") } });
     await inject({ thread_id: "7001", text: "plain", timestamp_ms: 3 });
     const img = await call("messenger_get_attachment", { message_id: "$e1" });
     expect(img.content[1]).toMatchObject({ type: "image", mimeType: "image/png", data: png.toString("base64") });
     const pdf = await call("messenger_get_attachment", { message_id: "$e2" });
     expect(pdf.content[1]!.type).toBe("resource");
     expect(Buffer.from(pdf.content[1]!.resource!.blob, "base64").toString()).toBe("%PDF");
-    expect(pdf.structuredContent).toMatchObject({ name: "a.pdf", size_bytes: 4 });
+    expect(pdf.structuredContent).toMatchObject({ name: "résumé.pdf", size_bytes: 4 });
     const none = await call("messenger_get_attachment", { message_id: "$e3" });
     expect(none.isError).toBe(true);
   });
@@ -236,17 +252,62 @@ describe("state", () => {
     expect((await call("messenger_get_messages")).structuredContent).toMatchObject({ messages: [] });
   });
 
-  it("a newer process takes the lease, and the older one stops", async () => {
+  it("a deploy hands over: the new process waits for the old one's final snapshot, then has everything", async () => {
     const blobs = new MemoryBlobStore();
     const cfg = config();
     const older = await connect({ blobs, cfg });
     await logIn(older.call);
     const newer = await connect({ blobs, cfg });
+    let answered = false;
+    const pending = newer.call("messenger_get_messages").then((r) => {
+      answered = true;
+      return r;
+    });
+    // Arrives at the old process while the new one is waiting for it.
+    await older.inject({ thread_id: "7001", text: "during the overlap", timestamp_ms: 9 });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(answered).toBe(false);
+    await older.close(); // SIGTERM: final snapshot, then release
+    const got = (await pending).structuredContent as { messages: Array<{ text: string }> };
+    expect(got.messages.map((m) => m.text)).toEqual(["during the overlap"]);
+  });
+
+  it("a newer process that times out waiting takes the lease, the older one stops, and takes it back once the newer one is gone", async () => {
+    const blobs = new MemoryBlobStore();
+    const cfg = config();
+    const older = await connect({ blobs, cfg });
+    await logIn(older.call);
+    const newer = await connect({ blobs, cfg, bridge: { handoffWaitMs: 50 } });
     expect((await newer.call("messenger_status")).structuredContent).toMatchObject({ logged_in: true });
     await older.created.bridge()!.snapshot();
     const stale = await older.call("messenger_status");
     expect(stale.isError).toBe(true);
     expect(stale.content[0]!.text).toContain("taken over");
+
+    await newer.close(); // releases the lease
+    await older.created.bridge()!.maintain();
+    expect((await older.call("messenger_status")).structuredContent).toMatchObject({ logged_in: true });
+  });
+
+  it("a bridge that cannot start is not restarted in a loop, and the next call boots again", async () => {
+    let spawns = 0;
+    const { call } = await connect({
+      bridge: {
+        startSidecar: async (opts) => {
+          spawns += 1;
+          if (spawns === 1) {
+            opts.onExit?.(1); // a child that died before listening
+            throw new Error("simulated start failure");
+          }
+          return startSidecar(opts);
+        },
+      },
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(spawns).toBe(1);
+    expect((await call("messenger_status")).structuredContent).toMatchObject({ logged_in: false });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(spawns).toBe(2);
   });
 
   it("restarts the bridge process when it dies", async () => {

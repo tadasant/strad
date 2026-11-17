@@ -30,7 +30,6 @@ import (
 	"io"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -56,10 +55,6 @@ var errNoMatrix = errors.New("not available: this bridge has no Matrix homeserve
 type Headless struct {
 	br  *bridgev2.Bridge
 	rec *Recorder
-
-	stateLock sync.Mutex
-	state     status.BridgeState
-	stateAt   time.Time
 }
 
 var (
@@ -118,18 +113,9 @@ func (h *Headless) NewUserIntent(context.Context, id.UserID, string) (bridgev2.M
 	return nil, "", errNoMatrix
 }
 
-func (h *Headless) SendBridgeStatus(_ context.Context, state *status.BridgeState) error {
-	h.stateLock.Lock()
-	defer h.stateLock.Unlock()
-	h.state = *state
-	h.stateAt = time.Now()
+func (h *Headless) SendBridgeStatus(context.Context, *status.BridgeState) error {
+	// /status reads each login's own BridgeState; nothing to keep here.
 	return nil
-}
-
-func (h *Headless) LastBridgeState() (status.BridgeState, time.Time) {
-	h.stateLock.Lock()
-	defer h.stateLock.Unlock()
-	return h.state, h.stateAt
 }
 
 func (h *Headless) SendMessageStatus(context.Context, *bridgev2.MessageStatus, *bridgev2.MessageStatusEventInfo) {
@@ -224,10 +210,11 @@ func (i *intent) IsDoublePuppet() bool { return false }
 
 func (i *intent) SendMessage(ctx context.Context, roomID id.RoomID, eventType event.Type, content *event.Content, extra *bridgev2.MatrixSendExtra) (*mautrix.RespSendEvent, error) {
 	evtID := newEventID()
-	if i.bot {
-		// Bridge notices ("you were logged out") are not chat messages.
-		return &mautrix.RespSendEvent{EventID: evtID}, nil
-	}
+	// The bot sends too: bridgev2 redacts disappearing and view-once messages,
+	// and outdated reactions, as the bot, and a message whose sender has no
+	// ghost falls back to it. Those are recorded with no sender. Bridge
+	// notices go to a management room, which is not a portal, and are dropped
+	// by the reader (no thread).
 	ts := time.Now()
 	if extra != nil && !extra.Timestamp.IsZero() {
 		ts = extra.Timestamp

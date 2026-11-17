@@ -28,7 +28,8 @@ a room is a row id, a send is an insert, an edit or an unsend updates the row
 and moves it to the end of the cursor order. Login steps (`bridge/login.go`) are
 bridgev2's own `LoginProcess`, held one at a time and advanced by the admin
 tools. Media is direct media: a row carries Meta's descriptor and
-`GET /attachment` downloads on demand.
+`GET /attachment` downloads on demand. A file Meta cannot hand over that way is
+kept in `strad_blob` if it is 2 MB or less.
 
 The loopback protocol (`bridge/api.go`): stdout carries one JSON event per line
 (`listening`, `login_complete`, `stopped`, or `fatal`); stderr is the log and is
