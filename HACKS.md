@@ -7517,7 +7517,7 @@ is written against the Cloud API.
    #22, and as DigitalOcean in #119.
 3. **The box is shared.** Hetzner issues tokens per project, and this token's
    project, `pulsemcp-ci`, holds one server: `ci-runner-2`, the CI runner box
-   PulseMCP's production CI runners share with tadasant's. So `-rw`'s blast
+   that runs PulseMCP's production CI runners and tadasant's. So `-rw`'s blast
    radius is that box, other people's production CI included. The fences are in
    the tool surface, not the credential: every tool that can take a box down
    says so in its description, no tool can lift Hetzner's delete or rebuild

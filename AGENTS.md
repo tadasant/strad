@@ -425,7 +425,7 @@ slop behind when you fix a stale fact.
 - `servers/hetzner/` — strad's own Hetzner Cloud server, behind `hetzner-pulse-ro`
   and `hetzner-pulse-rw` on one mount and one `HCLOUD_TOKEN`. Hetzner publishes
   no MCP server, so it is written against the Cloud API. Its token's project
-  holds one box, the CI runner PulseMCP's production CI shares with tadasant's,
+  holds one box, the CI runner that runs PulseMCP's production CI and tadasant's,
   so every tool that can take it down says so in its description, nothing here
   can lift delete or rebuild protection, and no result carries a root password.
   Met only fakes — `HACKS.md` #145.

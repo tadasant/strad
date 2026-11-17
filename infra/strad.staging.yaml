@@ -1488,11 +1488,10 @@ servers:
   # hetzner — strad's own Hetzner Cloud server (servers/hetzner). Hetzner
   # publishes no MCP server, so this one is written against the Cloud API.
   #
-  # IT COVERS THE CI RUNNER BOX AND NOTHING ELSE. Hetzner issues API tokens per
-  # project, and this token's project, `pulsemcp-ci`, holds one server:
-  # `ci-runner-2`, the box PulseMCP's production CI runners share with
-  # tadasant's. "pulse" in the slug names that project, not the owner. So the
-  # blast radius of the -rw slug is that box and every pipeline on it, other
+  # IT COVERS THE CI RUNNER BOX. Hetzner issues API tokens per project, and
+  # this token's project, `pulsemcp-ci` ("pulse" in the slug), holds one
+  # server: `ci-runner-2`, the box that runs PulseMCP's production CI runners
+  # and tadasant's. So the blast radius of the -rw slug is that box and every pipeline on it, other
   # people's production CI included: every tool that can take it down says so
   # in its description, none can lift Hetzner's delete or rebuild protection,
   # and none returns a root password.
@@ -1505,7 +1504,7 @@ servers:
   - slug: hetzner-pulse-ro
     kind: supplementary-image
     title: Hetzner Cloud — CI runner (read-only)
-    description: Read the shared CI runner box (ci-runner-2) — its metrics and actions, images, firewalls, networks, volumes and primary IPs.
+    description: Read the shared CI runner box (ci-runner-2), its metrics and actions, and the project's images, firewalls, networks, volumes and primary IPs.
     image: ghcr.io/tadasant/strad-bundle:latest
     bundle: bundle
     path: /hetzner
@@ -1530,7 +1529,7 @@ servers:
         - list_primary_ips
         - list_volumes
 
-  # Can take down the CI runner box PulseMCP's production CI shares with
+  # Can take down the CI runner box that runs PulseMCP's production CI and
   # tadasant's. Hand this one out deliberately.
   - slug: hetzner-pulse-rw
     kind: supplementary-image
