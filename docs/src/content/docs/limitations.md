@@ -4624,8 +4624,8 @@ See `HACKS.md` #146.
 ### 147. A listing during a bundle restart can page
 
 A listing that fails transiently (a refused connection, a reset, a `503`) is
-tried three times, with under a second of backoff, and the first retry always
-happens however long the failed attempt took. That covers a blip. It does not
+tried three times, with under a second of backoff, and the first retry happens
+even when the failed attempt took several seconds. That covers a blip. It does not
 cover a `strad-bundle` component being replaced in a deploy, which refuses
 connections for around half a minute. A listing of one of that bundle's slugs
 that starts inside the window spends its budget and emits

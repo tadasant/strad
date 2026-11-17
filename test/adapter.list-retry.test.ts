@@ -77,9 +77,7 @@ function startStub(): Promise<Stub> {
   const erroring = new Map<string, { code: number; left: number }>();
   const slow = new Map<string, number>();
   let skewMs = 0;
-  const realNow = Date.now.bind(Date);
-  // Restored by the `vi.restoreAllMocks()` in `afterEach`.
-  vi.spyOn(Date, "now").mockImplementation(() => realNow() + skewMs);
+  let clockSkewed = false;
   const stall = (method: string | undefined): void => {
     if (method) skewMs += slow.get(method) ?? 0;
   };
@@ -159,7 +157,14 @@ function startStub(): Promise<Stub> {
         fail: (m, status, times) => failing.set(m, { status, left: times }),
         drop: (m, times) => dropping.set(m, times),
         rpcError: (m, code, times) => erroring.set(m, { code, left: times }),
-        slowFailures: (m, ms) => slow.set(m, ms),
+        slowFailures: (m, ms) => {
+          slow.set(m, ms);
+          if (clockSkewed) return;
+          clockSkewed = true;
+          const realNow = Date.now.bind(Date);
+          // Restored by the `vi.restoreAllMocks()` in `afterEach`.
+          vi.spyOn(Date, "now").mockImplementation(() => realNow() + skewMs);
+        },
       });
     });
   });
@@ -384,6 +389,24 @@ describe("a slow first attempt still gets its retry (#494)", () => {
       status: 503,
     });
     expect(retries().map((r) => r.attempt)).toEqual([1]);
+  });
+
+  it("a first attempt that hung past the probes' 10s is not retried", async () => {
+    // The exemption is bounded: a reset after a very long hang is reported,
+    // not doubled.
+    const { stub, registry, faults, retries } = await setup();
+    stub.slowFailures("tools/list", 11_000);
+    stub.drop("tools/list", 100);
+
+    expect(await listTools(registry)).toEqual([]);
+    expect(stub.seen("tools/list")).toBe(1);
+    const failed = faults().filter((l) => l.includes("mcp.list_tools_failed"));
+    expect(failed).toHaveLength(1);
+    expect(JSON.parse(failed[0]!)).toMatchObject({
+      attempts: 1,
+      retry: "deadline",
+    });
+    expect(retries()).toEqual([]);
   });
 
   it("a slow real answer still fails on the first attempt", async () => {

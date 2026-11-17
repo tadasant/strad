@@ -7578,7 +7578,8 @@ is a no-op on a spec with no list, so it can stay.
 
 **What.** A transient listing failure gets three tries and under a second of
 backoff (`LIST_RETRY_BUDGET` in `src/gateway/adapters/http.ts`), and the first
-retry is never refused on the clock (#494). A `strad-bundle` component being
+retry may start up to 10s into the listing, so a first attempt that hung for
+several seconds before its reset still gets one (#494). A `strad-bundle` component being
 replaced in a deploy refuses or resets connections for around half a minute: on
 2026-11-17 `gmail-zimmer-ro` went `tool_surface_degraded` and recovered 28s
 after its `_failed` record. Every try in the budget lands inside that window, so
