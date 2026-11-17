@@ -4620,3 +4620,23 @@ takes a bundle image pinned or rolled back on its own. A list the host cannot
 parse stops the bundle at boot rather than guessing.
 
 See `HACKS.md` #146.
+
+---
+
+### 147. A listing during a bundle restart can page
+
+A listing that fails transiently (a refused connection, a reset, a `503`) is
+tried three times, with under a second of backoff, and the first retry happens
+even when the failed attempt took several seconds. That covers a blip. It does not
+cover a `strad-bundle` component being replaced in a deploy, which refuses
+connections for around half a minute. A listing of one of that bundle's slugs
+that starts inside the window spends its budget and emits
+`mcp.list_tools_failed` at ERROR, and that pages. A slug that a client polls
+often, like `gmail-zimmer-ro`, is the one most likely to be caught. Its
+`tool_surface_recovered` follows within a minute.
+
+A longer retry would make every client's listing wait out a bundle that is down
+for real, so the fix belongs to the deploy: drain the outgoing bundle before it
+stops listening, or have the alert skip that window. Neither is built.
+
+See `HACKS.md` #147.

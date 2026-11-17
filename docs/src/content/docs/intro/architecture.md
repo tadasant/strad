@@ -379,9 +379,14 @@ so the retry cannot run a tool twice.
 (`-32603`) — it answered, and it threw — a connection that closed under the
 request, a socket reset or refused connect, or a resolver answering `EAI_AGAIN`
 ("try again"). Three tries, with jittered exponential
-backoff from 250ms — under a second of sleep in all — and no new try once 5s
-have gone, which keeps a retry inside the 10s deadline the reachability probe
-puts around a listing. Each try is still bounded by `timeoutMs`. Each failure
+backoff from 250ms — under a second of sleep in all. No second or later retry
+starts once 5s have gone, which keeps those retries inside the 10s deadline the
+reachability probe puts around a listing. The first retry may start until 10s
+have gone: a connection to a component being replaced can hang for seconds
+before it is reset, that failure is still transient, and measured against 5s it
+would get no retry at all (#494). A first retry that starts after 5s can be cut
+by the probe's deadline, which reports the slug unreachable either way. Each
+try is still bounded by `timeoutMs`. Each failure
 the budget absorbs is an `mcp.list_retry` record at Info, which pages nobody;
 `mcp.list_tools_failed` and `mcp.list_resources_failed` fire at ERROR only once
 the budget is spent, and carry `attempts` and `retry` — `budget`, `deadline`,

@@ -884,7 +884,14 @@ export class HttpServerAdapter implements ServerAdapter {
         // The wall clock, not just the sleeps: a `504` can take as long as the
         // proxy that emitted it was willing to wait, and three of those in a row
         // is a listing the client has already given up on.
-        if (Date.now() - startedAt >= LIST_RETRY_DEADLINE_MS) {
+        //
+        // The FIRST retry has the longer bound. The clock includes the first
+        // attempt's own duration, and a connection to a component being
+        // replaced can hang for seconds before it is reset — a failure
+        // classified transient that would otherwise get zero retries (#494).
+        const deadlineMs =
+          attempt === 0 ? LIST_FIRST_RETRY_DEADLINE_MS : LIST_RETRY_DEADLINE_MS;
+        if (Date.now() - startedAt >= deadlineMs) {
           throw stop("deadline");
         }
         const delay = retryDelayMs({
@@ -1580,7 +1587,8 @@ const LIST_RETRY_BUDGET: RetryBudget = {
 };
 
 /**
- * No retry STARTS once a listing has spent this long, sleeps included.
+ * No second or later retry STARTS once a listing has spent this long, sleeps
+ * and earlier attempts included.
  *
  * Under the 10s deadline the reachability probe and the troubleshoot probe put
  * around `listTools()`, so a retry does not turn an upstream's `503` into
@@ -1588,6 +1596,22 @@ const LIST_RETRY_BUDGET: RetryBudget = {
  * it starts may take — that is `timeoutMs`, as it is for any listing.
  */
 const LIST_RETRY_DEADLINE_MS = 5_000;
+
+/**
+ * The FIRST retry's bound: it may start until the listing has spent this long.
+ *
+ * Longer than `LIST_RETRY_DEADLINE_MS` because the clock includes the first
+ * attempt, and a socket to a component being replaced can hang for seconds
+ * before it is reset or refused. Measured against the shorter deadline, that
+ * transient failure gets zero retries and pages with `retry: deadline` (#494).
+ * Equal to the probes' 10s, so a probe is never still waiting when a first
+ * retry starts past it, and a first attempt that hung for minutes before its
+ * reset is not doubled. A first retry that starts between 5s and 10s can still
+ * be cut by a probe's deadline, which reports the slug unreachable either way.
+ * When the first attempt fails past 5s, the listing stops after the second:
+ * two attempts, each bounded by `timeoutMs`, and one backoff.
+ */
+const LIST_FIRST_RETRY_DEADLINE_MS = 10_000;
 
 /**
  * Is this listing failure worth one more look?

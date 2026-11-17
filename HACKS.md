@@ -7582,3 +7582,35 @@ holding `${`. Bare names, boot keys, telemetry and tailnet variables never are.
 
 **Undo.** Remove the `foldEnvCopies` call in `renderAppSpec`. The host's restore
 is a no-op on a spec with no list, so it can stay.
+
+## 147. A listing's retry rides out a blip, not a bundle being replaced
+
+**What.** A transient listing failure gets three tries and under a second of
+backoff (`LIST_RETRY_BUDGET` in `src/gateway/adapters/http.ts`), and the first
+retry may start up to 10s into the listing, so a first attempt that hung for
+several seconds before its reset still gets one (#494). A `strad-bundle` component being
+replaced in a deploy refuses or resets connections for around half a minute: on
+2026-11-17 `gmail-zimmer-ro` went `tool_surface_degraded` and recovered 28s
+after its `_failed` record. Every try in the budget lands inside that window, so
+a listing that starts there spends the budget and emits `mcp.list_tools_failed`
+at ERROR, which pages.
+
+**Why.** The budget is deliberately small. Every listing a client makes fans out
+to every selected slug and waits for the slowest, and the reachability probe
+bounds a listing at 10s. A budget long enough to outlast a component
+replacement would make every client's listing wait that long whenever a bundle
+is down for real, and would be cut by the probe anyway.
+
+**What it costs.** A deploy can page once for a slug that is polled while its
+bundle restarts. `gmail-zimmer-ro`, which Zimmer's email trigger lists about
+once a minute, is the likely one. The record says `retry: budget` (or
+`deadline`) and `error.kind: upstream_unavailable`, and the slug's
+`tool_surface_recovered` follows within a minute.
+
+**Undo.** This needs handling at deploy time, not a longer retry. The options,
+none built: make the outgoing bundle stop being routed to before it stops
+listening (drain on `SIGTERM` until App Platform has moved traffic), so the
+window closes; or have the alert rule skip `_failed` records from a
+supplementary-image slug inside a deploy window that the deploy workflow
+publishes, so a refusal outside that window still pages. Demoting the record's
+severity is not an option: a bundle that stays down must page.
