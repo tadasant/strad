@@ -8,7 +8,10 @@ name: hostd-ax
 # this file changes.
 #
 # `helper` (strad-hostd-ax) proves: the helper compiles, signs, speaks its
-# protocol over stdio, answers `hello`, lists apps and displays, and refuses
+# protocol over stdio, answers `hello`, lists apps and displays, puts the banner
+# away into the menu bar and back, animates the menu-bar icon only while a call
+# runs (and uploads every frame of that icon as the `status-icons` artifact,
+# drawn offscreen), and refuses
 # every guarded op with the right code when the runner has granted nothing — a
 # runner has no Accessibility or Screen Recording grant and nobody to click
 # one, so the grant-holding halves (reading a real tree, a real screenshot, the
@@ -104,6 +107,14 @@ jobs:
       - name: Smoke over stdio
         working-directory: hostd/ax
         run: node smoke.mjs .build/release/strad-hostd-ax
+      - name: Render the menu-bar icon's stills and animation frames
+        working-directory: hostd/ax
+        run: .build/release/strad-hostd-ax --render-status-icons "$RUNNER_TEMP/status-icons"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: status-icons
+          path: ${{ runner.temp }}/status-icons
+          retention-days: 14
       - name: LaunchAgent plist is well-formed
         run: plutil -lint hostd/install/com.strad.hostd-ax.plist hostd/install/com.strad.hostd.plist
       - name: The signing script parses and refuses a missing binary

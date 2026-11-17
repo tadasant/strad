@@ -91,6 +91,12 @@ try {
     noTree.ok === false && noTree.error?.code === "not_controller",
     noTree.error?.code,
   );
+  const noMode = await call("banner_mode", { mode: "menubar" });
+  check(
+    "banner_mode before any set_state is refused as not_controller",
+    noMode.ok === false && noMode.error?.code === "not_controller",
+    noMode.error?.code,
+  );
 
   const bg = await call("set_state", {
     disabled: false,
@@ -133,6 +139,23 @@ try {
     "set_state with a foreground grant shows the banner",
     fg.ok === true && fg.result?.shown === true,
     JSON.stringify(fg.result ?? fg.error),
+  );
+  check(
+    "a grant with nothing running holds the menu-bar icon still",
+    fg.result?.animating === false &&
+      fg.result?.icon === "cursorarrow.motionlines",
+    JSON.stringify(fg.result),
+  );
+  // The owner's banner size lives in this helper's preferences, and this
+  // script also runs on the owner's Mac: note it, and put it back at the end.
+  const ownersMode = fg.result?.mode;
+  const compact = await call("banner_mode", { mode: "compact" });
+  check(
+    "banner_mode compact shows the strip",
+    compact.ok === true &&
+      compact.result?.mode === "compact" &&
+      compact.result?.panel_visible === true,
+    JSON.stringify(compact.result ?? compact.error),
   );
 
   // The detailed payload the daemon sends: two grants, a session link, a
@@ -192,6 +215,55 @@ try {
     rich.ok === true && rich.result?.shown === true,
     JSON.stringify(rich.result ?? rich.error),
   );
+  const moving = (r) =>
+    r?.reduce_motion === true
+      ? r?.animating === false
+      : r?.animating === true && /^cursorarrow\.motionlines/.test(r?.icon);
+  check(
+    "a call in flight animates the menu-bar icon (still under Reduce Motion)",
+    moving(rich.result),
+    JSON.stringify(rich.result),
+  );
+
+  const tucked = await call("banner_mode", { mode: "menubar" });
+  check(
+    "banner_mode menubar puts the strip away and keeps the menu-bar icon going",
+    tucked.ok === true &&
+      tucked.result?.mode === "menubar" &&
+      tucked.result?.panel_visible === false &&
+      tucked.result?.shown === true &&
+      moving(tucked.result),
+    JSON.stringify(tucked.result ?? tucked.error),
+  );
+  const stillTucked = await call("set_state", {
+    disabled: false,
+    grants: [
+      {
+        id: "g_smoke",
+        server: "computer-use-ci",
+        purpose: "Smoke-test the banner.",
+        foreground: true,
+      },
+    ],
+  });
+  check(
+    "a push while put away keeps the strip away, and stops the animation when nothing runs",
+    stillTucked.result?.panel_visible === false &&
+      stillTucked.result?.animating === false,
+    JSON.stringify(stillTucked.result),
+  );
+  const badMode = await call("banner_mode", { mode: "huge" });
+  check(
+    "banner_mode refuses a size it does not know",
+    badMode.ok === false && badMode.error?.code === "bad_args",
+    badMode.error?.code,
+  );
+  const back = await call("banner_mode", { mode: "compact" });
+  check(
+    "banner_mode compact brings the strip back",
+    back.result?.panel_visible === true,
+    JSON.stringify(back.result),
+  );
 
   const badArgs = await call("click", {});
   check(
@@ -232,10 +304,16 @@ try {
     );
   }
 
+  if (ownersMode) await call("banner_mode", { mode: ownersMode });
   const cleared = await call("set_state", { disabled: false, grants: [] });
   check(
     "set_state with no grants clears the banner",
-    cleared.ok === true && cleared.result?.shown === false,
+    cleared.ok === true &&
+      cleared.result?.shown === false &&
+      cleared.result?.panel_visible === false &&
+      cleared.result?.animating === false &&
+      cleared.result?.icon === "circle.dashed",
+    JSON.stringify(cleared.result),
   );
   const afterClear = await call("mouse_move", { x: 1, y: 1 });
   check(

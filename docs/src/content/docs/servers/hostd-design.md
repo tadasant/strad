@@ -281,7 +281,10 @@ comes back. It says so when nobody answered.
 installed, a strip sits at the top of the main display above every window and
 on every Space, naming the server and the purpose, with a **Kill** button and a
 **Disable everything** button, and the menu bar carries the same state with the
-same buttons. Orange is background control; red is a foreground grant that
+same buttons. The owner can put the strip away into the menu bar; the menu-bar
+icon then still shows the grant's colour and count, animates while a call is
+running, keeps Kill in its menu, and a foreground grant still ends on the
+owner's first key or click. Orange is background control; red is a foreground grant that
 holds the mouse. The helper draws it and decides nothing: the daemon pushes the
 full set of grants as one idempotent `set_state` message whenever the set
 changes and again every two seconds, unconditionally, and the buttons come back

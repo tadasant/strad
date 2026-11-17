@@ -13,6 +13,8 @@ func usage() -> Never {
       strad-hostd-ax --listen <path>     serve JSON lines on a Unix socket (LaunchAgent mode)
       strad-hostd-ax --status            print the permission state as JSON and exit
       strad-hostd-ax --request-access    ask macOS to prompt for Accessibility and Screen Recording, then exit
+      strad-hostd-ax --render-status-icons <dir>
+                                         write the menu-bar icon's stills and animation frames as PNGs, then exit
 
     """
     FileHandle.standardError.write(text.data(using: .utf8)!)
@@ -38,6 +40,19 @@ while index < arguments.count {
         let data = try! JSONSerialization.data(withJSONObject: Permissions.request(), options: [.sortedKeys])
         print(String(data: data, encoding: .utf8)!)
         exit(0)
+    case "--render-status-icons":
+        index += 1
+        guard index < arguments.count else { usage() }
+        do {
+            for path in try StatusIcon.render(to: arguments[index]) { print(path) }
+            exit(0)
+        } catch let e as HelperError {
+            FileHandle.standardError.write("\(e.code): \(e.message)\n".data(using: .utf8)!)
+            exit(1)
+        } catch {
+            FileHandle.standardError.write("\(error)\n".data(using: .utf8)!)
+            exit(1)
+        }
     case "--version":
         print(VERSION)
         exit(0)
