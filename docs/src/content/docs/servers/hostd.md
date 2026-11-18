@@ -323,6 +323,31 @@ nobody objects, set `"consent": { "onTimeout": "allow" }` in
 `~/.strad-hostd/config.json` and restart. Read the design page's consent section
 first: with that setting and nobody at the screen, the dialog protects nothing.
 
+### Copying a secret a page shows once
+
+A console that mints a token (GitHub's new-token page, say) shows it once,
+behind a copy button. Use `click_element` on that button. Its click is a real
+mouse event, sent with focus emulation on, so the page's own
+`navigator.clipboard.writeText` runs as if the owner had clicked: the value goes
+to the Mac's clipboard and the result says only `{"clicked":"button","url":…}`.
+From there, a step on the shell server can pipe `pbpaste` into wherever the
+value belongs and then clear the clipboard. Do not read the value with
+`read_page` or `evaluate_script`, and do not read the clipboard back through
+any tool: the point of the copy is that the value never reaches a transcript.
+`evaluate_script` can click too, but it does not turn on focus emulation, so a
+background tab refuses the write.
+
+A page that carries a password manager's overlay works the same way. Chrome
+will not let an extension debug a tab that holds another extension's frame, so
+the bridge takes those frames out of the page while it is attached and puts
+them back afterwards ([limitation #149](/limitations/)).
+
+What no hostd server does is sign in with a passkey or security key. Neither
+backend sends anything in the DevTools `WebAuthn` domain, which is the one that
+could stand in for an authenticator, and Chrome's own passkey sheet is browser
+UI that page input does not reach. A sign-in that asks for one waits for the
+owner.
+
 ### Reading Messages
 
 `imessage-*` serves three tools after the three control tools, all read-only:

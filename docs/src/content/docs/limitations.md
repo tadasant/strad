@@ -4659,3 +4659,19 @@ run headless in a separate AGPL-3.0 process. What that costs:
   with it, for up to five minutes.
   Messages that cannot be decrypted arrive as placeholders.
 - **Read-only.** There is no send tool.
+
+### 149. The hostd Chrome extension moves a password manager's overlay out of the way
+
+Chrome will not let [strad-hostd](/servers/hostd/)'s extension debug a tab that
+holds another extension's frame, such as a password manager's inline menu or
+save prompt. When Chrome refuses, the extension takes those frames out of the
+page, attaches, and puts them back when it lets go of the tab. What that costs:
+
+- **The owner's overlay is gone while an agent drives the tab.** It reloads
+  when it comes back.
+- **Some frames can't be found.** A frame inside a cross-origin frame the
+  extension can't script still blocks the attach. The error says so, and the
+  owner can dismiss the popup or switch the extension off for that site.
+- **Tested against a fixture, not a real password manager.** CI runs it in
+  Chromium with a stand-in extension. It hasn't run against a real password
+  manager in Google Chrome on the Mac.

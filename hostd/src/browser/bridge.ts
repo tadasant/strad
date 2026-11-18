@@ -4,7 +4,12 @@ import type { IncomingMessage } from "node:http";
 import type { WebSocket } from "ws";
 
 import { keysMatch } from "../mcp/auth.js";
-import { NO_TAB, type BrowserBackend, type RawTab } from "./backend.js";
+import {
+  assertRelayable,
+  NO_TAB,
+  type BrowserBackend,
+  type RawTab,
+} from "./backend.js";
 
 /**
  * The daemon half of the Chrome extension bridge. The extension half is
@@ -21,7 +26,15 @@ import { NO_TAB, type BrowserBackend, type RawTab } from "./backend.js";
  *   daemon → extension   {type:"ping"}      extension → daemon   {type:"pong"}
  *
  * Ops: `tabs`, `create`, `activate`, `close`, `attach`, `detach`,
- * `detachAll`, `send` (a DevTools command to an attached tab).
+ * `detachAll`, `send` (a DevTools command to an attached tab, never one in
+ * the `WebAuthn` domain).
+ *
+ * `attach` succeeds on a tab carrying ANOTHER extension's frame (a password
+ * manager's overlay), which `chrome.debugger` alone refuses: the extension
+ * moves those frames out of the page for as long as it is attached and puts
+ * them back on `detach`. A frame that arrives later makes Chrome drop the
+ * attachment, which reaches this side as a `detached` event; the next
+ * command re-attaches and moves it aside too.
  *
  * WHY THIS EXISTS. Chrome ignores `--remote-debugging-port` on the default
  * profile (136+) and its `chrome://inspect` toggle asks a person on every
@@ -392,6 +405,7 @@ export class ExtensionBackend implements BrowserBackend {
     params: Record<string, unknown> = {},
     timeoutMs?: number,
   ): Promise<T> {
+    assertRelayable(method);
     const n = tabNumber(tabId);
     const attached = async () => {
       await this.bridge.attach(this, n);

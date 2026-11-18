@@ -170,6 +170,11 @@ cannot be switched off from `chrome://extensions` and attaches with no
 of the Mac. When `extension/manifest.json` changes, bump its `version`: that
 is what Chrome compares to decide whether to fetch the new copy.
 
+**A password manager's overlay.** Chrome will not let an extension debug a
+tab that holds another extension's frame. When it refuses, the bridge
+(`scripting` permission, `<all_urls>` host access) takes those frames out of
+the page while it is attached and puts them back after. It never enters them.
+
 The status page (`http://127.0.0.1:7312`) and `strad-hostd status` say whether
 the extension is connected. `get_control_status` on the browser server reports
 `browser: {extension, via}`.
