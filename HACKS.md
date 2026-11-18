@@ -7695,10 +7695,23 @@ and a script's `click()` carries no user activation, so the page's own
 - The frames are never entered or read. Chrome would not allow it, and that
   rule is what keeps the debugger out of the password manager.
 - Only frames in the document are found: an `<iframe>`, `<frame>`, `<embed>` or
-  `<object>` whose source is another extension's URL. A frame the script cannot
+  `<object>` whose `src` (or `data`) attribute is another extension's URL. A
+  frame that starts at about:blank and is navigated there is not found. A frame the script cannot
   find, for example inside a cross-origin frame it cannot script, still refuses
   the attach, and the error says to ask the owner to dismiss that extension's
   popup or switch it off for the site.
+- It opens login pages. Before this, a password manager's inline menu on a
+  sign-in form made Chrome refuse the debugger there; now `read_page` and
+  `evaluate_script` work on that form, including a password a manager filled
+  in on load. Nothing stops that read but the grant's purpose.
+- A manager that puts its frame straight back is moved aside again on each of
+  ten tries, then the attach fails with the error above.
+- The upgrade adds permissions. A force-installed copy takes them silently; an
+  unpacked one needs Reload on `chrome://extensions`. `<all_urls>` also lets
+  the service worker `fetch` with the owner's cookies. Nothing uses that, and
+  the only code the extension injects is its two bundled functions: the daemon
+  cannot send a script, because `chrome.scripting` takes a function, not a
+  string.
 - It has run against a fixture extension in Chromium in CI. It has not run
   against a real password manager in Google Chrome on the Mac.
 

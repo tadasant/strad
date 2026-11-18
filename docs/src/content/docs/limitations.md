@@ -4672,6 +4672,11 @@ page, attaches, and puts them back when it lets go of the tab. What that costs:
 - **Some frames can't be found.** A frame inside a cross-origin frame the
   extension can't script still blocks the attach. The error says so, and the
   owner can dismiss the popup or switch the extension off for that site.
+- **Login pages open up.** A password manager's menu on a sign-in form used to
+  keep the debugger off it. Now an agent can read that form, including a
+  password the manager filled in.
+- **The upgrade adds permissions.** An unpacked copy needs Reload on
+  `chrome://extensions` before it takes the new version.
 - **Tested against a fixture, not a real password manager.** CI runs it in
   Chromium with a stand-in extension. It hasn't run against a real password
   manager in Google Chrome on the Mac.

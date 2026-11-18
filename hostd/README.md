@@ -174,6 +174,8 @@ is what Chrome compares to decide whether to fetch the new copy.
 tab that holds another extension's frame. When it refuses, the bridge
 (`scripting` permission, `<all_urls>` host access) takes those frames out of
 the page while it is attached and puts them back after. It never enters them.
+Those two permissions came with version 0.2.0: an unpacked copy needs Reload on
+`chrome://extensions` to pick them up.
 
 The status page (`http://127.0.0.1:7312`) and `strad-hostd status` say whether
 the extension is connected. `get_control_status` on the browser server reports

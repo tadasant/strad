@@ -1,11 +1,13 @@
 /* global chrome, document, location, MutationObserver */
-// The foreign fixture's content script: after ?delay= milliseconds, two
-// frames of THIS extension go into the page, the way a password manager's
+// The foreign fixture's content script: two frames of THIS extension go
+// into the page, the way a password manager's
 // inline menu does. How many of them are in the document is published on
 // <html data-foreign-frames>, which the test reads over its own DevTools
 // socket — the closed shadow root is otherwise invisible to it.
-const delay = Number(new URLSearchParams(location.search).get("delay") || 0);
-setTimeout(() => {
+// With ?late, the frames wait until the test sets <html data-insert-overlay>,
+// so "after the attach" is a signal, not a race against a timer.
+const late = new URLSearchParams(location.search).has("late");
+const insert = () => {
   const url = chrome.runtime.getURL("frame.html");
   const plain = document.createElement("iframe");
   plain.src = url;
@@ -34,4 +36,13 @@ setTimeout(() => {
   const watch = new MutationObserver(publish);
   watch.observe(document.body, { childList: true });
   watch.observe(shadow, { childList: true });
-}, delay);
+};
+if (!late || document.documentElement.dataset.insertOverlay) insert();
+else {
+  const signal = new MutationObserver(() => {
+    if (!document.documentElement.dataset.insertOverlay) return;
+    signal.disconnect();
+    insert();
+  });
+  signal.observe(document.documentElement, { attributes: true });
+}

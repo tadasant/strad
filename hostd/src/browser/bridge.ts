@@ -428,7 +428,10 @@ export class ExtensionBackend implements BrowserBackend {
       // The extension lost the attachment without saying so (a detach it did
       // itself, a Chrome-side drop): re-attach once rather than fail every
       // call for the rest of the grant.
-      if (!/not attached/i.test((err as Error).message)) throw err;
+      // Chrome dropping the session mid-command (a foreign frame arriving)
+      // says "detached while handling command".
+      if (!/not attached|detached while handling/i.test((err as Error).message))
+        throw err;
       this.bridge.forget(n);
       await attached();
       return this.bridge.call<T>(

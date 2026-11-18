@@ -332,7 +332,7 @@ mouse event, sent with focus emulation on, so the page's own
 to the Mac's clipboard and the result says only `{"clicked":"button","url":…}`.
 From there, a step on the shell server can pipe `pbpaste` into wherever the
 value belongs and then clear the clipboard. Do not read the value with
-`read_page` or `evaluate_script`, and do not read the clipboard back through
+`read_page`, `evaluate_script` or `take_screenshot`, and do not read the clipboard back through
 any tool: the point of the copy is that the value never reaches a transcript.
 `evaluate_script` can click too, but it does not turn on focus emulation, so a
 background tab refuses the write.
@@ -342,11 +342,12 @@ will not let an extension debug a tab that holds another extension's frame, so
 the bridge takes those frames out of the page while it is attached and puts
 them back afterwards ([limitation #149](/limitations/)).
 
-What no hostd server does is sign in with a passkey or security key. Neither
+The browser server cannot sign in with a passkey or security key. Neither
 backend sends anything in the DevTools `WebAuthn` domain, which is the one that
-could stand in for an authenticator, and Chrome's own passkey sheet is browser
-UI that page input does not reach. A sign-in that asks for one waits for the
-owner.
+could stand in for an authenticator, and Chrome's passkey sheet is browser UI
+that page input does not reach. The computer-use servers drive real input on
+the Mac, and nothing but the consent dialog keeps them off that sheet. The
+ceremony itself still needs the owner's fingerprint, device or key.
 
 ### Reading Messages
 

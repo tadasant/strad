@@ -40,8 +40,33 @@ let connecting = false;
 let status = { state: "starting", detail: "", since: Date.now() };
 /** Tabs this extension has chrome.debugger attached to. */
 const attached = new Set();
-/** Tabs where frames were moved aside so the debugger could attach. */
+/**
+ * Tabs where frames may have been moved aside so the debugger could attach.
+ * Mirrored to chrome.storage.session, so a worker that restarts mid-attachment
+ * still puts them back (see the startup sweep at the bottom).
+ */
 const parkedIn = new Set();
+function saveParked() {
+  return chrome.storage.session
+    .set({ parkedIn: [...parkedIn] })
+    .catch(() => {});
+}
+
+/**
+ * One attach, detach or restore at a time per tab. Without it, a restore
+ * from an earlier detach could land after a newer attach had moved the frames
+ * aside, put them back under the live attachment, and knock it off again.
+ */
+const tabQueues = new Map();
+function serial(tabId, fn) {
+  const run = (tabQueues.get(tabId) ?? Promise.resolve()).then(fn, fn);
+  const tail = run.catch(() => {});
+  tabQueues.set(tabId, tail);
+  void tail.then(() => {
+    if (tabQueues.get(tabId) === tail) tabQueues.delete(tabId);
+  });
+  return run;
+}
 
 /**
  * What Chrome says when it will not let `chrome.debugger` near a tab because
@@ -109,8 +134,16 @@ async function inEveryFrame(tabId, func, args = []) {
 
 async function restoreParked(tabId) {
   if (!parkedIn.delete(tabId)) return;
+  await saveParked();
   // A tab that navigated has nothing parked; a closed one has no frames.
   await inEveryFrame(tabId, restoreForeignFrames).catch(() => {});
+}
+
+/** Move every foreign frame aside; recorded first, so a script that fails halfway still gets a restore. */
+async function park(tabId) {
+  parkedIn.add(tabId);
+  await saveParked();
+  return inEveryFrame(tabId, parkForeignFrames, [OWN_ORIGIN]).catch(() => 0);
 }
 
 /**
@@ -126,16 +159,13 @@ async function attachDebugger(tabId) {
   } catch (err) {
     if (!FOREIGN_FRAME.test((err && err.message) || "")) throw err;
   }
-  let moved = 0;
-  try {
-    moved = await inEveryFrame(tabId, parkForeignFrames, [OWN_ORIGIN]);
-  } catch {
-    // Not scriptable at all (a page no extension may script): Chrome's own
-    // refusal is the answer.
-  }
-  if (moved > 0) parkedIn.add(tabId);
-  // A removed frame is torn down asynchronously; give Chrome a moment.
+  // A page no extension may script moves nothing, and Chrome's own refusal
+  // is the answer.
+  let moved = await park(tabId);
+  // A removed frame is torn down asynchronously; give Chrome a moment. A
+  // manager that puts its frame straight back is moved aside again, each try.
   for (let i = 0; i < 10; i++) {
+    if (i > 0) moved += await park(tabId);
     try {
       await chrome.debugger.attach({ tabId }, "1.3");
       return;
@@ -204,7 +234,9 @@ async function detachAll() {
   await Promise.all(
     ids.map((tabId) => chrome.debugger.detach({ tabId }).catch(() => {})),
   );
-  await Promise.all([...parkedIn].map((tabId) => restoreParked(tabId)));
+  await Promise.all(
+    [...parkedIn].map((tabId) => serial(tabId, () => restoreParked(tabId))),
+  );
 }
 
 /**
@@ -213,6 +245,7 @@ async function detachAll() {
  * caller could satisfy a passkey or security-key prompt in the owner's
  * browser, and that is a ceremony only the owner performs.
  */
+// Case-sensitive on purpose: DevTools method names are.
 const REFUSED_DOMAINS = ["WebAuthn."];
 
 async function perform(msg) {
@@ -251,17 +284,20 @@ async function perform(msg) {
       await chrome.tabs.remove(msg.tabId);
       return {};
     case "attach":
-      if (!attached.has(msg.tabId)) {
+      await serial(msg.tabId, async () => {
+        if (attached.has(msg.tabId)) return;
         await attachDebugger(msg.tabId);
         attached.add(msg.tabId);
-      }
+      });
       return {};
     case "detach":
-      if (attached.has(msg.tabId)) {
-        attached.delete(msg.tabId);
-        await chrome.debugger.detach({ tabId: msg.tabId }).catch(() => {});
-      }
-      await restoreParked(msg.tabId);
+      await serial(msg.tabId, async () => {
+        if (attached.has(msg.tabId)) {
+          attached.delete(msg.tabId);
+          await chrome.debugger.detach({ tabId: msg.tabId }).catch(() => {});
+        }
+        await restoreParked(msg.tabId);
+      });
       return {};
     case "detachAll":
       await detachAll();
@@ -409,13 +445,13 @@ chrome.debugger.onDetach.addListener((source, reason) => {
   // Frames stay parked only while this extension is attached. Chrome drops
   // the attachment when ANOTHER foreign frame arrives ("target_closed"); the
   // daemon re-attaches on its next command and parks them all again.
-  void restoreParked(source.tabId);
+  void serial(source.tabId, () => restoreParked(source.tabId));
   emit({ event: "detached", tabId: source.tabId, reason });
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   attached.delete(tabId);
-  parkedIn.delete(tabId);
+  if (parkedIn.delete(tabId)) void saveParked();
   emit({ event: "tabRemoved", tabId });
 });
 
@@ -449,11 +485,25 @@ chrome.alarms.create("strad-hostd-reconnect", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === "strad-hostd-reconnect") void connect();
 });
-chrome.storage.onChanged.addListener(() => {
+chrome.storage.onChanged.addListener((_changes, area) => {
+  // The session area is this worker's own bookkeeping, not a setting.
+  if (area === "session") return;
   if (socket) socket.close(4000, "settings changed");
   if (opening) opening.close(4000, "settings changed");
   void connect();
 });
 chrome.runtime.onStartup.addListener(() => void connect());
+// A fresh worker holds no attachment it knows of, so nothing it parked in an
+// earlier life should still be out of its page: put it back.
+void chrome.storage.session
+  .get("parkedIn")
+  .then(({ parkedIn: earlier }) => {
+    for (const tabId of earlier ?? []) {
+      if (attached.has(tabId)) continue;
+      parkedIn.add(tabId);
+      void serial(tabId, () => restoreParked(tabId));
+    }
+  })
+  .catch(() => {});
 chrome.runtime.onInstalled.addListener(() => void connect());
 void connect();

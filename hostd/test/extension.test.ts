@@ -694,7 +694,7 @@ describe.skipIf(!chrome)(
         const s = await pageSession(`${origin}/overlay`);
         expect(await foreignFrames(s)).toBe("2");
         const read = await use("read_page", { tab_id });
-        expect(read.isError).toBeFalsy();
+        expect(read.isError ? resultText(read) : "").toBe("");
         expect(resultJson<{ text: string }>(read).text).toContain(
           "copy your token now",
         );
@@ -771,7 +771,7 @@ describe.skipIf(!chrome)(
             arguments: { purpose: "Read a page whose overlay comes late." },
           }),
         ));
-        const url = `${origin}/overlay?delay=1500`;
+        const url = `${origin}/overlay?late`;
         const late = resultJson<{ tab_id: string }>(
           await use("open_tab", { url }),
         );
@@ -782,9 +782,12 @@ describe.skipIf(!chrome)(
               expression: "location.search",
             }),
           ),
-        ).toEqual({ value: "?delay=1500" });
+        ).toEqual({ value: "?late" });
         const s = await pageSession(url);
-        // The overlay arrives; Chrome detaches the bridge on its own.
+        expect(await attachedInChrome()).toBeGreaterThanOrEqual(1);
+        // Now, with the bridge attached, the overlay arrives; Chrome detaches
+        // the bridge on its own.
+        await inPage(s, "document.documentElement.dataset.insertOverlay = '1'");
         await until(
           async () => (await foreignFrames(s)) === "2",
           "the late frames arrive",
