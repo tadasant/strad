@@ -371,6 +371,8 @@ describe('SlackEventsIngest', () => {
     const got = await ingest.poll({ cursor, arguments: {} });
     expect(got.events.map((e) => e.eventId)).toEqual([`slack:C1:${ts(now)}`]);
     expect(got.events[0]!.name).toBe('message_posted');
+    // The text reached the buffer, so its absence from the sealed object below means something.
+    expect(got.events[0]!.data.text).toBe(SECRET_TEXT);
     expect(got.nextPollMs).toBeGreaterThan(0);
 
     await ingest.close();
