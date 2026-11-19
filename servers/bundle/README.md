@@ -1,22 +1,23 @@
 # bundle — THE strad supplementary image
 
-Thirty-four MCP servers. One container. One Chromium. One `op` binary. One
-`mcp-grafana` binary.
+Thirty-six MCP servers. One container. One Chromium. One `op` binary. One
+`mcp-grafana` binary and one `mcp-victorialogs` binary.
 
 ```
 /slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-filesystem-tmp-public
 /x-twitter /telegram /whatsapp /messenger /bill-spend /aws-device-farm /liveoak /ssh /image-diff
 /svg-tracer /nutrition-facts /airtable /flightaware /digitalocean /hetzner
 /pulse-subregistry
-/strad-fetch /grafana
+/strad-fetch /grafana /victorialogs /appsignal
 /google-flights /gmail /google-calendar /google-docs /google-sheets
 /onepassword /secrets
 /good-eggs /fetchpet /pointsyeah
 ```
 
-Thirty-four is the floor, not a constant: four of those mounts (`/telegram`,
-`/remote-filesystem-tmp-public`, `/google-sheets`, `/grafana`) are re-mounted once
-more per slug the container holds a separate credential for, and four trees
+Thirty-six is the floor, not a constant: six of those mounts (`/telegram`,
+`/remote-filesystem-tmp-public`, `/google-sheets`, `/grafana`, `/victorialogs`,
+`/appsignal`) are re-mounted once more per slug the container holds a separate
+credential for, and four trees
 (telegram, google-sheets, grafana, ssh) also serve store-served instances at
 `/_instance/{tree}/{slug}` — the ONLY way an SSH host is served; `/ssh` itself
 never holds a credential. `/google-sheets` is
@@ -24,6 +25,8 @@ the one a real deployment uses that way — an OAuth refresh token is one Google
 account, so six `google-sheets-*` slugs over three accounts are three more mounts.
 `/grafana` is the same shape for the same reason: a Grafana service-account token
 is one Grafana, so `grafana-registry` is its own mount and its own child process.
+`/victorialogs` (one entrypoint is one VictoriaLogs) and `/appsignal` (one app id
+is one AppSignal app) take the same shape.
 
 strad's staging app is **three components**: `core` (the public gateway),
 `bundle` (this), and `bundle-zimmer-secrets` — a second copy of this image that
@@ -49,6 +52,10 @@ the same path in this one container.
 
 `grafana` is the one exception, and it is deliberate: its child process runs with
 `-disable-write`, so the 13 write tools are not in it to withhold. See below.
+`victorialogs` and `appsignal` are read-only for a plainer reason: neither has a
+write tool. mcp-victorialogs wraps LogsQL's query API and nothing else, and
+appsignal's one tool that could write, `custom_graphql_query`, refuses a mutation
+in strad's layer (`servers/appsignal/README.md`).
 
 This host therefore **scrubs** every `*_ENABLED_TOOLGROUPS`-shaped variable out of
 its environment at boot. A stale one would not just be ignored — it would strip
@@ -69,10 +76,10 @@ binaries sit in the image unused. `/healthz` reports the sidecar under
 `tailnet` and never folds it into `ok`. See
 [`docs/operate/tailnet`](../../docs/src/content/docs/operate/tailnet.md).
 
-## How twenty-five projects become one image
+## How twenty-seven projects become one image
 
 `Dockerfile`'s build context is the **repo root**, because the servers live in
-twenty-five different places:
+twenty-seven different places:
 
 | tree | source | servers |
 | --- | --- | --- |
@@ -85,6 +92,8 @@ twenty-five different places:
 | `pulse-subregistry` | `servers/pulse-subregistry` | pulse-subregistry |
 | `strad-fetch` | `servers/strad-fetch` | strad-fetch (web fetching, strad's own fork) |
 | `grafana` | `servers/grafana` | grafana (proxies the pinned `mcp-grafana` Go binary, baked in) |
+| `victorialogs` | `servers/victorialogs` | victorialogs (proxies the pinned `mcp-victorialogs` Go binary, baked in; read-only) |
+| `appsignal` | `servers/appsignal` | appsignal (pulsemcp/mcp-servers' AppSignal server, vendored with a delta, behind strad's layer; read-only) |
 | `telegram` | `servers/telegram` | telegram (MTProto, a user session) |
 | `whatsapp` | `servers/whatsapp` | whatsapp (a WhatsApp linked device, Baileys) |
 | `messenger` | `servers/messenger` | messenger (Facebook Messenger, read-only; supervises the Go `strad-messenger-bridge`, AGPL-3.0, built in its own stage) |
@@ -104,7 +113,7 @@ twenty-five different places:
 
 Each is built **in its own stage, with its own lockfile and its own
 `node_modules`**, exactly as its standalone image builds it, and lands at
-`/app/trees/<name>`. Nothing is merged. Merging twenty-five dependency trees is how
+`/app/trees/<name>`. Nothing is merged. Merging twenty-seven dependency trees is how
 you find out in production that two of them wanted different Playwright versions.
 
 `host/` imports across the trees **by path** (`src/trees.ts`). Node resolves each
@@ -131,7 +140,7 @@ Measured, two browser servers logging in at once: **one** Chromium process tree,
 ~940MB RSS across it (mostly shared), ~760MB container working set. Hence the 2GB
 instance in `infra/strad.staging.yaml`.
 
-## The one upstream that is not JavaScript
+## The two upstreams that are Go binaries
 
 Grafana ships its MCP server as a **Go binary** and a Docker image, and as
 nothing else — there is no npm package to build into a tree. no strad server kind
@@ -162,6 +171,18 @@ child spawned with the default environment would inherit a Slack token, a
 `GRAFANA_URL`, `GRAFANA_SERVICE_ACCOUNT_TOKEN`, an optional `GRAFANA_ORG_ID` and
 four process variables. `servers/grafana/shared/src/config.ts` is that list.
 
+**mcp-victorialogs is the second, baked the same way** (Apache-2.0, v1.9.0,
+SHA-256 pinned per architecture) and supervised by `servers/victorialogs`, a copy
+of grafana's supervisor in its own tree. Three differences: it takes no flags,
+because all thirteen of its tools are reads; it gets `VL_INSTANCE_ENTRYPOINT`, an
+optional `VL_INSTANCE_BEARER_TOKEN`, `VL_INSTANCE_HEADERS` and
+`VL_DEFAULT_TENANT_ID`, with `MCP_SERVER_MODE` pinned to `stdio`; and because the
+binary will not start without an entrypoint, an unconfigured mount's child is
+pointed at `http://unconfigured.invalid` so its tools still list, and the proxy
+refuses every call on it. A per-slug instance never inherits a sibling's bare
+token or headers: only the entrypoint is required, so a slug with no token of
+its own would otherwise send another VictoriaLogs' credential to its entrypoint.
+
 ## The GCS_BUCKET collision
 
 `gcs` and `remote-filesystem-tmp-public` both want `GCS_BUCKET`, and they point at
@@ -190,7 +211,7 @@ could perform one. See [`servers/secrets/README.md`](../secrets/README.md).
 
 ## Blast radius, honestly
 
-Thirty-four servers share a process. A crash is a thirty-four-server outage. Everything
+Thirty-six servers share a process. A crash is a thirty-six-server outage. Everything
 that *can* be made survivable is:
 
 - a browser server whose **login fails** is marked `degraded` in `/healthz`; the

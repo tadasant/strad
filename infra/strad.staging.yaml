@@ -18,9 +18,9 @@
 # Forty-one of the forty-five land on twenty-eight upstream mounts inside the
 # one bundle image, because capability variants share a mount; the other four
 # (`zimmer-secrets`, `whatsapp-zimmer`, and the two Messenger slugs) run that
-# same image on three bundles of their own. The image serves thirty-four mounts: `/x-twitter`,
-# `/google-sheets`, `/grafana`, `/aws-device-farm` and `/ssh` are in it with no
-# staging slug pointing at any of them — every SSH host is a store-served
+# same image on three bundles of their own. The image serves thirty-six mounts: `/x-twitter`,
+# `/google-sheets`, `/grafana`, `/victorialogs`, `/appsignal`, `/aws-device-farm`
+# and `/ssh` are in it with no staging slug pointing at any of them — every SSH host is a store-served
 # instance at `/_instance/ssh/{slug}` rather than the conventional `/ssh`, and
 # none is configured here because the hosts it exists for are production's;
 # `grafana-registry` is served by a per-slug instance at `/grafana-registry`, not
@@ -183,19 +183,20 @@ roles:
 
 bundles:
   # THE bundle. One image, one component, and twenty-seven of the image's
-  # thirty-four upstream MCP servers — the bundle-api fleet, the Google
+  # thirty-six upstream MCP servers — the bundle-api fleet, the Google
   # servers, 1Password (with the `op` CLI baked in), telegram, liveoak,
   # airtable, flightaware, digitalocean, hetzner, image-diff, svg-tracer and the
   # three browser servers, which share ONE Chromium (never one per server: see
-  # servers/bundle/host/src/browser.ts). Six mounts have no slug here:
+  # servers/bundle/host/src/browser.ts). Eight mounts have no slug here:
   # `/x-twitter`, `/google-sheets` — registered in prod, where its six slugs each
   # carry one Google account's OAuth token, and where `/gmail` takes the same
   # per-slug shape beside its conventional service-account mount — the
   # conventional `/grafana`, since staging's Grafana is the per-slug
-  # `/grafana-registry` below, `/aws-device-farm`, whose AWS credential does
+  # `/grafana-registry` below, `/victorialogs` and `/appsignal`, which no
+  # staging slug uses yet, `/aws-device-farm`, whose AWS credential does
   # not exist yet, `/whatsapp`, whose one slug is served from
   # `bundle-whatsapp`, and `/ssh`, whose hosts are store-served instances.
-  # The PROCESS registers all thirty-four either way — including `/telegram`,
+  # The PROCESS registers all thirty-six either way — including `/telegram`,
   # `/liveoak`, `/airtable`, `/flightaware`, `/digitalocean` and `/hetzner`,
   # whose slugs are disabled until their secrets are seeded — which is what the
   # sizing below is about.

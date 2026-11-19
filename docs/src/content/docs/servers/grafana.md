@@ -153,9 +153,10 @@ Two things are worth knowing before querying it:
 - Its datasources are provisioned **without pinned UIDs**, so the VictoriaLogs
   UID is a Grafana-generated string rather than the friendly `VictoriaLogs` that
   `obs.tadasant.com` uses. Call `list_datasources` first.
-- There is no VictoriaLogs MCP server. Logs come through
-  `grafana_api_request` against the datasource proxy, e.g.
-  `GET /api/datasources/proxy/uid/<UID>/select/logsql/query?query=*&start=15m&limit=100`.
+- Logs come through `grafana_api_request` against the datasource proxy, e.g.
+  `GET /api/datasources/proxy/uid/<UID>/select/logsql/query?query=*&start=15m&limit=100`,
+  or through a [VictoriaLogs](/servers/victorialogs/) slug pointed at that same
+  proxy URL, which speaks LogsQL natively. Staging has no such slug.
 
 ## Version bumps
 

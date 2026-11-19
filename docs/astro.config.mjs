@@ -135,6 +135,8 @@ export default defineConfig({
             { label: "Image diff and SVG tracer", slug: "servers/image-tools" },
             { label: "Nutrition facts", slug: "servers/nutrition-facts" },
             { label: "Grafana", slug: "servers/grafana" },
+            { label: "VictoriaLogs", slug: "servers/victorialogs" },
+            { label: "AppSignal", slug: "servers/appsignal" },
           ],
         },
         {
