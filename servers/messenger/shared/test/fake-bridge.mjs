@@ -159,6 +159,7 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { flow: login.flow, ...step[login.at] });
     }
     case "POST /login/cancel":
+      if (login?.working) return json(res, 409, { error: "an answer is with Meta right now and cannot be called back: call messenger_login_submit with no input for its result, then cancel or start again" });
       login = null;
       return json(res, 200, { cancelled: true });
     case "POST /logout": {
@@ -183,6 +184,9 @@ const server = createServer(async (req, res) => {
     case "POST /_test/slow_pin":
       slowPin = true;
       return json(res, 200, {});
+    // The account is stopped and STAYS stopped through a fresh login — the case
+    // of Meta checkpointing the new login again. (A real fresh login replaces
+    // the account in place and marks it CONNECTING first.)
     case "POST /_test/checkpoint":
       state.account = {
         id: "100001", name: "Test Owner", state: "BAD_CREDENTIALS", state_error: "fb-checkpoint-required",

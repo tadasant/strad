@@ -169,6 +169,10 @@ describe("login", () => {
     expect(status.structuredContent).toMatchObject({ login_in_progress: { step_id: "fi.mau.meta.history_pin", working: true } });
     expect(status.structuredContent!.next_step).toContain("do not type the value again");
 
+    const cancel = await call("messenger_login_cancel");
+    expect(cancel.isError).toBe(true);
+    expect(cancel.content[0]!.text).toContain("cannot be called back");
+
     const resent = await call("messenger_login_submit", { input: { pin: "123456" } });
     expect(resent.isError).toBe(true);
     expect(resent.content[0]!.text).toContain("NOT sent again");

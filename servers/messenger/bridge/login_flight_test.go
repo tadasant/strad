@@ -212,9 +212,74 @@ func TestAStoppedAccountEndsThePINStepWithoutSpendingTheAttempt(t *testing.T) {
 	if l.InProgress() != nil || l.process != nil {
 		t.Errorf("the stranded PIN step survived: %+v", l.InProgress())
 	}
+
+	// A no-input call at a stranded PIN step ends it the same way.
+	l2 := atPIN(proc)
+	l2.deadAccount = l.deadAccount
+	if _, err := l2.Submit(context.Background(), nil); !errors.Is(err, ErrAccountStopped) {
+		t.Fatalf("a poll at a stranded PIN step: %v", err)
+	}
+	if l2.InProgress() != nil {
+		t.Errorf("the poll left the stranded PIN step in place")
+	}
 }
 
-func TestCancelEndsAnAnswerInFlight(t *testing.T) {
+func TestCancelIsRefusedWhileATypedAnswerIsOut(t *testing.T) {
+	shortBudget(t, 10*time.Millisecond)
+	proc := &slowPINProcess{release: make(chan struct{}), next: completeStep()}
+	l := atPIN(proc)
+	if v, _ := l.Submit(context.Background(), map[string]string{"pin": "123456"}); !v.Working {
+		t.Fatalf("want working, got %+v", v)
+	}
+	if err := l.Cancel(false); !errors.Is(err, ErrAnswerOut) {
+		t.Fatalf("cancel during a typed answer: %v, want ErrAnswerOut", err)
+	}
+	if loginErrCode(ErrAnswerOut) != 409 {
+		t.Errorf("answer-out should be a 409")
+	}
+	close(proc.release)
+	if done, err := l.Submit(context.Background(), nil); err != nil || done.Type != "complete" {
+		t.Fatalf("the answer should still land: %+v, %v", done, err)
+	}
+}
+
+func TestAnApprovalWaitKeepsItsOwnStepWhileWorking(t *testing.T) {
+	shortBudget(t, 10*time.Millisecond)
+	proc := &waitProcess{release: make(chan struct{})}
+	step := &bridgev2.LoginStep{
+		Type: bridgev2.LoginStepTypeDisplayAndWait, StepID: "afad_wait", Instructions: "Approve on your phone.",
+		DisplayAndWaitParams: &bridgev2.LoginDisplayAndWaitParams{Type: bridgev2.LoginDisplayTypeNothing},
+	}
+	l := &Login{flow: "android", process: proc, step: step}
+	v, err := l.Submit(context.Background(), nil)
+	if err != nil || !v.Working || v.Type != string(bridgev2.LoginStepTypeDisplayAndWait) || v.Instructions != "Approve on your phone." {
+		t.Fatalf("an approval wait past the budget should keep its own step: %+v, %v", v, err)
+	}
+	if strings.Contains(v.Instructions, "sent ONCE") {
+		t.Errorf("nothing was typed, so nothing was sent: %q", v.Instructions)
+	}
+	if err := l.Cancel(false); err != nil {
+		t.Fatalf("an approval wait can always be cancelled: %v", err)
+	}
+	if l.InProgress() != nil {
+		t.Errorf("a cancelled login still shows a pending step")
+	}
+}
+
+type waitProcess struct{ release chan struct{} }
+
+func (p *waitProcess) Start(context.Context) (*bridgev2.LoginStep, error) { return nil, nil }
+func (p *waitProcess) Cancel()                                            {}
+func (p *waitProcess) Wait(ctx context.Context) (*bridgev2.LoginStep, error) {
+	select {
+	case <-p.release:
+		return completeStep(), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestLogoutCancelsEvenATypedAnswer(t *testing.T) {
 	shortBudget(t, time.Second)
 	proc := &slowPINProcess{release: make(chan struct{}), next: completeStep()}
 	l := atPIN(proc)
@@ -226,7 +291,9 @@ func TestCancelEndsAnAnswerInFlight(t *testing.T) {
 		errc <- err
 	}()
 	time.Sleep(20 * time.Millisecond)
-	l.Cancel()
+	if err := l.Cancel(true); err != nil {
+		t.Fatalf("a forced cancel: %v", err)
+	}
 	if err := <-errc; !errors.Is(err, ErrLoginCancelled) {
 		t.Fatalf("the waiting caller got %v, want ErrLoginCancelled", err)
 	}
@@ -251,6 +318,9 @@ func TestDeadStatesNeedAHuman(t *testing.T) {
 		if deadState(s) {
 			t.Errorf("%q should not be dead", s)
 		}
+	}
+	if stoppedState(status.StateUnknownError) || !stoppedState(status.StateBadCredentials) || !stoppedState(status.StateLoggedOut) {
+		t.Errorf("only BAD_CREDENTIALS and LOGGED_OUT are stopped: UNKNOWN_ERROR reconnects by itself")
 	}
 	if a := stoppedAdvice(status.BridgeState{Error: "fb-checkpoint-required"}); !strings.Contains(a, "new password") {
 		t.Errorf("checkpoint advice: %q", a)

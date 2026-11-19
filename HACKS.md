@@ -7658,9 +7658,10 @@ homeserver keeps strad's no-database, one-component shape.
   and then have Meta checkpoint the account. The PIN submit that followed one
   such login came back to the console as an ingress 504: mautrix-meta waited its full minute for an encrypted
   connection the checkpointed account never opened, and the ingress gave up at
-  about the same moment. `bridge/login.go` now answers a step in the background
+  about the same moment. `bridge/login.go` answers a step in the background
   (a call returns `working` after 25 seconds, and a no-input submit collects the
-  result without resending), refuses to send a PIN once the account is stopped,
+  result without resending), refuses to send a PIN once the account is stopped (`BAD_CREDENTIALS` or
+  `LOGGED_OUT`; `UNKNOWN_ERROR` reconnects by itself and is left alone),
   and `messenger_status` names the action a stopped account needs. The bridge
   never reconnects a stopped login by itself.
 - Each phone-app login mints a fresh device identity (device id, family device

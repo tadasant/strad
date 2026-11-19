@@ -157,7 +157,7 @@ interface StatusPayload {
     state_message?: string;
     action?: string;
   }> | null;
-  login_in_progress: { flow: string; step_id: string; working?: boolean } | null;
+  login_in_progress: { flow: string; type?: string; step_id: string; working?: boolean } | null;
   cursor: number;
   uptime_seconds: number;
 }
@@ -183,7 +183,9 @@ function statusTool(bridge: BridgeFactory): ToolDefinition {
         const progress = status.login_in_progress;
         const stopped = accounts.find((a) => a.action);
         const next_step = progress?.working
-          ? "Meta is still processing the last login answer. Call messenger_login_submit with no input for the result; do not type the value again."
+          ? progress.type !== "working"
+            ? "Waiting on the login step. Do what it asks, then call messenger_login_submit with no input until it moves."
+            : "Meta is still processing the last login answer. Call messenger_login_submit with no input for the result; do not type the value again."
           : progress
             ? "A login is in progress: continue it with messenger_login_submit, or abandon it with messenger_login_cancel."
             : accounts.length === 0
@@ -495,7 +497,10 @@ function loginSubmitTool(bridge: BridgeFactory): ToolDefinition {
 function loginCancelTool(bridge: BridgeFactory): ToolDefinition {
   return {
     name: "messenger_login_cancel",
-    description: "Abandon a login in progress. A connected account is unaffected.",
+    description:
+      "Abandon a login in progress. A connected account is unaffected. Refused while a typed " +
+      "answer is still with Meta (a step that answered `working`): it cannot be called back, so " +
+      "collect its result with messenger_login_submit and no input first.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     handler: () =>

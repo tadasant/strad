@@ -49,7 +49,8 @@ var loginFlows = map[string]string{
 var replyBudget = 25 * time.Second
 
 // A display-and-wait step (approve on another device) is waited on this long
-// per call before the same step is handed back.
+// per flight before the same step stands again; each call still returns within
+// replyBudget.
 const waitStepTimeout = 2 * time.Minute
 
 // An answer still unresolved after this is abandoned: the login ends rather
@@ -89,7 +90,11 @@ type Login struct {
 }
 
 type flight struct {
+	flow   string
 	stepID string
+	// shown is the step being waited on when nothing was typed (display and
+	// wait): its own instructions stand while it works.
+	shown  *StepView
 	done   chan struct{}
 	cancel context.CancelFunc
 	result flightResult
@@ -152,6 +157,8 @@ var (
 	ErrStepInFlight      = errors.New("the previous answer is still with Meta and was NOT sent again: " +
 		"call messenger_login_submit with no input (or messenger_status) to get its result")
 	ErrAccountStopped = errors.New("Meta has stopped this account's session")
+	ErrAnswerOut      = errors.New("an answer is with Meta right now and cannot be called back: " +
+		"call messenger_login_submit with no input for its result, then cancel or start again")
 )
 
 func view(flow string, step *bridgev2.LoginStep) *StepView {
@@ -194,14 +201,18 @@ func view(flow string, step *bridgev2.LoginStep) *StepView {
 	return v
 }
 
-// deadStates are the states in which Meta has ended a login: nothing the
-// bridge does on its own brings one back, and a human logs in again.
+// deadState: a login Start does not count as live, so a new login may
+// replace it.
 func deadState(e status.BridgeStateEvent) bool {
-	switch e {
-	case status.StateBadCredentials, status.StateLoggedOut, status.StateUnknownError:
-		return true
-	}
-	return false
+	return stoppedState(e) || e == status.StateUnknownError
+}
+
+// stoppedState is narrower: Meta itself ended the login. UNKNOWN_ERROR is not
+// one — bridgev2 reconnects from it on its own, and mautrix-meta raises it for
+// passing encrypted-connection failures — so it neither blocks a PIN nor
+// tells a human to log in again.
+func stoppedState(e status.BridgeStateEvent) bool {
+	return e == status.StateBadCredentials || e == status.StateLoggedOut
 }
 
 // live: an account is logged in and not known to be dead. Anything but a
@@ -217,20 +228,29 @@ func (l *Login) live() bool {
 	return false
 }
 
-// stoppedAccount: no account is live and at least one is dead. Only asked at
-// the PIN step, which follows the account's creation in the same login — so
-// "none live" there means the account this login just made has been stopped.
+// stoppedAccount: every account is one Meta has stopped, and there is at
+// least one. Only asked at the PIN step, which follows the account's creation
+// in the same login — so "all stopped" there means the account this login
+// just made has been stopped. The most recent state is the one reported.
 func (l *Login) stoppedAccount() (status.BridgeState, bool) {
 	if l.deadAccount != nil {
 		return l.deadAccount()
 	}
-	if l.user == nil || l.live() {
+	if l.user == nil {
 		return status.BridgeState{}, false
 	}
+	var latest status.BridgeState
+	found := false
 	for _, ul := range l.user.GetUserLogins() {
-		return ul.BridgeState.GetPrevUnsent(), true
+		st := ul.BridgeState.GetPrevUnsent()
+		if !stoppedState(st.StateEvent) {
+			return status.BridgeState{}, false
+		}
+		if !found || st.Timestamp.After(latest.Timestamp.Time) {
+			latest, found = st, true
+		}
 	}
-	return status.BridgeState{}, false
+	return latest, found
 }
 
 // Start begins a flow, abandoning any login already in progress — including
@@ -245,7 +265,9 @@ func (l *Login) Start(ctx context.Context, flow string) (*StepView, error) {
 	if l.live() {
 		return nil, ErrAlreadyConnected
 	}
-	l.cancelLocked()
+	if err := l.cancelLocked(false); err != nil {
+		return nil, err
+	}
 	process, err := l.bridge.Network.CreateLogin(ctx, l.user, flowID)
 	if err != nil {
 		return nil, err
@@ -256,6 +278,10 @@ func (l *Login) Start(ctx context.Context, flow string) (*StepView, error) {
 		return nil, err
 	}
 	l.flow, l.process, l.step, l.started = flow, process, step, time.Now()
+	if step.Type == bridgev2.LoginStepTypeComplete {
+		r := l.landLocked(step, nil)
+		return r.view, r.err
+	}
 	return l.showLocked(), nil
 }
 
@@ -286,16 +312,26 @@ func (l *Login) Submit(ctx context.Context, input map[string]string) (*StepView,
 		}
 		return nil, ErrNoLoginInProgress
 	}
+	if l.step.StepID == historyPINStepID {
+		if state, stopped := l.stoppedAccount(); stopped {
+			// The PIN step waits a full minute for an encrypted connection that a
+			// stopped account never opens, and then fails. Do not spend a PIN
+			// attempt on it — Meta counts them — and do not hold a step that
+			// cannot finish, whether this call carries the PIN or only asks.
+			defer l.lock.Unlock()
+			err := fmt.Errorf("%w: %w (%s%s). The PIN was NOT sent. %s", ErrLoginEnded, ErrAccountStopped,
+				state.Error, suffix(": ", state.Message), stoppedAdvice(state))
+			l.endLocked(nil, err)
+			return nil, err
+		}
+	}
 	if len(input) == 0 && l.step.Type != bridgev2.LoginStepTypeDisplayAndWait {
 		defer l.lock.Unlock()
 		return l.showLocked(), nil
 	}
 	call, err := l.prepareLocked(input)
 	if err != nil {
-		defer l.lock.Unlock()
-		if errors.Is(err, ErrLoginEnded) {
-			l.endLocked(nil, err)
-		}
+		l.lock.Unlock()
 		return nil, err
 	}
 	f := l.launchLocked(call)
@@ -309,16 +345,6 @@ type stepCall func(context.Context) (*bridgev2.LoginStep, error)
 // nothing. The returned call owns its own copy of input: the caller's map is
 // wiped as soon as Submit returns.
 func (l *Login) prepareLocked(input map[string]string) (stepCall, error) {
-	if l.step.StepID == historyPINStepID {
-		if state, stopped := l.stoppedAccount(); stopped {
-			// The PIN step waits a full minute for an encrypted connection that a
-			// stopped account never opens, and then fails. Do not spend a PIN
-			// attempt on it — Meta counts them — and do not hold a step that
-			// cannot finish.
-			return nil, fmt.Errorf("%w: %w (%s%s). The PIN was NOT sent. %s", ErrLoginEnded, ErrAccountStopped,
-				state.Error, suffix(": ", state.Message), stoppedAdvice(state))
-		}
-	}
 	own := make(map[string]string, len(input))
 	for k, v := range input {
 		own[k] = v
@@ -381,13 +407,17 @@ func (l *Login) prepareLocked(input map[string]string) (stepCall, error) {
 // answer Meta is already processing, because the only way to "retry" it would
 // be to send it again.
 func (l *Login) launchLocked(call stepCall) *flight {
-	ctx, cancel := context.WithTimeout(context.Background(), flightTimeout)
-	if l.bridge != nil {
-		ctx, cancel = context.WithTimeout(l.bridge.BackgroundCtx, flightTimeout)
+	parent := context.Background()
+	if l.bridge != nil && l.bridge.BackgroundCtx != nil {
+		parent = l.bridge.BackgroundCtx
 	}
-	f := &flight{stepID: l.step.StepID, done: make(chan struct{}), cancel: cancel}
+	ctx, cancel := context.WithTimeout(parent, flightTimeout)
+	f := &flight{flow: l.flow, stepID: l.step.StepID, done: make(chan struct{}), cancel: cancel}
+	if l.step.Type == bridgev2.LoginStepTypeDisplayAndWait {
+		f.shown = view(l.flow, l.step)
+	}
 	l.flight = f
-	l.pending.Store(l.workingView(f))
+	l.pending.Store(workingView(f))
 	go func() {
 		defer cancel()
 		next, err := call(ctx)
@@ -440,12 +470,20 @@ func (l *Login) await(ctx context.Context, f *flight) (*StepView, error) {
 	case <-t.C:
 	case <-ctx.Done():
 	}
-	return l.workingView(f), nil
+	return workingView(f), nil
 }
 
-func (l *Login) workingView(f *flight) *StepView {
+// workingView reads only the flight, so await can build it without the lock.
+// A waited-on step keeps its own type and instructions: nothing was typed, so
+// there is nothing "sent once" to warn about.
+func workingView(f *flight) *StepView {
+	if f.shown != nil {
+		v := *f.shown
+		v.Working = true
+		return &v
+	}
 	return &StepView{
-		Flow: l.flow, Type: "working", StepID: f.stepID, Working: true,
+		Flow: f.flow, Type: "working", StepID: f.stepID, Working: true,
 		Instructions: "Meta is still processing the answer to this step. It was sent ONCE and will not be " +
 			"sent again. Call messenger_login_submit with no input to get the result (each call waits up " +
 			"to " + replyBudget.String() + "), or check messenger_status. Do not type the value again.",
@@ -469,13 +507,20 @@ func (l *Login) endLocked(v *StepView, err error) {
 	l.outcome = &flightResult{view: v, err: err}
 }
 
-func (l *Login) Cancel() {
+// Cancel abandons the login. While a TYPED answer is with Meta it refuses:
+// mautrix-meta cannot call one back, so "cancelled" would be a lie — the
+// account could still be created a moment later. Waiting on an approval can
+// always be cancelled. force (logout) abandons the login regardless.
+func (l *Login) Cancel(force bool) error {
 	l.lock.Lock()
 	defer l.lock.Unlock()
-	l.cancelLocked()
+	return l.cancelLocked(force)
 }
 
-func (l *Login) cancelLocked() {
+func (l *Login) cancelLocked(force bool) error {
+	if f := l.flight; f != nil && f.shown == nil && !force {
+		return ErrAnswerOut
+	}
 	if f := l.flight; f != nil {
 		f.cancel()
 		l.flight = nil
@@ -485,6 +530,7 @@ func (l *Login) cancelLocked() {
 	}
 	l.process, l.step, l.flow, l.outcome = nil, nil, "", nil
 	l.pending.Store(nil)
+	return nil
 }
 
 // InProgress reports the pending step, if any, for messenger_status.

@@ -87,7 +87,10 @@ get its result. A call with no input never sends anything to Meta: on an
 input step it shows the step again, and while an answer is working it waits for
 that answer. An answer typed while another is still working is refused with
 "was NOT sent again" rather than forwarded. Meta counts wrong PIN attempts, and
-a retry can never spend one.
+a retry can never spend one. `messenger_login_cancel` is refused while a typed
+answer is out too, because mautrix-meta cannot call one back: collect the
+result first. An approval wait (`display_and_wait`) keeps its own step and
+instructions while it works, and can always be cancelled.
 
 ### When Meta stops the account
 
@@ -95,7 +98,9 @@ Meta can end a login on its side: a checkpoint ("check the Facebook website to
 continue"), a forced password change, a revoked session. `messenger_status` then
 shows the account as `BAD_CREDENTIALS`, with `state_error` (for a checkpoint,
 `fb-checkpoint-required`) and an `action` saying what to do, and `next_step`
-repeats it. The bridge does not reconnect such a login on its own. A second
+repeats it. The bridge does not reconnect such a login on its own.
+`UNKNOWN_ERROR` is different: bridgev2 reconnects from it by itself, so it gets
+no `action` and does not block anything. A second
 attempt from a datacenter IP against an account Meta has just flagged is how a
 second checkpoint is earned. Only a restart retries it, once.
 
@@ -106,9 +111,9 @@ password, the old session is gone for good and the new password is the one to
 use.
 
 If the account is stopped while a login is at the PIN step, the PIN is not
-sent: the encrypted connection it needs never opens. The submit ends the login
-with an error that says the PIN was not sent and what to do, so no stranded
-PIN step is left behind.
+sent: the encrypted connection it needs never opens. The next submit, with the
+PIN or with no input, ends the login with an error that says the PIN was not
+sent and what to do, so no stranded PIN step is left behind.
 
 ### Failed steps
 

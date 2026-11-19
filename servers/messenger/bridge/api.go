@@ -113,12 +113,13 @@ type accountStatus struct {
 func (a *API) status(w http.ResponseWriter, r *http.Request) {
 	var accounts []accountStatus
 	for _, ul := range a.user.GetUserLogins() {
-		prev := ul.BridgeState.GetPrev()
+		// The latest state set, the same one the login's own checks read.
+		prev := ul.BridgeState.GetPrevUnsent()
 		acct := accountStatus{
 			ID: string(ul.ID), Name: ul.RemoteName,
 			State: string(prev.StateEvent), StateError: string(prev.Error), StateReason: prev.Message,
 		}
-		if deadState(prev.StateEvent) {
+		if stoppedState(prev.StateEvent) {
 			acct.Action = "Meta has ended this login; the bridge will not reconnect it. " + stoppedAdvice(prev)
 		}
 		accounts = append(accounts, acct)
@@ -481,7 +482,7 @@ func (a *API) loginSubmit(w http.ResponseWriter, r *http.Request) {
 func loginErrCode(err error) int {
 	switch {
 	case errors.Is(err, ErrNoLoginInProgress), errors.Is(err, ErrAlreadyConnected), errors.Is(err, ErrLoginCancelled),
-		errors.Is(err, ErrStepInFlight):
+		errors.Is(err, ErrStepInFlight), errors.Is(err, ErrAnswerOut):
 		return http.StatusConflict
 	case errors.Is(err, ErrUnknownFlow):
 		return http.StatusBadRequest
@@ -491,12 +492,15 @@ func loginErrCode(err error) int {
 }
 
 func (a *API) loginCancel(w http.ResponseWriter, _ *http.Request) {
-	a.login.Cancel()
+	if err := a.login.Cancel(false); err != nil {
+		writeErr(w, loginErrCode(err), err.Error())
+		return
+	}
 	writeJSON(w, map[string]bool{"cancelled": true})
 }
 
 func (a *API) logout(w http.ResponseWriter, r *http.Request) {
-	a.login.Cancel()
+	_ = a.login.Cancel(true)
 	n := 0
 	for _, ul := range a.user.GetUserLogins() {
 		ul.Logout(r.Context())
