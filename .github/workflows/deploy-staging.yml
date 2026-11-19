@@ -126,6 +126,11 @@ permissions:
   # caller's permissions, never widen them.
   actions: read
 
+env:
+  # The one doctl this workflow runs; keep it equal to teardown-staging.yml's,
+  # which `test/staging-on-demand.test.ts` checks.
+  DOCTL_VERSION: "2.6.0"
+
 jobs:
   # Build the dispatched ref into branch-scoped images.
   #
@@ -385,10 +390,28 @@ jobs:
         # "no strad-staging app; nothing to dump." It had not looked. A bundle
         # tag resolution died that way on 2026-08-11 and the deploy that could
         # have been read was never fetched.
+        #
+        # PINNED, and asserted in the next step: `latest` is an unauthenticated
+        # GitHub API lookup, and when it is rate-limited — or a pinned download
+        # fails — the action installs doctl 1.98.1 with only a warning.
+        # teardown-staging.yml gives the incident.
         if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
         uses: digitalocean/action-doctl@v2
         with:
           no_auth: "true"
+          version: ${{ env.DOCTL_VERSION }}
+
+      - name: Assert the pinned doctl
+        id: doctl_pin
+        if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
+        run: |
+          set -euo pipefail
+          GOT=$(doctl version | sed -n 1p)
+          if [ "$GOT" != "doctl version ${DOCTL_VERSION}-release" ]; then
+            echo "::error::expected doctl ${DOCTL_VERSION}, got '${GOT}'. digitalocean/action-doctl fell back to another version; re-run once its download succeeds."
+            exit 1
+          fi
+          echo "$GOT"
 
       - name: Resolve an immutable core image tag
         # Only when nothing else already names the image: a branch build has its
@@ -1023,7 +1046,10 @@ jobs:
         # `!seed_only` matches the doctl install's own gate. A seeding run
         # deploys nothing, so there are no container logs to want — and without
         # this it would warn about a doctl that was never meant to be there.
-        if: failure() && !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        # `doctl_pin` succeeding is the other half: when the pin check fails,
+        # the fallback doctl is on PATH and this run deployed nothing, so a dump
+        # would present the LAST deploy's logs as this run's failure.
+        if: failure() && !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' && steps.doctl_pin.outcome == 'success'
         continue-on-error: true
         env:
           # Its own, like every other doctl step. Reaching for whatever the

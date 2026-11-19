@@ -289,3 +289,73 @@ describe("teardown-staging.yml", () => {
     );
   });
 });
+
+describe("every doctl install is pinned and checked", () => {
+  // `digitalocean/action-doctl` resolves `latest` with an UNAUTHENTICATED GitHub
+  // API call, and when that is rate-limited — or when even a pinned download
+  // fails — it installs its hard-coded fallback, doctl 1.98.1, and warns. That
+  // doctl predates `AppMaintenanceSpec`: on 2026-11-19 the nightly teardown read
+  // an archived staging as running and then failed on `unknown field
+  // "maintenance"`. On a restore the same blindness exits green having done
+  // nothing, so the pin needs an assertion behind it, not just a `version:`.
+  const installs = workflowFiles().flatMap((file) =>
+    Object.values(workflow(file).jobs ?? {}).flatMap((job) => {
+      const all = job.steps ?? [];
+      return all
+        .map((step, i) => ({ file, step, next: all[i + 1] }))
+        .filter(({ step }) =>
+          step.uses?.startsWith("digitalocean/action-doctl"),
+        );
+    }),
+  );
+
+  /** The workflow-level `env:` a `${{ env.X }}` in `with:` resolves against. */
+  const envOf = (file: string) =>
+    (workflow(file) as unknown as { env?: Record<string, unknown> }).env ?? {};
+
+  /**
+   * The version an install resolves to. Only the `${{ env.DOCTL_VERSION }}`
+   * form counts: the assertion step reads the same variable, so a literal
+   * `version:` would let the two drift apart.
+   */
+  const pinned = (file: string, step: Step): string =>
+    String(step.with?.version) === "${{ env.DOCTL_VERSION }}"
+      ? String(envOf(file).DOCTL_VERSION ?? "")
+      : "";
+
+  it("finds the installs it is checking", () => {
+    // Guard the guard: both staging workflows install doctl.
+    expect(installs.map((i) => i.file).sort()).toEqual([DEPLOY, TEARDOWN]);
+  });
+
+  it.each(installs.map((i) => [i.file, i] as const))(
+    "%s pins an exact doctl and stops on any other",
+    (file, { step, next }) => {
+      expect(
+        String(step.with?.version),
+        `${file} must install \`version: \${{ env.DOCTL_VERSION }}\` — the ` +
+          `variable the check after it reads.`,
+      ).toBe("${{ env.DOCTL_VERSION }}");
+      const version = pinned(file, step);
+      expect(
+        version,
+        `${file} installs doctl \`${version}\`. Anything but an exact version ` +
+          `is an unauthenticated "latest" lookup that falls back to 1.98.1.`,
+      ).toMatch(/^\d+\.\d+\.\d+$/);
+      // The check is the step straight after the install, under the same gate.
+      expect(next?.if).toEqual(step.if);
+      const script = next?.run ?? "";
+      expect(script).toContain("doctl version ${DOCTL_VERSION}-release");
+      expect(
+        exitsAfter(script, "fell back to another version"),
+        `${file} reports a doctl other than the pin and carries on.`,
+      ).toBe(true);
+    },
+  );
+
+  it("is the same doctl everywhere", () => {
+    expect(
+      new Set(installs.map(({ file, step }) => pinned(file, step))).size,
+    ).toBe(1);
+  });
+});
