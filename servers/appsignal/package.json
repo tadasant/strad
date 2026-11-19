@@ -1,0 +1,18 @@
+{
+  "name": "appsignal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The AppSignal MCP server from pulsemcp/mcp-servers, vendored with a documented delta and hosted inside the strad bundle behind strad's own layer: injected credentials, one app per slug, read-only GraphQL. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared && cp shared/src/graphql/schema.graphql shared/build/graphql/schema.graphql",
+    "test": "npm run build && vitest run --config vitest.config.ts"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "vitest": "^4.1.9"
+  }
+}

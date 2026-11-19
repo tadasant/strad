@@ -1,26 +1,29 @@
 #!/usr/bin/env node
 /**
- * bundle — THE strad supplementary image. All 33 upstream MCP servers (33
- * mounts, see `buildMounts`), one container, one process, one Chromium, one
- * mcp-grafana child. The gateway's config names more SLUGS than that — 43
- * supplementary-image entries in infra/strad.staging.yaml — because capability
+ * bundle — THE strad supplementary image. All 36 upstream MCP servers (36
+ * mounts, see `buildMounts`), one container, one process, one Chromium, and one
+ * mcp-grafana and one mcp-victorialogs child per mount that uses them. The
+ * gateway's config names more SLUGS than that — 45 supplementary-image entries
+ * in infra/strad.staging.yaml — because capability
  * variants (gmail-ro, gmail-rw, …) are several slugs pointing at ONE mount here.
  * `/aws-device-farm` is the one that runs the other way round: it is mounted
  * here and named by no slug yet, because its credential is not seeded. `/ssh`
  * is named by none BY DESIGN: every SSH host is its own store-served instance
  * at `/_instance/ssh/{slug}`, and the conventional mount is the degraded one.
  *
- * THIRTY-FOUR IS THE FLOOR, not a constant. Seven trees (telegram,
- * remote-filesystem, google-sheets, gmail, google-docs, grafana, onepassword)
- * mount ONE INSTANCE PER SLUG the environment carries per-slug values for — see
+ * THIRTY-SIX IS THE FLOOR, not a constant. Nine trees (telegram,
+ * remote-filesystem, google-sheets, gmail, google-docs, grafana, victorialogs,
+ * appsignal, onepassword) mount ONE INSTANCE PER SLUG the environment carries
+ * per-slug values for — see
  * `extraSlugs` — so a container told about `telegram-ro` and `telegram-rw`
  * separately serves /telegram, /telegram-ro and /telegram-rw. google-sheets,
- * gmail, google-docs, grafana and onepassword are
+ * gmail, google-docs, grafana, victorialogs, appsignal and onepassword are
  * the cases a real deployment uses: an OAuth refresh token IS one Google account,
- * a service-account token IS one Grafana, and a 1Password service-account token
+ * a service-account token IS one Grafana, an entrypoint IS one VictoriaLogs, an
+ * app id IS one AppSignal app, and a 1Password service-account token
  * IS one 1Password account at one vault scope, so each extra account is another
  * mount here. The conventional path is always mounted, so a config that asks for
- * none of this sees exactly the thirty-four it saw before.
+ * none of this sees exactly the thirty-six it saw before.
  *
  * STORE-SERVED INSTANCES are the other way in, and the one that needs no deploy.
  * A strad server on `path: /_instance/{tree}/{slug}` puts nothing on this
@@ -64,8 +67,8 @@
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
  *
- * BLAST RADIUS, honestly. Thirty-four servers share a process. A crash is
- * a 33-server outage, not a 1-server outage. Everything below that CAN be made
+ * BLAST RADIUS, honestly. Thirty-six servers share a process. A crash is
+ * a 36-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
  * catastrophic here); a dead Chromium is relaunched on next use; an unhandled
@@ -89,6 +92,7 @@ import { requireInternalToken } from "./internal-auth.js";
 import { errMessage, log, logError, logWarn } from "./log.js";
 import {
   dropInheritedNames,
+  dropUnpairedCredentials,
   extraSlugs,
   instanceEnv,
   missingCredentialsDegraded,
@@ -332,6 +336,34 @@ async function buildMounts(): Promise<Mount[]> {
   mounts.push(loadGrafana(grafana, "grafana"));
   for (const slug of extraSlugs("grafana", grafana.GRAFANA_ENV_NAMES))
     deferred.push({ slug, load: async () => loadGrafana(grafana, slug) });
+
+  // victorialogs and appsignal: the same shape as grafana — the conventional
+  // mount, always served (degraded until configured), plus one per slug the
+  // environment carries a whole credential for.
+  const victorialogs = (await loadFromTree(
+    "victorialogs",
+    "shared/build/index.js",
+  )) as VictoriaLogsModule;
+  const victorialogsSlugs = extraSlugs(
+    "victorialogs",
+    victorialogs.VICTORIALOGS_ENV_NAMES,
+  );
+  mounts.push(
+    loadVictoriaLogs(victorialogs, "victorialogs", false, victorialogsSlugs),
+  );
+  for (const slug of victorialogsSlugs)
+    deferred.push({
+      slug,
+      load: async () => loadVictoriaLogs(victorialogs, slug, true),
+    });
+
+  const appsignal = (await loadFromTree(
+    "appsignal",
+    "shared/build/strad/index.js",
+  )) as AppSignalModule;
+  mounts.push(loadAppSignal(appsignal, "appsignal"));
+  for (const slug of extraSlugs("appsignal", appsignal.APPSIGNAL_ENV_NAMES))
+    deferred.push({ slug, load: async () => loadAppSignal(appsignal, slug) });
 
   mounts.push(await loadTelegram("telegram"));
   for (const slug of extraSlugs("telegram", TELEGRAM_MARKER_NAMES))
@@ -783,7 +815,8 @@ async function loadStradFetch(): Promise<Mount> {
   };
 }
 
-interface GrafanaModule {
+/** What grafana's and victorialogs' trees both export: a supervisor over a binary. */
+interface SupervisedBinaryModule {
   createMCPServer: (opts: Record<string, unknown>) => {
     registerHandlers: (server: unknown) => Promise<void>;
     missing: string[];
@@ -791,8 +824,32 @@ interface GrafanaModule {
   };
   /** The tree owns what its credential IS — see loadGoogleSheets for why. */
   missingCredentials: (env: Record<string, string | undefined>) => string[];
+}
+
+interface GrafanaModule extends SupervisedBinaryModule {
   /** The variables ONE Grafana's credential is made of. Owned by the tree. */
   GRAFANA_ENV_NAMES: readonly string[];
+}
+
+interface VictoriaLogsModule extends SupervisedBinaryModule {
+  /** The variables that make one instance: the entrypoint. Owned by the tree. */
+  VICTORIALOGS_ENV_NAMES: readonly string[];
+  /** The credentials a per-slug instance never inherits. Owned by the tree. */
+  VICTORIALOGS_CREDENTIAL_ENV_NAMES: readonly string[];
+  VL_INSTANCE_ENTRYPOINT: string;
+  VL_DEFAULT_TENANT_ID: string;
+}
+
+interface AppSignalModule {
+  createMCPServer: (opts: {
+    version: string;
+    env: Record<string, string | undefined>;
+  }) => {
+    registerHandlers: (server: unknown) => Promise<void>;
+    missing: string[];
+  };
+  /** The key and app id that make one instance. Owned by the tree. */
+  APPSIGNAL_ENV_NAMES: readonly string[];
 }
 
 async function loadGrafanaTree(): Promise<GrafanaModule> {
@@ -830,10 +887,76 @@ function loadGrafana(
   // caller reads this slug's view of the container.
   env: Record<string, string | undefined> = slugEnvView(process.env, slug),
 ): Mount {
+  return supervisedBinaryMount(
+    { tree: "grafana", serverName: "strad-grafana", binary: "mcp-grafana" },
+    mod,
+    slug,
+    env,
+  );
+}
+
+/**
+ * victorialogs — VictoriaMetrics' own MCP server for VictoriaLogs, hosted here
+ * the way grafana is: a pinned Go binary on PATH, supervised over stdio by the
+ * `victorialogs` tree (servers/victorialogs/shared/src/upstream.ts). Thirteen
+ * tools, all read-only, because LogsQL's query API is all the binary wraps.
+ *
+ * ONE INSTANCE PER SLUG, for grafana's reason: an entrypoint is one
+ * VictoriaLogs. Only the entrypoint is a marker — a VictoriaLogs on a private
+ * network takes no token — so a per-slug instance can be discovered with its
+ * token absent, and THAT is why the per-slug view drops the bare token and
+ * headers rather than inheriting them. The renderer gives the bare name to the
+ * first slug that declares it, and a sibling's bearer token sent to this slug's
+ * entrypoint is a credential handed to a host it was never minted for.
+ */
+function loadVictoriaLogs(
+  mod: VictoriaLogsModule,
+  slug: string,
+  perSlug: boolean,
+  // The per-slug instances beside the conventional mount, whose own
+  // credentials the conventional mount must not pair with someone else's
+  // entrypoint. See `dropUnpairedCredentials`.
+  siblings: readonly string[] = [],
+): Mount {
+  const env = slugEnvView(process.env, slug);
+  if (perSlug) {
+    dropInheritedNames(env, slug, mod.VICTORIALOGS_CREDENTIAL_ENV_NAMES);
+    ownNameOnly(env, slug, mod.VL_DEFAULT_TENANT_ID);
+  } else {
+    dropUnpairedCredentials(
+      env,
+      mod.VL_INSTANCE_ENTRYPOINT,
+      [...mod.VICTORIALOGS_CREDENTIAL_ENV_NAMES, mod.VL_DEFAULT_TENANT_ID],
+      siblings,
+    );
+  }
+  return supervisedBinaryMount(
+    {
+      tree: "victorialogs",
+      serverName: "strad-victorialogs",
+      binary: "mcp-victorialogs",
+    },
+    mod,
+    slug,
+    env,
+  );
+}
+
+/**
+ * A mount whose tools come from a pinned binary its tree supervises — grafana
+ * and victorialogs. Built once per slug: the child it starts outlives the
+ * request that started it.
+ */
+function supervisedBinaryMount(
+  spec: { tree: TreeName; serverName: string; binary: string },
+  mod: SupervisedBinaryModule,
+  slug: string,
+  env: Record<string, string | undefined>,
+): Mount {
   // Degraded, not unmounted, and for the usual reason: the tools must still LIST
   // so the console shows the slug and an agent can see what it would offer once
-  // a token lands. mcp-grafana lists its 52 tools without ever reaching Grafana,
-  // so this mount's surface is honest even here — only the calls fail.
+  // a credential lands. Both binaries list their tools without reaching their
+  // backend, so this mount's surface is honest even here — only the calls fail.
   const missing = mod.missingCredentials(env);
   const unconfigured =
     missing.length > 0
@@ -843,8 +966,8 @@ function loadGrafana(
 
   const mount: Mount = {
     slug,
-    tree: "grafana",
-    serverName: "strad-grafana",
+    tree: spec.tree,
+    serverName: spec.serverName,
     capabilities: { tools: {} },
     degraded: unconfigured,
     // Replaced below, once the supervisor it delegates to exists.
@@ -859,13 +982,13 @@ function loadGrafana(
     // A child that cannot be started is this mount's fault and nobody else's:
     // report it on /healthz rather than only in the error of whoever happened to
     // call next. A child that came up clears it — back to the missing-credential
-    // state if that is still true, because a running binary with no token is
-    // still a mount that fails every call.
+    // state if that is still true, because a running binary with no credential
+    // is still a mount that fails every call.
     onDegraded: (reason: string | null) => {
       if (reason === null) {
         if (mount.degraded !== unconfigured) {
           mount.degraded = unconfigured;
-          log(`${slug}: mcp-grafana is up (mount is no longer degraded)`);
+          log(`${slug}: ${spec.binary} is up (mount is no longer degraded)`);
         }
         return;
       }
@@ -881,6 +1004,35 @@ function loadGrafana(
   // running against the credential it was replaced for.
   mount.close = () => created.close();
   return mount;
+}
+
+/**
+ * appsignal — pulsemcp/mcp-servers' AppSignal server, vendored with a delta and
+ * hosted behind strad's own layer (servers/appsignal/README.md). The host
+ * imports the LAYER, `shared/build/strad/index.js`, never upstream's
+ * `createMCPServer`: upstream reads `process.env` and keeps a module-wide
+ * selected app, both wrong in a process holding several AppSignal mounts. The
+ * layer takes this slug's env and runs every call scoped to its own app.
+ *
+ * ONE INSTANCE PER SLUG. A slug is one app — `APPSIGNAL_APP_ID` is required —
+ * so a deployment watching production and staging is two slugs and two mounts
+ * here, each discovered on its own key and app id. Both are markers, so a
+ * per-slug instance never runs on a sibling's bare value.
+ *
+ * Read-only throughout, including `custom_graphql_query`, which the layer
+ * narrows to `query` operations.
+ */
+function loadAppSignal(mod: AppSignalModule, slug: string): Mount {
+  const env = slugEnvView(process.env, slug);
+  const created = mod.createMCPServer({ version: VERSION, env });
+  return {
+    slug,
+    tree: "appsignal",
+    serverName: "strad-appsignal",
+    capabilities: { tools: {} },
+    degraded: missingCredentialsDegraded(created.missing),
+    register: (s) => created.registerHandlers(s),
+  };
 }
 
 interface GoogleTree {
@@ -1293,7 +1445,7 @@ async function loadXTwitter(): Promise<Mount> {
     // The client caches its OAuth provider for the host process, so the factory
     // is built once here and memoised inside registerHandlers. Building it
     // LAZILY matters: `createXClientFromEnv` throws when no X credential is
-    // configured at all, and a throw at boot would take all thirty-four mounts down
+    // configured at all, and a throw at boot would take all thirty-six mounts down
     // over one unconfigured server.
     register: (s) =>
       created.registerHandlers(s, () =>
@@ -2312,7 +2464,7 @@ async function main(): Promise<void> {
   //
   // NOT AWAITED, and that is deliberate. A pass is one sequential read per
   // listed variable, each with its own timeout, so awaiting it would put a slow
-  // or unreachable core directly in front of `listen()` below — thirty-four
+  // or unreachable core directly in front of `listen()` below — thirty-six
   // mounts held off serving because one credential could not be re-read. The
   // container starting with the value the deploy baked is exactly the behaviour
   // every deployment has today, so falling back to it costs nothing; blocking
@@ -2325,7 +2477,7 @@ async function main(): Promise<void> {
   // STORE-SERVED INSTANCES — the mounts no deploy named. See the header.
   //
   // The first sync is NOT awaited, for the reason the refresh pass above is
-  // not: a slow core must not stand in front of `listen()` for thirty-four
+  // not: a slow core must not stand in front of `listen()` for thirty-six
   // mounts that need nothing from it. A request that arrives before the sync
   // lands takes the miss path in the route below, which syncs then.
   const instances = createInstanceReconciler<Mount>({
@@ -2378,7 +2530,7 @@ async function main(): Promise<void> {
   const internalOnly = requireInternalToken(process.env, timingSafeEqual);
 
   // Liveness for App Platform. Reports every mount and whether it is degraded —
-  // with 34 servers behind one health check, "ok: true" alone is not information.
+  // with 36 servers behind one health check, "ok: true" alone is not information.
   //
   // Deliberately OUTSIDE `internalOnly`. The platform's health prober holds no
   // token, and a 401 here is a component App Platform takes out of service — an
@@ -2602,8 +2754,8 @@ async function main(): Promise<void> {
     });
   });
 
-  // One stray rejection from one of thirty-four servers must not kill the other
-  // thirty-two. The standalone images exit here (correct, when the process IS the
+  // One stray rejection from one of thirty-six servers must not kill the other
+  // thirty-five. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {
     logError("unhandledRejection", reason);

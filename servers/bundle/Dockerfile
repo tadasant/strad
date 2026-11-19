@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# bundle — THE strad supplementary image. Thirty-four MCP servers, one container.
+# bundle — THE strad supplementary image. Thirty-six MCP servers, one container.
 #
 # BUILD CONTEXT IS THE REPO ROOT (not servers/bundle/), because this image is
-# assembled from twenty-five existing projects that live in different places:
+# assembled from twenty-seven existing projects that live in different places:
 #
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
 #                           gcs, google-flights
@@ -39,10 +39,14 @@
 #   servers/strad-fetch     strad-fetch            (web fetching; strad's own fork)
 #   servers/grafana         grafana                (proxies the pinned mcp-grafana
 #                                                  Go binary, baked below)
+#   servers/victorialogs    victorialogs           (proxies the pinned
+#                                                  mcp-victorialogs Go binary, baked below)
+#   servers/appsignal       appsignal              (AppSignal, read-only; vendored from
+#                                                  pulsemcp/mcp-servers + strad's layer)
 #
 # Each is built in its OWN stage with its OWN lockfile and its OWN node_modules,
 # exactly as its standalone image builds it, and copied into /app/trees/<name>.
-# Nothing is merged. That is on purpose: merging twenty-five dependency trees is how you
+# Nothing is merged. That is on purpose: merging twenty-seven dependency trees is how you
 # discover in production that two of them wanted different Playwright versions.
 # The host (servers/bundle/host) imports across them by path — Node resolves each
 # package's own imports from its own tree — and owns the one thing that MUST be
@@ -392,6 +396,58 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     test "$(/out/mcp-grafana --version)" = "${MCP_GRAFANA_VERSION}"
 
+# ---- victorialogs ------------------------------------------------------------
+# The proxy half of the VictoriaLogs mount, the same shape as grafana's: it
+# supervises the pinned mcp-victorialogs binary (fetched below) over stdio. Its
+# only dependency is the MCP SDK.
+FROM ${PW} AS build-victorialogs
+WORKDIR /src
+COPY servers/victorialogs/package.json servers/victorialogs/package-lock.json ./
+COPY servers/victorialogs/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/victorialogs/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
+# ---- mcp-victorialogs, the pinned Go binary ----------------------------------
+# VictoriaMetrics ships its MCP server (Apache-2.0) as a Go executable and a
+# Docker image and nothing else, so it is baked in the way mcp-grafana is above,
+# with the digests of the published v1.9.0 release assets pinned in the repo for
+# the same reason. There is no `--version` to assert: the binary reads only its
+# environment and exits without `VL_INSTANCE_ENTRYPOINT`. The digest is the
+# version check, and the bundle smoke test boots it and counts its tools.
+FROM ${PW} AS fetch-mcp-victorialogs
+ARG MCP_VICTORIALOGS_VERSION=1.9.0
+ARG MCP_VICTORIALOGS_SHA256_AMD64=66f68c07f780ec41c9283df19d1df77a7824a1830fdcdb4b6a5ebb84f0b1f871
+ARG MCP_VICTORIALOGS_SHA256_ARM64=35c4cdbf28eab62c0dc160d64001a7e16f6dd5f68689f85430e89149d72b5078
+ARG TARGETARCH=amd64
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) asset=x86_64; want="${MCP_VICTORIALOGS_SHA256_AMD64}" ;; \
+      arm64) asset=arm64;  want="${MCP_VICTORIALOGS_SHA256_ARM64}" ;; \
+      *) echo "mcp-victorialogs: no pinned digest for TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
+    curl -fsSL -o /tmp/mcp-victorialogs.tar.gz \
+      "https://github.com/VictoriaMetrics/mcp-victorialogs/releases/download/v${MCP_VICTORIALOGS_VERSION}/mcp-victorialogs_Linux_${asset}.tar.gz"; \
+    echo "${want}  /tmp/mcp-victorialogs.tar.gz" | sha256sum -c -; \
+    mkdir -p /out; \
+    tar xzf /tmp/mcp-victorialogs.tar.gz -C /out mcp-victorialogs; \
+    chmod 755 /out/mcp-victorialogs; \
+    rm -f /tmp/mcp-victorialogs.tar.gz; \
+    rm -rf /var/lib/apt/lists/*
+
+# ---- appsignal ---------------------------------------------------------------
+# pulsemcp/mcp-servers' AppSignal server with strad's delta and layer
+# (servers/appsignal/README.md). GraphQL over HTTPS; no browser.
+FROM ${PW} AS build-appsignal
+WORKDIR /src
+COPY servers/appsignal/package.json servers/appsignal/package-lock.json ./
+COPY servers/appsignal/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/appsignal/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
 # ---- tailscale (userspace tailscaled, for tailnet egress) --------------------
 # Started by the host ONLY on a component rendered with a bundle `tailnet:`
 # block (servers/bundle/host/src/tailnet.ts); on every other component the two
@@ -465,7 +521,7 @@ RUN npm run build && npm prune --omit=dev
 FROM ${PW}
 
 LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
-LABEL org.opencontainers.image.description="strad's single supplementary image — 34 MCP servers (API, Google, X.com, Telegram, WhatsApp, Messenger, web fetching, Grafana, banking, Airtable, FlightAware, DigitalOcean, Hetzner Cloud, image diff/tracing, nutrition facts, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
+LABEL org.opencontainers.image.description="strad's single supplementary image — 36 MCP servers (API, Google, X.com, Telegram, WhatsApp, Messenger, web fetching, Grafana, VictoriaLogs, AppSignal, banking, Airtable, FlightAware, DigitalOcean, Hetzner Cloud, image diff/tracing, nutrition facts, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
 LABEL org.opencontainers.image.licenses="MIT"
 
 # --- 1Password CLI (op), pinned ----------------------------------------------
@@ -497,7 +553,7 @@ RUN set -eux; \
 ENV NODE_ENV=production
 WORKDIR /app
 
-# The twenty-five trees, each with the node_modules it was built against.
+# The twenty-seven trees, each with the node_modules it was built against.
 COPY --from=build-api /src /app/trees/bundle-api
 COPY --from=build-google /src /app/trees/bundle-google
 COPY --from=build-op /src /app/trees/onepassword
@@ -526,12 +582,16 @@ COPY --from=build-nutrition-facts /src /app/trees/nutrition-facts
 COPY --from=build-pulse-subregistry /src /app/trees/pulse-subregistry
 COPY --from=build-strad-fetch /src /app/trees/strad-fetch
 COPY --from=build-grafana /src /app/trees/grafana
+COPY --from=build-victorialogs /src /app/trees/victorialogs
+COPY --from=build-appsignal /src /app/trees/appsignal
 
-# The one upstream in this image that is not JavaScript. It goes on PATH because
-# that is where the grafana tree's supervisor looks for it (DEFAULT_BINARY), and
-# it is spawned per mount with an allowlisted environment — see
-# servers/grafana/shared/src/config.ts for what it is and is not handed.
+# The two upstream MCP servers in this image that are Go binaries. Each goes on
+# PATH because that is where its tree's supervisor looks for it
+# (DEFAULT_BINARY), and each is spawned per mount with an allowlisted
+# environment — see servers/grafana/shared/src/config.ts and
+# servers/victorialogs/shared/src/config.ts for what each is and is not handed.
 COPY --from=fetch-mcp-grafana /out/mcp-grafana /usr/local/bin/mcp-grafana
+COPY --from=fetch-mcp-victorialogs /out/mcp-victorialogs /usr/local/bin/mcp-victorialogs
 
 # tailscaled + tailscale, on PATH where src/tailnet.ts spawns them. Inert unless
 # the component was rendered with `tailnet:`.

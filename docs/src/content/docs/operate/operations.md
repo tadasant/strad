@@ -13,8 +13,8 @@ produce a bootable image is a failing PR.
 ## `ci.yml` — the gate on every PR
 
 Runs on PRs and pushes to `main`. Eleven jobs, all `runs-on: ubuntu-latest` and
-each with a `timeout-minutes` — one of which, `servers`, is a twenty-five-leg
-matrix over the server trees. A push to a PR therefore starts thirty-five jobs at
+each with a `timeout-minutes` — one of which, `servers`, is a twenty-seven-leg
+matrix over the server trees. A push to a PR therefore starts thirty-seven jobs at
 once, and GitHub caps how many hosted jobs an account runs concurrently, so a few
 legs can sit queued behind the others for a short while. That is a wait, not a
 failure:
@@ -200,10 +200,20 @@ failure:
     `npm run build && vitest run` — `tsc` over `src/` runs first, so a type error
     there still fails the PR rather than the bundle-image build. The suite itself
     runs under Vitest against the TypeScript sources, like every other tree's.
+  - **`victorialogs`** — tests. The proxy in front of the pinned
+    `mcp-victorialogs` Go binary, grafana's shape: a fake MCP child, the
+    allowlisted environment with `MCP_SERVER_MODE` pinned to `stdio`, a dead
+    child replaced, and a mount with no entrypoint that still lists. The real
+    binary's count is `bundle_image`'s.
+  - **`appsignal`** — tests. pulsemcp/mcp-servers' AppSignal server with
+    strad's delta and layer. The suite sits at the tree root, outside the
+    `shared/` a re-vendor overwrites, and fails if the delta is reverted: the
+    per-call app scope, `custom_graphql_query` refusing a mutation before
+    anything is sent, and the key kept out of results.
   - **`bundle/host`** — tests, and no separate build leg, because `npm test` is
     `npm run build && vitest run` — `tsc` over `src/`, so a type error there
     still fails the PR. The host is the process every bundle container runs: it
-    mounts every tree in the image, 34 mounts, which staging's 45
+    mounts every tree in the image, 36 mounts, which staging's 45
     supplementary-image slugs resolve to. Its suite runs over its TypeScript
     sources with no `/app/trees` to mount: the per-slug environment
     discovery, the two `degraded` verdicts, the presence route's wiring and the
@@ -720,7 +730,7 @@ below for the move that publishes one.
 The walk-back rule is the one thing that differs from the core, and it is
 inverted. `release-image.yml` builds every commit except docs-only ones;
 `release-bundle-image.yml` has a `paths:` filter — one entry per thing that
-changes the image: the twenty-five trees the Dockerfile bakes, the bundle host, the
+changes the image: the twenty-seven trees the Dockerfile bakes, the bundle host, the
 workflow itself, and the shared release body it delegates to — so **most**
 commits cut no bundle image
 and stepping past them is the normal case, not an exception. `--kind bundle` reads
@@ -1249,7 +1259,7 @@ to the value that is wrong for it: `refuse-off-main: true` because
 `strad-bundle:latest` is what live staging tracks, `cache-scope: bundle` because
 this build is large enough to evict every one-tree image out of the shared gha
 scope, and `file: servers/bundle/Dockerfile` because its `context:` is the repo
-root — twenty-five trees, so the root is the only context that can `COPY` them all.
+root — twenty-seven trees, so the root is the only context that can `COPY` them all.
 Dropped, each of the three fails silently rather than loudly, which is why
 `test/workflow-release-callers.test.ts` asserts all three on that caller by
 name.
@@ -1459,7 +1469,7 @@ declares forty-eight server slugs:
 - forty-one `supplementary-image` entries on the one `bundle` component running
   `ghcr.io/tadasant/strad-bundle`. They land on twenty-eight paths, because a
   read-only and a read-write variant of one upstream are two entries sharing one
-  `path`: twenty-seven of the bundle image's thirty-four baked mounts, plus
+  `path`: twenty-seven of the bundle image's thirty-six baked mounts, plus
   `/grafana-registry`, a per-slug instance the host stands up for that slug's own
   Grafana credential. Eleven of them — `telegram-ro`, `telegram-rw`,
   `pulse-subregistry`, `grafana-registry`, `liveoak`, `airtable`, `flightaware`,

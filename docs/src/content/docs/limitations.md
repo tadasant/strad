@@ -614,11 +614,12 @@ nothing warns beforehand. Publishing the OAuth app removes the expiry.
 
 ## The deployment
 
-### 24. Thirty-four servers share one process and one CPU
+### 24. Thirty-six servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts thirty-four MCP servers,
-launches one shared Chromium and supervises one `mcp-grafana` child process, on
-`apps-s-1vcpu-2gb`. A crash in the host takes all thirty-four down together, and
+The `bundle` component runs one Node process that mounts thirty-six MCP servers,
+launches one shared Chromium and supervises an `mcp-grafana` and an
+`mcp-victorialogs` child process per mount that uses one, on
+`apps-s-1vcpu-2gb`. A crash in the host takes all thirty-six down together, and
 Chromium contends with every other server for the single vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -1009,7 +1010,7 @@ a store-wide read.
 keeps a listed parameter current in a supplementary container's environment
 without a redeploy. It cannot make the MCP server inside that container **look**
 at the new value — that is a property of the upstream, and the bundle image runs
-thirty-four of them, most written by other people.
+thirty-six of them, most written by other people.
 
 `strad-fetch` builds its scraping clients inside a factory the host invokes per
 request, so a rotated key is used by the next tool call; that is the case the
@@ -2204,7 +2205,7 @@ ever rebuilt with a rootless or hand-installed docker, where buildx lives in
 
 **Serialising the workflows was the alternative.** A `concurrency:` group would
 have ended it too, at the cost of every push taking the sum of its builds rather
-than the longest — the bundle alone is twenty-five dependency trees. Isolation costs a
+than the longest — the bundle alone is twenty-seven dependency trees. Isolation costs a
 `mkdir`.
 
 ### 49. The Telegram MTProto library is archived upstream
@@ -2304,7 +2305,7 @@ for the telegram pair, `BILL_SPEND_API_TOKEN` for the bill-spend pair,
 then delete that entry's `enabled:` line and add each seeded name to
 `PROVISIONED_STATICS` in `test/staging-config.test.ts`.
 
-### 56. Per-slug variable names are emitted for every server; only thirteen of the twenty-five trees can read one
+### 56. Per-slug variable names are emitted for every server; only fifteen of the twenty-seven trees can read one
 
 Every supplementary server's `env:` lands on its bundle twice — under the bare
 name and under `<SLUG>__<NAME>` — with no condition attached, so what a server's
@@ -2320,8 +2321,9 @@ differently is still a hard error — one process cannot hold two credentials,
 whatever the variables are called.
 
 **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
-`grafana`, `bill-spend`, `aws-device-farm`, `whatsapp`, `liveoak`, `airtable`,
-`flightaware`, `digitalocean`, `hetzner` and `ssh` read an injected environment.** The other eleven
+`grafana`, `victorialogs`, `appsignal`, `bill-spend`, `aws-device-farm`,
+`whatsapp`, `liveoak`, `airtable`, `flightaware`, `digitalocean`, `hetzner` and
+`ssh` read an injected environment.** The other twelve
 trees in the bundle image are vendored upstream code that reads `process.env` directly,
 often lazily at call time, so they see the bare names only. `bill-spend` reads
 the injected view for one mount rather than one per slug: one BILL token is one
@@ -2601,7 +2603,7 @@ leak. Nothing in the cache is a credential; it is public pages someone fetched.
 
 **What the fork DID bound is the memory.** Upstream's store grows for the life of
 the process, which is fine for a subprocess the OS reclaims and an out-of-memory
-kill in a container that hosts thirty-four mounts. The cache is LRU-bounded on both
+kill in a container that hosts thirty-six mounts. The cache is LRU-bounded on both
 entry count and bytes, and the filesystem backend is gone (App Platform gives the
 container no persistent volume, so it was memory with extra steps).
 
@@ -2672,7 +2674,8 @@ drive the sign-in form at once — and clear the login latch in the same change.
 
 ### 68. The Grafana mount runs a downloaded binary, and its version is pinned in three places
 
-`grafana` is the only upstream in the bundle image that is not JavaScript.
+`grafana` is one of two upstreams in the bundle image that are Go binaries;
+`victorialogs` is the other (#153).
 Grafana publishes `mcp-grafana` as a Go executable and a Docker image and nothing
 else, so the bundle Dockerfile fetches the pinned release, verifies it against a
 SHA-256 digest committed here, and installs it on PATH; `servers/grafana`
@@ -4765,3 +4768,47 @@ resolves, with no roles.
   This deployment's `secrets` server cannot see another store.
 
 See `HACKS.md` #152.
+
+---
+
+### 153. The VictoriaLogs mount is a second downloaded binary
+
+`mcp-victorialogs` is baked into the bundle image like `mcp-grafana` (#68): a
+pinned release, a SHA-256 digest committed here, a stdio child supervised by
+`servers/victorialogs`. See [VictoriaLogs](/servers/victorialogs/).
+
+- **A version bump moves three things**: the version and both digests in the
+  Dockerfile, the smoke test's `victorialogs: 13`, and the version on its page.
+  The build cannot check which version it unpacked. The digest is the only check.
+- **An unconfigured mount points its child at `http://unconfigured.invalid`.**
+  The binary will not start without an entrypoint, and the tools must still
+  list. The proxy refuses every call on that mount but the offline
+  `documentation` before the child sees it.
+- **Its supervisor is a copy of grafana's.** A fix to one is a fix to make in
+  the other.
+- **Through strad, it has met only a fake child and an entrypoint that does not
+  resolve.** The same binary ran against real VictoriaLogs from its Docker
+  image before strad hosted it.
+
+See `HACKS.md` #153.
+
+---
+
+### 154. AppSignal's token reaches every app, and travels in a URL
+
+The [AppSignal](/servers/appsignal/) mount is pulsemcp/mcp-servers' server with
+one edit and a layer of strad's own. Each slug reads one app, every tool reads,
+and `custom_graphql_query` refuses a mutation before it is sent.
+
+- **A personal API token reaches every app its user can see.** AppSignal issues
+  nothing narrower. The app ID scopes the seventeen app tools, but
+  `custom_graphql_query` can read any app the token can, by naming it.
+- **The token is sent in the request URL**, the only form upstream's client
+  uses. It goes to `appsignal.com` and nowhere else, and results are scrubbed of
+  it, but anything that logs request URLs on that path would see it.
+- **A failed AppSignal call comes back as text, not as an error.** That is
+  upstream's behaviour, kept as it was.
+- **strad's layer has met only fakes.** The queries are upstream's and ran
+  against the real API before strad hosted them.
+
+See `HACKS.md` #154.

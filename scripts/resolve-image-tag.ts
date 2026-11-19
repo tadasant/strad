@@ -12,7 +12,7 @@
  *   core    release-image.yml builds every commit except docs-only ones, so the
  *           walk steps past `**\/*.md` and `docs/**` and stops hard anywhere
  *           else.
- *   bundle  release-bundle-image.yml is `paths:`-filtered — the twenty-five trees
+ *   bundle  release-bundle-image.yml is `paths:`-filtered — the twenty-seven trees
  *           the Dockerfile bakes, the bundle host, the workflow itself and the
  *           shared release body it delegates to — so most commits cut no bundle
  *           image and stepping past them is the normal case. That filter is READ

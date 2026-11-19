@@ -1,0 +1,14 @@
+{
+  "name": "victorialogs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "VictoriaMetrics' mcp-victorialogs, hosted inside the strad bundle: a pinned Go binary supervised over stdio and proxied to as an MCP mount. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared",
+    "test": "npm run test --workspace shared"
+  }
+}

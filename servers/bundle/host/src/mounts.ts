@@ -156,6 +156,54 @@ export function dropInheritedNames(
 }
 
 /**
+ * Bare credentials that belong to a DIFFERENT origin than the bare origin.
+ *
+ * The renderer picks the owner of each bare name separately, so on a container
+ * holding several slugs of one tree, the bare origin can be one slug's and the
+ * bare credential another's: slug C declares only an entrypoint, slug B declares
+ * an entrypoint and a token, and the conventional mount comes up holding C's
+ * entrypoint and B's token. Sent together, that is B's credential handed to C's
+ * host. A per-slug view is guarded by {@link dropInheritedNames}; this is the
+ * guard for the conventional one.
+ *
+ * A bare credential is dropped when some slug carries the same value under its
+ * own name AND that slug's own origin is not the bare origin — the one case in
+ * which the pairing is provably wrong. Returns the names it dropped.
+ */
+export function dropUnpairedCredentials(
+  view: Record<string, string | undefined>,
+  originName: string,
+  credentialNames: readonly string[],
+  slugs: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const dropped: string[] = [];
+  for (const name of credentialNames) {
+    const bare = view[name];
+    if (!bare) continue;
+    for (const slug of slugs) {
+      const ownCredential = prefixedEnvName(slug, name);
+      const ownOrigin = prefixedEnvName(slug, originName);
+      if (ownCredential === null || ownOrigin === null) continue;
+      if (env[ownCredential] === bare && env[ownOrigin] !== view[originName]) {
+        delete view[name];
+        dropped.push(name);
+        break;
+      }
+    }
+  }
+  if (dropped.length > 0) {
+    logWarn(
+      `not using the bare ${dropped.join(", ")} for the conventional mount: ` +
+        `${dropped.length === 1 ? "it belongs" : "they belong"} to a slug whose ` +
+        `${originName} is not the bare one, and would be sent to a host it was ` +
+        `not issued for.`,
+    );
+  }
+  return dropped;
+}
+
+/**
  * A variable this mount reads under its OWN slug's name or not at all — and,
  * unlike {@link dropInheritedNames}, one that is not a credential.
  *
