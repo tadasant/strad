@@ -12,6 +12,7 @@ import { defineConfig } from "vitest/config";
 // so a test written inside one of them is a merge conflict on the next
 // re-vendor. The calendar and docs copies carry strad deltas, and their tests
 // are in `test/` for that reason: `test/calendar-auth-mode.test.ts`,
+// `test/calendar-create-send-updates.test.ts`, `test/calendar-show-as.test.ts`,
 // `test/docs-tabs.test.ts`, `test/docs-comments.test.ts`,
 // `test/docs-suggest-anchor.test.ts` and `test/docs-anchored-edits.test.ts`.
 // `vendor/gmail-shared` is a fork (its `FORK.md`), and its tests still live

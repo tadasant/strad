@@ -75,10 +75,11 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   - `vendor/google-docs-shared/` — vendored verbatim from
     `github.com/pulsemcp/mcp-servers/experimental/google-docs`.
   - `vendor/google-calendar-shared/` — a **patched vendor** of
-    `experimental/google-calendar`: upstream `0ed34de` plus one delta, the
-    `GOOGLE_CALENDAR_AUTH_MODE=oauth` mode in `src/server.ts`. Its README's
-    delta table lists it and `test/calendar-auth-mode.test.ts` defends it. A
-    re-vendor has to re-apply it.
+    `experimental/google-calendar`: upstream `0ed34de` plus strad's deltas,
+    among them the `GOOGLE_CALENDAR_AUTH_MODE=oauth` mode in `src/server.ts`,
+    `send_updates` on create, and Show as Free / Busy on create and update.
+    Its README's delta table lists each one and the test under `test/` that
+    defends it. A re-vendor has to re-apply every row.
   - `vendor/gmail-shared/` — **a fork**, not a copy. strad owns it and changes
     land here; do not re-vendor over it. It adds attachments to
     `send_email` and `upsert_draft_email`, the sender's display name,
