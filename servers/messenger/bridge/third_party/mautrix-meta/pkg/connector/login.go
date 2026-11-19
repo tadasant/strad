@@ -319,6 +319,14 @@ func (m *MetaNativeLogin) StartWithParams(ctx context.Context, params bridgev2.L
 		client.GetHTTP().GetNewProxy = nil
 		client.GetHTTP().SetTransportOverride(params.HTTP)
 	}
+	if m.Main.DeviceIdentity != nil {
+		// strad delta D2: the same phone as every earlier login.
+		identity, err := m.Main.DeviceIdentity(ctx, m.Mode)
+		if err != nil {
+			return nil, fmt.Errorf("device identity: %w", err)
+		}
+		client.MessengerLite.SetDeviceIdentity(identity)
+	}
 	m.SavedClient = client
 
 	return m.proceed(ctx, nil)

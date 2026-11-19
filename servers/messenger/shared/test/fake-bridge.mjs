@@ -91,6 +91,9 @@ const server = createServer(async (req, res) => {
           : null,
         cursor: state.seq,
         uptime_seconds: 1,
+        device_identity: state.account
+          ? [{ flow: "android", origin: "live_login", machine_id: true, since: "2026-11-18T00:00:00Z" }]
+          : [],
       });
     case "GET /threads": {
       const after = Number(url.searchParams.get("updated_after_ms") ?? 0);

@@ -46,6 +46,10 @@ type HTTPClient struct {
 	instagramNative atomic.Bool
 
 	LogRedactedLoginResponses bool
+
+	// strad delta D2: when set, the Bloks login headers that name the device
+	// come from it instead of being minted per request.
+	DeviceIdentity *types.DeviceIdentity
 }
 
 type Client interface {

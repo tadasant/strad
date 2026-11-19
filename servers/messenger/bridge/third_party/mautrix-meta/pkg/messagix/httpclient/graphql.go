@@ -75,7 +75,12 @@ func (c *HTTPClient) MakeBloksRequest(ctx context.Context, doc *bloks.BloksDoc, 
 		headers.Set("x-graphql-client-library", "pando")
 
 		// Not clear if this needs to be remembered
-		headers.Set("x-meta-usdid-uuid", strings.ToUpper(uuid.New().String()))
+		// strad delta D2: remembered, when there is a device identity.
+		if id := c.DeviceIdentity; id != nil {
+			headers.Set("x-meta-usdid-uuid", strings.ToUpper(id.USDID.String()))
+		} else {
+			headers.Set("x-meta-usdid-uuid", strings.ToUpper(uuid.New().String()))
+		}
 
 		// Skip setting encoding headers since it messes up
 		// our own http library
@@ -100,10 +105,18 @@ func (c *HTTPClient) MakeBloksRequest(ctx context.Context, doc *bloks.BloksDoc, 
 		headers.Set("x-fb-sim-hni", "310240")
 
 		// This probably needs to come from somewhere
-		headers.Set("x-fb-integrity-machine-id", string(random.StringBytes(24)))
+		// strad delta D2: from the device identity, when there is one — the
+		// Meta-issued machine id once known, as the logged-in app sends it
+		// (nativepush.go), and the device id below, as it sends that.
+		did := uuid.New().String()
+		if id := c.DeviceIdentity; id != nil {
+			headers.Set("x-fb-integrity-machine-id", id.IntegrityMachineIDHeader())
+			did = id.DeviceID.String()
+		} else {
+			headers.Set("x-fb-integrity-machine-id", string(random.StringBytes(24)))
+		}
 
 		// Meaning unclear
-		did := uuid.New().String()
 		headers.Set("x-zero-f-device-id", did)
 		headers.Set("x-zero-eh", hex.EncodeToString(random.Bytes(16)))
 		headers.Set("x-zero-state", "unknown")

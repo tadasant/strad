@@ -4664,8 +4664,10 @@ run headless in a separate AGPL-3.0 process. What that costs:
   secure-storage PIN at login, encrypted chats start at the moment of login.
 - **A checkpoint means a new login.** When Meta stops the session (a checkpoint,
   a forced password change), the bridge does not reconnect it on its own, and
-  `messenger_status` says to log in again. Every app login looks like a new
-  phone to Meta, from a datacenter IP.
+  `messenger_status` says to log in again. Every app login presents the same
+  stored phone, adopted from the login that was already running, but still
+  from a datacenter IP; `messenger_logout` deletes that phone with everything
+  else.
 - **A slow login step answers `working`.** The PIN step can outlast the
   console's minute-long ingress timeout, so a step is answered in the
   background and a call returns after 25 seconds; a submit with no input picks
@@ -4676,9 +4678,9 @@ run headless in a separate AGPL-3.0 process. What that costs:
   Messages that cannot be decrypted arrive as placeholders.
 - **Read-only.** There is no send tool.
 - **A patched mautrix-meta.** The phone-app login's authenticator-code step
-  needed a Bloks function mautrix-meta does not implement, so strad builds from
-  its own copy of the module with that fix, and a newer release has to have the
-  fix re-applied. A login screen that uses another function the interpreter
+  needed a Bloks function mautrix-meta does not implement, and mautrix-meta
+  makes every login a new device, so strad builds from its own copy of the
+  module with both changes, and a newer release has to have them re-applied. A login screen that uses another function the interpreter
   lacks fails that step and ends the login; the `cookies` flow avoids those
   screens.
 
