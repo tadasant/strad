@@ -10,7 +10,7 @@
  *
  * They were not, on 2026-08-06. Both this repo's staging deploy and
  * tadasant-internal's prod deploy wrote the same absolute path, `/tmp/spec.json`,
- * and both run on the same self-hosted machine (`ci-runner-2`) under different
+ * and both ran on the same self-hosted machine (`ci-runner-2`) under different
  * runner processes — which share `/tmp`. Prod's render step opened that path for
  * writing at 11:29:38.75, truncating staging's spec to zero bytes; staging's
  * `doctl apps update` read it at 11:29:40.05, 1.3 seconds inside the two-second

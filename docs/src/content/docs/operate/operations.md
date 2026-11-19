@@ -5,14 +5,19 @@ sidebar:
   order: 2
 ---
 
-strad's operations are a set of GitHub Actions workflows on self-hosted runners.
+strad's operations are a set of GitHub Actions workflows on GitHub-hosted
+runners.
 They enforce one premise: **the image is the deliverable**, so a PR that can't
 produce a bootable image is a failing PR.
 
 ## `ci.yml` — the gate on every PR
 
-Runs on PRs and pushes to `main`. Ten jobs, all `runs-on: self-hosted` — one
-of which, `servers`, is a twenty-five-leg matrix over the server trees:
+Runs on PRs and pushes to `main`. Eleven jobs, all `runs-on: ubuntu-latest` and
+each with a `timeout-minutes` — one of which, `servers`, is a twenty-five-leg
+matrix over the server trees. A push to a PR therefore starts thirty-five jobs at
+once, and GitHub caps how many hosted jobs an account runs concurrently, so a few
+legs can sit queued behind the others for a short while. That is a wait, not a
+failure:
 
 - **`lint`** — typecheck, ESLint, `prettier --check`. The typecheck is one
   program over `src/`, `test/` and `scripts/`. `scripts/` matters because those
@@ -30,7 +35,8 @@ of which, `servers`, is a twenty-five-leg matrix over the server trees:
   `main`, so without these legs a PR can break a server tree and merge green — a
   type error surfaces first as a failed release build, and a behavioural
   regression surfaces first in production. Each leg reports as `servers (<tree>)`,
-  and `fail-fast: false` keeps one broken tree from cancelling the other nineteen.
+  and `fail-fast: false` keeps one broken tree from cancelling the other
+  twenty-four.
 
   A leg's `tree:` **is** its path under `servers/`, so a tree that is not a direct
   child is spelled with a slash: `bundle/host` runs in `servers/bundle/host` and
@@ -299,8 +305,11 @@ of which, `servers`, is a twenty-five-leg matrix over the server trees:
 <aside class="starlight-aside starlight-aside--note">
 
 **Why `ci.yml`'s three docker jobs name everything per run.** `bundle_image`,
-`build_image` and `dev_env` all build an image and boot it, on a self-hosted box
-whose docker daemon every concurrent job shares. So the container name, the image
+`build_image` and `dev_env` all build an image and boot it. They were written for
+a self-hosted box whose docker daemon every concurrent job shared, and a hosted
+runner is a fresh VM per job, so nothing concurrent shares its daemon — but the
+guards cost nothing and keep a job correct if it ever lands on a shared
+daemon again. So the container name, the image
 tag, the compose project and the host port are all suffixed or assigned per run:
 the tag is `ci-<run id>-<run attempt>`, the container carries the same suffix,
 `dev_env`'s compose project is `strad-dev-ci-<run id>-<run attempt>`, and the port
@@ -320,7 +329,7 @@ The port readback is the one part that could fail quietly, so it doesn't: an emp
 or non-numeric answer from `docker port` fails the step by name instead of
 degrading into a `curl` connection-refused against a malformed URL. Binding to
 `127.0.0.1` rather than every interface is what keeps that answer to one line, and
-keeps a booted gateway off the runner box's public address.
+keeps a booted gateway off the runner's public address.
 
 What per-run names cost is the fixed names' one accidental virtue: a leaked
 `bundle-ci` was reaped by the next run that wanted that name, and nothing wants
@@ -343,9 +352,11 @@ and the port are the shared names a workflow can see. `~/.docker/buildx/current`
 is the one it cannot. `docker/setup-buildx-action` defaults to `use: true`, which
 means `docker buildx create --use`, which writes that file — and there is one of
 it per machine, because every job runs as the same user. A `docker buildx build`
-with no `--builder` reads it, so a build lands in whichever job on the box
-created a builder most recently, and dies with `graceful_stop` when that job's
-post-cleanup removes it mid-stream. That took `main` red on 2026-08-11.
+with no `--builder` reads it, so on a shared self-hosted box a build landed in
+whichever job created a builder most recently, and dies with `graceful_stop` when that job's
+post-cleanup removed it mid-stream. That took `main` red on 2026-08-11. A hosted
+runner gives each job its own `$HOME`, so the rule below guards nothing live —
+it is kept because it costs nothing and holds on a shared machine.
 
 The builder each job creates is a uuid and never collides, which is exactly what
 hid this: nothing collides, nothing errors until the unrelated job finishes. So
@@ -362,13 +373,13 @@ action, and fails the PR that drops either half. See
 
 <aside class="starlight-aside starlight-aside--note">
 
-**Why every job logs in to its own docker config.** The pointer is not the only
-box-wide file in `$HOME`. `~/.docker/config.json` holds the registry credential,
+**Why every job logs in to its own docker config.** On a shared self-hosted box
+the pointer was not the only box-wide file in `$HOME`. `~/.docker/config.json` holds the registry credential,
 and nine jobs here run `docker/login-action` against ghcr — each writing
 `auths["ghcr.io"]` with its own job's `GITHUB_TOKEN`, and each running `docker
 logout ghcr.io` in a post step, because `logout: true` is that action's default.
-So the last job to log in owns the credential every concurrent build pushes with,
-and the first job to finish deletes it.
+So on that box the last job to log in owned the credential every concurrent
+build pushed with, and the first job to finish deleted it.
 
 A buildx CLI reads that file once, at startup, and a long build pushes with
 whatever it read. On 2026-08-12 the bundle release loaded a sibling job's token,
@@ -387,7 +398,9 @@ and buildx's auth provider together, so the post-step logout stays on and emptie
 only this job's own file. It is called before `docker/setup-buildx-action` as well
 as before the login, since buildx keeps its builder metadata in the same
 directory. `test/workflow-docker-config.test.ts` fails the PR that drops it,
-reorders it, or hand-rolls a `docker login` in a `run:` block. See
+reorders it, or hand-rolls a `docker login` in a `run:` block. On a hosted
+runner, which is one job's VM, it guards nothing live and is kept for the same
+reason as the builder rule. See
 [limitations #57](/limitations/#57-the-ghcr-credential-is-a-box-wide-file-and-the-slowest-build-loses-it).
 
 </aside>
@@ -396,10 +409,9 @@ reorders it, or hand-rolls a `docker login` in a `run:` block. See
 
 strad-hostd's two native helpers — `strad-hostd-ax` behind the computer-use
 servers, `strad-hostd-messages` behind the Messages server — are Swift and
-build only on a Mac. Everything else in this repository runs on the
-self-hosted Linux runner, so this is the one workflow on GitHub-hosted
-`macos-15` runners, three jobs, and on a private repository those minutes are
-billed. It is path-filtered to `hostd/ax/**`, `hostd/messages/**`, the
+build only on a Mac. Everything else in this repository runs on
+`ubuntu-latest`, so this is the one workflow on `macos-15` runners, three jobs.
+The repository is public, so those minutes are not billed. It is path-filtered to `hostd/ax/**`, `hostd/messages/**`, the
 daemon's `hostd/src/messages/**` (the Messages smoke test runs its queries),
 both helpers' LaunchAgent plists, the signing script, the installer's launchd
 path and itself, and runs on a PR and on `main`.
@@ -514,13 +526,15 @@ else in the job noticing — see [Known limitations](/limitations/) #38.
 The deploy renders a spec to a file and hands that file to `doctl` several steps
 later. Two things make that handoff safe, and both were added after it failed.
 
-**The file lives in `$RUNNER_TEMP`, not `/tmp`.** `runs-on: self-hosted` means
-several runner _processes_ share one machine, and they share `/tmp` with each
-other. This repo's staging deploy and tadasant-internal's prod deploy both wrote
-`/tmp/spec.json`, and on 2026-08-06 they overlapped on the same box: prod's
+**The file lives in `$RUNNER_TEMP`, not `/tmp`.** When this ran on self-hosted
+runners, several runner _processes_ shared one machine, and they shared `/tmp`
+with each other. This repo's staging deploy and tadasant-internal's prod deploy
+both wrote `/tmp/spec.json`, and on 2026-08-06 they overlapped on the same box: prod's
 render opened that path for writing and truncated staging's finished spec, and
 staging's `doctl apps update` read the empty file 1.3 seconds later. `runner.temp`
 is per runner installation and emptied between jobs, so no other job can name it.
+A hosted runner is a fresh VM per job and has no neighbour to collide with, and
+the file stays in `$RUNNER_TEMP` anyway — it costs nothing.
 
 **The spec is asserted immediately before `doctl` reads it**, by
 `scripts/assert-spec.ts` (`src/deploy/spec-file.ts`) — once after the render, for
@@ -791,9 +805,9 @@ three of these hold:
 | `run_attempt == 1`          | a re-run adds an attempt to the _same_ run, so this listener fires again when that attempt ends. One heal per run.   |
 | `event == 'push'`           | a `workflow_dispatch` build is one a human started and may deliberately stop. Undoing that is worse than leaving it. |
 
-It runs on `ubuntu-latest`, not the self-hosted runners, for the same reason
-`alert-ci-failure.yml` does: the runners going down is precisely the event it
-heals, and a heal that runs on the broken thing cannot run.
+It runs on a fresh hosted runner of its own, like `alert-ci-failure.yml`, and
+shares no machine with the build it heals — so a runner lost mid-build or a job
+that hit its timeout cannot take the heal down with it.
 
 The tag walk meets it halfway. A deploy already inside its fifteen-minute wait
 polls every twenty seconds, so a cancellation landing mid-wait would otherwise
@@ -819,7 +833,8 @@ the loop above stays impossible. And it heals once — an attempt 2 that is
 cancelled again means the CI host is unhealthy, and hammering it would not make
 it healthy.
 
-**Why.** On 2026-09-04 the self-hosted runner host restarted mid-build.
+**Why.** On 2026-09-04, when CI still ran on self-hosted runners, the runner
+host restarted mid-build.
 `a278b5ed`'s bundle build was cancelled 100 seconds in; three unrelated jobs on
 two other runners died in the same second; nothing was wrong with the commit.
 `main` was left undeployable — every staging deploy hard-stopped on the missing
@@ -1002,8 +1017,9 @@ the ephemeral `GITHUB_TOKEN` that only exists during the workflow run.
 **Why `doctl` is installed without a token.** `digitalocean/action-doctl` will run
 `doctl auth init` for you, which writes the token in cleartext to
 `$HOME/.config/doctl/config.yaml`. The action has no `post:` step to tear that
-file down, and the runners are `self-hosted` with a shared `/home/runner`. A
-concurrent job can clobber it mid-run. So the workflow installs the binary with
+file down. On the self-hosted runners this was written for, `/home/runner` was
+shared and a concurrent job could clobber it mid-run; a hosted runner is one
+job's VM, and the rule stays because it costs nothing. So the workflow installs the binary with
 `no_auth: "true"` and gives every step that invokes `doctl` its own
 `DIGITALOCEAN_ACCESS_TOKEN`, which doctl reads natively.
 
@@ -1258,10 +1274,12 @@ See [Known limitations](/limitations/).
 **Why `release-onepassword-image.yml` tags its verification image per run.** That
 workflow builds the image, loads it locally, and runs `op --version` inside it
 before publishing — asserting the pinned CLI against the real artifact rather than
-against the Dockerfile it came from. It is `runs-on: self-hosted` like everything
-else here, so the tag it verifies is a name on a daemon the whole box shares.
-Its own `concurrency` group keeps two runs of _it_ from overlapping; every other
-job on the box is unaffected by that, and is what the tag has to be safe from.
+against the Dockerfile it came from. It was written for a self-hosted box, where
+the tag it verifies was a name on a daemon every job shared. Its own
+`concurrency` group keeps two runs of _it_ from overlapping; every other job on
+such a box is unaffected by that, and is what the tag has to be safe from. A
+hosted runner has its own daemon, and the per-run tag stays because it costs
+nothing.
 Under a fixed `strad-server-onepassword:ci`, a concurrent job rebuilding that tag
 between the build and the `docker run` moves the assertion onto an image this run
 never built — and it passes, because both came from the same Dockerfile. Nothing
@@ -1306,9 +1324,10 @@ upstream.
 
 <aside class="starlight-aside starlight-aside--note">
 
-**Why it names its container and its image per run.** Like every other job here
-it is `runs-on: self-hosted`, and its concurrency group is per-ref — so two PRs
-run it at the same time, on one box, against one docker daemon. So the container
+**Why it names its container and its image per run.** Its concurrency group is
+per-ref, so two PRs run it at the same time — on a shared self-hosted box, which
+is what this was written for, against one docker daemon. A hosted runner gives
+each run its own, and the guard stays because it costs nothing. So the container
 name and the image tag both carry `ci-<run id>-<run attempt>`:
 `strad-server-bundle-google:ci-…` and `bundle-google-ci-…`.
 

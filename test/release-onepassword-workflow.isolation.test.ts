@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
  * `release-onepassword-image.yml`'s verification build must not name an image
  * the whole runner box shares.
  *
- * It is `runs-on: self-hosted` against the same ONE docker daemon every other
+ * On a shared runner it runs against the same ONE docker daemon every other
  * job uses. A fixed `strad-server-onepassword:ci` is a name any concurrent job
  * can claim, and the window between this job's build and its `docker run` is
  * unguarded: a rebuild in that window moves the `op --version` assertion — the

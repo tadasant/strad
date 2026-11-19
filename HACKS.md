@@ -2055,11 +2055,13 @@ every tree's factory contract, which is why it is a list today.
 **✅ RESOLVED for this repo's staging deploy** — the rendered spec moved to
 `$RUNNER_TEMP`, which no other job can name, and it is asserted immediately
 before `doctl` reads it. The underlying condition — several runner processes on
-one box, sharing `/tmp` — is unchanged.
+one box, sharing `/tmp` — ended for this repo when every job moved to GitHub-hosted runners in November 2026, each one a fresh VM. Both
+fixes stay: they cost nothing and hold if a job ever lands on a shared machine
+again.
 
-**What.** `runs-on: self-hosted` means several runner _processes_ share one
-machine and therefore share `/tmp`. `deploy-staging.yml` rendered its App
-Platform spec to `/tmp/spec.json`; so does tadasant-internal's prod deploy, on
+**What.** `runs-on: self-hosted` meant several runner _processes_ shared one
+machine and therefore shared `/tmp`. `deploy-staging.yml` rendered its App
+Platform spec to `/tmp/spec.json`; so did tadasant-internal's prod deploy, on
 the same boxes. Nothing coordinated the two.
 
 **How it failed.** On 2026-08-06, `Release image` run 31097159965 (commit #113)
@@ -2092,12 +2094,12 @@ the deploy would have gone green. That is why the guard checks the app NAME and
 not merely that a name exists.
 
 **The same shape, elsewhere.** A shared path is one instance of "two jobs agree
-on a name nobody coordinates", and this box has had others:
+on a name nobody coordinates", and that box had others:
 
-- tadasant-internal's prod deploy still writes `/tmp/spec.json`, and is still
-  exposed to any _other_ job on those runners that picks the same name.
-  tadasant/strad#115.
-- The docker daemon is shared the same way, and any job that builds an image and
+- tadasant-internal's prod deploy writes `/tmp/spec.json`, and is exposed to any
+  _other_ job on the runners it shares that picks the same name — no strad job
+  among them. tadasant/strad#115.
+- The docker daemon was shared the same way, and any job that builds an image and
   runs it can claim a fixed `<something>:ci` tag. The name and host-port
   collisions that follow are loud; the TAG one is not, because a concurrent job
   rebuilding the tag between a build and its `docker run` moves the assertion
@@ -2110,9 +2112,10 @@ on a name nobody coordinates", and this box has had others:
   text and fail the PR that puts a fixed name back.
 
 **Undo.** Nothing to undo on this side; the collision needs both writers to agree
-on a path, so moving one ends it. The durable fix for the CLASS is ephemeral
-runners, so no two jobs ever share a filesystem or a daemon. Short of that, every
-fixed name a job writes on a shared box wants a `${{ github.run_id }}` in it.
+on a path, so moving one ends it. The durable fix for the CLASS was ephemeral
+runners, so no two jobs ever share a filesystem or a daemon, and that is what
+strad's CI runs on. On any shared box, every fixed name a job writes wants a
+`${{ github.run_id }}` in it.
 
 ---
 
@@ -2350,12 +2353,13 @@ renderer bug, so the renderer states it instead of guessing.
 
 **✅ RESOLVED** — every job creates its builder with `use: false` and every build
 names it explicitly. The underlying condition — one docker daemon, one
-`$HOME`, several concurrent runner processes — is unchanged.
+`$HOME`, several concurrent runner processes — ended when every job moved to GitHub-hosted runners in November 2026, each one a fresh VM; the
+rule stays because it costs nothing and holds on a shared machine.
 
 **What.** `docker/setup-buildx-action` defaults to `use: true`, which runs
 `docker buildx create --name builder-<uuid> --use`. The `--use` writes
-`~/.docker/buildx/current`. `runs-on: self-hosted` means every job on the box
-runs as the same user, so there is exactly ONE of that file for the whole
+`~/.docker/buildx/current`. On a self-hosted box every job runs as the same
+user, so there is exactly ONE of that file for the whole
 machine — and a `docker buildx build` with no `--builder` reads it.
 
 The per-job builder NAME is a uuid and never collides, which is precisely what
@@ -2441,7 +2445,7 @@ depth, because a manifest it does not find is a manifest it cannot fail.
 
 **What is deliberately NOT here.** No retry around the build. A retry would have
 turned this red run green, but it treats the symptom: with an explicit
-`--builder` nothing on the box can reach this job's builder, so there is no
+`--builder` nothing on a shared box can reach this job's builder, so there is no
 transport failure left to retry. It would also cost what #51 costs — buildkit
 does not cache a failed layer, so a genuinely broken bundle `Dockerfile` would be
 built three times, twelve dependency trees each.
@@ -2514,8 +2518,8 @@ would have surfaced #127's breakage sooner but changed nothing here, because the
 deploy that failed was for a LATER commit that owes no bundle image at all. The
 wedge is a property of the walk, not of the race.
 
-**A CANCELLED build is the same wedge for a build nobody broke.** On 2026-09-04
-the self-hosted runner host restarted mid-build: `a278b5ed`'s bundle build was
+**A CANCELLED build is the same wedge for a build nobody broke.** On 2026-09-04,
+while CI ran on self-hosted runners, the runner host restarted mid-build: `a278b5ed`'s bundle build was
 cancelled 100 seconds in, three unrelated jobs on two other runners died in the
 same second, and the commit itself was fine. `main` was undeployable anyway —
 every staging deploy hard-stopped on the missing `sha-a278b5ed…` — and nothing
@@ -2528,9 +2532,10 @@ bundle image` completing and re-runs it when the conclusion is `cancelled`, the
 attempt is the first, and the event is `push` — never a `failure` (that is the
 loop this entry's `republish` exists to break), never twice (a re-run adds an
 ATTEMPT to the same run, so one heal per run), and never a `workflow_dispatch`
-build, which is one a human may have stopped deliberately. It runs on
-`ubuntu-latest` rather than the self-hosted runners, for the reason
-`alert-ci-failure.yml` does: the runners going down is the event it heals.
+build, which is one a human may have stopped deliberately. Like
+`alert-ci-failure.yml` it runs on a fresh hosted runner of its own and shares no
+machine with the build it heals, so a runner lost mid-build or a job that hit its
+timeout cannot take the heal down with it.
 
 `deadRun` had to meet it halfway. A deploy already inside its 900-second wait
 polls every twenty seconds, so it would otherwise reach the cancellation and stop
@@ -2768,12 +2773,13 @@ can stay tight either way.
 
 **✅ RESOLVED** — every job that logs in points `DOCKER_CONFIG` at
 `$RUNNER_TEMP/docker` first. The underlying condition — one docker daemon, one
-`$HOME`, several concurrent runner processes — is unchanged, and is the same one
-behind #53.
+`$HOME`, several concurrent runner processes — is the same one behind #53, and
+ended with it when every job moved to GitHub-hosted runners in November 2026, each one a fresh VM; the fix stays because it costs
+nothing and holds on a shared machine.
 
 **What.** `~/.docker/config.json` is where `docker login` puts a registry
-credential. `runs-on: self-hosted` means every job runs as the same user, so
-there is exactly ONE of that file for the machine. Nine jobs in this repo run
+credential. On a self-hosted box every job runs as the same user, so there is
+exactly ONE of that file for the machine. Nine jobs in this repo run
 `docker/login-action` against ghcr, each writing `auths["ghcr.io"]` with its own
 job's `GITHUB_TOKEN` — and each running `docker logout ghcr.io` in a post step,
 because `logout: true` is that action's default.
@@ -3892,7 +3898,7 @@ twenty seconds — eight `#alerts` posts from one merge — and it took #129, #1
 `actionlint` is green on). Every input a call site passes is declared, and one that
 is not is a runner warning on a step that ran rather than a surprise on `main`.
 The builder guard runs. `docker/setup-buildx-action` → `builder:` → buildx holds
-together end to end, on the shared self-hosted daemon, twice.
+together end to end, twice.
 
 **What it does NOT cover, deliberately.** Everything downstream of the push:
 

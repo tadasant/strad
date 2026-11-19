@@ -17,8 +17,8 @@ import { buildUnits, publishingWorkflows } from "./helpers/workflow-graph.js";
 /**
  * Every job that logs in to ghcr must log in somewhere only it can reach.
  *
- * `~/.docker/config.json` is the credential file, and `runs-on: self-hosted`
- * means one of them for the whole box. Every job in this repo that reaches ghcr
+ * `~/.docker/config.json` is the credential file, and a self-hosted runner
+ * has one of them for the whole box. Every job in this repo that reaches ghcr
  * runs `docker/login-action`, each writing `auths["ghcr.io"]` with its OWN job's
  * `GITHUB_TOKEN`, and each running `docker logout ghcr.io` in a post step —
  * `logout: true` is that action's default. So the last job to log in owns the
@@ -224,8 +224,8 @@ describe("no job logs in to ghcr in a file another job can rewrite", () => {
       expect(
         unit.steps.findIndex(isIsolate),
         `${where} pushes an image without calling ${ISOLATE}, so its ` +
-          `credential lands in the file every concurrent job on this ` +
-          `self-hosted box shares.`,
+          `credential lands in the file every concurrent job on a ` +
+          `shared runner box shares.`,
       ).toBeGreaterThanOrEqual(0);
     }
   });

@@ -838,9 +838,9 @@ describe("reheal-bundle-image.yml, against the release it heals", () => {
     expect(condition).toContain("github.event.workflow_run.event == 'push'");
   });
 
-  it("holds `actions: write` and nothing else, and runs off the self-hosted box", () => {
+  it("holds `actions: write` and nothing else, and runs on a GitHub-hosted runner", () => {
     // `actions: write` is what POST /actions/runs/:id/rerun needs. ubuntu-latest
-    // is the point: the self-hosted runners going down is the event it heals.
+    // is the point: a runner going down is the event it heals.
     expect(reheal.permissions).toEqual({ actions: "write" });
     expect(reheal.jobs.rerun?.["runs-on"]).toBe("ubuntu-latest");
   });

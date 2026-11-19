@@ -21,11 +21,10 @@ name: CI failure alert
 #     on a feature branch change nothing until they merge, and `workflow_dispatch`
 #     below only appears in the Actions UI once this is on main. Post-merge, dispatch
 #     it manually to smoke-test Slack delivery end to end.
-#   - The alert runs on ubuntu-latest, NOT the self-hosted runners that twelve of this
-#     repo's other thirteen workflows use. Deliberate: the self-hosted runners going
-#     down is itself a failure worth alerting on, and an alert that runs on the broken
-#     thing cannot report it. reheal-bundle-image.yml is the other ubuntu-latest one,
-#     for the same reason.
+#   - The alert runs on ubuntu-latest, like every Linux job in this repo. It must never
+#     move to a self-hosted runner: a runner going down is itself a failure worth
+#     alerting on, and an alert that runs on the broken thing cannot report it.
+#     reheal-bundle-image.yml holds the same rule for the same reason.
 #
 # Requires two repo secrets (Settings -> Secrets and variables -> Actions):
 #   SLACK_BOT_TOKEN         xoxb-... for the Tadasant workspace, with chat:write.
@@ -45,11 +44,11 @@ permissions: {}
 
 jobs:
   alert:
-    # See the header: ubuntu-latest on purpose, so the alert still fires when the
-    # self-hosted runners are what broke.
+    # See the header: GitHub-hosted on purpose, so the alert still fires when a
+    # self-hosted runner is what broke.
     runs-on: ubuntu-latest
 
-    # A stalled connection to Slack must not sit on a GitHub-hosted (billable) runner
+    # A stalled connection to Slack must not hold a runner
     # until the 6-hour default job limit.
     timeout-minutes: 5
 

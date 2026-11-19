@@ -89,7 +89,8 @@ permissions:
 
 jobs:
   build-and-push:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
@@ -118,10 +119,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Job-scoped: on this self-hosted box every job runs as the same user, so
+      # Job-scoped. On a shared runner every job runs as the same user, so
       # `docker buildx create --use` writes ONE `~/.docker/buildx/current` and a
       # build with no `--builder` resolves whichever job created a builder most
-      # recently — then dies when that job removes it. HACKS.md #53.
+      # recently — then dies when that job removes it. A GitHub-hosted runner is
+      # a VM per job, so that cannot happen here; the explicit builder costs
+      # nothing and keeps it that way on any runner that does share. HACKS.md #53.
       - uses: docker/setup-buildx-action@v3
         id: buildx
         with:

@@ -140,7 +140,8 @@ jobs:
   # release path, so an automatic release never builds anything here.
   build:
     if: inputs.build
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
@@ -190,10 +191,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Job-scoped: on this self-hosted box every job runs as the same user, so
+      # Job-scoped. On a shared runner every job runs as the same user, so
       # `docker buildx create --use` writes ONE `~/.docker/buildx/current` and a
       # build with no `--builder` resolves whichever job created a builder most
-      # recently — then dies when that job removes it. HACKS.md #53.
+      # recently — then dies when that job removes it. A GitHub-hosted runner is
+      # a VM per job, so that cannot happen here; the explicit builder costs
+      # nothing and keeps it that way on any runner that does share. HACKS.md #53.
       - uses: docker/setup-buildx-action@v3
         id: buildx
         with:
@@ -228,16 +231,18 @@ jobs:
     # staging spec after a human hit Cancel, which is the one moment they most
     # want it to stop.
     if: ${{ !cancelled() && needs.build.result != 'failure' }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     environment: staging
     # THE RENDERED SPEC GOES SOMEWHERE ONLY THIS JOB CAN REACH.
     #
     # Every step below writes and reads `$RUNNER_TEMP/spec.json`, never
-    # `/tmp/spec.json`. `/tmp` is a path, not a private one: `runs-on:
-    # self-hosted` means several runner PROCESSES share one machine — this repo's
-    # staging deploy and tadasant-internal's prod deploy have both landed on
-    # `ci-runner-2` — and they share `/tmp` with each other and with anything
-    # else on the box.
+    # `/tmp/spec.json`. `/tmp` is a path, not a private one: on a self-hosted
+    # runner several runner PROCESSES share one machine — this repo's staging
+    # deploy and tadasant-internal's prod deploy both landed on `ci-runner-2`
+    # when this job ran there — and they share `/tmp` with each other and with
+    # anything else on the box. This job runs on a GitHub-hosted VM of its own,
+    # and keeps the job-private path so that a shared runner cannot reopen it.
     #
     # On 2026-08-06 they overlapped. Prod's render opened `/tmp/spec.json` for
     # writing at 11:29:38.75, truncating the staging spec that had been complete
@@ -311,7 +316,8 @@ jobs:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Set up gcloud
-        # The self-hosted runner has no gcloud on PATH; install it. Without this
+        # Pin gcloud through the action rather than trusting whatever the runner
+        # image ships (a self-hosted runner shipped none). Without this
         # the secret read silently loads zero secrets (the gcloud call is in a
         # process substitution, so its failure doesn't surface) and the deploy
         # then dies at render time with a confusing "STRAD_TOKENS required".
@@ -363,7 +369,9 @@ jobs:
         # Binary only. Given a token this action runs `doctl auth init`, which
         # writes it in cleartext to $HOME/.config/doctl/config.yaml. The action
         # ships no `post:` step, so nothing scopes that file to the job — and on
-        # `self-hosted` every runner process on the box shares /home/runner.
+        # a self-hosted runner every runner process on the box shares
+        # /home/runner. A hosted VM is discarded after the job, and the token
+        # still stays off disk.
         # `no_auth` skips the write; each doctl step below supplies the token
         # through its own env.
         #

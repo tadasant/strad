@@ -1497,10 +1497,15 @@ than for a capability. The entry is kept in `HACKS.md` for history.
 
 ### 47. Deploys from two repos share one machine, and coordinate only by not colliding
 
-strad's CI runs on **self-hosted** runners, which means several runner
-_processes_ share one machine — and therefore share `/tmp`. This repo's staging
-deploy rendered its App Platform spec to `/tmp/spec.json`; so does the prod
-deploy that lives in a separate private repo. Nothing coordinated the two.
+**Resolved for strad.** Every strad job runs on a GitHub-hosted runner, a fresh
+VM per job, so nothing shares its `/tmp` or its docker daemon; the fixes below
+stay because they cost nothing and hold if a job ever lands on a shared machine
+again.
+
+strad's CI ran on **self-hosted** runners, which meant several runner
+_processes_ shared one machine — and therefore shared `/tmp`. This repo's staging
+deploy rendered its App Platform spec to `/tmp/spec.json`; so did the prod deploy
+that lives in a separate private repo. Nothing coordinated the two.
 
 On 2026-08-06 they overlapped on the same box. Prod's render opened
 `/tmp/spec.json` for writing at `11:29:38.75`, truncating the staging spec that
@@ -1524,12 +1529,12 @@ parse, carry a non-empty top-level `name`, have components, and **name the app
 this job set out to deploy**. The collision needs both writers to agree on a path,
 so moving one side ends it.
 
-**Still true, and not only for the spec.** The condition that made this possible
-is unchanged: these are long-lived shared runners, and any job on them can still
-claim any fixed name — a path, a container, a host port, an image tag. The prod
-deploy has not moved off `/tmp/spec.json`
-([#115](https://github.com/tadasant/strad/issues/115)), and it is the instance
-that remains open. The docker half is closed: every job in this repo that builds
+**Not only the spec.** On long-lived shared runners any job can claim any fixed
+name — a path, a container, a host port, an image tag. The prod deploy has not
+moved off `/tmp/spec.json`
+([#115](https://github.com/tadasant/strad/issues/115)), and on whatever runners it
+shares that is the instance that remains open; no strad job is among them. The
+docker half is closed: every job in this repo that builds
 an image and runs it tags it per run, because a concurrent job rebuilding a
 shared `strad:ci` between the build and the `docker run` lets an assertion pass
 against an image the run never built — the "`/mcp` with no token returns 401" one
@@ -1538,7 +1543,7 @@ count in `bundle-google-ci.yml`
 ([#119](https://github.com/tadasant/strad/issues/119)), and the pinned `op
 --version` that gates the published 1Password image
 ([#126](https://github.com/tadasant/strad/issues/126)). The durable fix for the
-class is ephemeral runners.
+class is ephemeral runners, which is what strad's CI runs on.
 
 **Why the name check, and not just "has a name."** One second later on the clock
 and staging's `doctl` would have read prod's _complete_ 91302-byte spec — valid,
@@ -2016,8 +2021,9 @@ package.
 ### 53. The buildx builder is a box-wide name, and nothing in a workflow says so
 
 **Resolved.** The condition that made it possible — one docker daemon, one
-`$HOME`, several concurrent runner processes — is unchanged, so it is written
-down here.
+`$HOME`, several concurrent runner processes — ended when every job moved to GitHub-hosted runners in November 2026, each one a fresh VM.
+The fix stays because it costs nothing and holds on a shared machine, and the
+condition is written down here for whoever lands a job on one again.
 
 `docker/setup-buildx-action` defaults to `use: true`, which means `docker buildx
 create --use`, which writes `~/.docker/buildx/current`. Every job on a
@@ -2074,7 +2080,7 @@ action manifest, and no `inputs.*.default` reaching for `steps`, `needs` or
 `job`. An action's `outputs.*.value` is exempt — that is a genuine deferred
 expression context — and so is an ordinary `inputs.*.default`.
 
-**No retry was added.** With an explicit builder nothing on the box can reach
+**No retry was added.** With an explicit builder nothing on a shared box can reach
 this job's, so there is no transport failure left to retry — and a retry would
 cost what #51 costs, three full bundle builds for a genuinely broken
 `Dockerfile`.
@@ -2114,8 +2120,8 @@ or — when the failure is IN that commit, so a re-run only rebuilds it — disp
 `release-bundle-image.yml` on `main`, which publishes `sha-<HEAD>` and ends the
 walk before it reaches the stuck commit.
 
-**A cancelled build is the same wedge for a commit nobody broke.** On 2026-09-04
-the self-hosted runner host restarted mid-build. `a278b5ed`'s bundle build was
+**A cancelled build is the same wedge for a commit nobody broke.** On 2026-09-04,
+while CI ran on self-hosted runners, the runner host restarted mid-build. `a278b5ed`'s bundle build was
 cancelled 100 seconds in — three unrelated jobs on two other runners died in the
 same second — and `main` was undeployable until somebody re-ran it by hand nine
 minutes later. Nothing alerted: `alert-ci-failure.yml` stays quiet on `cancelled`
@@ -2140,11 +2146,12 @@ to re-run it.
 ### 57. The ghcr credential is a box-wide file, and the slowest build loses it
 
 **Resolved.** The condition behind it — one docker daemon, one `$HOME`, several
-concurrent runner processes — is unchanged, and is the same one behind #53, so it
-is written down here.
+concurrent runner processes — is the same one behind #53, and ended with it when
+every job moved to GitHub-hosted runners in November 2026, each one a fresh VM. It is written down here for the same reason.
 
 `~/.docker/config.json` is where `docker login` puts a registry credential, and
-there is one of it per machine, because every job runs as the same user. Nine jobs
+on a self-hosted box there is one of it per machine, because every job runs as
+the same user. Nine jobs
 here run `docker/login-action` against ghcr, each writing the same
 `auths["ghcr.io"]` entry with its own job's `GITHUB_TOKEN`, and each running
 `docker logout ghcr.io` in a post step — `logout: true` is that action's default.
@@ -2775,7 +2782,7 @@ its prose nor its shell.
 `push: false`, so every pull request loads and runs it. What that covers: the
 manifest parses and LOADS, every input a call site passes is declared, the builder
 guard runs, and `docker/setup-buildx-action` → `builder:` → buildx holds together
-end to end on the shared self-hosted daemon.
+end to end.
 
 **What a pull request still cannot exercise**, deliberately — everything
 downstream of the push:

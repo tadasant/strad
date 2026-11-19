@@ -21,7 +21,8 @@ concurrency:
 
 jobs:
   lint:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -58,7 +59,8 @@ jobs:
           "$tmp/actionlint" -color
 
   test:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -75,7 +77,8 @@ jobs:
   # (`consoleEnvs:` for `consoleEnv:`, which Zod silently strips) fails here
   # instead of deploying a console with no admin credential.
   config:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -325,14 +328,16 @@ jobs:
     # `servers (good-eggs, true, true, true)` — so the check name changes the day
     # a tree gains a build step. The tree is the identity; the booleans are how.
     name: servers (${{ matrix.tree }})
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       # NOT optional. The default cancels every sibling leg on the first failure,
       # which turns "good-eggs is broken" into "twelve other trees have no
       # result".
       fail-fast: false
-      # No `max-parallel` on purpose: every leg runs concurrently on the one
-      # self-hosted box, and a cap would only make PRs slower.
+      # No `max-parallel` on purpose: every leg gets its own hosted runner, and a
+      # cap would only make PRs slower. GitHub's per-account limit on concurrent
+      # hosted jobs is the only throttle, and it queues rather than fails.
       matrix:
         include:
           # skip-browser sets PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD on the install. The
@@ -475,7 +480,8 @@ jobs:
   # here talks to Meta.
   messenger_bridge:
     name: messenger bridge (go)
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: gofmt, vet, test
@@ -501,7 +507,8 @@ jobs:
   # nothing here. Lint and format for this tree run in the `lint` job, from the
   # repo root.
   hostd:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -511,7 +518,7 @@ jobs:
         working-directory: hostd
         run: npm ci
       - name: Install Chromium
-        run: npx --yes playwright@1.63.0 install chromium
+        run: npx --yes playwright@1.63.0 install --with-deps chromium
       - name: Build and test
         working-directory: hostd
         run: npm test
@@ -543,9 +550,13 @@ jobs:
   # the one thing that can answer it early — the real names, from the real image —
   # so it dumps them and checks every config in the repo against them.
   bundle_image:
-    runs-on: self-hosted
-    # One runner box means one docker daemon, and every concurrent job shares it.
-    # A fixed name collides loudly; a fixed TAG is worse, because a concurrent job
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # On a shared runner, one box means one docker daemon that every concurrent
+    # job shares. A hosted runner is a VM per job, so nothing collides here; the
+    # per-run identifiers stay because they cost nothing and keep this job
+    # correct on any runner that does share a daemon. On a shared daemon a fixed
+    # name collides loudly; a fixed TAG is worse, because a concurrent job
     # rebuilding it between our build and our run is a wrong-artifact green with no
     # error anywhere. Per-run identifiers make both impossible, and let the
     # `if: always()` teardown name only this job's container.
@@ -572,7 +583,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # The builder is a shared resource too, and the sharpest one: every job on
-      # this box runs as the same user, so `docker buildx create --use` writes
+      # a shared runner runs as the same user, so `docker buildx create --use` writes
       # ONE `~/.docker/buildx/current`, and a `docker buildx build` with no
       # `--builder` resolves whichever job created a builder most recently. This
       # job's build then runs inside a CONCURRENT job's buildkit, and dies with
@@ -902,8 +913,8 @@ jobs:
 
       # Names only this run's container and image, so it cannot reap a concurrent
       # job's. Deleting the image matters too: per-run tags would otherwise pile up
-      # one per CI run on a runner box that never goes away. buildx's cache is not
-      # the daemon's image store, so nothing rebuilds slower for this.
+      # one per CI run on any runner box that outlives the job. buildx's cache is
+      # not the daemon's image store, so nothing rebuilds slower for this.
       - name: Tear down
         if: always()
         run: |
@@ -912,7 +923,8 @@ jobs:
           docker rmi -f "$BUNDLE_IMAGE" 2>/dev/null || true
 
   verify_lockfile:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -933,16 +945,17 @@ jobs:
   # by nothing else. Both are how a session gets its first look at strad, and a
   # broken one reads as "strad is broken".
   dev_env:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
-      # Per-run, for the reason spelled out on `bundle_image`: one runner box
-      # means one docker daemon, and a fixed compose project would have two
+      # Per-run, for the reason spelled out on `bundle_image`: on a shared
+      # runner one box means one docker daemon, and a fixed compose project would have two
       # concurrent jobs sharing a container, a volume and a build.
       AC_PROJECT: strad-dev-ci-${{ github.run_id }}-${{ github.run_attempt }}
       COMPOSE_FILE: .agent-containers/docker-compose.dev.yml
       # The credential mounts, redirected away from the runner's real HOME. A
       # bind mount whose source does not exist is created by the daemon as root,
-      # and this box's HOME belongs to a human.
+      # and a runner's HOME is not this job's to litter.
       AC_CLAUDE_DIR: /tmp/ac-ci-claude-${{ github.run_id }}-${{ github.run_attempt }}
       AC_GH_DIR: /tmp/ac-ci-gh-${{ github.run_id }}-${{ github.run_attempt }}
       # Name the builder instead of resolving the ambient one. `default` is the
@@ -1124,7 +1137,8 @@ jobs:
   # sidebar fails the PR rather than the deploy. Node-only — docs/ has its own
   # dependency tree and never touches the gateway's.
   docs_site:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -1142,7 +1156,8 @@ jobs:
   # The image is the deliverable, so a PR that cannot produce one is a failing
   # PR — not something we find out about at release time.
   build_image:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     # Per-run, for the reason spelled out on `bundle_image`. This job carries the
     # sharpest version of it: a concurrent job rebuilding a shared `strad:ci`
     # between our build and our run would move the 401 assertion below onto
@@ -1152,8 +1167,8 @@ jobs:
       STRAD_CONTAINER: strad-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
-      # Job-scoped, for the reason spelled out on `bundle_image`: the box-wide
-      # `~/.docker/buildx/current` is a shared name like any other.
+      # Job-scoped, for the reason spelled out on `bundle_image`: on a shared
+      # runner, `~/.docker/buildx/current` is a box-wide name like any other.
       - uses: docker/setup-buildx-action@v3
         id: buildx
         with:
