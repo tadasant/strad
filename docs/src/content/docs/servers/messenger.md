@@ -31,10 +31,10 @@ interfaces in mautrix-go's bridge framework, bridgev2. `servers/messenger/bridge
 implements them against a SQLite table instead: a "room" is a row id and a
 "message sent to Matrix" is an insert. Every protocol decision stays
 mautrix-meta's, at the version `bridge/go.mod` pins, and a server-side change at
-Meta is fixed by bumping the pin. The module is built from a copy in
-`bridge/third_party/mautrix-meta` that carries strad's own fixes, each a listed
-and tested delta; today there is one, for the authenticator-code step of the
-phone-app login.
+Meta is fixed by moving to a newer mautrix-meta. The module is built from a copy
+in `bridge/third_party/mautrix-meta` that carries strad's own fixes, each a
+listed and tested delta in `bridge/third_party/README.md`, so moving means
+re-copying the module and re-applying them.
 
 **Two processes, because of the licence.** mautrix-meta is AGPL-3.0, so the Go
 program is too (`servers/messenger/bridge/LICENSE`). strad is MIT, and talks to

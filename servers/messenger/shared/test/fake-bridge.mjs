@@ -124,7 +124,7 @@ const server = createServer(async (req, res) => {
       if (login.at === "creds") {
         if (input.password !== "correct horse") {
           login = null;
-          return json(res, 422, { error: "Incorrect password" });
+          return json(res, 422, { error: "this login has ended; call messenger_login_start to begin again: Incorrect password" });
         }
         login.at = "approve";
       } else if (login.at === "approve") {

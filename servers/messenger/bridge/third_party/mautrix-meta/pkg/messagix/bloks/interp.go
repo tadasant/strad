@@ -1806,7 +1806,8 @@ func (i *Interpreter) Evaluate(ctx context.Context, form *BloksScriptNode) (*Blo
 	// strad delta (servers/messenger/bridge/third_party/README.md, D1): Make is
 	// handled exactly like MakeWithScopeOnly. Messenger's authenticator-code
 	// (TOTP) screen wraps its Continue handler in callback.Make, and without
-	// this case the tap failed locally with "unimplemented function".
+	// this case the tap failed locally with "unimplemented function". Both
+	// return an error, not a panic, when called with no argument.
 	case "bk.action.callback.Make", "bk.action.callback.MakeWithScopeOnly":
 		if len(call.Args) < 1 {
 			return nil, fmt.Errorf("%s needs a callback", call.Function)

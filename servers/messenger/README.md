@@ -68,9 +68,9 @@ handles the overlap a deploy creates anyway.
 
 ## mautrix-meta is a patched copy
 
-`bridge/third_party/mautrix-meta` is mautrix-meta's module with strad's deltas
-(today: one, the Bloks interpreter's `bk.action.callback.Make`, which the
-phone-app login's authenticator-code step needs). `bridge/go.mod` builds against
+`bridge/third_party/mautrix-meta` is mautrix-meta's module with strad's deltas,
+such as the Bloks interpreter's `bk.action.callback.Make`, which the phone-app
+login's authenticator-code step needs. `bridge/go.mod` builds against
 it through a `replace`. `bridge/third_party/README.md` has the delta table, the
 diff that checks the copy against upstream, and the steps for moving to a newer
 release; each delta has a test in `bridge/` that fails if a re-copy drops it.

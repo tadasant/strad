@@ -15,7 +15,7 @@ It is upstream's module byte for byte, except:
 
 | # | File | Delta | Why | Test |
 | --- | --- | --- | --- | --- |
-| D1 | `pkg/messagix/bloks/interp.go` | `bk.action.callback.Make` is evaluated exactly like `bk.action.callback.MakeWithScopeOnly`: its one argument, the callback | Messenger's authenticator-code (TOTP) screen wraps its Continue handler in `callback.Make`, and the stock interpreter failed the tap locally with `unimplemented function bk.action.callback.Make (1 args)`, ending the phone-app login at 2FA. Not implemented upstream as of mautrix-meta `main` at d41f1e3 (2026-11-18) | `../bloks_totp_test.go` |
+| D1 | `pkg/messagix/bloks/interp.go` | `bk.action.callback.Make` is evaluated exactly like `bk.action.callback.MakeWithScopeOnly`: its one argument, the callback. Both return an error instead of panicking when called with no argument | Messenger's authenticator-code (TOTP) screen wraps its Continue handler in `callback.Make`, and the stock interpreter failed the tap locally with `unimplemented function bk.action.callback.Make (1 args)`, ending the phone-app login at 2FA. Not implemented upstream as of mautrix-meta `main` at d41f1e3 (2026-11-18) | `../bloks_totp_test.go` |
 
 ## Checking the copy against upstream
 
@@ -36,3 +36,7 @@ Anything else is an undocumented change.
    `go mod tidy` resolves the same dependency graph upstream declared, and copy
    that release's `replace github.com/imroc/req/v3 => …` line.
 3. `go mod tidy && go vet ./... && go test ./...` in `bridge/`.
+
+CI's `gofmt -l .` walks this copy too, so a release formatted by a newer gofmt
+fails it: run `gofmt -w third_party` after re-copying. That is formatting only,
+and `diff -r` against upstream will show it.
