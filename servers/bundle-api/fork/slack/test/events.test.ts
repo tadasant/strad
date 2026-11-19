@@ -33,6 +33,9 @@ import { toMessagePosted, MAX_TEXT_CHARS } from '../src/events/normalize.js';
 import { EVENTS_EXTENSION } from '../src/events/protocol.js';
 import { createMCPServer } from '../src/server.js';
 
+/** A message body long enough that no ciphertext contains it by chance. */
+const SECRET_TEXT = 'a message the sealed buffer must never show in plaintext';
+
 const BOT = { userId: 'UBOT', botId: 'BBOT', workspaceUrl: 'https://tadasant.slack.com/' };
 const KEY = Buffer.alloc(32, 7).toString('base64');
 const T0 = Date.parse('2026-10-29T12:00:00Z');
@@ -353,7 +356,7 @@ describe('SlackEventsIngest', () => {
       envelope_id: 'env-1',
       type: 'events_api',
       payload: {
-        event: { type: 'message', channel: 'C1', channel_type: 'channel', user: 'U1', ts: ts(now), text: 'yo' },
+        event: { type: 'message', channel: 'C1', channel_type: 'channel', user: 'U1', ts: ts(now), text: SECRET_TEXT },
       },
     });
     sock.frame({
@@ -368,12 +371,16 @@ describe('SlackEventsIngest', () => {
     const got = await ingest.poll({ cursor, arguments: {} });
     expect(got.events.map((e) => e.eventId)).toEqual([`slack:C1:${ts(now)}`]);
     expect(got.events[0]!.name).toBe('message_posted');
+    // The text reached the buffer, so its absence from the sealed object below means something.
+    expect(got.events[0]!.data.text).toBe(SECRET_TEXT);
     expect(got.nextPollMs).toBeGreaterThan(0);
 
     await ingest.close();
     expect(blobs.objects.has('slack-events/buffer.bin')).toBe(true);
-    // Sealed: the text does not appear in the object.
-    expect(blobs.objects.get('slack-events/buffer.bin')!.data.toString('latin1')).not.toContain('yo');
+    // Sealed: the text does not appear in the object. The text is long on
+    // purpose: a two-letter needle turns up in a kilobyte of ciphertext by
+    // chance about once in seventy runs.
+    expect(blobs.objects.get('slack-events/buffer.bin')!.data.toString('latin1')).not.toContain(SECRET_TEXT);
   });
 
   it('a new process takes the lease, backfills the gap, and the old one stands down', async () => {
