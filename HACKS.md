@@ -7670,11 +7670,21 @@ homeserver keeps strad's no-database, one-component shape.
   `LOGGED_OUT`; `UNKNOWN_ERROR` reconnects by itself and is left alone),
   and `messenger_status` names the action a stopped account needs. The bridge
   never reconnects a stopped login by itself.
-- Each phone-app login mints a fresh device identity (device id, family device
-  id, attestation key, no `machine_id`), so a retry from the same datacenter IP
-  looks like another new phone rather than the same one trying again.
-  Persisting that identity across attempts would be a further delta to the
-  vendored copy; it is not made.
+- Every phone-app login presents ONE stored device per platform rather than a
+  new phone each time (delta D2 in `bridge/third_party/README.md`,
+  `bridge/identity.go`): device id, family device id, the `machine_id` Meta
+  issued it, the attestation key, and the two Bloks headers upstream
+  re-randomised per request. It lives in `bridge.db`, so it rides the sealed
+  snapshot. On first boot it is ADOPTED from the login already running (its
+  native session carries the device id, family device id and `machine_id`), so
+  the next login is the phone Meta already accepted. Two things are not
+  recoverable from a stored login: the attestation key (upstream never kept
+  it), which a seeded device gets fresh once and keeps from then on, and the
+  per-request headers, which upstream never repeated. What it does not buy: the
+  IP is still a datacenter's, and an account Meta has decided to distrust stays
+  distrusted; `MESSENGER_PROXY` is the other lever. `messenger_logout` deletes
+  the stored device with everything else, so the login after a logout is a new
+  phone.
 - A `replace` in mautrix-meta's `go.mod` (Beeper's fork of `req`) does not carry
   over to a dependent module, so `bridge/go.mod` repeats it and must move with
   the mautrix-meta pin.

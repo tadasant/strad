@@ -135,6 +135,9 @@ describe("login", () => {
     const status = await call("messenger_status");
     expect(status.structuredContent).toMatchObject({ logged_in: true, connected: true });
     expect(status.structuredContent!.last_saved_at).toEqual(expect.any(String));
+    expect(status.structuredContent!.device_identity).toEqual([
+      { flow: "android", origin: "live_login", machine_id: true, since: "2026-11-18T00:00:00Z" },
+    ]);
   });
 
   it("ends the login on a wrong password and refuses a second login while connected", async () => {

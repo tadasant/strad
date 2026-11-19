@@ -115,6 +115,35 @@ sent: the encrypted connection it needs never opens. The next submit, with the
 PIN or with no input, ends the login with an error that says the PIN was not
 sent and what to do, so no stranded PIN step is left behind.
 
+### One phone, not a new one per login
+
+A phone-app login tells Meta which phone it is: a device id, a family device
+id, the `machine_id` Meta issued that phone on an earlier login, and the key
+its login requests are signed with. Stock mautrix-meta mints all of them fresh
+for every attempt, which makes each retry a phone Meta has never seen. The
+bridge instead keeps one device per flow (`android`, `ios`) in its own
+database, so it survives deploys in the sealed snapshot, and every
+`messenger_login_start` presents it.
+
+- **Adopted from the login already running.** The first time a bridge with
+  this behaviour boots over a logged-in account, it takes that login's device
+  id, family device id and `machine_id` as the stored phone. The next login is
+  then the phone Meta already accepted. The login itself is only read; nobody
+  is logged out. The attestation key was never kept by a login, so an adopted
+  phone gets one, once, and keeps it.
+- **Otherwise generated once.** With no login to adopt from, the first login
+  start mints the phone and every later one reuses it. After that login
+  completes, the `machine_id` Meta issues is recorded and sent from then on, as
+  a returning phone does.
+- **`messenger_status` reports it** under `device_identity`: the flow, its
+  `origin` (`live_login` or `generated`), whether Meta has issued it a
+  `machine_id`, and since when. Never the identifiers.
+- **Logging out forgets it.** `messenger_logout` deletes everything, the stored
+  phone included, so the login after a logout is a new phone.
+
+It does not change the IP Meta sees, and it does not make an account Meta
+already distrusts trusted again.
+
 ### Failed steps
 
 A step that fails ends the login, and the error says so. Nothing is left half
@@ -140,7 +169,7 @@ buffer and the saved snapshot.
 
 | Tool                       | Slug              | What it does                                                         |
 | -------------------------- | ----------------- | -------------------------------------------------------------------- |
-| `messenger_status`         | both              | logged in? connected? `CONNECTED` is the only healthy state          |
+| `messenger_status`         | both              | logged in? connected? `CONNECTED` is the only healthy state; the stored login device |
 | `messenger_list_threads`   | both              | chats, most recently active first, with `updated_after`              |
 | `messenger_get_messages`   | both              | the buffer, by cursor, across every chat or one                      |
 | `messenger_get_attachment` | both              | one message's file, fetched from Meta on demand                      |
@@ -222,11 +251,10 @@ DigitalOcean IP. Meta is more suspicious of logins from datacenter ranges, and
 may answer with a checkpoint (a CAPTCHA, a phone check, a forced logout). The
 app-style login helps — it registers a device the way a phone does, rather than
 replaying a browser's cookies from somewhere else — but it does not remove the
-risk. Each app login is also a brand-new phone to Meta: mautrix-meta mints a
-fresh device id, family device id and attestation key for every attempt, and
-sends no `machine_id`, so retrying a login does not look like the same phone
-trying again. If checkpoints become routine, set `MESSENGER_PROXY` to a residential
-egress. The alternative is to run the same Go program on the owner's Mac beside
+risk. Every app login is at least the same phone (see
+[One phone, not a new one per login](#one-phone-not-a-new-one-per-login)), but
+the same phone on a datacenter IP. If checkpoints become routine, set
+`MESSENGER_PROXY` to a residential egress. The alternative is to run the same Go program on the owner's Mac beside
 [strad-hostd](/servers/hostd/), which only works while the Mac is awake.
 
 ## Testing

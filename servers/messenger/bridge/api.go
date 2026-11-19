@@ -48,6 +48,8 @@ type API struct {
 	headless *Headless
 	login    *Login
 	started  time.Time
+	// identities: the stored phone-app device, reported (never its ids) on /status.
+	identities *DeviceIdentities
 }
 
 func ownerGhostID(user *bridgev2.User) func() networkid.UserID {
@@ -125,7 +127,12 @@ func (a *API) status(w http.ResponseWriter, r *http.Request) {
 		accounts = append(accounts, acct)
 	}
 	maxSeq, _ := a.rec.MaxSeq(r.Context())
+	var identities []IdentityView
+	if a.identities != nil {
+		identities, _ = a.identities.Describe(r.Context())
+	}
 	writeJSON(w, map[string]any{
+		"device_identity":   identities,
 		"accounts":          accounts,
 		"login_in_progress": a.login.InProgress(),
 		"cursor":            maxSeq,

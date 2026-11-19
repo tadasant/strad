@@ -31,6 +31,11 @@ tools. Media is direct media: a row carries Meta's descriptor and
 `GET /attachment` downloads on demand. A file Meta cannot hand over that way is
 kept in `strad_blob` if it is 2 MB or less.
 
+Every phone-app login presents one stored device per platform
+(`bridge/identity.go`, table `strad_device_identity`), handed to mautrix-meta
+through delta D2 in `bridge/third_party/README.md`. It is adopted at boot from
+the native session of a login already in `user_login`, which is only ever read.
+
 The loopback protocol (`bridge/api.go`): stdout carries one JSON event per line
 (`listening`, `login_complete`, `stopped`, or `fatal`); stderr is the log and is
 never parsed; every request carries `Authorization: Bearer <token>`.

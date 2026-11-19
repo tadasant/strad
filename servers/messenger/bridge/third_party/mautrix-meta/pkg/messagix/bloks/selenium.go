@@ -324,6 +324,9 @@ type BrowserConfig struct {
 	EncryptPassword  func(context.Context, string) (string, error)
 	MakeBloksRequest func(context.Context, *BloksDoc, string, BloksParamsInner, string, string) (*BloksBundle, error)
 	FetchAsset       func(ctx context.Context, url string) ([]byte, string, error)
+	// strad delta D2: when set, the browser presents this device instead of
+	// minting a new one (types.DeviceIdentity).
+	Identity *types.DeviceIdentity
 }
 
 type Browser struct {
@@ -688,6 +691,19 @@ func (b *Browser) instagramDirectLoginParams() BloksParamsInner {
 // error state, then we'll re-prompt the user for input, rather than reusing what they gave last
 // time.
 
+// strad delta D2: the persisted attestation key, PKCS#8 DER, P-256 only.
+func parseAttestationKey(der []byte) (*ecdsa.PrivateKey, error) {
+	parsed, err := x509.ParsePKCS8PrivateKey(der)
+	if err != nil {
+		return nil, fmt.Errorf("parse device identity attestation key: %w", err)
+	}
+	key, ok := parsed.(*ecdsa.PrivateKey)
+	if !ok || key.Curve != elliptic.P256() {
+		return nil, fmt.Errorf("device identity attestation key is not P-256")
+	}
+	return key, nil
+}
+
 func NewBrowser(cfg *BrowserConfig) (*Browser, error) {
 	profile := browserProfile(cfg.Platform)
 	b := Browser{
@@ -695,7 +711,15 @@ func NewBrowser(cfg *BrowserConfig) (*Browser, error) {
 		Config:  cfg,
 		profile: profile,
 	}
-	attestationKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	var attestationKey *ecdsa.PrivateKey
+	var err error
+	if cfg.Identity != nil {
+		// strad delta D2: the persisted device's key, so the keyHash Meta sees
+		// is the same on every login.
+		attestationKey, err = parseAttestationKey(cfg.Identity.AttestationKey)
+	} else {
+		attestationKey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("generate attestation key: %w", err)
 	}
@@ -1027,6 +1051,14 @@ func NewBrowser(cfg *BrowserConfig) (*Browser, error) {
 			}
 			return nil
 		},
+	}
+	if id := cfg.Identity; id != nil {
+		// strad delta D2: present the persisted device. A machine_id is only
+		// ever one Meta issued to this device on an earlier login, which is
+		// what a returning phone sends.
+		b.Bridge.DeviceID = strings.ToUpper(id.DeviceID.String())
+		b.Bridge.FamilyDeviceID = strings.ToUpper(id.FamilyDeviceID.String())
+		b.Bridge.MachineID = id.MachineID
 	}
 	return &b, nil
 }

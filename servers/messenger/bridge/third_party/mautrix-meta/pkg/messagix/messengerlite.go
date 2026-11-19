@@ -32,6 +32,19 @@ type MessengerLiteMethods struct {
 	familyDeviceID uuid.UUID
 	machineID      string
 	nativeSession  *types.NativeSession
+	// strad delta D2: the device every login presents; nil mints a new one.
+	identity *types.DeviceIdentity
+}
+
+// SetDeviceIdentity makes every login this client starts present identity
+// rather than a newly minted device (strad delta D2). Call it before the first
+// DoLoginSteps.
+func (m *MessengerLiteMethods) SetDeviceIdentity(identity *types.DeviceIdentity) {
+	if m == nil {
+		return
+	}
+	m.identity = identity
+	m.client.http.DeviceIdentity = identity
 }
 
 func (m *MessengerLiteMethods) GetNativeSession() *types.NativeSession {
@@ -79,6 +92,7 @@ func (fb *MessengerLiteMethods) getBrowserConfig() *bloks.BrowserConfig {
 		},
 		MakeBloksRequest: fb.client.http.MakeBloksRequest,
 		FetchAsset:       fb.fetchAsset,
+		Identity:         fb.identity,
 	}
 }
 

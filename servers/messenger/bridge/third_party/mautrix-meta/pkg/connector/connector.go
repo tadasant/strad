@@ -10,6 +10,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/commands"
 	"maunium.net/go/mautrix/bridgev2/status"
 
+	"go.mau.fi/mautrix-meta/pkg/messagix/types"
 	"go.mau.fi/mautrix-meta/pkg/metadb"
 	"go.mau.fi/mautrix-meta/pkg/msgconv"
 	"go.mau.fi/mautrix-meta/pkg/msgconv/mediadl"
@@ -21,6 +22,11 @@ type MetaConnector struct {
 	MsgConv     *msgconv.MessageConverter
 	DeviceStore *sqlstore.Container
 	DB          *metadb.MetaDB
+
+	// DeviceIdentity, when set, supplies the device a Messenger Lite login
+	// presents, so every login on a platform is the same phone (strad delta D2,
+	// types.DeviceIdentity). Nil keeps upstream's new device per login.
+	DeviceIdentity func(ctx context.Context, platform types.Platform) (*types.DeviceIdentity, error)
 
 	mediaEditCache     MediaEditCache
 	mediaEditCacheLock sync.RWMutex

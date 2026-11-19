@@ -174,6 +174,10 @@ func run() error {
 		meta.Config.ProxyOther = true
 	}
 
+	// Every phone-app login presents the one stored device (identity.go).
+	identities := NewDeviceIdentities(db, log)
+	meta.DeviceIdentity = identities.For
+
 	rec := NewRecorder(db, s.retention)
 	headless := NewHeadless(rec)
 	br := bridgev2.NewBridge("", db, log, &cfg.Bridge, headless, meta, commands.NewProcessor)
@@ -189,22 +193,39 @@ func run() error {
 		return fmt.Errorf("owner user: %w", err)
 	}
 	rec.ownerID = ownerGhostID(user)
+	// Adopt the device of the login already running, before anything can start
+	// a new one, so the next login is the phone Meta already knows. Only read
+	// from user_login: a failure here is logged and costs the running login
+	// nothing; a phone-app login started after it fails on its own.
+	if err = identities.Upgrade(ctx); err != nil {
+		log.Warn().Err(err).Msg("device identity: schema")
+	} else if err = identities.Sync(ctx); err != nil {
+		log.Warn().Err(err).Msg("device identity: could not adopt the existing login's device")
+	}
 	if err = br.StartLogins(ctx); err != nil {
 		return fmt.Errorf("start logins: %w", err)
 	}
 	go br.PostStart(ctx)
 
 	api := &API{
-		token:    s.token,
-		dataDir:  s.dataDir,
-		bridge:   br,
-		user:     user,
-		rec:      rec,
-		headless: headless,
-		login:    &Login{bridge: br, user: user},
-		started:  time.Now(),
+		token:      s.token,
+		dataDir:    s.dataDir,
+		bridge:     br,
+		user:       user,
+		rec:        rec,
+		headless:   headless,
+		identities: identities,
+		login:      &Login{bridge: br, user: user},
+		started:    time.Now(),
 	}
-	api.login.onComplete = func() { emit(map[string]any{"event": "login_complete"}) }
+	api.login.onComplete = func() {
+		// Record the machine id Meta just issued (or adopt the device) before
+		// the host snapshots on the event below.
+		if err := identities.Sync(ctx); err != nil {
+			log.Warn().Err(err).Msg("device identity: could not sync after login")
+		}
+		emit(map[string]any{"event": "login_complete"})
+	}
 
 	ln, err := net.Listen("tcp", s.listen)
 	if err != nil {

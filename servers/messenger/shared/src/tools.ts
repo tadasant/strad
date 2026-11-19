@@ -160,6 +160,7 @@ interface StatusPayload {
   login_in_progress: { flow: string; type?: string; step_id: string; working?: boolean } | null;
   cursor: number;
   uptime_seconds: number;
+  device_identity?: Array<{ flow: string; origin: string; machine_id: boolean; since: string }> | null;
 }
 
 function statusTool(bridge: BridgeFactory): ToolDefinition {
@@ -171,7 +172,10 @@ function statusTool(bridge: BridgeFactory): ToolDefinition {
       "the session — a checkpoint, a password change — and a human must log in again with " +
       "messenger_login_start; the bridge does not retry it, and `action` says what to do), any " +
       "login in progress (`working: true` while Meta is still processing an answer), the newest " +
-      "message cursor, and when state last reached durable storage.\n\n" +
+      "message cursor, when state last reached durable storage, and `device_identity`: the one " +
+      "phone each phone-app flow presents on every login (`origin` `live_login` = adopted from a " +
+      "login Meta already accepted, `generated` = minted here; `machine_id` = Meta has issued it " +
+      "one, which every login now sends). It never carries the identifiers themselves.\n\n" +
       UNOFFICIAL,
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: true },
@@ -201,6 +205,7 @@ function statusTool(bridge: BridgeFactory): ToolDefinition {
             ? { flow: progress.flow, step_id: progress.step_id, ...(progress.working ? { working: true } : {}) }
             : null,
           cursor: status.cursor,
+          device_identity: status.device_identity ?? [],
           last_saved_at: iso(b.lastSavedAt) ?? null,
           ...(next_step ? { next_step } : {}),
         });
