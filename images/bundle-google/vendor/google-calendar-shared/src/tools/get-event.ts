@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
 import { logError } from '../logging.js';
 import { buildCalendarEventUrl } from '../utils/calendar-helpers.js';
-import { formatShowAs } from '../utils/show-as.js';
+import { showAsLine } from '../utils/show-as.js';
 
 export const GetEventSchema = z.object({
   calendar_id: z
@@ -138,7 +138,7 @@ export function getEventTool(server: Server, clientFactory: ClientFactory) {
         if (event.visibility) {
           output += `**Visibility:** ${event.visibility}\n`;
         }
-        output += `**Show as:** ${formatShowAs(event.transparency)}\n`;
+        output += showAsLine(event);
 
         // Metadata
         if (event.created) {

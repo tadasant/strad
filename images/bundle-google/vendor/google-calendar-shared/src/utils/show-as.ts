@@ -22,7 +22,7 @@ export const transparencyField = z
     'Whether the event blocks time on the calendar (Google Calendar\'s "Show as"). ' +
       '"opaque" shows the event as Busy; "transparent" shows it as Free, so it does not block time in free/busy lookups. ' +
       'Same setting as show_as; pass one or the other. ' +
-      'Omitted, the event keeps its current setting (a new event is Busy, Google\'s default).'
+      'Omitted: a new event is Busy (Google\'s default) and an update leaves the setting unchanged.'
   );
 
 export const showAsField = z
@@ -56,13 +56,25 @@ export function resolveTransparency(args: {
   return args.transparency ?? fromShowAs;
 }
 
-/** `Free` or `Busy`, with the raw API value beside it. Absent is Google's default, Busy. */
-export function formatShowAs(transparency: string | undefined): string {
+/**
+ * The `**Show as:**` line for an event: `Free` or `Busy` with the raw API value
+ * beside it, an absent field read as Google's default, Busy. A cancelled event
+ * blocks no time and Google returns it with almost no fields, so it gets no
+ * line at all rather than an inferred Busy.
+ */
+export function showAsLine(event: { transparency?: string; status?: string }): string {
+  if (event.status === 'cancelled') {
+    return '';
+  }
+  return `**Show as:** ${formatShowAs(event.transparency)}\n`;
+}
+
+function formatShowAs(transparency: string | undefined): string {
   if (transparency === 'transparent') {
     return 'Free (transparent)';
   }
   if (transparency === undefined || transparency === 'opaque') {
     return 'Busy (opaque)';
   }
-  return transparency;
+  return `Unknown (${transparency})`;
 }

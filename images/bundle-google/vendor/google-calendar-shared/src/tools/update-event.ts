@@ -4,10 +4,10 @@ import type { ClientFactory } from '../server.js';
 import { logError } from '../logging.js';
 import { buildCalendarEventUrl } from '../utils/calendar-helpers.js';
 import {
-  formatShowAs,
   resolveTransparency,
   SHOW_AS_VALUES,
   showAsField,
+  showAsLine,
   TRANSPARENCY_VALUES,
   transparencyField,
 } from '../utils/show-as.js';
@@ -297,7 +297,7 @@ export function updateEventTool(server: Server, clientFactory: ClientFactory) {
         }
 
         // Show as Free / Busy, read back from the event Google returned
-        output += `**Show as:** ${formatShowAs(result.transparency)}\n`;
+        output += showAsLine(result);
 
         // Attendees
         if (result.attendees && result.attendees.length > 0) {

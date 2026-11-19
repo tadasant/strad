@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
 import { logError } from '../logging.js';
 import { buildCalendarEventUrl } from '../utils/calendar-helpers.js';
-import { formatShowAs } from '../utils/show-as.js';
+import { showAsLine } from '../utils/show-as.js';
 
 export const ListEventsSchema = z.object({
   calendar_id: z
@@ -158,7 +158,7 @@ export function listEventsTool(server: Server, clientFactory: ClientFactory) {
           }
 
           // Show as Free / Busy
-          output += `**Show as:** ${formatShowAs(event.transparency)}\n`;
+          output += showAsLine(event);
 
           // Status
           if (event.status) {

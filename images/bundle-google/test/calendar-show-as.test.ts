@@ -8,6 +8,9 @@
  * real request builders; only `fetch` and the token are stubbed. If a re-vendor
  * drops the delta, the write tests fail on the request body and the read tests
  * on the missing `**Show as:**` line.
+ *
+ * The fetch stub echoes a write's body back as the event, so a read-back line
+ * proves the result reflects what Google returned, not that Google stored it.
  */
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { OAuth2Client } from "google-auth-library";
@@ -263,3 +266,30 @@ test.each([
     expect(listed.text).toContain(`**Show as:** ${line}`);
   },
 );
+
+test("update with show_as and transparency that agree sends the one value", async () => {
+  const { result } = await call("update_calendar_event", {
+    event_id: "evt1",
+    show_as: "busy",
+    transparency: "opaque",
+  });
+  expect(result.isError).toBeFalsy();
+  expect(calls[0].body).toEqual({ transparency: "opaque" });
+});
+
+test("a cancelled event gets no Show as line, not an inferred Busy", async () => {
+  stored = { status: "cancelled" };
+  const got = await call("get_calendar_event", { event_id: "evt1" });
+  expect(got.text).toContain("**Status:** cancelled");
+  expect(got.text).not.toContain("Show as");
+
+  const listed = await call("list_calendar_events", {});
+  expect(listed.text).toContain("**Status:** cancelled");
+  expect(listed.text).not.toContain("Show as");
+});
+
+test("a transparency value Google may add later is printed as Unknown, never as Free or Busy", async () => {
+  stored = { transparency: "tentative" };
+  const got = await call("get_calendar_event", { event_id: "evt1" });
+  expect(got.text).toContain("**Show as:** Unknown (tentative)");
+});
