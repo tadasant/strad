@@ -72,6 +72,11 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # The one doctl this workflow runs. It must know `AppMaintenanceSpec`; keep it
+  # equal to deploy-staging.yml's, which `test/staging-on-demand.test.ts` checks.
+  DOCTL_VERSION: "2.6.0"
+
 jobs:
   power:
     runs-on: ubuntu-latest
@@ -83,9 +88,34 @@ jobs:
         # token this action runs `doctl auth init`, which writes it in cleartext
         # to $HOME, which every runner process on a self-hosted box shares. The step below
         # supplies the token through its own env instead.
+        #
+        # PINNED, and checked in the next step. Left at `latest`, the action asks
+        # GitHub's API for the newest release WITHOUT a token — 60 requests an
+        # hour per IP, shared by every job on a hosted runner's address — and
+        # when that is rate-limited it installs its hard-coded fallback, doctl
+        # 1.98.1, with only a warning. 1.98.1 predates `AppMaintenanceSpec`: it
+        # read an archived staging as running and then refused the spec it was
+        # handed (`unknown field "maintenance"`), on 2026-11-19. Even a pinned
+        # version falls back the same way if its download fails, so the pin is
+        # half of it and the assertion is the other half.
         uses: digitalocean/action-doctl@v2
         with:
           no_auth: "true"
+          version: ${{ env.DOCTL_VERSION }}
+
+      - name: Assert the pinned doctl
+        # The action's fallback is a warning, not a failure. An old doctl drops
+        # `maintenance` on the READ as well as the write, so a restore against
+        # an archived app would see "running", say "nothing to do" and exit
+        # green — the read-back below never runs on that path. Stop here instead.
+        run: |
+          set -euo pipefail
+          GOT=$(doctl version | sed -n 1p)
+          if [ "$GOT" != "doctl version ${DOCTL_VERSION}-release" ]; then
+            echo "::error::expected doctl ${DOCTL_VERSION}, got '${GOT}'. digitalocean/action-doctl fell back to another version; re-run once its download succeeds."
+            exit 1
+          fi
+          echo "$GOT"
 
       - name: Archive or restore strad-staging
         env:

@@ -1023,6 +1023,16 @@ job's VM, and the rule stays because it costs nothing. So the workflow installs 
 `no_auth: "true"` and gives every step that invokes `doctl` its own
 `DIGITALOCEAN_ACCESS_TOKEN`, which doctl reads natively.
 
+**Why it is pinned.** Left at `latest`, the action finds the newest doctl through
+an unauthenticated GitHub API call — 60 requests an hour per IP, shared by every
+job on a hosted runner's address. When that call is rate-limited, or when the
+download fails, the action installs a fallback, doctl 1.98.1, and only warns.
+That doctl predates `AppMaintenanceSpec`, so it reads an archived app as running.
+So both staging workflows install the `DOCTL_VERSION` in their `env:`. The step
+right after the install fails the job if `doctl version` reports anything else.
+`test/staging-on-demand.test.ts` holds every `action-doctl` step in the repo to
+that shape.
+
 Those steps also set `DIGITALOCEAN_CONTEXT: default`, which is load-bearing.
 doctl only honors the token from the environment on the `default` context. On any
 other context it reads that context's entry in the config file and ignores the
@@ -1146,6 +1156,7 @@ mistakes an archived spec for current `main`.
 | Re-reads the spec and refuses any app not named `strad-staging`                     | the only thing between a nightly cron and archiving prod is a name resolved out of a list, and an archive is a full outage of whatever it hits                                                                                                                                                                                                                                                                                                                   |
 | Re-reads it AGAIN after the update, and fails if `maintenance.archive` did not land | `doctl` decodes the spec with `encoding/json`, which drops a field it does not know — so a `doctl` predating `AppMaintenanceSpec` would PUT, return success, deploy, and leave the app billing. Same rule as [limitations #84](/limitations/)                                                                                                                                                                                                                    |
 | Shares `deploy-staging.yml`'s `staging-deploy` concurrency group                    | both workflows PUT the whole spec; queuing rather than racing stops an archive from reading the spec before a deploy's PUT and writing it back after. It costs something: GitHub keeps at most **one pending run** per group, so an archive queued behind a deploy is cancelled if anything else enters the group first — one night's saving, lost silently, since `alert-ci-failure.yml` does not alert on `cancelled`. Losing a deploy is the worse of the two |
+| Fails before touching the app if `doctl` is not the pinned version                  | an old doctl drops `maintenance` on the read as well as the write. A restore against an archived app would read "running", report "nothing to do" and exit green, before the read-back ever runs                                                                                                                                                                                                                                                                 |
 | Fails loudly when `doctl apps list` fails                                           | `awk` exits 0 on no match, so an unreachable API and an absent app produce the same empty id — a green "nothing to archive" through an outage would hide the bill this exists to stop                                                                                                                                                                                                                                                                            |
 | No token but `DIGITALOCEAN_ACCESS_TOKEN`                                            | it talks to DigitalOcean and nothing else: no checkout, no ghcr login, no GCP                                                                                                                                                                                                                                                                                                                                                                                    |
 
