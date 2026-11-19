@@ -7639,10 +7639,12 @@ homeserver keeps strad's no-database, one-component shape.
   datacenter IP, which raises that risk. `MESSENGER_PROXY` routes everything
   through a proxy if checkpoints happen; nothing ships with one.
 - CI tests the Go program's recorder against a real SQLite file and the
-  TypeScript tree against a fake of the Go program. Against Meta, it has been
-  run only as far as the first login step (the Android flow's credential form,
-  and the cookie flow's cookie list). A real login, the encrypted-history
-  restore and live delivery are first exercised by the owner's own login.
+  TypeScript tree against a fake of the Go program. Against Meta, the owner's
+  first Android login got through the password and failed at the
+  authenticator-code step, inside mautrix-meta's interpreter (the patched copy
+  below is the fix); the cookie flow is the workaround. A completed app login,
+  the encrypted-history restore and live delivery are first exercised by the
+  owner's own login.
 - A deploy is a handoff: the new container waits (up to five minutes, and its
   tool calls with it) until the old one has snapshotted on SIGTERM and released
   the lease. A crash (not a deploy) loses up to a minute of encryption state; whatsmeow
@@ -7655,6 +7657,15 @@ homeserver keeps strad's no-database, one-component shape.
 - A `replace` in mautrix-meta's `go.mod` (Beeper's fork of `req`) does not carry
   over to a dependent module, so `bridge/go.mod` repeats it and must move with
   the mautrix-meta pin.
+- mautrix-meta is built from a PATCHED copy in
+  `servers/messenger/bridge/third_party/mautrix-meta`, not from the module
+  proxy. Its Bloks interpreter (Meta's server-driven login screens) did not
+  implement `bk.action.callback.Make`, which the authenticator-code (TOTP)
+  screen's Continue button uses, so the phone-app login failed at 2FA. Upstream
+  `main` does not implement it either. The copy is upstream's module plus the
+  deltas in `bridge/third_party/README.md`, each with a test; moving to a newer
+  release means re-applying them. Any other Bloks function the interpreter lacks
+  still fails a login step the same way, locally, and ends that login.
 
 **Undo.** If Meta ever ships an API for personal inboxes, replace the Go program.
 If datacenter checkpoints become routine, either set `MESSENGER_PROXY` to a

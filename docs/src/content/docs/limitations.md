@@ -4650,8 +4650,9 @@ run headless in a separate AGPL-3.0 process. What that costs:
   the bridge connects from a datacenter IP, which makes that more likely.
   `MESSENGER_PROXY` sends everything through a proxy if it happens.
 - **Untested against a real login.** CI runs the Go program against SQLite and
-  the TypeScript tree against a fake of it. Against Meta it has only fetched the
-  first login step. The first real login is the owner's.
+  the TypeScript tree against a fake of it. The owner's first Android login got
+  through the password and failed at the authenticator-code step, which a
+  patched mautrix-meta (below) fixes; a completed app login is still untested.
 - **Encrypted history before login needs the PIN.** Without the 6-digit
   secure-storage PIN at login, encrypted chats start at the moment of login.
 - **A crash loses up to a minute of encryption state.** A deploy does not: the
@@ -4659,6 +4660,12 @@ run headless in a separate AGPL-3.0 process. What that costs:
   with it, for up to five minutes.
   Messages that cannot be decrypted arrive as placeholders.
 - **Read-only.** There is no send tool.
+- **A patched mautrix-meta.** The phone-app login's authenticator-code step
+  needed a Bloks function mautrix-meta does not implement, so strad builds from
+  its own copy of the module with that fix, and a newer release has to have the
+  fix re-applied. A login screen that uses another function the interpreter
+  lacks fails that step and ends the login; the `cookies` flow avoids those
+  screens.
 
 ### 149. The hostd Chrome extension moves a password manager's overlay out of the way
 

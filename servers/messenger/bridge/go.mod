@@ -65,3 +65,8 @@ require (
 // A replace does not carry over to a dependent module, so it is repeated here,
 // at the same version; bump it whenever the mautrix-meta pin moves.
 replace github.com/imroc/req/v3 => github.com/beeper/req/v3 v3.0.0-20261112020631-42bebc180e13
+
+// strad's PATCHED VENDOR copy of mautrix-meta v0.2611.0: upstream's module,
+// verbatim but for the deltas listed in third_party/README.md. The require above
+// stays at the version the copy was taken from; bump both together.
+replace go.mau.fi/mautrix-meta => ./third_party/mautrix-meta

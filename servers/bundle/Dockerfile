@@ -171,6 +171,9 @@ RUN npm run build && npm prune --omit=dev
 FROM golang:1.27-bookworm AS build-messenger-bridge
 WORKDIR /src
 COPY servers/messenger/bridge/go.mod servers/messenger/bridge/go.sum ./
+# go.mod replaces mautrix-meta with strad's patched copy in third_party/, so the
+# copy has to be in place before the download resolves the module graph.
+COPY servers/messenger/bridge/third_party ./third_party
 RUN go mod download
 COPY servers/messenger/bridge ./
 RUN CGO_ENABLED=1 go build -trimpath -buildvcs=false -ldflags="-s -w" \

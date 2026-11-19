@@ -66,13 +66,14 @@ One Messenger device is one connection. The renderer refuses `instanceCount > 1`
 for a bundle serving `/messenger`, and the lease in `shared/src/bridge.ts`
 handles the overlap a deploy creates anyway.
 
-## Bumping mautrix-meta
+## mautrix-meta is a patched copy
 
-1. Change the `go.mau.fi/mautrix-meta` version in `bridge/go.mod`.
-2. Copy the `replace github.com/imroc/req/v3 => …` line from that release's own
-   `go.mod`: a `replace` does not carry over to a dependent module.
-3. `go mod tidy && go vet ./... && go test ./...` in `bridge/`, in
-   `golang:1.27-bookworm` (the image the bundle Dockerfile builds it in).
+`bridge/third_party/mautrix-meta` is mautrix-meta's module with strad's deltas
+(today: one, the Bloks interpreter's `bk.action.callback.Make`, which the
+phone-app login's authenticator-code step needs). `bridge/go.mod` builds against
+it through a `replace`. `bridge/third_party/README.md` has the delta table, the
+diff that checks the copy against upstream, and the steps for moving to a newer
+release; each delta has a test in `bridge/` that fails if a re-copy drops it.
 
 ## Tests
 
