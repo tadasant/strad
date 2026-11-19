@@ -272,11 +272,12 @@ Mac's own config:
 ```
 
 - **A name, never a URL.** `deposit` takes `destination: "pulsemcp"`. Its
-  input schema lists exactly the configured names, and any other value is
+  input schema lists exactly these names (the default's, then each
+  configured one), and any other value is
   refused before anything is sent: `No deposit destination named "…"`. A
   prompt cannot add a host. Only the owner, editing this file, can.
-- **Omitting it changes nothing.** No `destination` means `stradUrl` with the
-  custody slug's derived bearer, as before. `stradName` (default `"default"`)
+- **Omitting it means the default.** No `destination` means `stradUrl` with the
+  custody slug's derived bearer. `stradName` (default `"default"`)
   is the name that destination also answers to, so a list a human approved can
   say "mine" out loud.
 - **Each destination has its own key.** The bearer is
@@ -296,8 +297,10 @@ strad-hostd keys        # prints it again later
 # restart the daemon to serve the new destination
 ```
 
-`strad-hostd destination remove pulsemcp` drops it. Delete the key from that
-strad too.
+`strad-hostd destination remove pulsemcp` drops it, and a running daemon
+stops depositing there at once. Delete the key from that strad too. A
+destination added while the daemon runs can be deposited into straight away,
+but the tool's list of names updates at the next restart.
 
 ### What the other strad needs
 
@@ -324,6 +327,10 @@ anything:
   that strad's own store under the entry's namespace
   (`/strad/<env>/mcp/custody-my-mbp/static/HOSTD_CUSTODY_DEPOSIT_KEY`) through
   its console. A deposit cannot seed it: the route refuses a `local-tunnel` slug.
+  Store it **before** the entry deploys, because the deploy's preflight refuses
+  an unseeded `${NAME}`, or list it in the entry's `mayBeUnseeded:` until it
+  lands. On a strad using the `env` secrets provider it is an App Platform
+  secret instead.
 - `entitlements: []` means no role can reach the slug through `/mcp`. The
   `.invalid` name reads as `offline` on that strad, which is not degraded
   ([limitation #152](/limitations/)).

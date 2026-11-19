@@ -440,9 +440,10 @@ export function matchKey(
 
 /**
  * Re-read every server's keys from the config file into a LIVE config, so a
- * key minted while the daemon runs works without a restart. Only the keys
- * move: everything else a running daemon holds was validated at boot and is
- * wired into listeners and the tunnel.
+ * key minted while the daemon runs works without a restart. The keys move, and
+ * so do custody's deposit destinations, so that `destination remove` revokes
+ * one at once. Everything else a running daemon holds was validated at boot and
+ * is wired into listeners and the tunnel.
  */
 export function reloadKeys(live: Config, path = configPath()): void {
   const fresh = loadConfig(path);
@@ -450,6 +451,7 @@ export function reloadKeys(live: Config, path = configPath()): void {
     live.capabilities[id].key = fresh.capabilities[id].key;
     live.capabilities[id].clientKeys = fresh.capabilities[id].clientKeys;
   }
+  live.custody.destinations = fresh.custody.destinations;
 }
 
 /**
@@ -514,7 +516,7 @@ export function addDestination(
     destinations?: Record<string, unknown>;
   };
   const destinations = (custody.destinations ??= {});
-  if (destinations[name])
+  if (Object.hasOwn(destinations, name))
     throw new Error(
       `destination "${name}" already exists; remove it first to replace its key`,
     );
@@ -533,7 +535,7 @@ export function removeDestination(
   const destinations = (
     raw.custody as { destinations?: Record<string, unknown> } | undefined
   )?.destinations;
-  if (!destinations?.[name]) return false;
+  if (!destinations || !Object.hasOwn(destinations, name)) return false;
   delete destinations[name];
   return true;
 }

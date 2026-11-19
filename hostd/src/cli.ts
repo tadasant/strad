@@ -335,8 +335,13 @@ async function main(argv: string[]): Promise<number> {
         writeFileSync(path, JSON.stringify(raw, null, 2) + "\n", {
           mode: 0o600,
         });
+        // A running daemon stops depositing there now; a stopped one never starts.
+        const live = await control("/reload-keys").then(
+          (r) => r.ok,
+          () => false,
+        );
         console.log(
-          `removed destination "${name}". Restart the daemon; then delete its key from that strad too.`,
+          `removed destination "${name}"${live ? "; the running daemon no longer deposits there" : ""}. Delete its key from that strad too.`,
         );
         return 0;
       }

@@ -1,9 +1,14 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   addDestination,
   ConfigSchema,
+  loadConfig,
+  reloadKeys,
   removeDestination,
 } from "../src/config.js";
 import { depositToken } from "../src/custody/deposit-wire.js";
@@ -198,6 +203,36 @@ describe("custody destinations in the config", () => {
     expect(removeDestination(raw, "pulsemcp")).toBe(false);
   });
 
+  it("treats a name that is also an Object.prototype key as just a name", () => {
+    const raw: Record<string, unknown> = structuredClone(base);
+    expect(removeDestination(raw, "constructor")).toBe(false);
+    addDestination(raw, "constructor", "https://c.example.com", PULSE_KEY);
+    expect(removeDestination(raw, "constructor")).toBe(true);
+  });
+
+  it("reloads destinations live, so a removal revokes at once", () => {
+    const path = join(
+      mkdtempSync(join(tmpdir(), "hostd-dest-")),
+      "config.json",
+    );
+    const raw: Record<string, unknown> = structuredClone(base);
+    addDestination(raw, "pulsemcp", "https://strad.pulsemcp.com", PULSE_KEY);
+    writeFileSync(path, JSON.stringify(raw));
+    const live = loadConfig(path);
+    expect(resolveDestination(live, "pulsemcp").ok).toBe(true);
+    removeDestination(raw, "pulsemcp");
+    writeFileSync(path, JSON.stringify(raw));
+    reloadKeys(live, path);
+    expect(resolveDestination(live, "pulsemcp").ok).toBe(false);
+    // A file whose client key collides with a destination key never goes live.
+    addDestination(raw, "pulsemcp", "https://strad.pulsemcp.com", PULSE_KEY);
+    (raw.capabilities as { shell: Record<string, unknown> }).shell.clientKeys =
+      { laptop: PULSE_KEY };
+    writeFileSync(path, JSON.stringify(raw));
+    expect(() => reloadKeys(live, path)).toThrow(/could open that server/);
+    expect(live.capabilities.shell.clientKeys).toEqual({});
+  });
+
   it("does not resolve a name off the object prototype", () => {
     const cfg = ConfigSchema.parse(base);
     for (const name of ["constructor", "__proto__", "toString"])
@@ -390,7 +425,7 @@ describe("deposit, through the daemon, to named destinations", () => {
 });
 
 describe("deposit with no default strad set up", () => {
-  it("still says exactly what it said before destinations existed", () => {
+  it("names custody.stradUrl as what is missing", () => {
     const cfg = ConfigSchema.parse({
       capabilities: { custody: { enabled: true, key: CUSTODY_KEY } },
     });

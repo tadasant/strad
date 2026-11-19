@@ -22,7 +22,10 @@ export interface Destination {
 export type DestinationLookup =
   { ok: true; destination: Destination } | { ok: false; message: string };
 
-/** Every destination name a caller may give, the default's first. */
+/**
+ * Every destination name a caller may give, the default's first. The rest in
+ * code-unit order, which is the order the tool description lists them in.
+ */
 export function destinationNames(config: Config): string[] {
   return [
     config.custody.stradName,
@@ -32,7 +35,7 @@ export function destinationNames(config: Config): string[] {
 
 /**
  * The destination `name` names, or why there is none. `name` omitted is the
- * default destination, exactly as before destinations existed.
+ * default destination: `stradUrl`, with the custody slug key's bearer.
  */
 export function resolveDestination(
   config: Config,

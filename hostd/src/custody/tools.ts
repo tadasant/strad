@@ -627,9 +627,9 @@ public_key is one authorized_keys line. The private key is OpenSSH format, unenc
   });
 
   const names = destinationNames(config);
-  const named = Object.entries(config.custody.destinations).sort(([a], [b]) =>
-    a.localeCompare(b),
-  );
+  const named = names
+    .slice(1)
+    .map((name) => [name, config.custody.destinations[name]!] as const);
   const destinationList = [
     `- "${config.custody.stradName}" (the default, used when destination is omitted)${config.custody.stradUrl ? `: ${new URL(config.custody.stradUrl).host}` : ": not set up on this machine"}`,
     ...named.map(
