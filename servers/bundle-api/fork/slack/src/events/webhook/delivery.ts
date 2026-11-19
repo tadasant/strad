@@ -1,5 +1,11 @@
 /**
- * Webhook delivery (draft SEP-3415 webhook mode) for `message_posted`.
+ * Webhook delivery (SEP-3415 webhook mode), for any event source.
+ *
+ * The engine knows events only as {@link DeliverableEvent}s in a sequenced
+ * buffer and subscription arguments only as an opaque `A` the source filters
+ * on, so one engine serves Slack's `message_posted` and Gmail's
+ * `message_received` (`images/bundle-google/src/events/`, which carries a
+ * copy of this directory made by `npm run eventswebhook:sync`). Edit it here.
  *
  * SUBSCRIBE is any process's job; DELIVERY is the lease holder's. A subscribe
  * verifies the endpoint if this principal has not verified that URL yet, then
@@ -33,8 +39,7 @@
  *     carries on from the oldest event still held.
  */
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { encodeCursor, type MessagePostedArgs } from '../buffer.js';
-import type { StoredEvent } from '../normalize.js';
+import { encodeCursor } from './cursor.js';
 import {
   DEFAULT_TTL_MS,
   SECRET_GRACE_MS,
@@ -103,21 +108,40 @@ export class SubscriptionLimit extends Error {
   }
 }
 
-/** What delivery reads from the ring buffer. */
-export interface DeliverySource {
+/** One buffered event, as delivery sees it. `data` is the payload, sent as is. */
+export interface DeliverableEvent {
+  eventId: string;
+  /** ISO 8601. */
+  timestamp: string;
+  data: unknown;
+  seq: number;
+}
+
+/** What delivery reads from the ring buffer. `A` is the source's parsed arguments. */
+export interface DeliverySource<A> {
   head(): number;
   evictedThrough(): number;
   /** Matching events with `seq > after`, oldest first, at most `limit`. */
-  eventsAfter(after: number, args: MessagePostedArgs, limit: number): StoredEvent[];
+  eventsAfter(after: number, args: A, limit: number): DeliverableEvent[];
+  /**
+   * The highest sequence through which the source has DECIDED, for these
+   * arguments, which events match. Absent: the head, which is right for a
+   * source whose matching is synchronous. A source that decides some matches
+   * asynchronously (Gmail asks Gmail's own search) answers lower while a
+   * decision is outstanding, and `eventsAfter` stops there too, so delivery
+   * never scans past an event it may yet owe. `after` is where this
+   * subscription's scan already stands; nothing at or before it is asked about.
+   */
+  readyThrough?(args: A, after: number): number;
 }
 
-export interface SubscribeInput {
+export interface SubscribeInput<A> {
   principal: string;
   /** The name as the subscriber knows it (strad's namespaced name). */
   name: string;
   eventType: string;
   arguments: Record<string, unknown>;
-  parsedArguments: MessagePostedArgs;
+  parsedArguments: A;
   url: string;
   /** The parsed `whsec_` key bytes. */
   secret: Buffer;
@@ -151,13 +175,13 @@ interface Pending {
   sending: boolean;
   /** The body, minus the cursor, which is the watermark at send time. */
   envelope:
-    | { kind: 'event'; event: StoredEvent }
+    | { kind: 'event'; event: DeliverableEvent }
     | { kind: 'gap' };
 }
 
-interface Live {
+interface Live<A> {
   record: SubscriptionRecord;
-  args: MessagePostedArgs;
+  args: A;
   queue: Map<number, Pending>;
   /** Everything at or below this has been queued or skipped. */
   scannedThrough: number;
@@ -199,11 +223,11 @@ export interface AccessConfig {
   headers: Record<string, string>;
 }
 
-export interface WebhookDeliveryDeps {
+export interface WebhookDeliveryDeps<A> {
   store: RegistryStore;
-  source: DeliverySource;
+  source: DeliverySource<A>;
   transport: WebhookTransport;
-  parseArgs: (raw: unknown) => MessagePostedArgs;
+  parseArgs: (raw: unknown) => A;
   /** Edge credentials for configured URL prefixes; see {@link accessHeadersFor}. */
   access?: AccessConfig | null;
   clock?: () => number;
@@ -212,15 +236,15 @@ export interface WebhookDeliveryDeps {
 
 const iso = (ms: number | null): string | null => (ms === null ? null : new Date(ms).toISOString());
 
-export class WebhookDelivery {
+export class WebhookDelivery<A> {
   private readonly store: RegistryStore;
-  private readonly source: DeliverySource;
+  private readonly source: DeliverySource<A>;
   private readonly transport: WebhookTransport;
-  private readonly parseArgs: (raw: unknown) => MessagePostedArgs;
-  private readonly access: WebhookDeliveryDeps['access'];
+  private readonly parseArgs: (raw: unknown) => A;
+  private readonly access: WebhookDeliveryDeps<A>['access'];
   private readonly clock: () => number;
   private readonly warn: (message: string) => void;
-  private live = new Map<string, Live>();
+  private live = new Map<string, Live<A>>();
   private loadedAt: number | null = null;
   private lastPersistAt = 0;
   private registryDirty = false;
@@ -228,7 +252,7 @@ export class WebhookDelivery {
   private sends = new Set<Promise<void>>();
   private verifications = new Map<string, number[]>();
 
-  constructor(deps: WebhookDeliveryDeps) {
+  constructor(deps: WebhookDeliveryDeps<A>) {
     this.store = deps.store;
     this.source = deps.source;
     this.transport = deps.transport;
@@ -240,7 +264,7 @@ export class WebhookDelivery {
 
   // --- subscribe / unsubscribe -------------------------------------------------
 
-  async subscribe(input: SubscribeInput): Promise<SubscribeResult> {
+  async subscribe(input: SubscribeInput<A>): Promise<SubscribeResult> {
     const now = this.clock();
     const key = subscriptionKey(input.principal, input.url, input.name, input.arguments);
     const id = subscriptionId(key);
@@ -321,7 +345,7 @@ export class WebhookDelivery {
 
   private create(
     doc: RegistryDoc,
-    input: SubscribeInput,
+    input: SubscribeInput<A>,
     id: string,
     secretB64: string,
     ttl: number,
@@ -533,7 +557,7 @@ export class WebhookDelivery {
       // again elsewhere, with its own start. Start over from the new record.
       const live = existing && existing.record.createdAt === record.createdAt ? existing : undefined;
       if (!live) {
-        let args: MessagePostedArgs;
+        let args: A;
         try {
           args = this.parseArgs(record.arguments);
         } catch {
@@ -561,7 +585,7 @@ export class WebhookDelivery {
     for (const id of [...this.live.keys()]) if (!seen.has(id)) this.live.delete(id);
   }
 
-  private reactivate(live: Live): void {
+  private reactivate(live: Live<A>): void {
     const now = this.clock();
     live.record.active = true;
     live.record.failedSince = null;
@@ -576,7 +600,7 @@ export class WebhookDelivery {
   }
 
   /** Queues what is due, oldest first, up to the in-flight cap. */
-  private fill(live: Live, now: number): void {
+  private fill(live: Live<A>, now: number): void {
     const evicted = this.source.evictedThrough();
     if (live.scannedThrough < evicted) {
       live.queue.set(evicted, {
@@ -593,7 +617,7 @@ export class WebhookDelivery {
     const room = MAX_IN_FLIGHT - live.queue.size;
     if (room <= 0) return;
     const notBefore = live.record.notBefore;
-    const due: StoredEvent[] = [];
+    const due: DeliverableEvent[] = [];
     let scanned = live.scannedThrough;
     // With no age floor, `room` events is all this pass can use. With one, events
     // under it are skipped rather than queued, so the scan cannot stop at `room`.
@@ -615,8 +639,10 @@ export class WebhookDelivery {
         envelope: { kind: 'event', event: e },
       });
     }
-    // Room left over means every matching event up to the head was seen.
-    live.scannedThrough = due.length < room ? Math.max(scanned, this.source.head()) : scanned;
+    // Room left over means every matching event up to what the source has
+    // decided was seen: the head, unless a match is still being decided.
+    const ready = this.source.readyThrough?.(live.args, scanned) ?? this.source.head();
+    live.scannedThrough = due.length < room ? Math.max(scanned, ready) : scanned;
     this.advance(live);
   }
 
@@ -624,13 +650,13 @@ export class WebhookDelivery {
    * A gap envelope's cursor: the eviction point, but never past an event still
    * outstanding, or a receiver that persists it would replay past that event.
    */
-  private gapCursor(live: Live, evicted: number): number {
+  private gapCursor(live: Live<A>, evicted: number): number {
     const others = [...live.queue.keys()].filter((seq) => seq !== evicted);
     return others.length > 0 ? Math.min(evicted, Math.min(...others) - 1) : evicted;
   }
 
   /** Recomputes the watermark from what is still outstanding. */
-  private advance(live: Live): void {
+  private advance(live: Live<A>): void {
     const outstanding = [...live.queue.keys()];
     const next = outstanding.length > 0 ? Math.min(...outstanding) - 1 : live.scannedThrough;
     if (next > live.record.watermark) {
@@ -639,7 +665,7 @@ export class WebhookDelivery {
     }
   }
 
-  private send(live: Live, pending: Pending): void {
+  private send(live: Live<A>, pending: Pending): void {
     pending.sending = true;
     const record = live.record;
     const cursor = encodeCursor(record.watermark);
@@ -679,7 +705,7 @@ export class WebhookDelivery {
   }
 
   private settled(
-    live: Live,
+    live: Live<A>,
     pending: Pending,
     status: number | null,
     failure: DeliveryErrorCategory | null
@@ -769,7 +795,7 @@ export class WebhookDelivery {
 
   // --- status ----------------------------------------------------------------------
 
-  /** For `slack_events_status`. No URL path, no secret: the host is enough to recognise one. */
+  /** For a status tool. No URL path, no secret: the host is enough to recognise one. */
   status(): Record<string, unknown>[] {
     return [...this.live.values()].map((l) => ({
       id: l.record.id,

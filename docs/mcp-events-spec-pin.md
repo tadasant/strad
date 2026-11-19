@@ -1,21 +1,23 @@
 # MCP Events: the draft this repo is built against
 
-strad's MCP Events support tracks a **draft**: SEP-3415, the events extension
-(`io.modelcontextprotocol/events`). It is not part of any released MCP
-specification. Its status reads Accepted, but the PR is unmerged and its wire,
-error codes and capability shape can still change.
+strad's MCP Events support tracks SEP-3415, the events extension
+(`io.modelcontextprotocol/events`). The SEP merged on 2026-11-19 with status
+Final, but it is an Extensions Track SEP, not part of any released MCP
+specification, and its official extension repository has not published it
+yet. Treat the wire as able to change until it has.
 
-| Field                | Value                                                                                       |
-| -------------------- | ------------------------------------------------------------------------------------------- |
-| SEP                  | SEP-3415, `seps/3415-events-extension.md` (docs copy `docs/seps/3415-events-extension.mdx`) |
-| Pinned head commit   | `4165cc2e580afa795842002f631edbbe17c63757`                                                  |
-| Pinned on            | 2026-11-16                                                                                  |
-| Delivery modes built | poll (`events/list`, `events/poll`) and webhook (`events/subscribe`, `events/unsubscribe`)  |
-| Not built            | push (`events/stream`), `notifications/events/list_changed`, `server/discover`              |
-| Re-checked           | 2026-11-16: SEP still an open PR, status Accepted                                           |
+| Field                | Value                                                                                                    |
+| -------------------- | -------------------------------------------------------------------------------------------------------- |
+| SEP                  | SEP-3415, `seps/3415-events-extension.md` (docs copy `docs/seps/3415-events-extension.mdx`)              |
+| Source               | `modelcontextprotocol/modelcontextprotocol` `main`, merged in `8a18b4b3292b9f9b3aee73f6325f9f62f19a89f9` |
+| Pinned head commit   | `6a4bf07c96abad167976c1156c6daa63ced40535` (the PR's final head)                                         |
+| Pinned on            | 2026-11-19                                                                                               |
+| Delivery modes built | poll (`events/list`, `events/poll`) and webhook (`events/subscribe`, `events/unsubscribe`)               |
+| Not built            | push (`events/stream`), `notifications/events/list_changed`, `server/discover`                           |
+| Re-checked           | 2026-11-19: merged, status Final                                                                         |
 
-Before changing anything under MCP Events, compare this commit with the live
-SEP. If the draft moved, decide what the change means for the wire here, then
+Before changing anything under MCP Events, compare this commit with the SEP
+on `main` (and, once it exists, the extension repository's copy). If the draft moved, decide what the change means for the wire here, then
 update this file in the same PR.
 
 ## What is implemented against this commit
@@ -44,6 +46,8 @@ update this file in the same PR.
   `-32025` ResourceExhausted, `-32026` Unsupported, `-32027`
   CallbackEndpointError (`data.reason`).
 - The `Mcp-Method` and `Mcp-Name` headers are accepted and not checked.
+- No `inputSchema` property carries `x-mcp-header`, so no `Mcp-Param-*`
+  header is asked for and none is validated.
 - `resultType: "complete"` is not set on results.
 
 ## Choices the draft leaves open, as made here
@@ -94,5 +98,17 @@ change both.
   `v1a,` signatures and publishes no card. Open Question 6 and a rationale
   paragraph were added (non-normative).
 
+- 2026-11-19 — `4165cc2` → `6a4bf07`, and the SEP MERGED (`8a18b4b` on
+  `main`), status Final. Additive only, so no code change: an event type's
+  `inputSchema` property MAY carry `x-mcp-header`, which mirrors the argument
+  into an `Mcp-Param-{Name}` header on `events/poll`, `events/stream`,
+  `events/subscribe` and `events/unsubscribe`, with a `-32020` HeaderMismatch
+  when they disagree. strad annotates nothing, so nothing is mirrored and
+  nothing is checked; the SEP itself advises against annotating an argument
+  that may be sensitive, such as a sender filter, which Gmail's `query` is.
+  The rest is editorial: the author's handle, and a TypeScript SDK reference
+  implementation listed. Built the Gmail `message_received` event against it.
+
 Code: `src/gateway/events.ts` (core), `servers/bundle-api/fork/slack/src/events/`
-(the Slack `message_posted` event). Prose: `docs/src/content/docs/servers/events.md`.
+(the Slack `message_posted` event, and the webhook engine both sources share),
+`images/bundle-google/src/events/` (the Gmail `message_received` event). Prose: `docs/src/content/docs/servers/events.md`.

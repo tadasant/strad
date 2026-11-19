@@ -235,7 +235,35 @@ export const VENDORED = [
       "servers/whatsapp/shared/src/state-store.ts",
       "servers/bundle-api/fork/slack/src/events/state-store.ts",
       "servers/messenger/shared/src/state-store.ts",
+      "images/bundle-google/src/events/state-store.ts",
     ],
+  },
+  {
+    // MCP Events WEBHOOK DELIVERY: the subscription registry, the Standard
+    // Webhooks signing, the SSRF-guarded transport and the delivery engine
+    // (retries, watermark, suspension, gap envelopes). Two event sources run
+    // it — Slack's `message_posted` in the bundle-api tree and Gmail's
+    // `message_received` in the bundle-google tree — and each tree is its own
+    // Docker context. A drift is two webhook semantics under one `/mcp`: a
+    // receiver that verified one source's signatures, retries or cursors would
+    // be wrong about the other's, and nothing would say so. The engine is
+    // generic over the source's arguments; what is source-specific (matching,
+    // the buffer, the payload) stays in each tree.
+    id: "eventswebhook",
+    source: "servers/bundle-api/fork/slack/src/events/webhook",
+    files: [
+      "cursor.ts",
+      "delivery.ts",
+      "registry.ts",
+      "signing.ts",
+      "transport.ts",
+    ],
+    label: "the MCP Events webhook engine",
+    banner: `// GENERATED — DO NOT EDIT.
+// Vendored from servers/bundle-api/fork/slack/src/events/webhook by \`npm run eventswebhook:sync\`.
+// Edit the source, run the sync, and commit both. CI fails if these drift.
+`,
+    targets: ["images/bundle-google/src/events/webhook"],
   },
   {
     // BOTH ends of `POST /_strad/deposit`: core serves it (src/http/deposit.ts)

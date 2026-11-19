@@ -35,6 +35,7 @@ import {
   encodeCursor,
   parseMessagePostedArgs,
   type BufferDoc,
+  type MessagePostedArgs,
 } from './buffer.js';
 import {
   EventsConfigError,
@@ -159,7 +160,7 @@ export class SlackEventsIngest {
   private readonly buffer: EventBuffer | null;
   private readonly api: SlackApi | null;
   private readonly wsFactory: WebSocketFactory | null;
-  private readonly webhooks: WebhookDelivery | null;
+  private readonly webhooks: WebhookDelivery<MessagePostedArgs> | null;
   private booted = false;
   private readonly manual: boolean;
   private bot: BotIdentity | null = null;
@@ -734,7 +735,7 @@ export class SlackEventsIngest {
     await this.webhooks?.settle();
   }
 
-  async subscribe(input: Omit<SubscribeInput, 'parsedArguments'>): Promise<SubscribeResult> {
+  async subscribe(input: Omit<SubscribeInput<MessagePostedArgs>, 'parsedArguments'>): Promise<SubscribeResult> {
     const webhooks = await this.servedWebhooks();
     return webhooks.subscribe({
       ...input,
@@ -753,7 +754,7 @@ export class SlackEventsIngest {
   }
 
   /** The delivery engine, once the buffer it reads is loaded. */
-  private async servedWebhooks(): Promise<WebhookDelivery> {
+  private async servedWebhooks(): Promise<WebhookDelivery<MessagePostedArgs>> {
     if (!this.config || !this.webhooks) {
       throw new EventsNotServed(this.configProblem ?? 'Slack events are not configured.');
     }

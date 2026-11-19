@@ -7750,3 +7750,65 @@ and a script's `click()` carries no user activation, so the page's own
 **Undo.** If Chrome ever lets `chrome.debugger` attach beside another
 extension's frames, delete `parkForeignFrames`, the two permissions, and this
 entry.
+
+## 150. Gmail `message_received` decides `query` by asking Gmail, and has met only fakes
+
+**What.** Every gmail mount can publish `message_received`
+(`images/bundle-google/src/events/`), switched on per slug by its own
+`GMAIL_EVENTS_STATE_ENCRYPTION_KEY`. New mail is heard about through Gmail's
+`users.watch` and a Pub/Sub pull subscription, or by polling
+`users.history.list` every 15 seconds when no Pub/Sub pair is configured; the
+history is read either way. The `query` argument is a Gmail search, and strad
+cannot evaluate Gmail's search language, so each message is checked by asking
+Gmail for `(<query>) rfc822msgid:<its Message-ID>` and the verdict is stored
+with the event.
+
+**Why.** Zimmer's inbox-triage trigger filters with a Gmail search
+(`in:inbox -from:zimmer@tadasant.com`), and an event a trigger moves onto has
+to see the mail the old poller saw. Pull rather than a push subscription
+because a bundle has no public ingress; a push endpoint would be a new
+unauthenticated route on core plus a forward to the bundle.
+
+**What it costs.**
+
+1. **Untested against Google.** The suite (`images/bundle-google/test/gmail-events.test.ts`)
+   drives a fake Gmail and a fake Pub/Sub in their documented shapes. No real
+   watch, notification, history read or `rfc822msgid:` search has run.
+2. **Gmail's search index trails delivery.** A message the index does not have
+   yet holds a query's poll and delivery at that message. After 30 minutes it
+   is decided as not matching, with a warning, and anything the query would
+   have matched is lost to that subscriber.
+3. **A verdict is never revised.** A message archived a minute after it
+   arrived still matches `in:inbox` if it was decided before the archive, and
+   not if after. Zimmer's poller has the same race, at its own poll time.
+4. **Quota.** Each verdict costs one search (5 units), two for a non-match;
+   each message's metadata read costs 20. Gmail allows 6,000 a minute per
+   user. Background deciding spends at most 40 searches a pass, shared across
+   queries, and covers every live webhook subscription's query plus the 20
+   most recently polled; past that, each poll decides its own query. A query
+   is decided from where it was first used (or the oldest cursor a subscriber
+   brought), never back through the whole buffer. A Message-ID that is not
+   one clean search token (the sender writes it) is checked by a two-second
+   time window on `internalDate` instead.
+5. **Recovery has a ceiling.** A history id Gmail no longer keeps, or a read
+   past 200 pages of history, is recovered by search, which reads at most
+   5,000 messages. Past that the oldest in the window are not events, and the
+   warning says CUT.
+6. **One event per message, not per thread.** Zimmer's email trigger fires once
+   per thread per tick with the newest message. A burst in one thread is one
+   native fire and several events, so the parity join will show those
+   messages as event-only until the consumer batches by `thread_id`.
+7. **No status tool.** Unlike `slack_events_status`, the Gmail ingest's state
+   reaches only the bundle's stderr. A tool would have changed every gmail
+   slug's tool count and allow lists; `status()` exists for when one is added.
+8. **GCP resources by hand.** The Pub/Sub topic, Gmail's publish grant and the
+   pull subscription with its `roles/pubsub.subscriber` grant are made once in
+   GCP, outside any deploy. The topic has to live in the project that owns the
+   mailbox's OAuth client. Until they exist, a configured mount polls.
+9. **The webhook engine is copied.** `npm run eventswebhook:sync` copies the
+   Slack tree's `src/events/webhook/` into the gmail tree; CI fails on drift.
+
+**Undo.** Unseed the slug's `GMAIL_EVENTS_STATE_ENCRYPTION_KEY`: the mount goes
+inert. Removing it is deleting `images/bundle-google/src/events/`, its hooks in
+`images/bundle-google/src/gmail.ts` and `loadGmail`, and the `eventswebhook`
+seam.

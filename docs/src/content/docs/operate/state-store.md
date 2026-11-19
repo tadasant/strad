@@ -8,11 +8,12 @@ has to remember something across a restart keeps it in **one GCS bucket**: the
 state store. There is one bucket and one service account for a deployment.
 Each server gets its own folder and its own encryption key.
 
-| Consumer                                | Folder: the root, or one under it                   | Its own key                         | Folder variable             |
-| --------------------------------------- | --------------------------------------------------- | ----------------------------------- | --------------------------- |
-| [WhatsApp](/servers/whatsapp/) bridge   | `whatsapp` (`whatsapp/prod`, `whatsapp/staging`)    | `WHATSAPP_STATE_ENCRYPTION_KEY`     | `WHATSAPP_STATE_PREFIX`     |
-| [Slack events](/servers/events/) ingest | `slack-events`                                      | `SLACK_EVENTS_STATE_ENCRYPTION_KEY` | `SLACK_EVENTS_STATE_PREFIX` |
-| [Messenger](/servers/messenger/) bridge | `messenger` (`messenger/prod`, `messenger/staging`) | `MESSENGER_STATE_ENCRYPTION_KEY`    | `MESSENGER_STATE_PREFIX`    |
+| Consumer                                                       | Folder: the root, or one under it                   | Its own key                         | Folder variable             |
+| -------------------------------------------------------------- | --------------------------------------------------- | ----------------------------------- | --------------------------- |
+| [WhatsApp](/servers/whatsapp/) bridge                          | `whatsapp` (`whatsapp/prod`, `whatsapp/staging`)    | `WHATSAPP_STATE_ENCRYPTION_KEY`     | `WHATSAPP_STATE_PREFIX`     |
+| [Slack events](/servers/events/) ingest                        | `slack-events`                                      | `SLACK_EVENTS_STATE_ENCRYPTION_KEY` | `SLACK_EVENTS_STATE_PREFIX` |
+| [Messenger](/servers/messenger/) bridge                        | `messenger` (`messenger/prod`, `messenger/staging`) | `MESSENGER_STATE_ENCRYPTION_KEY`    | `MESSENGER_STATE_PREFIX`    |
+| [Gmail events](/servers/events/#gmail-message_received) ingest | `gmail-events/<slug>`                               | `GMAIL_EVENTS_STATE_ENCRYPTION_KEY` | `GMAIL_EVENTS_STATE_PREFIX` |
 
 The code is one module, `src/state/store.ts`: the GCS client, the seal, the
 single-writer lease and the rules on this page. Each consumer is its own npm
@@ -49,13 +50,13 @@ Each consumer's **key** belongs in that consumer's own namespace,
 
 **A folder cannot leave its consumer's root.** The WhatsApp bridge refuses a
 prefix that is not `whatsapp` or `whatsapp/…`, the Messenger bridge one
-outside `messenger/`, and the Slack ingest one outside `slack-events/`. The check runs at boot and names the variable, so no
+outside `messenger/`, the Slack ingest one outside `slack-events/`, and a Gmail events ingest one outside `gmail-events/`. The check runs at boot and names the variable, so no
 configuration can point one server at another's objects.
 
 **Every consumer has its own key.** A WhatsApp key together with its state is
 the account: whoever holds both reads every chat and posts as it. The Slack
 ingest has no business holding that. Each consumer also writes its own four-byte
-magic at the front of every object (`WAS1`, `SLE1`), so an object of one does
+magic at the front of every object (`WAS1`, `SLE1`, `GME1`), so an object of one does
 not even parse as another's.
 
 Every object except a lease is AES-256-GCM, with the object's full name as

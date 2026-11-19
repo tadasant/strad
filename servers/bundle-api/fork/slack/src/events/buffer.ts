@@ -23,13 +23,14 @@
  * `evictedThrough` is the largest evicted sequence, which is exactly the test.
  */
 import type { MessagePostedData, StoredEvent } from './normalize.js';
+import { CURSOR_PREFIX, encodeCursor } from './webhook/cursor.js';
+
+export { encodeCursor };
 
 export const DEFAULT_MAX_EVENTS = 100;
 export const MAX_MAX_EVENTS = 1000;
 /** A hard cap on the buffer whatever its age, so one burst cannot grow the object without bound. */
 export const MAX_BUFFERED_EVENTS = 20_000;
-
-const CURSOR_PREFIX = 'v1.';
 
 export class InvalidEventArguments extends Error {
   constructor(message: string) {
@@ -113,10 +114,6 @@ export function matchesMessagePosted(d: MessagePostedData, a: MessagePostedArgs)
   if (a.top_level_only === true && d.thread_ts !== undefined && d.thread_ts !== d.ts) return false;
   if (!a.include_bot_authors && (d.bot_id !== undefined || d.user_id === undefined)) return false;
   return true;
-}
-
-export function encodeCursor(seq: number): string {
-  return `${CURSOR_PREFIX}${seq}`;
 }
 
 /** Null for a null/absent cursor ("from now"); throws for one this server did not mint. */

@@ -703,6 +703,21 @@ interface GmailModule {
    * mount's own slug — see `ownNameOnly`.
    */
   GMAIL_SENDER_NAME_ENV_NAME: string;
+  /**
+   * The `GMAIL_EVENTS_*` names a mount reads under its own slug only: the
+   * ones that switch its `message_received` ingest on and point it somewhere.
+   * See `ownNameOnly`.
+   */
+  GMAIL_EVENTS_OWN_ENV_NAMES: readonly string[];
+  /** The mount's events ingest, built once per mount; inert unless the mount's own key is set. */
+  createGmailEvents: (opts: { env: Record<string, string | undefined>; slug: string }) => GmailEventsIngestLike;
+}
+
+/** What this host needs of a gmail mount's events ingest (`images/bundle-google/src/events/ingest.ts`). */
+interface GmailEventsIngestLike {
+  readonly configured: boolean;
+  start(): Promise<void>;
+  close(): Promise<void>;
 }
 
 /**
@@ -967,6 +982,11 @@ function loadGmail(gmail: GmailModule, slug: string, perSlug: boolean): Mount {
   // included, reads it under its own slug — `GMAIL__…` for `/gmail` — and never
   // from the bare name, which is whichever sibling declared one.
   ownNameOnly(view, slug, gmail.GMAIL_SENDER_NAME_ENV_NAME);
+  // The events ingest's switch, folder and Pub/Sub names are this mount's too.
+  // From the bare name they would start an ingest on EVERY gmail mount in the
+  // bundle the moment one slug was configured, each watching its own mailbox
+  // into its own folder; the shared STRAD_STATE_GCS_* are read the usual way.
+  for (const name of gmail.GMAIL_EVENTS_OWN_ENV_NAMES) ownNameOnly(view, slug, name);
   const env = {
     ...view,
     // WHERE TO GO WHEN THE TOKEN DIES — same as google-sheets, same reason:
@@ -980,6 +1000,11 @@ function loadGmail(gmail: GmailModule, slug: string, perSlug: boolean): Mount {
   };
   // The tree owns what its credential IS, and which mode this environment is in.
   const missing = gmail.missingCredentials(env);
+  // ONE ingest per mount, for the life of the process: it holds a lease, a
+  // Pub/Sub pull and a buffer, where the server below is built per request.
+  // Inert (no GCS, no Gmail call, no event types) without the mount's key.
+  const events = gmail.createGmailEvents({ env, slug });
+  if (events.configured) void events.start().catch(() => {});
 
   return {
     slug,
@@ -992,8 +1017,10 @@ function loadGmail(gmail: GmailModule, slug: string, perSlug: boolean): Mount {
     // button that mints one.
     degraded: missingCredentialsDegraded(missing),
     register: async (s) => {
-      await gmail.createMCPServer({ version: VERSION, env }).registerHandlers(s);
+      await gmail.createMCPServer({ version: VERSION, env, events }).registerHandlers(s);
     },
+    // Flushes the event buffer and the webhook watermarks on SIGTERM.
+    close: () => events.close(),
   };
 }
 
