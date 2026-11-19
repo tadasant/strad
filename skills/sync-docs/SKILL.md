@@ -39,8 +39,8 @@ number, know which of these you mean and grep for the others:
 | The number | What it counts                                                                       | Where it's decided                                    |
 | ---------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------- |
 | **3**      | App Platform components                                                              | `renderAppSpec` output; `test/staging-config.test.ts` |
-| **27**     | dependency trees the bundle Dockerfile builds into `/app/trees`                      | `servers/bundle/Dockerfile`, `TreeName` in `trees.ts` |
-| **36**     | MCP servers mounted inside the bundle image                                          | `buildMounts()` in `servers/bundle/host/src/index.ts` |
+| **28**     | dependency trees the bundle Dockerfile builds into `/app/trees`                      | `servers/bundle/Dockerfile`, `TreeName` in `trees.ts` |
+| **37**     | MCP servers mounted inside the bundle image                                          | `buildMounts()` in `servers/bundle/host/src/index.ts` |
 | **45**     | `supplementary-image` _entries_ in the staging config (capability variants included) | `infra/strad.staging.yaml`                            |
 | **48**     | total server slugs in staging (45 + `echo` + `deepwiki` + `anki`)                    | `infra/strad.staging.yaml`                            |
 

@@ -260,6 +260,7 @@ not a confession.
 | `servers/nutrition-facts/**` — a tool, a pinned source, the matching or range rules, the FatSecret budget                            | `servers/nutrition-facts.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                 |
 | `servers/{airtable,flightaware,digitalocean}/**` — a tool, a tier, what a result may carry                                           | `servers/airtable.md`, `servers/flightaware.md`, `servers/digitalocean.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                   |
 | `servers/hetzner/**` — a tool, a tier, the blast-radius text, what a result may carry                                                | `servers/hetzner.md`, `limitations.md`, the `hetzner-pulse-ro` allow list in `infra/strad.staging.yaml`, and the counts in `servers/bundle/scripts/smoke.mjs`                        |
+| `servers/glitchtip/**` — a tool, the path guard, the https rule, the result cap                                                      | `servers/glitchtip.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                       |
 | `servers/grafana/**` — the pinned version, the read-only flags, the env allowlist                                                    | `servers/grafana.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                         |
 | `servers/victorialogs/**` — the pinned version, the env allowlist, the unconfigured placeholder                                      | `servers/victorialogs.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                    |
 | `servers/appsignal/**` — the vendored delta, the layer, the read-only GraphQL rule                                                   | `servers/appsignal.md`, `servers/appsignal/README.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                        |
@@ -308,8 +309,8 @@ numbers describe "how many servers," and they count different things:
 | The number | What it counts                                                                                     |
 | ---------- | -------------------------------------------------------------------------------------------------- |
 | **3**      | App Platform components: `core`, `bundle`, `bundle-zimmer-secrets`                                 |
-| **27**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
-| **36**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
+| **28**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
+| **37**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
 | **45**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included)         |
 | **48**     | total server slugs in staging (45 + `echo` builtin + `deepwiki` remote-http + `anki` local-tunnel) |
 
@@ -378,8 +379,8 @@ slop behind when you fix a stale fact.
   "did I typo a key" is answered here, by `scripts/check-config.ts`.
 - `src/deploy/appspec.ts` — turns the config into a DigitalOcean App Platform spec.
   The server list decides the container topology.
-- `servers/bundle/` — one image, 36 mounted MCP servers, one shared Chromium,
-  assembled from TWENTY-SEVEN independently-built dependency trees.
+- `servers/bundle/` — one image, 37 mounted MCP servers, one shared Chromium,
+  assembled from TWENTY-EIGHT independently-built dependency trees.
 - `servers/remote-filesystem/` — strad's own artifact store, behind the
   `remote-filesystem-tmp-public` slug. `is_sensitive` picks the KIND of link;
   GCS's 7-day V4 ceiling is why the 14-day default is signed with V2.
@@ -456,6 +457,13 @@ slop behind when you fix a stale fact.
   app per slug (upstream's runtime app selection would leak between slugs in one
   process), every call scoped to it, `custom_graphql_query` refused for a
   mutation, the key scrubbed from results. `HACKS.md` #154.
+- `servers/glitchtip/` — strad's own GlitchTip server: seven reads (the
+  organization, projects, teams, issues, one issue with its latest event,
+  events) over the Sentry-compatible `/api/0/`, and nothing that writes. One
+  slug is one GlitchTip — `GLITCHTIP_BASE_URL` plus a token, both required for
+  a per-slug instance. Written, not vendored: the AGPL-3.0
+  `@karsten684/glitchtip-mcp-server` is not something strad links.
+  `HACKS.md` #155.
 - `servers/image-tools/` — strad's own `image-diff` and `svg-tracer`, two
   mounts over one tree, replacing two npx packages that read the agent's disk.
   Inputs are URLs, fetched behind an SSRF guard at the connector (derived from

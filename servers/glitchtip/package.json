@@ -1,0 +1,14 @@
+{
+  "name": "glitchtip",
+  "version": "0.1.0",
+  "private": true,
+  "description": "strad's own GlitchTip MCP server — issues, events, projects, teams and the organization, read-only, over GlitchTip's Sentry-compatible API with one token per slug. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared",
+    "test": "npm run test --workspace shared"
+  }
+}
