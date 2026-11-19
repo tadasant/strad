@@ -5,6 +5,7 @@ import { parseConfig } from "../src/config/load.ts";
 import { assertNoAccessControlChange } from "../src/config/overlay.ts";
 import { ENV_NAME_SOURCE } from "../src/config/env-name.ts";
 import { SLUG } from "../src/config/schema.ts";
+import { probeToolSurfaces } from "../src/gateway/reachability.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import { refusalForTarget } from "../src/http/deposit.ts";
@@ -48,6 +49,7 @@ const NARROW_KEY = "narrow-slug-key-0123456789abcdef0123456789ab";
 const SHELL_KEY = "shell-slug-key-0123456789abcdef0123456789abc";
 const PAIRS_KEY = "pairs-slug-key-0123456789abcdef0123456789abc";
 const NARROW_PAIRS_KEY = "narrow-pairs-key-0123456789abcdef0123456789";
+const ELSEWHERE_KEY = "elsewhere-deposit-key-0123456789abcdef012345";
 
 const YAML = `
 version: 1
@@ -91,6 +93,13 @@ servers:
       into: [granola]
       paramsVariables:
         paramsy: [NARROW_PAIRED_KEY]
+  - slug: custody-elsewhere-mbp
+    kind: local-tunnel
+    url: https://custody-elsewhere-mbp.invalid/
+    entitlements: []
+    headers:
+      Authorization: "Bearer \${HOSTD_ELSEWHERE_KEY}"
+    deposit: {}
   - slug: shell-test-mbp
     kind: local-tunnel
     url: https://hostd.example.com/shell/mcp
@@ -139,6 +148,7 @@ const VALUE = "lin_api_FAKEVALUEnotARealToken0123456789abcdef";
 let server: Server;
 let baseUrl: string;
 let invalidations = 0;
+let registry: Registry;
 
 beforeAll(async () => {
   const keys = new EnvSecretProvider({
@@ -147,6 +157,7 @@ beforeAll(async () => {
     HOSTD_SHELL_KEY: SHELL_KEY,
     HOSTD_PAIRS_KEY: PAIRS_KEY,
     HOSTD_NARROW_PAIRS_KEY: NARROW_PAIRS_KEY,
+    HOSTD_ELSEWHERE_KEY: ELSEWHERE_KEY,
     // A name the gateway already resolves for every slug, e.g. from core's env.
     SHARED_API_KEY: "the-live-shared-one",
   });
@@ -162,14 +173,15 @@ beforeAll(async () => {
     STRAD_INTERNAL_TOKEN: "InternalTokenValueNeverShown",
     STRAD_BUNDLE_URL_BUNDLE_SECRETS: "http://bundle-secrets:8080",
   };
+  registry = await Registry.build({
+    config: CONFIG,
+    secrets: providers,
+    mode: "core",
+    env,
+  });
   const app = createApp({
     config: CONFIG,
-    registry: await Registry.build({
-      config: CONFIG,
-      secrets: providers,
-      mode: "core",
-      env,
-    }),
+    registry,
     tokenStore: tokenStoreFromConfig(CONFIG, env),
     mode: "core",
     env,
@@ -397,6 +409,46 @@ describe("who may deposit", () => {
       (await deposit("granola", "NARROW_TEST", { bearer: narrow })).status,
     ).toBe(201);
   });
+});
+
+/**
+ * Another organisation's strad receiving from strad-hostd's named destination
+ * (docs/servers/hostd-custody.md, "Another strad"): a deposit-only caller whose
+ * url never resolves and that no role can reach, so that strad holds a key that
+ * deposits and opens nothing on the machine. `HACKS.md` #152.
+ */
+describe("a deposit-only caller on another strad", () => {
+  it("takes the derived bearer of an entry whose url never resolves", async () => {
+    const res = await deposit("linear", "ELSEWHERE_TEST", {
+      bearer: depositToken(ELSEWHERE_KEY),
+    });
+    expect(res.status).toBe(201);
+    const path = serverParameterPath(
+      "test",
+      "linear",
+      "static",
+      "ELSEWHERE_TEST",
+    );
+    const [meta] = (await fake.store.list(path)).filter((p) => p.path === path);
+    expect(meta?.note).toBe("deposited by custody-elsewhere-mbp");
+    // Its raw key is not a bearer here either.
+    expect(
+      (await deposit("linear", "ELSEWHERE_RAW", { bearer: ELSEWHERE_KEY }))
+        .status,
+    ).toBe(401);
+  });
+
+  it("is probed as offline, which is not degraded", async () => {
+    const { snapshot } = await probeToolSurfaces({
+      registry,
+      timeoutMs: 15_000,
+    });
+    const surface = snapshot.surfaces.find(
+      (s) => s.slug === "custody-elsewhere-mbp",
+    );
+    expect(surface?.state).toBe("offline");
+    expect(snapshot.degraded).not.toContain("custody-elsewhere-mbp");
+  }, 30_000);
 });
 
 describe("deposit.paramsVariables: exact pairs on a params: true slug", () => {

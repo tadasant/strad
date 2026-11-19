@@ -46,7 +46,8 @@ export interface HandleView {
   created_at: string;
   expires_at?: string;
   ended_at?: string;
-  /** Where it went, for a deposited handle. */
+  /** Where it went, for a deposited handle: which strad, and which path. */
+  destination?: string;
   path?: string;
   version?: string;
   /** Why it ended, for a burned one. */
@@ -267,7 +268,12 @@ export class Vault {
   end(
     handle: string,
     state: HandleEnd,
-    extra: { path?: string; version?: string; reason?: string } = {},
+    extra: {
+      destination?: string;
+      path?: string;
+      version?: string;
+      reason?: string;
+    } = {},
   ): boolean {
     const h = this.held.get(handle);
     if (!h) return false;

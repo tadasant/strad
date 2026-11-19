@@ -183,27 +183,65 @@ const MessagesConfig = z
   })
   .default({});
 
+/** https, or http on loopback: where a deposit may be sent at all. */
+const DepositUrl = z
+  .string()
+  .url()
+  .refine((u) => {
+    const url = new URL(u);
+    return (
+      url.protocol === "https:" ||
+      (url.protocol === "http:" &&
+        ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname))
+    );
+  }, "a deposit URL must be https (or http on loopback)");
+
+/** A destination's name: what the `deposit` tool's `destination` argument says. */
+export const DESTINATION_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+
+/**
+ * One more strad deployment custody may deposit into, besides `stradUrl`.
+ *
+ * Its key is its OWN: a random string this file and that strad both hold, from
+ * which the deposit bearer is derived exactly as it is from the custody slug's
+ * key for the default destination. It opens no door on this machine — the
+ * schema refuses one equal to any server or client key here — so the strad that
+ * holds it can deposit, and cannot drive the Mac.
+ */
+const DestinationConfig = z
+  .object({
+    url: DepositUrl,
+    key: z.string().min(MIN_KEY_LENGTH),
+    /** Who runs it, for a tool description and a refusal, e.g. "PulseMCP's strad". */
+    title: z.string().min(1).max(80).optional(),
+  })
+  .strict();
+
 const CustodyConfig = z
   .object({
     /**
-     * The strad deployment `deposit` posts to, e.g. "https://strad.example.com".
-     * The deposit bearer is derived from THIS server's own key
-     * (`capabilities.custody.key`, the one strad holds for the custody slug),
-     * so nothing else needs configuring here. https only, but for loopback.
-     * Unset, capture works and every deposit says so.
+     * The DEFAULT strad deployment `deposit` posts to, e.g.
+     * "https://strad.example.com" — where a deposit goes when it names no
+     * destination. Its deposit bearer is derived from this server's own key
+     * (`capabilities.custody.key`, the one that strad holds for the custody
+     * slug), so nothing else needs configuring for it. https only, but for
+     * loopback. Unset, capture works and every default deposit says so.
      */
-    stradUrl: z
-      .string()
-      .url()
-      .refine((u) => {
-        const url = new URL(u);
-        return (
-          url.protocol === "https:" ||
-          (url.protocol === "http:" &&
-            ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname))
-        );
-      }, "stradUrl must be https (or http on loopback)")
-      .optional(),
+    stradUrl: DepositUrl.optional(),
+    /**
+     * The name the default destination also answers to, so a caller can say
+     * it out loud ("mine") rather than only by omission.
+     */
+    stradName: z.string().regex(DESTINATION_NAME).default("default"),
+    /**
+     * Further strad deployments, by name. The `deposit` tool takes one of these
+     * NAMES, never a URL, so a session cannot send a held secret anywhere this
+     * file does not list. `strad-hostd destination add <name> --url <url>`
+     * mints the key.
+     */
+    destinations: z
+      .record(z.string().regex(DESTINATION_NAME), DestinationConfig)
+      .default({}),
     /** Where Chrome saves downloads, for `capture_download`. Defaults to ~/Downloads. */
     downloadsDir: z.string().min(1).optional(),
     /** How long a captured secret is held before it is dropped undeposited. */
@@ -264,6 +302,41 @@ export const ConfigSchema = z
         path: ["consent", "grantMinutes"],
         message: "grantMinutes exceeds maxGrantMinutes",
       });
+    }
+    if (Object.hasOwn(cfg.custody.destinations, cfg.custody.stradName)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["custody", "destinations", cfg.custody.stradName],
+        message: `"${cfg.custody.stradName}" is custody.stradName, the default destination's name; a named destination may not reuse it`,
+      });
+    }
+    // A destination key is held by ANOTHER strad. If it were also a key to a
+    // server here, that strad could drive this machine with it.
+    const doorKeys = new Set<string>();
+    for (const id of CAPABILITY_IDS) {
+      const cap = cfg.capabilities[id];
+      if (cap.key) doorKeys.add(cap.key);
+      for (const k of Object.values(cap.clientKeys)) doorKeys.add(k);
+    }
+    const seen = new Map<string, string>();
+    for (const [name, d] of Object.entries(cfg.custody.destinations)) {
+      if (doorKeys.has(d.key)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["custody", "destinations", name, "key"],
+          message:
+            "a destination key must not be any server's or client's key on this machine: the strad holding it could open that server",
+        });
+      }
+      const twin = seen.get(d.key);
+      if (twin) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["custody", "destinations", name, "key"],
+          message: `the same key as destination "${twin}": each destination holds its own, so revoking one revokes nothing else`,
+        });
+      }
+      seen.set(d.key, name);
     }
     if (cfg.tunnel.enabled && !cfg.tunnel.configPath) {
       ctx.addIssue({
@@ -367,9 +440,10 @@ export function matchKey(
 
 /**
  * Re-read every server's keys from the config file into a LIVE config, so a
- * key minted while the daemon runs works without a restart. Only the keys
- * move: everything else a running daemon holds was validated at boot and is
- * wired into listeners and the tunnel.
+ * key minted while the daemon runs works without a restart. The keys move, and
+ * so do custody's deposit destinations, so that `destination remove` revokes
+ * one at once. Everything else a running daemon holds was validated at boot and
+ * is wired into listeners and the tunnel.
  */
 export function reloadKeys(live: Config, path = configPath()): void {
   const fresh = loadConfig(path);
@@ -377,6 +451,7 @@ export function reloadKeys(live: Config, path = configPath()): void {
     live.capabilities[id].key = fresh.capabilities[id].key;
     live.capabilities[id].clientKeys = fresh.capabilities[id].clientKeys;
   }
+  live.custody.destinations = fresh.custody.destinations;
 }
 
 /**
@@ -422,5 +497,45 @@ export function revokeClientKey(
   )?.[id];
   if (!cap?.clientKeys?.[client]) return false;
   delete cap.clientKeys[client];
+  return true;
+}
+
+/**
+ * Add a named deposit destination to a RAW config object, with a fresh key.
+ * Refuses a name already in use rather than rotating it: the strad on the other
+ * end would go on holding the old key, and every deposit there would 401.
+ */
+export function addDestination(
+  raw: Record<string, unknown>,
+  name: string,
+  url: string,
+  key: string,
+  title?: string,
+): void {
+  const custody = (raw.custody ??= {}) as {
+    destinations?: Record<string, unknown>;
+  };
+  const destinations = (custody.destinations ??= {});
+  if (Object.hasOwn(destinations, name))
+    throw new Error(
+      `destination "${name}" already exists; remove it first to replace its key`,
+    );
+  const entry = { url, key, ...(title ? { title } : {}) };
+  ConfigSchema.parse({
+    ...raw,
+    custody: { ...custody, destinations: { ...destinations, [name]: entry } },
+  });
+  destinations[name] = entry;
+}
+
+export function removeDestination(
+  raw: Record<string, unknown>,
+  name: string,
+): boolean {
+  const destinations = (
+    raw.custody as { destinations?: Record<string, unknown> } | undefined
+  )?.destinations;
+  if (!destinations || !Object.hasOwn(destinations, name)) return false;
+  delete destinations[name];
   return true;
 }

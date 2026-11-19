@@ -447,6 +447,7 @@ describe.skipIf(!chrome)(
       });
       expect(resultJson(res)).toEqual({
         deposited: true,
+        destination: "default",
         path: "/strad/test/mcp/linear/static/LINEAR_API_KEY",
         version: "v1",
       });

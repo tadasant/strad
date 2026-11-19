@@ -7859,3 +7859,40 @@ keeps addresses out of the metrics: only a count leaves.
 
 **Undo.** Delete `SourceNetworks` and its gauge; the `strad.principal` label on
 the counters does not depend on it.
+
+## 152. Another strad accepts custody deposits through a `local-tunnel` entry that never connects
+
+**What.** strad-hostd's custody server can deposit into strads other than its
+own, named in `custody.destinations` on the Mac (`hostd/src/custody/destinations.ts`),
+each with its own deposit key. The receiving strad's route only accepts a bearer
+derived from an enabled `local-tunnel` entry that declares `deposit:`. So that
+strad's config carries a `local-tunnel` whose `url` is an `.invalid` host
+(RFC 2606, never resolves), with `entitlements: []` and only
+`Authorization: Bearer ${HOSTD_CUSTODY_DEPOSIT_KEY}`.
+`docs/servers/hostd-custody` ("Another strad") has the entry.
+
+**Why.** The owner's ask: PulseMCP's strad (strad.pulsemcp.com) needs
+credentials onboarded autonomously, through the owner's own Zimmer, without
+giving PulseMCP's agents any access to the owner's Mac. A real tunnel URL would need the custody slug key
+or Cloudflare Access headers on that strad, which open the Mac. A separate key
+on a real URL would read as a refusing host, which counts as degraded. An
+unresolvable name reads as `offline`, which does not. The alternative, a
+tunnel-less deposit caller in core's schema, touches the route's
+authentication, the spec renderer and the preflight, for one caller.
+
+**What it costs.**
+
+- The receiving strad shows a slug that is always `offline`. Nobody holds a
+  role for it, so it is never listed or called, but it appears in that strad's
+  console roster and its `/healthz` surfaces.
+- Its key is placed by hand in two places: printed once by
+  `strad-hostd destination add` on the Mac, and pasted into that strad's console.
+  A deposit cannot seed it, because the route refuses a `local-tunnel` slug.
+- Like the default destination's key, it sits in `~/.strad-hostd/config.json`,
+  which a shell grant can read while custody holds nothing.
+- Verifying a deposit there takes that strad's `secrets` server or its
+  console. This deployment's `secrets` server reads only this store.
+
+**Undo.** A deposit-only caller kind in `src/config/schema.ts` that core
+accepts without a `url:`. Then the receiving strad's entry becomes that, and
+this entry goes.

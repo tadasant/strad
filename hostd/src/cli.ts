@@ -18,12 +18,14 @@ import {
 } from "./capabilities.js";
 import {
   addClientKey,
+  addDestination,
   configPath,
   ConfigSchema,
   displayName,
   enableCapability,
   ensureStateDir,
   loadConfig,
+  removeDestination,
   revokeClientKey,
 } from "./config.js";
 import { platformNotifier } from "./consent/notifier.js";
@@ -59,6 +61,10 @@ const USAGE = `strad-hostd — MCP servers that operate the machine they run on.
   strad-hostd key add <server> <client> | key revoke <server> <client>
       Mint or drop a client key for one server: a bearer key of its own for a
       local MCP client (one Claude Code session), named on the dialog.
+  strad-hostd destination add <name> --url <https://strad…> [--title "…"]
+  strad-hostd destination remove <name>
+      Let custody deposit into one more strad, by name, with a fresh deposit
+      key of its own (printed once, and by \`keys\`) for that strad to hold.
   strad-hostd extension
       How to install the Chrome extension that lets the browser server drive
       the real profile unattended: the unpacked directory and the pairing
@@ -295,6 +301,68 @@ async function main(argv: string[]): Promise<number> {
         for (const [client, key] of Object.entries(c.clientKeys))
           console.log(`${displayName(config, id)} (${client})\t${key}`);
       }
+      for (const [name, d] of Object.entries(config.custody.destinations))
+        console.log(
+          `custody deposit → ${name} (${new URL(d.url).host})\t${d.key}`,
+        );
+      return 0;
+    }
+
+    case "destination": {
+      const [sub, name] = args;
+      if ((sub !== "add" && sub !== "remove") || !name) {
+        console.error(
+          'usage: strad-hostd destination add <name> --url <https://strad…> [--title "…"] | destination remove <name>',
+        );
+        return 1;
+      }
+      const path = configPath();
+      if (!existsSync(path)) {
+        console.error(
+          `${path} does not exist; run \`strad-hostd init\` first.`,
+        );
+        return 1;
+      }
+      const raw = JSON.parse(readFileSync(path, "utf8")) as Record<
+        string,
+        unknown
+      >;
+      if (sub === "remove") {
+        if (!removeDestination(raw, name)) {
+          console.log(`custody has no destination named "${name}".`);
+          return 1;
+        }
+        writeFileSync(path, JSON.stringify(raw, null, 2) + "\n", {
+          mode: 0o600,
+        });
+        // A running daemon stops depositing there now; a stopped one never starts.
+        const live = await control("/reload-keys").then(
+          (r) => r.ok,
+          () => false,
+        );
+        console.log(
+          `removed destination "${name}"${live ? "; the running daemon no longer deposits there" : ""}. Delete its key from that strad too.`,
+        );
+        return 0;
+      }
+      const url = flag(args, "--url");
+      if (!url) {
+        console.error("destination add needs --url <https://strad…>");
+        return 1;
+      }
+      const key = randomBytes(32).toString("base64url");
+      try {
+        addDestination(raw, name, url, key, flag(args, "--title"));
+      } catch (err) {
+        console.error((err as Error).message);
+        return 1;
+      }
+      writeFileSync(path, JSON.stringify(raw, null, 2) + "\n", { mode: 0o600 });
+      console.log(
+        `custody deposit → ${name} (${new URL(url).host})\t${key}\n\n` +
+          `Store this key in THAT strad as the custody deposit caller's key (docs: servers/hostd-custody, "Another strad"), then restart the daemon.\n` +
+          "It opens nothing on this machine; it only lets this machine deposit there.",
+      );
       return 0;
     }
 
