@@ -149,8 +149,15 @@ const iso = (ms: unknown): string | undefined =>
 // ---- readonly ---------------------------------------------------------------
 
 interface StatusPayload {
-  accounts: Array<{ id: string; name: string; state: string; state_error?: string; state_message?: string }> | null;
-  login_in_progress: { flow: string; step_id: string } | null;
+  accounts: Array<{
+    id: string;
+    name: string;
+    state: string;
+    state_error?: string;
+    state_message?: string;
+    action?: string;
+  }> | null;
+  login_in_progress: { flow: string; step_id: string; working?: boolean } | null;
   cursor: number;
   uptime_seconds: number;
 }
@@ -161,8 +168,10 @@ function statusTool(bridge: BridgeFactory): ToolDefinition {
     description:
       "Is the Messenger bridge logged in and connected? Returns the account (id, name), its " +
       "connection state (`CONNECTED` is the only healthy one; `BAD_CREDENTIALS` means Meta ended " +
-      "the session and a human must log in again with messenger_login_start), any login in " +
-      "progress, the newest message cursor, and when state last reached durable storage.\n\n" +
+      "the session — a checkpoint, a password change — and a human must log in again with " +
+      "messenger_login_start; the bridge does not retry it, and `action` says what to do), any " +
+      "login in progress (`working: true` while Meta is still processing an answer), the newest " +
+      "message cursor, and when state last reached durable storage.\n\n" +
       UNOFFICIAL,
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: true },
@@ -171,18 +180,27 @@ function statusTool(bridge: BridgeFactory): ToolDefinition {
         const b = await bridge();
         const status = await (await b.client()).request<StatusPayload>("GET", "/status");
         const accounts = status.accounts ?? [];
+        const progress = status.login_in_progress;
+        const stopped = accounts.find((a) => a.action);
+        const next_step = progress?.working
+          ? "Meta is still processing the last login answer. Call messenger_login_submit with no input for the result; do not type the value again."
+          : progress
+            ? "A login is in progress: continue it with messenger_login_submit, or abandon it with messenger_login_cancel."
+            : accounts.length === 0
+              ? "Not logged in. A human logs in with messenger_login_start (admin slug)."
+              : stopped && !accounts.some((a) => a.state === "CONNECTED")
+                ? stopped.action
+                : undefined;
         return ok({
           logged_in: accounts.length > 0,
           connected: accounts.some((a) => a.state === "CONNECTED"),
           accounts,
-          login_in_progress: status.login_in_progress
-            ? { flow: status.login_in_progress.flow, step_id: status.login_in_progress.step_id }
+          login_in_progress: progress
+            ? { flow: progress.flow, step_id: progress.step_id, ...(progress.working ? { working: true } : {}) }
             : null,
           cursor: status.cursor,
           last_saved_at: iso(b.lastSavedAt) ?? null,
-          ...(accounts.length === 0
-            ? { next_step: "Not logged in. A human logs in with messenger_login_start (admin slug)." }
-            : {}),
+          ...(next_step ? { next_step } : {}),
         });
       }),
   };
@@ -345,16 +363,24 @@ interface StepPayload {
   images?: Array<{ mime_type: string; base64: string }>;
   account?: { id: string; name: string };
   unsupported?: string;
+  working?: boolean;
 }
 
 const NEXT: Record<string, string> = {
-  user_input: "Call messenger_login_submit with `input` holding each field's value by its `id`.",
+  user_input:
+    "Call messenger_login_submit with `input` holding each field's value by its `id`. To leave an " +
+    'optional field empty (skipping the PIN), name it with an empty value: {"input":{"pin":""}}. ' +
+    "A call with no input sends nothing; it shows this step again.",
   cookies:
     "Sign in at `cookies_url` in a browser, copy each named cookie's value, and call " +
     "messenger_login_submit with `input` mapping cookie name to value.",
   display_and_wait:
     "Do what `instructions` says (usually: approve the login on a phone already signed in to " +
-    "Facebook), then call messenger_login_submit with no input; it waits up to two minutes.",
+    "Facebook), then call messenger_login_submit with no input; each call waits a little and " +
+    "returns, so call it again until the step moves.",
+  working:
+    "Meta is still processing the answer, which was sent once and will not be resent. Call " +
+    "messenger_login_submit with NO input to get the result; do not type the value again.",
   complete: "Logged in. The bridge is connecting and backfilling recent chats.",
 };
 
@@ -395,9 +421,11 @@ function loginStartTool(bridge: BridgeFactory): ToolDefinition {
       "phone and password, then whatever Meta asks (a code, an approval on another device) — " +
       "and register as a device of their own; \"cookies\" adopts a browser's facebook.com " +
       "session instead. After the account step, Meta may ask for the 6-digit secure-storage " +
-      "PIN that restores end-to-end encrypted history; leave it empty to skip. Continue each " +
-      "step with messenger_login_submit. Refused while an account is already connected " +
-      "(messenger_logout first). Starting again abandons a login in progress.\n\n" +
+      'PIN that restores end-to-end encrypted history; submit {"input":{"pin":""}} to skip. ' +
+      "Continue each step with messenger_login_submit. Refused while an account is connected " +
+      "(messenger_logout first); an account Meta has ended (`BAD_CREDENTIALS` in " +
+      "messenger_status) does not block it — logging in to the same account replaces it. " +
+      "Starting again abandons a login in progress.\n\n" +
       CREDENTIAL_WARNING +
       "\n\n" +
       UNOFFICIAL,
@@ -427,6 +455,12 @@ function loginSubmitTool(bridge: BridgeFactory): ToolDefinition {
       "(or, for a cookies step, each cookie's name) to its value; omit it for a step of type " +
       '`display_and_wait`. A step of type "complete" means logged in, and `saved: true` that ' +
       "the login is already in durable storage. A failed step ends the login: start again.\n\n" +
+      "Some steps take Meta longer than a call may wait (restoring encrypted history can take a " +
+      'minute). Then this returns type "working": the answer was sent ONCE and is still being ' +
+      "processed. Call this again with NO input to get the result. A call with no input never " +
+      "sends anything to Meta, and an answer sent while one is still working is refused rather " +
+      "than forwarded, so a PIN is never submitted twice by a retry. To submit an empty value " +
+      '(skipping the PIN), name the field: {"input":{"pin":""}}.\n\n' +
       CREDENTIAL_WARNING,
     inputSchema: {
       type: "object",

@@ -4655,6 +4655,14 @@ run headless in a separate AGPL-3.0 process. What that costs:
   patched mautrix-meta (below) fixes; a completed app login is still untested.
 - **Encrypted history before login needs the PIN.** Without the 6-digit
   secure-storage PIN at login, encrypted chats start at the moment of login.
+- **A checkpoint means a new login.** When Meta stops the session (a checkpoint,
+  a forced password change), the bridge does not reconnect it on its own, and
+  `messenger_status` says to log in again. Every app login looks like a new
+  phone to Meta, from a datacenter IP.
+- **A slow login step answers `working`.** The PIN step can outlast the
+  console's minute-long ingress timeout, so a step is answered in the
+  background and a call returns after 25 seconds; a submit with no input picks
+  up the result and never resends.
 - **A crash loses up to a minute of encryption state.** A deploy does not: the
   new container waits for the old one's final snapshot, and tool calls wait
   with it, for up to five minutes.

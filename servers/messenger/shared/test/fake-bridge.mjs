@@ -30,6 +30,9 @@ const persist = () => writeFileSync(dbPath, JSON.stringify(state));
 persist();
 
 let login = null;
+// _test/slow_pin: the next PIN answer "takes longer than the reply budget", the
+// way the real one waits a minute; the bridge answers working until it lands.
+let slowPin = false;
 const emit = (event) => console.log(JSON.stringify(event));
 
 const step = {
@@ -81,7 +84,11 @@ const server = createServer(async (req, res) => {
     case "GET /status":
       return json(res, 200, {
         accounts: state.account ? [state.account] : null,
-        login_in_progress: login ? { flow: login.flow, ...step[login.at] } : null,
+        login_in_progress: login
+          ? login.working
+            ? { flow: login.flow, type: "working", step_id: "fi.mau.meta.history_pin", working: true }
+            : { flow: login.flow, ...step[login.at] }
+          : null,
         cursor: state.seq,
         uptime_seconds: 1,
       });
@@ -121,6 +128,23 @@ const server = createServer(async (req, res) => {
     case "POST /login/submit": {
       const { input } = await body(req);
       if (!login) return json(res, 409, { error: "no login is in progress: call messenger_login_start first" });
+      const empty = !input || Object.keys(input).length === 0;
+      if (login.working) {
+        if (!empty) return json(res, 409, { error: "the previous answer is still with Meta and was NOT sent again: call messenger_login_submit with no input (or messenger_status) to get its result" });
+        login.polls = (login.polls ?? 0) + 1;
+        if (login.polls < 2) return json(res, 200, { flow: login.flow, type: "working", step_id: "fi.mau.meta.history_pin", instructions: "Meta is still processing.", working: true });
+        return json(res, 200, complete(login.flow));
+      }
+      if (empty && step[login.at].type !== "display_and_wait") return json(res, 200, { flow: login.flow, ...step[login.at] });
+      if (login.at === "pin" && state.account?.state === "BAD_CREDENTIALS") {
+        login = null;
+        return json(res, 422, { error: "this login has ended; call messenger_login_start to begin again: Meta has stopped this account's session (fb-checkpoint-required). The PIN was NOT sent." });
+      }
+      if (login.at === "pin" && slowPin && input.pin) {
+        slowPin = false;
+        login.working = true;
+        return json(res, 200, { flow: login.flow, type: "working", step_id: "fi.mau.meta.history_pin", instructions: "Meta is still processing.", working: true });
+      }
       if (login.at === "creds") {
         if (input.password !== "correct horse") {
           login = null;
@@ -156,6 +180,17 @@ const server = createServer(async (req, res) => {
       persist();
       return json(res, 200, { seq: state.seq });
     }
+    case "POST /_test/slow_pin":
+      slowPin = true;
+      return json(res, 200, {});
+    case "POST /_test/checkpoint":
+      state.account = {
+        id: "100001", name: "Test Owner", state: "BAD_CREDENTIALS", state_error: "fb-checkpoint-required",
+        state_message: "Checkpoint required, please check the Facebook website to continue",
+        action: "Meta has ended this login; the bridge will not reconnect it. Sign in at facebook.com in a browser and do what it asks. If that changes the password, the bridge's session is gone: call messenger_login_start again with the new password.",
+      };
+      persist();
+      return json(res, 200, {});
     case "POST /_test/crash":
       json(res, 200, {});
       return setTimeout(() => process.exit(3), 10);

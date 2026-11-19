@@ -63,14 +63,54 @@ through the admin slug, from strad's console playground, and the login is made
    Meta then asks for whatever it asks a new phone for: a code it sent, an
    approval on a device already signed in, a choice of method. Each answer is
    another `messenger_login_submit`. A step of type `display_and_wait` needs no
-   input — approve on the phone, then submit with nothing. An authenticator
-   app's code is `{"input": {"totp_code": "…"}}`.
+   input — approve on the phone, then submit with nothing, and again until the
+   step moves. An authenticator app's code is `{"input": {"totp_code": "…"}}`.
 3. If the account has encrypted-chat backup, the next step asks for the 6-digit
    **secure-storage PIN**. Entering it restores end-to-end encrypted history
-   from Meta's backup. Leaving it empty skips that, and encrypted chats start
-   at the moment of login.
+   from Meta's backup. Skipping it — `{"input": {"pin": ""}}`, with the field
+   named — means encrypted chats start at the moment of login.
 4. A step of type `complete` means logged in, and `saved: true` that the login
    has already reached the state bucket.
+
+### A step that takes longer than a call
+
+The console sits behind an ingress that gives up on a request at about a
+minute, and the PIN step can take that long on its own: mautrix-meta waits up to
+a minute for the encrypted connection before it asks Meta anything. So the
+bridge sends an answer to Meta in the background, detached from the request,
+and a call returns after 25 seconds if Meta has not finished. It returns a step
+of type `working`, and `messenger_status` shows `working: true` on the login in
+progress.
+
+The answer was sent once. Call `messenger_login_submit` with **no input** to
+get its result. A call with no input never sends anything to Meta: on an
+input step it shows the step again, and while an answer is working it waits for
+that answer. An answer typed while another is still working is refused with
+"was NOT sent again" rather than forwarded. Meta counts wrong PIN attempts, and
+a retry can never spend one.
+
+### When Meta stops the account
+
+Meta can end a login on its side: a checkpoint ("check the Facebook website to
+continue"), a forced password change, a revoked session. `messenger_status` then
+shows the account as `BAD_CREDENTIALS`, with `state_error` (for a checkpoint,
+`fb-checkpoint-required`) and an `action` saying what to do, and `next_step`
+repeats it. The bridge does not reconnect such a login on its own. A second
+attempt from a datacenter IP against an account Meta has just flagged is how a
+second checkpoint is earned. Only a restart retries it, once.
+
+Clear whatever Meta asks for on facebook.com in a browser, then log in again
+with `messenger_login_start`. A stopped account does not block that, and logging
+in to the same account replaces it in place. If the checkpoint changed the
+password, the old session is gone for good and the new password is the one to
+use.
+
+If the account is stopped while a login is at the PIN step, the PIN is not
+sent: the encrypted connection it needs never opens. The submit ends the login
+with an error that says the PIN was not sent and what to do, so no stranded
+PIN step is left behind.
+
+### Failed steps
 
 A step that fails ends the login, and the error says so. Nothing is left half
 done: the next call is a fresh `messenger_login_start`, from the password step.
@@ -177,7 +217,10 @@ DigitalOcean IP. Meta is more suspicious of logins from datacenter ranges, and
 may answer with a checkpoint (a CAPTCHA, a phone check, a forced logout). The
 app-style login helps — it registers a device the way a phone does, rather than
 replaying a browser's cookies from somewhere else — but it does not remove the
-risk. If checkpoints become routine, set `MESSENGER_PROXY` to a residential
+risk. Each app login is also a brand-new phone to Meta: mautrix-meta mints a
+fresh device id, family device id and attestation key for every attempt, and
+sends no `machine_id`, so retrying a login does not look like the same phone
+trying again. If checkpoints become routine, set `MESSENGER_PROXY` to a residential
 egress. The alternative is to run the same Go program on the owner's Mac beside
 [strad-hostd](/servers/hostd/), which only works while the Mac is awake.
 

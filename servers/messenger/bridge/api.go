@@ -104,16 +104,24 @@ type accountStatus struct {
 	State       string `json:"state"`
 	StateError  string `json:"state_error,omitempty"`
 	StateReason string `json:"state_message,omitempty"`
+	// Action: what a human does about a login Meta has ended. The bridge does
+	// not retry one on its own — reconnecting to a checkpointed account from a
+	// datacenter is how a second checkpoint is earned.
+	Action string `json:"action,omitempty"`
 }
 
 func (a *API) status(w http.ResponseWriter, r *http.Request) {
 	var accounts []accountStatus
 	for _, ul := range a.user.GetUserLogins() {
 		prev := ul.BridgeState.GetPrev()
-		accounts = append(accounts, accountStatus{
+		acct := accountStatus{
 			ID: string(ul.ID), Name: ul.RemoteName,
 			State: string(prev.StateEvent), StateError: string(prev.Error), StateReason: prev.Message,
-		})
+		}
+		if deadState(prev.StateEvent) {
+			acct.Action = "Meta has ended this login; the bridge will not reconnect it. " + stoppedAdvice(prev)
+		}
+		accounts = append(accounts, acct)
 	}
 	maxSeq, _ := a.rec.MaxSeq(r.Context())
 	writeJSON(w, map[string]any{
@@ -472,7 +480,8 @@ func (a *API) loginSubmit(w http.ResponseWriter, r *http.Request) {
 
 func loginErrCode(err error) int {
 	switch {
-	case errors.Is(err, ErrNoLoginInProgress), errors.Is(err, ErrAlreadyConnected), errors.Is(err, ErrLoginCancelled):
+	case errors.Is(err, ErrNoLoginInProgress), errors.Is(err, ErrAlreadyConnected), errors.Is(err, ErrLoginCancelled),
+		errors.Is(err, ErrStepInFlight):
 		return http.StatusConflict
 	case errors.Is(err, ErrUnknownFlow):
 		return http.StatusBadRequest

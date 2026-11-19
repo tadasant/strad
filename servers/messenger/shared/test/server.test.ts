@@ -152,6 +152,53 @@ describe("login", () => {
     expect(again.content[0]!.text).toContain("messenger_logout");
   });
 
+  it("answers a long PIN step with working, refuses a resend, and hands over the result to a no-input poll", async () => {
+    const { call, created } = await connect();
+    await call("messenger_login_start", { flow: "android" });
+    await call("messenger_login_submit", { input: { username: "owner@example.com", password: "correct horse" } });
+    await call("messenger_login_submit", {});
+    await (await created.bridge()!.client()).request("POST", "/_test/slow_pin");
+
+    const working = await call("messenger_login_submit", { input: { pin: "123456" } });
+    expect(working.isError).toBeFalsy();
+    expect(working.structuredContent).toMatchObject({ type: "working", working: true, step_id: "fi.mau.meta.history_pin" });
+    expect(working.structuredContent!.next).toContain("NO input");
+    expect(JSON.stringify(working)).not.toContain("123456");
+
+    const status = await call("messenger_status");
+    expect(status.structuredContent).toMatchObject({ login_in_progress: { step_id: "fi.mau.meta.history_pin", working: true } });
+    expect(status.structuredContent!.next_step).toContain("do not type the value again");
+
+    const resent = await call("messenger_login_submit", { input: { pin: "123456" } });
+    expect(resent.isError).toBe(true);
+    expect(resent.content[0]!.text).toContain("NOT sent again");
+
+    expect((await call("messenger_login_submit", {})).structuredContent).toMatchObject({ type: "working" });
+    const done = await call("messenger_login_submit", {});
+    expect(done.structuredContent).toMatchObject({ type: "complete", saved: true });
+  });
+
+  it("says plainly that a stopped account needs a new login, and lets one start", async () => {
+    const { call, created } = await connect();
+    await logIn(call);
+    await (await created.bridge()!.client()).request("POST", "/_test/checkpoint");
+    const status = await call("messenger_status");
+    expect(status.structuredContent).toMatchObject({ logged_in: true, connected: false, login_in_progress: null });
+    expect(status.structuredContent!.next_step).toContain("messenger_login_start");
+    expect(status.structuredContent!.next_step).toContain("new password");
+
+    const fresh = await call("messenger_login_start", { flow: "android" });
+    expect(fresh.isError).toBeFalsy();
+    expect(fresh.structuredContent).toMatchObject({ step_id: "fi.mau.meta.messengerlite.email_password" });
+    await call("messenger_login_submit", { input: { username: "owner@example.com", password: "correct horse" } });
+    await call("messenger_login_submit", {});
+    // Still checkpointed at the PIN step: the PIN is refused before it is sent.
+    const pin = await call("messenger_login_submit", { input: { pin: "123456" } });
+    expect(pin.isError).toBe(true);
+    expect(pin.content[0]!.text).toContain("NOT sent");
+    expect((await call("messenger_status")).structuredContent!.login_in_progress).toBeNull();
+  });
+
   it("rejects malformed input before it reaches the bridge", async () => {
     const { call } = await connect();
     expect((await call("messenger_login_submit", { input: { password: 5 } })).content[0]!.text).toContain("must be a string");
