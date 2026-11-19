@@ -175,7 +175,7 @@ function statusTool(bridge: BridgeFactory): ToolDefinition {
       "message cursor, when state last reached durable storage, and `device_identity`: the one " +
       "phone each phone-app flow presents on every login (`origin` `live_login` = adopted from a " +
       "login Meta already accepted, `generated` = minted here; `machine_id` = Meta has issued it " +
-      "one, which every login now sends). It never carries the identifiers themselves.\n\n" +
+      "one, which every login sends). It never carries the identifiers themselves.\n\n" +
       UNOFFICIAL,
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: true },

@@ -130,7 +130,8 @@ database, so it survives deploys in the sealed snapshot, and every
   id, family device id and `machine_id` as the stored phone. The next login is
   then the phone Meta already accepted. The login itself is only read; nobody
   is logged out. The attestation key was never kept by a login, so an adopted
-  phone gets one, once, and keeps it.
+  phone gets one, once, and keeps it: its next login is a known phone signing
+  with a new key, which happens once.
 - **Otherwise generated once.** With no login to adopt from, the first login
   start mints the phone and every later one reuses it. After that login
   completes, the `machine_id` Meta issues is recorded and sent from then on, as

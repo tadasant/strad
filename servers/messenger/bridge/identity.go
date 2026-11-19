@@ -96,8 +96,24 @@ func (d *DeviceIdentities) For(ctx context.Context, platform types.Platform) (*t
 		d.log.Warn().Err(err).Msg("device identity: could not read existing logins")
 	}
 	id, _, err := d.load(ctx, platform)
-	if err != nil || id != nil {
-		return id, err
+	if err != nil {
+		return nil, err
+	}
+	if id != nil {
+		if _, perr := x509.ParsePKCS8PrivateKey(id.AttestationKey); perr != nil {
+			// Unreadable: replace the key, keep the device. Otherwise every
+			// login would fail until a logout wiped the database.
+			fresh, gerr := newIdentity(id.DeviceID, id.FamilyDeviceID, id.MachineID)
+			if gerr != nil {
+				return nil, gerr
+			}
+			id.AttestationKey = fresh.AttestationKey
+			if err = d.update(ctx, platform, id); err != nil {
+				return nil, err
+			}
+			d.log.Warn().Str("platform", platform.String()).Msg("device identity: unreadable attestation key replaced")
+		}
+		return id, nil
 	}
 	id, err = newIdentity(uuid.New(), uuid.New(), "")
 	if err != nil {
@@ -159,7 +175,8 @@ func (d *DeviceIdentities) syncLocked(ctx context.Context) error {
 
 // liveSessions reads the native session of every login bridgev2 holds, in
 // whatever state. A login Meta has stopped still names the device Meta last
-// saw, which is the one to keep presenting.
+// saw, which is the one to keep presenting — even if Meta flagged it, a new
+// phone from the same IP is not the better look.
 func (d *DeviceIdentities) liveSessions(ctx context.Context) ([]*types.NativeSession, error) {
 	rows, err := d.db.Query(ctx, `SELECT metadata FROM user_login ORDER BY id`)
 	if err != nil {
@@ -262,7 +279,7 @@ type IdentityView struct {
 	// "generated".
 	Origin string `json:"origin"`
 	// MachineID: Meta has issued this device a machine id, which every login
-	// now sends.
+	// sends.
 	MachineID bool   `json:"machine_id"`
 	Since     string `json:"since"`
 }
