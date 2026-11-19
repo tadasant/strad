@@ -4728,3 +4728,20 @@ mailbox receives mail, or a poll whose cursor does not move. The bundle's
 stderr says why, prefixed `[gmail-events <slug>]`.
 
 See `HACKS.md` #150.
+
+### 151. Per-token source-network counts can be spoofed
+
+[`strad.mcp.source_networks`](/operate/telemetry/#stradprincipal--whose-request-was-it)
+counts how many networks each token called `/mcp` from in the last hour. What
+that costs:
+
+- **The address is `X-Forwarded-For`'s first entry**, which the client writes.
+  A careless thief using a stolen token from a second network shows up. A
+  careful one can make every request look like it came from one place.
+- **Per core instance.** With more than one, each count is a lower bound.
+- **One hour, and a restart resets it.**
+
+The `strad.principal` label on the request and tool-call counters does not
+depend on any of this.
+
+See `HACKS.md` #151.

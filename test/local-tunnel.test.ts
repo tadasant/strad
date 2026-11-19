@@ -669,6 +669,7 @@ servers:
       mode: "core",
       selected,
       principalId: "test",
+      principalAttr: "test",
       log: () => {},
       explicit: { onUnlistable: () => {} },
     });
@@ -1110,6 +1111,7 @@ servers:
       mode: "core",
       selected: ["anki"],
       principalId: "test",
+      principalAttr: "test",
       log: () => {},
       explicit: { onUnlistable: () => {} },
     });
@@ -1431,6 +1433,7 @@ servers:
         mode: "core",
         selected: ["anki"],
         principalId: "test",
+        principalAttr: "test",
         log: () => {},
       });
       const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();

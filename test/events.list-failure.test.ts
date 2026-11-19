@@ -143,6 +143,7 @@ describe("mcp.events_list_failed", () => {
       mode: "core",
       selected: ["feed"],
       principalId: "test",
+      principalAttr: "test",
       log: event,
       events: { advertise: true },
     });

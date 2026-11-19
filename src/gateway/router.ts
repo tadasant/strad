@@ -20,8 +20,12 @@ import type { StradConfig } from "../config/schema.ts";
 import {
   elapsedSeconds,
   event,
+  INTERNAL,
   instruments,
+  principalAttr,
+  sourceNetworks,
   tracer,
+  UNAUTHENTICATED,
 } from "../telemetry/index.ts";
 import {
   entitledServers,
@@ -171,6 +175,9 @@ export function createMcpHandler(opts: McpHandlerOptions) {
     // that hangs up mid-stream, and a permanently-climbing concurrency number is
     // worse than none.
     let outcome = "ok";
+    // Who, as a bounded label: `unauthenticated` until `serve` has verified a
+    // credential, and then the verified principal. See src/telemetry/principal.ts.
+    let principal = UNAUTHENTICATED;
     res.on("close", () => {
       inst.inFlight.add(-1, modeAttrs);
       const status = res.statusCode;
@@ -179,7 +186,9 @@ export function createMcpHandler(opts: McpHandlerOptions) {
         outcome,
         "http.response.status_code": status,
       };
-      inst.requests.add(1, attrs);
+      // On the counter and NOT on the duration histogram: a histogram is a
+      // series per bucket, and "whose requests are slow" is the span's question.
+      inst.requests.add(1, { ...attrs, "strad.principal": principal });
       inst.requestDuration.record(elapsedSeconds(startedAt), attrs);
       span.setAttribute("http.response.status_code", status);
       if (status >= 500) span.setStatus({ code: SpanStatusCode.ERROR });
@@ -188,7 +197,13 @@ export function createMcpHandler(opts: McpHandlerOptions) {
 
     try {
       await context.with(trace.setSpan(context.active(), span), () =>
-        serve(req, res, span, (o) => (outcome = o)),
+        serve(
+          req,
+          res,
+          span,
+          (o) => (outcome = o),
+          (p) => (principal = p),
+        ),
       );
     } catch (err) {
       // The ANSWER to a failure here is the route guard's — this handler is
@@ -218,6 +233,7 @@ export function createMcpHandler(opts: McpHandlerOptions) {
     res: Response,
     span: import("@opentelemetry/api").Span,
     setOutcome: (outcome: string) => void,
+    setPrincipalAttr: (principal: string) => void,
   ): Promise<void> {
     const inst = instruments();
     let principal: Principal;
@@ -272,6 +288,15 @@ export function createMcpHandler(opts: McpHandlerOptions) {
     }
 
     span.setAttribute("mcp.principal.kind", principal.kind);
+
+    // The bounded caller label for every metric this request records. A
+    // bundle's only caller is core, so its label says so rather than naming
+    // the internal token's placeholder principal.
+    const caller = opts.mode === "bundle" ? INTERNAL : principalAttr(principal);
+    setPrincipalAttr(caller);
+    // Where it came from, counted per principal and never exported as an
+    // address. Core only: a bundle's peer is core, on the private network.
+    if (opts.mode === "core") sourceNetworks().record(caller, req.ip);
 
     // --- selection: the query string proposes, the token disposes -----------
     const requested = parseServersParam(req.query.servers);
@@ -328,6 +353,7 @@ export function createMcpHandler(opts: McpHandlerOptions) {
         inst.unavailable.add(1, {
           "strad.mode": opts.mode,
           "mcp.server": slug,
+          "strad.principal": caller,
         });
       }
       if (unknown > 0) {
@@ -336,6 +362,7 @@ export function createMcpHandler(opts: McpHandlerOptions) {
         inst.unavailable.add(unknown, {
           "strad.mode": opts.mode,
           "mcp.server": "(not configured)",
+          "strad.principal": caller,
         });
       }
       span.setAttribute("mcp.servers.unavailable", known);
@@ -402,6 +429,7 @@ export function createMcpHandler(opts: McpHandlerOptions) {
       surface: "mcp",
       selected,
       principalId: principal.id,
+      principalAttr: caller,
       principalRoles: principal.roles,
       log,
       clientCapabilities,
