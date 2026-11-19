@@ -313,11 +313,15 @@ describe("every doctl install is pinned and checked", () => {
   const envOf = (file: string) =>
     (workflow(file) as unknown as { env?: Record<string, unknown> }).env ?? {};
 
-  const pinned = (file: string, step: Step): string => {
-    const raw = String(step.with?.version ?? "latest");
-    const ref = /^\$\{\{\s*env\.(\w+)\s*\}\}$/.exec(raw);
-    return ref ? String(envOf(file)[ref[1]!] ?? "") : raw;
-  };
+  /**
+   * The version an install resolves to. Only the `${{ env.DOCTL_VERSION }}`
+   * form counts: the assertion step reads the same variable, so a literal
+   * `version:` would let the two drift apart.
+   */
+  const pinned = (file: string, step: Step): string =>
+    String(step.with?.version) === "${{ env.DOCTL_VERSION }}"
+      ? String(envOf(file).DOCTL_VERSION ?? "")
+      : "";
 
   it("finds the installs it is checking", () => {
     // Guard the guard: both staging workflows install doctl.
@@ -327,6 +331,11 @@ describe("every doctl install is pinned and checked", () => {
   it.each(installs.map((i) => [i.file, i] as const))(
     "%s pins an exact doctl and stops on any other",
     (file, { step, next }) => {
+      expect(
+        String(step.with?.version),
+        `${file} must install \`version: \${{ env.DOCTL_VERSION }}\` — the ` +
+          `variable the check after it reads.`,
+      ).toBe("${{ env.DOCTL_VERSION }}");
       const version = pinned(file, step);
       expect(
         version,
@@ -341,7 +350,6 @@ describe("every doctl install is pinned and checked", () => {
         exitsAfter(script, "fell back to another version"),
         `${file} reports a doctl other than the pin and carries on.`,
       ).toBe(true);
-      expect(String(step.with?.version)).toBe("${{ env.DOCTL_VERSION }}");
     },
   );
 

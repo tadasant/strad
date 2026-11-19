@@ -402,6 +402,7 @@ jobs:
           version: ${{ env.DOCTL_VERSION }}
 
       - name: Assert the pinned doctl
+        id: doctl_pin
         if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
         run: |
           set -euo pipefail
@@ -1045,7 +1046,10 @@ jobs:
         # `!seed_only` matches the doctl install's own gate. A seeding run
         # deploys nothing, so there are no container logs to want — and without
         # this it would warn about a doctl that was never meant to be there.
-        if: failure() && !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        # `doctl_pin` succeeding is the other half: when the pin check fails,
+        # the fallback doctl is on PATH and this run deployed nothing, so a dump
+        # would present the LAST deploy's logs as this run's failure.
+        if: failure() && !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' && steps.doctl_pin.outcome == 'success'
         continue-on-error: true
         env:
           # Its own, like every other doctl step. Reaching for whatever the

@@ -1028,10 +1028,12 @@ an unauthenticated GitHub API call — 60 requests an hour per IP, shared by eve
 job on a hosted runner's address. When that call is rate-limited, or when the
 download fails, the action installs a fallback, doctl 1.98.1, and only warns.
 That doctl predates `AppMaintenanceSpec`, so it reads an archived app as running.
-So both staging workflows install the `DOCTL_VERSION` in their `env:`. The step
-right after the install fails the job if `doctl version` reports anything else.
-`test/staging-on-demand.test.ts` holds every `action-doctl` step in the repo to
-that shape.
+Both staging workflows therefore install the exact `DOCTL_VERSION` set in their
+`env:`, and the step right after the install fails the job if `doctl version`
+reports anything else. In `deploy-staging.yml` that failure also skips the
+container-log dump, which would otherwise show the previous deploy's logs.
+`test/staging-on-demand.test.ts` holds every `action-doctl` step in a workflow
+to that shape.
 
 Those steps also set `DIGITALOCEAN_CONTEXT: default`, which is load-bearing.
 doctl only honors the token from the environment on the `default` context. On any
