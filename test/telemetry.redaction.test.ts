@@ -479,6 +479,72 @@ describe("telemetry exports the signals we actually need", () => {
     expect(attrs.some((a) => a["mcp.server"] === "beta")).toBe(true);
   });
 
+  it("attributes every /mcp request to a BOUNDED principal: the pubid, or `unauthenticated`", () => {
+    const points = findMetric("strad.mcp.requests")!.dataPoints;
+    const principals = new Set(
+      points.map((d) => d.attributes["strad.principal"]),
+    );
+    // The verified token's non-secret lookup key, and nothing derived from its
+    // secret half.
+    expect(principals).toContain(`token:${adminToken.record.pubid}`);
+    expect(principals).toContain(`token:${limitedToken.record.pubid}`);
+    // The 401 with the canary token is one fixed word, so a caller presenting
+    // a thousand different strings mints one series, not a thousand.
+    expect(principals).toContain("unauthenticated");
+    const unauth = points.find(
+      (d) => d.attributes["strad.principal"] === "unauthenticated",
+    );
+    expect(unauth!.attributes["outcome"]).toBe("unauthenticated");
+    expect(principals.size).toBe(3);
+  });
+
+  it("attributes tool calls and 424s to the principal, playground included", () => {
+    const calls = findMetric("strad.mcp.tool_calls")!.dataPoints;
+    const mcp = calls.find((d) => d.attributes["strad.surface"] === "mcp");
+    expect(mcp!.attributes["strad.principal"]).toBe(
+      `token:${adminToken.record.pubid}`,
+    );
+    const playground = calls.find(
+      (d) => d.attributes["strad.surface"] === "playground",
+    );
+    // A human is their kind, never their Google subject.
+    expect(playground!.attributes["strad.principal"]).toMatch(
+      /^(google|console-bypass|console-token)$/,
+    );
+
+    // A capability refusal names the principal too, and still no tool.
+    const refused = findMetric("strad.mcp.tool_denials")!.dataPoints.find(
+      (d) => d.attributes["mcp.server"] === "gamma",
+    );
+    expect(refused!.attributes["strad.principal"]).toBe(
+      `token:${adminToken.record.pubid}`,
+    );
+
+    const denied = findMetric("strad.mcp.unavailable")!.dataPoints.find(
+      (d) => d.attributes["mcp.server"] === "beta",
+    );
+    expect(denied!.attributes["strad.principal"]).toBe(
+      `token:${limitedToken.record.pubid}`,
+    );
+  });
+
+  it("counts distinct source networks per principal, never the address", () => {
+    const points = findMetric("strad.mcp.source_networks")!.dataPoints;
+    const admin = points.find(
+      (d) =>
+        d.attributes["strad.principal"] === `token:${adminToken.record.pubid}`,
+    );
+    // Every request came from 127.0.0.1, which is one /24.
+    expect(admin!.value).toBe(1);
+    // A 401 never reaches the tracker.
+    expect(
+      points.some((d) => d.attributes["strad.principal"] === "unauthenticated"),
+    ).toBe(false);
+    // The principal is the only attribute: no address, no network.
+    expect(Object.keys(admin!.attributes)).toEqual(["strad.principal"]);
+    expect(JSON.stringify(points)).not.toContain("127.0.0");
+  });
+
   it("emits the resource-constraint metrics (the whole reason we are here)", () => {
     const names = allMetricNames();
     // The OOM story.

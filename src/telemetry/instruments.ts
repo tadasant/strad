@@ -3,9 +3,12 @@ import {
   trace,
   type Gauge,
   type Histogram,
+  type ObservableGauge,
+  type ObservableResult,
   type Counter,
   type UpDownCounter,
 } from "@opentelemetry/api";
+import { sourceNetworks } from "./principal.ts";
 import type { ErrorKind } from "./redact.ts";
 
 /**
@@ -44,7 +47,10 @@ export function tracer() {
 }
 
 interface GatewayInstruments {
-  /** /mcp requests, by outcome. */
+  /**
+   * /mcp requests, by outcome and by `strad.principal` — the bounded caller
+   * identity from src/telemetry/principal.ts, `unauthenticated` for a 401.
+   */
   requests: Counter;
   requestDuration: Histogram;
   /** Requests currently in flight. THE concurrency signal. */
@@ -97,8 +103,9 @@ interface GatewayInstruments {
    * `mcp.tool` as well as `mcp.server`, and the tool name on a refusal is
    * whatever the caller wrote after the `__` — an unbounded series any token
    * holder could mint, and a client-authored string in an ingestor. So the
-   * refusal gets its own counter, carrying the config's own slug and nothing
-   * else. Same answer `authFailures` gives for `mcp.auth_failed`: when the
+   * refusal gets its own counter, carrying the config's own slug and the
+   * bounded `strad.principal` (src/telemetry/principal.ts), never the name.
+   * Same answer `authFailures` gives for `mcp.auth_failed`: when the
    * field cannot ship, the count does.
    */
   toolDenials: Counter;
@@ -113,6 +120,15 @@ interface GatewayInstruments {
    */
   upstreamTimeouts: Counter;
   upstreamErrors: Counter;
+
+  /**
+   * Distinct client networks (IPv4 /24, IPv6 /48) each principal has called
+   * `/mcp` from over the trailing hour, by `strad.principal`. Observed at
+   * collection time from the in-process tracker, so a window that empties reads
+   * 0 without waiting for a request. Never a network as a value: the count is
+   * the only thing exported. See src/telemetry/principal.ts.
+   */
+  sourceNetworks: ObservableGauge;
 }
 
 let cached: GatewayInstruments | null = null;
@@ -174,13 +190,27 @@ export function instruments(): GatewayInstruments {
     upstreamErrors: meter.createCounter("strad.mcp.upstream.errors", {
       description: "Upstream hops that failed, by classified error kind",
     }),
+    sourceNetworks: meter.createObservableGauge("strad.mcp.source_networks", {
+      description:
+        "Distinct client networks (IPv4 /24, IPv6 /48) each principal called /mcp from over the trailing hour. Per process; saturates at 64.",
+    }),
   };
+  cached.sourceNetworks.addCallback(observeSourceNetworks);
   return cached;
 }
 
 /** Test seam: drop the memoised instruments so a fresh meter provider is picked up. */
 export function resetInstruments(): void {
+  // A meter provider outlives this cache, so an observable left registered
+  // would be observed again beside its replacement.
+  cached?.sourceNetworks.removeCallback(observeSourceNetworks);
   cached = null;
+}
+
+function observeSourceNetworks(result: ObservableResult): void {
+  for (const [principal, count] of sourceNetworks().counts()) {
+    result.observe(count, { "strad.principal": principal });
+  }
 }
 
 /** Attribute helpers. Slugs and tool names only — never arguments. See redact.ts. */

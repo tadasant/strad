@@ -44,6 +44,14 @@ export {
   tracer,
 } from "./instruments.ts";
 export {
+  INTERNAL,
+  principalAttr,
+  reachPrincipalAttr,
+  resetSourceNetworks,
+  sourceNetworks,
+  UNAUTHENTICATED,
+} from "./principal.ts";
+export {
   disableEventExport,
   enableEventExport,
   event,

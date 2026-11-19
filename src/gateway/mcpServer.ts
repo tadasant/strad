@@ -97,6 +97,13 @@ export interface GatewayServerOptions {
   /** Principal id, for log lines. Never a credential. */
   principalId: string;
   /**
+   * The same principal as a BOUNDED metric label, `strad.principal` on the
+   * tool-call and tool-denial counters. Built by the door that authenticated
+   * the caller (src/telemetry/principal.ts), because only the door knows what
+   * kind of identity `principalId` is.
+   */
+  principalAttr: string;
+  /**
    * The roles that principal holds, for a server whose ANSWER depends on who is
    * asking rather than only on whether they may ask.
    *
@@ -160,6 +167,7 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
     mode,
     selected,
     principalId,
+    principalAttr,
     log,
     clientCapabilities,
     explicit,
@@ -265,8 +273,9 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
       // holder can mint) nor an exported log record. `parsed.slug` is not that:
       // by this line it has survived `selected.includes()` and `registry.get()`
       // above, so it is one of the config's own slugs. The counter is attributed
-      // by the slug alone, which is what makes "how often is this slug refusing
-      // calls" answerable without the name. It is deliberately not an `outcome`
+      // by the slug (and the bounded `strad.principal`, never the raw principal
+      // id), which is what makes "how often is this slug refusing calls"
+      // answerable without the name. It is deliberately not an `outcome`
       // on `toolCalls`, whose attributes include `mcp.tool`.
       //
       // It comes BEFORE the throw for the reason this counter exists at all: the
@@ -275,6 +284,7 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
         "mcp.server": parsed.slug,
         "strad.mode": mode,
         "strad.surface": surface,
+        "strad.principal": principalAttr,
       });
       // `slug`, not `server`: the allowlist exports this record, every other
       // exported record names a server under `slug`, and the throttle keys on
@@ -282,7 +292,9 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
       // the allowlist — `tool` is the caller's own bytes, and `principal` is a
       // token `pubid` through router.ts but a signed-in human's Google `sub`
       // through ui/playground.ts, which builds this same server. The stream
-      // carries both; the ingestor gets the slug. See src/telemetry/events.ts.
+      // carries both; the ingestor gets the slug, and the counter above gets
+      // `principalAttr`, which folds a human to their kind. See
+      // src/telemetry/events.ts and src/telemetry/principal.ts.
       log({
         evt: "mcp.tool_denied",
         principal: principalId,
@@ -321,6 +333,7 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
         "mcp.server": parsed.slug,
         "strad.mode": mode,
         "strad.surface": surface,
+        "strad.principal": principalAttr,
       });
       log({
         evt: "mcp.pin_refused",
@@ -353,6 +366,9 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
       "strad.mode": mode,
       "strad.surface": surface,
     };
+    // The counter carries who; the span and the duration histogram do not —
+    // the histogram for the same series-per-bucket reason as router.ts.
+    const countAttrs = { ...toolAttrs, "strad.principal": principalAttr };
     const callSpan = tracer().startSpan("mcp.tools.call", {
       attributes: { ...toolAttrs, ...argShape(args) },
     });
@@ -380,7 +396,7 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
       // that blew up, and conflating them would hide the resource story under a
       // pile of ordinary "no results found" responses.
       const toolOutcome = shape["mcp.tool.is_error"] ? "tool_error" : "ok";
-      inst.toolCalls.add(1, { ...toolAttrs, outcome: toolOutcome });
+      inst.toolCalls.add(1, { ...countAttrs, outcome: toolOutcome });
       inst.toolCallDuration.record(elapsedSeconds(toolStartedAt), {
         ...toolAttrs,
         outcome: toolOutcome,
@@ -400,7 +416,7 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
       // counts.
       if (err instanceof ServerUnconfiguredError) {
         inst.toolCalls.add(1, {
-          ...toolAttrs,
+          ...countAttrs,
           outcome: "error",
           "error.kind": kind,
         });
@@ -416,7 +432,7 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
       // error message is arbitrary text we did not author. See redact.ts.
       callSpan.setStatus({ code: SpanStatusCode.ERROR });
       inst.toolCalls.add(1, {
-        ...toolAttrs,
+        ...countAttrs,
         outcome: "error",
         "error.kind": kind,
       });

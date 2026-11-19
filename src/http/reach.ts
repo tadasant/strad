@@ -5,7 +5,7 @@ import { activeGrants, reachPins, reachPolicies } from "../config/reach.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { buildGatewayServer } from "../gateway/mcpServer.ts";
 import type { Registry } from "../gateway/registry.ts";
-import { event } from "../telemetry/index.ts";
+import { event, reachPrincipalAttr } from "../telemetry/index.ts";
 import { asyncRoute, jsonFailure } from "./async-route.ts";
 
 /**
@@ -87,6 +87,7 @@ export function createReachHandler(opts: ReachHandlerOptions): RequestHandler {
       surface: "reach",
       selected,
       principalId: `reach:${source.slug}`,
+      principalAttr: reachPrincipalAttr(source.slug),
       log: event,
       // A grant is named in full by the source's own config, so a broken
       // target is a failure the source should hear about, not a smaller list.

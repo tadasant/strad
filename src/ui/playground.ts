@@ -14,7 +14,7 @@ import type { Registry } from "../gateway/registry.ts";
 import { compileToolPolicies } from "../gateway/toolPolicy.ts";
 import { denamespace } from "../gateway/adapters/types.ts";
 import { TROUBLESHOOT_TOOL } from "../gateway/troubleshoot.ts";
-import { event } from "../telemetry/index.ts";
+import { event, principalAttr } from "../telemetry/index.ts";
 import {
   consolePrincipal,
   refuseTokenSession,
@@ -379,6 +379,7 @@ export async function withSession(
     surface,
     selected: [decision.server.slug],
     principalId: consolePrincipal(res).id,
+    principalAttr: principalAttr(consolePrincipal(res)),
     // The signed-in human's own roles, so a write made through the playground is
     // bounded by exactly what the same human's write through /connectors is.
     principalRoles: consolePrincipal(res).roles,

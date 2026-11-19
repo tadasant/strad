@@ -240,6 +240,7 @@ describe("an oauth: slug nobody has connected", () => {
       mode: "core",
       selected: [SLUG],
       principalId: "test",
+      principalAttr: "test",
       log: () => {},
     });
     const client = new Client({ name: "test", version: "1" }, {});

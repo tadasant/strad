@@ -171,7 +171,8 @@ serving fetchpet".
 `tools/list` that failed for a server the client named, by server),
 `strad.mcp.tool_calls` and `strad.mcp.tool_call.duration` (by server + tool),
 `strad.mcp.tool_denials` (**tools/call refusals by the capability policy, by
-server and by nothing else** — see below),
+server** — see below), `strad.mcp.source_networks` (**how many networks each
+caller used in the last hour** — see [whose request was it](#stradprincipal--whose-request-was-it)),
 `strad.mcp.upstream.duration` (**per-server latency — this is what shows you
 which server is starving the others**), `strad.mcp.upstream.errors`,
 `strad.mcp.upstream.timeouts`, `strad.mcp.tool_surface` (**is a slug serving
@@ -182,6 +183,65 @@ Timeouts get their own counter deliberately. The MCP SDK's request timeout
 defaults to **60s and applies at every hop**, so a slow tool behind the gateway
 dies at exactly 60s and presents as a mysterious platform failure. Counting them
 separately turns that into a one-glance diagnosis.
+
+### `strad.principal` — whose request was it?
+
+A stolen token used at a normal rate looks exactly like the agent it was stolen
+from, unless the counters say whose requests they are. So the counters do:
+`strad.mcp.requests`, `strad.mcp.tool_calls`, `strad.mcp.unavailable` and
+`strad.mcp.tool_denials` carry `strad.principal`. Ingested as Prometheus, that is
+the `strad_principal` label.
+
+| Caller                                        | `strad.principal`            |
+| --------------------------------------------- | ---------------------------- |
+| a static token that verified                  | `token:<pubid>`              |
+| an OAuth access token from strad's own server | `oauth`                      |
+| a human in the console playground or app host | `google`, or `console-token` |
+| the console dev bypass                        | `console-bypass`             |
+| a flow-through call (`/_strad/reach`)         | `reach:<source slug>`        |
+| core calling a bundle's `/mcp`                | `internal`                   |
+| anything that got a 401                       | `unauthenticated`            |
+
+The `pubid` is the token's public lookup key, the one the console lists. It is
+not the token, and nothing about the secret half can be recovered or checked from
+it. A value only appears after the credential has verified, so the set is
+bounded by the token roster: a caller sending a thousand made-up tokens is one
+`unauthenticated` series. A human is their kind and never their Google `sub` —
+that is the person's identifier, kept off every exported record for the reason
+[below](#a-policy-refusal-the-count-and-the-slug-together) — and a console login
+token is minted per sign-in, so its id is dropped too.
+
+It is on the counters and **not** on the duration histograms. A histogram is a
+series per bucket, and "whose requests are slow" is a question for the span.
+
+`strad.mcp.auth_failures` is the other half: every 401, by `auth.failure_reason`
+— `no_authorization_header`, `malformed`, `wrong_env`, `unknown`, `revoked`,
+`mismatch`, one of the `oauth_*` reasons, or on a bundle `no_internal_token` and
+`internal_token_mismatch`. It carries no principal, because a
+401 has none. An entitlement refusal is `strad.mcp.unavailable` (the 424), and a
+capability refusal is `strad.mcp.tool_denials`; both carry the principal, so a
+valid token probing for servers it does not have shows up by name.
+
+**`strad.mcp.source_networks`** is a gauge, by `strad.principal` and nothing else:
+how many distinct client networks (an IPv4 /24, an IPv6 /48) that principal has
+called core's `/mcp` from in the last hour. Counted in memory, read when the
+metrics are collected, so a quiet principal drops back to 0 on its own. No
+address or network is ever exported, only the count. It stops at 64 per
+principal, which also keeps the memory bounded.
+
+```promql
+# a token used from more than two networks in the last hour
+max by (strad_principal) (strad_mcp_source_networks{strad_principal=~"token:.*"}) > 2
+
+# a token's request rate, against its own last week
+sum by (strad_principal) (rate(strad_mcp_requests_total[15m]))
+```
+
+Two limits to know (`HACKS.md` #151). The address is `req.ip`, which is the
+left-most `X-Forwarded-For` entry, and a client can write that header itself, so
+this catches a careless thief, not a careful one. And it is per process: with
+more than one core instance each sees only its own requests, so each count is a
+lower bound and the counts do not add up.
 
 ### `strad.mcp.tool_surface` — is a slug serving anything at all?
 
@@ -437,7 +497,9 @@ A `tools/call` the capability policy withholds throws **ahead of** the
 all. It is answered by a pair instead, and the pair is the design:
 
 - **`strad.mcp.tool_denials`**, a counter attributed by `mcp.server`,
-  `strad.mode` and `strad.surface` — and by nothing else. It is deliberately not
+  `strad.mode`, `strad.surface` and the bounded
+  [`strad.principal`](#stradprincipal--whose-request-was-it) — and by nothing
+  else. It is deliberately not
   an `outcome` on `strad.mcp.tool_calls`, whose attributes include `mcp.tool`: a
   refusal happens precisely because no such tool exists, so the name on it is an
   unbounded series any token holder could mint.
@@ -452,7 +514,8 @@ through `router.ts` it is the token record's `pubid`, read out of the store — 
 `buildGatewayServer` serves both doors, and through the
 [playground](/auth/overview/#the-console-playground) the same field is the Google
 `sub` of the signed-in human. One allowlist entry cannot say "ours here, theirs
-there", so it does not ship.
+there", so it does not ship. The counter's `strad.principal` can, because it is
+built by the door: a token is its `pubid`, a human is just `google`.
 
 The stream carries all three for whoever is diagnosing which tool a caller
 wanted; the ingestor gets the slug and the count. This is the same answer

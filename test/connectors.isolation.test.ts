@@ -1296,6 +1296,7 @@ describe("the principal reaches a builtin through the machinery both doors share
       mode: "core",
       selected: ["probe"],
       principalId: "whoever",
+      principalAttr: "test",
       principalRoles: ["fleet", "wildcard"],
       log: () => {},
     });

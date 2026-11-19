@@ -248,6 +248,7 @@ async function listResources(registry: Registry): Promise<string[]> {
     mode: "core",
     selected: ["apify"],
     principalId: "test",
+    principalAttr: "test",
     log: () => {},
   });
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();

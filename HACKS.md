@@ -7812,3 +7812,32 @@ unauthenticated route on core plus a forward to the bundle.
 inert. Removing it is deleting `images/bundle-google/src/events/`, its hooks in
 `images/bundle-google/src/gmail.ts` and `loadGmail`, and the `eventswebhook`
 seam.
+
+## 151. `strad.mcp.source_networks` trusts `X-Forwarded-For`, and counts per process
+
+**What.** Core counts the distinct client networks (IPv4 /24, IPv6 /48) each
+principal called `/mcp` from over the trailing hour, in memory
+(`src/telemetry/principal.ts`), and exports the count as the
+`strad.mcp.source_networks` gauge. The address is Express's `req.ip`. With
+`trust proxy` on (`src/http/app.ts`), that is the left-most `X-Forwarded-For`
+entry.
+
+**Why.** A stolen static token used at a normal rate is otherwise
+indistinguishable from the agent it was stolen from. "The same token from a
+second network" is the cheapest signal that it is not. Computing it in process
+keeps addresses out of the metrics: only a count leaves.
+
+**What it costs.**
+
+1. **A client can spoof it.** The left-most `X-Forwarded-For` entry is whatever
+   the client sent, so a careful thief can pin the count at 1. It catches a
+   careless one. Reading the hop the platform appended instead would need to
+   know how many proxies sit in front of core, which strad does not configure.
+2. **Per process.** Each core instance counts only the requests routed to it.
+   With more than one instance the counts are lower bounds and do not add.
+3. **One hour, capped at 64.** A longer window cannot be rebuilt from the
+   gauge; `max_over_time` gives the peak hour, not the union.
+4. **Restarts reset it.** A deploy zeroes every count.
+
+**Undo.** Delete `SourceNetworks` and its gauge; the `strad.principal` label on
+the counters does not depend on it.
