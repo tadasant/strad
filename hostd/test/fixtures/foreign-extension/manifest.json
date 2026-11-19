@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "foreign overlay fixture",
+  "version": "1.0.0",
+  "description": "A stand-in for a password manager in hostd's extension test: it puts its own chrome-extension:// frames into a page, one in the light DOM and one in a closed shadow root.",
+  "content_scripts": [
+    {
+      "matches": ["http://127.0.0.1/overlay*"],
+      "js": ["inject.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    { "resources": ["frame.html"], "matches": ["<all_urls>"] }
+  ]
+}

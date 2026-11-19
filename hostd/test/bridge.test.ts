@@ -472,3 +472,20 @@ describe("several grants, one extension", () => {
     ext = newer;
   });
 });
+
+describe("what neither route will send", () => {
+  it("refuses the WebAuthn domain before it reaches the extension", async () => {
+    const { ExtensionBridge } = await import("../src/browser/bridge.js");
+    const { assertRelayable } = await import("../src/browser/backend.js");
+    const bridge = new ExtensionBridge({ token: "t" });
+    const be = bridge.backend();
+    await expect(be.send("100", "WebAuthn.enable")).rejects.toThrow(
+      /WebAuthn.enable is never sent/,
+    );
+    expect(() => assertRelayable("WebAuthn.addVirtualAuthenticator")).toThrow(
+      /never sent/,
+    );
+    expect(() => assertRelayable("Runtime.evaluate")).not.toThrow();
+    expect(() => assertRelayable("Input.dispatchMouseEvent")).not.toThrow();
+  });
+});

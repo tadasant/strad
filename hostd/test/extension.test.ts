@@ -2,7 +2,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { WebSocketServer } from "ws";
 
@@ -45,6 +46,24 @@ const PAGE = `<!doctype html><title>Owner's page</title>
 <input id="q" placeholder="Search" value="old">
 <button id="go" onclick="document.getElementById('out').textContent = 'clicked:' + document.getElementById('q').value">Go</button>
 <p id="out"></p><script>document.cookie = "session=owner-cookie; path=/"</script>`;
+
+/** A token a console has just minted, behind its own copy button, as GitHub's settings page shows one. */
+const MINTED = "github_pat_TESTONLY_0123456789abcdefghijklmnop";
+const TOKEN_PAGE = `<!doctype html><title>New token</title>
+<p>Make sure to copy your token now. You won't be able to see it again.</p>
+<code id="new-token">${MINTED}</code>
+<button id="copy" aria-label="Copy token" onclick="navigator.clipboard.writeText(document.getElementById('new-token').textContent).then(() => { document.getElementById('status').textContent = 'Copied!' }, (e) => { document.getElementById('status').textContent = 'copy failed: ' + e.message })">Copy</button>
+<p id="status"></p>`;
+
+/**
+ * Another extension in the same profile, standing in for the owner's password
+ * manager: it puts chrome-extension:// frames of its own into `/overlay` pages.
+ */
+const FOREIGN = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "fixtures",
+  "foreign-extension",
+);
 
 describe.skipIf(!chrome)(
   "the browser server through the real extension, in a real Chromium",
@@ -101,11 +120,22 @@ describe.skipIf(!chrome)(
 
     beforeAll(async () => {
       site = createServer((req, res) => {
+        if (req.url?.startsWith("/overlay")) {
+          // GitHub's settings pages allow no eval; neither does this one.
+          res.writeHead(200, {
+            "content-type": "text/html",
+            "content-security-policy": "script-src 'unsafe-inline'",
+          });
+          res.end(TOKEN_PAGE);
+          return;
+        }
         res.writeHead(200, { "content-type": "text/html" });
         res.end(
           req.url === "/two"
             ? `<title>Two</title><p>page two, cookie: <span id=c></span></p><script>c.textContent=document.cookie</script>`
-            : PAGE,
+            : req.url === "/blank"
+              ? "<title>blank</title>"
+              : PAGE,
         );
       });
       await new Promise<void>((r) => site.listen(0, "127.0.0.1", r));
@@ -145,7 +175,7 @@ describe.skipIf(!chrome)(
           "--headless=new",
           "--no-sandbox",
           "--disable-gpu",
-          `--load-extension=${extensionDir()}`,
+          `--load-extension=${extensionDir()},${FOREIGN}`,
           // The TEST's way in to the service worker, to pair it. The daemon
           // under test is given no such port.
           "--remote-debugging-port=0",
@@ -502,6 +532,285 @@ describe.skipIf(!chrome)(
       const crx = Buffer.from(await (await fetch(codebase!)).arrayBuffer());
       expect(crx.subarray(0, 4).toString()).toBe("Cr24");
       expect(/appid='([a-p]{32})'/.test(xml)).toBe(true);
+    });
+
+    describe("a page that carries another extension's frames", () => {
+      let grant: string;
+      let tab_id: string;
+      const use = (name: string, args: Record<string, unknown> = {}) =>
+        client.callTool({ name, arguments: { grant_id: grant, ...args } });
+
+      /** The TEST's own session on a page, over the browser-wide DevTools socket the daemon is not given. */
+      const pageSession = async (url: string): Promise<string> => {
+        const { targetInfos } = await cdp.send<{
+          targetInfos: { targetId: string; type: string; url: string }[];
+        }>("Target.getTargets");
+        const target = targetInfos.find(
+          (t) => t.type === "page" && t.url === url,
+        );
+        if (!target) throw new Error(`no page target at ${url}`);
+        const { sessionId } = await cdp.send<{ sessionId: string }>(
+          "Target.attachToTarget",
+          { targetId: target.targetId, flatten: true },
+        );
+        return sessionId;
+      };
+      const inPage = async <T>(
+        sessionId: string,
+        expression: string,
+        userGesture = false,
+      ): Promise<T> => {
+        const r = await cdp.send<{
+          result: { value: T };
+          exceptionDetails?: { exception?: { description?: string } };
+        }>(
+          "Runtime.evaluate",
+          { expression, awaitPromise: true, returnByValue: true, userGesture },
+          sessionId,
+        );
+        if (r.exceptionDetails)
+          throw new Error(
+            r.exceptionDetails.exception?.description ?? "page threw",
+          );
+        return r.result.value;
+      };
+      const foreignFrames = (sessionId: string) =>
+        inPage<string | undefined>(
+          sessionId,
+          "document.documentElement.dataset.foreignFrames",
+        );
+      /**
+       * The clipboard, read from ANOTHER origin that alone was granted the
+       * read, so the page under test gets no clipboard permission from it.
+       */
+      const clipboard = async (): Promise<string> => {
+        const reader = `http://localhost:${new URL(origin).port}/blank`;
+        await cdp.send("Browser.grantPermissions", {
+          origin: new URL(reader).origin,
+          permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
+        });
+        const { targetId } = await cdp.send<{ targetId: string }>(
+          "Target.createTarget",
+          { url: reader },
+        );
+        try {
+          const { sessionId } = await cdp.send<{ sessionId: string }>(
+            "Target.attachToTarget",
+            { targetId, flatten: true },
+          );
+          await until(
+            async () =>
+              (await inPage<string>(sessionId, "document.readyState")) ===
+              "complete",
+            "the clipboard reader loads",
+          );
+          await cdp.send(
+            "Emulation.setFocusEmulationEnabled",
+            { enabled: true },
+            sessionId,
+          );
+          return await inPage<string>(
+            sessionId,
+            "navigator.clipboard.readText()",
+            true,
+          );
+        } finally {
+          await cdp.send("Target.closeTarget", { targetId });
+        }
+      };
+      const setClipboard = async (value: string) => {
+        const reader = `http://localhost:${new URL(origin).port}/blank`;
+        await cdp.send("Browser.grantPermissions", {
+          origin: new URL(reader).origin,
+          permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
+        });
+        const { targetId } = await cdp.send<{ targetId: string }>(
+          "Target.createTarget",
+          { url: reader },
+        );
+        try {
+          const { sessionId } = await cdp.send<{ sessionId: string }>(
+            "Target.attachToTarget",
+            { targetId, flatten: true },
+          );
+          await until(
+            async () =>
+              (await inPage<string>(sessionId, "document.readyState")) ===
+              "complete",
+            "the clipboard writer loads",
+          );
+          await cdp.send(
+            "Emulation.setFocusEmulationEnabled",
+            { enabled: true },
+            sessionId,
+          );
+          await inPage(
+            sessionId,
+            `navigator.clipboard.writeText(${JSON.stringify(value)})`,
+            true,
+          );
+        } finally {
+          await cdp.send("Target.closeTarget", { targetId });
+        }
+      };
+
+      beforeAll(async () => {
+        ({ grant_id: grant } = resultJson<{ grant_id: string }>(
+          await client.callTool({
+            name: "request_control",
+            arguments: {
+              purpose: "Copy a freshly minted token to the clipboard.",
+            },
+          }),
+        ));
+      });
+
+      it("is a page Chrome refuses chrome.debugger on, as it stands", async () => {
+        const url = `${origin}/overlay`;
+        await cdp.send("Target.createTarget", { url });
+        const s = await pageSession(url);
+        await until(
+          async () => (await foreignFrames(s)) === "2",
+          "the foreign extension's frames are loaded in the page",
+        );
+        const tabs = await inWorker<{ id: number; url: string }[]>(
+          "chrome.tabs.query({}).then(ts => ts.map(t => ({ id: t.id, url: t.url })))",
+        );
+        const id = tabs.find((t) => t.url === url)!.id;
+        expect(
+          await inWorker<string>(
+            `chrome.debugger.attach({ tabId: ${id} }, "1.3").then(() => chrome.debugger.detach({ tabId: ${id} }).then(() => "attached"), (e) => e.message)`,
+          ),
+        ).toMatch(
+          /Cannot access a chrome-extension:\/\/ URL of different extension/,
+        );
+      });
+
+      it("reads, evaluates and clicks in it: the foreign frames are moved aside while attached", async () => {
+        const { tabs } = resultJson<{
+          tabs: { tab_id: string; url: string }[];
+        }>(await use("list_tabs"));
+        tab_id = tabs.find((t) => t.url === `${origin}/overlay`)!.tab_id;
+        const s = await pageSession(`${origin}/overlay`);
+        expect(await foreignFrames(s)).toBe("2");
+        const read = await use("read_page", { tab_id });
+        expect(read.isError ? resultText(read) : "").toBe("");
+        expect(resultJson<{ text: string }>(read).text).toContain(
+          "copy your token now",
+        );
+        // Both of them — the light-DOM frame and the closed shadow root's.
+        expect(await foreignFrames(s)).toBe("0");
+        expect(
+          resultJson(
+            await use("evaluate_script", {
+              tab_id,
+              expression: "document.title + ' ' + location.pathname",
+            }),
+          ),
+        ).toEqual({ value: "New token /overlay" });
+        expect(await attachedInChrome()).toBeGreaterThanOrEqual(1);
+      });
+
+      it("copies a minted token with the page's own button: to the clipboard, never into a result", async () => {
+        await setClipboard("before");
+        const s = await pageSession(`${origin}/overlay`);
+        expect(await clipboard()).toBe("before");
+
+        // click_element's click is a trusted mouse event, under focus
+        // emulation: the page's own write goes through, as the owner's would.
+        const clicked = await use("click_element", {
+          tab_id,
+          selector: "#copy",
+        });
+        expect(clicked.isError).toBeFalsy();
+        expect(resultJson(clicked)).toEqual({
+          clicked: "button",
+          url: `${origin}/overlay`,
+        });
+        expect(JSON.stringify(clicked)).not.toContain(MINTED);
+        await until(
+          async () =>
+            (await inPage<string>(
+              s,
+              "document.getElementById('status').textContent",
+            )) === "Copied!",
+          "the page says it copied",
+        );
+        expect(await clipboard()).toBe(MINTED);
+      });
+
+      it("refuses the WebAuthn domain outright, so no caller can answer a passkey prompt", async () => {
+        const id = Number(tab_id);
+        expect(
+          await inWorker<string>(
+            `perform({ op: "send", tabId: ${id}, method: "WebAuthn.enable", params: {} }).then(() => "relayed", (e) => e.message)`,
+          ),
+        ).toBe("WebAuthn.enable is never relayed");
+        expect(
+          await inWorker<string>(
+            `perform({ op: "send", tabId: ${id}, method: "WebAuthn.addVirtualAuthenticator", params: { options: { protocol: "ctap2", transport: "internal" } } }).then(() => "relayed", (e) => e.message)`,
+          ),
+        ).toBe("WebAuthn.addVirtualAuthenticator is never relayed");
+      });
+
+      it("puts the frames back when the grant lets go", async () => {
+        const s = await pageSession(`${origin}/overlay`);
+        expect(await foreignFrames(s)).toBe("0");
+        await use("end_control");
+        await until(
+          async () => (await foreignFrames(s)) === "2",
+          "the foreign frames are back in the page",
+          () => undefined,
+        );
+      });
+
+      it("follows a frame that arrives after the attach: Chrome drops the debugger, the next call re-attaches", async () => {
+        ({ grant_id: grant } = resultJson<{ grant_id: string }>(
+          await client.callTool({
+            name: "request_control",
+            arguments: { purpose: "Read a page whose overlay comes late." },
+          }),
+        ));
+        const url = `${origin}/overlay?late`;
+        const late = resultJson<{ tab_id: string }>(
+          await use("open_tab", { url }),
+        );
+        expect(
+          resultJson(
+            await use("evaluate_script", {
+              tab_id: late.tab_id,
+              expression: "location.search",
+            }),
+          ),
+        ).toEqual({ value: "?late" });
+        const s = await pageSession(url);
+        expect(await attachedInChrome()).toBeGreaterThanOrEqual(1);
+        // Now, with the bridge attached, the overlay arrives; Chrome detaches
+        // the bridge on its own.
+        await inPage(s, "document.documentElement.dataset.insertOverlay = '1'");
+        await until(
+          async () => (await foreignFrames(s)) === "2",
+          "the late frames arrive",
+        );
+        expect(
+          resultJson(
+            await use("evaluate_script", {
+              tab_id: late.tab_id,
+              expression: "document.title",
+            }),
+          ),
+        ).toEqual({ value: "New token" });
+        expect(await foreignFrames(s)).toBe("0");
+        await use("close_tab", { tab_id: late.tab_id });
+        await use("end_control");
+        const { targetInfos } = await cdp.send<{
+          targetInfos: { targetId: string; url: string }[];
+        }>("Target.getTargets");
+        await cdp.send("Target.closeTarget", {
+          targetId: targetInfos.find((t) => t.url === `${origin}/overlay`)!
+            .targetId,
+        });
+      });
     });
   },
 );

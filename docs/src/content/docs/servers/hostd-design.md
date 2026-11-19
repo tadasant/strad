@@ -422,6 +422,33 @@ extension detaches everything itself the moment its socket closes, since a
 daemon that is gone has no grants. If the person cancels the debugger from
 Chrome's own bar, the extension reports it and the next call re-attaches.
 
+**A tab with another extension's frame in it.** Chromium's `debugger_api.cc`
+checks every frame of a tab before it attaches. A frame whose URL is another
+extension's (a password manager's inline menu or save prompt, which they render
+in their own `chrome-extension://` frames) fails the attach with "Cannot access
+a chrome-extension:// URL of different extension". The same frame arriving
+after the attach drops the session with `target_closed`. When the attach fails
+for that reason and no other, the extension runs a function in every frame it
+may script through `chrome.scripting`, in its isolated world. The function takes
+each foreign `chrome-extension://` frame out of the document, open and closed
+shadow roots included, and records where each one was. Then the extension
+attaches. It never enters those frames: Chrome would not allow it, and that rule
+is what keeps the debugger out of the password manager. The frames go back on
+`detach`, `detachAll`, and `chrome.debugger.onDetach`, so they are out only
+while the extension is attached. A frame that arrives later drops the session;
+the daemon re-attaches on its next command, which moves the newcomer aside too.
+`chrome.scripting` on its own could not replace the debugger. It cannot
+evaluate a string on a page whose CSP forbids `eval`, GitHub's included, and a
+scripted `click()` carries no user activation, so a page's own clipboard write
+is refused. `test/extension.test.ts` covers this against a fixture extension in
+Chromium. `HACKS.md` #149 is what it costs.
+
+**The WebAuthn domain is never sent.** `assertRelayable` in
+`src/browser/backend.ts` refuses it on both backends, and the extension refuses
+it again on its side of the socket. A virtual authenticator is the one DevTools
+route to answering a passkey or security-key prompt, and that ceremony is the
+owner's.
+
 **Tab operations go through `chrome.tabs`, not the Target domain.** `open_tab`
 is `chrome.tabs.create`, `activate_tab` is `chrome.tabs.update` plus a window
 focus, `close_tab` is `chrome.tabs.remove`, and the tab id is the number Chrome

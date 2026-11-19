@@ -39,6 +39,20 @@ export interface BrowserBackend {
 export const NO_TAB = (id: string): Error =>
   new Error(`No tab "${id}". list_tabs shows the tabs there are.`);
 
+/**
+ * DevTools domains neither backend sends, whatever a caller asks. `WebAuthn`
+ * installs virtual authenticators and answers credential requests, which is
+ * a passkey or security-key ceremony done without the owner — and that is
+ * the owner's alone. No tool sends it; this keeps one from starting to. The
+ * extension refuses the same domain on its side of the socket.
+ */
+const REFUSED_DOMAINS = ["WebAuthn."];
+
+export function assertRelayable(method: string): void {
+  if (REFUSED_DOMAINS.some((d) => method.startsWith(d)))
+    throw new Error(`${method} is never sent to the owner's browser`);
+}
+
 interface TargetInfo {
   targetId: string;
   type: string;
@@ -121,6 +135,7 @@ export class CdpBackend implements BrowserBackend {
     params: Record<string, unknown> = {},
     timeoutMs?: number,
   ): Promise<T> {
+    assertRelayable(method);
     const sessionId = await this.attach(tabId);
     return this.conn.send<T>(method, params, sessionId, timeoutMs);
   }

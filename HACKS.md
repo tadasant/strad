@@ -7660,3 +7660,61 @@ homeserver keeps strad's no-database, one-component shape.
 If datacenter checkpoints become routine, either set `MESSENGER_PROXY` to a
 residential egress, or move the bridge to strad-hostd on the owner's Mac, where
 the same Go program can run beside the daemon.
+
+## 149. The hostd Chrome extension moves another extension's frames out of a page it drives
+
+**What.** `chrome.debugger` will not attach to a tab that holds a frame
+belonging to another extension. The attach fails with "Cannot access a
+chrome-extension:// URL of different extension", and an existing attachment is
+dropped (`target_closed`) the moment such a frame arrives. Password managers
+put their inline menus and save prompts in exactly those frames. So when Chrome
+refuses for that reason, `hostd/extension/background.js` runs a script in the
+tab's frames with `chrome.scripting`, in its own isolated world. The script
+takes every `chrome-extension://` frame that is not its own out of the
+document, closed shadow roots included, and attaches again. The frames go back
+where they were when the attachment ends: the grant lets go, the kill switch is
+thrown, the socket drops, or Chrome detaches. A frame that arrives later knocks
+the debugger off, and the next command re-attaches and moves that frame too.
+The extension gained the `scripting` permission and `<all_urls>` host access
+(version 0.2.0) for this.
+
+**Why.** The failure stopped an agent on GitHub's new-token page with the token
+on screen and the copy button one click away (session
+https://zimmer.tadasant.com/sessions/28055). Chrome has no flag or permission
+that allows a debugger next to another extension's frame, and the other route
+into the profile, `chrome.scripting` alone, cannot do the job: it cannot
+evaluate a string on a page whose CSP has no `unsafe-eval` (GitHub's has none),
+and a script's `click()` carries no user activation, so the page's own
+`navigator.clipboard.writeText` is refused.
+
+**What it costs.**
+
+- While an agent is attached, the owner's password manager has no overlay on
+  that page. A frame that is put back reloads, so whatever it was showing
+  starts over.
+- The frames are never entered or read. Chrome would not allow it, and that
+  rule is what keeps the debugger out of the password manager.
+- Only frames in the document are found: an `<iframe>`, `<frame>`, `<embed>` or
+  `<object>` whose `src` (or `data`) attribute is another extension's URL. A
+  frame that starts at about:blank and is navigated there is not found. A frame the script cannot
+  find, for example inside a cross-origin frame it cannot script, still refuses
+  the attach, and the error says to ask the owner to dismiss that extension's
+  popup or switch it off for the site.
+- It opens login pages. Before this, a password manager's inline menu on a
+  sign-in form made Chrome refuse the debugger there; now `read_page` and
+  `evaluate_script` work on that form, including a password a manager filled
+  in on load. Nothing stops that read but the grant's purpose.
+- A manager that puts its frame straight back is moved aside again on each of
+  ten tries, then the attach fails with the error above.
+- The upgrade adds permissions. A force-installed copy takes them silently; an
+  unpacked one needs Reload on `chrome://extensions`. `<all_urls>` also lets
+  the service worker `fetch` with the owner's cookies. Nothing uses that, and
+  the only code the extension injects is its two bundled functions: the daemon
+  cannot send a script, because `chrome.scripting` takes a function, not a
+  string.
+- It has run against a fixture extension in Chromium in CI. It has not run
+  against a real password manager in Google Chrome on the Mac.
+
+**Undo.** If Chrome ever lets `chrome.debugger` attach beside another
+extension's frames, delete `parkForeignFrames`, the two permissions, and this
+entry.
