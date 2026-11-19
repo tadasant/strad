@@ -7660,6 +7660,21 @@ homeserver keeps strad's no-database, one-component shape.
   only readable if the owner enters their secure-storage PIN at login, which
   restores Meta's encrypted history backup (mautrix-meta v26.10+). Without it,
   history starts at login.
+- A phone-app login can get through the password and the authenticator code
+  and then have Meta checkpoint the account. The PIN submit that followed one
+  such login came back to the console as an ingress 504: mautrix-meta waited its full minute for an encrypted
+  connection the checkpointed account never opened, and the ingress gave up at
+  about the same moment. `bridge/login.go` answers a step in the background
+  (a call returns `working` after 25 seconds, and a no-input submit collects the
+  result without resending), refuses to send a PIN once the account is stopped (`BAD_CREDENTIALS` or
+  `LOGGED_OUT`; `UNKNOWN_ERROR` reconnects by itself and is left alone),
+  and `messenger_status` names the action a stopped account needs. The bridge
+  never reconnects a stopped login by itself.
+- Each phone-app login mints a fresh device identity (device id, family device
+  id, attestation key, no `machine_id`), so a retry from the same datacenter IP
+  looks like another new phone rather than the same one trying again.
+  Persisting that identity across attempts would be a further delta to the
+  vendored copy; it is not made.
 - A `replace` in mautrix-meta's `go.mod` (Beeper's fork of `req`) does not carry
   over to a dependent module, so `bridge/go.mod` repeats it and must move with
   the mautrix-meta pin.
