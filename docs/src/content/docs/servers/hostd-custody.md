@@ -48,7 +48,7 @@ strad.
 | `generate_keypair`  | Generates an ed25519 SSH keypair. Holds the private key as a handle; returns the public key and its fingerprint.  |
 | `list_handles`      | This grant's handles: held, deposited (with path and version), discarded, burned or expired.                       |
 | `discard_handle`    | Drops a handle and zeroes its bytes.                                                                               |
-| `deposit`           | Posts a handle's value to strad as `/strad/<env>/mcp/<slug>/static/<VARIABLE>`. Returns the path and the version.  |
+| `deposit`           | Posts a handle's value to a strad, named by `destination` (default: this machine's own), as `/strad/<env>/mcp/<slug>/static/<VARIABLE>`. Returns the destination, the path and the version. |
 
 A shape is the value's length, its kind (`token`, `json`, `pem`, `text`), a
 well-known non-secret prefix (`ghp_`, `lin_api_`, `sk-ant-` and similar) and,
@@ -249,6 +249,101 @@ strad-hostd keys                          # prints the key to store under HOSTD_
 Enabling it creates the key the deposit bearer is derived from, and a
 credential that can write into strad's store should go on a machine because
 someone decided it should, not because the installer was re-run.
+
+## Another strad: named destinations
+
+By default `deposit` goes to one strad, `custody.stradUrl`. A machine can also
+deposit into other strad deployments, such as another organisation's, without
+that strad getting any access to the machine. Each one is a named entry in the
+Mac's own config:
+
+```json
+"custody": {
+  "stradUrl": "https://strad.example.com",
+  "stradName": "mine",
+  "destinations": {
+    "pulsemcp": {
+      "url": "https://strad.pulsemcp.com",
+      "key": "<minted by strad-hostd destination add>",
+      "title": "PulseMCP's strad"
+    }
+  }
+}
+```
+
+- **A name, never a URL.** `deposit` takes `destination: "pulsemcp"`. Its
+  input schema lists exactly the configured names, and any other value is
+  refused before anything is sent: `No deposit destination named "…"`. A
+  prompt cannot add a host. Only the owner, editing this file, can.
+- **Omitting it changes nothing.** No `destination` means `stradUrl` with the
+  custody slug's derived bearer, as before. `stradName` (default `"default"`)
+  is the name that destination also answers to, so a list a human approved can
+  say "mine" out loud.
+- **Each destination has its own key.** The bearer is
+  `depositToken(destination key)`, the same derivation as the default, so the
+  other strad's route needs no change. The key is a fresh random string, not
+  the custody slug key, and the schema refuses one equal to any server or
+  client key on the machine. The strad holding it can deposit and can open
+  nothing on the Mac.
+- `list_handles` and the deposit result say which destination a handle went to.
+
+Add one on the Mac:
+
+```bash
+strad-hostd destination add pulsemcp --url https://strad.pulsemcp.com --title "PulseMCP's strad"
+# prints:  custody deposit → pulsemcp (strad.pulsemcp.com)  <key>
+strad-hostd keys        # prints it again later
+# restart the daemon to serve the new destination
+```
+
+`strad-hostd destination remove pulsemcp` drops it. Delete the key from that
+strad too.
+
+### What the other strad needs
+
+The deposit route accepts a bearer derived from the `${NAME}` key of an
+enabled `local-tunnel` entry that declares `deposit:`. The other strad has no
+tunnel to this machine and should not have one, so its entry is a deposit
+caller only. Its `url` is a name that never resolves, so strad never dials
+anything:
+
+```yaml
+- slug: custody-my-mbp
+  kind: local-tunnel
+  title: The owner's Mac (custody deposits only)
+  description: Lets strad-hostd custody on the owner's Mac deposit secrets here, write-only. Never dialled.
+  url: https://custody-my-mbp.invalid/
+  entitlements: []
+  headers:
+    Authorization: "Bearer ${HOSTD_CUSTODY_DEPOSIT_KEY}"
+  deposit:
+    into: [linear, granola] # optional; omitted, any slug
+```
+
+- `HOSTD_CUSTODY_DEPOSIT_KEY` is the key `destination add` printed, stored in
+  that strad's own store under the entry's namespace
+  (`/strad/<env>/mcp/custody-my-mbp/static/HOSTD_CUSTODY_DEPOSIT_KEY`) through
+  its console. A deposit cannot seed it: the route refuses a `local-tunnel` slug.
+- `entitlements: []` means no role can reach the slug through `/mcp`. The
+  `.invalid` name reads as `offline` on that strad, which is not degraded
+  ([limitation #152](/limitations/)).
+- No Cloudflare Access headers and no custody slug key. Those open the Mac,
+  and this strad has no reason to hold them.
+- To revoke it there, delete the entry or the key. On the Mac,
+  `destination remove`.
+
+### Verifying a deposit into another strad
+
+The deposit answers `201` with the path and version only after that strad's
+`store.create()` succeeded, so the receipt is the other strad's own account of
+the write. An independent check is `list_parameters` on **that** strad's
+`secrets` server. This strad's `secrets` server cannot do it, because it reads
+this deployment's store. If the other strad's `secrets` slug is console-only
+(no `env:`, no viewer key), its admins can see the parameter and its timestamp
+in its console. For an agent to check it, that strad needs a viewer key on its
+`secrets` slug (`parametermanager.parameterViewer`, never `parameterAccessor`),
+a role that allows only `list_parameters` there, and a token for that role in
+the agent's MCP config.
 
 ## Verifying a deposit
 

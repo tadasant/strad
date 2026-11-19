@@ -4744,4 +4744,22 @@ that costs:
 The `strad.principal` label on the request and tool-call counters does not
 depend on any of this.
 
-See `HACKS.md` #151.
+---
+
+### 152. Another strad takes custody deposits through a tunnel entry that never connects
+
+strad-hostd's custody server can [deposit into another strad](/servers/hostd-custody/#another-strad-named-destinations),
+named in the Mac's config, with a key of its own. That strad's deposit route
+accepts only a `local-tunnel` entry with `deposit:`, and it must not hold a key
+that opens the Mac. So its entry points at an `.invalid` host that never
+resolves, with no roles.
+
+- **That strad shows the slug as always `offline`.** That is not degraded, and
+  no role can reach it, but it is in the roster.
+- **Its key is pasted by hand.** `strad-hostd destination add` prints it on the
+  Mac, and someone stores it in that strad's console. A deposit cannot seed it.
+- **The key sits in the Mac's config file**, like the default destination's.
+- **Verify a deposit there with that strad's own `secrets` server or console.**
+  This deployment's `secrets` server cannot see another store.
+
+See `HACKS.md` #152.

@@ -284,6 +284,7 @@ describe("generate_keypair, through the daemon", () => {
     });
     expect(resultJson(res)).toEqual({
       deposited: true,
+      destination: "default",
       path: "/strad/test/mcp/ssh-example-staging/static/SSH_PRIVATE_KEY",
       version: "v1",
     });

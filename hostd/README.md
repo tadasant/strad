@@ -23,7 +23,8 @@ with Full Disk Access. It cannot send.
 `custody` is opt-in: `init` and the installer leave it off, and
 `strad-hostd add custody` turns it on. It captures a credential the browser
 shows or downloads into a handle, never returning the value, and deposits it
-into strad. While it holds one, the shell and computer-use servers refuse every
+into strad: this machine's own by default, or another strad the config names
+under `custody.destinations` (`strad-hostd destination add`). While it holds one, the shell and computer-use servers refuse every
 call and the browser server refuses its reads. That is enforced here, in
 `src/custody/enforce.ts`, and every result from every server is checked for a
 held value before it leaves. See
@@ -320,6 +321,8 @@ matter:
 | `messages.maxAttachmentBytes`                              | `10485760`          | largest attachment returned, after conversion                          |
 | `computer.maxScreenshotWidth`                              | `1280`              | widest image `take_screenshot` returns                                 |
 | `custody.stradUrl`                                         | unset               | the strad deployment `deposit` posts to; https, or http on loopback    |
+| `custody.stradName`                                        | `"default"`         | the name the `stradUrl` destination also answers to, e.g. `"mine"`     |
+| `custody.destinations`                                     | `{}`                | other strads `deposit` may name, each `{url, key, title?}`             |
 | `custody.downloadsDir`                                     | `~/Downloads`       | where `capture_download` looks for the new file                        |
 | `custody.handleMinutes`                                    | `15`                | how long a captured secret is held undeposited                         |
 | `port` / `controlPort`                                     | `7311` / `7312`     | daemon mode only, both on `127.0.0.1`                                  |

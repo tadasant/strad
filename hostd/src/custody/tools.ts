@@ -17,6 +17,7 @@ import {
   MAX_DEPOSIT_VALUE_LENGTH,
   parseDepositReceipt,
 } from "./deposit-wire.js";
+import { destinationNames, resolveDestination } from "./destinations.js";
 import { KEY_COMMENT, KEY_TYPES, mintKeypair } from "./keygen.js";
 import { elementValue, SNAPSHOT_CANDIDATES } from "./page-scripts.js";
 import { shapeOf, type Vault } from "./vault.js";
@@ -584,7 +585,7 @@ public_key is one authorized_keys line. The private key is OpenSSH format, unenc
     name: "list_handles",
     description: `List this grant's handles: held, and recently ended (deposited, discarded, burned, expired). Shapes and destinations only, never values.
 
-**Returns:** {"handles":[{"handle":"h_3kd9…","state":"held","label":"Linear API key","source":"page https://linear.app","shape":{"length":48,"kind":"token","prefix":"lin_api_"},"created_at":"…","expires_at":"…"},{"handle":"h_9xx…","state":"deposited","path":"/strad/prod/mcp/linear/static/LINEAR_API_KEY","version":"v1"}]}
+**Returns:** {"handles":[{"handle":"h_3kd9…","state":"held","label":"Linear API key","source":"page https://linear.app","shape":{"length":48,"kind":"token","prefix":"lin_api_"},"created_at":"…","expires_at":"…"},{"handle":"h_9xx…","state":"deposited","destination":"default","path":"/strad/prod/mcp/linear/static/LINEAR_API_KEY","version":"v1"}]}
 
 **Use cases:**
 - Check what is still held before ending control
@@ -625,23 +626,41 @@ public_key is one authorized_keys line. The private key is OpenSSH format, unenc
     },
   });
 
+  const names = destinationNames(config);
+  const named = Object.entries(config.custody.destinations).sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
+  const destinationList = [
+    `- "${config.custody.stradName}" (the default, used when destination is omitted)${config.custody.stradUrl ? `: ${new URL(config.custody.stradUrl).host}` : ": not set up on this machine"}`,
+    ...named.map(
+      ([name, d]) =>
+        `- "${name}": ${d.title ? `${d.title}, ` : ""}${new URL(d.url).host}`,
+    ),
+  ].join("\n");
+
   const deposit = defineTool({
     name: "deposit",
-    description: `Send a held secret to strad, which stores it as a NEW secret parameter at /strad/<env>/mcp/<slug>/static/<VARIABLE>. The value goes from this machine to strad directly; you get back where it went.
+    description: `Send a held secret to a strad deployment, which stores it as a NEW secret parameter at /strad/<env>/mcp/<slug>/static/<VARIABLE>. The value goes from this machine to that strad directly; you get back where it went.
+
+Where it can go is fixed by this machine's own config, by NAME — there is no URL argument:
+${destinationList}
+Name the strad the approved list names. Omit destination for the default.
 
 Create-only: if that name already exists for the slug — in its static/ or oauth/ namespace, or resolved from the gateway — strad refuses with "exists" and the handle stays held; a human rotates existing credentials in strad's console. strad also refuses (not_permitted) a name in the slug's url, a process-control name such as NODE_OPTIONS or HTTPS_PROXY, a local-tunnel machine's slug, and a params: true slug this machine is not configured for. It only ever writes that one namespace and never reads anything back.
 
-**Returns:** {"deposited":true,"path":"/strad/prod/mcp/linear/static/LINEAR_API_KEY","version":"v1"}
-The handle ends on success. Confirm through strad's secrets server (list_parameters shows the parameter and its timestamp), never by reading the value.
+**Returns:** {"deposited":true,"destination":"${config.custody.stradName}","path":"/strad/prod/mcp/linear/static/LINEAR_API_KEY","version":"v1"}
+The handle ends on success. Confirm through that strad's secrets server (list_parameters shows the parameter and its timestamp), never by reading the value.
 
-**On refusal** the error names strad's reason: exists, not_permitted (this machine may not deposit into that slug), unauthorized (strad does not accept this machine's deposit key — its custody slug is not configured for deposit), bad_target, store_unavailable, write_failed.
+**On refusal** the error names strad's reason: exists, not_permitted (this machine may not deposit into that slug), unauthorized (that strad does not accept this machine's deposit key for it), bad_target, store_unavailable, write_failed. An unknown destination is refused here and nothing is sent.
 
 **Use cases:**
-- The last step for each secret the owner approved: capture, check the shape, deposit`,
+- The last step for each secret the owner approved: capture, check the shape, deposit
+- The same, into another organisation's strad the approved list names`,
     schema: z.object({
       handle: z.string().min(1),
       slug: z.string().min(1),
       variable: z.string().min(1),
+      destination: z.string().min(1).optional(),
     }),
     inputSchema: {
       type: "object",
@@ -649,6 +668,11 @@ The handle ends on success. Confirm through strad's secrets server (list_paramet
         handle: { type: "string", description: P.handle },
         slug: { type: "string", description: P.slug },
         variable: { type: "string", description: P.variable },
+        destination: {
+          type: "string",
+          enum: names,
+          description: `Which strad to deposit into, by name. Omit it for the default, "${config.custody.stradName}".`,
+        },
       },
       required: ["handle", "slug", "variable"],
     },
@@ -658,20 +682,21 @@ The handle ends on success. Confirm through strad's secrets server (list_paramet
       destructiveHint: false,
       openWorldHint: true,
     },
-    summarize: (a) => `deposit: ${a.handle} → ${a.slug}/${a.variable}`,
+    summarize: (a) =>
+      `deposit: ${a.handle} → ${a.destination ?? config.custody.stradName}:${a.slug}/${a.variable}`,
     handler: async (a, { grant }) => {
       if (!isDepositSlug(a.slug) || !isDepositVariable(a.variable))
         return text(
           "slug must be a strad slug (lowercase, single dashes) and variable an environment-variable name. Nothing was sent.",
           true,
         );
-      const base = config.custody.stradUrl;
-      const key = config.capabilities.custody.key;
-      if (!base || !key)
+      const found = resolveDestination(config, a.destination);
+      if (!found.ok)
         return text(
-          "This machine is not set up to deposit: custody.stradUrl is unset in its config. Nothing was sent; the handle is still held.",
+          `${found.message} Nothing was sent; the handle is still held.`,
           true,
         );
+      const dest = found.destination;
       const value = vault.reveal(a.handle, grant.id);
       if (value === undefined)
         return text(
@@ -680,19 +705,25 @@ The handle ends on success. Confirm through strad's secrets server (list_paramet
         );
       let res: Response;
       try {
-        res = await fetch(new URL(depositRoutePath(a.slug, a.variable), base), {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            authorization: `Bearer ${depositToken(key)}`,
+        res = await fetch(
+          new URL(depositRoutePath(a.slug, a.variable), dest.url),
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              authorization: `Bearer ${depositToken(dest.key)}`,
+            },
+            body: JSON.stringify({ value }),
+            signal: AbortSignal.any([
+              grant.signal,
+              AbortSignal.timeout(20_000),
+            ]),
+            redirect: "error",
           },
-          body: JSON.stringify({ value }),
-          signal: AbortSignal.any([grant.signal, AbortSignal.timeout(20_000)]),
-          redirect: "error",
-        });
+        );
       } catch (err) {
         return text(
-          `Could not reach strad at ${new URL(base).origin}: ${(err as Error).message}. The handle is still held; try again.`,
+          `Could not reach strad "${dest.name}" at ${new URL(dest.url).origin}: ${(err as Error).message}. The handle is still held; try again.`,
           true,
         );
       }
@@ -706,16 +737,18 @@ The handle ends on success. Confirm through strad's secrets server (list_paramet
         const message =
           typeof body?.message === "string" ? ` — ${body.message}` : "";
         return text(
-          `strad refused the deposit (${res.status} ${reason})${message}. The handle is still held.`,
+          `strad "${dest.name}" refused the deposit (${res.status} ${reason})${message}. The handle is still held.`,
           true,
         );
       }
       vault.end(a.handle, "deposited", {
+        destination: dest.name,
         path: receipt.path,
         version: receipt.version,
       });
       return json({
         deposited: true,
+        destination: dest.name,
         path: receipt.path,
         version: receipt.version,
       });
