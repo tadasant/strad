@@ -76,7 +76,11 @@ commonly takes no credential. That makes one rule matter: **a per-slug instance
 never inherits a sibling's bare token or headers.** The renderer gives each bare
 name to the first slug that declares it, and a slug that declares no token of
 its own would otherwise send another VictoriaLogs' credential to its own
-entrypoint. The host drops them unless the slug carries its own.
+entrypoint. The host drops them unless the slug carries its own. The
+conventional `/victorialogs` mount has the mirror-image guard: a bare token,
+headers or tenant that some slug carries under its own name, beside an
+entrypoint that is not the bare one, belongs to that slug's host, so the
+conventional mount does not send it to the bare entrypoint.
 
 ## The child gets an allowlisted environment
 
@@ -92,7 +96,8 @@ The binary refuses to start without an entrypoint, and the mount still has to
 list its tools so the console can show the slug. So an unconfigured mount starts
 its child against `http://unconfigured.invalid`, a name that never resolves,
 lists the binary's own thirteen tools, reports itself `degraded` on the bundle's
-`/healthz`, and refuses every call by naming `VL_INSTANCE_ENTRYPOINT`. See
+`/healthz`, and refuses every call except `documentation` by naming
+`VL_INSTANCE_ENTRYPOINT`. See
 [Limitations #153](/limitations/).
 
 :::caution

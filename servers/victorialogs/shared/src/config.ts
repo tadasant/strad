@@ -64,7 +64,7 @@ export const VICTORIALOGS_CREDENTIAL_ENV_NAMES = [
  * The binary refuses to start without an entrypoint, and a mount with no
  * credential still has to list its tools (the console shows the slug, and an
  * agent sees what it would offer). `.invalid` is reserved by RFC 2606 and never
- * resolves, so nothing can answer it — and the proxy refuses every call on such
+ * resolves, so nothing can answer it — and the proxy refuses every call but `documentation` on such
  * a mount before it reaches the child anyway.
  */
 export const UNCONFIGURED_ENTRYPOINT = "http://unconfigured.invalid";

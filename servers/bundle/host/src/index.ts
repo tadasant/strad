@@ -92,6 +92,7 @@ import { requireInternalToken } from "./internal-auth.js";
 import { errMessage, log, logError, logWarn } from "./log.js";
 import {
   dropInheritedNames,
+  dropUnpairedCredentials,
   extraSlugs,
   instanceEnv,
   missingCredentialsDegraded,
@@ -343,11 +344,14 @@ async function buildMounts(): Promise<Mount[]> {
     "victorialogs",
     "shared/build/index.js",
   )) as VictoriaLogsModule;
-  mounts.push(loadVictoriaLogs(victorialogs, "victorialogs", false));
-  for (const slug of extraSlugs(
+  const victorialogsSlugs = extraSlugs(
     "victorialogs",
     victorialogs.VICTORIALOGS_ENV_NAMES,
-  ))
+  );
+  mounts.push(
+    loadVictoriaLogs(victorialogs, "victorialogs", false, victorialogsSlugs),
+  );
+  for (const slug of victorialogsSlugs)
     deferred.push({
       slug,
       load: async () => loadVictoriaLogs(victorialogs, slug, true),
@@ -832,6 +836,8 @@ interface VictoriaLogsModule extends SupervisedBinaryModule {
   VICTORIALOGS_ENV_NAMES: readonly string[];
   /** The credentials a per-slug instance never inherits. Owned by the tree. */
   VICTORIALOGS_CREDENTIAL_ENV_NAMES: readonly string[];
+  VL_INSTANCE_ENTRYPOINT: string;
+  VL_DEFAULT_TENANT_ID: string;
 }
 
 interface AppSignalModule {
@@ -907,11 +913,22 @@ function loadVictoriaLogs(
   mod: VictoriaLogsModule,
   slug: string,
   perSlug: boolean,
+  // The per-slug instances beside the conventional mount, whose own
+  // credentials the conventional mount must not pair with someone else's
+  // entrypoint. See `dropUnpairedCredentials`.
+  siblings: readonly string[] = [],
 ): Mount {
   const env = slugEnvView(process.env, slug);
   if (perSlug) {
     dropInheritedNames(env, slug, mod.VICTORIALOGS_CREDENTIAL_ENV_NAMES);
-    ownNameOnly(env, slug, "VL_DEFAULT_TENANT_ID");
+    ownNameOnly(env, slug, mod.VL_DEFAULT_TENANT_ID);
+  } else {
+    dropUnpairedCredentials(
+      env,
+      mod.VL_INSTANCE_ENTRYPOINT,
+      [...mod.VICTORIALOGS_CREDENTIAL_ENV_NAMES, mod.VL_DEFAULT_TENANT_ID],
+      siblings,
+    );
   }
   return supervisedBinaryMount(
     {
@@ -2738,7 +2755,7 @@ async function main(): Promise<void> {
   });
 
   // One stray rejection from one of thirty-six servers must not kill the other
-  // thirty-two. The standalone images exit here (correct, when the process IS the
+  // thirty-five. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {
     logError("unhandledRejection", reason);

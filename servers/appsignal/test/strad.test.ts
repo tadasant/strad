@@ -150,6 +150,16 @@ describe('custom_graphql_query is read-only', () => {
     expect(executeCustomQuery).not.toHaveBeenCalled();
   });
 
+  it('refuses a document it cannot parse, rather than letting AppSignal decide', async () => {
+    const query = 'mutation { archiveAlert(id: "1" appId: ';
+    expect(refuseNonQuery(query)).toContain('could not parse');
+    const executeCustomQuery = vi.fn();
+    const client = await connect({ clientFactory: () => ({ executeCustomQuery }) as never });
+    const result = await client.callTool({ name: 'custom_graphql_query', arguments: { query } });
+    expect(result.isError).toBe(true);
+    expect(executeCustomQuery).not.toHaveBeenCalled();
+  });
+
   it('runs a query, with the mount app ID injected for $appId', async () => {
     const executeCustomQuery = vi.fn(async () => ({ app: { id: APP } }));
     const client = await connect({ clientFactory: () => ({ executeCustomQuery }) as never });

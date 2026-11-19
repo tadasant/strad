@@ -22,8 +22,15 @@ import { VictoriaLogsUpstream, type UpstreamOptions } from "./upstream.js";
  * AN UNCONFIGURED MOUNT LISTS BUT DOES NOT CALL. Its child runs against an
  * entrypoint that cannot resolve (config.ts), purely so the binary will start
  * and list; a call is refused here, naming the variable, before it reaches the
- * child.
+ * child. The one exception is `documentation`, which never leaves the binary.
  */
+
+/**
+ * Tools that answer from the binary alone, so an unconfigured mount still
+ * serves them: `documentation` searches the VictoriaLogs docs embedded in the
+ * binary and never contacts an instance.
+ */
+const OFFLINE_TOOLS = new Set(["documentation"]);
 
 export interface CreateOptions {
   version: string;
@@ -77,7 +84,7 @@ export function createMCPServer(options: CreateOptions): CreatedServer {
       s.setRequestHandler(
         CallToolRequestSchema,
         async (request: { params: Parameters<typeof upstream.callTool>[0] }) => {
-          if (missing.length > 0) {
+          if (missing.length > 0 && !OFFLINE_TOOLS.has(request.params.name)) {
             return {
               content: [
                 {

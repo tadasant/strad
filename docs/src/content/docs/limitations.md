@@ -2323,7 +2323,7 @@ whatever the variables are called.
 **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
 `grafana`, `victorialogs`, `appsignal`, `bill-spend`, `aws-device-farm`,
 `whatsapp`, `liveoak`, `airtable`, `flightaware`, `digitalocean`, `hetzner` and
-`ssh` read an injected environment.** The other eleven
+`ssh` read an injected environment.** The other twelve
 trees in the bundle image are vendored upstream code that reads `process.env` directly,
 often lazily at call time, so they see the bare names only. `bill-spend` reads
 the injected view for one mount rather than one per slug: one BILL token is one
@@ -4782,7 +4782,8 @@ pinned release, a SHA-256 digest committed here, a stdio child supervised by
   The build cannot check which version it unpacked. The digest is the only check.
 - **An unconfigured mount points its child at `http://unconfigured.invalid`.**
   The binary will not start without an entrypoint, and the tools must still
-  list. The proxy refuses every call on that mount before the child sees it.
+  list. The proxy refuses every call on that mount but the offline
+  `documentation` before the child sees it.
 - **Its supervisor is a copy of grafana's.** A fix to one is a fix to make in
   the other.
 - **Through strad, it has met only a fake child and an entrypoint that does not

@@ -2707,7 +2707,7 @@ DigitalOcean both times.
 - **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
   `grafana`, `victorialogs`, `appsignal`, `bill-spend`, `aws-device-farm`,
   `whatsapp`, `liveoak`, `airtable`, `flightaware`, `digitalocean`, `hetzner` and
-  `ssh` read an injected env.** The other eleven trees
+  `ssh` read an injected env.** The other twelve trees
   are vendored upstream code reading `process.env`, often lazily at call time
   (`onepassword` builds its client per call off `OP_SERVICE_ACCOUNT_TOKEN`). A single process cannot overlay `process.env`
   per-request without a race, so each tree needs its own seam and gets it when it
@@ -7910,7 +7910,8 @@ each tree is its own npm project, built in its own Docker stage.
 The binary exits on boot without `VL_INSTANCE_ENTRYPOINT`, and a mount with no
 credential still has to list its tools. So an unconfigured mount's child is given
 `http://unconfigured.invalid` (RFC 2606, never resolves) purely so it starts, and
-the proxy refuses every call on that mount, naming the variable, before the
+the proxy refuses every call on that mount except the offline `documentation`,
+naming the variable, before the
 child sees it.
 
 **Why.** No strad server kind runs a local command, and VictoriaMetrics ships

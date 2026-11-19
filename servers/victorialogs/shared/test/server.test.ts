@@ -6,6 +6,7 @@ import {
   createMCPServer,
   missingCredentials,
   upstreamEnv,
+  VICTORIALOGS_CREDENTIAL_ENV_NAMES,
   VICTORIALOGS_ENV_NAMES,
 } from "../src/index.js";
 
@@ -44,6 +45,15 @@ describe("what the mount needs before it can serve", () => {
       [],
     );
     assert.deepEqual(missingCredentials({}), ["VL_INSTANCE_ENTRYPOINT"]);
+  });
+
+  it("names the credentials a per-slug instance never inherits", () => {
+    // The bundle host drops these from a per-slug view, and from the
+    // conventional view when a sibling owns them: a token is one origin's.
+    assert.deepEqual([...VICTORIALOGS_CREDENTIAL_ENV_NAMES], [
+      "VL_INSTANCE_BEARER_TOKEN",
+      "VL_INSTANCE_HEADERS",
+    ]);
   });
 
   it("drops an empty token rather than sending an empty bearer header", () => {
@@ -117,6 +127,28 @@ describe("the handlers the host registers", () => {
     });
     assert.equal(called.isError, true);
     assert.match(called.content[0].text, /VL_INSTANCE_ENTRYPOINT is not set/);
+    await created.close();
+  });
+
+  it("still serves `documentation`, which never leaves the binary, unconfigured", async () => {
+    const created = createMCPServer({
+      version: "test",
+      env: { PATH: process.env.PATH },
+      binary: FAKE,
+      log: () => {},
+    });
+    const server = recordingServer();
+    await created.registerHandlers(server);
+    // The fake serves no `documentation` tool and answers with a JSON-RPC
+    // error: that the error is the CHILD's proves the call was forwarded rather
+    // than refused for the missing entrypoint.
+    await assert.rejects(
+      () =>
+        server.handlers.get("tools/call")!({
+          params: { name: "documentation", arguments: {} },
+        }),
+      /unknown tool documentation/,
+    );
     await created.close();
   });
 });

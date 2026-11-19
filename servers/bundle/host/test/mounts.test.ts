@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   dropInheritedNames,
+  dropUnpairedCredentials,
   extraSlugs,
   instanceEnv,
   missingCredentialsDegraded,
@@ -843,5 +844,58 @@ describe("ownNameOnly", () => {
     const view: Record<string, string | undefined> = { ...own };
     ownNameOnly(view, "gmail", NAME, own);
     expect(view[NAME]).toBe("Tadas");
+  });
+});
+
+describe("dropUnpairedCredentials", () => {
+  // The conventional /victorialogs mount reads bare names, and the renderer
+  // picks each bare name's owner separately: C declared only an entrypoint, B
+  // an entrypoint and a token, so the bare entrypoint is C's and the bare token
+  // B's. Sent together, B's token goes to C's host.
+  const ENV = {
+    VL_INSTANCE_ENTRYPOINT: "https://c.example",
+    VL_INSTANCE_BEARER_TOKEN: "b-token",
+    VL_DEFAULT_TENANT_ID: "7",
+    VICTORIALOGS_B__VL_INSTANCE_ENTRYPOINT: "https://b.example",
+    VICTORIALOGS_B__VL_INSTANCE_BEARER_TOKEN: "b-token",
+    VICTORIALOGS_B__VL_DEFAULT_TENANT_ID: "7",
+  };
+  const NAMES = ["VL_INSTANCE_BEARER_TOKEN", "VL_INSTANCE_HEADERS", "VL_DEFAULT_TENANT_ID"];
+
+  it("drops a bare credential that a sibling with a different origin owns", () => {
+    const log = captureLog();
+    const view: Record<string, string | undefined> = { ...ENV };
+    const dropped = dropUnpairedCredentials(
+      view,
+      "VL_INSTANCE_ENTRYPOINT",
+      NAMES,
+      ["victorialogs-b"],
+      ENV,
+    );
+    expect(dropped).toEqual(["VL_INSTANCE_BEARER_TOKEN", "VL_DEFAULT_TENANT_ID"]);
+    expect(view.VL_INSTANCE_BEARER_TOKEN).toBeUndefined();
+    expect(view.VL_INSTANCE_ENTRYPOINT).toBe("https://c.example");
+    expect(log.lines().join("\n")).toContain("not using the bare");
+  });
+
+  it("keeps the bare credential when its owner's origin IS the bare origin", () => {
+    const env = { ...ENV, VL_INSTANCE_ENTRYPOINT: "https://b.example" };
+    const view: Record<string, string | undefined> = { ...env };
+    expect(
+      dropUnpairedCredentials(view, "VL_INSTANCE_ENTRYPOINT", NAMES, ["victorialogs-b"], env),
+    ).toEqual([]);
+    expect(view.VL_INSTANCE_BEARER_TOKEN).toBe("b-token");
+  });
+
+  it("keeps a bare credential no slug claims, and does nothing with no siblings", () => {
+    const view: Record<string, string | undefined> = {
+      VL_INSTANCE_ENTRYPOINT: "https://c.example",
+      VL_INSTANCE_BEARER_TOKEN: "c-token",
+    };
+    expect(
+      dropUnpairedCredentials(view, "VL_INSTANCE_ENTRYPOINT", NAMES, ["victorialogs-b"], ENV),
+    ).toEqual([]);
+    expect(dropUnpairedCredentials(view, "VL_INSTANCE_ENTRYPOINT", NAMES, [], ENV)).toEqual([]);
+    expect(view.VL_INSTANCE_BEARER_TOKEN).toBe("c-token");
   });
 });

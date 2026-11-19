@@ -179,7 +179,7 @@ optional `VL_INSTANCE_BEARER_TOKEN`, `VL_INSTANCE_HEADERS` and
 `VL_DEFAULT_TENANT_ID`, with `MCP_SERVER_MODE` pinned to `stdio`; and because the
 binary will not start without an entrypoint, an unconfigured mount's child is
 pointed at `http://unconfigured.invalid` so its tools still list, and the proxy
-refuses every call on it. A per-slug instance never inherits a sibling's bare
+refuses every call on it except the offline `documentation`. A per-slug instance never inherits a sibling's bare
 token or headers: only the entrypoint is required, so a slug with no token of
 its own would otherwise send another VictoriaLogs' credential to its entrypoint.
 
@@ -216,7 +216,7 @@ that *can* be made survivable is:
 
 - a browser server whose **login fails** is marked `degraded` in `/healthz`; the
   container keeps serving. (The standalone images `process.exit(1)` here — correct
-  when the process *is* the server, catastrophic when it is thirty-two others too.)
+  when the process *is* the server, catastrophic when it is thirty-five others too.)
   For fetchpet the mark is a report on the last attempt: the next tool call retries
   the login and a success clears it, so a form that changed and was fixed does not
   cost a redeploy. good-eggs still holds its first failure until the container

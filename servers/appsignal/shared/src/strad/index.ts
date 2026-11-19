@@ -103,7 +103,8 @@ const LOCAL_TOOLS = new Set(['get_graphql_schema', 'get_graphql_schema_details']
 
 /**
  * Upstream's locked-mode surface, in upstream's registration order: the two
- * schema tools, then the eighteen that read one app.
+ * schema tools, then seventeen that read this mount's app, then
+ * custom_graphql_query.
  */
 function upstreamTools(clientFactory: ClientFactory): UpstreamTool[] {
   // Every factory takes an McpServer it never reads (`_server`); none is built.
@@ -144,14 +145,21 @@ export const TOOL_NAMES: readonly string[] = upstreamTools(() => {
  * Parsed rather than pattern-matched: `mutation` can hide behind a comment, a
  * second operation, or an anonymous shorthand, and only the parser agrees with
  * AppSignal about which operations a document holds. A document that does not
- * parse is passed through so that AppSignal's own error reaches the caller.
+ * parse is REFUSED, not passed through: graphql-request sends a string as is,
+ * so passing it would make the read-only guarantee depend on AppSignal's parser
+ * being no more lenient than this one. The cost is the caller sees graphql-js's
+ * syntax error instead of AppSignal's.
  */
 export function refuseNonQuery(query: string): string | null {
   let document;
   try {
     document = parse(query);
-  } catch {
-    return null;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return (
+      `custom_graphql_query could not parse this document, so nothing was sent to ` +
+      `AppSignal (only a document that parses can be checked for being read-only): ${reason}`
+    );
   }
   for (const definition of document.definitions) {
     if (definition.kind === Kind.OPERATION_DEFINITION && definition.operation !== 'query') {
