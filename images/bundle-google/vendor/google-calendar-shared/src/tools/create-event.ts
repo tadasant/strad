@@ -3,6 +3,14 @@ import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
 import { logError } from '../logging.js';
 import { buildCalendarEventUrl } from '../utils/calendar-helpers.js';
+import {
+  formatShowAs,
+  resolveTransparency,
+  SHOW_AS_VALUES,
+  showAsField,
+  TRANSPARENCY_VALUES,
+  transparencyField,
+} from '../utils/show-as.js';
 
 export const CreateEventSchema = z.object({
   calendar_id: z
@@ -51,6 +59,8 @@ export const CreateEventSchema = z.object({
         'Omitted, Google applies its own default, which it documents as not notifying, though it says some emails might still be sent. ' +
         'Pass "all" to be sure attendees are invited, or "none" to ask explicitly for no emails.'
     ),
+  transparency: transparencyField,
+  show_as: showAsField,
   attachments: z
     .array(
       z.object({
@@ -73,6 +83,7 @@ export function createEventTool(server: Server, clientFactory: ClientFactory) {
       'Creates a new event in Google Calendar. ' +
       'Supports both timed events (using start_datetime/end_datetime) and all-day events (using start_date/end_date). ' +
       'Can include title, description, location, and attendees. ' +
+      'Set show_as to "free" (or transparency to "transparent") to show the event as Free rather than Busy. ' +
       'Set send_updates to "all" to email invites to attendees, or to "none" to create the event without emailing invites to attendees. ' +
       'Returns the created event details including the event ID and link.',
     inputSchema: {
@@ -128,6 +139,16 @@ export function createEventTool(server: Server, clientFactory: ClientFactory) {
           enum: ['all', 'externalOnly', 'none'],
           description: CreateEventSchema.shape.send_updates.description,
         },
+        transparency: {
+          type: 'string',
+          enum: [...TRANSPARENCY_VALUES],
+          description: CreateEventSchema.shape.transparency.description,
+        },
+        show_as: {
+          type: 'string',
+          enum: [...SHOW_AS_VALUES],
+          description: CreateEventSchema.shape.show_as.description,
+        },
         attachments: {
           type: 'array',
           items: {
@@ -146,6 +167,7 @@ export function createEventTool(server: Server, clientFactory: ClientFactory) {
     handler: async (args: unknown) => {
       try {
         const parsed = CreateEventSchema.parse(args);
+        const transparency = resolveTransparency(parsed);
         const client = clientFactory();
 
         // Validate that we have either datetime or date fields
@@ -165,6 +187,7 @@ export function createEventTool(server: Server, clientFactory: ClientFactory) {
           end: { dateTime?: string; date?: string; timeZone?: string };
           attendees?: Array<{ email: string }>;
           attachments?: Array<{ fileUrl: string; title?: string }>;
+          transparency?: 'opaque' | 'transparent';
         } = {
           summary: parsed.summary,
           description: parsed.description,
@@ -191,6 +214,10 @@ export function createEventTool(server: Server, clientFactory: ClientFactory) {
           }
         } else if (parsed.end_date) {
           event.end.date = parsed.end_date;
+        }
+
+        if (transparency) {
+          event.transparency = transparency;
         }
 
         // Add attendees
@@ -263,6 +290,9 @@ export function createEventTool(server: Server, clientFactory: ClientFactory) {
         if (result.location) {
           output += `**Location:** ${result.location}\n`;
         }
+
+        // Show as Free / Busy, read back from the event Google returned
+        output += `**Show as:** ${formatShowAs(result.transparency)}\n`;
 
         // Attendees
         if (result.attendees && result.attendees.length > 0) {

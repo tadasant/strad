@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
 import { logError } from '../logging.js';
 import { buildCalendarEventUrl } from '../utils/calendar-helpers.js';
+import { formatShowAs } from '../utils/show-as.js';
 
 export const GetEventSchema = z.object({
   calendar_id: z
@@ -18,7 +19,7 @@ export function getEventTool(server: Server, clientFactory: ClientFactory) {
     name: 'get_calendar_event',
     description:
       'Retrieves detailed information about a specific calendar event by ID. ' +
-      'Returns full event details including title, time, location, attendees, description, recurrence rules, and reminders. ' +
+      'Returns full event details including title, time, location, attendees, description, Free/Busy (show as), recurrence rules, and reminders. ' +
       'Use this when you need complete information about a particular event.',
     inputSchema: {
       type: 'object' as const,
@@ -137,9 +138,7 @@ export function getEventTool(server: Server, clientFactory: ClientFactory) {
         if (event.visibility) {
           output += `**Visibility:** ${event.visibility}\n`;
         }
-        if (event.transparency) {
-          output += `**Show as:** ${event.transparency}\n`;
-        }
+        output += `**Show as:** ${formatShowAs(event.transparency)}\n`;
 
         // Metadata
         if (event.created) {

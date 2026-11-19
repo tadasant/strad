@@ -3,6 +3,14 @@ import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
 import { logError } from '../logging.js';
 import { buildCalendarEventUrl } from '../utils/calendar-helpers.js';
+import {
+  formatShowAs,
+  resolveTransparency,
+  SHOW_AS_VALUES,
+  showAsField,
+  TRANSPARENCY_VALUES,
+  transparencyField,
+} from '../utils/show-as.js';
 
 export const UpdateEventSchema = z.object({
   event_id: z.string().min(1).describe('The ID of the event to update.'),
@@ -51,6 +59,8 @@ export const UpdateEventSchema = z.object({
     .describe(
       'Whether to send update notifications. "all" sends to all attendees, "externalOnly" to external attendees only, "none" sends no notifications.'
     ),
+  transparency: transparencyField,
+  show_as: showAsField,
   attachments: z
     .array(
       z.object({
@@ -73,7 +83,7 @@ export function updateEventTool(server: Server, clientFactory: ClientFactory) {
     description:
       'Updates an existing event in Google Calendar. ' +
       'Only the fields provided will be updated (PATCH semantics). ' +
-      'Can update title, description, location, time, and attendees. ' +
+      'Can update title, description, location, time, attendees, and whether the event shows as Free or Busy (show_as / transparency). ' +
       'Returns the updated event details.',
     inputSchema: {
       type: 'object' as const,
@@ -132,6 +142,16 @@ export function updateEventTool(server: Server, clientFactory: ClientFactory) {
           enum: ['all', 'externalOnly', 'none'],
           description: UpdateEventSchema.shape.send_updates.description,
         },
+        transparency: {
+          type: 'string',
+          enum: [...TRANSPARENCY_VALUES],
+          description: UpdateEventSchema.shape.transparency.description,
+        },
+        show_as: {
+          type: 'string',
+          enum: [...SHOW_AS_VALUES],
+          description: UpdateEventSchema.shape.show_as.description,
+        },
         attachments: {
           type: 'array',
           items: {
@@ -150,6 +170,7 @@ export function updateEventTool(server: Server, clientFactory: ClientFactory) {
     handler: async (args: unknown) => {
       try {
         const parsed = UpdateEventSchema.parse(args);
+        const transparency = resolveTransparency(parsed);
         const client = clientFactory();
 
         // Build event update object with only provided fields
@@ -161,6 +182,7 @@ export function updateEventTool(server: Server, clientFactory: ClientFactory) {
           end?: { dateTime?: string; date?: string; timeZone?: string };
           attendees?: Array<{ email: string }>;
           attachments?: Array<{ fileUrl: string; title?: string }>;
+          transparency?: 'opaque' | 'transparent';
         } = {};
 
         if (parsed.summary !== undefined) {
@@ -197,6 +219,10 @@ export function updateEventTool(server: Server, clientFactory: ClientFactory) {
           } else if (parsed.end_date) {
             eventUpdate.end.date = parsed.end_date;
           }
+        }
+
+        if (transparency) {
+          eventUpdate.transparency = transparency;
         }
 
         // Set attendees if provided
@@ -269,6 +295,9 @@ export function updateEventTool(server: Server, clientFactory: ClientFactory) {
         if (result.location) {
           output += `**Location:** ${result.location}\n`;
         }
+
+        // Show as Free / Busy, read back from the event Google returned
+        output += `**Show as:** ${formatShowAs(result.transparency)}\n`;
 
         // Attendees
         if (result.attendees && result.attendees.length > 0) {
