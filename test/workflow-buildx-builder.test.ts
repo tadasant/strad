@@ -17,7 +17,7 @@ import {
  * `~/.docker/buildx/current` is a shared name, in exactly the sense
  * `test/ci-workflow.isolation.test.ts` and `test/bundle-google-workflow.isolation.test.ts`
  * mean it — and the least visible one, because nothing in a workflow file says
- * it exists. `runs-on: self-hosted` means every job runs as the same user on one
+ * it exists. On a self-hosted runner every job runs as the same user on one
  * box, `docker/setup-buildx-action` defaults to `use: true`, and `docker buildx
  * create --use` writes that ONE file. A `docker buildx build` with no
  * `--builder` reads it. So a build resolves whichever job on the box created a

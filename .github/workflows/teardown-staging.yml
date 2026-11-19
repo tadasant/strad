@@ -74,13 +74,14 @@ permissions:
 
 jobs:
   power:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: staging
     steps:
       - name: Install doctl
         # Binary only, for the same reason deploy-staging.yml gives: given a
         # token this action runs `doctl auth init`, which writes it in cleartext
-        # to a $HOME every runner process on this box shares. The step below
+        # to $HOME, which every runner process on a self-hosted box shares. The step below
         # supplies the token through its own env instead.
         uses: digitalocean/action-doctl@v2
         with:
@@ -128,10 +129,11 @@ jobs:
           fi
 
           # THE SPEC IS JOB-PRIVATE, for the reason src/deploy/spec-file.ts
-          # records: `runs-on: self-hosted` means several runner processes share
-          # one machine and one /tmp, and this repo's staging deploy and
-          # tadasant-internal's prod deploy have both landed on the same box.
-          # RUNNER_TEMP is per runner installation and emptied between jobs.
+          # records: on a self-hosted runner several runner processes share one
+          # machine and one /tmp, and this repo's staging deploy and
+          # tadasant-internal's prod deploy both landed on the same box. This
+          # job runs on a hosted VM of its own; RUNNER_TEMP keeps it private on
+          # any runner, being per runner installation and emptied between jobs.
           #
           # It is also not log-safe. Secret values come back as DigitalOcean's
           # `EV[…]` ciphertext rather than plaintext, and they are still not

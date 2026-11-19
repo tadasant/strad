@@ -33,8 +33,8 @@ name: Bundle image self-heal
 #
 #   - workflow_run only fires from the copy of this file on the DEFAULT branch.
 #     Edits on a feature branch change nothing until they merge.
-#   - It runs on ubuntu-latest, NOT the self-hosted runners, for the same reason
-#     alert-ci-failure.yml does: the self-hosted runners going down is precisely
+#   - It runs on ubuntu-latest and must never move to a self-hosted runner, for
+#     the same reason alert-ci-failure.yml gives: a runner going down is precisely
 #     the event this heals, and a heal that runs on the broken thing cannot run.
 
 on:

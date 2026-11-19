@@ -6,15 +6,17 @@ description: >-
 # WHY THIS EXISTS
 #
 # `~/.docker/config.json` is where `docker login` puts a registry credential, and
-# on this box there is exactly ONE of it. `runs-on: self-hosted` means every job
-# runs as the same user, so nine workflows that all do
+# on a shared runner box there is exactly ONE of it. A self-hosted runner runs
+# every job as the same user, so nine workflows that all do
 #
 #   docker/login-action@v3  ->  docker login ghcr.io
 #
 # are all writing the same `auths["ghcr.io"]` entry, with their own job's
 # `GITHUB_TOKEN`, over each other. Worse, `docker/login-action` defaults to
 # `logout: true`, so its post step runs `docker logout ghcr.io` — which DELETES
-# that entry out from under whatever else on the box is mid-push.
+# that entry out from under whatever else on the box is mid-push. A GitHub-hosted
+# runner is a VM per job, so it cannot happen there; this action costs nothing
+# and keeps it that way on any runner that does share a `$HOME`.
 #
 # This is HACKS.md #53 one file over. The pointer was the shared thing there; the
 # credential is the shared thing here, and it is the more damaging of the two,

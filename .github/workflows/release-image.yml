@@ -43,7 +43,8 @@ permissions:
 
 jobs:
   build-and-push:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Refuse to release from anything but main
         # This workflow is the release path: it moves `:latest` and notifies
@@ -87,10 +88,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Job-scoped: on this self-hosted box every job runs as the same user, so
+      # Job-scoped. On a shared runner every job runs as the same user, so
       # `docker buildx create --use` writes ONE `~/.docker/buildx/current` and a
       # build with no `--builder` resolves whichever job created a builder most
-      # recently — then dies when that job removes it. HACKS.md #53.
+      # recently — then dies when that job removes it. A GitHub-hosted runner is
+      # a VM per job, so that cannot happen here; the explicit builder costs
+      # nothing and keeps it that way on any runner that does share. HACKS.md #53.
       - uses: docker/setup-buildx-action@v3
         id: buildx
         with:
@@ -141,9 +144,8 @@ jobs:
             sha256:*) ;;
             *) echo "::error::the build step produced no image digest ('${BUILT:-}')"; exit 1 ;;
           esac
-          # Credentials go in through curl's stdin config, never argv: this is a
-          # shared self-hosted runner and argv is readable by anything that can
-          # run `ps`. `|| true` keeps `set -e` from killing the step before the
+          # Credentials go in through curl's stdin config, never argv: on any
+          # shared runner argv is readable by anything that can run `ps`. `|| true` keeps `set -e` from killing the step before the
           # diagnostic below can say what actually went wrong.
           TOKEN=$(printf 'user = "%s:%s"\n' "$ACTOR" "$GH_TOKEN" \
             | curl -sS -K - "https://ghcr.io/token?service=ghcr.io&scope=repository:tadasant/strad:pull" 2>/dev/null \

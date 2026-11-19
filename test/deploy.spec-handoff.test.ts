@@ -6,7 +6,7 @@ import { parse } from "yaml";
 /**
  * The rendered spec must not live at a path another job can name.
  *
- * `runs-on: self-hosted` means several runner PROCESSES share one machine, and
+ * On a self-hosted runner several runner PROCESSES share one machine, and
  * they share `/tmp` with each other. This repo's staging deploy and
  * tadasant-internal's prod deploy both wrote `/tmp/spec.json`, and on 2026-08-06
  * they overlapped on `ci-runner-2`: prod's render truncated staging's finished

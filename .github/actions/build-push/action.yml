@@ -84,9 +84,9 @@ inputs:
       The buildx builder to run on: pass this job's own
       `docker/setup-buildx-action` output — steps.<id>.outputs.name — as an
       expression. Not optional in practice: an empty value falls back to the
-      box-wide `~/.docker/buildx/current`, which a concurrent job on this
-      self-hosted runner rewrites and then deletes out from under an in-flight
-      build (HACKS.md #53). The guard step below refuses to build without it.
+      box-wide `~/.docker/buildx/current`, which a concurrent job on a shared
+      runner rewrites and then deletes out from under an in-flight build
+      (HACKS.md #53). The guard step below refuses to build without it.
     required: true
   context:
     description: Build context, as docker/build-push-action takes it.

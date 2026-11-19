@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
  * `bundle-google-ci.yml`'s docker job must not name a resource the whole runner
  * box shares.
  *
- * It is `runs-on: self-hosted` against the same ONE docker daemon every other
+ * On a shared runner it runs against the same ONE docker daemon every other
  * job uses, and its concurrency group is per-REF — so two PRs run it at the same
  * time. A fixed container name collides loudly there. A fixed image TAG does
  * not: a concurrent job can rebuild it between our build and our `docker run`,

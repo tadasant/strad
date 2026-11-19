@@ -42,7 +42,8 @@ jobs:
   #     reads, and getting that wrong is a mount that serves the wrong account
   #     while looking healthy. A smoke test counts tools and would never see it.
   unit_tests:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -56,9 +57,12 @@ jobs:
         run: npm test
 
   build_and_smoke:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     # The concurrency group above is per-REF, so two PRs run this job at the same
-    # time, on one box, against one docker daemon. A fixed container name collides
+    # time. On a hosted runner each gets its own VM; on a shared runner they get
+    # one box and one docker daemon, and the per-run identifiers below are kept
+    # so this job stays correct there too. A fixed container name collides
     # loudly there; a fixed image TAG does not, and that is the failure worth
     # naming: a concurrent job rebuilding `strad-server-bundle-google:ci` between
     # this job's build and its `docker run` leaves the smoke test asserting three
@@ -79,8 +83,8 @@ jobs:
       BUNDLE_GOOGLE_CONTAINER: bundle-google-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
-      # The builder is a shared name too. Every job on this box runs as the same
-      # user, so `docker buildx create --use` writes ONE
+      # The builder is a shared name too. On a shared runner every job runs as the
+      # same user, so `docker buildx create --use` writes ONE
       # `~/.docker/buildx/current`, and a build with no `--builder` resolves
       # whichever job created a builder most recently — then dies with
       # `graceful_stop` when that job's teardown removes it. `use: false` never
@@ -145,7 +149,7 @@ jobs:
           docker run -d --name "$BUNDLE_GOOGLE_CONTAINER" --label strad-ci=1 "$BUNDLE_GOOGLE_IMAGE"
 
           probe='fetch("http://127.0.0.1:8080/healthz").then(r=>{if(!r.ok)process.exit(1);return r.text()}).then(t=>{console.log(t)}).catch(()=>process.exit(1))'
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if docker exec "$BUNDLE_GOOGLE_CONTAINER" node -e "$probe"; then break; fi
             sleep 1
           done
@@ -155,8 +159,8 @@ jobs:
 
       # Names only this run's container and image, so it cannot reap a concurrent
       # job's. Deleting the image matters too: per-run tags would otherwise pile up
-      # one per CI run on a runner box that never goes away. buildx's cache is not
-      # the daemon's image store, so nothing rebuilds slower for this.
+      # one per CI run on any runner box that outlives the job. buildx's cache is
+      # not the daemon's image store, so nothing rebuilds slower for this.
       - name: Tear down
         if: always()
         run: |

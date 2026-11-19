@@ -29,7 +29,7 @@
  *     --app strad-staging > "$RUNNER_TEMP/spec.json"
  *
  * The deploy writes it into the job's own temp directory, never a shared /tmp:
- * several runner processes share one self-hosted machine, and a second job
+ * on a self-hosted runner several runner processes share one machine, and a second job
  * rendering to the same path truncates this one mid-deploy. See
  * src/deploy/spec-file.ts.
  *

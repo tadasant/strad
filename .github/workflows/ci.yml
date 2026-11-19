@@ -21,7 +21,8 @@ concurrency:
 
 jobs:
   lint:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -58,7 +59,8 @@ jobs:
           "$tmp/actionlint" -color
 
   test:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -75,7 +77,8 @@ jobs:
   # (`consoleEnvs:` for `consoleEnv:`, which Zod silently strips) fails here
   # instead of deploying a console with no admin credential.
   config:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -325,14 +328,16 @@ jobs:
     # `servers (good-eggs, true, true, true)` — so the check name changes the day
     # a tree gains a build step. The tree is the identity; the booleans are how.
     name: servers (${{ matrix.tree }})
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       # NOT optional. The default cancels every sibling leg on the first failure,
       # which turns "good-eggs is broken" into "twelve other trees have no
       # result".
       fail-fast: false
-      # No `max-parallel` on purpose: every leg runs concurrently on the one
-      # self-hosted box, and a cap would only make PRs slower.
+      # No `max-parallel` on purpose: every leg gets its own hosted runner, and a
+      # cap would only make PRs slower. GitHub's per-account limit on concurrent
+      # hosted jobs is the only throttle, and it queues rather than fails.
       matrix:
         include:
           # skip-browser sets PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD on the install. The
@@ -475,7 +480,8 @@ jobs:
   # here talks to Meta.
   messenger_bridge:
     name: messenger bridge (go)
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: gofmt, vet, test
@@ -501,7 +507,8 @@ jobs:
   # nothing here. Lint and format for this tree run in the `lint` job, from the
   # repo root.
   hostd:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -511,7 +518,7 @@ jobs:
         working-directory: hostd
         run: npm ci
       - name: Install Chromium
-        run: npx --yes playwright@1.63.0 install chromium
+        run: npx --yes playwright@1.63.0 install --with-deps chromium
       - name: Build and test
         working-directory: hostd
         run: npm test
@@ -543,9 +550,13 @@ jobs:
   # the one thing that can answer it early — the real names, from the real image —
   # so it dumps them and checks every config in the repo against them.
   bundle_image:
-    runs-on: self-hosted
-    # One runner box means one docker daemon, and every concurrent job shares it.
-    # A fixed name collides loudly; a fixed TAG is worse, because a concurrent job
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # On a shared runner, one box means one docker daemon that every concurrent
+    # job shares. A hosted runner is a VM per job, so nothing collides here; the
+    # per-run identifiers stay because they cost nothing and keep this job
+    # correct on any runner that does share a daemon. On a shared daemon a fixed
+    # name collides loudly; a fixed TAG is worse, because a concurrent job
     # rebuilding it between our build and our run is a wrong-artifact green with no
     # error anywhere. Per-run identifiers make both impossible, and let the
     # `if: always()` teardown name only this job's container.
@@ -572,7 +583,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # The builder is a shared resource too, and the sharpest one: every job on
-      # this box runs as the same user, so `docker buildx create --use` writes
+      # a shared runner runs as the same user, so `docker buildx create --use` writes
       # ONE `~/.docker/buildx/current`, and a `docker buildx build` with no
       # `--builder` resolves whichever job created a builder most recently. This
       # job's build then runs inside a CONCURRENT job's buildkit, and dies with
@@ -642,7 +653,7 @@ jobs:
             -e REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN=ci.example \
             -e SECRETS_PROJECT_ID=ci -e SECRETS_NAMESPACES=/strad/staging/mcp/ \
             "$BUNDLE_IMAGE"
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if docker exec "$BUNDLE_CONTAINER" node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" 2>/dev/null; then break; fi
             sleep 2
           done
@@ -713,11 +724,12 @@ jobs:
             -e REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN=ci.example \
             -e SECRETS_PROJECT_ID=ci -e SECRETS_NAMESPACES=/strad/staging/mcp/ \
             "$BUNDLE_IMAGE"
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if docker exec "$BUNDLE_CLOSED_CONTAINER" node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" 2>/dev/null; then break; fi
             sleep 2
           done
           docker exec "$BUNDLE_CLOSED_CONTAINER" node /app/scripts/smoke.mjs --json > bundle-tools-closed.json
+          # shellcheck disable=SC2016 # the quoted text is JavaScript, not shell
           node -e '
             const dump = JSON.parse(require("fs").readFileSync("bundle-tools-closed.json", "utf8"));
             const entries = Object.entries(dump.mounts);
@@ -743,10 +755,12 @@ jobs:
         run: |
           set -euo pipefail
           docker exec "$BUNDLE_CONTAINER" node /app/scripts/smoke.mjs --json > bundle-tools.json
+          configs=()
+          for cfg in strad.config*.yaml infra/*.yaml; do configs+=(--config "$cfg"); done
           npm run --silent policy:check -- \
             --tools bundle-tools.json \
             --image ghcr.io/tadasant/strad-bundle:latest \
-            $(for cfg in strad.config*.yaml infra/*.yaml; do printf -- '--config %s ' "$cfg"; done)
+            "${configs[@]}"
 
       # PER-SLUG GMAIL, END TO END, IN A REAL CONTAINER — and the cross-account
       # trap it exists to close.
@@ -789,12 +803,13 @@ jobs:
             -e ONEPASSWORD_CI_ALL__OP_SERVICE_ACCOUNT_TOKEN=ops_ci_placeholder \
             -e ONEPASSWORD_CI_ALL__OP_ELICITATION_WRITE=false \
             "$BUNDLE_IMAGE"
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if docker exec "$GMAILSLUG" node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" 2>/dev/null; then break; fi
             sleep 2
           done
           docker exec "$GMAILSLUG" node -e 'fetch("http://127.0.0.1:8080/healthz").then(r=>r.json()).then(h=>console.log(JSON.stringify(h)))' > bundle-health-gmail.json
           docker exec "$GMAILSLUG" node /app/scripts/smoke.mjs --json > bundle-tools-gmail.json
+          # shellcheck disable=SC2016 # the quoted text is JavaScript, not shell
           node -e '
             const fs = require("fs");
             const health = JSON.parse(fs.readFileSync("bundle-health-gmail.json", "utf8"));
@@ -873,7 +888,7 @@ jobs:
           set -euo pipefail
           MULTI="$BUNDLE_CONTAINER-multi"
           docker run -d --name "$MULTI" --label strad-ci=1             -e STRAD_INTERNAL_TOKEN="$STRAD_INTERNAL_TOKEN"             -e GCS_PROJECT_ID=ci -e GCS_BUCKET=ci-bucket             -e REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET=ci-rfs-bucket             -e REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN=ci.example             -e SECRETS_STORES='[{"project":"ci-staging","namespaces":["/strad/staging/mcp/"],"viewerKeyVar":"SECRETS_SERVICE_ACCOUNT_KEY_JSON"},{"project":"ci-prod","namespaces":["/strad/prod/mcp/"],"viewerKeyVar":"CI_PROD_VIEWER_KEY_JSON"}]'             "$BUNDLE_IMAGE"
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if docker exec "$MULTI" node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" 2>/dev/null; then break; fi
             sleep 2
           done
@@ -881,6 +896,7 @@ jobs:
           # The mount exists (a `loadConfig` throw would have skipped it), and it
           # names both stores rather than one. `node -e` over the dump rather than
           # grep, so a partial match cannot pass for a whole one.
+          # shellcheck disable=SC2016 # the quoted text is JavaScript, not shell
           node -e '
             const dump = JSON.parse(require("fs").readFileSync("bundle-tools-multi.json", "utf8"));
             const secrets = dump.mounts["/secrets"];
@@ -902,8 +918,8 @@ jobs:
 
       # Names only this run's container and image, so it cannot reap a concurrent
       # job's. Deleting the image matters too: per-run tags would otherwise pile up
-      # one per CI run on a runner box that never goes away. buildx's cache is not
-      # the daemon's image store, so nothing rebuilds slower for this.
+      # one per CI run on any runner box that outlives the job. buildx's cache is
+      # not the daemon's image store, so nothing rebuilds slower for this.
       - name: Tear down
         if: always()
         run: |
@@ -912,7 +928,8 @@ jobs:
           docker rmi -f "$BUNDLE_IMAGE" 2>/dev/null || true
 
   verify_lockfile:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -933,16 +950,17 @@ jobs:
   # by nothing else. Both are how a session gets its first look at strad, and a
   # broken one reads as "strad is broken".
   dev_env:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
-      # Per-run, for the reason spelled out on `bundle_image`: one runner box
-      # means one docker daemon, and a fixed compose project would have two
+      # Per-run, for the reason spelled out on `bundle_image`: on a shared
+      # runner one box means one docker daemon, and a fixed compose project would have two
       # concurrent jobs sharing a container, a volume and a build.
       AC_PROJECT: strad-dev-ci-${{ github.run_id }}-${{ github.run_attempt }}
       COMPOSE_FILE: .agent-containers/docker-compose.dev.yml
       # The credential mounts, redirected away from the runner's real HOME. A
       # bind mount whose source does not exist is created by the daemon as root,
-      # and this box's HOME belongs to a human.
+      # and a runner's HOME is not this job's to litter.
       AC_CLAUDE_DIR: /tmp/ac-ci-claude-${{ github.run_id }}-${{ github.run_attempt }}
       AC_GH_DIR: /tmp/ac-ci-gh-${{ github.run_id }}-${{ github.run_attempt }}
       # Name the builder instead of resolving the ambient one. `default` is the
@@ -1063,7 +1081,7 @@ jobs:
           base="http://127.0.0.1:${port}"
           echo "compose port -> ${mapping}; base ${base}"
 
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl -fsS "$base/healthz" > /dev/null 2>&1; then break; fi
             sleep 1
           done
@@ -1095,7 +1113,7 @@ jobs:
           # things.
           echo "--- run.sh is idempotent"
           # Captured in a variable rather than a file: a fixed path under /tmp is
-          # a shared resource on this box exactly like a fixed port is, and a
+          # a shared resource on a shared box exactly like a fixed port is, and a
           # concurrent job writing it between the tee and the grep is a green
           # that proves nothing.
           rerun=$(dc exec -T app .agent-containers/run.sh)
@@ -1124,7 +1142,8 @@ jobs:
   # sidebar fails the PR rather than the deploy. Node-only — docs/ has its own
   # dependency tree and never touches the gateway's.
   docs_site:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -1142,7 +1161,8 @@ jobs:
   # The image is the deliverable, so a PR that cannot produce one is a failing
   # PR — not something we find out about at release time.
   build_image:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     # Per-run, for the reason spelled out on `bundle_image`. This job carries the
     # sharpest version of it: a concurrent job rebuilding a shared `strad:ci`
     # between our build and our run would move the 401 assertion below onto
@@ -1152,8 +1172,8 @@ jobs:
       STRAD_CONTAINER: strad-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
-      # Job-scoped, for the reason spelled out on `bundle_image`: the box-wide
-      # `~/.docker/buildx/current` is a shared name like any other.
+      # Job-scoped, for the reason spelled out on `bundle_image`: on a shared
+      # runner, `~/.docker/buildx/current` is a box-wide name like any other.
       - uses: docker/setup-buildx-action@v3
         id: buildx
         with:
@@ -1215,7 +1235,7 @@ jobs:
           echo "docker port -> ${mapping}; host port ${port}"
           base="http://127.0.0.1:${port}"
 
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl -fsS "$base/healthz" >/dev/null 2>&1; then break; fi
             sleep 1
           done

@@ -2,8 +2,8 @@ name: hostd-ax
 
 # strad-hostd's two native helpers are Swift and only build on a Mac, and every
 # other job in this repository runs on Linux. This is the one workflow on a
-# GitHub-hosted macOS runner, and it is billed by the minute on a private
-# repository, so it is kept to what needs a Mac and runs only when a helper,
+# GitHub-hosted macOS runner. macOS runners are the slowest to schedule and the
+# scarcest per account, so it is kept to what needs a Mac and runs only when a helper,
 # the daemon code a helper's smoke test imports, the installer's launchd path, or
 # this file changes.
 #
