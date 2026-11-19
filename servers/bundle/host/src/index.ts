@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * bundle — THE strad supplementary image. All 36 upstream MCP servers (36
+ * bundle — THE strad supplementary image. All 37 MCP servers (37
  * mounts, see `buildMounts`), one container, one process, one Chromium, and one
  * mcp-grafana and one mcp-victorialogs child per mount that uses them. The
  * gateway's config names more SLUGS than that — 45 supplementary-image entries
@@ -11,19 +11,19 @@
  * is named by none BY DESIGN: every SSH host is its own store-served instance
  * at `/_instance/ssh/{slug}`, and the conventional mount is the degraded one.
  *
- * THIRTY-SIX IS THE FLOOR, not a constant. Nine trees (telegram,
+ * THIRTY-SEVEN IS THE FLOOR, not a constant. Ten trees (telegram,
  * remote-filesystem, google-sheets, gmail, google-docs, grafana, victorialogs,
- * appsignal, onepassword) mount ONE INSTANCE PER SLUG the environment carries
+ * appsignal, glitchtip, onepassword) mount ONE INSTANCE PER SLUG the environment carries
  * per-slug values for — see
  * `extraSlugs` — so a container told about `telegram-ro` and `telegram-rw`
  * separately serves /telegram, /telegram-ro and /telegram-rw. google-sheets,
- * gmail, google-docs, grafana, victorialogs, appsignal and onepassword are
+ * gmail, google-docs, grafana, victorialogs, appsignal, glitchtip and onepassword are
  * the cases a real deployment uses: an OAuth refresh token IS one Google account,
  * a service-account token IS one Grafana, an entrypoint IS one VictoriaLogs, an
- * app id IS one AppSignal app, and a 1Password service-account token
+ * app id IS one AppSignal app, a URL and token IS one GlitchTip, and a 1Password service-account token
  * IS one 1Password account at one vault scope, so each extra account is another
  * mount here. The conventional path is always mounted, so a config that asks for
- * none of this sees exactly the thirty-six it saw before.
+ * none of this sees exactly the thirty-seven it saw before.
  *
  * STORE-SERVED INSTANCES are the other way in, and the one that needs no deploy.
  * A strad server on `path: /_instance/{tree}/{slug}` puts nothing on this
@@ -67,8 +67,8 @@
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
  *
- * BLAST RADIUS, honestly. Thirty-six servers share a process. A crash is
- * a 36-server outage, not a 1-server outage. Everything below that CAN be made
+ * BLAST RADIUS, honestly. Thirty-seven servers share a process. A crash is
+ * a 37-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
  * catastrophic here); a dead Chromium is relaunched on next use; an unhandled
@@ -394,6 +394,20 @@ async function buildMounts(): Promise<Mount[]> {
   mounts.push(await loadKeyedApiServer("flightaware", "strad-flightaware"));
   mounts.push(await loadKeyedApiServer("digitalocean", "strad-digitalocean"));
   mounts.push(await loadKeyedApiServer("hetzner", "strad-hetzner"));
+
+  // glitchtip: the conventional mount (degraded until configured) plus one per
+  // slug the environment carries a whole GlitchTip — origin and token — for.
+  const glitchtip = (await loadFromTree(
+    "glitchtip",
+    "shared/build/index.js",
+  )) as GlitchTipModule;
+  const glitchtipSlugs = extraSlugs("glitchtip", glitchtip.GLITCHTIP_ENV_NAMES);
+  mounts.push(loadGlitchTip(glitchtip, "glitchtip", false, glitchtipSlugs));
+  for (const slug of glitchtipSlugs)
+    deferred.push({
+      slug,
+      load: async () => loadGlitchTip(glitchtip, slug, true),
+    });
 
   mounts.push(...(await loadImageTools()));
   mounts.push(await loadNutritionFacts());
@@ -1445,7 +1459,7 @@ async function loadXTwitter(): Promise<Mount> {
     // The client caches its OAuth provider for the host process, so the factory
     // is built once here and memoised inside registerHandlers. Building it
     // LAZILY matters: `createXClientFromEnv` throws when no X credential is
-    // configured at all, and a throw at boot would take all thirty-six mounts down
+    // configured at all, and a throw at boot would take all thirty-seven mounts down
     // over one unconfigured server.
     register: (s) =>
       created.registerHandlers(s, () =>
@@ -1706,6 +1720,61 @@ async function loadKeyedApiServer(
     serverName,
     capabilities: { tools: {} },
     degraded: missingCredentialsDegraded(mod.missingCredentials(env)),
+    register: (s) => created.registerHandlers(s),
+  };
+}
+
+interface GlitchTipModule {
+  createMCPServer: (opts: {
+    version: string;
+    env: Record<string, string | undefined>;
+  }) => {
+    registerHandlers: (server: unknown) => Promise<void>;
+    missing: string[];
+  };
+  /** The origin and token that make one instance. Owned by the tree. */
+  GLITCHTIP_ENV_NAMES: readonly string[];
+  ENV: { baseUrl: string; apiToken: string; organization: string };
+}
+
+/**
+ * glitchtip — strad's own GlitchTip server: seven reads (the organization, its
+ * projects and teams, issues, one issue with its latest event, events) over
+ * GlitchTip's Sentry-compatible API. Nothing on it writes.
+ *
+ * ONE INSTANCE PER SLUG. GlitchTip is self-hosted as often as not, so one slug
+ * is one origin and one token, and two organizations or two GlitchTips are two
+ * slugs. Both the origin and the token are markers, so a per-slug instance
+ * never runs on a sibling's bare value, and the default organization is read
+ * under the slug's own name only: a sibling's organization slug means nothing
+ * on another GlitchTip. The conventional mount gets victorialogs' guard: a bare
+ * token or organization that a slug carries under its own name, beside a
+ * different origin, is that slug's, and is not sent to the bare origin.
+ */
+function loadGlitchTip(
+  mod: GlitchTipModule,
+  slug: string,
+  perSlug: boolean,
+  siblings: readonly string[] = [],
+): Mount {
+  const env = slugEnvView(process.env, slug);
+  if (perSlug) {
+    ownNameOnly(env, slug, mod.ENV.organization);
+  } else {
+    dropUnpairedCredentials(
+      env,
+      mod.ENV.baseUrl,
+      [mod.ENV.apiToken, mod.ENV.organization],
+      siblings,
+    );
+  }
+  const created = mod.createMCPServer({ version: VERSION, env });
+  return {
+    slug,
+    tree: "glitchtip",
+    serverName: "strad-glitchtip",
+    capabilities: { tools: {} },
+    degraded: missingCredentialsDegraded(created.missing),
     register: (s) => created.registerHandlers(s),
   };
 }
@@ -2464,7 +2533,7 @@ async function main(): Promise<void> {
   //
   // NOT AWAITED, and that is deliberate. A pass is one sequential read per
   // listed variable, each with its own timeout, so awaiting it would put a slow
-  // or unreachable core directly in front of `listen()` below — thirty-six
+  // or unreachable core directly in front of `listen()` below — thirty-seven
   // mounts held off serving because one credential could not be re-read. The
   // container starting with the value the deploy baked is exactly the behaviour
   // every deployment has today, so falling back to it costs nothing; blocking
@@ -2477,7 +2546,7 @@ async function main(): Promise<void> {
   // STORE-SERVED INSTANCES — the mounts no deploy named. See the header.
   //
   // The first sync is NOT awaited, for the reason the refresh pass above is
-  // not: a slow core must not stand in front of `listen()` for thirty-six
+  // not: a slow core must not stand in front of `listen()` for thirty-seven
   // mounts that need nothing from it. A request that arrives before the sync
   // lands takes the miss path in the route below, which syncs then.
   const instances = createInstanceReconciler<Mount>({
@@ -2530,7 +2599,7 @@ async function main(): Promise<void> {
   const internalOnly = requireInternalToken(process.env, timingSafeEqual);
 
   // Liveness for App Platform. Reports every mount and whether it is degraded —
-  // with 36 servers behind one health check, "ok: true" alone is not information.
+  // with 37 servers behind one health check, "ok: true" alone is not information.
   //
   // Deliberately OUTSIDE `internalOnly`. The platform's health prober holds no
   // token, and a 401 here is a component App Platform takes out of service — an
@@ -2754,8 +2823,8 @@ async function main(): Promise<void> {
     });
   });
 
-  // One stray rejection from one of thirty-six servers must not kill the other
-  // thirty-five. The standalone images exit here (correct, when the process IS the
+  // One stray rejection from one of thirty-seven servers must not kill the other
+  // thirty-six. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {
     logError("unhandledRejection", reason);

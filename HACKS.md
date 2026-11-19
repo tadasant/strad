@@ -392,7 +392,7 @@ one (hack #4).
 **✅ RESOLVED.** Core presents the internal token to every `supplementary-image`
 component, and the `strad-bundle` host refuses a mount request without it.
 
-**What.** The `strad-bundle` container — thirty-six mounts, and every upstream
+**What.** The `strad-bundle` container — thirty-seven mounts, and every upstream
 credential behind them — serves every mount unauthenticated. Its only protection
 is the network boundary: an internal-only App Platform component
 (`internal_ports: [8080]`, no public route), reachable by core over the private
@@ -789,10 +789,10 @@ still what makes prod's read-only variants read-only.
 policies) → confirm → _then_ delete the per-server images, their workflows and the
 toggle plumbing.
 
-## 24. Thirty-six servers share one process, and one Chromium
+## 24. Thirty-seven servers share one process, and one Chromium
 
-The collapsed bundle is one container running thirty-six MCP servers and one
-headless Chromium. An OOM there is a thirty-six-server outage; it used to be a
+The collapsed bundle is one container running thirty-seven MCP servers and one
+headless Chromium. An OOM there is a thirty-seven-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -2650,7 +2650,7 @@ both `infra/strad.staging.yaml` and `strad.config.example.yaml` — plus the cou
 in `servers/bundle/scripts/smoke.mjs`, `test/staging-config.test.ts` and
 `.github/workflows/ci.yml`.
 
-## 56. Per-slug box names are emitted for every server; fifteen of twenty-seven trees can read one
+## 56. Per-slug box names are emitted for every server; sixteen of twenty-eight trees can read one
 
 **What.** Every enabled `supplementary-image` server's resolved `env:` is emitted
 onto its bundle TWICE: under the bare name it always had, and under
@@ -2706,8 +2706,8 @@ DigitalOcean both times.
 
 - **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
   `grafana`, `victorialogs`, `appsignal`, `bill-spend`, `aws-device-farm`,
-  `whatsapp`, `liveoak`, `airtable`, `flightaware`, `digitalocean`, `hetzner` and
-  `ssh` read an injected env.** The other twelve trees
+  `whatsapp`, `liveoak`, `airtable`, `flightaware`, `digitalocean`, `hetzner`,
+  `glitchtip` and `ssh` read an injected env.** The other twelve trees
   are vendored upstream code reading `process.env`, often lazily at call time
   (`onepassword` builds its client per call off `OP_SERVICE_ACCOUNT_TOKEN`). A single process cannot overlay `process.env`
   per-request without a race, so each tree needs its own seam and gets it when it
@@ -3751,7 +3751,7 @@ behaviour, which is the pre-change one.
 a listed parameter current in a supplementary container's `process.env` without a
 redeploy. What it cannot do is make the MCP server inside that container LOOK at
 the new value. That is a property of the upstream, and this image runs
-thirty-six of them, most written by other people.
+thirty-seven of them, most written by other people.
 
 The split is real and it is not subtle:
 
@@ -7976,3 +7976,38 @@ write.
 **Undo.** If upstream takes its app and credential per server instance, the
 `state.ts` delta goes, and the layer can call upstream's own factory. The token
 breadth and the URL form are AppSignal's to change.
+
+## 155. GlitchTip is strad's own server, and has met the real API only at its 401
+
+**What.** `servers/glitchtip` is written against GlitchTip's Sentry-compatible
+API (`/api/0/`), taking its paths, parameters and response shapes from
+GlitchTip's published OpenAPI (`https://app.glitchtip.com/api/openapi.json`).
+It serves seven reads: `get_organization`, `list_projects`, `get_project`,
+`list_teams`, `list_issues`, `get_issue` (with the latest event and comments)
+and `list_events`.
+
+**Why.** The GlitchTip MCP package on npm, `@karsten684/glitchtip-mcp-server`,
+is AGPL-3.0, and strad does not vendor or link AGPL code (the Messenger bridge
+is a separate process for the same reason). Seven reads over a documented API are less to own than a stranger's
+package is to vet.
+
+**What it costs.**
+
+- Every test runs against a fake that answers in the OpenAPI's shapes. Against
+  the real API it has met one thing: a deliberately invalid token at
+  app.glitchtip.com, answered `401 {"detail": "Unauthorized"}`, which is the
+  error envelope it parses. Pagination (`Link` with `results` and `cursor`) and
+  every success shape are documented, not observed.
+- An API token reaches every organization its user can see. The default
+  organization is a convenience, not a fence.
+- `get_issue` takes the numeric id only. A short id like `WEB-12` is refused
+  with a pointer to `list_issues`, because resolving one is a second request
+  whose semantics the OpenAPI does not pin down.
+- A plain-http `GLITCHTIP_BASE_URL` is accepted only for a loopback,
+  private-network, `.internal` or `.local` host; anywhere else the token would
+  cross the internet in cleartext.
+- A result is cut at 60,000 characters. A large latest event in `get_issue` can
+  hit that; the cut says so and points at `list_events`.
+
+**Undo.** A live run against a real GlitchTip with a read token retires the
+first item. The rest are what the API offers.

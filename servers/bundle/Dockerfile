@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# bundle — THE strad supplementary image. Thirty-six MCP servers, one container.
+# bundle — THE strad supplementary image. Thirty-seven MCP servers, one container.
 #
 # BUILD CONTEXT IS THE REPO ROOT (not servers/bundle/), because this image is
-# assembled from twenty-seven existing projects that live in different places:
+# assembled from twenty-eight existing projects that live in different places:
 #
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
 #                           gcs, google-flights
@@ -31,6 +31,8 @@
 #   servers/digitalocean    digitalocean           (droplets, apps, databases)
 #   servers/hetzner         hetzner                (Hetzner Cloud servers, power,
 #                                                  firewalls, volumes)
+#   servers/glitchtip       glitchtip              (GlitchTip issues and events,
+#                                                  read-only; strad's own)
 #   servers/image-tools     image-diff, svg-tracer (compare two images; trace a
 #                                                  bitmap to SVG. Inputs are URLs)
 #   servers/nutrition-facts nutrition-facts        (USDA + MenuStat data baked in
@@ -46,7 +48,7 @@
 #
 # Each is built in its OWN stage with its OWN lockfile and its OWN node_modules,
 # exactly as its standalone image builds it, and copied into /app/trees/<name>.
-# Nothing is merged. That is on purpose: merging twenty-seven dependency trees is how you
+# Nothing is merged. That is on purpose: merging twenty-eight dependency trees is how you
 # discover in production that two of them wanted different Playwright versions.
 # The host (servers/bundle/host) imports across them by path — Node resolves each
 # package's own imports from its own tree — and owns the one thing that MUST be
@@ -269,6 +271,16 @@ COPY servers/hetzner/package.json servers/hetzner/package-lock.json ./
 COPY servers/hetzner/shared/package.json ./shared/
 RUN npm ci --no-audit --no-fund
 COPY servers/hetzner/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
+# glitchtip: strad's own, over GlitchTip's Sentry-compatible API. Read-only; its
+# only dependency is the MCP SDK.
+FROM ${PW} AS build-glitchtip
+WORKDIR /src
+COPY servers/glitchtip/package.json servers/glitchtip/package-lock.json ./
+COPY servers/glitchtip/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/glitchtip/shared ./shared
 RUN npm run build && npm prune --omit=dev
 
 # ---- good-eggs / fetchpet / pointsyeah (browser servers) ---------------------
@@ -521,7 +533,7 @@ RUN npm run build && npm prune --omit=dev
 FROM ${PW}
 
 LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
-LABEL org.opencontainers.image.description="strad's single supplementary image — 36 MCP servers (API, Google, X.com, Telegram, WhatsApp, Messenger, web fetching, Grafana, VictoriaLogs, AppSignal, banking, Airtable, FlightAware, DigitalOcean, Hetzner Cloud, image diff/tracing, nutrition facts, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
+LABEL org.opencontainers.image.description="strad's single supplementary image — 37 MCP servers (API, Google, X.com, Telegram, WhatsApp, Messenger, web fetching, Grafana, VictoriaLogs, AppSignal, banking, Airtable, FlightAware, DigitalOcean, Hetzner Cloud, GlitchTip, image diff/tracing, nutrition facts, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
 LABEL org.opencontainers.image.licenses="MIT"
 
 # --- 1Password CLI (op), pinned ----------------------------------------------
@@ -553,7 +565,7 @@ RUN set -eux; \
 ENV NODE_ENV=production
 WORKDIR /app
 
-# The twenty-seven trees, each with the node_modules it was built against.
+# The twenty-eight trees, each with the node_modules it was built against.
 COPY --from=build-api /src /app/trees/bundle-api
 COPY --from=build-google /src /app/trees/bundle-google
 COPY --from=build-op /src /app/trees/onepassword
@@ -577,6 +589,7 @@ COPY --from=build-airtable /src /app/trees/airtable
 COPY --from=build-flightaware /src /app/trees/flightaware
 COPY --from=build-digitalocean /src /app/trees/digitalocean
 COPY --from=build-hetzner /src /app/trees/hetzner
+COPY --from=build-glitchtip /src /app/trees/glitchtip
 COPY --from=build-image-tools /src /app/trees/image-tools
 COPY --from=build-nutrition-facts /src /app/trees/nutrition-facts
 COPY --from=build-pulse-subregistry /src /app/trees/pulse-subregistry
