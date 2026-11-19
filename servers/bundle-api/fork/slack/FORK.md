@@ -298,7 +298,7 @@ No existing tool changed.
 | `src/events/slack-api.ts` | **New.** `auth.test`, `apps.connections.open`, `users.conversations`, `conversations.history`, `conversations.replies`. |
 | `src/events/ingest.ts` | **New.** The Socket Mode client: ack every envelope first, buffer second, backfill on every hello, stand down when the lease is lost. |
 | `src/events/protocol.ts` | **New.** `events/list`, `events/poll`, `events/subscribe`, `events/unsubscribe`, and the extension, advertised only when configured. |
-| `src/events/webhook/` | **New.** Webhook delivery (draft SEP-3415): the Standard Webhooks signature (`signing.ts`), the SSRF-guarded HTTPS transport (`transport.ts`), the persisted subscriptions (`registry.ts`), and verification, retries, suspension and the watermark (`delivery.ts`). strad's `docs/servers/events` and `HACKS.md` #140. |
+| `src/events/webhook/` | **New.** Webhook delivery (draft SEP-3415): the Standard Webhooks signature (`signing.ts`), the SSRF-guarded HTTPS transport (`transport.ts`), the persisted subscriptions (`registry.ts`), and verification, retries, suspension and the watermark (`delivery.ts`), and the cursor's wire form (`cursor.ts`). Generic over the event source: it is also Gmail's engine, copied into `images/bundle-google/src/events/webhook/` by `npm run eventswebhook:sync`, so edit it HERE. strad's `docs/servers/events` and `HACKS.md` #140. |
 | `src/tools/events-status.ts` | **New.** `slack_events_status`, read-only. |
 | `src/server.ts`, `src/tools.ts`, `src/index.ts` | One ingest per process, threaded to the status tool and the handlers; `close()` flushes the buffer. |
 

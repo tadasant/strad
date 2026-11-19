@@ -1,18 +1,20 @@
 ---
 title: MCP Events (draft)
-description: How strad serves MCP Events — events/list, events/poll and webhook delivery through core, slug-prefixed and entitled like tools — and the Slack message_posted event behind slack-zimmer.
+description: How strad serves MCP Events — events/list, events/poll and webhook delivery through core, slug-prefixed and entitled like tools — and its two event sources, Slack's message_posted and Gmail's message_received.
 ---
 
 A trigger that fires when something happens needs a feed of things that
 happened. MCP Events is that feed, as an MCP extension: a server lists event
 types, and a client either polls each one with a cursor or subscribes a webhook
 that the server POSTs to. strad serves **poll** and **webhook** delivery, not
-push (`events/stream`), and it has one event source today: Slack's
-`message_posted`, behind `slack-zimmer`.
+push (`events/stream`), and it has two event sources: Slack's
+`message_posted`, behind `slack-zimmer`, and Gmail's
+[`message_received`](#gmail-message_received), on any gmail mount given its
+own key.
 
 :::caution
-MCP Events is a **draft** (SEP-3415). It is in no released MCP specification,
-and the wire can still change. The commit strad is built against is pinned in
+MCP Events is SEP-3415, an Extensions Track SEP. It merged on 2026-11-19, but it
+is in no released MCP specification, and the wire can still change. The commit strad is built against is pinned in
 `docs/mcp-events-spec-pin.md` at the repository root. See
 [Limitations #131](/limitations/).
 :::
@@ -277,6 +279,12 @@ x-mcp-subscription-id: sub_<32 hex>
   climb out of the prefix, and since no redirect is followed the headers cannot
   travel on.
 
+**One engine, two sources.** Subscribe, verification, signing, retries,
+suspension and the watermark are one module, written once in the Slack tree
+(`fork/slack/src/events/webhook/`) and copied into the Gmail tree by
+`npm run eventswebhook:sync`. CI fails if the copies drift. What differs per
+source is the buffer, the matching and the payload.
+
 **Where subscriptions live.** In `webhooks.bin`, sealed under the ingest's key
 in its folder of the [state store](/operate/state-store/), beside the buffer.
 Any container may write it, because a subscribe can land on one that does not
@@ -350,3 +358,135 @@ conversations with `channels:read`, `groups:read` and `im:read`.
 **One instance.** The component that holds the socket must run one instance.
 The lease stops a second one from writing, but each socket still takes its share
 of Slack's events until the lease check closes it.
+
+## Gmail: `message_received`
+
+Every gmail mount can publish `message_received`: a message arrived in the
+mailbox. A mount publishes it only once it has its own key, so turning it on
+for `gmail-zimmer-ro` touches no other mailbox on the bundle. Zimmer's inbox
+triage trigger is the consumer it was built for, and the rules below are that
+trigger's rules.
+
+### Hearing about new mail: push, with polling as the catch-up
+
+Gmail has a push API. `users.watch` makes Gmail publish a notification to a
+Google Cloud Pub/Sub topic whenever the mailbox changes. The notification says
+only that something changed (`{emailAddress, historyId}`), so the mount then
+reads what changed with `users.history.list`, from the history id it stored
+last time.
+
+The last hop is a Pub/Sub **pull** subscription, which the mount long-polls.
+A push subscription would POST to a public URL, and in strad that would have
+to be core: a bundle has no public ingress. Core would then need an
+unauthenticated route that checks Google's OIDC token and forwards to the
+right bundle mount. A pull is outbound only, the way Slack's Socket Mode is,
+and Pub/Sub answers it as soon as a notification is published. So a new
+message is read within a few seconds of Gmail publishing it.
+
+| Mode | Configured by | How soon a message is read | Gmail quota while idle |
+| ---- | ------------- | -------------------------- | ---------------------- |
+| push | `GMAIL_EVENTS_PUBSUB_TOPIC` and `_SUBSCRIPTION` | seconds | one `history.list` a minute (2 units), one `watch` a day (100) |
+| poll | neither | up to 15 seconds | one `history.list` every 15 s (8 units a minute) |
+
+Gmail allows 6,000 quota units a minute per user, so polling would not run
+into a rate limit. Push wins on latency, and costs nothing while the mailbox is
+quiet. In push mode the history is still read once a minute, because Gmail
+says a notification can be delayed or dropped. A watch that fails (a missing
+grant, a topic in the wrong project) drops the mount back to the 15-second
+poll until a watch succeeds, retried every 10 minutes. The watch is renewed
+once a day; Gmail stops publishing after 7 days without one.
+
+**A history id Gmail no longer keeps** (about a week; Gmail answers 404) is
+recovered by searching for mail received since 10 minutes before the last
+complete read, then reading on from the mailbox's current history id. **A
+first-ever boot** reads nothing older than itself.
+
+### The event
+
+The event id is `gmail:<message_id>`, the Gmail API message id. It is the
+dedupe key, and the key Zimmer's `compare_trigger_fires` joins on. There is one
+event per message, not per thread. The payload:
+
+| Field             | Notes                                                                                   |
+| ----------------- | --------------------------------------------------------------------------------------- |
+| `message_id`      | the Gmail API message id                                                                |
+| `thread_id`       | the Gmail API thread id                                                                 |
+| `permalink`       | `https://mail.google.com/mail/?authuser=<mailbox>#all/<message_id>`, the tools' Gmail URL |
+| `from`, `to`, `subject` | the headers, cut to 1,000 characters. **Written by the sender: untrusted.**       |
+| `snippet`         | Gmail's snippet of the body, cut to 500 characters. **Untrusted.**                      |
+| `received_at`     | Gmail's `internalDate`, ISO 8601. Also the event's `timestamp`.                         |
+| `label_ids`       | Gmail's labels when the message was read                                                |
+| `is_automated`, `automated_reason` | Zimmer's automated-mail verdict; see below                             |
+
+**What is never an event.** A message labelled `SENT`, `DRAFT`, `SPAM` or
+`TRASH` when it is read, and a message From the mailbox's own address: the
+same mail Zimmer's email trigger never fires on.
+
+**The arguments.** Both optional. An unknown argument is refused.
+
+| Argument            | Default | Narrows to                                                                 |
+| ------------------- | ------- | -------------------------------------------------------------------------- |
+| `query`             | —       | messages this Gmail search matches, decided by Gmail for each message      |
+| `include_automated` | `false` | `true` keeps automated mail                                                |
+
+**Automated** is Zimmer's definition, rule for rule: an `Auto-Submitted`
+header with any value but `no`, a `List-Id` header, a `CATEGORY_PROMOTIONS`,
+`CATEGORY_SOCIAL` or `CATEGORY_FORUMS` label, a no-reply or mail-system sender
+(`no-reply@`, `mailer-daemon@`, `notifications@`, …), or an auto-reply or
+bounce subject. `automated_reason` names which, never what the sender wrote.
+
+**`query` is Gmail's own search.** strad cannot evaluate Gmail's search
+language itself, so for each message it asks Gmail: the query AND the
+message's own `rfc822msgid:`. The answer is remembered with the event, so a
+poll's answer does not change later. Gmail's search index can trail delivery
+by a few seconds. A message the index does not have yet is **undecided**: a
+poll or a delivery stops just before it and picks it up once it is indexed.
+After 30 minutes unindexed, it is decided as not matching, and a warning says
+so. A query is decided from the moment it is first used, or from the oldest
+cursor a subscriber brings, never back through the whole buffer. If the
+sender's Message-ID is not one clean search token, strad checks a two-second
+window around the message's receive time instead. Each answer costs 5 quota units, or 10 when the message is not a match.
+
+### The buffer, the lease and webhooks
+
+Slack's rules apply as they are written above: a sealed 7-day buffer
+(`GMAIL_EVENTS_RETENTION_DAYS`, at most 30), a sequence-number cursor, one
+reading process by lease, a superseded process answering polls from the
+owner's persisted buffer, and the same webhook engine and edge-credential
+rule. The folder is `gmail-events/<slug>` in the
+[state store](/operate/state-store/), and everything in it is sealed under the
+mount's own key. Only the lease holder calls `watch` and pulls the
+subscription, so two containers never split the notifications.
+
+### Turning it on
+
+| Variable                            | Read under                 | What                                                                 |
+| ----------------------------------- | -------------------------- | -------------------------------------------------------------------- |
+| `GMAIL_EVENTS_STATE_ENCRYPTION_KEY` | the slug's own name only   | 32 random bytes, base64 or hex. Switches the ingest on.              |
+| `STRAD_STATE_GCS_BUCKET`, `_CLIENT_EMAIL`, `_PRIVATE_KEY` | the usual way | the shared state store                                 |
+| `GMAIL_EVENTS_PUBSUB_TOPIC`         | the slug's own name only   | optional, with the next: `projects/<project>/topics/<topic>`         |
+| `GMAIL_EVENTS_PUBSUB_SUBSCRIPTION`  | the slug's own name only   | optional: `projects/<project>/subscriptions/<name>`, a pull subscription |
+| `GMAIL_EVENTS_WEBHOOK_ACCESS_PREFIXES` | the slug's own name only | optional, as `SLACK_EVENTS_WEBHOOK_ACCESS_PREFIXES`, with the same two `ZIMMER_APPROVAL_CF_ACCESS_*` |
+
+"The slug's own name only" means the bundle host ignores the bare name, so a
+value set for one slug never starts an ingest on another gmail mount. The
+mailbox credential is the mount's own: the ingest calls Gmail through the same
+client as the tools, and works on a `gmail.readonly` consent.
+
+For push, in Google Cloud, once:
+
+1. A Pub/Sub topic **in the project that owns the mailbox's OAuth client**.
+   Gmail refuses a watch on a topic in any other project.
+2. `roles/pubsub.publisher` on that topic for
+   `gmail-api-push@system.gserviceaccount.com`. An organization with
+   domain-restricted sharing needs an exception for that account.
+3. A **pull** subscription on the topic, and `roles/pubsub.subscriber` on it
+   for the state store's service account (`STRAD_STATE_GCS_CLIENT_EMAIL`),
+   which is what pulls it. No new credential.
+
+Without the Pub/Sub pair the mount polls every 15 seconds, and everything else
+works the same. A half-set or malformed pair is reported and polls.
+
+Turn it on for **one** slug per mailbox. Each configured slug is its own
+ingest with its own buffer and its own Gmail reads.
+

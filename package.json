@@ -36,7 +36,8 @@
     "writerules:sync": "node scripts/sync-vendored.mjs --only writerules",
     "elicitation:sync": "node scripts/sync-vendored.mjs --only elicitation",
     "statestore:sync": "node scripts/sync-vendored.mjs --only statestore",
-    "deposit:sync": "node scripts/sync-vendored.mjs --only deposit"
+    "deposit:sync": "node scripts/sync-vendored.mjs --only deposit",
+    "eventswebhook:sync": "node scripts/sync-vendored.mjs --only eventswebhook"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",

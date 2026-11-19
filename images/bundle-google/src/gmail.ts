@@ -52,6 +52,11 @@ import {
   type ServiceAccountCredentials,
 } from "gmail-workspace-mcp-server-shared";
 import { guardSends, withConfirmation } from "./confirm.js";
+import { GMAIL_EVENTS_OWN_ENV_NAMES } from "./events/config.js";
+import { GmailEventsIngest } from "./events/ingest.js";
+import { registerGmailEventHandlers } from "./events/protocol.js";
+
+export { GMAIL_EVENTS_OWN_ENV_NAMES, GmailEventsIngest };
 
 export type EnvLike = Readonly<Record<string, string | undefined>>;
 
@@ -182,6 +187,11 @@ class ReconnectableOAuth2GmailClient extends OAuth2GmailClient {
     this.reconnectUrl = reconnectUrl;
   }
 
+  /** The tools' own authenticated headers, for the events ingest (`./events/`). */
+  authHeaders(): Promise<Record<string, string>> {
+    return this.getHeaders();
+  }
+
   protected async refreshTokenImpl(): Promise<{
     token: string;
     expiryDate: number;
@@ -205,6 +215,16 @@ class ReconnectableOAuth2GmailClient extends OAuth2GmailClient {
   }
 }
 
+/** The service-account client, with the same door onto its headers as the OAuth one. */
+class EventsServiceAccountGmailClient extends ServiceAccountGmailClient {
+  authHeaders(): Promise<Record<string, string>> {
+    return this.getHeaders();
+  }
+}
+
+/** A client the events ingest can authenticate through. Every client this module builds is one. */
+type GmailClient = IGmailClient & { authHeaders(): Promise<Record<string, string>> };
+
 /**
  * One client per credential, for the life of the process.
  *
@@ -215,7 +235,7 @@ class ReconnectableOAuth2GmailClient extends OAuth2GmailClient {
  * and keeps two accounts apart, which is the property the whole per-slug design
  * rests on.
  */
-const clients = new Map<string, IGmailClient>();
+const clients = new Map<string, GmailClient>();
 
 /**
  * Builds the client from an environment, LAZILY.
@@ -225,7 +245,7 @@ const clients = new Map<string, IGmailClient>();
  * servers sharing the process. So this throws when a tool is CALLED, never when
  * the server is built or its tools are listed.
  */
-export function createDefaultClient(env: EnvLike = process.env): IGmailClient {
+export function createDefaultClient(env: EnvLike = process.env): GmailClient {
   const missing = missingCredentials(env);
   if (missing.length > 0) {
     throw new Error(
@@ -294,7 +314,7 @@ export function createDefaultClient(env: EnvLike = process.env): IGmailClient {
     auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
     client_x509_cert_url: "",
   };
-  const client = new ServiceAccountGmailClient(credentials, impersonateEmail, {
+  const client = new EventsServiceAccountGmailClient(credentials, impersonateEmail, {
     senderDisplayName,
   });
   clients.set(key, client);
@@ -308,6 +328,28 @@ export interface CreateMCPServerOptions {
    * single-instance deployment; the collapsed bundle passes a per-slug view.
    */
   env?: EnvLike;
+  /**
+   * This mount's `message_received` ingest, built ONCE per mount by
+   * {@link createGmailEvents} — a server is built per request, an ingest holds
+   * a lease and a Pub/Sub pull. Absent: no events handlers at all.
+   */
+  events?: GmailEventsIngest;
+}
+
+/**
+ * The mount's Gmail `message_received` ingest (`./events/`). Inert — no GCS,
+ * no Gmail call, no event types listed — unless the mount's own
+ * `GMAIL_EVENTS_STATE_ENCRYPTION_KEY` is set. It authenticates through the
+ * same cached client as the tools, so a dead refresh token reads the same on
+ * both. The caller starts it (`start()`) and stops it (`close()`).
+ */
+export function createGmailEvents(options: { env?: EnvLike; slug?: string }): GmailEventsIngest {
+  const env = options.env ?? process.env;
+  return new GmailEventsIngest({
+    env,
+    slug: options.slug,
+    authHeaders: () => createDefaultClient(env).authHeaders(),
+  });
 }
 
 /**
@@ -359,6 +401,7 @@ export function createMCPServer(options: CreateMCPServerOptions): {
         client: factory,
       }),
     );
+    if (options.events) registerGmailEventHandlers(target, options.events);
   };
 
   return { server, registerHandlers };

@@ -37,6 +37,16 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   imports as `dist/gmail.js`. `test/gmail.test.ts` is its suite. The requirement
   is strad's, not upstream's, and it needs nothing inside the tree, so it
   lives here.
+- `src/events/` — **Gmail's `message_received` MCP Events source**, strad's
+  own: `users.watch` and a Pub/Sub pull subscription for push, `history.list`
+  for the read and the catch-up, a sealed buffer in strad's state store, and
+  `events/list` / `events/poll` / `events/subscribe` on the gmail mount.
+  `src/gmail.ts` exports `createGmailEvents()`, which the bundle host calls
+  once per mount; this image's own `src/index.ts` does not start one. Two
+  pieces here are GENERATED copies: `state-store.ts` (`npm run statestore:sync`
+  from strad's `src/state/store.ts`) and `webhook/` (`npm run
+  eventswebhook:sync` from `servers/bundle-api/fork/slack/src/events/webhook/`).
+  Edit the sources, never these. `test/gmail-events.test.ts` is the suite.
 - `src/docs.ts` — the same layer over `vendor/google-docs-shared`, for the
   same reason: google-docs has gmail's two auth modes, and the collapsed bundle
   mounts it once per Google account. Built to `dist/docs.js`; the tree stays
@@ -144,6 +154,7 @@ call.
 | **Capability toggle** | `GMAIL_ENABLED_TOOLGROUPS` = `readonly` \| `readwrite` \| `readwrite_external` (comma-sep; default: all) |
 | **Console reconnect hint** (not a credential) | `GMAIL_RECONNECT_URL` — the page named in an `invalid_grant` error |
 | **Sender name** (optional, not a credential) | `GMAIL_SENDER_DISPLAY_NAME` — the name in `From: "Name" <address>`. Unset, it is read from the account's Gmail send-as settings. In the collapsed bundle a mount reads it only under its own slug's name, never the bare one |
+| **MCP Events `message_received`** (optional; collapsed bundle only) | `GMAIL_EVENTS_STATE_ENCRYPTION_KEY` switches it on; `GMAIL_EVENTS_PUBSUB_TOPIC` + `GMAIL_EVENTS_PUBSUB_SUBSCRIPTION` for push; `GMAIL_EVENTS_STATE_PREFIX`, `GMAIL_EVENTS_RETENTION_DAYS`, `GMAIL_EVENTS_WEBHOOK_ACCESS_PREFIXES`. All read under the mount's own slug only. Plus the shared `STRAD_STATE_GCS_*`. See strad's `docs/servers/events` |
 
 **Attachments.** `send_email` and `upsert_draft_email` take `attachments`: up
 to 10 files, 17 MB decoded in total, each an HTTPS `url` the server downloads

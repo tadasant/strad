@@ -4702,3 +4702,29 @@ page, attaches, and puts them back when it lets go of the tab. What that costs:
 - **Tested against a fixture, not a real password manager.** CI runs it in
   Chromium with a stand-in extension. It hasn't run against a real password
   manager in Google Chrome on the Mac.
+
+### 150. Gmail `message_received` asks Gmail whether a query matches, and has met only fakes
+
+A gmail mount given its own key publishes [`message_received`](/servers/events/#gmail-message_received).
+What that costs:
+
+- **Fakes only.** No real Gmail watch, Pub/Sub notification, history read or
+  per-message search has run in CI.
+- **A query waits on Gmail's search index.** A message the index has not
+  caught up with holds that subscriber's feed for a few seconds. One still
+  unindexed after 30 minutes is decided as not matching, with a warning.
+- **A verdict is not revised.** Whether a message matches is decided once,
+  when it is first asked, and kept.
+- **One event per message.** Zimmer's email trigger fires once per thread, so
+  a burst in one thread is several events and one native fire.
+- **No status tool.** The ingest's state is in the bundle's logs only.
+- **Push needs Google Cloud set up by hand.** A Pub/Sub topic in the OAuth
+  client's project, Gmail's publish grant on it, and a pull subscription the
+  state store's service account may read. Without them the mount polls every
+  15 seconds.
+
+**How you would know.** A webhook subscription that stays quiet while the
+mailbox receives mail, or a poll whose cursor does not move. The bundle's
+stderr says why, prefixed `[gmail-events <slug>]`.
+
+See `HACKS.md` #150.
