@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 /**
- * bundle — THE strad supplementary image. All 33 upstream MCP servers (33
- * mounts, see `buildMounts`), one container, one process, one Chromium, one
- * mcp-grafana child. The gateway's config names more SLUGS than that — 43
+ * bundle — THE strad supplementary image. All 36 MCP servers (36 mounts, see
+ * `buildMounts`), one container, one process, one Chromium, one mcp-grafana
+ * child. The gateway's config names more SLUGS than that — 45
  * supplementary-image entries in infra/strad.staging.yaml — because capability
  * variants (gmail-ro, gmail-rw, …) are several slugs pointing at ONE mount here.
  * `/aws-device-farm` is the one that runs the other way round: it is mounted
- * here and named by no slug yet, because its credential is not seeded. `/ssh`
+ * here and named by no slug yet, because its credential is not seeded.
+ * `/pulsemcp-cms-admin` and `/proctor` are named by no slug in this repo's
+ * configs: they exist for another deployment, PulseMCP's. `/ssh`
  * is named by none BY DESIGN: every SSH host is its own store-served instance
  * at `/_instance/ssh/{slug}`, and the conventional mount is the degraded one.
  *
- * THIRTY-FOUR IS THE FLOOR, not a constant. Seven trees (telegram,
- * remote-filesystem, google-sheets, gmail, google-docs, grafana, onepassword)
+ * THIRTY-SIX IS THE FLOOR, not a constant. Nine trees (telegram,
+ * remote-filesystem, google-sheets, gmail, google-docs, grafana, onepassword,
+ * pulsemcp-cms-admin, proctor)
  * mount ONE INSTANCE PER SLUG the environment carries per-slug values for — see
  * `extraSlugs` — so a container told about `telegram-ro` and `telegram-rw`
  * separately serves /telegram, /telegram-ro and /telegram-rw. google-sheets,
@@ -20,7 +23,7 @@
  * a service-account token IS one Grafana, and a 1Password service-account token
  * IS one 1Password account at one vault scope, so each extra account is another
  * mount here. The conventional path is always mounted, so a config that asks for
- * none of this sees exactly the thirty-four it saw before.
+ * none of this sees exactly the thirty-six it saw before.
  *
  * STORE-SERVED INSTANCES are the other way in, and the one that needs no deploy.
  * A strad server on `path: /_instance/{tree}/{slug}` puts nothing on this
@@ -64,7 +67,7 @@
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
  *
- * BLAST RADIUS, honestly. Thirty-four servers share a process. A crash is
+ * BLAST RADIUS, honestly. Thirty-six servers share a process. A crash is
  * a 33-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
@@ -321,6 +324,16 @@ async function buildMounts(): Promise<Mount[]> {
   mounts.push(await loadXTwitter());
 
   mounts.push(await loadPulseSubregistry());
+
+  // pulsemcp-cms-admin and proctor: PulseMCP's admin API, ONE INSTANCE PER API
+  // KEY. The conventional path reads the bare names; each slug the environment
+  // carries its own key for gets a mount of its own at `/<slug>`, which is how a
+  // deployment serves a read-only and a read-write key as two slugs.
+  for (const tree of ["pulsemcp-cms-admin", "proctor"] as const) {
+    mounts.push(await loadPulseAdmin(tree, tree, false));
+    for (const slug of extraSlugs(tree, [PULSE_ADMIN[tree].keyVar]))
+      deferred.push({ slug, load: () => loadPulseAdmin(tree, slug, true) });
+  }
 
   mounts.push(await loadStradFetch());
 
@@ -672,6 +685,84 @@ async function loadPulseSubregistry(): Promise<Mount> {
       ? null
       : "PULSEMCP_SUBREGISTRY_API_KEY is not set; tools will list but calls will fail",
     register: (s) => created.registerHandlers(s),
+  };
+}
+
+/**
+ * pulsemcp-cms-admin and proctor — PulseMCP's admin API (the MCP directory,
+ * newsletter, mirror queues, tenants, background jobs) and its Proctor exam
+ * runner. Both trees are VENDORED VERBATIM from pulsemcp/mcp-servers and both
+ * authenticate with one `X-API-Key` against one base URL.
+ *
+ * ONE INSTANCE PER KEY. The admin API issues read-only and read-write keys, and
+ * the key is the boundary: a deployment mounts each as its own slug at
+ * `path: /<slug>`, the renderer bakes `<SLUG>__PULSEMCP_ADMIN_API_KEY`, and
+ * discovery here gives that slug a mount of its own. Same shape as telegram.
+ *
+ * The vendored trees read `process.env` when no client factory is passed, which
+ * is one server per process. So the host passes one, built from the mount's own
+ * view of the environment. A per-slug mount reads its key AND its base URL
+ * under its own name only: a bare URL on the box is whichever sibling declared
+ * it, and a production key sent to a staging origin is a credential leak that
+ * fails nowhere.
+ *
+ * MOUNTED EVEN WITH NO KEY, degraded: the tools list, and every call fails
+ * naming the variable.
+ *
+ * Tool groups are not configurable here. `scrubCapabilityEnv` removes
+ * `TOOL_GROUPS`, so each tree serves its upstream default — every group except
+ * pulsemcp-cms-admin's `tenants_destructive` (delete_tenant, delete_api_key,
+ * revoke_api_key), which upstream gates behind an elicitation prompt and which
+ * strad does not serve. Narrowing is the gateway's `tools:` policy.
+ */
+const PULSE_ADMIN = {
+  "pulsemcp-cms-admin": {
+    keyVar: "PULSEMCP_ADMIN_API_KEY",
+    urlVar: "PULSEMCP_ADMIN_API_URL",
+    clientExport: "PulseMCPAdminClient",
+    serverName: "strad-pulsemcp-cms-admin",
+  },
+  proctor: {
+    keyVar: "PROCTOR_API_KEY",
+    urlVar: "PROCTOR_API_URL",
+    clientExport: "ProctorClient",
+    serverName: "strad-proctor",
+  },
+} as const;
+
+async function loadPulseAdmin(
+  tree: keyof typeof PULSE_ADMIN,
+  slug: string,
+  perSlug: boolean,
+): Promise<Mount> {
+  const { keyVar, urlVar, clientExport, serverName } = PULSE_ADMIN[tree];
+  const mod = (await loadFromTree(tree, "shared/build/index.js")) as {
+    createMCPServer: (opts: { version: string }) => {
+      registerHandlers: (server: unknown, clientFactory: () => unknown) => Promise<void>;
+    };
+  } & Record<string, unknown>;
+  const Client = mod[clientExport] as new (apiKey: string, baseUrl?: string) => unknown;
+
+  const view = slugEnvView(process.env, slug);
+  if (perSlug) {
+    ownNameOnly(view, slug, keyVar);
+    ownNameOnly(view, slug, urlVar);
+  }
+  const apiKey = view[keyVar];
+  const baseUrl = view[urlVar] || undefined;
+  const created = mod.createMCPServer({ version: VERSION });
+  const factory = () => {
+    if (!apiKey) throw new Error(`${keyVar} is not set for ${slug}`);
+    return new Client(apiKey, baseUrl);
+  };
+
+  return {
+    slug,
+    tree,
+    serverName,
+    capabilities: { tools: {} },
+    degraded: missingCredentialsDegraded(apiKey ? [] : [keyVar]),
+    register: (s) => created.registerHandlers(s, factory),
   };
 }
 
@@ -1293,7 +1384,7 @@ async function loadXTwitter(): Promise<Mount> {
     // The client caches its OAuth provider for the host process, so the factory
     // is built once here and memoised inside registerHandlers. Building it
     // LAZILY matters: `createXClientFromEnv` throws when no X credential is
-    // configured at all, and a throw at boot would take all thirty-four mounts down
+    // configured at all, and a throw at boot would take all thirty-six mounts down
     // over one unconfigured server.
     register: (s) =>
       created.registerHandlers(s, () =>
@@ -2312,7 +2403,7 @@ async function main(): Promise<void> {
   //
   // NOT AWAITED, and that is deliberate. A pass is one sequential read per
   // listed variable, each with its own timeout, so awaiting it would put a slow
-  // or unreachable core directly in front of `listen()` below — thirty-four
+  // or unreachable core directly in front of `listen()` below — thirty-six
   // mounts held off serving because one credential could not be re-read. The
   // container starting with the value the deploy baked is exactly the behaviour
   // every deployment has today, so falling back to it costs nothing; blocking
@@ -2325,7 +2416,7 @@ async function main(): Promise<void> {
   // STORE-SERVED INSTANCES — the mounts no deploy named. See the header.
   //
   // The first sync is NOT awaited, for the reason the refresh pass above is
-  // not: a slow core must not stand in front of `listen()` for thirty-four
+  // not: a slow core must not stand in front of `listen()` for thirty-six
   // mounts that need nothing from it. A request that arrives before the sync
   // lands takes the miss path in the route below, which syncs then.
   const instances = createInstanceReconciler<Mount>({
@@ -2602,7 +2693,7 @@ async function main(): Promise<void> {
     });
   });
 
-  // One stray rejection from one of thirty-four servers must not kill the other
+  // One stray rejection from one of thirty-six servers must not kill the other
   // thirty-two. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {

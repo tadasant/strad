@@ -1,0 +1,18 @@
+{
+  "name": "strad-server-pulsemcp-cms-admin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PulseMCP CMS admin MCP server (directory, newsletter, mirrors, tenants, jobs) vendored from pulsemcp/mcp-servers. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "elicitation",
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @pulsemcp/mcp-elicitation && npm run build --workspace pulsemcp-cms-admin-mcp-server-shared",
+    "test": "npm run build && vitest run --config vitest.config.ts"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.9"
+  }
+}

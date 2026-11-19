@@ -15,7 +15,7 @@
  * credential-dependent. CI has no credential, the probe fails closed, and the
  * count is the read-only 4 below.
  *
- * What it is really checking is that thirty-four servers, twenty-five dependency trees and
+ * What it is really checking is that thirty-six servers, twenty-seven dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  *
@@ -83,6 +83,14 @@ const EXPECT = {
   pointsyeah: null,
   "x-twitter": 9,
   "pulse-subregistry": 2,
+  // PulseMCP's admin API: every upstream tool group except
+  // `tenants_destructive`, whose delete_tenant, delete_api_key and
+  // revoke_api_key strad does not serve. 34 of the 71 are reads. A 72nd is
+  // either a new upstream tool or the destructive group switched on.
+  "pulsemcp-cms-admin": 71,
+  // Proctor: get_proctor_metadata and get_machines, which a read-only slug
+  // allows, plus run_exam, destroy_machine and cancel_exam.
+  proctor: 5,
   // One tool, `scrape`, and the count is a FORK assertion: upstream grows an
   // `extract` parameter when LLM credentials are present, and strad removed that
   // feature so the surface cannot vary with the environment.

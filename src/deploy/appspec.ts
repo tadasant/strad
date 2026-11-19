@@ -301,7 +301,7 @@ const STRAD_BUNDLE_REPOSITORY = "strad-bundle";
  * about two minutes in. The 5-second timeout is generous on purpose: a loop that
  * is merely busy for a moment must not cost 66 slugs a restart.
  *
- * `initial_delay_seconds` covers boot: thirty-four mounts load before `listen()`.
+ * `initial_delay_seconds` covers boot: thirty-six mounts load before `listen()`.
  * `port` is explicit because the component has `internal_ports` and no
  * `http_port`, which is what the check would otherwise default to.
  */

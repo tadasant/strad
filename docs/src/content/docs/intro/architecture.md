@@ -70,23 +70,25 @@ for servers on it. Every non-core component gets `STRAD_CORE_URL` for it.
 
 A bundle runs **one image**, and any number of servers may share it, each on its
 own `path`. strad's own deployment has one main bundle: a
-`ghcr.io/tadasant/strad-bundle` container that mounts thirty-four MCP servers in
-one Node process, assembled from twenty-five independently-built dependency trees.
+`ghcr.io/tadasant/strad-bundle` container that mounts thirty-six MCP servers in
+one Node process, assembled from twenty-seven independently-built dependency trees.
 The staging config maps forty-one of its forty-five `supplementary-image`
 entries onto twenty-eight paths, because capability variants of one upstream are two
 entries pointing at the same path. Twenty-seven of those are baked mounts;
-`/x-twitter`, `/google-sheets`, `/grafana` and `/aws-device-farm` are baked with no staging slug
-pointing at them. The twenty-eighth, `/grafana-registry`, is a **per-slug
+`/x-twitter`, `/google-sheets`, `/grafana`, `/aws-device-farm`, `/pulsemcp-cms-admin`
+and `/proctor` are baked with no staging slug pointing at them. The twenty-eighth, `/grafana-registry`, is a **per-slug
 instance** — a mount the host stands up only when the container carries that
 slug's own credential (see below). The other two entries run on bundles of
 their own, below.
 
-Seven of those mounts are also mounted again, once per slug, when a deployment
+Nine of those mounts are also mounted again, once per slug, when a deployment
 gives a slug its own credential rather than sharing the container's: `/telegram`,
 `/remote-filesystem-tmp-public`, `/grafana`, `/google-sheets`, `/gmail`,
-`/google-docs` and `/onepassword`. What counts as "its own" is per tree:
-telegram wants the whole credential, the artifact store wants a bucket, grafana
-wants an origin and a token, 1Password wants a service-account token, and
+`/google-docs`, `/onepassword`, `/pulsemcp-cms-admin` and `/proctor`. What
+counts as "its own" is per tree: telegram wants the whole credential, the
+artifact store wants a bucket, grafana wants an origin and a token, 1Password
+wants a service-account token, the two PulseMCP admin servers want an API key
+([how](/servers/pulsemcp-admin/)), and
 google-sheets, gmail and google-docs want the OAuth client id and secret — never
 the refresh token, which a human mints later on the mount's own console page.
 That is what makes six `google-sheets-*` slugs over three Google accounts one
@@ -702,8 +704,8 @@ The server list drives how containers are grouped:
 
 <aside class="starlight-aside starlight-aside--caution">
 
-**One process, one core, thirty-four servers is an accepted risk, not a proven
-design.** A crash in the bundle host takes all thirty-four down together, and the
+**One process, one core, thirty-six servers is an accepted risk, not a proven
+design.** A crash in the bundle host takes all thirty-six down together, and the
 single vCPU is shared with Chromium. If it turns out to be starved, the next move
 is a dedicated CPU (`apps-d-1vcpu-2gb`), not more RAM — the binding constraint is
 compute. This is what the [telemetry](/operate/telemetry/) exists to answer. See

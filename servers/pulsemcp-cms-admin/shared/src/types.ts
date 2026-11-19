@@ -1,0 +1,1309 @@
+// Post metadata types matching the PulseMCP API
+export interface Post {
+  id: number;
+  title: string;
+  body?: string; // Optional because list endpoint doesn't return it
+  slug: string;
+  // Ordered author ids provided by the list endpoint (GET /posts). Index 0 is
+  // the primary author. The list endpoint returns ids only (no names); use the
+  // show endpoint's `authors` array when names are needed.
+  author_ids?: number[];
+  status: 'draft' | 'live' | string; // Allow string for flexibility
+  category: 'newsletter' | 'other' | string; // Allow string for flexibility
+  image_url?: string;
+  preview_image_url?: string;
+  share_image?: string;
+  title_tag?: string;
+  short_title?: string;
+  short_description?: string;
+  description_tag?: string;
+  last_updated?: string;
+  table_of_contents?: unknown;
+  featured_mcp_server_ids?: number[];
+  featured_mcp_client_ids?: number[];
+  created_at: string;
+  updated_at: string;
+  // Ordered list of authors with names (position-ordered; index 0 is the primary
+  // author). Returned by the supervisor show endpoint (GET /supervisor/posts/:slug)
+  // and is the source of truth for reading post authorship.
+  authors?: Array<{
+    id: number;
+    name: string;
+  }>;
+}
+
+export interface PostsResponse {
+  posts: Post[];
+  pagination?: {
+    current_page: number;
+    total_pages: number;
+    total_count: number;
+  };
+}
+
+export interface CreatePostParams {
+  title: string;
+  body: string;
+  slug: string;
+  // Ordered author ids; index 0 is the primary author. Sent to the API as
+  // post[author_ids][] (Rails permits only the array form).
+  author_ids: number[];
+  status?: 'draft' | 'live';
+  category?: 'newsletter' | 'other';
+  image_url?: string;
+  preview_image_url?: string;
+  share_image?: string;
+  title_tag?: string;
+  short_title?: string;
+  short_description?: string;
+  description_tag?: string;
+  last_updated?: string;
+  table_of_contents?: unknown;
+  featured_mcp_server_ids?: number[];
+  featured_mcp_client_ids?: number[];
+}
+
+export type UpdatePostParams = Partial<CreatePostParams>;
+
+export interface ImageUploadResponse {
+  url: string;
+}
+
+export interface Author {
+  id: number;
+  name: string;
+  slug: string;
+  bio?: string;
+  image_url?: string; // API returns image_url, not avatar_url
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AuthorsResponse {
+  authors: Author[];
+  pagination?: {
+    current_page: number;
+    total_pages: number;
+    total_count: number;
+  };
+}
+
+export interface MCPServerTag {
+  id: number;
+  name: string;
+  slug: string;
+}
+
+export interface MCPServerRemote {
+  id: number;
+  display_name?: string;
+  url_direct?: string;
+  url_setup?: string;
+  transport?: string; // e.g., "sse", "streamable_http"
+  host_platform?: string; // e.g., "smithery", "superinterface"
+  host_infrastructure?: string; // e.g., "cloudflare", "vercel", "fly_io"
+  authentication_method?: string; // e.g., "open", "oauth", "api_key"
+  cost?: string; // e.g., "free", "free_tier", "paid"
+  status?: string; // e.g., "live", "draft"
+  internal_notes?: string;
+}
+
+export interface RemoteEndpointParams {
+  id?: string | number; // ID of existing remote (number from get_draft, string also accepted) or omit for new
+  url_direct?: string;
+  url_setup?: string;
+  transport?: string; // e.g., "sse", "streamable_http"
+  host_platform?: string; // e.g., "smithery", "superinterface"
+  host_infrastructure?: string; // e.g., "cloudflare", "fly_io"
+  authentication_method?: string; // e.g., "open", "oauth"
+  cost?: string; // e.g., "free", "paid"
+  status?: string; // Status - defaults to "live"
+  display_name?: string;
+  internal_notes?: string;
+}
+
+export interface CanonicalUrlParams {
+  url: string;
+  scope: 'domain' | 'subdomain' | 'url';
+  note?: string;
+}
+
+export interface MCPServer {
+  id: number;
+  slug: string;
+  // Note: name and description come from McpImplementation, not McpServer
+  created_at?: string;
+  updated_at?: string;
+  classification?: string;
+  implementation_language?: string;
+  registry_package_id?: number | null;
+  registry_package_soft_verified?: boolean;
+  downloads_estimate_last_7_days?: number;
+  downloads_estimate_last_30_days?: number;
+  downloads_estimate_total?: number;
+  downloads_estimate_most_recent_week?: number;
+  downloads_estimate_last_four_weeks?: number;
+  visitors_estimate_total?: number;
+  mcp_server_remotes_count?: number;
+  recommended?: boolean;
+  verified_no_remote_canonicals?: boolean;
+  owner_tenant_id?: number | null;
+  owner_tenant_slug?: string | null;
+  tags?: MCPServerTag[];
+  remotes?: MCPServerRemote[];
+}
+
+export interface MCPClient {
+  id: number;
+  slug: string;
+  // Note: name and description come from McpImplementation, not McpClient
+  created_at?: string;
+  updated_at?: string;
+  featured?: boolean;
+  logo_url?: string | null;
+}
+
+export interface MCPImplementation {
+  id: number;
+  name: string;
+  short_description?: string;
+  description?: string;
+  type: 'server' | 'client';
+  status: 'draft' | 'live' | 'archived';
+  slug: string;
+  url?: string;
+  // Provider info
+  provider_name?: string;
+  provider_id?: number | null;
+  provider_url?: string;
+  provider_slug?: string;
+  // GitHub info
+  github_stars?: number | null;
+  github_owner?: string;
+  github_repo?: string;
+  github_subfolder?: string;
+  github_created_date?: string;
+  github_status?: string;
+  github_last_updated?: string;
+  // Server-specific fields
+  classification?: 'official' | 'community' | 'reference';
+  implementation_language?: string;
+  mcp_server_id?: number | null;
+  mcp_client_id?: number | null;
+  internal_notes?: string;
+  created_at?: string;
+  updated_at?: string;
+  created_on_override?: string;
+  // Flags
+  recommended?: boolean;
+  // Package registry fields
+  package_registry?: string;
+  package_name?: string;
+  // Associated objects (now inline from API)
+  mcp_server?: MCPServer | null;
+  mcp_client?: MCPClient | null;
+  canonical?: CanonicalUrlParams[];
+}
+
+export interface MCPImplementationsResponse {
+  implementations: MCPImplementation[];
+  pagination?: {
+    current_page: number;
+    total_pages: number;
+    total_count: number;
+    has_next?: boolean;
+    limit?: number;
+  };
+}
+
+export interface SaveMCPImplementationParams {
+  name?: string;
+  short_description?: string;
+  description?: string;
+  type?: 'server' | 'client';
+  status?: 'draft' | 'live' | 'archived';
+  slug?: string;
+  url?: string;
+  provider_name?: string;
+  github_stars?: number | null;
+  classification?: 'official' | 'community' | 'reference';
+  implementation_language?: string;
+  mcp_server_id?: number | null;
+  mcp_client_id?: number | null;
+
+  // Owner tenant linking. Pass owner_tenant_slug (preferred) or owner_tenant_id.
+  // Slug wins if both are sent. Empty string clears the link.
+  owner_tenant_id?: number | null;
+  owner_tenant_slug?: string | null;
+
+  // Provider creation/linking fields
+  provider_id?: string | number; // "new" to create, or numeric ID to link existing
+  provider_slug?: string; // Optional slug (auto-generated from name if omitted)
+  provider_url?: string; // Optional provider website URL
+
+  // GitHub repository fields
+  github_owner?: string; // GitHub organization or username
+  github_repo?: string; // Repository name
+  github_subfolder?: string; // Optional subfolder within repo (for monorepos)
+
+  // Package registry fields
+  package_registry?: string; // e.g., "npm", "pypi", "cargo"
+  package_name?: string; // e.g., "@modelcontextprotocol/server-filesystem"
+
+  // Flags
+  recommended?: boolean; // Mark this server as recommended by PulseMCP
+  verified_no_remote_canonicals?: boolean; // Mark that this server has been verified to have no remote canonical URLs
+
+  // Date overrides
+  created_on_override?: string; // ISO date string to override the automatically derived created date
+
+  // Tags (for servers)
+  tags?: string[]; // Array of tag slugs to set on the server
+
+  // Remote endpoints (for servers)
+  remote?: RemoteEndpointParams[]; // Array of remote endpoint configurations
+
+  // Canonical URLs
+  canonical?: CanonicalUrlParams[]; // Array of canonical URL configurations
+
+  // Other fields
+  internal_notes?: string; // Admin-only notes
+}
+
+/**
+ * Parameters for creating a new MCP implementation.
+ * Required fields: name, type
+ * All other fields are optional.
+ *
+ * Note: Some fields from SaveMCPImplementationParams are NOT available on create:
+ * - github_stars: Read-only, derived from GitHub repository
+ * - mcp_server_id/mcp_client_id: Created automatically based on 'type'
+ */
+export interface CreateMCPImplementationParams {
+  // Required fields
+  name: string; // Name of the MCP implementation
+  type: 'server' | 'client'; // Implementation type
+
+  // Optional fields
+  short_description?: string;
+  description?: string;
+  status?: 'draft' | 'live' | 'archived';
+  slug?: string;
+  url?: string;
+  provider_name?: string; // If matches an existing provider's slug, reuses that provider
+  // Note: github_stars is read-only (derived from GitHub repository) - not available on create
+  classification?: 'official' | 'community' | 'reference'; // Server-only field
+  implementation_language?: string; // Server-only field
+  // Note: mcp_server_id/mcp_client_id are created automatically based on 'type' - not available on create
+
+  // Provider creation/linking fields
+  provider_id?: string | number; // "new" to create, or numeric ID to link existing
+  provider_slug?: string; // Optional slug (auto-generated from name if omitted)
+  provider_url?: string; // Optional provider website URL
+
+  // GitHub repository fields
+  github_owner?: string; // GitHub organization or username
+  github_repo?: string; // Repository name
+  github_subfolder?: string; // Optional subfolder within repo (for monorepos)
+
+  // Package registry fields
+  package_registry?: string; // e.g., "npm", "pypi", "cargo"
+  package_name?: string; // e.g., "@modelcontextprotocol/server-filesystem"
+
+  // Flags
+  recommended?: boolean; // Mark this server as recommended by PulseMCP
+  verified_no_remote_canonicals?: boolean; // Mark that this server has been verified to have no remote canonical URLs
+
+  // Date overrides
+  created_on_override?: string; // ISO date string to override the automatically derived created date
+
+  // Tags (for servers)
+  tags?: string[]; // Array of tag slugs to set on the server
+
+  // Remote endpoints (for servers)
+  remote?: RemoteEndpointParams[]; // Array of remote endpoint configurations
+
+  // Canonical URLs
+  canonical?: CanonicalUrlParams[]; // Array of canonical URL configurations
+
+  // Other fields
+  internal_notes?: string; // Admin-only notes
+
+  // Owner tenant linking. Pass owner_tenant_slug (preferred) or owner_tenant_id.
+  owner_tenant_id?: number | null;
+  owner_tenant_slug?: string | null;
+}
+
+export interface Provider {
+  id: number;
+  name: string;
+  slug: string;
+  url?: string;
+  implementations_count?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ProvidersResponse {
+  providers: Provider[];
+  pagination?: {
+    current_page: number;
+    total_pages: number;
+    total_count: number;
+    has_next?: boolean;
+    limit?: number;
+  };
+}
+
+// Official Mirror Queue Types
+export type OfficialMirrorQueueStatus =
+  | 'pending'
+  | 'pending_new'
+  | 'pending_update'
+  | 'approved'
+  | 'rejected';
+
+export interface OfficialMirrorSummary {
+  id: number;
+  name: string;
+  version: string;
+  description?: string;
+  github_url?: string;
+  website_url?: string;
+  published_at?: string;
+}
+
+export interface OfficialMirror {
+  id: number;
+  name: string;
+  version: string;
+  official_version_id: string;
+  description?: string;
+  github_url?: string;
+  website_url?: string;
+  categories?: string[];
+  license?: string;
+  remotes?: unknown[];
+  packages?: unknown[];
+  published_at?: string;
+  schema_version?: string;
+  datetime_ingested?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface LinkedServer {
+  id: number;
+  slug: string;
+  classification?: string;
+  implementation_language?: string;
+  provider_name?: string;
+  provider_slug?: string;
+  implementation_name?: string;
+  implementation_status?: string;
+}
+
+export interface OfficialMirrorQueueItem {
+  id: number;
+  name: string;
+  status: OfficialMirrorQueueStatus;
+  mirrors_count: number;
+  linked_server_slug?: string | null;
+  linked_server_id?: number | null;
+  latest_mirror?: OfficialMirrorSummary | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface OfficialMirrorQueueItemDetail {
+  id: number;
+  name: string;
+  status: OfficialMirrorQueueStatus;
+  mirrors_count: number;
+  linked_server?: LinkedServer | null;
+  server_linkage_consistent: boolean;
+  mirrors: OfficialMirror[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface OfficialMirrorQueueResponse {
+  items: OfficialMirrorQueueItem[];
+  pagination?: {
+    current_page: number;
+    total_pages: number;
+    total_count: number;
+    has_next?: boolean;
+    limit?: number;
+  };
+}
+
+export interface OfficialMirrorQueueActionResponse {
+  success: boolean;
+  message: string;
+  queue_item: OfficialMirrorQueueItem;
+}
+
+// Unofficial Mirror Types (REST API)
+export interface UnofficialMirror {
+  id: number;
+  name: string;
+  version: string;
+  jsonb_data: Record<string, unknown>;
+  datetime_ingested?: string;
+  mcp_server_id?: number | null;
+  mcp_server_slug?: string | null;
+  previous_name?: string | null;
+  next_name?: string | null;
+  proctor_results_count?: number;
+  mcp_jsons_count?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface UnofficialMirrorsResponse {
+  mirrors: UnofficialMirror[];
+  pagination?: {
+    current_page: number;
+    total_pages: number;
+    total_count: number;
+    has_next?: boolean;
+    limit?: number;
+  };
+}
+
+export interface CreateUnofficialMirrorParams {
+  name: string;
+  version: string;
+  jsonb_data: Record<string, unknown> | string;
+  mcp_server_id?: number;
+  previous_name?: string;
+  next_name?: string;
+}
+
+export interface UpdateUnofficialMirrorParams {
+  name?: string;
+  version?: string;
+  jsonb_data?: Record<string, unknown> | string;
+  mcp_server_id?: number | null;
+  previous_name?: string | null;
+  next_name?: string | null;
+}
+
+// Official Mirror Types (REST API - separate from queue)
+export interface OfficialMirrorRest {
+  id: number;
+  name: string;
+  version: string;
+  official_version_id?: string;
+  jsonb_data: Record<string, unknown>;
+  datetime_ingested?: string;
+  mcp_server_id?: number | null;
+  mcp_server_slug?: string | null;
+  processed?: boolean;
+  processing_failure_reason?: string | null;
+  queue_id?: number | null;
+  queue_status?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface OfficialMirrorsResponse {
+  mirrors: OfficialMirrorRest[];
+  pagination?: {
+    current_page: number;
+    total_pages: number;
+    total_count: number;
+    has_next?: boolean;
+    limit?: number;
+  };
+}
+
+// Tenant Types
+export interface Tenant {
+  id: number;
+  slug: string;
+  is_admin: boolean;
+  enrichments?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface TenantsResponse {
+  tenants: Tenant[];
+  pagination?: {
+    current_page: number;
+    total_pages: number;
+    total_count: number;
+    has_next?: boolean;
+    limit?: number;
+  };
+}
+
+// Tenant -> MCP server association (TenantsMcpServer row)
+export interface TenantServer {
+  id: number;
+  tenant_id: number;
+  mcp_server_id: number;
+  mcp_server_slug: string;
+  status: 'active' | 'deleted';
+  server_json_selection: string;
+  first_touched_at?: string | null;
+  touched: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ListTenantServersResponse {
+  data: TenantServer[];
+  pagination: {
+    current_page: number;
+    total_pages: number;
+    total_count: number;
+    has_next: boolean;
+    limit: number;
+  };
+}
+
+export interface BulkUpdateTenantServersParams {
+  add_server_identifiers?: Array<number | string>;
+  remove_server_identifiers?: Array<number | string>;
+  restore_association_ids?: number[];
+}
+
+export interface BulkUpdateAddedItem {
+  mcp_server_id: number;
+  mcp_server_slug: string;
+  association_id: number;
+  outcome: 'created' | 'restored_from_deleted';
+}
+
+export interface BulkUpdateRemovedItem {
+  mcp_server_id: number;
+  mcp_server_slug: string;
+  // Only populated for soft_deleted (the row still exists). Null for hard_deleted.
+  association_id: number | null;
+  outcome: 'hard_deleted' | 'soft_deleted';
+}
+
+export interface BulkUpdateRestoredItem {
+  mcp_server_id: number;
+  mcp_server_slug: string;
+  association_id: number;
+}
+
+export interface BulkUpdateSkippedItem {
+  mcp_server_id?: number;
+  mcp_server_slug?: string;
+  association_id?: number;
+  reason: 'no_unofficial_mirror' | 'already_active' | string;
+}
+
+export interface BulkUpdateTenantServersResponse {
+  status: 'success';
+  tenant: { id: number; slug: string };
+  added: BulkUpdateAddedItem[];
+  removed: BulkUpdateRemovedItem[];
+  restored: BulkUpdateRestoredItem[];
+  skipped: BulkUpdateSkippedItem[];
+  unresolved_identifiers: Array<number | string>;
+}
+
+// MCP JSON Types
+export interface McpJson {
+  id: number;
+  mcp_servers_unofficial_mirror_id: number;
+  unofficial_mirror_name?: string;
+  unofficial_mirror_version?: string;
+  title: string;
+  description?: string;
+  value: Record<string, unknown>;
+  server_key?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface McpJsonsResponse {
+  mcp_jsons: McpJson[];
+  pagination?: {
+    current_page: number;
+    total_pages: number;
+    total_count: number;
+    has_next?: boolean;
+    limit?: number;
+  };
+}
+
+export interface CreateMcpJsonParams {
+  mcp_servers_unofficial_mirror_id: number;
+  title: string;
+  value: Record<string, unknown> | string;
+  description?: string;
+}
+
+export interface UpdateMcpJsonParams {
+  mcp_servers_unofficial_mirror_id?: number;
+  title?: string;
+  value?: Record<string, unknown> | string;
+  description?: string;
+}
+
+// ============================================================
+// MCP Servers Unified Interface Types
+// These types provide an abstracted view of MCP servers that hides
+// the complexity of the underlying MCPImplementation → MCPServer relationship
+// ============================================================
+
+/**
+ * Source code location for an MCP server (e.g., GitHub repository)
+ */
+export interface SourceCodeLocation {
+  github_owner?: string;
+  github_repo?: string;
+  github_subfolder?: string;
+  github_stars?: number | null;
+  github_created_date?: string;
+  github_last_updated?: string;
+  github_status?: string;
+}
+
+/**
+ * Canonical URL configuration for an MCP server.
+ * Alias for CanonicalUrlParams - both represent the same data structure.
+ */
+export type CanonicalUrl = CanonicalUrlParams;
+
+/**
+ * Remote endpoint configuration for an MCP server
+ */
+export interface RemoteEndpoint {
+  id?: number;
+  display_name?: string;
+  url_direct?: string;
+  url_setup?: string;
+  transport?: string;
+  host_platform?: string;
+  host_infrastructure?: string;
+  authentication_method?: string;
+  cost?: string;
+  status?: string;
+  internal_notes?: string;
+}
+
+/**
+ * Unified MCP server view that abstracts away MCPImplementation complexity.
+ * This represents an MCP server with all its associated data in a single interface.
+ */
+export interface UnifiedMCPServer {
+  // Core identification
+  id: number; // This is the MCPServer ID
+  slug: string;
+  implementation_id: number | null; // The underlying MCPImplementation ID (needed for updates), null if no implementation exists
+
+  // Basic info (from MCPImplementation)
+  name: string;
+  short_description?: string;
+  description?: string;
+  status: 'draft' | 'live' | 'archived';
+  classification?: 'official' | 'community' | 'reference';
+  implementation_language?: string;
+
+  // Marketing URL
+  url?: string;
+
+  // Provider info
+  provider?: {
+    id?: number | null;
+    name?: string;
+    slug?: string;
+    url?: string;
+  };
+
+  // Source code location
+  source_code?: SourceCodeLocation;
+
+  // Package registry info
+  package_registry?: string; // e.g., "npm", "pypi", "cargo"
+  package_name?: string; // e.g., "@modelcontextprotocol/server-filesystem"
+
+  // Flags
+  recommended?: boolean; // Whether this server is recommended by PulseMCP
+  verified_no_remote_canonicals?: boolean; // Whether this server has been verified to have no remote canonical URLs
+
+  // Canonical URLs
+  canonical_urls?: CanonicalUrl[];
+
+  // Remote endpoints
+  remotes?: RemoteEndpoint[];
+
+  // Tags
+  tags?: MCPServerTag[];
+
+  // Registry/download info
+  registry_package_id?: number | null;
+  registry_package_soft_verified?: boolean;
+  downloads_estimate_last_7_days?: number;
+  downloads_estimate_last_30_days?: number;
+  downloads_estimate_total?: number;
+
+  // Internal notes
+  internal_notes?: string;
+
+  // Owner tenant (the tenant that owns this server, if any)
+  owner_tenant_id?: number | null;
+  owner_tenant_slug?: string | null;
+
+  // Timestamps
+  created_at?: string;
+  updated_at?: string;
+  created_on_override?: string; // User-specified creation date override
+}
+
+/**
+ * Response for listing unified MCP servers
+ */
+export interface UnifiedMCPServersResponse {
+  servers: UnifiedMCPServer[];
+  pagination?: {
+    current_page: number;
+    total_pages: number;
+    total_count: number;
+    has_next?: boolean;
+    limit?: number;
+  };
+}
+
+/**
+ * Parameters for updating a unified MCP server
+ */
+export interface UpdateUnifiedMCPServerParams {
+  // Basic info
+  name?: string;
+  short_description?: string;
+  description?: string;
+  status?: 'draft' | 'live' | 'archived';
+  classification?: 'official' | 'community' | 'reference';
+  implementation_language?: string;
+  url?: string;
+
+  // Provider (can link existing by ID or create new)
+  provider_id?: number | string; // number to link existing, "new" to create
+  provider_name?: string; // Name for new provider
+  provider_slug?: string;
+  provider_url?: string;
+
+  // Source code location
+  source_code?: {
+    github_owner?: string;
+    github_repo?: string;
+    github_subfolder?: string;
+  };
+
+  // Package registry info
+  package_registry?: string; // e.g., "npm", "pypi", "cargo"
+  package_name?: string; // e.g., "@modelcontextprotocol/server-filesystem"
+
+  // Flags
+  recommended?: boolean; // Mark this server as recommended by PulseMCP
+  verified_no_remote_canonicals?: boolean; // Mark that this server has been verified to have no remote canonical URLs
+
+  // Date overrides
+  created_on_override?: string; // ISO date string to override the automatically derived created date
+
+  // Tags (replaces all if provided)
+  tags?: string[]; // Array of tag slugs
+
+  // Canonical URLs (replaces all if provided)
+  canonical_urls?: CanonicalUrl[];
+
+  // Remote endpoints (replaces all if provided)
+  remotes?: RemoteEndpoint[];
+
+  // Internal notes
+  internal_notes?: string;
+
+  // Owner tenant. Pass a slug (string) or numeric tenant id, or null to clear.
+  owner_tenant?: string | number | null;
+}
+
+// ============================================================
+// Redirect Types
+// URL redirects for managing PulseMCP website routing
+// ============================================================
+
+export type RedirectStatus = 'draft' | 'active' | 'paused' | 'archived';
+
+export interface Redirect {
+  id: number;
+  from: string; // Source path (e.g., "/old-page")
+  to: string; // Destination path or URL (e.g., "/new-page" or "https://example.com")
+  status: RedirectStatus;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface RedirectsResponse {
+  redirects: Redirect[];
+  pagination?: {
+    current_page: number;
+    total_pages: number;
+    total_count: number;
+    has_next?: boolean;
+    limit?: number;
+  };
+}
+
+export interface CreateRedirectParams {
+  from: string; // Source path to redirect from
+  to: string; // Destination path or URL to redirect to
+  status?: RedirectStatus; // Defaults to 'draft' if not specified
+}
+
+export interface UpdateRedirectParams {
+  from?: string;
+  to?: string;
+  status?: RedirectStatus;
+}
+
+// ============================================================
+// Secret Types
+// Auth secrets whose values live in 1Password, linked to MCP
+// servers via the mcp_servers_secrets join that Proctor reads
+// to inject the value at runtime.
+// ============================================================
+
+export interface Secret {
+  id: number;
+  slug: string;
+  // 1Password item reference. The raw secret value never touches this API.
+  onepassword_item_id: string;
+  title?: string | null;
+  description?: string | null;
+  mcp_servers_count?: number;
+  mcp_server_slugs?: string[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CreateSecretParams {
+  slug: string;
+  onepassword_item_id: string;
+  title?: string;
+  description?: string;
+}
+
+export interface SecretServerLink {
+  mcp_server_id: number;
+  mcp_server_slug: string;
+  // Tag scoping which field of the 1Password item to inject. Null when unscoped.
+  onepassword_tag?: string | null;
+}
+
+export interface LinkSecretToServerParams {
+  // Secret identifier: numeric id or slug.
+  secret: string | number;
+  // MCP server identifier: exactly one of these is required.
+  mcp_server_id?: number;
+  mcp_server_slug?: string;
+  onepassword_tag?: string;
+}
+
+// Response of the link endpoint: the secret plus the created/updated join row.
+export interface SecretWithLink extends Secret {
+  link: SecretServerLink;
+}
+
+// ============================================================
+// GoodJob Types
+// Background job management via the GoodJob API
+// ============================================================
+
+export type GoodJobStatus =
+  | 'scheduled'
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'discarded';
+
+export interface GoodJob {
+  id: string;
+  job_class: string;
+  queue_name: string;
+  status: GoodJobStatus;
+  scheduled_at?: string;
+  performed_at?: string;
+  finished_at?: string;
+  error?: string;
+  serialized_params?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface GoodJobsResponse {
+  jobs: GoodJob[];
+  pagination?: {
+    current_page: number;
+    total_pages: number;
+    total_count: number;
+    has_next?: boolean;
+    limit?: number;
+  };
+}
+
+export interface GoodJobCronSchedule {
+  cron_key: string;
+  job_class: string;
+  cron_expression: string;
+  description?: string;
+  next_scheduled_at?: string;
+  last_run_at?: string;
+}
+
+export interface GoodJobProcess {
+  id: string;
+  hostname: string;
+  pid: number;
+  queues?: string[];
+  max_threads?: number;
+  started_at?: string;
+}
+
+export interface GoodJobStatistics {
+  total: number;
+  scheduled: number;
+  queued: number;
+  running: number;
+  succeeded: number;
+  failed: number;
+  discarded: number;
+}
+
+export interface GoodJobActionResponse {
+  success: boolean;
+  message: string;
+  job?: GoodJob;
+}
+
+export interface GoodJobCleanupResponse {
+  success: boolean;
+  message: string;
+  deleted_count?: number;
+}
+
+// ============================================================
+// Proctor Types
+// Proctor exam execution and result storage for unofficial mirrors
+// ============================================================
+
+export interface ProctorExamStreamLine {
+  type: 'log' | 'exam_result' | 'summary' | 'error';
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
+}
+
+export interface ProctorRunExamParams {
+  mirror_ids: number[];
+  runtime_id: string;
+  exam_type: 'auth-check' | 'init-tools-list' | 'both';
+  max_retries?: number;
+}
+
+export interface ProctorRunExamResponse {
+  lines: ProctorExamStreamLine[];
+}
+
+export interface ProctorResultInput {
+  exam_id: string;
+  status: string;
+  data?: Record<string, unknown>;
+}
+
+export interface ProctorSaveResultsParams {
+  mirror_id: number;
+  runtime_id: string;
+  results: ProctorResultInput[];
+}
+
+export interface ProctorSaveResultsResponse {
+  saved: Array<{
+    exam_id: string;
+    proctor_result_id: number;
+  }>;
+  errors: Array<
+    | string
+    | {
+        exam_id: string;
+        error: string;
+      }
+  >;
+}
+
+export interface ProctorRun {
+  id: number;
+  slug: string;
+  name: string | null;
+  recommended: boolean;
+  mirrors_count: number;
+  tenant_count: number;
+  latest_version: string | null;
+  latest_mirror_id: number | null;
+  latest_mirror_name: string | null;
+  latest_tested: boolean;
+  last_auth_check_days: number | null;
+  last_tools_list_days: number | null;
+  auth_types: string[];
+  num_tools: number | null;
+  packages: string[];
+  remotes: string[];
+  known_missing_init_tools_list: boolean;
+  known_missing_auth_check: boolean;
+  known_missing_init_tools_list_filter_to: string | null;
+  known_missing_auth_check_filter_to: string | null;
+}
+
+export interface ProctorRunsResponse {
+  runs: ProctorRun[];
+  pagination?: {
+    current_page: number;
+    total_pages: number;
+    total_count: number;
+    has_next?: boolean;
+    limit?: number;
+  };
+}
+
+export interface GetProctorRunsParams {
+  q?: string;
+  recommended?: boolean;
+  tenant_ids?: string;
+  sort?:
+    | 'slug'
+    | 'name'
+    | 'mirrors'
+    | 'recommended'
+    | 'tenants'
+    | 'latest_tested'
+    | 'last_auth_check'
+    | 'last_tools_list';
+  direction?: 'asc' | 'desc';
+  limit?: number;
+  offset?: number;
+}
+
+export interface ProctorRuntime {
+  id: string;
+  name: string;
+  image: string;
+}
+
+export interface ProctorExam {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface ProctorMetadataResponse {
+  runtimes: ProctorRuntime[];
+  exams: ProctorExam[];
+}
+
+// ============================================================
+// Discovered URL Types
+// For managing discovered URLs that need processing into MCP implementations
+// ============================================================
+
+export type DiscoveredUrlResult =
+  | 'posted'
+  | 'skipped'
+  | 'rejected'
+  | 'error'
+  | 'needs_indexing'
+  | 'drafted';
+
+export interface DiscoveredUrl {
+  id: number;
+  url: string;
+  source: string;
+  created_at: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface DiscoveredUrlsResponse {
+  urls: DiscoveredUrl[];
+  has_more: boolean;
+  total_count: number;
+  page: number;
+  per_page: number;
+}
+
+export interface MarkDiscoveredUrlProcessedParams {
+  id: number;
+  result: DiscoveredUrlResult;
+  notes?: string;
+  mcp_implementation_id?: number;
+}
+
+export interface MarkDiscoveredUrlProcessedResponse {
+  success: boolean;
+  id: number;
+  processed_at: string;
+}
+
+export interface DiscoveredUrlStats {
+  pending: number;
+  processed_today: number;
+  posted_today: number;
+  skipped_today: number;
+  rejected_today: number;
+  errored_today: number;
+}
+
+// ============================================================
+// Tenant Provisioning Types
+// For creating tenants and API keys via the admin API
+// ============================================================
+
+export interface CreateTenantParams {
+  slug: string;
+}
+
+export type ApiKeyPermissionLevel = 'read_only' | 'read_and_upsert' | 'full_access';
+
+export interface ApiKey {
+  id: number;
+  name?: string;
+  tenant_id: number;
+  tenant_slug: string;
+  tenant_is_admin: boolean;
+  permission_level: ApiKeyPermissionLevel;
+  key: string;
+  created_at: string;
+}
+
+export interface CreateApiKeyParams {
+  tenant_slug: string;
+  name?: string;
+  permission_level?: ApiKeyPermissionLevel;
+}
+
+export interface DeleteTenantParams {
+  id_or_slug: number | string;
+  force?: boolean;
+}
+
+export interface DeleteTenantResponse {
+  success: boolean;
+  message: string;
+}
+
+export interface DeleteApiKeyResponse {
+  success: boolean;
+  message: string;
+}
+
+// ============================================================
+// Cache Management Types
+// ============================================================
+
+export interface RecacheMCPServerResponse {
+  message: string;
+}
+
+export interface SetKnownMissingInitToolsListResponse {
+  id: number;
+  slug: string;
+  known_missing_init_tools_list: boolean;
+  known_missing_init_tools_list_filter_to: string | null;
+}
+
+// ============================================================
+// GitHub Repository Classification Types
+// ============================================================
+
+// The classification values supported by GithubRepository#classification.
+// Mirrors the Rails enum `GithubRepository.classifications.keys`.
+// Note: `other` ("not a single MCP server") drops the repo out of the
+// gh_stars popularity path — int_github_repositories.sql maps it to
+// mcp_server_count = 0, which gates it out of
+// int_mcp_server_downloads_normalized_daily.sql.
+export type GithubRepositoryClassification =
+  | 'single_mcp_server'
+  | 'single_mcp_client'
+  | 'multiple_mcp_servers'
+  | 'multiple_mcp_clients'
+  | 'other';
+
+export interface SetGithubRepositoryClassificationResponse {
+  id: number;
+  classification: GithubRepositoryClassification;
+}
+
+// Status of the one-off SYSTEMIC_DROP bypass for popularity estimates.
+// Returned by GET/POST /api/popularity_drop_bypass.
+export interface PopularityDropBypassStatus {
+  enabled: boolean;
+  enabled_at: string | null;
+  enabled_by: string | null;
+}
+
+// ============================================================
+// MOZ Types
+// MOZ URL metrics, backlinks, and stored historical data
+// ============================================================
+
+export interface MozMetrics {
+  page_authority?: number;
+  domain_authority?: number;
+  spam_score?: number;
+  root_domains_to_page?: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
+}
+
+export interface MozMetricsResponse {
+  metrics: MozMetrics;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  raw_response: Record<string, any>;
+  processed_at: string;
+}
+
+export interface MozBacklink {
+  source_page?: string;
+  anchor_text?: string;
+  domain_authority?: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
+}
+
+export interface MozBacklinksResponse {
+  backlinks: MozBacklink[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  raw_response: Record<string, any>;
+  processed_at: string;
+}
+
+export interface MozStoredMetric {
+  id: number;
+  canonical_id: number;
+  canonical_url: string;
+  scope?: string;
+  timestamp: string;
+  triggered_by: string;
+  page_authority?: number;
+  root_domains_to_page?: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  site_metrics?: Record<string, any>;
+  created_at: string;
+}
+
+export interface MozStoredMetricsResponse {
+  data: MozStoredMetric[];
+  meta: {
+    current_page: number;
+    total_pages: number;
+    total_count: number;
+    has_next: boolean;
+    limit: number;
+  };
+}

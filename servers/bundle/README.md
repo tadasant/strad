@@ -1,22 +1,23 @@
 # bundle — THE strad supplementary image
 
-Thirty-four MCP servers. One container. One Chromium. One `op` binary. One
+Thirty-six MCP servers. One container. One Chromium. One `op` binary. One
 `mcp-grafana` binary.
 
 ```
 /slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-filesystem-tmp-public
 /x-twitter /telegram /whatsapp /messenger /bill-spend /aws-device-farm /liveoak /ssh /image-diff
 /svg-tracer /nutrition-facts /airtable /flightaware /digitalocean /hetzner
-/pulse-subregistry
+/pulse-subregistry /pulsemcp-cms-admin /proctor
 /strad-fetch /grafana
 /google-flights /gmail /google-calendar /google-docs /google-sheets
 /onepassword /secrets
 /good-eggs /fetchpet /pointsyeah
 ```
 
-Thirty-four is the floor, not a constant: four of those mounts (`/telegram`,
-`/remote-filesystem-tmp-public`, `/google-sheets`, `/grafana`) are re-mounted once
-more per slug the container holds a separate credential for, and four trees
+Thirty-six is the floor, not a constant: six of those mounts (`/telegram`,
+`/remote-filesystem-tmp-public`, `/google-sheets`, `/grafana`,
+`/pulsemcp-cms-admin`, `/proctor`) are re-mounted once more per slug the
+container holds a separate credential for, and four trees
 (telegram, google-sheets, grafana, ssh) also serve store-served instances at
 `/_instance/{tree}/{slug}` — the ONLY way an SSH host is served; `/ssh` itself
 never holds a credential. `/google-sheets` is
@@ -69,10 +70,10 @@ binaries sit in the image unused. `/healthz` reports the sidecar under
 `tailnet` and never folds it into `ok`. See
 [`docs/operate/tailnet`](../../docs/src/content/docs/operate/tailnet.md).
 
-## How twenty-five projects become one image
+## How twenty-seven projects become one image
 
 `Dockerfile`'s build context is the **repo root**, because the servers live in
-twenty-five different places:
+twenty-seven different places:
 
 | tree | source | servers |
 | --- | --- | --- |
@@ -83,6 +84,8 @@ twenty-five different places:
 | `remote-filesystem` | `servers/remote-filesystem` | remote-filesystem-tmp-public (strad's artifact store) |
 | `x-twitter` | `servers/x-twitter` | x-twitter |
 | `pulse-subregistry` | `servers/pulse-subregistry` | pulse-subregistry |
+| `pulsemcp-cms-admin` | `servers/pulsemcp-cms-admin` | pulsemcp-cms-admin (PulseMCP's admin API; vendored verbatim, one instance per API key) |
+| `proctor` | `servers/proctor` | proctor (PulseMCP's Proctor exam runner; vendored verbatim, one instance per API key) |
 | `strad-fetch` | `servers/strad-fetch` | strad-fetch (web fetching, strad's own fork) |
 | `grafana` | `servers/grafana` | grafana (proxies the pinned `mcp-grafana` Go binary, baked in) |
 | `telegram` | `servers/telegram` | telegram (MTProto, a user session) |
@@ -104,7 +107,7 @@ twenty-five different places:
 
 Each is built **in its own stage, with its own lockfile and its own
 `node_modules`**, exactly as its standalone image builds it, and lands at
-`/app/trees/<name>`. Nothing is merged. Merging twenty-five dependency trees is how
+`/app/trees/<name>`. Nothing is merged. Merging twenty-seven dependency trees is how
 you find out in production that two of them wanted different Playwright versions.
 
 `host/` imports across the trees **by path** (`src/trees.ts`). Node resolves each
@@ -190,7 +193,7 @@ could perform one. See [`servers/secrets/README.md`](../secrets/README.md).
 
 ## Blast radius, honestly
 
-Thirty-four servers share a process. A crash is a thirty-four-server outage. Everything
+Thirty-six servers share a process. A crash is a thirty-six-server outage. Everything
 that *can* be made survivable is:
 
 - a browser server whose **login fails** is marked `degraded` in `/healthz`; the

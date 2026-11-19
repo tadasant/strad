@@ -186,13 +186,14 @@ export const VENDORED = [
     targets: ["servers/secrets/shared/src/parameter-write-rules.ts"],
   },
   {
-    // ONE library, built into ONE image, out of two independently-built trees:
-    // `build-google` and `build-op` in `servers/bundle/Dockerfile` each COPY
-    // their own context, so neither can reach the other's copy. Both consumers
-    // gate an IRREVERSIBLE act through `requestConfirmation()` — the google copy
-    // before an email is SENT, the onepassword copy before five tools reveal or
-    // mint a credential — and `readElicitationConfig()` decides whether they
-    // prompt at all. A timeout tightened in one tree and not the other is two
+    // ONE library, built into ONE image, out of three independently-built trees:
+    // `build-google`, `build-op` and `build-pulsemcp-cms-admin` in
+    // `servers/bundle/Dockerfile` each COPY their own context, so none can reach
+    // another's copy. Each consumer gates an IRREVERSIBLE act through
+    // `requestConfirmation()` — the google copy before an email is SENT, the
+    // onepassword copy before five tools reveal or mint a credential, the
+    // pulsemcp-cms-admin copy before a tenant or an API key is deleted — and
+    // `readElicitationConfig()` decides whether they prompt at all. A timeout tightened in one tree and not the other is two
     // confirmation semantics under one `/mcp`, with nothing saying so.
     //
     // The onepassword copy is the SOURCE because it is the one a deliberate
@@ -213,7 +214,10 @@ export const VENDORED = [
 // Vendored from servers/onepassword/elicitation/src by \`npm run elicitation:sync\`.
 // Edit the source, run the sync, and commit both. CI fails if these drift.
 `,
-    targets: ["images/bundle-google/vendor/mcp-elicitation/src"],
+    targets: [
+      "images/bundle-google/vendor/mcp-elicitation/src",
+      "servers/pulsemcp-cms-admin/elicitation/src",
+    ],
   },
   {
     // strad's state store: the GCS client, the seal, the lease and the

@@ -275,6 +275,15 @@ jobs:
   #               tool list; this suite pins defaults, query construction,
   #               truncation and error handling.
   #
+  #   pulsemcp-cms-admin, proctor
+  #               test. Vendored verbatim from pulsemcp/mcp-servers, which ships
+  #               no suite for either. The strad suites sit at each TREE root,
+  #               outside the vendored shared/, and pin what the bundle host
+  #               relies on: the tool surface and its read-only subset, that the
+  #               key and base URL handed to the client are the ones on the
+  #               wire, and that a missing key fails the call rather than the
+  #               process. No network, no PulseMCP credential.
+  #
   #   grafana     test. The proxy in front of the pinned mcp-grafana Go binary. Its
   #               suite runs against a fake MCP child rather than the real
   #               executable — which CI cannot run here and a unit test should not
@@ -431,6 +440,14 @@ jobs:
             build: false
             test: true
             skip-browser: false
+          - tree: pulsemcp-cms-admin
+            build: false
+            test: true
+            skip-browser: false
+          - tree: proctor
+            build: false
+            test: true
+            skip-browser: false
           - tree: strad-fetch
             build: false
             test: true
@@ -531,7 +548,7 @@ jobs:
           node "$STRAD_HOSTD_HOME/app/build/cli.js" keys | awk '{ if (length($2) < 32) exit 1 }'
           ./install/uninstall.sh --purge
 
-  # THE bundle: thirty-four MCP servers, twenty-five dependency trees, one Chromium and the
+  # THE bundle: thirty-six MCP servers, twenty-seven dependency trees, one Chromium and the
   # `op` CLI in one container. It is now the only supplementary component strad
   # deploys, so a PR that cannot build it — or that builds one where a server
   # silently lost half its tools — is a failing PR.

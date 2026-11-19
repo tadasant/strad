@@ -137,12 +137,14 @@ does not use it.
     nor either half quietly ceasing to import it.
   - `npm run elicitation:sync` (`--only elicitation`) re-vendors the four
     `src/*.ts` modules of `servers/onepassword/elicitation` — the unpublished
-    `@pulsemcp/mcp-elicitation` — into `images/bundle-google/vendor/`. Both trees
-    are built into the SAME bundle image from separate Docker contexts, and both
-    consumers gate an irreversible act through the library's
-    `requestConfirmation()`: the google copy before an email is SENT, the
-    onepassword copy before five tools reveal or mint a credential. A drift is
-    two confirmation semantics under one `/mcp`. The seam's other half is in the
+    `@pulsemcp/mcp-elicitation` — into `images/bundle-google/vendor/` and
+    `servers/pulsemcp-cms-admin/elicitation/`. All three trees are built into the
+    SAME bundle image from separate Docker contexts, and the consumers gate an
+    irreversible act through the library's `requestConfirmation()`: the google
+    copy before an email is SENT, the onepassword copy before five tools reveal
+    or mint a credential. (The cms-admin copy is there because its vendored
+    `shared/` imports it; the destructive tools that prompt are not served.) A
+    drift is two confirmation semantics under one `/mcp`. The seam's other half is in the
     test: `files:` must name every `.ts` file in the source directory, because a
     fifth module added and hand-copied is the one drift byte-identity cannot see.
     The trees' `package.json`, `tsconfig.json` and markdown are identical too and
@@ -260,6 +262,7 @@ not a confession.
 | `servers/nutrition-facts/**` — a tool, a pinned source, the matching or range rules, the FatSecret budget                            | `servers/nutrition-facts.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                 |
 | `servers/{airtable,flightaware,digitalocean}/**` — a tool, a tier, what a result may carry                                           | `servers/airtable.md`, `servers/flightaware.md`, `servers/digitalocean.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                   |
 | `servers/hetzner/**` — a tool, a tier, the blast-radius text, what a result may carry                                                | `servers/hetzner.md`, `limitations.md`, the `hetzner-pulse-ro` allow list in `infra/strad.staging.yaml`, and the counts in `servers/bundle/scripts/smoke.mjs`                        |
+| `servers/{pulsemcp-cms-admin,proctor}/**` — a re-vendor, the host's client factory, what a tier may reach                            | `servers/pulsemcp-admin.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                  |
 | `servers/grafana/**` — the pinned version, the read-only flags, the env allowlist                                                    | `servers/grafana.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                         |
 | `servers/good-eggs/**` — the basket read, a cart tool, what a result may claim                                                       | `limitations.md`, and `servers/good-eggs/FORK.md`                                                                                                                                    |
 | `servers/strad-fetch/**` — a strategy, the cache bounds, an env name, the tool                                                       | `servers/strad-fetch.md`, `limitations.md`, and `servers/strad-fetch/FORK.md`                                                                                                        |
@@ -306,8 +309,8 @@ numbers describe "how many servers," and they count different things:
 | The number | What it counts                                                                                     |
 | ---------- | -------------------------------------------------------------------------------------------------- |
 | **3**      | App Platform components: `core`, `bundle`, `bundle-zimmer-secrets`                                 |
-| **25**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
-| **34**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
+| **27**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
+| **36**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
 | **45**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included)         |
 | **48**     | total server slugs in staging (45 + `echo` builtin + `deepwiki` remote-http + `anki` local-tunnel) |
 
@@ -376,8 +379,8 @@ slop behind when you fix a stale fact.
   "did I typo a key" is answered here, by `scripts/check-config.ts`.
 - `src/deploy/appspec.ts` — turns the config into a DigitalOcean App Platform spec.
   The server list decides the container topology.
-- `servers/bundle/` — one image, 34 mounted MCP servers, one shared Chromium,
-  assembled from TWENTY-FIVE independently-built dependency trees.
+- `servers/bundle/` — one image, 36 mounted MCP servers, one shared Chromium,
+  assembled from TWENTY-SEVEN independently-built dependency trees.
 - `servers/remote-filesystem/` — strad's own artifact store, behind the
   `remote-filesystem-tmp-public` slug. `is_sensitive` picks the KIND of link;
   GCS's 7-day V4 ceiling is why the 14-day default is signed with V2.
@@ -474,6 +477,13 @@ slop behind when you fix a stale fact.
   SQLite file, snapshotted sealed to the shared state bucket. The login is a
   human driving Meta's own app-login steps through the admin tools.
   `HACKS.md` #148.
+- `servers/pulsemcp-cms-admin/`, `servers/proctor/` — PulseMCP's admin API and
+  its Proctor exam runner, VENDORED VERBATIM from `pulsemcp/mcp-servers` for
+  PulseMCP's own strad; no slug in this repo's configs points at them. The admin
+  API issues read-only and read-write keys and the key is the boundary, so each
+  tree is ONE INSTANCE PER KEY: a slug at `path: /<its own slug>` gets its own
+  mount, built by the bundle host from that slug's own key and base URL — never
+  a sibling's bare one. `tenants_destructive` is not served (`HACKS.md` #153).
 - `servers/bill-spend/` — strad's own BILL Spend & Expense server, behind
   `bill-spend-ro` and `bill-spend-rw`. Re-codes card transactions to the right
   chart-of-accounts value, which BILL carries as CUSTOM-FIELD VALUES rather than

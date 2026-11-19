@@ -392,7 +392,7 @@ one (hack #4).
 **✅ RESOLVED.** Core presents the internal token to every `supplementary-image`
 component, and the `strad-bundle` host refuses a mount request without it.
 
-**What.** The `strad-bundle` container — thirty-four mounts, and every upstream
+**What.** The `strad-bundle` container — thirty-six mounts, and every upstream
 credential behind them — serves every mount unauthenticated. Its only protection
 is the network boundary: an internal-only App Platform component
 (`internal_ports: [8080]`, no public route), reachable by core over the private
@@ -403,7 +403,7 @@ seam. Anything else that gets into the VPC can talk to the mounts directly.
 **Why.** The core→supplementary proxy path sends no internal token, unlike the
 builtin-in-bundle path, so the entry described the remedy as a config change:
 a `headers:` entry on the server entry plus a check in the image. That was the
-wrong shape. Thirty-four `supplementary-image` entries would each have had to
+wrong shape. Thirty-six `supplementary-image` entries would each have had to
 remember the block, and the one that forgot would be silently open.
 
 **Undone by.** Two halves, in code rather than in config:
@@ -789,10 +789,10 @@ still what makes prod's read-only variants read-only.
 policies) → confirm → _then_ delete the per-server images, their workflows and the
 toggle plumbing.
 
-## 24. Thirty-four servers share one process, and one Chromium
+## 24. Thirty-six servers share one process, and one Chromium
 
-The collapsed bundle is one container running thirty-four MCP servers and one
-headless Chromium. An OOM there is a thirty-four-server outage; it used to be a
+The collapsed bundle is one container running thirty-six MCP servers and one
+headless Chromium. An OOM there is a thirty-six-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -2650,7 +2650,7 @@ both `infra/strad.staging.yaml` and `strad.config.example.yaml` — plus the cou
 in `servers/bundle/scripts/smoke.mjs`, `test/staging-config.test.ts` and
 `.github/workflows/ci.yml`.
 
-## 56. Per-slug box names are emitted for every server; thirteen of twenty-five trees can read one
+## 56. Per-slug box names are emitted for every server; fifteen of twenty-seven trees can read one
 
 **What.** Every enabled `supplementary-image` server's resolved `env:` is emitted
 onto its bundle TWICE: under the bare name it always had, and under
@@ -2706,7 +2706,8 @@ DigitalOcean both times.
 
 - **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
   `grafana`, `bill-spend`, `aws-device-farm`, `whatsapp`, `liveoak`, `airtable`,
-  `flightaware`, `digitalocean`, `hetzner` and `ssh` read an injected env.** The other eleven trees
+  `flightaware`, `digitalocean`, `hetzner` and `ssh` read an injected env, and
+  `pulsemcp-cms-admin` and `proctor` are handed a client built from one.** The other eleven trees
   are vendored upstream code reading `process.env`, often lazily at call time
   (`onepassword` builds its client per call off `OP_SERVICE_ACCOUNT_TOKEN`). A single process cannot overlay `process.env`
   per-request without a race, so each tree needs its own seam and gets it when it
@@ -3750,7 +3751,7 @@ behaviour, which is the pre-change one.
 a listed parameter current in a supplementary container's `process.env` without a
 redeploy. What it cannot do is make the MCP server inside that container LOOK at
 the new value. That is a property of the upstream, and this image runs
-thirty-four of them, most written by other people.
+thirty-six of them, most written by other people.
 
 The split is real and it is not subtle:
 
@@ -7896,3 +7897,44 @@ authentication, the spec renderer and the preflight, for one caller.
 **Undo.** A deposit-only caller kind in `src/config/schema.ts` that core
 accepts without a `url:`. Then the receiving strad's entry becomes that, and
 this entry goes.
+
+## 153. pulsemcp-cms-admin and proctor are vendored verbatim, and three of cms-admin's tools are not served
+
+**What.** `servers/pulsemcp-cms-admin` and `servers/proctor` are PulseMCP's admin
+API and Proctor servers, copied unchanged from `pulsemcp/mcp-servers` at
+`cca9d52` (VENDOR; each tree's README says so). The bundle host serves each one
+per API key: a slug at `path: /<its own slug>` with its own key gets its own
+mount (`loadPulseAdmin` in `servers/bundle/host/src/index.ts`). They exist so
+PulseMCP's strad (strad.pulsemcp.com) can stop running them as stdio packages.
+
+**Why this shape.** Both trees take a client factory, so the host builds each
+mount's client from that slug's own key and base URL without editing a line of
+the vendored code. A per-slug mount reads both under its own name only. A bare
+`PULSEMCP_ADMIN_API_URL` on the box belongs to whichever sibling declared it,
+and a production key sent to that origin would fail nowhere.
+
+**What it costs.**
+
+- **`tenants_destructive` is not served.** `scrubCapabilityEnv` removes
+  `TOOL_GROUPS`, so cms-admin serves its upstream default: 71 of its 74 tools.
+  `delete_tenant`, `delete_api_key` and `revoke_api_key` need an elicitation
+  prompt upstream, and strad has not wired one for this tree. Deleting or
+  revoking a key goes through PulseMCP's own admin UI.
+- **`PULSEMCP_ADMIN_INTERNAL_SECRET` is read from the bare name.** The vendored
+  `adminFetch` reads `process.env` directly for the Cloudflare bypass header.
+  Every slug on the bundle sends the same one. It is one secret for the whole
+  admin origin, so that is correct today; a per-slug secret would need a delta
+  in the vendored client.
+- **Exam results live on the container's disk.** `run_exam_for_mirror` writes
+  its result to the OS temp directory under a random id, and
+  `save_results_for_mirror` and `get_exam_result` read it back. Every slug on
+  the bundle shares that directory, and a bundle with more than one instance
+  can send the read to an instance without the file. Results do not survive a
+  restart.
+- **`run_exam` holds the call open** for as long as the exam runs.
+- **Met only fakes in this repo.** The suites stub `fetch`. Neither tree has
+  been called through strad against the real admin API from here.
+
+**Undo.** Wire strad's confirmation path to `requestConfirmation()` for this
+tree and stop dropping `tenants_destructive`, or give the client a per-slug
+internal secret, each as a delta that promotes the tree to PATCHED VENDOR.

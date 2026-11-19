@@ -1,0 +1,17 @@
+{
+  "name": "strad-server-proctor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PulseMCP Proctor MCP server (run MCP server exams, manage their Fly machines) vendored from pulsemcp/mcp-servers. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace proctor-mcp-server-shared",
+    "test": "npm run build && vitest run --config vitest.config.ts"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.9"
+  }
+}

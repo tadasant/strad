@@ -160,4 +160,29 @@ describe("the marker names the bundle host looks for", () => {
     );
     expect(host).toContain("REMOTE_FS_ENV_PREFIX}_GCS_BUCKET");
   });
+
+  it("are the PulseMCP admin servers' key variables, which the vendored trees read", () => {
+    // Both trees are vendored verbatim and read these names out of
+    // `process.env` when no client factory is passed. The host passes one, built
+    // from the slug's own view, and discovers a per-slug instance on the key. A
+    // rename upstream that a re-vendor brings in would leave the host building
+    // a client from a variable nobody sets any more.
+    for (const [file, names] of [
+      [
+        "servers/pulsemcp-cms-admin/shared/src/server.ts",
+        ["PULSEMCP_ADMIN_API_KEY", "PULSEMCP_ADMIN_API_URL"],
+      ],
+      [
+        "servers/proctor/shared/src/server.ts",
+        ["PROCTOR_API_KEY", "PROCTOR_API_URL"],
+      ],
+    ] as const) {
+      const tree = readFileSync(file, "utf8");
+      for (const name of names) {
+        expect(tree).toContain(`process.env.${name}`);
+        expect(host).toContain(`"${name}"`);
+      }
+    }
+    expect(host).toContain("extraSlugs(tree, [PULSE_ADMIN[tree].keyVar])");
+  });
 });

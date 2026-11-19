@@ -614,11 +614,11 @@ nothing warns beforehand. Publishing the OAuth app removes the expiry.
 
 ## The deployment
 
-### 24. Thirty-four servers share one process and one CPU
+### 24. Thirty-six servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts thirty-four MCP servers,
+The `bundle` component runs one Node process that mounts thirty-six MCP servers,
 launches one shared Chromium and supervises one `mcp-grafana` child process, on
-`apps-s-1vcpu-2gb`. A crash in the host takes all thirty-four down together, and
+`apps-s-1vcpu-2gb`. A crash in the host takes all thirty-six down together, and
 Chromium contends with every other server for the single vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -1009,7 +1009,7 @@ a store-wide read.
 keeps a listed parameter current in a supplementary container's environment
 without a redeploy. It cannot make the MCP server inside that container **look**
 at the new value — that is a property of the upstream, and the bundle image runs
-thirty-four of them, most written by other people.
+thirty-six of them, most written by other people.
 
 `strad-fetch` builds its scraping clients inside a factory the host invokes per
 request, so a rotated key is used by the next tool call; that is the case the
@@ -2204,7 +2204,7 @@ ever rebuilt with a rootless or hand-installed docker, where buildx lives in
 
 **Serialising the workflows was the alternative.** A `concurrency:` group would
 have ended it too, at the cost of every push taking the sum of its builds rather
-than the longest — the bundle alone is twenty-five dependency trees. Isolation costs a
+than the longest — the bundle alone is twenty-seven dependency trees. Isolation costs a
 `mkdir`.
 
 ### 49. The Telegram MTProto library is archived upstream
@@ -2304,7 +2304,7 @@ for the telegram pair, `BILL_SPEND_API_TOKEN` for the bill-spend pair,
 then delete that entry's `enabled:` line and add each seeded name to
 `PROVISIONED_STATICS` in `test/staging-config.test.ts`.
 
-### 56. Per-slug variable names are emitted for every server; only thirteen of the twenty-five trees can read one
+### 56. Per-slug variable names are emitted for every server; only fifteen of the twenty-seven trees can read one
 
 Every supplementary server's `env:` lands on its bundle twice — under the bare
 name and under `<SLUG>__<NAME>` — with no condition attached, so what a server's
@@ -2321,7 +2321,8 @@ whatever the variables are called.
 
 **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
 `grafana`, `bill-spend`, `aws-device-farm`, `whatsapp`, `liveoak`, `airtable`,
-`flightaware`, `digitalocean`, `hetzner` and `ssh` read an injected environment.** The other eleven
+`flightaware`, `digitalocean`, `hetzner` and `ssh` read an injected environment,
+and `pulsemcp-cms-admin` and `proctor` are handed a client built from one.** The other eleven
 trees in the bundle image are vendored upstream code that reads `process.env` directly,
 often lazily at call time, so they see the bare names only. `bill-spend` reads
 the injected view for one mount rather than one per slug: one BILL token is one
@@ -2601,7 +2602,7 @@ leak. Nothing in the cache is a credential; it is public pages someone fetched.
 
 **What the fork DID bound is the memory.** Upstream's store grows for the life of
 the process, which is fine for a subprocess the OS reclaims and an out-of-memory
-kill in a container that hosts thirty-four mounts. The cache is LRU-bounded on both
+kill in a container that hosts thirty-six mounts. The cache is LRU-bounded on both
 entry count and bytes, and the filesystem backend is gone (App Platform gives the
 container no persistent volume, so it was memory with extra steps).
 
@@ -4765,3 +4766,22 @@ resolves, with no roles.
   This deployment's `secrets` server cannot see another store.
 
 See `HACKS.md` #152.
+
+### 153. The PulseMCP admin servers are vendored as-is, and three cms-admin tools are not served
+
+[`pulsemcp-cms-admin` and `proctor`](/servers/pulsemcp-admin/) are PulseMCP's own
+servers, copied unchanged. What that costs:
+
+- **No delete or revoke.** `delete_tenant`, `delete_api_key` and
+  `revoke_api_key` need a confirmation prompt that strad has not wired for this
+  server, so they are not served. cms-admin serves the other 71 tools.
+- **One Cloudflare bypass secret per bundle.** `PULSEMCP_ADMIN_INTERNAL_SECRET`
+  is read from the bare variable, so every slug on a bundle sends the same one.
+- **Exam results sit on one container's disk.** A result saved by
+  `run_exam_for_mirror` is a file in the bundle's temp directory. It is gone
+  after a restart, and a bundle running more than one instance can miss it.
+- **`run_exam` holds the call open** until the exam finishes.
+- **Fakes only.** CI stubs the network. Nothing in this repo has called the
+  real admin API through strad.
+
+See `HACKS.md` #153.

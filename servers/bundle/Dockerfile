@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# bundle — THE strad supplementary image. Thirty-four MCP servers, one container.
+# bundle — THE strad supplementary image. Thirty-six MCP servers, one container.
 #
 # BUILD CONTEXT IS THE REPO ROOT (not servers/bundle/), because this image is
-# assembled from twenty-five existing projects that live in different places:
+# assembled from twenty-seven existing projects that live in different places:
 #
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
 #                           gcs, google-flights
@@ -36,13 +36,17 @@
 #   servers/nutrition-facts nutrition-facts        (USDA + MenuStat data baked in
 #                                                  at build; FatSecret live)
 #   servers/pulse-subregistry  pulse-subregistry
+#   servers/pulsemcp-cms-admin pulsemcp-cms-admin  (PulseMCP admin API; one
+#                                                  instance per API key)
+#   servers/proctor         proctor                (PulseMCP Proctor exams; one
+#                                                  instance per API key)
 #   servers/strad-fetch     strad-fetch            (web fetching; strad's own fork)
 #   servers/grafana         grafana                (proxies the pinned mcp-grafana
 #                                                  Go binary, baked below)
 #
 # Each is built in its OWN stage with its OWN lockfile and its OWN node_modules,
 # exactly as its standalone image builds it, and copied into /app/trees/<name>.
-# Nothing is merged. That is on purpose: merging twenty-five dependency trees is how you
+# Nothing is merged. That is on purpose: merging twenty-seven dependency trees is how you
 # discover in production that two of them wanted different Playwright versions.
 # The host (servers/bundle/host) imports across them by path — Node resolves each
 # package's own imports from its own tree — and owns the one thing that MUST be
@@ -329,6 +333,29 @@ RUN npm ci --no-audit --no-fund
 COPY servers/pulse-subregistry/shared ./shared
 RUN npm run build && npm prune --omit=dev
 
+# ---- pulsemcp-cms-admin / proctor --------------------------------------------
+# PulseMCP's admin API and its Proctor exam runner, both vendored verbatim from
+# pulsemcp/mcp-servers. cms-admin's shared/ imports the unpublished
+# @pulsemcp/mcp-elicitation, which this tree carries as a workspace (a vendored
+# copy kept in step by `npm run elicitation:sync`), exactly as onepassword does.
+FROM ${PW} AS build-pulsemcp-cms-admin
+WORKDIR /src
+COPY servers/pulsemcp-cms-admin/package.json servers/pulsemcp-cms-admin/package-lock.json ./
+COPY servers/pulsemcp-cms-admin/elicitation/package.json ./elicitation/
+COPY servers/pulsemcp-cms-admin/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/pulsemcp-cms-admin/elicitation ./elicitation
+COPY servers/pulsemcp-cms-admin/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
+FROM ${PW} AS build-proctor
+WORKDIR /src
+COPY servers/proctor/package.json servers/proctor/package-lock.json ./
+COPY servers/proctor/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/proctor/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
 # ---- strad-fetch -------------------------------------------------------------
 # strad's own web-fetching server, forked from @pulsemcp/pulse-fetch. It is a
 # pure-HTTP server despite the company it keeps below: jsdom parses the page,
@@ -465,7 +492,7 @@ RUN npm run build && npm prune --omit=dev
 FROM ${PW}
 
 LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
-LABEL org.opencontainers.image.description="strad's single supplementary image — 34 MCP servers (API, Google, X.com, Telegram, WhatsApp, Messenger, web fetching, Grafana, banking, Airtable, FlightAware, DigitalOcean, Hetzner Cloud, image diff/tracing, nutrition facts, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
+LABEL org.opencontainers.image.description="strad's single supplementary image — 36 MCP servers (API, Google, X.com, Telegram, WhatsApp, Messenger, web fetching, Grafana, banking, Airtable, FlightAware, DigitalOcean, Hetzner Cloud, PulseMCP admin and Proctor, image diff/tracing, nutrition facts, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
 LABEL org.opencontainers.image.licenses="MIT"
 
 # --- 1Password CLI (op), pinned ----------------------------------------------
@@ -497,7 +524,7 @@ RUN set -eux; \
 ENV NODE_ENV=production
 WORKDIR /app
 
-# The twenty-five trees, each with the node_modules it was built against.
+# The twenty-seven trees, each with the node_modules it was built against.
 COPY --from=build-api /src /app/trees/bundle-api
 COPY --from=build-google /src /app/trees/bundle-google
 COPY --from=build-op /src /app/trees/onepassword
@@ -524,6 +551,8 @@ COPY --from=build-hetzner /src /app/trees/hetzner
 COPY --from=build-image-tools /src /app/trees/image-tools
 COPY --from=build-nutrition-facts /src /app/trees/nutrition-facts
 COPY --from=build-pulse-subregistry /src /app/trees/pulse-subregistry
+COPY --from=build-pulsemcp-cms-admin /src /app/trees/pulsemcp-cms-admin
+COPY --from=build-proctor /src /app/trees/proctor
 COPY --from=build-strad-fetch /src /app/trees/strad-fetch
 COPY --from=build-grafana /src /app/trees/grafana
 
