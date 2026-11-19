@@ -31,7 +31,10 @@ interfaces in mautrix-go's bridge framework, bridgev2. `servers/messenger/bridge
 implements them against a SQLite table instead: a "room" is a row id and a
 "message sent to Matrix" is an insert. Every protocol decision stays
 mautrix-meta's, at the version `bridge/go.mod` pins, and a server-side change at
-Meta is fixed by bumping the pin.
+Meta is fixed by moving to a newer mautrix-meta. The module is built from a copy
+in `bridge/third_party/mautrix-meta` that carries strad's own fixes, each a
+listed and tested delta in `bridge/third_party/README.md`, so moving means
+re-copying the module and re-applying them.
 
 **Two processes, because of the licence.** mautrix-meta is AGPL-3.0, so the Go
 program is too (`servers/messenger/bridge/LICENSE`). strad is MIT, and talks to
@@ -60,13 +63,19 @@ through the admin slug, from strad's console playground, and the login is made
    Meta then asks for whatever it asks a new phone for: a code it sent, an
    approval on a device already signed in, a choice of method. Each answer is
    another `messenger_login_submit`. A step of type `display_and_wait` needs no
-   input — approve on the phone, then submit with nothing.
+   input — approve on the phone, then submit with nothing. An authenticator
+   app's code is `{"input": {"totp_code": "…"}}`.
 3. If the account has encrypted-chat backup, the next step asks for the 6-digit
    **secure-storage PIN**. Entering it restores end-to-end encrypted history
    from Meta's backup. Leaving it empty skips that, and encrypted chats start
    at the moment of login.
 4. A step of type `complete` means logged in, and `saved: true` that the login
    has already reached the state bucket.
+
+A step that fails ends the login, and the error says so. Nothing is left half
+done: the next call is a fresh `messenger_login_start`, from the password step.
+Submitting again to the step that failed is refused with "no login is in
+progress".
 
 `"ios"` is the same flow as the iOS app. `"cookies"` adopts a browser's
 facebook.com session instead (the `xs`, `c_user` and `datr` cookies): use it if

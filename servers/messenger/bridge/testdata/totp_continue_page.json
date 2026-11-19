@@ -1,0 +1,29 @@
+{
+  "layout": {
+    "bloks_payload": {
+      "data": [
+        { "id": "totp_code", "type": "ls", "data": { "key": "totp_code", "initial": "" } }
+      ],
+      "tree": {
+        "bk.components.Flexbox": {
+          "children": [
+            {
+              "bk.components.TextInput": {
+                "type": "number",
+                "on_text_change": "(bk.action.bloks.WriteLocalState \"totp_code\" (bk.action.textinput.GetText (bk.action.core.GetArg 0)))"
+              }
+            },
+            {
+              "bk.components.Flexbox": {
+                "on_click": "(dyt (dyv (bk.action.core.FuncConst (bk.action.bloks.AsyncActionWithDataManifestV2 \"com.bloks.www.two_step_verification.verify_code.async\" (bk.action.map.Make (bk.action.array.Make \"code\" \"method\") (bk.action.array.Make (bk.action.bloks.GetVariable2 \"totp_code\") \"totp\")) (bk.action.tree.Make 16131 36 (bk.action.core.FuncConst (bk.action.bloks.WriteGlobalConsistencyStore \"totp_result\" (bk.action.core.GetArg 0))))))))",
+                "children": [
+                  { "bk.components.Text": { "text_spans": [ { "bk.data.TextSpan": { "text": "Continue" } } ] } }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -107,6 +107,7 @@ var (
 	ErrAlreadyConnected  = errors.New("an account is already logged in: call messenger_logout first to replace it")
 	ErrUnknownFlow       = errors.New(`unknown flow: use "android", "ios" or "cookies"`)
 	ErrLoginCancelled    = errors.New("the login was cancelled")
+	ErrLoginEnded        = errors.New("this login has ended; call messenger_login_start to begin again")
 )
 
 func view(flow string, step *bridgev2.LoginStep) *StepView {
@@ -248,9 +249,13 @@ func (l *Login) Submit(ctx context.Context, input map[string]string) (*StepView,
 		return nil, fmt.Errorf("step %q cannot be completed from here", l.step.StepID)
 	}
 	if err != nil {
-		// A failed step ends the login: Meta's flows do not resume mid-way.
+		// A failed step ends the login: Meta's flows do not resume mid-way, and
+		// a step that failed in mautrix-meta's own interpreter would fail the
+		// same way again. Nothing is left half-done — the next call is a fresh
+		// messenger_login_start — and the error says so, so whoever is typing
+		// the codes does not retry a step that no longer exists.
 		l.cancelLocked()
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrLoginEnded, err)
 	}
 	l.step = next
 	return l.advanceLocked(ctx)
