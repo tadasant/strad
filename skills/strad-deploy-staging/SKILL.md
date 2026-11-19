@@ -191,7 +191,7 @@ gh run list --workflow=deploy-staging.yml --limit 3
 gh run watch "$(gh run list --workflow=deploy-staging.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
 ```
 
-What the run does, in order (all on a `self-hosted` runner, in the `staging`
+What the run does, in order (all on an `ubuntu-latest` runner, in the `staging`
 environment, under the `staging-deploy` concurrency group): optionally **build**
 the branch's core and bundle images (only when `build: true`; skipped otherwise,
 which is why the deploy job runs on `always()`) → **preflight** the

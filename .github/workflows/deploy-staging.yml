@@ -174,9 +174,11 @@ jobs:
               *:latest) echo "::error::refusing to push '$ref'"; exit 1 ;;
             esac
           done
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "core_image=${CORE}" >> "$GITHUB_OUTPUT"
-          echo "bundle_image=${BUNDLE}" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=${TAG}"
+            echo "core_image=${CORE}"
+            echo "bundle_image=${BUNDLE}"
+          } >> "$GITHUB_OUTPUT"
           echo "Branch images: strad:${TAG} and strad-bundle:${TAG}"
 
       # This job's ghcr credential goes somewhere no concurrent job can rewrite
@@ -450,13 +452,15 @@ jobs:
         # file. release-bundle-image.yml is a SEPARATE trigger on the same push
         # and it bakes Chromium and nine npm trees — so on a merge that touches
         # a baked tree, sha-<HEAD> reliably does not exist yet when this runs,
-        # and a bare hard stop would turn every such deploy red. 900s is roughly
-        # three times the slowest bundle build on record (6m10s).
+        # and a bare hard stop would turn every such deploy red. 1500s is about
+        # six times a warm-cache bundle build on a hosted runner (4m22s) and four
+        # times the slowest self-hosted one on record (6m10s), leaving room for a
+        # build whose gha cache was evicted.
         #
         # ON `main` ONLY, and that is not a shortcut. Both release workflows
         # refuse to run on any other ref, so a BRANCH commit that touches a baked
-        # tree has no image coming — waiting fifteen minutes for a build nobody
-        # started is fifteen minutes of a runner spent reaching the same failure.
+        # tree has no image coming — waiting twenty-five minutes for a build nobody
+        # started is twenty-five minutes of a runner spent reaching the same failure.
         # The branch answers are `build: true` (which builds that ref's bundle
         # and skips this step entirely) or an explicit `bundle_version`, and the
         # error names both.
@@ -468,7 +472,7 @@ jobs:
           # The bundle is its own package, beside the core's: tadasant/strad ->
           # tadasant/strad-bundle.
           REPOSITORY: ${{ github.repository }}-bundle
-          WAIT: ${{ github.ref == 'refs/heads/main' && '900' || '0' }}
+          WAIT: ${{ github.ref == 'refs/heads/main' && '1500' || '0' }}
         run: |
           set -euo pipefail
           git log --first-parent --format=%H -n 50 \
@@ -727,7 +731,7 @@ jobs:
           APP_ID=$(doctl apps list --format ID,Spec.Name --no-header | awk '$2=="strad-staging"{print $1}')
           HOST=$(doctl apps get "$APP_ID" --format DefaultIngress --no-header)
           echo "Live at: $HOST"
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl -fsS "$HOST/healthz" >/dev/null 2>&1; then break; fi
             sleep 4
           done

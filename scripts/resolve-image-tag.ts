@@ -38,8 +38,8 @@
  * stderr, so the two never mix.
  *
  * Credentials come from GHCR_PULL_TOKEN (or GITHUB_TOKEN) and are read from the
- * environment, never argv — this runs on a shared self-hosted runner where argv
- * is readable by anything that can run `ps`.
+ * environment, never argv — on any shared runner argv is readable by anything
+ * that can run `ps`.
  */
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";

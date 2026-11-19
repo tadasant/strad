@@ -653,7 +653,7 @@ jobs:
             -e REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN=ci.example \
             -e SECRETS_PROJECT_ID=ci -e SECRETS_NAMESPACES=/strad/staging/mcp/ \
             "$BUNDLE_IMAGE"
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if docker exec "$BUNDLE_CONTAINER" node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" 2>/dev/null; then break; fi
             sleep 2
           done
@@ -724,11 +724,12 @@ jobs:
             -e REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN=ci.example \
             -e SECRETS_PROJECT_ID=ci -e SECRETS_NAMESPACES=/strad/staging/mcp/ \
             "$BUNDLE_IMAGE"
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if docker exec "$BUNDLE_CLOSED_CONTAINER" node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" 2>/dev/null; then break; fi
             sleep 2
           done
           docker exec "$BUNDLE_CLOSED_CONTAINER" node /app/scripts/smoke.mjs --json > bundle-tools-closed.json
+          # shellcheck disable=SC2016 # the quoted text is JavaScript, not shell
           node -e '
             const dump = JSON.parse(require("fs").readFileSync("bundle-tools-closed.json", "utf8"));
             const entries = Object.entries(dump.mounts);
@@ -754,10 +755,12 @@ jobs:
         run: |
           set -euo pipefail
           docker exec "$BUNDLE_CONTAINER" node /app/scripts/smoke.mjs --json > bundle-tools.json
+          configs=()
+          for cfg in strad.config*.yaml infra/*.yaml; do configs+=(--config "$cfg"); done
           npm run --silent policy:check -- \
             --tools bundle-tools.json \
             --image ghcr.io/tadasant/strad-bundle:latest \
-            $(for cfg in strad.config*.yaml infra/*.yaml; do printf -- '--config %s ' "$cfg"; done)
+            "${configs[@]}"
 
       # PER-SLUG GMAIL, END TO END, IN A REAL CONTAINER — and the cross-account
       # trap it exists to close.
@@ -800,12 +803,13 @@ jobs:
             -e ONEPASSWORD_CI_ALL__OP_SERVICE_ACCOUNT_TOKEN=ops_ci_placeholder \
             -e ONEPASSWORD_CI_ALL__OP_ELICITATION_WRITE=false \
             "$BUNDLE_IMAGE"
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if docker exec "$GMAILSLUG" node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" 2>/dev/null; then break; fi
             sleep 2
           done
           docker exec "$GMAILSLUG" node -e 'fetch("http://127.0.0.1:8080/healthz").then(r=>r.json()).then(h=>console.log(JSON.stringify(h)))' > bundle-health-gmail.json
           docker exec "$GMAILSLUG" node /app/scripts/smoke.mjs --json > bundle-tools-gmail.json
+          # shellcheck disable=SC2016 # the quoted text is JavaScript, not shell
           node -e '
             const fs = require("fs");
             const health = JSON.parse(fs.readFileSync("bundle-health-gmail.json", "utf8"));
@@ -884,7 +888,7 @@ jobs:
           set -euo pipefail
           MULTI="$BUNDLE_CONTAINER-multi"
           docker run -d --name "$MULTI" --label strad-ci=1             -e STRAD_INTERNAL_TOKEN="$STRAD_INTERNAL_TOKEN"             -e GCS_PROJECT_ID=ci -e GCS_BUCKET=ci-bucket             -e REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET=ci-rfs-bucket             -e REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN=ci.example             -e SECRETS_STORES='[{"project":"ci-staging","namespaces":["/strad/staging/mcp/"],"viewerKeyVar":"SECRETS_SERVICE_ACCOUNT_KEY_JSON"},{"project":"ci-prod","namespaces":["/strad/prod/mcp/"],"viewerKeyVar":"CI_PROD_VIEWER_KEY_JSON"}]'             "$BUNDLE_IMAGE"
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if docker exec "$MULTI" node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" 2>/dev/null; then break; fi
             sleep 2
           done
@@ -892,6 +896,7 @@ jobs:
           # The mount exists (a `loadConfig` throw would have skipped it), and it
           # names both stores rather than one. `node -e` over the dump rather than
           # grep, so a partial match cannot pass for a whole one.
+          # shellcheck disable=SC2016 # the quoted text is JavaScript, not shell
           node -e '
             const dump = JSON.parse(require("fs").readFileSync("bundle-tools-multi.json", "utf8"));
             const secrets = dump.mounts["/secrets"];
@@ -1076,7 +1081,7 @@ jobs:
           base="http://127.0.0.1:${port}"
           echo "compose port -> ${mapping}; base ${base}"
 
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl -fsS "$base/healthz" > /dev/null 2>&1; then break; fi
             sleep 1
           done
@@ -1108,7 +1113,7 @@ jobs:
           # things.
           echo "--- run.sh is idempotent"
           # Captured in a variable rather than a file: a fixed path under /tmp is
-          # a shared resource on this box exactly like a fixed port is, and a
+          # a shared resource on a shared box exactly like a fixed port is, and a
           # concurrent job writing it between the tee and the grep is a green
           # that proves nothing.
           rerun=$(dc exec -T app .agent-containers/run.sh)
@@ -1230,7 +1235,7 @@ jobs:
           echo "docker port -> ${mapping}; host port ${port}"
           base="http://127.0.0.1:${port}"
 
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl -fsS "$base/healthz" >/dev/null 2>&1; then break; fi
             sleep 1
           done

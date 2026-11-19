@@ -49,9 +49,8 @@ export default defineConfig({
     // the same here as everywhere, arriving by a different route: this image is
     // NOT a leg of `ci.yml`'s `servers` matrix, it is gated by
     // `.github/workflows/bundle-google-ci.yml`, whose two jobs run on the same
-    // one self-hosted box as every other workflow's — including that matrix's
-    // thirteen concurrent legs. Vitest's default is a tighter bound than a
-    // contended box can be held to.
+    // small hosted runners as every other workflow's. Vitest's default is a
+    // tighter bound than a CI runner can be held to.
     testTimeout: 20_000,
   },
 });

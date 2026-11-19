@@ -700,7 +700,7 @@ pushes the core and then calls the deploy, in that order, in one workflow;
 `release-bundle-image.yml` is a separate trigger on the same push and takes
 several minutes longer. So on a merge that touches a baked tree, the bundle's
 `sha-<commit>` does not exist yet when the deploy starts, and without a wait
-every such merge would deploy red. The step re-asks for up to 15 minutes before
+every such merge would deploy red. The step re-asks for up to 25 minutes before
 it gives up — only in the case that would otherwise be a hard stop.
 
 The wait assumes the image is **coming**. When it is not — the run that owed it
@@ -833,7 +833,7 @@ the loop above stays impossible. And it heals once — an attempt 2 that is
 cancelled again means the CI host is unhealthy, and hammering it would not make
 it healthy.
 
-**Why.** On 2026-09-04, when CI still ran on self-hosted runners, the runner
+**Why.** On 2026-09-04, while CI ran on self-hosted runners, the runner
 host restarted mid-build.
 `a278b5ed`'s bundle build was cancelled 100 seconds in; three unrelated jobs on
 two other runners died in the same second; nothing was wrong with the commit.
