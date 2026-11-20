@@ -14,7 +14,7 @@ yet. Treat the wire as able to change until it has.
 | Pinned on            | 2026-11-19                                                                                               |
 | Delivery modes built | poll (`events/list`, `events/poll`) and webhook (`events/subscribe`, `events/unsubscribe`)               |
 | Not built            | push (`events/stream`), `notifications/events/list_changed`, `server/discover`                           |
-| Re-checked           | 2026-11-19: merged, status Final                                                                         |
+| Re-checked           | 2026-11-20: merged, status Final; `main` changed editorially only                                        |
 
 Before changing anything under MCP Events, compare this commit with the SEP
 on `main` (and, once it exists, the extension repository's copy). If the draft moved, decide what the change means for the wire here, then
@@ -109,6 +109,15 @@ change both.
   The rest is editorial: the author's handle, and a TypeScript SDK reference
   implementation listed. Built the Gmail `message_received` event against it.
 
+- 2026-11-20 — re-checked while building WhatsApp's `message_received`. The PR
+  head is still `6a4bf07`; the SEP on `main` moved once since the merge, in
+  `bbc31f8ded5762eae4df115b93942f5e71c8b3a7`, and only editorially: the Working
+  Group is renamed the Tasks and Events Working Group, two maintainers are
+  added, and the text says the specification is published in
+  `modelcontextprotocol/ext-events` under `specification/beta/events/`. That
+  path does not exist in that repository yet. No wire change, no code change.
+
 Code: `src/gateway/events.ts` (core), `servers/bundle-api/fork/slack/src/events/`
-(the Slack `message_posted` event, and the webhook engine both sources share),
-`images/bundle-google/src/events/` (the Gmail `message_received` event). Prose: `docs/src/content/docs/servers/events.md`.
+(the Slack `message_posted` event, and the webhook engine every source shares),
+`images/bundle-google/src/events/` (the Gmail `message_received` event),
+`servers/whatsapp/shared/src/events/` (the WhatsApp `message_received` event). Prose: `docs/src/content/docs/servers/events.md`.

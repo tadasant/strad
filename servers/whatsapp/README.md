@@ -56,6 +56,14 @@ There is no device-name variable. The pairing identity is Baileys'
 phone lists the device as Chrome on Mac OS: a custom OS name is what the phone
 refuses a pairing code over ("Couldn't link device").
 
+The MCP Events `message_received` event (`src/events/`) is off unless
+`WHATSAPP_EVENTS_ENABLED` is `true`. With it: `WHATSAPP_EVENTS_RETENTION_DAYS`
+(7), and `WHATSAPP_EVENTS_WEBHOOK_ACCESS_PREFIXES` with
+`ZIMMER_APPROVAL_CF_ACCESS_CLIENT_ID` / `_SECRET` for a webhook behind
+Cloudflare Access. It needs nothing else: its buffer is sealed under this
+server's own key, in this server's folder. strad's `docs/servers/events` has
+the event.
+
 Missing any required variable is a supported state: the tools list and every
 call fails naming what is missing, and the server never opens a socket. That is
 every bundle container except the one this slug is bundled onto.
@@ -74,6 +82,7 @@ every bundle container except the one this slug is bundled onto.
 | `src/crypto.ts`   | this server's seal format (`WAS1`, its key) over the shared AES-256-GCM          |
 | `src/state-store.ts`| GENERATED from strad's `src/state/store.ts` (`npm run statestore:sync`): GCS, the in-memory double, the seal, the lease. Never edit the copy |
 | `src/pacing.ts`   | human-paced sending                                                               |
+| `src/events/`     | `message_received`: the arguments and buffer, the payload, the sealed objects, the handlers. `events/webhook/` is GENERATED (`npm run eventswebhook:sync`) from the Slack tree; never edit the copy |
 
 ## One instance
 
@@ -111,4 +120,9 @@ against real libsignal, and `GcsBlobStore` — strad's own GCS JSON-API client o
 (`test/gcs.test.ts`). That is what checks that a read reports the generation a
 later conditional write needs, that the signed JWT verifies, and that a body
 cut off mid-read is retried.
+The event (`test/events.test.ts`) runs through the same client and fake
+socket: off without its switch, the eventId and payload, a history sync, a
+reaction and the bridge's own send never being events, each filter, refused
+arguments, the sealed buffer surviving a restart, a signed webhook delivery,
+and logout wiping the buffer.
 Nothing in CI talks to WhatsApp. Every identifier in the fixtures is invented.

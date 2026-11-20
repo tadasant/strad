@@ -6,9 +6,11 @@
  *
  * The engine knows events only as {@link DeliverableEvent}s in a sequenced
  * buffer and subscription arguments only as an opaque `A` the source filters
- * on, so one engine serves Slack's `message_posted` and Gmail's
- * `message_received` (`images/bundle-google/src/events/`, which carries a
- * copy of this directory made by `npm run eventswebhook:sync`). Edit it here.
+ * on, so one engine serves Slack's `message_posted`, Gmail's
+ * `message_received` (`images/bundle-google/src/events/`) and WhatsApp's
+ * `message_received` (`servers/whatsapp/shared/src/events/`). Each of those
+ * trees carries a copy of this directory made by `npm run eventswebhook:sync`.
+ * Edit it here.
  *
  * SUBSCRIBE is any process's job; DELIVERY is the lease holder's. A subscribe
  * verifies the endpoint if this principal has not verified that URL yet, then

@@ -37,6 +37,7 @@ import {
   type AttachmentMeta,
 } from "./attachment.js";
 import type { BlobStore } from "./state-store.js";
+import type { IncomingMessage } from "./events/normalize.js";
 import { MessageBuffer, type ChatMeta } from "./buffer.js";
 import type { WhatsAppConfig } from "./config.js";
 import { SealError } from "./crypto.js";
@@ -218,6 +219,14 @@ export interface BridgeOptions {
   /** Injected in tests. Production is `cdnMediaDownloader` (socket.ts). */
   mediaDownloader?: MediaDownloader;
   media?: Partial<MediaLimits>;
+  /**
+   * A message WhatsApp delivered live (never a history sync), once it is
+   * buffered: the `message_received` event (`events/ingest.ts`). Must not
+   * throw or block.
+   */
+  onLiveMessage?: (message: IncomingMessage) => void;
+  /** The buffer is being wiped (logout, a different account paired): the event buffer goes too. */
+  onWipe?: () => Promise<void>;
 }
 
 /**
@@ -316,6 +325,9 @@ export class WhatsAppBridge {
   private readonly recovering = new Map<string, Promise<void>>();
   private downloadsRunning = 0;
   private readonly downloadQueue: (() => void)[] = [];
+  private leaseClaimed = false;
+  private readonly onLiveMessage: BridgeOptions["onLiveMessage"];
+  private readonly onWipe: BridgeOptions["onWipe"];
 
   constructor(options: BridgeOptions) {
     this.config = options.config;
@@ -349,6 +361,8 @@ export class WhatsAppBridge {
       () => Math.floor(this.clock() / 1000),
     );
     this.flushDelayMs = options.flushDelayMs ?? 2_000;
+    this.onLiveMessage = options.onLiveMessage;
+    this.onWipe = options.onWipe;
     this.reconnectBaseMs = options.reconnectBaseMs ?? 2_000;
     this.reconnectMaxMs = options.reconnectMaxMs ?? 5 * 60_000;
     this.replacedDelayMs = options.replacedDelayMs ?? 10 * 60_000;
@@ -400,6 +414,7 @@ export class WhatsAppBridge {
 
   private async doStart(): Promise<void> {
     await this.store.claimLease();
+    this.leaseClaimed = true;
     // Re-read the lease on a clock, not only when a write happens: a process
     // that has nothing to write would otherwise keep its socket open after a
     // newer deploy took the account.
@@ -434,6 +449,20 @@ export class WhatsAppBridge {
         await this.connect();
       }
     }
+  }
+
+  /**
+   * True while this process holds the account's lease: what the event
+   * buffer's writer is. Not ended by `close()`, which releases nothing, so
+   * the event's last flush on SIGTERM still writes.
+   */
+  ownsAccount(): boolean {
+    return this.leaseClaimed && !this.store.superseded;
+  }
+
+  /** A fresh read of the lease. False once another process has the account. */
+  async confirmOwnership(): Promise<boolean> {
+    return this.leaseClaimed && (await this.store.checkLease(true));
   }
 
   private loadIndex(index: IndexDoc): void {
@@ -729,6 +758,9 @@ export class WhatsAppBridge {
     try {
       await this.flushing;
       await remove();
+      await this.onWipe?.().catch((err: unknown) =>
+        logWarning(`could not wipe the event buffer: ${errMessage(err)}`),
+      );
       this.buffer.clear();
       this.bridgeSent.clear();
       this.pendingIngest.length = 0;
@@ -816,10 +848,49 @@ export class WhatsAppBridge {
       }
       if (this.bridgeSent.has(n.message.id)) n.message.sent_by_bridge = true;
       await this.upsertOrHold(n.message);
+      if (!historical && this.onLiveMessage) await this.announce(n.message);
     } else if (n.kind === "mutation") {
       const m = n.mutation;
       if (m.kind === "revoke") await this.buffer.revoke(m.chat_id, m.id);
       else await this.buffer.edit(m.chat_id, m.id, m.text);
+    }
+  }
+
+  /**
+   * Hands a live message to the event, with what only the bridge can resolve:
+   * the names, and whether it mentions or replies to the paired account. A
+   * failure here costs the event, never the message.
+   */
+  private async announce(m: StoredMessage): Promise<void> {
+    try {
+      const self = this.self();
+      let replyToSelf = isSelf(m.quoted_participant, self);
+      if (!replyToSelf && m.quoted_message_id) {
+        const quoted = await this.buffer.get(m.chat_id, m.quoted_message_id).catch(() => undefined);
+        replyToSelf = quoted?.from_me === true;
+      }
+      // The chat's other address, so a `chat_ids` filter naming either form
+      // matches: a LID chat's phone JID once known, or a direct chat's LID,
+      // which is the sender's other address when the other person wrote.
+      const chatAlt = isLidJid(m.chat_id)
+        ? (this.buffer.lidToPn.get(m.chat_id) ?? (!m.from_me ? m.sender_alt_jid : undefined))
+        : !isGroupJid(m.chat_id) && !m.from_me
+          ? m.sender_alt_jid
+          : undefined;
+      this.onLiveMessage!({
+        ...(chatAlt && chatAlt !== m.chat_id ? { chat_alt_id: chatAlt } : {}),
+        message: {
+          ...m,
+          sender_jid: m.from_me && self.jid ? self.jid : m.sender_jid,
+          sent_by_bridge: m.sent_by_bridge || this.bridgeSent.has(m.id),
+        },
+        chat_name: this.chatName(this.buffer.chats.get(m.chat_id), m.chat_id),
+        sender_name: this.senderName(m, self),
+        mentions_self: m.mentioned.some((j) => isSelf(j, self)),
+        reply_to_self: replyToSelf,
+      });
+    } catch (err) {
+      logWarning(`could not hand a message to the event: ${errMessage(err)}`);
     }
   }
 

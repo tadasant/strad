@@ -381,6 +381,15 @@ or outside a strad deployment (no `STRAD_PUBLIC_URL` or `STRAD_INTERNAL_TOKEN`),
 the file is still read and the result carries `download_url: null` with the
 reason; the boot log names what was missing.
 
+## Events
+
+A slug that sets `WHATSAPP_EVENTS_ENABLED: "true"` also publishes
+[`message_received`](/servers/events/#whatsapp-message_received), an MCP Events
+event for every message the bridge receives live, filterable by chat, by
+direct or group, and by whether the account sent it. It needs no new secret:
+the event buffer sits in this server's folder, sealed under its key. Off by
+default.
+
 ## Logging
 
 Nothing logs a message's text, an attachment's name or contents, a key, or a pairing code. Baileys' own logger is

@@ -4832,3 +4832,29 @@ is AGPL-3.0.
 - **A result is cut at 60,000 characters**, and says so.
 
 See `HACKS.md` #155.
+
+---
+
+### 156. WhatsApp `message_received` is cut from the bridge's live feed, and has met only fakes
+
+A WhatsApp slug that sets `WHATSAPP_EVENTS_ENABLED` publishes
+[`message_received`](/servers/events/#whatsapp-message_received). What that costs:
+
+- **Fakes only.** No real account's reconnect has been watched to see what
+  WhatsApp redelivers. A redelivered message already buffered is
+  deduplicated; one older than the retention is dropped.
+- **Only what the socket saw.** A message that arrives while the bridge is
+  down is an event only if WhatsApp delivers it on reconnect. A history sync
+  is never an event.
+- **The chat id in the eventId can change** from a LID to a phone JID once the
+  bridge learns the mapping, so a later redelivery could be a second event.
+  For the same reason a `chat_ids` filter naming a phone JID misses a message
+  in a chat the bridge still knows only by its LID.
+- **One event per message.** Zimmer's WhatsApp trigger fires once per batch.
+- **No status tool.** The event's state is in the bundle's logs only.
+
+**How you would know.** A webhook subscription that stays quiet while the
+account receives messages, or a poll whose cursor does not move. The bundle's
+stderr says why, prefixed `[whatsapp] WARN events:`.
+
+See `HACKS.md` #156.

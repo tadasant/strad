@@ -1,16 +1,17 @@
 ---
 title: MCP Events (draft)
-description: How strad serves MCP Events — events/list, events/poll and webhook delivery through core, slug-prefixed and entitled like tools — and its two event sources, Slack's message_posted and Gmail's message_received.
+description: How strad serves MCP Events — events/list, events/poll and webhook delivery through core, slug-prefixed and entitled like tools — and its three event sources, Slack's message_posted, Gmail's message_received and WhatsApp's message_received.
 ---
 
 A trigger that fires when something happens needs a feed of things that
 happened. MCP Events is that feed, as an MCP extension: a server lists event
 types, and a client either polls each one with a cursor or subscribes a webhook
 that the server POSTs to. strad serves **poll** and **webhook** delivery, not
-push (`events/stream`), and it has two event sources: Slack's
-`message_posted`, behind `slack-zimmer`, and Gmail's
+push (`events/stream`), and it has three event sources: Slack's
+`message_posted`, behind `slack-zimmer`; Gmail's
 [`message_received`](#gmail-message_received), on any gmail mount given its
-own key.
+own key; and WhatsApp's [`message_received`](#whatsapp-message_received), on a
+WhatsApp slug that switches it on.
 
 :::caution
 MCP Events is SEP-3415, an Extensions Track SEP. It merged on 2026-11-19, but it
@@ -279,10 +280,10 @@ x-mcp-subscription-id: sub_<32 hex>
   climb out of the prefix, and since no redirect is followed the headers cannot
   travel on.
 
-**One engine, two sources.** Subscribe, verification, signing, retries,
+**One engine, three sources.** Subscribe, verification, signing, retries,
 suspension and the watermark are one module, written once in the Slack tree
-(`fork/slack/src/events/webhook/`) and copied into the Gmail tree by
-`npm run eventswebhook:sync`. CI fails if the copies drift. What differs per
+(`fork/slack/src/events/webhook/`) and copied into the Gmail and WhatsApp
+trees by `npm run eventswebhook:sync`. CI fails if the copies drift. What differs per
 source is the buffer, the matching and the payload.
 
 **Where subscriptions live.** In `webhooks.bin`, sealed under the ingest's key
@@ -490,3 +491,91 @@ works the same. A half-set or malformed pair is reported and polls.
 Turn it on for **one** slug per mailbox. Each configured slug is its own
 ingest with its own buffer and its own Gmail reads.
 
+## WhatsApp: `message_received`
+
+The WhatsApp server can publish `message_received`: a message arrived on the
+paired account. It is off until the slug's `env:` sets
+`WHATSAPP_EVENTS_ENABLED: "true"`. Built for Zimmer, whose only WhatsApp feed
+for the account is a nightly batch sweep, so a direct message can start work as it
+arrives.
+
+### Where the events come from
+
+The [bridge](/servers/whatsapp/) already holds the one socket on the linked
+device, and WhatsApp pushes every message down it. So there is nothing to poll
+upstream and no Pub/Sub: each message WhatsApp delivers live is buffered for
+the tools and handed to the event in the same step. A message that arrives
+while the socket is down is delivered by WhatsApp on reconnect, and becomes an
+event then.
+
+**What is never an event.** A history sync (the backlog the phone replays
+after pairing, or on demand) is not new. A message this bridge sent is
+Zimmer's own post: an event for it would be a self-loop. A reaction is not a
+message to answer. Zimmer's WhatsApp trigger drops the last two as well. Status
+updates, broadcast lists and channels are never buffered at all.
+
+### The event
+
+The event id is `whatsapp:<chat_id>:<message_id>`. A WhatsApp message id is
+unique within its chat, not across chats, so the chat is part of the key.
+There is one event per message: a burst of five messages in a group is five
+events.
+
+| Field                 | Notes                                                                                              |
+| --------------------- | -------------------------------------------------------------------------------------------------- |
+| `message_id`          | WhatsApp's message id                                                                              |
+| `chat_id`             | the chat's JID, as `whatsapp_get_messages` takes it                                                |
+| `chat_name`           | the group's subject or the contact's name. **Untrusted.**                                          |
+| `is_group`            | `true` for a `…@g.us` chat                                                                         |
+| `sender_jid`          | a phone JID where the bridge knows it, otherwise a LID                                             |
+| `sender_name`         | the contact-book name, else the push name, else the number. **Untrusted.**                         |
+| `push_name`           | the name the sender's own phone attached, or `null`. **Untrusted.**                                |
+| `from_me`             | sent by the paired account from its phone or another linked device                                 |
+| `timestamp`           | the sender's clock, ISO 8601. Also the event's `timestamp`.                                        |
+| `type`, `media_type`  | `text`, `image`, `video`, `audio`, `document`, `sticker` or `other`; `media_type` is the attachment kind or `null` |
+| `text`                | the text or caption, cut to 2,000 characters. **Untrusted.** `text_truncated` says when it was cut. |
+| `quoted_message_id`   | the message this one replies to, or `null`                                                         |
+| `mentions_self`, `reply_to_self` | it @mentions the paired account; it replies to one of the account's messages            |
+
+The payload is a summary. It carries no attachment and no media key: read the
+chat with `whatsapp_get_messages` and a file with `whatsapp_get_attachment`.
+
+**The arguments.** All optional. An unknown argument is refused, so a typo
+cannot widen a trigger.
+
+| Argument          | Default | Narrows to                                                                 |
+| ----------------- | ------- | -------------------------------------------------------------------------- |
+| `chat_ids`        | —       | these chats, as `whatsapp_list_chats` lists them (at most 100); a direct chat matches under its phone JID or its LID, where the bridge knows both |
+| `include_from_me` | `false` | `true` keeps messages the account sent from its own devices                |
+| `include_groups`  | `true`  | `false` is the direct-messages-only filter: one-to-one chats only          |
+
+`include_from_me` is the name and the default of the same setting on Zimmer's
+WhatsApp trigger.
+
+### The buffer and webhooks
+
+Slack's rules apply as written above: a 7-day buffer
+(`WHATSAPP_EVENTS_RETENTION_DAYS`, at most 30), a sequence-number cursor in
+arrival order rather than the sender's clock, and the same webhook engine and
+edge-credential rule.
+
+What is different is where it lives. The buffer and the webhook registry are
+`events/buffer.bin` and `events/webhooks.bin` in the bridge's own folder of the
+[state store](/operate/state-store/), sealed under the bridge's
+`WHATSAPP_STATE_ENCRYPTION_KEY`, the key that already seals every chat it
+holds. There is no separate key and no separate lease: the process holding the
+bridge's lease is the one receiving messages, so it is the one that writes the
+buffer and delivers. `whatsapp_logout`, and pairing a different account, wipe
+the event buffer with the chats; a cursor from before reads as `truncated`.
+
+### Turning it on
+
+| Variable                                  | What                                                                  |
+| ----------------------------------------- | --------------------------------------------------------------------- |
+| `WHATSAPP_EVENTS_ENABLED`                 | `"true"` switches it on. Anything else is off.                        |
+| `WHATSAPP_EVENTS_RETENTION_DAYS`          | optional, days kept, default 7, at most 30                            |
+| `WHATSAPP_EVENTS_WEBHOOK_ACCESS_PREFIXES` | optional, as `SLACK_EVENTS_WEBHOOK_ACCESS_PREFIXES`, with the same two `ZIMMER_APPROVAL_CF_ACCESS_*` |
+
+Nothing else: the bridge's key and the shared state store are already on any
+slug that serves WhatsApp. A WhatsApp slug is one container's one mount, so
+the switch on its `env:` is per slug.

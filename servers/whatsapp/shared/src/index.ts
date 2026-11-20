@@ -65,3 +65,13 @@ export {
   type AttachmentMeta,
 } from "./attachment.js";
 export { deriveDownloadKey, mintDownloadToken, verifyDownloadToken } from "./download-link.js";
+export {
+  eventsRequested,
+  EventsNotServed,
+  MESSAGE_RECEIVED,
+  WhatsAppEvents,
+  type Ownership,
+} from "./events/ingest.js";
+export { MESSAGE_RECEIVED_DESCRIPTOR, registerWhatsAppEventHandlers } from "./events/protocol.js";
+export { WHATSAPP_EVENTS_ENV } from "./events/config.js";
+export { eventIdFor, MAX_TEXT_CHARS, type MessageReceived } from "./events/normalize.js";
