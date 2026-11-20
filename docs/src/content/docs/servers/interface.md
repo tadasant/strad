@@ -356,6 +356,8 @@ server's own docs for the URL it tells clients to connect to, and use that.
       into: [linear, granola] # optional; omitted, any slug
       paramsVariables: # optional; exact pairs on params: true slugs
         ssh-example-staging: [SSH_PRIVATE_KEY]
+      gatewayVariables: # optional; a bundle's tailnet.authKey, gateway namespace
+        [STRAD_TAILNET_OAUTH_CLIENT_SECRET]
 ```
 
 This lets the machine call `POST /_strad/deposit/{slug}/{VARIABLE}`, which
@@ -373,8 +375,13 @@ narrows the slugs. `paramsVariables:` only widens, one (slug, VARIABLE) pair at
 a time: a listed pair is allowed even when `into:` leaves its slug out, and no
 other slug's rule changes. The schema refuses a listed slug that is not
 `params: true` and a listed name the route would refuse (`STRAD_*`,
-`NODE_OPTIONS` and the rest). The block is read from the checked-in config only, and a
-runtime roster write cannot add or change it.
+`NODE_OPTIONS` and the rest). `gatewayVariables:` is the one route into the
+gateway namespace: `POST /_strad/deposit/_gateway/{VARIABLE}` creates
+`/strad/{env}/gateway/static/{VARIABLE}`, create-only, for a listed name only.
+The schema refuses a listed name unless it is the `${NAME}` of some bundle's
+`tailnet.authKey` (enabled or not), read by nothing outside `bundles:`, and not
+a name core or a bundle reads for itself at boot. The block is read from the
+checked-in config only, and a runtime roster write cannot add or change it.
 
 #### `troubleshoot_host`: the tool a machine that is off still serves
 

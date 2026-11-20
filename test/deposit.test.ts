@@ -10,8 +10,10 @@ import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import { refusalForTarget } from "../src/http/deposit.ts";
 import {
+  DEPOSIT_GATEWAY_TARGET,
   DEPOSIT_PROTOCOL,
   depositRoutePath,
+  gatewayDepositRoutePath,
   depositToken,
   isDepositSlug,
   isDepositVariable,
@@ -19,7 +21,10 @@ import {
   parseDepositReceipt,
 } from "../src/secrets/deposit-wire.ts";
 import { createFakeGcp } from "../src/secrets/parameters/fake.ts";
-import { serverParameterPath } from "../src/secrets/parameters/namespace.ts";
+import {
+  gatewayParameterPath,
+  serverParameterPath,
+} from "../src/secrets/parameters/namespace.ts";
 import {
   EnvSecretProvider,
   sharedSecretProviders,
@@ -50,6 +55,7 @@ const SHELL_KEY = "shell-slug-key-0123456789abcdef0123456789abc";
 const PAIRS_KEY = "pairs-slug-key-0123456789abcdef0123456789abc";
 const NARROW_PAIRS_KEY = "narrow-pairs-key-0123456789abcdef0123456789";
 const ELSEWHERE_KEY = "elsewhere-deposit-key-0123456789abcdef012345";
+const GATEWAY_KEY = "gateway-deposit-key-0123456789abcdef0123456";
 
 const YAML = `
 version: 1
@@ -58,7 +64,29 @@ auth: { staticTokens: { enabled: true } }
 roles: { admin: { servers: ["*"] } }
 bundles:
   - name: bundle-secrets
+    tailnet:
+      authKey: "\${STRAD_TAILNET_OAUTH_CLIENT_SECRET}"
+      tags: ["tag:strad"]
+  - name: bundle-off
+    tailnet:
+      enabled: false
+      authKey: "\${TAILNET_TWICE}"
+      tags: ["tag:strad"]
+  - name: bundle-env
+    tailnet:
+      authKey: "\${TAILNET_IN_ENV}"
+      tags: ["tag:strad"]
 servers:
+  - slug: custody-gateway-mbp
+    kind: local-tunnel
+    url: https://hostd.example.com/custody/mcp
+    entitlements: [admin]
+    headers:
+      Authorization: "Bearer \${HOSTD_GATEWAY_KEY}"
+    deposit:
+      into: [granola]
+      gatewayVariables:
+        [STRAD_TAILNET_OAUTH_CLIENT_SECRET, TAILNET_TWICE, TAILNET_IN_ENV]
   - slug: custody-test-mbp
     kind: local-tunnel
     url: https://hostd.example.com/custody/mcp
@@ -137,7 +165,7 @@ servers:
       SECRETS_NAMESPACES: "/strad/test/mcp/"
     consoleEnv:
       SECRETS_PROJECT_ID: "strad-secrets-test"
-      SECRETS_NAMESPACES: "/strad/test/mcp/"
+      SECRETS_NAMESPACES: "/strad/test/mcp/,/strad/test/gateway/static/"
       SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "\${SECRETS_ADMIN_KEY_JSON}"
 `;
 
@@ -158,6 +186,9 @@ beforeAll(async () => {
     HOSTD_PAIRS_KEY: PAIRS_KEY,
     HOSTD_NARROW_PAIRS_KEY: NARROW_PAIRS_KEY,
     HOSTD_ELSEWHERE_KEY: ELSEWHERE_KEY,
+    HOSTD_GATEWAY_KEY: GATEWAY_KEY,
+    // A tailnet key the gateway already resolves, e.g. baked into core's env.
+    TAILNET_IN_ENV: "tskey-client-already-here",
     // A name the gateway already resolves for every slug, e.g. from core's env.
     SHARED_API_KEY: "the-live-shared-one",
   });
@@ -562,6 +593,106 @@ describe("deposit.paramsVariables: exact pairs on a params: true slug", () => {
   });
 });
 
+describe("deposit.gatewayVariables: a bundle's tailnet key, into the gateway namespace", () => {
+  const gateway = depositToken(GATEWAY_KEY);
+  const depositGateway = (variable: string, bearer: string) =>
+    fetch(`${baseUrl}${gatewayDepositRoutePath(variable)}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${bearer}`,
+      },
+      body: JSON.stringify({ value: "tskey-client-FAKE0123456789" }),
+    });
+
+  it("spells a target no slug can be", () => {
+    expect(isDepositSlug(DEPOSIT_GATEWAY_TARGET)).toBe(false);
+    expect(gatewayDepositRoutePath("X")).toBe("/_strad/deposit/_gateway/X");
+  });
+
+  it("creates a listed tailnet key as a secret under gateway/static/", async () => {
+    const res = await depositGateway(
+      "STRAD_TAILNET_OAUTH_CLIENT_SECRET",
+      gateway,
+    );
+    expect(res.status).toBe(201);
+    const path = gatewayParameterPath(
+      "test",
+      "STRAD_TAILNET_OAUTH_CLIENT_SECRET",
+    );
+    expect(path).toBe(
+      "/strad/test/gateway/static/STRAD_TAILNET_OAUTH_CLIENT_SECRET",
+    );
+    expect(await res.json()).toEqual({
+      protocol: DEPOSIT_PROTOCOL,
+      path,
+      version: "v1",
+    });
+    expect(await fake.store.isSecret!(path)).toBe(true);
+  });
+
+  it("is create-only: a second deposit of the same name is a 409", async () => {
+    // Also the enabled-or-disabled rule: bundle-off's tailnet is enabled: false.
+    expect((await depositGateway("TAILNET_TWICE", gateway)).status).toBe(201);
+    const again = await depositGateway("TAILNET_TWICE", gateway);
+    expect(again.status).toBe(409);
+    expect(((await again.json()) as { error: string }).error).toBe("exists");
+  });
+
+  it("refuses a listed name that already resolves from another layer", async () => {
+    const res = await depositGateway("TAILNET_IN_ENV", gateway);
+    expect(res.status).toBe(409);
+    expect(
+      await fake.store.isSecret!(
+        gatewayParameterPath("test", "TAILNET_IN_ENV"),
+      ),
+    ).toBe(undefined);
+  });
+
+  it("refuses an unlisted name, and a caller that lists none", async () => {
+    for (const [variable, bearer] of [
+      ["STRAD_TOKENS", gateway],
+      ["GOOGLE_CLIENT_SECRET", gateway],
+      ["strad_tailnet_oauth_client_secret", gateway],
+      ["STRAD_TAILNET_OAUTH_CLIENT_SECRET", CUSTODY],
+    ] as const) {
+      const res = await depositGateway(variable, bearer);
+      expect(res.status, variable).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toBe(
+        "not_permitted",
+      );
+    }
+    // Nothing the refusals named was created. (The tailnet key itself was,
+    // by the listing caller, above; the lowercase spelling folds onto it.)
+    for (const variable of ["STRAD_TOKENS", "GOOGLE_CLIENT_SECRET"])
+      expect(
+        await fake.store.isSecret!(gatewayParameterPath("test", variable)),
+      ).toBe(undefined);
+    expect((await depositGateway("STRAD_TOKENS", "not-a-key")).status).toBe(
+      401,
+    );
+  });
+
+  it("leaves slug deposits as they were: STRAD_* refused, into: still fencing", async () => {
+    const strad = await deposit(
+      "granola",
+      "STRAD_TAILNET_OAUTH_CLIENT_SECRET",
+      {
+        bearer: gateway,
+      },
+    );
+    expect(strad.status).toBe(403);
+    expect(
+      (await deposit("linear", "GATEWAY_CALLER_KEY", { bearer: gateway }))
+        .status,
+    ).toBe(403);
+    expect(
+      (await deposit("granola", "GATEWAY_CALLER_KEY", { bearer: gateway }))
+        .status,
+    ).toBe(201);
+  });
+});
+
 describe("the config", () => {
   const withPairs = (pairs: string, extra = "") => `
 version: 1
@@ -628,6 +759,63 @@ ${extra}`;
     expect(() => parseConfig(withPairs("{ ssh-x: [] }"))).toThrow();
   });
 
+  const withGateway = (names: string, extra = "") => `
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+bundles:
+  - name: b
+    tailnet:
+      enabled: false
+      authKey: "\${STRAD_TAILNET_OAUTH_CLIENT_SECRET}"
+      tags: ["tag:strad"]
+  - name: c
+    tailnet:
+      authKey: "\${STRAD_TOKENS}"
+      tags: ["tag:strad"]
+  - name: d
+    tailnet:
+      authKey: "\${SHARED_TAILNET}"
+      tags: ["tag:strad"]
+servers:
+  - slug: custody-x
+    kind: local-tunnel
+    url: https://hostd.example.com/custody/mcp
+    headers: { Authorization: "Bearer \${K}" }
+    deposit:
+      gatewayVariables: ${names}
+  - slug: plain
+    kind: remote-http
+    url: https://plain.example.com/mcp
+    headers: { Authorization: "Bearer \${SHARED_TAILNET}" }
+${extra}`;
+
+  it("accepts a gatewayVariables name that is a bundle's tailnet key, enabled or not", () => {
+    expect(() =>
+      parseConfig(withGateway("[STRAD_TAILNET_OAUTH_CLIENT_SECRET]")),
+    ).not.toThrow();
+  });
+
+  it("refuses a gatewayVariables name that is not any bundle's tailnet key", () => {
+    for (const name of ["SOME_OTHER_KEY", "STRAD_INTERNAL_TOKEN", "K"])
+      expect(() => parseConfig(withGateway(`[${name}]`)), name).toThrow(
+        /gatewayVariables/,
+      );
+    expect(() => parseConfig(withGateway("[SOME_OTHER_KEY]"))).toThrow(
+      /not the \$\{NAME\} of any bundle's tailnet.authKey/,
+    );
+  });
+
+  it("refuses a tailnet key that is a boot key or read by anything else", () => {
+    expect(() => parseConfig(withGateway("[STRAD_TOKENS]"))).toThrow(
+      /reads for itself at boot/,
+    );
+    expect(() => parseConfig(withGateway("[SHARED_TAILNET]"))).toThrow(
+      /something outside bundles: also reads it/,
+    );
+    expect(() => parseConfig(withGateway("[]"))).toThrow();
+  });
+
   it("refuses deposit: on an entry whose key strad cannot name", () => {
     for (const headers of [
       "{}",
@@ -686,6 +874,15 @@ servers:
         kind: "local-tunnel",
         url: "https://h/custody/mcp",
         deposit: { paramsVariables: { paramsy: ["SSH_PRIVATE_KEY"] } },
+      }),
+    ).toThrow(/deposit/);
+    // Adding a gateway name to it.
+    expect(() =>
+      assertNoAccessControlChange(base, {
+        slug: "custody-test-mbp",
+        kind: "local-tunnel",
+        url: "https://h/custody/mcp",
+        deposit: { gatewayVariables: ["STRAD_TAILNET_OAUTH_CLIENT_SECRET"] },
       }),
     ).toThrow(/deposit/);
     // Echoing it unchanged is fine.

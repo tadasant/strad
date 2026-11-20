@@ -12,6 +12,7 @@ import { defineTool, json, text, type Capability } from "../mcp/tool.js";
 import {
   depositRoutePath,
   depositToken,
+  gatewayDepositRoutePath,
   isDepositSlug,
   isDepositVariable,
   MAX_DEPOSIT_VALUE_LENGTH,
@@ -35,9 +36,11 @@ const P = {
     'A short note for yourself about what this is, e.g. "Linear API key, read scope". Never the value.',
   handle:
     'A handle from click_and_capture, capture_download or generate_keypair, e.g. "h_3kd9…".',
-  slug: 'The strad server slug the secret is for, e.g. "linear". Lowercase, dashes.',
+  slug: 'The strad server slug the secret is for, e.g. "linear". Lowercase, dashes. Omit it when gateway is true.',
   variable:
     'The environment-variable name the server reads it as, e.g. "LINEAR_API_KEY".',
+  gateway:
+    "true to deposit into strad's GATEWAY namespace instead of a slug's — for a bundle's tailnet key, e.g. variable STRAD_TAILNET_OAUTH_CLIENT_SECRET. Only names strad lists for this machine in deposit.gatewayVariables. Omit slug when true.",
 } as const;
 
 const POLL_MS = 250;
@@ -642,6 +645,8 @@ public_key is one authorized_keys line. The private key is OpenSSH format, unenc
     name: "deposit",
     description: `Send a held secret to a strad deployment, which stores it as a NEW secret parameter at /strad/<env>/mcp/<slug>/static/<VARIABLE>. The value goes from this machine to that strad directly; you get back where it went.
 
+With gateway: true and no slug, it goes to /strad/<env>/gateway/static/<VARIABLE> instead. That form exists for ONE kind of name: a bundle's tailnet key (e.g. STRAD_TAILNET_OAUTH_CLIENT_SECRET), and only one strad lists for this machine in deposit.gatewayVariables. Every other gateway name is refused (not_permitted).
+
 Where it can go is fixed by this machine's own config, by NAME — there is no URL argument:
 ${destinationList}
 Name the strad the approved list names. Omit destination for the default.
@@ -655,11 +660,13 @@ The handle ends on success. Confirm through that strad's secrets server (list_pa
 
 **Use cases:**
 - The last step for each secret the owner approved: capture, check the shape, deposit
-- The same, into another organisation's strad the approved list names`,
+- The same, into another organisation's strad the approved list names
+- A bundle's tailnet OAuth client secret, with gateway: true`,
     schema: z.object({
       handle: z.string().min(1),
-      slug: z.string().min(1),
+      slug: z.string().min(1).optional(),
       variable: z.string().min(1),
+      gateway: z.boolean().optional(),
       destination: z.string().min(1).optional(),
     }),
     inputSchema: {
@@ -668,13 +675,14 @@ The handle ends on success. Confirm through that strad's secrets server (list_pa
         handle: { type: "string", description: P.handle },
         slug: { type: "string", description: P.slug },
         variable: { type: "string", description: P.variable },
+        gateway: { type: "boolean", description: P.gateway },
         destination: {
           type: "string",
           enum: names,
           description: `Which strad to deposit into, by name. Omit it for the default, "${config.custody.stradName}".`,
         },
       },
-      required: ["handle", "slug", "variable"],
+      required: ["handle", "variable"],
     },
     annotations: {
       title: "Deposit a secret into strad",
@@ -683,13 +691,30 @@ The handle ends on success. Confirm through that strad's secrets server (list_pa
       openWorldHint: true,
     },
     summarize: (a) =>
-      `deposit: ${a.handle} → ${a.destination ?? config.custody.stradName}:${a.slug}/${a.variable}`,
+      `deposit: ${a.handle} → ${a.destination ?? config.custody.stradName}:${a.gateway ? "gateway" : a.slug}/${a.variable}`,
     handler: async (a, { grant }) => {
-      if (!isDepositSlug(a.slug) || !isDepositVariable(a.variable))
+      if (a.gateway === true && a.slug !== undefined)
+        return text(
+          "Pass slug OR gateway: true, not both: a gateway deposit has no slug. Nothing was sent.",
+          true,
+        );
+      if (a.gateway !== true && a.slug === undefined)
+        return text(
+          "slug is required unless gateway is true. Nothing was sent.",
+          true,
+        );
+      if (
+        (a.slug !== undefined && !isDepositSlug(a.slug)) ||
+        !isDepositVariable(a.variable)
+      )
         return text(
           "slug must be a strad slug (lowercase, single dashes) and variable an environment-variable name. Nothing was sent.",
           true,
         );
+      const route =
+        a.slug === undefined
+          ? gatewayDepositRoutePath(a.variable)
+          : depositRoutePath(a.slug, a.variable);
       const found = resolveDestination(config, a.destination);
       if (!found.ok)
         return text(
@@ -705,22 +730,16 @@ The handle ends on success. Confirm through that strad's secrets server (list_pa
         );
       let res: Response;
       try {
-        res = await fetch(
-          new URL(depositRoutePath(a.slug, a.variable), dest.url),
-          {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-              authorization: `Bearer ${depositToken(dest.key)}`,
-            },
-            body: JSON.stringify({ value }),
-            signal: AbortSignal.any([
-              grant.signal,
-              AbortSignal.timeout(20_000),
-            ]),
-            redirect: "error",
+        res = await fetch(new URL(route, dest.url), {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${depositToken(dest.key)}`,
           },
-        );
+          body: JSON.stringify({ value }),
+          signal: AbortSignal.any([grant.signal, AbortSignal.timeout(20_000)]),
+          redirect: "error",
+        });
       } catch (err) {
         return text(
           `Could not reach strad "${dest.name}" at ${new URL(dest.url).origin}: ${(err as Error).message}. The handle is still held; try again.`,

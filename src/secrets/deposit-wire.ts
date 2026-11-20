@@ -4,7 +4,8 @@
  * model, a transcript or Zimmer.
  *
  * BOTH ENDS live in this one module, because they are in two npm trees: core
- * serves `POST /_strad/deposit/{slug}/{VARIABLE}` (src/http/deposit.ts), and
+ * serves `POST /_strad/deposit/{slug}/{VARIABLE}` and its one reserved form
+ * `POST /_strad/deposit/_gateway/{VARIABLE}` (src/http/deposit.ts), and
  * hostd is its only caller (`hostd/src/custody/deposit-wire.ts` is the vendored
  * copy, written by `npm run deposit:sync`). What the two must agree on is
  * small and every disagreement is a refused deposit — the route's path, the
@@ -35,6 +36,16 @@ import { createHmac } from "node:crypto";
 
 /** The route's prefix. The full path is `{prefix}/{slug}/{VARIABLE}`. */
 export const DEPOSIT_ROUTE_PREFIX = "/_strad/deposit";
+
+/**
+ * The reserved target segment for the GATEWAY namespace:
+ * `{prefix}/_gateway/{VARIABLE}` creates `/strad/{env}/gateway/static/{VARIABLE}`
+ * instead of a slug's `static/`. An underscore is outside the slug alphabet,
+ * so no slug can be spelled this way and no slug can be mistaken for it.
+ * Core accepts it only for a name the caller lists in
+ * `deposit.gatewayVariables:` that is some bundle's `tailnet.authKey`.
+ */
+export const DEPOSIT_GATEWAY_TARGET = "_gateway";
 
 /** Bumped on any change a peer one version behind would misread. */
 export const DEPOSIT_PROTOCOL = 1;
@@ -92,6 +103,11 @@ export function depositRoutePath(slug: string, variable: string): string {
   return `${DEPOSIT_ROUTE_PREFIX}/${encodeURIComponent(slug)}/${encodeURIComponent(variable)}`;
 }
 
+/** The route path for one GATEWAY-namespace name (`DEPOSIT_GATEWAY_TARGET`). */
+export function gatewayDepositRoutePath(variable: string): string {
+  return `${DEPOSIT_ROUTE_PREFIX}/${DEPOSIT_GATEWAY_TARGET}/${encodeURIComponent(variable)}`;
+}
+
 /** The request body. The value is the only thing in it. */
 export interface DepositRequest {
   value: string;
@@ -113,7 +129,9 @@ export interface DepositReceipt {
  *
  * - `unauthorized` — no deposit caller's bearer matched (401).
  * - `bad_target` — the slug or variable has an impossible shape (400).
- * - `not_permitted` — the caller's `deposit.into:` list does not name the slug (403).
+ * - `not_permitted` — the caller's `deposit.into:` list does not name the slug,
+ *   or, for `_gateway`, its `deposit.gatewayVariables:` does not name the
+ *   variable (403).
  * - `bad_body` — no value, a non-string value, or an over-long one (400 / 413).
  * - `exists` — a parameter already exists under that name, in `static/` or
  *   `oauth/`; a deposit never overwrites (409).

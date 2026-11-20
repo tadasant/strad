@@ -173,7 +173,11 @@ secret. So:
 
 - **In the store**, at `/strad/{env}/gateway/static/STRAD_TAILNET_OAUTH_CLIENT_SECRET`
   under `gcp-parameter-store`, or in the deploy environment under `env`. A
-  human seeds it. `render-spec` reads it like a supplementary server's `env:`
+  human seeds it in the console. Or strad-hostd's custody server deposits it
+  through `POST /_strad/deposit/_gateway/{VARIABLE}`, when the custody slug
+  lists the name in `deposit.gatewayVariables:` (create-only; see
+  [custody and deposit](/servers/hostd-custody/#the-gateway-form-a-bundles-tailnet-key)).
+  `render-spec` reads it like a supplementary server's `env:`
   and bakes it onto **that one component** as a SECRET. It is never in the
   broadcast, and core does not hold it. `store:check` counts it.
 - **In the container**, it is not in the environment Node starts with. A

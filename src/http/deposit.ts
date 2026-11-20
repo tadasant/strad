@@ -1,10 +1,15 @@
 import type { Request, RequestHandler, Response } from "express";
 
 import { bearerToken, secretEquals } from "../auth/credential.ts";
-import { depositKeyRef, type StradConfig } from "../config/schema.ts";
+import {
+  depositKeyRef,
+  gatewayDepositRefusal,
+  type StradConfig,
+} from "../config/schema.ts";
 import { grantAuthority, isConnectorClientPath } from "../connectors/index.ts";
 import type { RuntimeConfig } from "../config/runtime.ts";
 import {
+  DEPOSIT_GATEWAY_TARGET,
   DEPOSIT_PROTOCOL,
   depositToken,
   isDepositSlug,
@@ -16,6 +21,7 @@ import {
 import { DEPOSIT_PROCESS_CONTROL } from "../secrets/deposit-names.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import {
+  gatewayParameterPath,
   ParameterStoreError,
   serverParameterPath,
   validateVariableName,
@@ -54,8 +60,10 @@ import { asyncRoute, jsonFailure } from "./async-route.ts";
  *     agent's traffic to an account of the attacker's choosing, which is the
  *     one harm "write-only" does not otherwise rule out.
  *   - **No other namespace.** The path is composed here from the `static`
- *     kind and the two URL segments after a shape check, so neither the
- *     gateway's namespace nor `oauth/` is addressable by any spelling.
+ *     kind and the two URL segments after a shape check, so `oauth/` is not
+ *     addressable by any spelling. The gateway namespace is reachable only
+ *     through the reserved `_gateway` target, below, and only for one kind
+ *     of name.
  *   - **No plain parameter.** `secret: true`, always.
  *
  * ## Who may call it
@@ -67,6 +75,17 @@ import { asyncRoute, jsonFailure } from "./async-route.ts";
  * key matched, never by anything it claims, and `deposit.into:` narrows which
  * slugs it may name. A `params: true` slug takes one more grant: `into:`
  * naming it, or `deposit.paramsVariables:` naming the exact (slug, VARIABLE).
+ *
+ * ## The one gateway door
+ *
+ * `POST /_strad/deposit/_gateway/{VARIABLE}` creates
+ * `/strad/{env}/gateway/static/{VARIABLE}` — where the renderer reads a
+ * bundle's `tailnet.authKey`, which has no per-slug fallback. Only for a name
+ * the caller lists in `deposit.gatewayVariables:` AND that
+ * `gatewayDepositRefusal` passes in the config that runs: the `${NAME}` of
+ * some bundle's tailnet key, read by nothing else, not a boot key. It is
+ * create-only like the rest: a name already in that namespace, or one that
+ * resolves from any layer (the store or core's environment), is a 409.
  */
 
 export interface DepositHandlerOptions {
@@ -195,6 +214,147 @@ async function exists(store: ParameterStore, path: string): Promise<boolean> {
   return (await store.list(prefix)).some((p) => p.path === path);
 }
 
+/** Create `path` with `value`, and answer 201 with where it went. */
+async function create(
+  res: Response,
+  caller: Caller,
+  store: ParameterStore,
+  path: string,
+  value: string,
+  opts: DepositHandlerOptions,
+): Promise<void> {
+  const created = await store.create({
+    path,
+    secret: true,
+    value,
+    note: `deposited by ${caller.slug}`,
+    // The console's rule, from the checked-in config: an `oauth:`
+    // connector's own client is the one secret the console must read back.
+    consoleReadable: isConnectorClientPath(grantAuthority(opts), path),
+  });
+  opts.secretProvider?.invalidate();
+  forgetDeploymentDiagnosis({
+    env: opts.env,
+    store: opts.diagnosticStore,
+  });
+  // `caller` is a config string. The target is the caller's bytes and goes
+  // to stderr only — see the `strad.param_refused` note in events.ts.
+  event({ evt: "strad.deposit_written", caller: caller.slug });
+  console.log(`[strad] ${caller.slug} deposited ${path}`);
+  const receipt: DepositReceipt = {
+    protocol: DEPOSIT_PROTOCOL,
+    path,
+    version: created.latestVersion ?? "v1",
+  };
+  res.status(201).set("cache-control", "no-store").json(receipt);
+}
+
+/** Answer a store failure on the create: a 409 is `exists`, the rest `write_failed`. */
+function failed(
+  res: Response,
+  caller: Caller,
+  path: string,
+  err: unknown,
+): void {
+  const status = err instanceof ParameterStoreError ? err.status : 502;
+  if (status === 409) {
+    refuse(res, 409, "exists", `${path} already exists`);
+    return;
+  }
+  console.error(
+    `[strad] deposit by ${caller.slug} into ${path} failed: ${errorSummary(err)}`,
+  );
+  event({
+    evt: "strad.deposit_failed",
+    caller: caller.slug,
+    ...(err instanceof ParameterStoreError ? { status } : {}),
+  });
+  refuse(
+    res,
+    status >= 400 && status < 600 ? status : 502,
+    "write_failed",
+    errorSummary(err),
+  );
+}
+
+/**
+ * `POST /_strad/deposit/_gateway/{VARIABLE}`: create one name in the GATEWAY
+ * namespace, for a caller that lists it in `deposit.gatewayVariables:`, when
+ * the config that runs still makes it a bundle's tailnet key and nothing else.
+ */
+async function depositIntoGateway(
+  req: Request,
+  res: Response,
+  caller: Caller,
+  variable: string,
+  opts: DepositHandlerOptions,
+): Promise<void> {
+  if (!isDepositVariable(variable) || validateVariableName(variable) !== null) {
+    refuse(
+      res,
+      400,
+      "bad_target",
+      "the variable must be an environment-variable name",
+    );
+    return;
+  }
+  // Exact and case-sensitive, like the name the renderer resolves.
+  if (!caller.deposit?.gatewayVariables?.includes(variable)) {
+    refuse(
+      res,
+      403,
+      "not_permitted",
+      `${caller.slug} may deposit into the gateway namespace only a name it lists in deposit.gatewayVariables` +
+        (caller.deposit?.gatewayVariables
+          ? ` (${caller.deposit.gatewayVariables.join(", ")})`
+          : ", and it lists none"),
+    );
+    return;
+  }
+  // The schema already refused a list entry that fails this, but the config
+  // that RUNS is the one that decides: re-ask it here.
+  const why = gatewayDepositRefusal(opts.config, variable);
+  if (why) {
+    refuse(res, 403, "not_permitted", `${variable}: ${why}`);
+    return;
+  }
+
+  const parsed = parseDepositRequest(req.body);
+  if (!parsed.ok) {
+    refuse(res, parsed.status, parsed.error, parsed.message);
+    return;
+  }
+
+  const path = gatewayParameterPath(opts.config.gateway.env, variable);
+  const resolved = storeForPath(opts.config, opts.secrets, path, opts);
+  if (!resolved.store) {
+    refuse(res, 503, "store_unavailable", resolved.reason);
+    return;
+  }
+  const store = resolved.store;
+
+  try {
+    // Create-only from EVERY layer: core's environment, the shared provider
+    // (the gateway namespace, then that environment), and the store itself,
+    // read now rather than through a cache up to `ttlSeconds` old.
+    const current =
+      opts.env[variable] ||
+      (await opts.secretProvider?.shared.get(variable).catch(() => null));
+    if (current || (await exists(store, path))) {
+      refuse(
+        res,
+        409,
+        "exists",
+        `${variable} already resolves for the gateway; a deposit never replaces a value. Rotate it in the console.`,
+      );
+      return;
+    }
+    await create(res, caller, store, path, parsed.value, opts);
+  } catch (err) {
+    failed(res, caller, path, err);
+  }
+}
+
 export function createDepositHandler(
   opts: DepositHandlerOptions,
 ): RequestHandler {
@@ -212,6 +372,10 @@ export function createDepositHandler(
 
     const slug = req.params.slug ?? "";
     const variable = req.params.variable ?? "";
+    if (slug === DEPOSIT_GATEWAY_TARGET) {
+      await depositIntoGateway(req, res, caller, variable, opts);
+      return;
+    }
     if (
       !isDepositSlug(slug) ||
       !isDepositVariable(variable) ||
@@ -299,50 +463,9 @@ export function createDepositHandler(
           return;
         }
       }
-      const created = await store.create({
-        path,
-        secret: true,
-        value: parsed.value,
-        note: `deposited by ${caller.slug}`,
-        // The console's rule, from the checked-in config: an `oauth:`
-        // connector's own client is the one secret the console must read back.
-        consoleReadable: isConnectorClientPath(grantAuthority(opts), path),
-      });
-      opts.secretProvider?.invalidate();
-      forgetDeploymentDiagnosis({
-        env: opts.env,
-        store: opts.diagnosticStore,
-      });
-      // `caller` is a config string. The target is the caller's bytes and goes
-      // to stderr only — see the `strad.param_refused` note in events.ts.
-      event({ evt: "strad.deposit_written", caller: caller.slug });
-      console.log(`[strad] ${caller.slug} deposited ${path}`);
-      const receipt: DepositReceipt = {
-        protocol: DEPOSIT_PROTOCOL,
-        path,
-        version: created.latestVersion ?? "v1",
-      };
-      res.status(201).set("cache-control", "no-store").json(receipt);
+      await create(res, caller, store, path, parsed.value, opts);
     } catch (err) {
-      const status = err instanceof ParameterStoreError ? err.status : 502;
-      if (status === 409) {
-        refuse(res, 409, "exists", `${path} already exists`);
-        return;
-      }
-      console.error(
-        `[strad] deposit by ${caller.slug} into ${path} failed: ${errorSummary(err)}`,
-      );
-      event({
-        evt: "strad.deposit_failed",
-        caller: caller.slug,
-        ...(err instanceof ParameterStoreError ? { status } : {}),
-      });
-      refuse(
-        res,
-        status >= 400 && status < 600 ? status : 502,
-        "write_failed",
-        errorSummary(err),
-      );
+      failed(res, caller, path, err);
     }
   }, jsonFailure("deposit"));
 }
