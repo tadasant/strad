@@ -19,6 +19,11 @@ import {
 } from "./deposit-wire.js";
 import { destinationNames, resolveDestination } from "./destinations.js";
 import { KEY_COMMENT, KEY_TYPES, mintKeypair } from "./keygen.js";
+import {
+  type Candidate,
+  type CaptureChoice,
+  chooseCapture,
+} from "./capture-choice.js";
 import { elementValue, SNAPSHOT_CANDIDATES } from "./page-scripts.js";
 import { shapeOf, type Vault } from "./vault.js";
 
@@ -45,10 +50,12 @@ const POLL_MS = 250;
 const TAINTED = "(tainted — hidden until release_tab)";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-interface Candidate {
-  selector: string;
-  token: string;
-}
+/**
+ * How long the set of new strings must hold still before a diff capture
+ * decides. A dialog and the list behind it do not render in one frame, and
+ * the first new string to appear is often the list's masked preview.
+ */
+const SETTLE_MS = 1_000;
 
 /** Why a capture's click did not happen. Nothing was clicked, so nothing was captured. */
 function notClicked(reason: "no-match" | "hidden", selector: string): string {
@@ -186,10 +193,11 @@ The tab is TAINTED from the start of this call: until you release_tab it (or end
 
 How the value is found:
 - capture_selector given: that element's value (an input's value, a copy button's data-clipboard-text, else its text), once it is non-empty and has changed.
-- omitted: the ONE credential-shaped string (16+ characters, letters and digits, no spaces) that was not on the page before the click. If several appear, nothing is kept and their selectors are returned: call again with no click_selector and one of them as capture_selector.
+- omitted: the ONE credential-shaped string (16+ characters, letters and digits, no spaces) that was not on the page before the click, read from text, input and textarea values and copy buttons, once the page has held still for a second. A masked preview (an ellipsis or mask characters, e.g. a key list's "sk-…abc...xyz" row) is never kept. If several values appear — even one inside another, like a key and a snippet quoting it — nothing is kept and their selectors are returned: call again with no click_selector and one of them as capture_selector. If only a masked preview appears, nothing is kept and you are told so.
+- A value that was already on the page before the click is never kept, and neither is a masked one.
 
-**Returns:** {"handle":"h_3kd9…","shape":{"length":40,"kind":"token","prefix":"lin_api_"},"expires_at":"…","tab_tainted":true}
-shape.kind is "token", "json", "pem" or "text". Check length and prefix against what the provider issues before you deposit.
+**Returns:** {"handle":"h_3kd9…","shape":{"length":73,"kind":"token","prefix":"sk-or-v1-"},"expires_at":"…","tab_tainted":true}
+shape.kind is "token", "json", "pem" or "text". prefix is the longest known one. suspect_truncated (with expected_min_length) means the value is shorter than that provider issues: probably a display copy — discard it and capture the full value. Check length and prefix against what the provider issues before you deposit.
 
 **Use cases:**
 - "Generate new token" on a provider's settings page, with the token shown once
@@ -246,13 +254,15 @@ shape.kind is "token", "json", "pem" or "text". Check length and prefix against 
               elementValue(a.capture_selector),
             )
           : null;
-        const beforeTokens = a.capture_selector
-          ? new Set<string>()
-          : new Set(
+        // What was on the page before the click is not the new credential,
+        // in either mode: a key list's previews, an older key's display.
+        const beforeTokens = a.click_selector
+          ? new Set(
               (
                 await s.evaluate<Candidate[]>(a.tab_id, SNAPSHOT_CANDIDATES)
               ).map((c) => c.token),
-            );
+            )
+          : new Set<string>();
         if (a.click_selector) {
           const clicked = await clickSelector(s, a.tab_id, a.click_selector);
           if (!clicked.clicked) {
@@ -264,7 +274,12 @@ shape.kind is "token", "json", "pem" or "text". Check length and prefix against 
 
         const deadline = Date.now() + a.wait_seconds * 1000;
         let value: string | undefined;
-        let several: Candidate[] = [];
+        let choice: CaptureChoice = { kind: "none" };
+        let fresh: Candidate[] = [];
+        // A short wait still gets a settle, just a shorter one.
+        const settleMs = Math.min(SETTLE_MS, (a.wait_seconds * 1000) / 4);
+        let seen = "";
+        let stableSince = 0;
         while (Date.now() < deadline) {
           await sleep(POLL_MS);
           if (a.capture_selector) {
@@ -279,23 +294,37 @@ shape.kind is "token", "json", "pem" or "text". Check length and prefix against 
               break;
             }
           } else {
-            const fresh = (
+            const now = (
               await s
                 .evaluate<Candidate[]>(a.tab_id, SNAPSHOT_CANDIDATES)
                 .catch(() => [] as Candidate[])
             ).filter((c) => !beforeTokens.has(c.token));
-            if (fresh.length === 1) {
-              value = fresh[0]!.token;
-              break;
+            const key = now
+              .map((c) => c.token)
+              .sort()
+              .join("\n");
+            if (key !== seen) {
+              seen = key;
+              stableSince = Date.now();
+              fresh = now;
+              choice = chooseCapture(fresh);
+              continue;
             }
-            if (fresh.length > 1) {
-              several = fresh;
+            // Held still for the settle: decide — unless all that appeared
+            // is a masked preview, in which case the real value may still
+            // come. At the deadline the last set seen decides, settled or not.
+            if (
+              (choice.kind === "one" || choice.kind === "several") &&
+              Date.now() - stableSince >= settleMs
+            )
               break;
-            }
           }
         }
+        if (!a.capture_selector && choice.kind === "one")
+          value = choice.candidate.token;
 
-        if (several.length > 0) {
+        if (!a.capture_selector && choice.kind === "several") {
+          const several = choice.candidates;
           return text(
             JSON.stringify(
               {
@@ -303,15 +332,33 @@ shape.kind is "token", "json", "pem" or "text". Check length and prefix against 
                 reason: `${several.length} new credential-shaped values appeared; nothing was kept. Call click_and_capture again with NO click_selector and the right capture_selector.`,
                 candidates: several.slice(0, 20).map((c) => ({
                   // None of these values is held, so the filter cannot catch
-                  // one: a selector the page built out of a candidate (an id
-                  // that IS the token) is withheld here instead.
-                  capture_selector: several.some((o) =>
-                    c.selector.includes(o.token),
-                  )
-                    ? null
-                    : c.selector,
+                  // one: a selector the page built out of ANY new string (an
+                  // id that IS the token) is withheld here instead. Null too
+                  // for one inside a shadow root, which no selector reaches.
+                  capture_selector:
+                    c.selector === null ||
+                    fresh.some((o) => c.selector!.includes(o.token))
+                      ? null
+                      : c.selector,
                   shape: shapeOf(c.token),
                 })),
+                tab_tainted: true,
+              },
+              null,
+              2,
+            ),
+            true,
+          );
+        }
+        if (!a.capture_selector && choice.kind === "masked") {
+          return text(
+            JSON.stringify(
+              {
+                captured: false,
+                reason: `Only a MASKED display of a key appeared (${choice.candidates.length} value(s) with an ellipsis or mask characters) within ${a.wait_seconds}s — the provider's preview, not the key. Nothing was kept. The full key is somewhere this diff cannot read, or not shown yet: find the element that holds it (a read-only input, a code block, a copy button's data-clipboard-text) and call click_and_capture again with NO click_selector and that capture_selector, or click a reveal button first.`,
+                masked: choice.candidates
+                  .slice(0, 5)
+                  .map((c) => ({ shape: shapeOf(c.token) })),
                 tab_tainted: true,
               },
               null,
@@ -326,6 +373,26 @@ shape.kind is "token", "json", "pem" or "text". Check length and prefix against 
             true,
           );
         }
+        if (beforeTokens.has(value))
+          return text(
+            `${JSON.stringify(a.capture_selector)} holds a value that was already on the page before the click, so it is not the credential the click produced. Nothing was kept. The tab stays tainted: release_tab it before reading it again.`,
+            true,
+          );
+        const shape = shapeOf(value);
+        if (shape.looks_masked)
+          return text(
+            JSON.stringify(
+              {
+                captured: false,
+                reason: `${JSON.stringify(a.capture_selector)} holds a MASKED display of a key (an ellipsis or mask characters), not the key. Nothing was kept. Point capture_selector at the element that holds the full value — a read-only input, a code block, a copy button's data-clipboard-text — or click its reveal button first.`,
+                shape,
+                tab_tainted: true,
+              },
+              null,
+              2,
+            ),
+            true,
+          );
         const source = `page ${await origin(s, a.tab_id)}`;
         // The grant ended while this ran: its handles were already dropped,
         // and one held now would outlive it with nothing able to deposit it.

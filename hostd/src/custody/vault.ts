@@ -26,8 +26,25 @@ export type HandleKind = "json" | "pem" | "token" | "text";
 export interface HandleShape {
   length: number;
   kind: HandleKind;
-  /** A well-known, non-secret prefix the value starts with, e.g. `ghp_`. */
+  /**
+   * The longest well-known, non-secret prefix the value starts with, e.g.
+   * `sk-or-v1-` rather than `sk-`.
+   */
   prefix?: string;
+  /**
+   * The value — or, for `text`, a key-like word in it — carries a mask: an
+   * ellipsis (`...`, `…`), a mask character (`•`, `●`, `·`) or a run of three
+   * or more `*`. It is a provider's DISPLAY form of a key, not the key. The
+   * vault refuses to hold one; a capture reports it.
+   */
+  looks_masked?: true;
+  /**
+   * Shorter than the provider issues for `prefix` — a partial or display
+   * copy. Held, because a provider can change its format, but check it.
+   */
+  suspect_truncated?: true;
+  /** The shortest value this prefix is issued at, when `suspect_truncated`. */
+  expected_min_length?: number;
   /** Top-level key names, for a JSON object. Never values. */
   json_keys?: string[];
   /** Line count, for a multi-line value. */
@@ -78,37 +95,73 @@ const MIN_NEEDLE_LENGTH = 8;
 const MAX_ENDED = 50;
 
 /**
- * Non-secret prefixes a credential announces itself with. Reported so a
- * caller can check it captured the right thing ("expected a GitHub token,
- * got a `ghp_`") without seeing any of it. Longest first, so `sk-ant-` wins
- * over `sk-`.
+ * Non-secret prefixes a credential announces itself with, and the shortest
+ * length each is issued at. Reported so a caller can check it captured the
+ * right thing ("expected an OpenRouter key, got an `sk-or-v1-` of 73") without
+ * seeing any of it. Matched longest first, so `sk-or-v1-` wins over `sk-`.
+ *
+ * A minimum is set only where the format is published or stable, and is
+ * conservative: it flags a display copy, it does not validate a key. Absent
+ * means "no opinion".
  */
-const KNOWN_PREFIXES = [
-  "github_pat_",
-  "sk-ant-",
-  "sk-proj-",
-  "sk_live_",
-  "sk_test_",
-  "rk_live_",
-  "rk_test_",
-  "lin_api_",
-  "dop_v1_",
-  "glpat-",
-  "xoxb-",
-  "xoxp-",
-  "xapp-",
-  "ghp_",
-  "gho_",
-  "ghu_",
-  "ghs_",
-  "ghr_",
-  "ntn_",
-  "AKIA",
-  "AIza",
-  "ya29.",
-  "SG.",
-  "sk-",
-];
+const KNOWN_PREFIXES: readonly { prefix: string; min?: number }[] = [
+  { prefix: "github_pat_", min: 82 },
+  { prefix: "sk-svcacct-", min: 80 },
+  { prefix: "sk-or-v1-", min: 73 },
+  { prefix: "sk-admin-" },
+  { prefix: "sk-proj-", min: 50 },
+  { prefix: "sk-ant-", min: 90 },
+  { prefix: "sk_live_", min: 30 },
+  { prefix: "sk_test_", min: 30 },
+  { prefix: "rk_live_", min: 30 },
+  { prefix: "rk_test_", min: 30 },
+  { prefix: "lin_api_", min: 40 },
+  { prefix: "dop_v1_", min: 71 },
+  { prefix: "glpat-", min: 26 },
+  { prefix: "xoxb-", min: 40 },
+  { prefix: "xoxp-", min: 40 },
+  { prefix: "xapp-", min: 40 },
+  { prefix: "ghp_", min: 40 },
+  { prefix: "gho_", min: 40 },
+  { prefix: "ghu_", min: 40 },
+  { prefix: "ghs_", min: 40 },
+  { prefix: "ghr_", min: 40 },
+  { prefix: "ntn_", min: 40 },
+  { prefix: "npm_", min: 40 },
+  { prefix: "AKIA", min: 20 },
+  { prefix: "AIza", min: 39 },
+  { prefix: "ya29." },
+  { prefix: "SG.", min: 60 },
+  { prefix: "sk-" },
+]
+  .slice()
+  .sort((a, b) => b.prefix.length - a.prefix.length);
+
+/**
+ * Whether a value is a provider's masked display of a key rather than the
+ * key: an ellipsis, or a run of mask characters. Base64, base64url, hex and
+ * every prefixed token format above contain none of these.
+ */
+export function looksMasked(value: string): boolean {
+  return /\.\.\.|\u2026|[\u2022\u25cf\u00b7]|\*{3,}/.test(value);
+}
+
+/**
+ * A masked word inside a longer text value — a key-list row read whole,
+ * `sk-…abc...xyz  Created just now`. A word has to look like a key to count,
+ * so prose with an ellipsis in it ("Copy it now...") does not.
+ */
+function hasMaskedWord(value: string): boolean {
+  return value
+    .split(/\s+/)
+    .some(
+      (w) =>
+        w.length >= MIN_NEEDLE_LENGTH &&
+        /[0-9]/.test(w) &&
+        /[A-Za-z]/.test(w) &&
+        looksMasked(w),
+    );
+}
 
 /** Keys in a JSON credential whose string values are secret on their own. */
 const SECRET_KEY = /key|secret|token|password|passwd|credential/i;
@@ -131,10 +184,23 @@ export function shapeOf(value: string): HandleShape {
   }
   if (trimmed.startsWith("-----BEGIN ")) return { ...base, kind: "pem" };
   if (!/\s/.test(trimmed)) {
-    const prefix = KNOWN_PREFIXES.find((p) => trimmed.startsWith(p));
-    return { ...base, kind: "token", ...(prefix ? { prefix } : {}) };
+    const known = KNOWN_PREFIXES.find((p) => trimmed.startsWith(p.prefix));
+    const short = known?.min !== undefined && trimmed.length < known.min;
+    return {
+      ...base,
+      kind: "token",
+      ...(known ? { prefix: known.prefix } : {}),
+      ...(looksMasked(trimmed) ? { looks_masked: true as const } : {}),
+      ...(short
+        ? { suspect_truncated: true as const, expected_min_length: known.min }
+        : {}),
+    };
   }
-  return { ...base, kind: "text" };
+  return {
+    ...base,
+    kind: "text",
+    ...(hasMaskedWord(trimmed) ? { looks_masked: true as const } : {}),
+  };
 }
 
 /**
@@ -190,8 +256,14 @@ export function needlesFor(value: string): string[] {
   if (value.includes("-----BEGIN ")) linesOf(value);
   // A value captured with text around it ("Your token: abc…") is still a
   // secret in its credential-shaped part alone.
+  // A masked word is public display text, never filtered for on its own.
   for (const tok of value.split(/\s+/))
-    if (tok.length >= 16 && /[0-9]/.test(tok) && /[A-Za-z]/.test(tok))
+    if (
+      tok.length >= 16 &&
+      /[0-9]/.test(tok) &&
+      /[A-Za-z]/.test(tok) &&
+      !looksMasked(tok)
+    )
       forms(tok);
   return [...out];
 }
@@ -214,7 +286,7 @@ export class Vault {
    */
   private readonly watched = new Map<
     string,
-    { grantId: string; needles: string[] }
+    { grantId: string; needles: string[]; state: "deposited" | "discarded" }
   >();
   /** tab id → the custody grant that tainted it. */
   private readonly tainted = new Map<string, string>();
@@ -236,6 +308,14 @@ export class Vault {
       throw new Error(
         `the captured value is ${value.length} characters — too short to be a credential. Nothing was kept.`,
       );
+    const shape = shapeOf(value);
+    // A masked preview is public — the provider renders it on every page
+    // load — so holding one would both vault the wrong thing and arm the
+    // egress filter against text that is not a secret.
+    if (shape.looks_masked)
+      throw new Error(
+        `the captured value (${JSON.stringify(shape)}) looks like a MASKED display form of a key — it contains an ellipsis or mask characters — not the key. Nothing was kept.`,
+      );
     const now = this.now();
     const h: Held = {
       id: `h_${randomBytes(12).toString("base64url")}`,
@@ -244,7 +324,7 @@ export class Vault {
       source: meta.source,
       value: Buffer.from(value, "utf8"),
       needles: needlesFor(value),
-      shape: shapeOf(value),
+      shape,
       createdAt: now,
       expiresAt: now + this.opts.handleTtlMs,
     };
@@ -280,7 +360,11 @@ export class Vault {
     this.held.delete(handle);
     h.value.fill(0);
     if (state === "deposited" || state === "discarded")
-      this.watched.set(handle, { grantId: h.grantId, needles: h.needles });
+      this.watched.set(handle, {
+        grantId: h.grantId,
+        needles: h.needles,
+        state,
+      });
     this.ended.unshift({
       grantId: h.grantId,
       view: {
@@ -380,6 +464,15 @@ export class Vault {
   /** Whether `handle` is held, as opposed to deposited or discarded. */
   isHeld(handle: string): boolean {
     return this.held.has(handle);
+  }
+
+  /**
+   * What a handle `scan` can return is now: held, or a value that left
+   * custody and is still filtered. Undefined for anything else.
+   */
+  filterState(handle: string): "held" | "deposited" | "discarded" | undefined {
+    if (this.held.has(handle)) return "held";
+    return this.watched.get(handle)?.state;
   }
 
   /** One grant's handles, live and recently ended. */

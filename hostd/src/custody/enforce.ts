@@ -37,9 +37,10 @@ import type { Vault } from "./vault.js";
  *    handle in every form it could travel in (`needlesFor`) — and of every
  *    handle deposited or discarded under a custody grant that is still
  *    running, since that value is still live at its provider. A hit withholds
- *    the result and BURNS the handle: a value that reached the model is a
- *    leaked credential, and depositing it anyway would store one the owner
- *    has to rotate. This is the backstop for whatever the hold does not
+ *    the result and BURNS a handle still held: a value readable outside
+ *    custody is a leaked credential, and depositing it anyway would store one
+ *    the owner has to rotate. A deposited or discarded hit burns nothing, and
+ *    the refusal says which each handle was (`withheldResult`). This is the backstop for whatever the hold does not
  *    foresee; the hold is what makes it rare.
  *
  * The cost is deliberate and bounded: for the minutes between a capture and a
@@ -127,38 +128,88 @@ function textsOf(payload: unknown): string[] {
   return out;
 }
 
+/** A handle whose value a payload carried, and what it was when it did. */
+export interface EgressHit {
+  handle: string;
+  /**
+   * `held` — burned by this hit. `deposited` / `discarded` — it had already
+   * left custody and is filtered as a tripwire; nothing burned.
+   */
+  was: "held" | "deposited" | "discarded";
+}
+
 /**
- * Check a payload against every live handle. On a hit, burn the handles and
- * return them; the caller withholds what it was about to send.
+ * Check a payload against every live handle. On a hit, burn the HELD handles
+ * and return every hit with what it was; the caller withholds what it was
+ * about to send.
  */
-export function egressHits(vault: Vault, payload: unknown): string[] {
-  const hits = vault.scan(textsOf(payload));
-  for (const id of hits)
-    if (vault.isHeld(id))
-      vault.end(id, "burned", {
+export function egressHits(vault: Vault, payload: unknown): EgressHit[] {
+  const hits: EgressHit[] = vault.scan(textsOf(payload)).map((handle) => ({
+    handle,
+    was: vault.filterState(handle) ?? "discarded",
+  }));
+  for (const h of hits)
+    if (h.was === "held")
+      vault.end(h.handle, "burned", {
         reason: "its value appeared in a tool call or result",
       });
   return hits;
 }
 
+const ids = (hits: EgressHit[], was: EgressHit["was"]) =>
+  hits
+    .filter((h) => h.was === was)
+    .map((h) => h.handle)
+    .join(", ");
+
+/**
+ * What the caller is told, per handle and per what it WAS: a burn is only
+ * claimed of a handle that was held. A discarded handle is filtered because a
+ * credential discarded unused is still live at its provider — but it may as
+ * well have been the wrong capture (a label, a public preview), and the page
+ * showing it again is not a leak of anything in custody.
+ */
 export function withheldResult(
-  hits: string[],
+  hits: EgressHit[],
   where: "result" | "arguments",
 ): CallToolResult {
+  const parts: string[] = [];
+  const held = ids(hits, "held");
+  const deposited = ids(hits, "deposited");
+  const discarded = ids(hits, "discarded");
+  if (where === "result") {
+    parts.push(
+      `Withheld: this result contained the value behind ${hits.map((h) => h.handle).join(", ")}. Nothing of the result was returned.`,
+    );
+    if (held)
+      parts.push(
+        `${held} was held and is now BURNED: it cannot be deposited. Its value is readable outside custody — revoke the credential at its provider and capture a fresh one.`,
+      );
+    if (deposited)
+      parts.push(
+        `${deposited} is already deposited in strad, and its value is readable outside custody: rotate it.`,
+      );
+    if (discarded)
+      parts.push(
+        `${discarded} was already DISCARDED, so nothing was burned and nothing is in strad. Its value stays filtered until the custody grant ends, because a discarded credential can still be live at its provider: if it was a real credential, revoke it there. If you discarded it as the wrong capture — a partial or display copy the page shows to anyone — this is that same text again, not a leak.`,
+      );
+  } else {
+    parts.push(
+      `Refused: these arguments contain the secret behind ${hits.map((h) => h.handle).join(", ")}, so it has already been in your context. Nothing ran.`,
+    );
+    if (held)
+      parts.push(
+        `${held} is now BURNED — revoke the credential at its provider and capture a fresh one.`,
+      );
+    if (deposited)
+      parts.push(`${deposited} is already deposited in strad: rotate it.`);
+    if (discarded)
+      parts.push(
+        `${discarded} was already discarded; nothing was burned. If it was a real credential, revoke it at its provider.`,
+      );
+  }
   return {
-    content: [
-      {
-        type: "text",
-        text:
-          where === "result"
-            ? `Withheld: this result contained the secret behind ${hits.join(", ")}. ` +
-              "A handle still held is now BURNED and cannot be deposited; one already deposited is in strad and " +
-              "must be rotated. Either way treat the credential as leaked. Nothing of the result was returned."
-            : `Refused: these arguments contain the secret held by ${hits.join(", ")}, so it has already ` +
-              "been in your context. Those handles are now BURNED — revoke the credential at its provider " +
-              "and capture a fresh one. Nothing ran.",
-      },
-    ],
+    content: [{ type: "text", text: parts.join(" ") }],
     isError: true,
   };
 }

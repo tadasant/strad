@@ -7394,6 +7394,14 @@ a tool that never returns the value. Design: Zimmer session 27977.
 - **The clipboard is not cleared.** A provider whose "Copy" button was the
   click leaves the value on the clipboard. The filter keeps watching for it
   until the custody grant ends, but a read after that is not caught.
+- **Masked and truncated are recognised, not proven.** A diff capture skips a
+  value with an ellipsis or mask characters, and the vault refuses one, so a
+  key list's `sk-…abc...xyz` preview is never vaulted and never arms the
+  filter. A provider that truncates with no marker shows a plain, shorter
+  string; `suspect_truncated` catches that only for a prefix custody knows the
+  issued length of. A key shown only in a closed shadow root is never captured: the
+  capture says only a masked preview appeared, or that nothing did. A real
+  password that contains `...` or `***` is refused as masked.
 - **A daemon restart loses every handle**, and a tab still showing the token is
   no longer tainted. It fails closed for the handle (re-mint), not for the
   page.

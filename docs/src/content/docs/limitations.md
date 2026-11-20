@@ -4511,6 +4511,14 @@ What that leaves:
   captured value's match forms do. Only ed25519, and only unencrypted.
 - **The clipboard is not cleared.** A value put there by a "Copy" button is
   filtered only until the custody grant ends.
+- **Masked and truncated are recognised, not proven.** A diff capture skips a
+  value with an ellipsis or mask characters and the vault refuses one, but a
+  provider that truncates a key with no marker shows a plain, shorter string.
+  `suspect_truncated` flags that only for a prefix custody knows the issued
+  length of. A diff also cannot read a closed shadow root, so a key shown only
+  there is never captured: the capture says only a masked preview appeared,
+  or that nothing did. A real password that contains `...` or `***` is
+  refused as masked.
 - **A daemon restart loses every handle**, and a tab still showing the token is
   no longer tainted. Re-mint the credential.
 - **The egress filter matches known forms.** It catches the raw value,
