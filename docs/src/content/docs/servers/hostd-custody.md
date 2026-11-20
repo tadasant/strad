@@ -50,18 +50,45 @@ strad.
 | `discard_handle`    | Drops a handle and zeroes its bytes.                                                                               |
 | `deposit`           | Posts a handle's value to a strad, named by `destination` (default: this machine's own), as `/strad/<env>/mcp/<slug>/static/<VARIABLE>`. Returns the destination, the path and the version. |
 
-A shape is the value's length, its kind (`token`, `json`, `pem`, `text`), a
-well-known non-secret prefix (`ghp_`, `lin_api_`, `sk-ant-` and similar) and,
-for JSON, its top-level key names. It is enough to check that you captured
-the right thing.
+A shape is the value's length, its kind (`token`, `json`, `pem`, `text`), the
+longest well-known non-secret prefix it starts with (`sk-or-v1-` rather than
+`sk-`, `ghp_`, `lin_api_`, `sk-ant-` and similar) and, for JSON, its top-level
+key names. Two flags say the value is probably not the key:
+
+- `looks_masked` — it carries an ellipsis (`...`, `…`) or mask characters
+  (`•`, `●`, `·`, or three or more `*`) — in a text value, in a key-like word of it, so it is a provider's display of a key, such as the
+  `sk-or-v1-abc...xyz` preview a key list shows. custody never holds one.
+- `suspect_truncated`, with `expected_min_length` — it is shorter than that
+  prefix is issued at. It is held, because a provider can change its format,
+  but it is most likely a partial or display copy: discard it and capture the
+  full value.
 
 `click_and_capture` finds the value in one of two ways. With
 `capture_selector`, it reads that element: an input's value, a copy button's
-`data-clipboard-text`, or the element's text. Without it, it takes the one new
-credential-shaped string the click produced: 16 or more printable characters,
-letters and digits, no spaces, not a URL. If several appear it keeps none and
-returns their selectors, so the next call can name one. Navigation to the
-provider's page is the browser server's job, as before.
+`data-clipboard-text`, or the element's text. Without it, it diffs the page:
+it reads every credential-shaped string (16 or more characters, letters and
+digits, no spaces, not a URL) from text, input and textarea values, copy
+buttons' `data-clipboard-text`, and open shadow roots, before the click and again after it until the new set has held
+still for a second. Then:
+
+- anything that was on the page before the click is not the new credential;
+- a masked string is never chosen. A provider that adds the new key's preview
+  to its list as it opens the reveal dialog puts exactly that on the page,
+  often before the dialog renders;
+- what is left must be one value. If several are left, it keeps none and
+  returns their selectors, so the next call can name one — even when one
+  contains the other. "Take the longer" would hold a key glued to its
+  neighbours (a `Copy` label, a snippet quoting `api_key="…"`), which passes
+  the prefix and length check, deposits broken, and arms the filter with a
+  string the bare key never matches. A value inside a shadow root comes back
+  with no selector, because no document selector reaches it.
+- if only a masked preview appeared, it keeps none and says so: the full value
+  is somewhere the diff cannot read, such as a closed shadow root, or behind a
+  reveal button.
+
+In both modes a value that was already on the page before the click, or a
+masked one, is refused rather than held. Navigation to the provider's page is
+the browser server's job, as before.
 
 ### Generating a key instead of capturing one
 
@@ -131,12 +158,23 @@ every live handle, and of every handle deposited or discarded under a custody
 grant that is still running: the value itself, its JSON-escaped, base64, base64url and
 URL-encoded forms, and for a JSON or PEM credential, its secret fields and
 the long lines of a PEM body, and any credential-shaped word in a value that
-was captured with text around it. A match withholds the result and **burns** a
-handle still held. A burned handle cannot be deposited, because a value that
-reached the model is a leaked credential. Revoke it at the provider and capture
-a new one. A match on a deposited value means the copy in strad has leaked,
-and it needs rotating. Values stay watched after a deposit because the token
-may still be on the clipboard or in a window.
+was captured with text around it. A match withholds the result, and what it says depends on what each
+matching handle WAS:
+
+- **held** — the handle is **burned**. A burned handle cannot be deposited,
+  because its value is readable outside custody. Revoke it at the provider
+  and capture a new one.
+- **deposited** — the copy in strad is readable outside custody, and it needs
+  rotating.
+- **discarded** — nothing is burned and nothing is in strad. The value stays a
+  tripwire until the custody grant ends, because a credential discarded unused
+  is still live at its provider. If it was discarded as the wrong capture, the
+  page is showing that same non-secret text again; `end_control` on custody
+  ends the filter.
+
+Values stay watched after a deposit or discard because the token may still be
+on the clipboard or in a window. A masked preview is never a handle's value,
+so a key list that shows previews on every load never trips the filter.
 This is an exact match on a known value, so it does not guess what looks
 secret.
 

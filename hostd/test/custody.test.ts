@@ -5,13 +5,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { chooseCapture } from "../src/custody/capture-choice.js";
 import {
   custodyAfter,
   custodyRefusal,
   egressHits,
+  withheldResult,
 } from "../src/custody/enforce.js";
 import { depositToken } from "../src/custody/deposit-wire.js";
-import { needlesFor, shapeOf, Vault } from "../src/custody/vault.js";
+import {
+  looksMasked,
+  needlesFor,
+  shapeOf,
+  Vault,
+} from "../src/custody/vault.js";
 import { startDaemon, type RunningDaemon } from "../src/daemon.js";
 import { findChrome } from "./chrome.js";
 import {
@@ -99,7 +106,7 @@ describe("the vault", () => {
     vault.end(handle, "deposited", { path: "/p", version: "v1" });
     expect(vault.live()).toBe(false);
     expect(egressHits(vault, { text: "secret-value-0123456789" })).toEqual([
-      handle,
+      { handle, was: "deposited" },
     ]);
     // Still recorded as deposited: a watched hit withholds, it does not burn.
     expect(vault.list("g1")[0]?.state).toBe("deposited");
@@ -128,6 +135,123 @@ describe("the vault", () => {
     vault.endGrant("g1");
     expect(vault.reveal(handle, "g1")).toBeUndefined();
     expect(vault.live()).toBe(false);
+  });
+});
+
+/** An OpenRouter-shaped fixture key: `sk-or-v1-` and 64 hex. Random per call. */
+const orKey = () =>
+  `sk-or-v1-${Array.from({ length: 64 }, () => "0123456789abcdef"[Math.floor(Math.random() * 16)]).join("")}`;
+/** How such a provider previews a key in its list: 18 characters. */
+const orPreview = (k: string) => `${k.slice(0, 12)}...${k.slice(-3)}`;
+
+describe("masked previews and the shape", () => {
+  it("reports the longest known prefix and flags a masked or short value", () => {
+    const k = orKey();
+    expect(shapeOf(k)).toEqual({
+      length: 73,
+      kind: "token",
+      prefix: "sk-or-v1-",
+    });
+    expect(shapeOf(orPreview(k))).toMatchObject({
+      length: 18,
+      prefix: "sk-or-v1-",
+      looks_masked: true,
+      suspect_truncated: true,
+      expected_min_length: 73,
+    });
+    expect(shapeOf(k.slice(0, 36))).toMatchObject({
+      prefix: "sk-or-v1-",
+      suspect_truncated: true,
+    });
+    expect(shapeOf(k.slice(0, 36)).looks_masked).toBeUndefined();
+  });
+
+  it("knows a mask when it sees one, and not in a real token", () => {
+    for (const m of [
+      "sk-or-v1-abc...xyz",
+      "sk-ab\u2026yz12",
+      "ghp_\u2022\u2022\u2022\u20221234",
+      "sk-****abcd1234",
+    ])
+      expect(looksMasked(m)).toBe(true);
+    for (const t of [
+      orKey(),
+      "ya29.a0AfH6SMB-x_y",
+      "eyJhbGciOi.eyJzdWIi.sig",
+      "AKIAIOSFODNN7EXAMPLE",
+    ])
+      expect(looksMasked(t)).toBe(false);
+  });
+
+  it("refuses to hold a masked value", () => {
+    const vault = new Vault({ handleTtlMs: 60_000 });
+    expect(() => vault.hold("g", orPreview(orKey()), { source: "t" })).toThrow(
+      /MASKED/,
+    );
+    expect(vault.live()).toBe(false);
+  });
+
+  it("a diff capture never chooses a preview, and never guesses between two", () => {
+    const k = orKey();
+    const preview = { selector: "li", token: orPreview(k) };
+    const full = { selector: "code", token: k };
+    expect(chooseCapture([preview])).toEqual({
+      kind: "masked",
+      candidates: [preview],
+    });
+    expect(chooseCapture([preview, full])).toEqual({
+      kind: "one",
+      candidate: full,
+    });
+    // A key glued to its neighbours contains the key; taking the longer would
+    // hold a broken credential the bare key's needles never match.
+    const glued = { selector: "pre", token: `api_key="${k}"` };
+    expect(chooseCapture([full, glued, preview])).toEqual({
+      kind: "several",
+      candidates: [full, glued],
+    });
+    expect(chooseCapture([]).kind).toBe("none");
+  });
+
+  it("a key-list row read whole is masked too, and its preview is never a needle", () => {
+    const row = `${orPreview(orKey())}  Created just now`;
+    expect(shapeOf(row)).toMatchObject({ kind: "text", looks_masked: true });
+    expect(() =>
+      new Vault({ handleTtlMs: 60_000 }).hold("g", row, { source: "t" }),
+    ).toThrow(/MASKED/);
+    expect(shapeOf("Copy it now... it is shown once").looks_masked).toBe(
+      undefined,
+    );
+    const preview = orPreview(orKey());
+    const needles = needlesFor(`${preview} tok_0123456789abcdefXYZ`);
+    expect(needles).toContain("tok_0123456789abcdefXYZ");
+    expect(needles).not.toContain(preview);
+  });
+
+  it("a discarded handle hit is withheld but neither burned nor called held", () => {
+    const vault = new Vault({ handleTtlMs: 60_000 });
+    const v = orKey();
+    const { handle } = vault.hold("g1", v, { source: "t" });
+    vault.end(handle, "discarded");
+    const hits = egressHits(vault, { text: `row ${v}` });
+    expect(hits).toEqual([{ handle, was: "discarded" }]);
+    expect(vault.list("g1")[0]?.state).toBe("discarded");
+    const msg = resultText(withheldResult(hits, "result"));
+    expect(msg).toMatch(/already DISCARDED, so nothing was burned/);
+    expect(msg).not.toMatch(/is now BURNED/);
+    // A held one IS burned, and only it is called burned.
+    const { handle: h2 } = vault.hold("g1", orKey(), { source: "t" });
+    const v2 = vault.reveal(h2, "g1")!;
+    const both = egressHits(vault, { text: `${v} ${v2}` });
+    expect(both).toEqual(
+      expect.arrayContaining([
+        { handle, was: "discarded" },
+        { handle: h2, was: "held" },
+      ]),
+    );
+    expect(resultText(withheldResult(both, "result"))).toMatch(
+      new RegExp(`${h2} was held and is now BURNED`),
+    );
   });
 });
 
@@ -196,6 +320,8 @@ describe.skipIf(!chrome)(
     let origin: string;
     const downloads = mkdtempSync(join(tmpdir(), "hostd-downloads-"));
     const minted: string[] = [];
+    /** Keys the OpenRouter-shaped page minted. One preexists. */
+    const orKeys: string[] = [orKey()];
     const deposits: {
       url: string;
       authorization?: string;
@@ -236,6 +362,39 @@ describe.skipIf(!chrome)(
           minted.push(t);
           res.writeHead(200, { "content-type": "text/plain" });
           res.end(t);
+          return;
+        }
+        if (req.url === "/or-mint") {
+          const k = orKey();
+          orKeys.push(k);
+          res.writeHead(200, { "content-type": "text/plain" });
+          res.end(k);
+          return;
+        }
+        if (req.url === "/keys" || req.url === "/keys-hidden") {
+          // A provider's key page: every key the account has is listed by
+          // its MASKED preview, on every load. Creating one adds its preview
+          // row first, then opens a dialog that shows the full key — in a
+          // code block on /keys, and somewhere the diff cannot read (a
+          // closed shadow root) on /keys-hidden.
+          const hidden = req.url === "/keys-hidden";
+          res.writeHead(200, { "content-type": "text/html" });
+          res.end(`<!doctype html><title>Keys</title>
+<ul id="list">${orKeys.map((k) => `<li>${orPreview(k)}</li>`).join("")}</ul>
+<button data-zm-create="1" onclick="fetch('/or-mint').then(r=>r.text()).then(k=>{
+  const li=document.createElement('li');li.textContent=k.slice(0,12)+'...'+k.slice(-3);
+  document.getElementById('list').appendChild(li);
+  setTimeout(()=>{
+    const d=document.createElement('div');d.setAttribute('role','dialog');
+    d.innerHTML='<p>Copy your key now. You will not see it again.</p>';
+    ${
+      hidden
+        ? "const host=document.createElement('div');host.attachShadow({mode:'closed'}).textContent=k;d.appendChild(host);"
+        : "const c=document.createElement('code');c.textContent=k;d.appendChild(c);"
+    }
+    document.body.appendChild(d);
+  },600);
+})">Create</button>`);
           return;
         }
         if (req.url === "/title") {
@@ -528,6 +687,108 @@ describe.skipIf(!chrome)(
         "burned",
       );
       await call(custody, "custody", "release_tab", { tab_id: tab });
+    });
+
+    it("captures the full key from a create dialog, never the list's masked preview of it", async () => {
+      await call(browser, "browser", "navigate_tab", {
+        tab_id: tab,
+        url: `${origin}/keys`,
+      });
+      const res = await call(custody, "custody", "click_and_capture", {
+        tab_id: tab,
+        click_selector: 'button[data-zm-create="1"]',
+        wait_seconds: 15,
+      });
+      expect(res.isError).toBeFalsy();
+      const key = orKeys.at(-1)!;
+      expect(JSON.stringify(res)).not.toContain(key.slice(9, 30));
+      const out = resultJson<{
+        handle: string;
+        shape: Record<string, unknown>;
+      }>(res);
+      expect(out.shape).toEqual({
+        length: 73,
+        kind: "token",
+        prefix: "sk-or-v1-",
+      });
+      // It is the full key: depositing it sends exactly that.
+      await call(custody, "custody", "deposit", {
+        handle: out.handle,
+        slug: "openrouter",
+        variable: "OPENROUTER_PROVISIONING_KEY",
+      });
+      expect(deposits.at(-1)?.value).toBe(key);
+      await call(custody, "custody", "release_tab", { tab_id: tab });
+    });
+
+    it("refuses, and holds nothing, when only a masked preview appears", async () => {
+      await call(browser, "browser", "navigate_tab", {
+        tab_id: tab,
+        url: `${origin}/keys-hidden`,
+      });
+      const res = await call(custody, "custody", "click_and_capture", {
+        tab_id: tab,
+        click_selector: 'button[data-zm-create="1"]',
+        wait_seconds: 3,
+      });
+      expect(res.isError).toBe(true);
+      expect(resultText(res)).toMatch(/Only a MASKED display/);
+      expect(resultText(res)).toMatch(/"looks_masked": true/);
+      const { handles } = resultJson<{
+        handles: { handle: string; state: string }[];
+      }>(await call(custody, "custody", "list_handles"));
+      expect(handles.filter((h) => h.state === "held")).toEqual([]);
+      await call(custody, "custody", "release_tab", { tab_id: tab });
+    });
+
+    it("refuses a capture_selector that points at a masked preview", async () => {
+      await call(browser, "browser", "navigate_tab", {
+        tab_id: tab,
+        url: `${origin}/keys`,
+      });
+      const res = await call(custody, "custody", "click_and_capture", {
+        tab_id: tab,
+        capture_selector: "#list > li:last-child",
+      });
+      expect(res.isError).toBe(true);
+      expect(resultText(res)).toMatch(/MASKED display of a key/);
+      await call(custody, "custody", "release_tab", { tab_id: tab });
+    });
+
+    it("after a discard and release, the keys page reads cleanly: the previews are not a secret", async () => {
+      await call(browser, "browser", "navigate_tab", {
+        tab_id: tab,
+        url: `${origin}/keys`,
+      });
+      const cap = resultJson<{ handle: string }>(
+        await call(custody, "custody", "click_and_capture", {
+          tab_id: tab,
+          click_selector: 'button[data-zm-create="1"]',
+          wait_seconds: 15,
+        }),
+      );
+      await call(custody, "custody", "discard_handle", { handle: cap.handle });
+      await call(custody, "custody", "release_tab", { tab_id: tab });
+      await call(browser, "browser", "navigate_tab", {
+        tab_id: tab,
+        url: `${origin}/keys`,
+      });
+      // Every preview, including the discarded key's, is on this page.
+      const read = await call(browser, "browser", "evaluate_script", {
+        tab_id: tab,
+        expression: "document.getElementById('list').textContent",
+      });
+      expect(read.isError).toBeFalsy();
+      expect(resultText(read)).toContain(orPreview(orKeys.at(-1)!));
+      // The discarded FULL key is still a tripwire while the grant runs, and
+      // says so without claiming a burn.
+      const echoed = await call(shell, "shell", "run_command", {
+        command: `echo ${orKeys.at(-1)}`,
+      });
+      expect(echoed.isError).toBe(true);
+      expect(resultText(echoed)).toMatch(
+        /already discarded; nothing was burned/,
+      );
     });
 
     it("takes a downloaded credential into custody and deletes the file", async () => {

@@ -10,13 +10,23 @@ export const MIN_CANDIDATE_LENGTH = 16;
 
 /**
  * Every credential-shaped token on the page, with a selector for the element
- * it is in: input and textarea values, and whitespace-separated runs of text.
- * A candidate is printable, has no whitespace, is at least
- * `MIN_CANDIDATE_LENGTH` long, mixes letters and digits, and is not a URL.
+ * it is in. Read from: input and textarea VALUES (a revealed key is often a
+ * read-only field), a copy button's `data-clipboard-text`, and
+ * whitespace-separated runs of every text node — in the document and in
+ * every open shadow root. An element inside a shadow root gets a null
+ * selector: `document.querySelector` cannot reach it, and a selector built
+ * from inside the root could name a different element in the document.
+ *
+ * A candidate has no whitespace, is at least `MIN_CANDIDATE_LENGTH` long,
+ * mixes letters and digits, and is not a URL. Its characters are printable
+ * ASCII plus the four a page MASKS a key with (`…`, `•`, `●`, `·`): a masked
+ * preview is let through here so the caller can tell "only a masked preview
+ * appeared" from "nothing appeared" — `chooseCapture` never keeps one.
  */
 export const SNAPSHOT_CANDIDATES = `(() => {
   const MIN = ${MIN_CANDIDATE_LENGTH};
   const path = (el) => {
+    if (el.getRootNode() !== document) return null;
     if (el.id && document.querySelectorAll('#' + CSS.escape(el.id)).length === 1) return '#' + CSS.escape(el.id);
     const parts = [];
     for (let n = el; n && n.nodeType === 1 && n !== document.documentElement; n = n.parentElement) {
@@ -30,20 +40,28 @@ export const SNAPSHOT_CANDIDATES = `(() => {
   const seen = new Set();
   const add = (el, text) => {
     for (const tok of String(text || '').split(/\\s+/)) {
+      if (out.length >= 5000) return;
       if (tok.length < MIN || seen.has(tok)) continue;
-      if (!/^[\\x21-\\x7e]+$/.test(tok) || !/[0-9]/.test(tok) || !/[A-Za-z]/.test(tok)) continue;
+      if (!/^[\\x21-\\x7e\\u2026\\u2022\\u25cf\\u00b7]+$/.test(tok) || !/[0-9]/.test(tok) || !/[A-Za-z]/.test(tok)) continue;
       if (/^https?:\\/\\//i.test(tok)) continue;
       seen.add(tok);
       out.push({ selector: path(el), token: tok });
-      if (out.length >= 5000) return;
     }
   };
-  for (const el of document.querySelectorAll('input, textarea')) add(el, el.value);
-  const root = document.body || document.documentElement;
-  const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  for (let n = w.nextNode(); n; n = w.nextNode()) {
-    const p = n.parentElement;
-    if (p && p.tagName !== 'SCRIPT' && p.tagName !== 'STYLE') add(p, n.nodeValue);
+  const roots = [document];
+  for (let i = 0; i < roots.length && i < 200; i++) {
+    const r = roots[i];
+    for (const el of r.querySelectorAll('*')) if (el.shadowRoot) roots.push(el.shadowRoot);
+  }
+  for (const r of roots) {
+    for (const el of r.querySelectorAll('input, textarea')) add(el, el.value);
+    for (const el of r.querySelectorAll('[data-clipboard-text]')) add(el, el.getAttribute('data-clipboard-text'));
+    const root = r === document ? (document.body || document.documentElement) : r;
+    const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let n = w.nextNode(); n; n = w.nextNode()) {
+      const p = n.parentElement;
+      if (p && p.tagName !== 'SCRIPT' && p.tagName !== 'STYLE') add(p, n.nodeValue);
+    }
   }
   return out;
 })()`;

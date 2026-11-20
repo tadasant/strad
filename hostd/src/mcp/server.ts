@@ -214,7 +214,7 @@ Idempotent: ending a grant that is already gone returns {"ended":false}.`,
         audit.record({
           kind: "denied",
           capability: id,
-          detail: `custody: ${tool} arguments carried ${leaked.join(", ")}; burned`,
+          detail: `custody: ${tool} arguments carried ${leaked.map((h) => `${h.handle} (${h.was})`).join(", ")}; burned if held`,
         });
         return withheldResult(leaked, "arguments");
       }
@@ -375,7 +375,7 @@ Idempotent: ending a grant that is already gone returns {"ended":false}.`,
           kind: "denied",
           capability: id,
           grantId: used.grant.id,
-          detail: `custody: ${tool} result carried ${hits.join(", ")}; withheld and burned`,
+          detail: `custody: ${tool} result carried ${hits.map((h) => `${h.handle} (${h.was})`).join(", ")}; withheld, burned if held`,
         });
         return withheldResult(hits, "result");
       }
