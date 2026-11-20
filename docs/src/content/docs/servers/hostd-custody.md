@@ -195,15 +195,23 @@ Core creates it only when all of these hold:
 - The caller lists the exact name in `deposit.gatewayVariables:`. Otherwise
   the answer is 403.
 - In the config that runs, the name is the `${NAME}` of some bundle's
-  `tailnet.authKey`, with that tailnet enabled or not. Nothing outside
-  `bundles:` may read it, and it is not a name core or a bundle hydrates for
-  itself (`STRAD_TOKENS`, `GOOGLE_CLIENT_SECRET`, the resolver's own
+  `tailnet.authKey`, with that tailnet enabled or not, and it is not a name
+  core or a bundle hydrates for itself (`STRAD_TOKENS`, `GOOGLE_CLIENT_SECRET`, the resolver's own
   variables and the rest). The schema refuses a list entry that fails any of
   these, so the list can never name an arbitrary gateway or process-config
   name. The route asks the same question again on every call, so it does not
   depend on the schema having run.
+- Nothing outside `bundles:` reads it, in the config that runs. A server
+  whose header or `env:` also names it would be seeded too, so the route
+  refuses that with a 403, and `config:check` reports it for the checked-in
+  file. This rule is not in the schema, because the schema also judges the
+  merged runtime roster, and a console-added entry must not invalidate it.
 - Create-only. The answer is 409 if the name exists in the gateway namespace,
   or resolves from any layer: the store, or core's environment.
+
+The console store's `consoleEnv.SECRETS_NAMESPACES` must cover
+`/strad/<env>/gateway/static/`, the same as for a console write there.
+Otherwise the answer is 503 `store_unavailable`.
 
 `into:` does not narrow this form, and listing a name widens nothing else:
 `STRAD_*` stays refused on every slug.
@@ -281,8 +289,9 @@ Turn it on in the checked-in config:
   slug. The schema refuses a listed slug that is not `params: true`, and a
   listed name the route would refuse anyway. A listed slug that does not exist grants nothing.
 - `gatewayVariables:` opens the gateway form for exactly the names it lists.
-  Each one must be a bundle's `tailnet.authKey` `${NAME}`, read by nothing
-  else and not a boot key, or the schema refuses the config.
+  Each one must be a bundle's `tailnet.authKey` `${NAME}` and not a boot
+  key, or the schema refuses the config. `config:check` also fails a name
+  that something outside `bundles:` reads.
 - `deposit:` is honoured from the **checked-in** config only. A runtime
   roster write that adds or changes it is refused.
 - **To revoke it,** remove the `deposit:` block (a deploy), or rotate the

@@ -7418,14 +7418,17 @@ a tool that never returns the value. Design: Zimmer session 27977.
   slug only if `into:` names it or `paramsVariables:` names the exact slug and
   variable. A listed pair is a new environment variable on that container,
   which is why it is one name at a time and never a process-control name.
-  `deposit.gatewayVariables:` adds the one gateway name a deposit can create,
-  through `POST /_strad/deposit/_gateway/{VARIABLE}`: the schema and the route
-  both require it to be a bundle's `tailnet.authKey` `${NAME}`, read by nothing
-  else and not a boot key. Seeded first with a different tailnet's key, it
-  makes the bundle join that tailnet (`--shields-up`, ssh-only, pinned host
-  keys): a denial of service plus connection metadata, not access.
   Keeping the key where the shell server cannot read it (a Keychain item behind
   the helper) is the follow-up that closes it.
+- **One gateway name is depositable.** `deposit.gatewayVariables:` lets a
+  custody caller create one gateway name through
+  `POST /_strad/deposit/_gateway/{VARIABLE}`: a bundle's `tailnet.authKey`
+  `${NAME}`, read by nothing else and not a boot key, create-only. Seeded
+  first with a different tailnet's key, it makes the bundle join that tailnet
+  (`--shields-up`, ssh-only, pinned host keys): a denial of service plus
+  connection metadata, not access. It needs the console store's
+  `SECRETS_NAMESPACES` to cover `/strad/{env}/gateway/static/`, or the route
+  answers 503.
 - **A generated keypair is only as private as a captured token.**
   `generate_keypair` mints an ed25519 key in the daemon and holds the private
   half like a capture; its bytes pass through JavaScript strings (the OpenSSH

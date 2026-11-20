@@ -4,7 +4,7 @@ import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { parseConfig } from "../src/config/load.ts";
 import { assertNoAccessControlChange } from "../src/config/overlay.ts";
 import { ENV_NAME_SOURCE } from "../src/config/env-name.ts";
-import { SLUG } from "../src/config/schema.ts";
+import { gatewayVariableConflicts, SLUG } from "../src/config/schema.ts";
 import { probeToolSurfaces } from "../src/gateway/reachability.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
@@ -76,6 +76,10 @@ bundles:
     tailnet:
       authKey: "\${TAILNET_IN_ENV}"
       tags: ["tag:strad"]
+  - name: bundle-shared
+    tailnet:
+      authKey: "\${TAILNET_SHARED}"
+      tags: ["tag:strad"]
 servers:
   - slug: custody-gateway-mbp
     kind: local-tunnel
@@ -86,7 +90,12 @@ servers:
     deposit:
       into: [granola]
       gatewayVariables:
-        [STRAD_TAILNET_OAUTH_CLIENT_SECRET, TAILNET_TWICE, TAILNET_IN_ENV]
+        [
+          STRAD_TAILNET_OAUTH_CLIENT_SECRET,
+          TAILNET_TWICE,
+          TAILNET_IN_ENV,
+          TAILNET_SHARED,
+        ]
   - slug: custody-test-mbp
     kind: local-tunnel
     url: https://hostd.example.com/custody/mcp
@@ -134,6 +143,12 @@ servers:
     entitlements: [admin]
     headers:
       Authorization: "Bearer \${HOSTD_SHELL_KEY}"
+  - slug: shared-reader
+    kind: remote-http
+    url: https://shared-reader.example.com/mcp
+    entitlements: [admin]
+    headers:
+      X-Tailnet: "\${TAILNET_SHARED}"
   - slug: tracker
     kind: remote-http
     url: "https://\${TRACKER_HOST}/mcp"
@@ -649,6 +664,35 @@ describe("deposit.gatewayVariables: a bundle's tailnet key, into the gateway nam
     ).toBe(undefined);
   });
 
+  it("refuses a listed tailnet key that something outside bundles: also reads", async () => {
+    const res = await depositGateway("TAILNET_SHARED", gateway);
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { message: string }).message).toMatch(
+      /something outside bundles: also reads it/,
+    );
+    expect(
+      await fake.store.isSecret!(
+        gatewayParameterPath("test", "TAILNET_SHARED"),
+      ),
+    ).toBe(undefined);
+  });
+
+  it("takes only the exact reserved segment", async () => {
+    const post = (target: string) =>
+      fetch(`${baseUrl}/_strad/deposit/${target}/TAILNET_SPELLING`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${gateway}`,
+        },
+        body: JSON.stringify({ value: "tskey-client-FAKE" }),
+      });
+    // Upper case is neither the reserved target nor a slug.
+    expect((await post("_GATEWAY")).status).toBe(400);
+    // Percent-encoded, it decodes to the reserved target and meets its gates.
+    expect((await post("%5Fgateway")).status).toBe(403);
+  });
+
   it("refuses an unlisted name, and a caller that lists none", async () => {
     for (const [variable, bearer] of [
       ["STRAD_TOKENS", gateway],
@@ -810,9 +854,17 @@ ${extra}`;
     expect(() => parseConfig(withGateway("[STRAD_TOKENS]"))).toThrow(
       /reads for itself at boot/,
     );
-    expect(() => parseConfig(withGateway("[SHARED_TAILNET]"))).toThrow(
-      /something outside bundles: also reads it/,
-    );
+    // Not a schema error — the merged roster is judged by the same parse —
+    // but config:check's finding, and the route's refusal.
+    const shared = parseConfig(withGateway("[SHARED_TAILNET]"));
+    expect(gatewayVariableConflicts(shared)).toEqual([
+      expect.stringMatching(/SHARED_TAILNET.*something outside bundles:/),
+    ]);
+    expect(
+      gatewayVariableConflicts(
+        parseConfig(withGateway("[STRAD_TAILNET_OAUTH_CLIENT_SECRET]")),
+      ),
+    ).toEqual([]);
     expect(() => parseConfig(withGateway("[]"))).toThrow();
   });
 

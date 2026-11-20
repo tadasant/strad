@@ -902,9 +902,10 @@ const LocalTunnelServer = ServerBase.extend({
    *
    * It exists for a bundle's tailnet key, which the renderer reads from the
    * gateway namespace and nowhere else. So every listed name must be the
-   * `${NAME}` of some bundle's `tailnet.authKey` (enabled or not), must be
-   * read by nothing else in the config, and must not be a name core
-   * hydrates for itself (`gatewayDepositRefusal`). Any other gateway name,
+   * `${NAME}` of some bundle's `tailnet.authKey` (enabled or not) and must
+   * not be a name core hydrates for itself (`gatewayDepositRefusal`). A name
+   * something outside `bundles:` also reads is refused by the route and
+   * reported by `config:check` (`gatewayDepositSharedBy`), not by this parse. Any other gateway name,
    * `STRAD_TOKENS` included, stays out of reach. Create-only, like every
    * deposit; `into:` does not narrow it, and it widens nothing else.
    *
@@ -942,17 +943,23 @@ const GATEWAY_DEPOSIT_NEVER: ReadonlySet<string> = new Set<string>([
  *
  * Shared by the schema, which refuses a list entry that fails it, and the
  * route (src/http/deposit.ts), which re-asks it of the config that runs.
- * The rule is narrow on purpose: the name must be the `${NAME}` of some
- * bundle's `tailnet.authKey`, enabled or not; nothing outside `bundles:`
- * may read it; and it may not be a name core or a bundle hydrates for
- * itself. Those three together mean the list can never name an arbitrary
- * gateway or process-configuration name.
+ * The name must be the `${NAME}` of some bundle's `tailnet.authKey`, enabled
+ * or not, and may not be a name core or a bundle hydrates for itself. Those
+ * two together mean the list can never name an arbitrary gateway or
+ * process-configuration name.
+ *
+ * `DEPOSIT_PROCESS_CONTROL` is deliberately not asked: the canonical name is
+ * `STRAD_*`, and a tailnet key never lands in an environment under its own
+ * name — the renderer bakes it as `STRAD_TAILNET_AUTHKEY` on one component.
+ *
+ * The third rule, that nothing outside `bundles:` reads the name, is
+ * `gatewayDepositSharedBy` below. It is NOT part of this function because the
+ * schema also judges the runtime-merged roster, and a console-added entry that
+ * happens to reference the name must not invalidate the whole overlay. The
+ * route asks it on every call, and `config:check` asks it of the file.
  */
 export function gatewayDepositRefusal(
-  cfg: { bundles: readonly { tailnet?: { authKey: string } }[] } & Record<
-    string,
-    unknown
-  >,
+  cfg: { bundles: readonly { tailnet?: { authKey: string } }[] },
   name: string,
 ): string | undefined {
   if (!isDepositVariable(name) || validateVariableName(name) !== null)
@@ -963,10 +970,24 @@ export function gatewayDepositRefusal(
     (b) => b.tailnet && secretRefsIn(b.tailnet.authKey).includes(name),
   );
   if (!tailnet) return "it is not the ${NAME} of any bundle's tailnet.authKey";
-  const elsewhere = new Set<string>();
+  return undefined;
+}
+
+/**
+ * Whether anything outside `bundles:` references `${name}` — a server's
+ * header, url or env, the gateway's own config. A gateway deposit of such a
+ * name would seed more than a tailnet key, so the route refuses it and
+ * `config:check` reports a `gatewayVariables:` entry that names one.
+ */
+export function gatewayDepositSharedBy(
+  cfg: Record<string, unknown>,
+  name: string,
+): boolean {
+  let found = false;
   const walk = (node: unknown): void => {
+    if (found) return;
     if (typeof node === "string") {
-      for (const ref of secretRefsIn(node)) elsewhere.add(ref);
+      if (secretRefsIn(node).includes(name)) found = true;
     } else if (Array.isArray(node)) {
       node.forEach(walk);
     } else if (node && typeof node === "object") {
@@ -975,9 +996,29 @@ export function gatewayDepositRefusal(
   };
   for (const [key, value] of Object.entries(cfg))
     if (key !== "bundles") walk(value);
-  if (elsewhere.has(name))
-    return "something outside bundles: also reads it, so a deposit would seed more than a tailnet key";
-  return undefined;
+  return found;
+}
+
+/**
+ * `config:check`'s findings for every `deposit.gatewayVariables:` entry that
+ * something outside `bundles:` also reads. A problem there, not a schema
+ * error, for the reason on `gatewayDepositRefusal`.
+ */
+export function gatewayVariableConflicts(cfg: StradConfig): string[] {
+  const out: string[] = [];
+  for (const s of cfg.servers) {
+    if (s.kind !== "local-tunnel" || !s.deposit?.gatewayVariables) continue;
+    for (const name of s.deposit.gatewayVariables)
+      if (
+        gatewayDepositSharedBy(cfg as unknown as Record<string, unknown>, name)
+      )
+        out.push(
+          `server "${s.slug}" lists ${name} in deposit.gatewayVariables, but ` +
+            "something outside bundles: also reads it, so a deposit would seed " +
+            "more than a tailnet key. The route refuses it.",
+        );
+  }
+  return out;
 }
 
 /**

@@ -4,6 +4,7 @@ import { bearerToken, secretEquals } from "../auth/credential.ts";
 import {
   depositKeyRef,
   gatewayDepositRefusal,
+  gatewayDepositSharedBy,
   type StradConfig,
 } from "../config/schema.ts";
 import { grantAuthority, isConnectorClientPath } from "../connectors/index.ts";
@@ -82,8 +83,9 @@ import { asyncRoute, jsonFailure } from "./async-route.ts";
  * `/strad/{env}/gateway/static/{VARIABLE}` — where the renderer reads a
  * bundle's `tailnet.authKey`, which has no per-slug fallback. Only for a name
  * the caller lists in `deposit.gatewayVariables:` AND that
- * `gatewayDepositRefusal` passes in the config that runs: the `${NAME}` of
- * some bundle's tailnet key, read by nothing else, not a boot key. It is
+ * `gatewayDepositRefusal` and `gatewayDepositSharedBy` pass in the config that
+ * runs: the `${NAME}` of some bundle's tailnet key, read by nothing else, not
+ * a boot key. It is
  * create-only like the rest: a name already in that namespace, or one that
  * resolves from any layer (the store or core's environment), is a 409.
  */
@@ -313,7 +315,14 @@ async function depositIntoGateway(
   }
   // The schema already refused a list entry that fails this, but the config
   // that RUNS is the one that decides: re-ask it here.
-  const why = gatewayDepositRefusal(opts.config, variable);
+  const why =
+    gatewayDepositRefusal(opts.config, variable) ??
+    (gatewayDepositSharedBy(
+      opts.config as unknown as Record<string, unknown>,
+      variable,
+    )
+      ? "something outside bundles: also reads it, so a deposit would seed more than a tailnet key"
+      : undefined);
   if (why) {
     refuse(res, 403, "not_permitted", `${variable}: ${why}`);
     return;

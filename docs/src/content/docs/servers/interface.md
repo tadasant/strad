@@ -379,8 +379,9 @@ other slug's rule changes. The schema refuses a listed slug that is not
 gateway namespace: `POST /_strad/deposit/_gateway/{VARIABLE}` creates
 `/strad/{env}/gateway/static/{VARIABLE}`, create-only, for a listed name only.
 The schema refuses a listed name unless it is the `${NAME}` of some bundle's
-`tailnet.authKey` (enabled or not), read by nothing outside `bundles:`, and not
-a name core or a bundle reads for itself at boot. The block is read from the
+`tailnet.authKey` (enabled or not) and not a name core or a bundle reads for
+itself at boot. `config:check` and the route also refuse one that something
+outside `bundles:` reads. The block is read from the
 checked-in config only, and a runtime roster write cannot add or change it.
 
 #### `troubleshoot_host`: the tool a machine that is off still serves

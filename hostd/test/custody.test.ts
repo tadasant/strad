@@ -569,6 +569,8 @@ describe.skipIf(!chrome)(
       const before = deposits.length;
       for (const args of [
         { variable: "STRAD_TAILNET_OAUTH_CLIENT_SECRET" },
+        { gateway: false, variable: "STRAD_TAILNET_OAUTH_CLIENT_SECRET" },
+        { gateway: true, variable: "NOT-A-NAME" },
         {
           slug: "linear",
           gateway: true,

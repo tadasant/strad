@@ -371,8 +371,10 @@ the route will only create a secret parameter under
 `/strad/<env>/mcp/<slug>/static/`. It never reads, never overwrites, and never
 touches an `oauth/` name. The one gateway name it can create is a bundle's
 `tailnet.authKey` that the custody slug lists in `deposit.gatewayVariables:`,
-create-only, under `/strad/<env>/gateway/static/`. The console's admin
-credential already reaches that namespace, so this needs no new grant either. A GCP key on the laptop could not be made
+create-only, under `/strad/<env>/gateway/static/`. It writes through the
+same console store, so it needs no new grant either, but that store's
+`consoleEnv.SECRETS_NAMESPACES` has to cover `/strad/<env>/gateway/static/`.
+Without it, the route answers 503 `store_unavailable`. A GCP key on the laptop could not be made
 write-only this cleanly: creating a secret needs `secretmanager.secrets.setIamPolicy`,
 and anything holding that can grant itself read. That is the "speed bump, not a
 wall" this page closes with a deny policy for the console. Keeping the GCP

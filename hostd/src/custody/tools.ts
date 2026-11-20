@@ -645,13 +645,13 @@ public_key is one authorized_keys line. The private key is OpenSSH format, unenc
     name: "deposit",
     description: `Send a held secret to a strad deployment, which stores it as a NEW secret parameter at /strad/<env>/mcp/<slug>/static/<VARIABLE>. The value goes from this machine to that strad directly; you get back where it went.
 
-With gateway: true and no slug, it goes to /strad/<env>/gateway/static/<VARIABLE> instead. That form exists for ONE kind of name: a bundle's tailnet key (e.g. STRAD_TAILNET_OAUTH_CLIENT_SECRET), and only one strad lists for this machine in deposit.gatewayVariables. Every other gateway name is refused (not_permitted).
+With gateway: true and no slug, it goes to /strad/<env>/gateway/static/<VARIABLE> instead. That form exists for ONE kind of name: a bundle's tailnet key (e.g. STRAD_TAILNET_OAUTH_CLIENT_SECRET), and only a name that strad lists for this machine in deposit.gatewayVariables. Every other gateway name is refused (not_permitted).
 
 Where it can go is fixed by this machine's own config, by NAME — there is no URL argument:
 ${destinationList}
 Name the strad the approved list names. Omit destination for the default.
 
-Create-only: if that name already exists for the slug — in its static/ or oauth/ namespace, or resolved from the gateway — strad refuses with "exists" and the handle stays held; a human rotates existing credentials in strad's console. strad also refuses (not_permitted) a name in the slug's url, a process-control name such as NODE_OPTIONS or HTTPS_PROXY, a local-tunnel machine's slug, and a params: true slug this machine is not configured for. It only ever writes that one namespace and never reads anything back.
+Create-only: if that name already exists for the slug — in its static/ or oauth/ namespace, or resolved from the gateway — strad refuses with "exists" and the handle stays held; a human rotates existing credentials in strad's console. strad also refuses (not_permitted) a name in the slug's url, a process-control name such as NODE_OPTIONS or HTTPS_PROXY, a local-tunnel machine's slug, and a params: true slug this machine is not configured for. It only ever writes the slug's static/ namespace (or, with gateway: true, that one gateway name) and never reads anything back.
 
 **Returns:** {"deposited":true,"destination":"${config.custody.stradName}","path":"/strad/prod/mcp/linear/static/LINEAR_API_KEY","version":"v1"}
 The handle ends on success. Confirm through that strad's secrets server (list_parameters shows the parameter and its timestamp), never by reading the value.
@@ -701,6 +701,11 @@ The handle ends on success. Confirm through that strad's secrets server (list_pa
       if (a.gateway !== true && a.slug === undefined)
         return text(
           "slug is required unless gateway is true. Nothing was sent.",
+          true,
+        );
+      if (a.slug === undefined && !isDepositVariable(a.variable))
+        return text(
+          "variable must be an environment-variable name. Nothing was sent.",
           true,
         );
       if (
