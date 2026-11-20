@@ -24,6 +24,9 @@ import {
 import {
   decodeStoredValue,
   encodeSecretValue,
+  isReadableManaged,
+  MANAGED_BY_LABEL,
+  MANAGED_BY_STRAD,
   parameterId,
   secretRef,
   SECRET_VALUE_ENCODING,
@@ -633,7 +636,11 @@ export function createGcpParameterStore(
   // --- ParameterStore surface ---------------------------------------------
 
   /**
-   * Every `managed-by: strad` parameter in the project, with its envelope.
+   * Every parameter in the project that strad reads as managed — labelled
+   * `managed-by` with one of `READABLE_MANAGERS` (`strad`, `zimmer`) — with its
+   * envelope. Zimmer writes the same envelope into the same stores, and a
+   * listing that skipped its parameters showed a namespace without them while
+   * `create()` still collided with them.
    *
    * The namespace is INSIDE the envelope, not on a label, so there is no way to
    * ask the store for one namespace: enumerating means reading a version of
@@ -654,7 +661,7 @@ export function createGcpParameterStore(
         nextPageToken?: string;
       };
       for (const raw of page.parameters ?? []) {
-        if (raw.labels?.["managed-by"] !== "strad") continue;
+        if (!isReadableManaged(raw.labels)) continue;
         const id = raw.name?.split("/").pop();
         if (id) ids.push(id);
       }
@@ -896,7 +903,7 @@ export function createGcpParameterStore(
     if (input.secret) {
       await sm("POST", `${smParent}/secrets?secretId=${id}`, {
         replication: { automatic: {} },
-        labels: { "managed-by": "strad" },
+        labels: { [MANAGED_BY_LABEL]: MANAGED_BY_STRAD },
       });
       try {
         await sm("POST", `${smParent}/secrets/${id}:addVersion`, {
@@ -928,7 +935,10 @@ export function createGcpParameterStore(
     try {
       await pm("POST", `${pmParent}/parameters?parameter_id=${id}`, {
         format: "JSON",
-        labels: { "managed-by": "strad", secret: String(input.secret) },
+        labels: {
+          [MANAGED_BY_LABEL]: MANAGED_BY_STRAD,
+          secret: String(input.secret),
+        },
       });
     } catch (err) {
       // A 409 here is the ONE failure that must not roll back the parameter: it
@@ -1145,18 +1155,24 @@ export function createGcpParameterStore(
       throw new ParameterStoreError(`no such parameter: ${path}`, 404);
     assertSamePath(existing.envelope, path);
 
-    // Whether this is a secret parameter is read from the PARAMETER'S label, not
-    // its version envelope: the label survives even if the latest version is
+    // Whether this is a secret parameter is read from the PARAMETER'S label OR
+    // the envelope just read. The label survives even if the latest version is
     // unreadable, so a transient read glitch cannot make us skip the Secret
-    // Manager delete and orphan the secret. If even the label is unreadable, we
-    // still attempt the secret delete (it is 404-tolerant) rather than leave one
-    // behind.
-    const isSecret = await pm("GET", `${pmParent}/parameters/${id}`)
-      .then(
-        (p) =>
-          (p as { labels?: Record<string, string> }).labels?.secret === "true",
-      )
-      .catch(() => true);
+    // Manager delete and orphan the secret. The envelope is there for a
+    // parameter Zimmer wrote: Zimmer stamps no `secret` label, and a delete that
+    // trusted the label alone would leave its secret behind — and the next
+    // create at that path would meet a 409 from Secret Manager for a parameter
+    // nobody can see. If even the label is unreadable, we still attempt the
+    // secret delete (it is 404-tolerant) rather than leave one behind.
+    const isSecret =
+      existing.envelope.secret === true ||
+      (await pm("GET", `${pmParent}/parameters/${id}`)
+        .then(
+          (p) =>
+            (p as { labels?: Record<string, string> }).labels?.secret ===
+            "true",
+        )
+        .catch(() => true));
 
     // Delete the Parameter Manager parameter's versions, then the parameter,
     // then (for a secret parameter) its Secret Manager secret.

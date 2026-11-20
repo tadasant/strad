@@ -11,7 +11,7 @@ import type {
   SecretsStore,
   ServerView,
 } from "./resolve.ts";
-import type { ParameterMeta } from "../secrets/parameters/index.ts";
+import { variableOf, type ParameterMeta } from "../secrets/parameters/index.ts";
 import { serverConsolePath } from "./paths.ts";
 import { CONSOLE_SNAPSHOT_TTL_MS } from "./store-client.ts";
 import {
@@ -418,6 +418,13 @@ export interface SecretsViewOptions {
    * editor. Carries no value — see refillCsv in bulk-params.ts.
    */
   bulk?: BulkReport;
+  /**
+   * A create that collided with a parameter already at `path`: the page offers
+   * to add a new version to THAT parameter, so "already exists" is a route and
+   * not a dead end. The value the human typed is not carried back — it is
+   * pasted again into this form, the same as a row's rotate.
+   */
+  addVersion?: { path: string };
 }
 
 export function renderSecrets(opts: SecretsViewOptions): string {
@@ -558,6 +565,19 @@ export function renderSecrets(opts: SecretsViewOptions): string {
     ? `<div class="flash flash-${opts.flash.tone}">${esc(opts.flash.message)}</div>`
     : "";
 
+  const addVersion = opts.addVersion
+    ? `<section class="addbox add-version">
+  <h2 class="addbox-title">Add a new version to ${esc(variableOf(opts.addVersion.path))}</h2>
+  <p class="addbox-sub">${esc(opts.addVersion.path)} already exists in ${esc(store.label)}. Paste the value again to make it the current version; earlier versions are kept.</p>
+  <form method="post" action="${action}/rotate" class="addform">
+    <input type="hidden" name="path" value="${esc(opts.addVersion.path)}" />${nsField}
+    <textarea class="in in-value in-masked" name="value" rows="2" placeholder="new value" spellcheck="false" data-gramm="false" data-enable-grammarly="false"
+              autocapitalize="off" autocomplete="off" required></textarea>
+    <button class="btn">Add new version</button>
+  </form>
+</section>`
+    : "";
+
   const secretCount = parameters.filter((p) => p.secret).length;
 
   const body = `
@@ -590,6 +610,7 @@ ${siblingStrip(opts.siblingPages)}
 ${deliveryBanner(config, resolver)}
 ${driftBanner(revealUi)}
 ${flash}
+${addVersion}
 ${unreadableBanner}
 ${reveal}
 <section class="addbox">
@@ -2368,6 +2389,7 @@ textarea.in-row{height:1.95rem;min-height:1.95rem}
 .addbox + .listing,.addbox + .state{margin-top:1.5rem}
 .addbox{margin-top:1.5rem;border:1px solid var(--g5);border-radius:.6rem;background:var(--g7);padding:1.2rem 1.4rem}
 .addbox-title{margin:0 0 .9rem;font-size:1rem;color:var(--white)}
+.addbox-sub{margin:-.5rem 0 .9rem;font-size:.85rem;color:var(--g2)}
 .addform{display:flex;flex-direction:column;gap:.9rem;max-width:34rem}
 .field{display:flex;flex-direction:column;gap:.3rem}
 .field-check{flex-direction:row;align-items:flex-start;gap:.55rem}

@@ -275,3 +275,38 @@ export function parameterId(path: string): string {
 export function variableOf(path: string): string {
   return path.slice(path.lastIndexOf("/") + 1);
 }
+
+/** The GCP label that says which system wrote a parameter and its secret. */
+export const MANAGED_BY_LABEL = "managed-by";
+
+/** What strad stamps on every parameter and secret it creates. */
+export const MANAGED_BY_STRAD = "strad";
+
+/**
+ * The `managed-by` values whose parameters strad reads as its own.
+ *
+ * `zimmer` is here because Zimmer writes into the SAME stores, the same way:
+ * the same id fold, the same envelope, the same `__REF__` at `versions/latest`
+ * (`tadasant/zimmer` `app/services/parameter_store/write_client.rb`). Zimmer
+ * already reads `strad`-labelled parameters for the mirror-image reason. A
+ * reader keyed on `strad` alone hid every Zimmer-written parameter from the
+ * console's list while the create path still collided with it, so a human
+ * could neither see the parameter nor add a version to it: "That parameter
+ * already exists", with no row to rotate.
+ *
+ * The label keeps a hand-made or foreign parameter from being read at all. It
+ * is not the namespace fence — every reader still filters on the envelope's
+ * own `path`.
+ */
+export const READABLE_MANAGERS: readonly string[] = [
+  MANAGED_BY_STRAD,
+  "zimmer",
+];
+
+/** Whether a parameter's labels mark it as one strad reads. */
+export function isReadableManaged(
+  labels: Record<string, string> | undefined,
+): boolean {
+  const by = labels?.[MANAGED_BY_LABEL];
+  return by !== undefined && READABLE_MANAGERS.includes(by);
+}

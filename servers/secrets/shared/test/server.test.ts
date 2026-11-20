@@ -610,6 +610,47 @@ test("the viewer enumerates versions and reads the greatest ENABLED one", async 
   await fake.close();
 });
 
+test("the viewer lists a Zimmer-written parameter and skips an unlabelled one", async () => {
+  // Zimmer writes the same envelope into the same stores, labelled
+  // `managed-by=zimmer`. A listing keyed on `strad` alone hid it from both
+  // doors while a create still collided with it.
+  const projectId = "test-project";
+  const ns = "/zimmer/production/secrets/";
+  const zimmerPath = `${ns}static/OPENROUTER_API_KEY`;
+  const foreignPath = `${ns}static/HAND_MADE`;
+  const envelope = (path) =>
+    JSON.stringify({
+      path,
+      secret: true,
+      value: `__REF__("//secretmanager.googleapis.com/projects/${projectId}/secrets/${parameterId(path)}/versions/latest")`,
+    });
+  const fake = await startFakeParameterManager({
+    projectId,
+    parameters: new Map([
+      [
+        parameterId(zimmerPath),
+        { labels: { "managed-by": "zimmer" }, createTime: "2026-11-01T00:00:00Z", versions: [envelope(zimmerPath)] },
+      ],
+      [
+        parameterId(foreignPath),
+        { labels: { "managed-by": "terraform" }, createTime: "2026-11-01T00:00:00Z", versions: [envelope(foreignPath)] },
+      ],
+    ]),
+  });
+  const client = new ParameterManagerReadClient({
+    projectId,
+    account: VIEWER_ACCOUNT,
+    apiBase: fake.apiBase,
+    tokenUrl: fake.tokenUrl,
+  });
+  const listed = await client.listParameters(ns);
+  assert.deepEqual(
+    listed.map((p) => [p.name, p.secret]),
+    [[zimmerPath, true]],
+  );
+  await fake.close();
+});
+
 test("parameterId is deterministic, legal, and hash-truncates long paths", () => {
   const legal = (id) => /^[a-z][a-z0-9-]*$/.test(id) && id.length <= 63;
 

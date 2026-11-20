@@ -4858,3 +4858,24 @@ account receives messages, or a poll whose cursor does not move. The bundle's
 stderr says why, prefixed `[whatsapp] WARN events:`.
 
 See `HACKS.md` #156.
+
+### 157. strad reads Zimmer's parameters by name, and the two writers disagree on encoding
+
+The console, the resolver and the `secrets` server list a parameter labelled
+`managed-by=strad` or `managed-by=zimmer` and nothing else — see [Parameters
+another writer made](/operate/secrets/#parameters-another-writer-made).
+
+- **A third writer is skipped.** A parameter in the same envelope shape,
+  labelled by any other system, is not listed.
+- **A Zimmer write after a strad rotate.** strad's rotate declares
+  `"encoding":"base64url"` on a parameter that had none. Zimmer's own `upsert`
+  then writes literal bytes and leaves that declaration in place. Most values
+  are refused by Zimmer's reader; a value made only of `[A-Za-z0-9_-]` is read
+  as the wrong string. This already applied to every parameter strad created in
+  Zimmer's stores.
+
+**How you would know.** Zimmer reports a credential it cannot decode, or an
+upstream rejects a key that was just set from Zimmer's side. Rotating it once
+more in the strad console writes a consistent pair.
+
+See `HACKS.md` #157.

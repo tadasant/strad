@@ -10,7 +10,10 @@ import {
   storeForPath,
 } from "./config.js";
 import { variableOf } from "./parameter-wire.js";
-import type { ParametersReader } from "./parameter-manager.js";
+import {
+  ParameterManagerError,
+  type ParametersReader,
+} from "./parameter-manager.js";
 import {
   anyPermits,
   NO_CAPABILITIES,
@@ -611,12 +614,25 @@ export function registerTools(server: Server, deps: ToolDeps): void {
           }
           const writer = deps.writer?.(found.store);
           if (!writer) return error("no client is configured for writes");
-          await writer.create({
-            path,
-            secret,
-            value: a.value,
-            note: typeof a.note === "string" && a.note ? a.note : undefined,
-          });
+          try {
+            await writer.create({
+              path,
+              secret,
+              value: a.value,
+              note: typeof a.note === "string" && a.note ? a.note : undefined,
+            });
+          } catch (err) {
+            // A collision is not a dead end: the parameter is there, and
+            // `set_parameter_value` adds a version to it. Said here because a
+            // 409 is exactly the case where the caller did not see it listed.
+            if (err instanceof ParameterManagerError && err.status === 409) {
+              return error(
+                `${path} already exists in ${found.store.project}, so nothing was created. ` +
+                  "To change its value, call set_parameter_value with the same name — it adds a new version.",
+              );
+            }
+            throw err;
+          }
           return text({
             created: path,
             project: found.store.project,

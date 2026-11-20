@@ -1,5 +1,6 @@
 import { createSign } from "node:crypto";
 import {
+  isReadableManaged,
   parameterId,
   variableOf,
   type ParameterEnvelope,
@@ -109,9 +110,15 @@ const DEFAULT_API_BASE = "https://parametermanager.googleapis.com";
 /** Parameter Manager is single-region for strad; we keep everything in `global`. */
 const LOCATION = "global";
 
-/** The label every strad-managed parameter carries, so a listing can find them. */
-export const MANAGED_BY_LABEL = "managed-by";
-export const MANAGED_BY_VALUE = "strad";
+/**
+ * The label a listing finds managed parameters by, and what strad stamps on
+ * its own. Both are the wire's (`parameter-wire.ts`), re-exported under the
+ * names this package has always exported.
+ */
+export {
+  MANAGED_BY_LABEL,
+  MANAGED_BY_STRAD as MANAGED_BY_VALUE,
+} from "./parameter-wire.js";
 
 /** How many version lookups to run at once. See listParameters(). */
 const VERSION_FANOUT = 10;
@@ -161,10 +168,11 @@ export class ParameterManagerReadClient implements ParametersReader {
       for (const raw of page.parameters ?? []) {
         const id = raw.name?.split("/").pop();
         if (!id) continue;
-        // Only ours. A second tenant's parameters in the same project are not
-        // this server's to enumerate, and skipping them here also bounds the
-        // fan-out below to strad's own set.
-        if (raw.labels?.[MANAGED_BY_LABEL] !== MANAGED_BY_VALUE) continue;
+        // Only managed ones — strad's own, and Zimmer's, which writes the same
+        // envelope into the same stores (`READABLE_MANAGERS` in the wire). A
+        // foreign or hand-made parameter is not this server's to enumerate, and
+        // skipping it here also bounds the fan-out below.
+        if (!isReadableManaged(raw.labels)) continue;
         ids.push(id);
       }
       pageToken = page.nextPageToken;

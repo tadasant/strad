@@ -1157,12 +1157,29 @@ async function handleSecretAction(
         const prefix = normalisePathPrefix(prefixRaw);
         const fullPath = `${namespace}${prefix}${variable}`;
         assertWellFormed(fullPath);
-        const grant = await createParameter(store, opts, {
-          path: fullPath,
-          secret,
-          value,
-          note,
-        });
+        let grant: Awaited<ReturnType<typeof createParameter>>;
+        try {
+          grant = await createParameter(store, opts, {
+            path: fullPath,
+            secret,
+            value,
+            note,
+          });
+        } catch (err) {
+          if (!(err instanceof ParameterStoreError && err.status === 409)) {
+            throw err;
+          }
+          const answer = await collided(store, fullPath);
+          forgetConsoleStores();
+          await renderSecretsPage(res, view, store_, opts, {
+            signedInAs,
+            namespace,
+            flash: { tone: "error", message: answer.message },
+            addVersion: answer.addVersion ? { path: fullPath } : undefined,
+            status: 409,
+          });
+          return;
+        }
         forgetStoreReading(opts);
         await renderSecretsPage(res, view, store_, opts, {
           signedInAs,
@@ -1336,6 +1353,8 @@ interface PageExtras {
   revealed?: { name: string; value: string };
   /** The per-line outcome of a bulk add. See handleBulkCreate. */
   bulk?: BulkReport;
+  /** A create that collided: offer a new version of this path. See `collided`. */
+  addVersion?: { path: string };
   status?: number;
 }
 
@@ -1461,6 +1480,7 @@ async function renderSecretsPage(
         flash: extras.flash,
         revealed: extras.revealed,
         bulk: extras.bulk,
+        addVersion: extras.addVersion,
       }),
     );
 }
@@ -1645,6 +1665,69 @@ class ConsoleInputError extends Error {
     super(message);
     this.name = "ConsoleInputError";
   }
+}
+
+/**
+ * What a create that met `409 ALREADY_EXISTS` tells the human, and whether it can
+ * offer them the way through.
+ *
+ * "That parameter already exists" on its own is a dead end whenever the
+ * parameter is not on the page — and a 409 is exactly the case where the human
+ * did not see it, or they would have rotated it rather than created it. So the
+ * store is asked, live, what is at the path:
+ *
+ *   - a parameter whose envelope names THIS path: the page offers a new version
+ *     of it, which is what the human came to do;
+ *   - an id that folds onto a DIFFERENT path, or a resource strad cannot read
+ *     as a parameter (no version yet, or only the Secret Manager half): no
+ *     version can be added through strad, and the message says what is there
+ *     and what clears it rather than claiming a parameter the page cannot show.
+ *
+ * Read live rather than from the held listing: the listing is what missed it.
+ */
+async function collided(
+  store: ParameterStore,
+  path: string,
+): Promise<{ message: string; addVersion: boolean }> {
+  const id = parameterId(path);
+  let exists: boolean | undefined;
+  try {
+    exists = store.isSecret
+      ? (await store.isSecret(path)) !== undefined
+      : (await store.list(path.slice(0, path.lastIndexOf("/") + 1))).some(
+          (p) => p.path === path,
+        );
+  } catch (err) {
+    if (err instanceof ParameterStoreError && err.status === 404) {
+      return {
+        addVersion: false,
+        message:
+          `${path} folds to the store id "${id}", and a different parameter already ` +
+          `holds that id, so this path cannot be created as typed. Rotate that ` +
+          `parameter from its row, or choose a name that differs by more than case ` +
+          `or punctuation.`,
+      };
+    }
+    exists = undefined;
+  }
+  if (exists) {
+    return {
+      addVersion: true,
+      message:
+        `${path} already exists, so nothing was created. To change its value, ` +
+        `add a new version below.`,
+    };
+  }
+  return {
+    addVersion: false,
+    message:
+      `Google Cloud already holds a resource with this parameter's id ("${id}"), ` +
+      `but strad cannot read it as a parameter: it has no version yet, or only ` +
+      `its Secret Manager half exists — a write that stopped part-way, by strad ` +
+      `or another tool. Nothing was created. Delete the Parameter Manager ` +
+      `parameter and the Secret Manager secret named "${id}" in this store's ` +
+      `project, then create it again.`,
+  };
 }
 
 /**

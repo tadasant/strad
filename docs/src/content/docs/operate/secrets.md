@@ -964,8 +964,10 @@ limitations](/limitations/#69-a-namespace-is-not-addressable-so-reading-one-mean
 
 A parameter's namespace lives inside its version **envelope**, not on a Parameter
 Manager label. So `list(namespace)` cannot ask the store for a namespace — it pages
-every `managed-by: strad` parameter in the project, reads a version of each one to
-recover its envelope, and filters afterwards.
+every managed parameter in the project, reads a version of each one to recover its
+envelope, and filters afterwards. "Managed" is the `managed-by` label, and two values
+count: `strad`, and `zimmer` — see [Parameters another writer
+made](#parameters-another-writer-made).
 
 `resolve()` calls `list()`. Resolving N namespaces therefore cost **N x P version
 reads** for P parameters, and both factors grow every time a server is added. That
@@ -2784,6 +2786,42 @@ to one MCP server; without it the console could only ever write
 field is the same combobox as the namespace picker: it opens this gateway's own
 server slugs on click — each labelled with whether that server sets
 `params: true` — and shows the full path it is about to write as you type.
+
+### Parameters another writer made
+
+Zimmer writes into its own stores with its own client, the same way strad does: the
+same id fold, the same envelope, the same `__REF__` at `versions/latest`. Its
+parameters are labelled `managed-by=zimmer` rather than `strad`, carry no `secret`
+label, and store their Secret Manager bytes literally (no `encoding`). strad reads
+both labels — the list `READABLE_MANAGERS` in `src/secrets/parameters/wire.ts`,
+vendored into the `secrets` server so the `/mcp` listing agrees with the page — and
+nothing else: a parameter labelled by any other system, or by nobody, is not
+listed.
+
+A Zimmer-written parameter is a row like any other. Rotating it adds a Secret Manager
+version and, the first time, a Parameter Manager version that declares
+`"encoding":"base64url"` — Zimmer's reader honours that. Deleting it removes the
+Secret Manager secret too, decided from the envelope as well as the label, because
+the label is absent.
+
+### "Already exists" offers a new version
+
+A create whose path is already taken is refused, and the page asks the store, live,
+what is there. A parameter at exactly that path gets an **Add a new version** form
+for it on the same page: paste the value again and it becomes the current version,
+which is what the row's Rotate does. The value from the refused create is not
+carried back into the page. The `/mcp` half says the same thing to an agent:
+`create_parameter` on a taken path answers with an error naming
+`set_parameter_value`, which adds the version.
+
+Two collisions have no version to add, and the page says which one it is:
+
+- the path folds to an id a **different** path already holds — choose a name that
+  differs by more than case or punctuation;
+- Google Cloud holds a resource under the id that strad cannot read as a parameter —
+  no version yet, or only the Secret Manager half — which is a write that stopped
+  part-way. Delete the parameter and the secret named in the message, in that
+  store's project, and create it again.
 
 ### Several at once: bulk add
 
