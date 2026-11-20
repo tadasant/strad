@@ -1,6 +1,6 @@
 ---
 title: MCP Events (draft)
-description: How strad serves MCP Events — events/list, events/poll and webhook delivery through core, slug-prefixed and entitled like tools — and its three event sources: Slack's message_posted, Gmail's message_received and WhatsApp's message_received.
+description: How strad serves MCP Events — events/list, events/poll and webhook delivery through core, slug-prefixed and entitled like tools — and its three event sources, Slack's message_posted, Gmail's message_received and WhatsApp's message_received.
 ---
 
 A trigger that fires when something happens needs a feed of things that
