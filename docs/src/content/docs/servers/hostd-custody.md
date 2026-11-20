@@ -211,12 +211,67 @@ tainted.
     `paramsVariables:` pair grants exactly one name. It still meets every
     other refusal on this list, so it can never be a `STRAD_*`, `NODE_*` or
     proxy name.
-- **One namespace.** The path is always `/strad/<env>/mcp/<slug>/static/<VAR>`,
-  built from the literal `static` kind and two shape-checked segments. No
-  spelling reaches a gateway name or `oauth/`.
+- **One namespace per form.** The slug form's path is always
+  `/strad/<env>/mcp/<slug>/static/<VAR>`, built from the literal `static` kind
+  and two shape-checked segments. No spelling reaches `oauth/`. The gateway
+  namespace has its own reserved form, below, for one kind of name.
 - **Secret parameters only.** The value is stored in Secret Manager behind a
   `__REF__`, with the per-parameter `secretAccessor` grant, like any secret
   created in the console.
+
+### The gateway form: a bundle's tailnet key
+
+`POST /_strad/deposit/_gateway/{VARIABLE}` creates
+`/strad/<env>/gateway/static/<VARIABLE>`. It exists because a bundle's
+`tailnet.authKey` (see [tailnet egress](/operate/tailnet/)) is read by the
+renderer from the gateway namespace and nowhere else: it has no per-slug
+fallback, so the slug form cannot seed it. `_gateway` has an underscore, which
+no slug can, so the two forms cannot collide.
+
+Core creates it only when all of these hold:
+
+- The caller lists the exact name in `deposit.gatewayVariables:`. Otherwise
+  the answer is 403.
+- In the config that runs, the name is the `${NAME}` of some bundle's
+  `tailnet.authKey`, with that tailnet enabled or not, and it is not a name
+  core or a bundle hydrates for itself (`STRAD_TOKENS`, `GOOGLE_CLIENT_SECRET`, the resolver's own
+  variables and the rest). The schema refuses a list entry that fails any of
+  these, so the list can never name an arbitrary gateway or process-config
+  name. The route asks the same question again on every call, so it does not
+  depend on the schema having run.
+- Nothing outside `bundles:` reads it, in the config that runs. A server
+  whose header or `env:` also names it would be seeded too, so the route
+  refuses that with a 403, and `config:check` reports it for the checked-in
+  file. This rule is not in the schema, because the schema also judges the
+  merged runtime roster, and a console-added entry must not invalidate it.
+- Create-only. The answer is 409 if the name exists in the gateway namespace,
+  or resolves from any layer: the store, or core's environment.
+
+The console store's `consoleEnv.SECRETS_NAMESPACES` must cover
+`/strad/<env>/gateway/static/`, the same as for a console write there.
+Otherwise the answer is 503 `store_unavailable`.
+
+`into:` does not narrow this form, and listing a name widens nothing else:
+`STRAD_*` stays refused on every slug.
+
+On the Mac, the custody `deposit` tool takes `gateway: true` in place of
+`slug`:
+
+```text
+deposit {handle, gateway: true, variable: "STRAD_TAILNET_OAUTH_CLIENT_SECRET"}
+```
+
+It refuses a call that passes both or neither, and sends nothing.
+
+What this costs: it widens what any holder of the custody slug key can write
+by one name, which must be a bundle's tailnet key. That key decides which
+tailnet the bundle joins. Say a misbehaving caller creates it first with a key
+for a different tailnet. The bundle then joins that tailnet as an ephemeral
+node with `--shields-up`, so nothing can connect in. Only the `ssh` tree dials
+through it, and only to tailnet addresses. Host keys are pinned strictly, so a
+fake host is refused at key exchange, before the private key signs anything.
+The worst case is a denial of service plus connection-attempt metadata, not
+access. Rotating the key stays a human act in the console.
 
 Core performs the write through `store.create()` with the console's own admin
 credential, so the encoding, the version and the grant come from the same
@@ -260,6 +315,8 @@ Turn it on in the checked-in config:
     into: [linear, granola] # optional; omitted, any slug
     paramsVariables: # optional; exact pairs on params: true slugs
       ssh-example-staging: [SSH_PRIVATE_KEY]
+    gatewayVariables: # optional; a bundle's tailnet.authKey name, gateway namespace
+      [STRAD_TAILNET_OAUTH_CLIENT_SECRET]
 ```
 
 - The `Authorization` header must be exactly `Bearer ${NAME}`. The schema
@@ -269,6 +326,10 @@ Turn it on in the checked-in config:
   even if `into:` leaves the slug out, and it changes nothing for any other
   slug. The schema refuses a listed slug that is not `params: true`, and a
   listed name the route would refuse anyway. A listed slug that does not exist grants nothing.
+- `gatewayVariables:` opens the gateway form for exactly the names it lists.
+  Each one must be a bundle's `tailnet.authKey` `${NAME}` and not a boot
+  key, or the schema refuses the config. `config:check` also fails a name
+  that something outside `bundles:` reads.
 - `deposit:` is honoured from the **checked-in** config only. A runtime
   roster write that adds or changes it is refused.
 - **To revoke it,** remove the `deposit:` block (a deploy), or rotate the

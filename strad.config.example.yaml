@@ -454,8 +454,12 @@ servers:
   # schema refuses a listed slug that is not `params: true` and a listed name
   # the route would refuse. It never shadows a name the slug already resolves,
   # nor writes a `url:` name or a process-control name (NODE_OPTIONS, *_PROXY,
-  # STRAD_*, ...). Checked-in config only: a runtime roster write cannot add or
-  # change it.
+  # STRAD_*, ...). `gatewayVariables:` is the one exception to "never a gateway
+  # name": POST /_strad/deposit/_gateway/{VARIABLE} creates
+  # /strad/{env}/gateway/static/{VARIABLE}, create-only, for a listed name that
+  # is some bundle's `tailnet.authKey` ${NAME} (enabled or not), read by nothing
+  # outside `bundles:`, and not a boot key. The schema refuses any other name.
+  # Checked-in config only: a runtime roster write cannot add or change it.
   #
   # - slug: custody-my-mbp
   #   kind: local-tunnel
@@ -467,6 +471,7 @@ servers:
   #     into: [linear, granola]
   #     paramsVariables:
   #       ssh-example-staging: [SSH_PRIVATE_KEY]
+  #     gatewayVariables: [STRAD_TAILNET_OAUTH_CLIENT_SECRET]
 
   # --- kind: supplementary-image --------------------------------------------
   # A server published as its own container image. strad deploys it as an

@@ -254,7 +254,10 @@ custody server can capture it in your browser and deposit it, and the agent
 never sees it. The deposit goes to `POST /_strad/deposit/{slug}/{VARIABLE}`
 on core, which creates a **secret** parameter at
 `/strad/{env}/mcp/{slug}/static/{VARIABLE}` with the console's own write path.
-It is create-only, never reads, and never touches a gateway or `oauth/` name.
+It is create-only, never reads, and never touches an `oauth/` name. The one
+gateway name it can create is a bundle's `tailnet.authKey`, through
+`POST /_strad/deposit/_gateway/{VARIABLE}`, and only when the custody slug
+lists it in `deposit.gatewayVariables:`.
 The caller authenticates with a bearer derived from its custody slug's key, and
 only a `local-tunnel` entry with `deposit:` in the checked-in config can call
 it. See [custody and deposit](/servers/hostd-custody/).

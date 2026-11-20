@@ -314,6 +314,7 @@ describe("deposit, through the daemon, to named destinations", () => {
     expect(props.destination?.enum).toEqual(["mine", "pulsemcp"]);
     expect(Object.keys(props).sort()).toEqual([
       "destination",
+      "gateway",
       "grant_id",
       "handle",
       "slug",

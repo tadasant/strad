@@ -58,6 +58,7 @@ import {
 } from "../src/config/load.ts";
 import { formatUnknownKey, unknownConfigKeys } from "../src/config/strict.ts";
 import { reachIssues } from "../src/config/reach.ts";
+import { gatewayVariableConflicts } from "../src/config/schema.ts";
 import {
   collectSecretRefs,
   parseImage,
@@ -170,6 +171,13 @@ for (const unknown of unknownConfigKeys(raw, config)) {
 for (const issue of reachIssues(config)) {
   problem(`${issue.path.join(".")}: ${issue.message}`);
 }
+
+// --- 2c. gateway deposit names ---------------------------------------------
+//
+// Here and not in the schema, for the same reason as 2b: a console-added entry
+// that references a listed name must not invalidate the merged roster. The
+// deposit route refuses such a name at request time either way.
+for (const message of gatewayVariableConflicts(config)) problem(message);
 
 // --- 3. instance sizes ------------------------------------------------------
 //

@@ -13,6 +13,11 @@ import {
 import { DEPOSIT_PROCESS_CONTROL } from "../secrets/deposit-names.ts";
 import { isDepositVariable } from "../secrets/deposit-wire.ts";
 import { bearerToken } from "../secrets/presence.ts";
+import {
+  BUNDLE_BOOT_ENV_KEYS,
+  CORE_BOOT_ENV_KEYS,
+} from "../secrets/provider/hydrate.ts";
+import { RESOLVER_ENV } from "../secrets/parameters/resolver.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
 import { normaliseNamespace } from "../secrets/parameters/namespace.ts";
 import {
@@ -888,6 +893,22 @@ const LocalTunnelServer = ServerBase.extend({
    * had. Each listed slug must be `params: true` and each name one the route
    * would accept; the route's other refusals all still apply to a listed pair.
    *
+   * `gatewayVariables:` is the one door into the GATEWAY namespace,
+   * `/strad/{env}/gateway/static/{VARIABLE}`, through the reserved route form
+   * `POST /_strad/deposit/_gateway/{VARIABLE}`:
+   *
+   *   deposit:
+   *     gatewayVariables: [STRAD_TAILNET_OAUTH_CLIENT_SECRET]
+   *
+   * It exists for a bundle's tailnet key, which the renderer reads from the
+   * gateway namespace and nowhere else. So every listed name must be the
+   * `${NAME}` of some bundle's `tailnet.authKey` (enabled or not) and must
+   * not be a name core hydrates for itself (`gatewayDepositRefusal`). A name
+   * something outside `bundles:` also reads is refused by the route and
+   * reported by `config:check` (`gatewayDepositSharedBy`), not by this parse. Any other gateway name,
+   * `STRAD_TOKENS` included, stays out of reach. Create-only, like every
+   * deposit; `into:` does not narrow it, and it widens nothing else.
+   *
    * Honoured from the CHECKED-IN config only: a runtime roster write may not
    * declare or change it (src/config/overlay.ts), and the route reads its
    * callers from the deploy's own document.
@@ -898,10 +919,107 @@ const LocalTunnelServer = ServerBase.extend({
       paramsVariables: z
         .record(SLUG, z.array(z.string().min(1)).min(1))
         .optional(),
+      gatewayVariables: z.array(z.string().min(1)).min(1).optional(),
     })
     .strict()
     .optional(),
 });
+
+/**
+ * Names a process reads at boot as its own configuration or credentials: what
+ * core and a bundle hydrate from the gateway namespace, and the resolver's own
+ * bootstrap variables. A gateway deposit can never create one.
+ */
+const GATEWAY_DEPOSIT_NEVER: ReadonlySet<string> = new Set<string>([
+  ...CORE_BOOT_ENV_KEYS,
+  ...BUNDLE_BOOT_ENV_KEYS,
+  ...Object.values(RESOLVER_ENV),
+]);
+
+/**
+ * Why `name` may not be deposited into the GATEWAY namespace under this
+ * config, or undefined when it may (given a caller that lists it in
+ * `deposit.gatewayVariables:`).
+ *
+ * Shared by the schema, which refuses a list entry that fails it, and the
+ * route (src/http/deposit.ts), which re-asks it of the config that runs.
+ * The name must be the `${NAME}` of some bundle's `tailnet.authKey`, enabled
+ * or not, and may not be a name core or a bundle hydrates for itself. Those
+ * two together mean the list can never name an arbitrary gateway or
+ * process-configuration name.
+ *
+ * `DEPOSIT_PROCESS_CONTROL` is deliberately not asked: the canonical name is
+ * `STRAD_*`, and a tailnet key never lands in an environment under its own
+ * name — the renderer bakes it as `STRAD_TAILNET_AUTHKEY` on one component.
+ *
+ * The third rule, that nothing outside `bundles:` reads the name, is
+ * `gatewayDepositSharedBy` below. It is NOT part of this function because the
+ * schema also judges the runtime-merged roster, and a console-added entry that
+ * happens to reference the name must not invalidate the whole overlay. The
+ * route asks it on every call, and `config:check` asks it of the file.
+ */
+export function gatewayDepositRefusal(
+  cfg: { bundles: readonly { tailnet?: { authKey: string } }[] },
+  name: string,
+): string | undefined {
+  if (!isDepositVariable(name) || validateVariableName(name) !== null)
+    return "it is not an environment-variable name";
+  if (GATEWAY_DEPOSIT_NEVER.has(name))
+    return "it is a name core or a bundle reads for itself at boot";
+  const tailnet = cfg.bundles.some(
+    (b) => b.tailnet && secretRefsIn(b.tailnet.authKey).includes(name),
+  );
+  if (!tailnet) return "it is not the ${NAME} of any bundle's tailnet.authKey";
+  return undefined;
+}
+
+/**
+ * Whether anything outside `bundles:` references `${name}` — a server's
+ * header, url or env, the gateway's own config. A gateway deposit of such a
+ * name would seed more than a tailnet key, so the route refuses it and
+ * `config:check` reports a `gatewayVariables:` entry that names one.
+ */
+export function gatewayDepositSharedBy(
+  cfg: Record<string, unknown>,
+  name: string,
+): boolean {
+  let found = false;
+  const walk = (node: unknown): void => {
+    if (found) return;
+    if (typeof node === "string") {
+      if (secretRefsIn(node).includes(name)) found = true;
+    } else if (Array.isArray(node)) {
+      node.forEach(walk);
+    } else if (node && typeof node === "object") {
+      Object.values(node).forEach(walk);
+    }
+  };
+  for (const [key, value] of Object.entries(cfg))
+    if (key !== "bundles") walk(value);
+  return found;
+}
+
+/**
+ * `config:check`'s findings for every `deposit.gatewayVariables:` entry that
+ * something outside `bundles:` also reads. A problem there, not a schema
+ * error, for the reason on `gatewayDepositRefusal`.
+ */
+export function gatewayVariableConflicts(cfg: StradConfig): string[] {
+  const out: string[] = [];
+  for (const s of cfg.servers) {
+    if (s.kind !== "local-tunnel" || !s.deposit?.gatewayVariables) continue;
+    for (const name of s.deposit.gatewayVariables)
+      if (
+        gatewayDepositSharedBy(cfg as unknown as Record<string, unknown>, name)
+      )
+        out.push(
+          `server "${s.slug}" lists ${name} in deposit.gatewayVariables, but ` +
+            "something outside bundles: also reads it, so a deposit would seed " +
+            "more than a tailnet key. The route refuses it.",
+        );
+  }
+  return out;
+}
 
 /**
  * The `${NAME}` a deposit caller's bearer key lives under — the reference in
@@ -1914,6 +2032,25 @@ export const StradConfig = z
               path: ["servers"],
             });
         }
+      }
+    }
+
+    // A `deposit.gatewayVariables:` NAME IS A BUNDLE'S TAILNET KEY AND
+    // NOTHING ELSE. It is the only door into the gateway namespace, so a list
+    // that could name `STRAD_TOKENS` or a connector's client secret would be a
+    // credential-creation primitive for the whole deployment.
+    for (const s of cfg.servers) {
+      if (s.kind !== "local-tunnel" || !s.deposit?.gatewayVariables) continue;
+      for (const name of s.deposit.gatewayVariables) {
+        const why = gatewayDepositRefusal(cfg, name);
+        if (why)
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `server "${s.slug}" lists ${name} in deposit.gatewayVariables, ` +
+              `which the deposit route refuses: ${why}.`,
+            path: ["servers"],
+          });
       }
     }
 

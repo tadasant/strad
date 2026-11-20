@@ -453,7 +453,10 @@ describe.skipIf(!chrome)(
           res.end(
             JSON.stringify({
               protocol: 1,
-              path: `/strad/test/mcp/${slug}/static/${variable}`,
+              path:
+                slug === "_gateway"
+                  ? `/strad/test/gateway/static/${variable}`
+                  : `/strad/test/mcp/${slug}/static/${variable}`,
               version: "v1",
             }),
           );
@@ -821,6 +824,50 @@ describe.skipIf(!chrome)(
         variable: "GCS_KEY_JSON",
       });
       expect(deposits.at(-1)?.value).toBe(SA);
+    });
+
+    it("deposits into the gateway namespace with gateway: true, and only with slug or gateway", async () => {
+      const before = deposits.length;
+      for (const args of [
+        { variable: "STRAD_TAILNET_OAUTH_CLIENT_SECRET" },
+        { gateway: false, variable: "STRAD_TAILNET_OAUTH_CLIENT_SECRET" },
+        { gateway: true, variable: "NOT-A-NAME" },
+        {
+          slug: "linear",
+          gateway: true,
+          variable: "STRAD_TAILNET_OAUTH_CLIENT_SECRET",
+        },
+      ]) {
+        const refused = await call(custody, "custody", "deposit", {
+          handle: "h_whatever",
+          ...args,
+        });
+        expect(refused.isError).toBe(true);
+        expect(resultText(refused)).toMatch(/Nothing was sent/);
+      }
+      expect(deposits.length).toBe(before);
+
+      const capture = await call(custody, "custody", "capture_download", {
+        tab_id: tab,
+        click_selector: "#dl",
+      });
+      const { handle } = resultJson<{ handle: string }>(capture);
+      const res = await call(custody, "custody", "deposit", {
+        handle,
+        gateway: true,
+        variable: "STRAD_TAILNET_OAUTH_CLIENT_SECRET",
+      });
+      expect(resultJson(res)).toEqual({
+        deposited: true,
+        destination: "default",
+        path: "/strad/test/gateway/static/STRAD_TAILNET_OAUTH_CLIENT_SECRET",
+        version: "v1",
+      });
+      expect(deposits.at(-1)).toMatchObject({
+        url: "/_strad/deposit/_gateway/STRAD_TAILNET_OAUTH_CLIENT_SECRET",
+        authorization: `Bearer ${depositToken(CUSTODY_KEY)}`,
+        value: SA,
+      });
     });
 
     it("deletes a download it cannot keep rather than leaving it for the shell", async () => {

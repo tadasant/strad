@@ -4504,7 +4504,14 @@ What that leaves:
   one that already resolves for the slug, never a `url:` name, never a
   process-control name such as `NODE_OPTIONS`, never on a `local-tunnel`, and
   on a `params: true` slug only if `deposit.into:` names it or
-  `deposit.paramsVariables:` names that exact slug and variable.
+  `deposit.paramsVariables:` names that exact slug and variable. One gateway
+  name is reachable too, when the custody slug lists it in
+  `deposit.gatewayVariables:`: a bundle's `tailnet.authKey`, create-only. A
+  caller that seeds it first with another tailnet's key can make the bundle
+  join that tailnet. The node runs `--shields-up`, only the `ssh` tree dials
+  through it, and pinned host keys refuse a fake host before anything is
+  signed, so the worst case is a denial of service plus connection-attempt
+  metadata, not access.
 - **A generated SSH key is held like a captured token.** `generate_keypair`
   mints an ed25519 key in the daemon and keeps the private half behind a
   handle. Its bytes pass through JavaScript strings that cannot be zeroed, as a
