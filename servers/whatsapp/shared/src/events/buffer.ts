@@ -54,6 +54,8 @@ export interface StoredEvent {
   timestamp: string;
   seq: number;
   data: MessageReceived;
+  /** The chat's other JID, for `chat_ids`. Not part of the payload. */
+  chat_alt?: string;
 }
 
 const ARG_NAMES = new Set(["chat_ids", "include_from_me", "include_groups"]);
@@ -118,7 +120,9 @@ export function matchesMessageReceived(e: StoredEvent, a: MessageReceivedArgs): 
   const d = e.data;
   if (d.from_me && !a.include_from_me) return false;
   if (d.is_group && !a.include_groups) return false;
-  if (a.chat_ids && !a.chat_ids.includes(d.chat_id)) return false;
+  if (a.chat_ids && !a.chat_ids.includes(d.chat_id) && !(e.chat_alt && a.chat_ids.includes(e.chat_alt))) {
+    return false;
+  }
   return true;
 }
 
@@ -309,6 +313,26 @@ export class EventBuffer {
     }
     this.events.sort((a, b) => a.seq - b.seq);
     this.revision++;
+    this.prune();
+  }
+
+  /**
+   * The boot load: becomes the persisted document, then appends whatever was
+   * added in memory before it loaded, sequenced after the document's head. No
+   * cursor was handed out before the load (a poll waits for it), so nothing
+   * held in memory can land below one a client holds, whatever the previous
+   * owner's clock said.
+   */
+  adopt(doc: BufferDoc): void {
+    if (doc.version !== 1) return;
+    const early = this.events;
+    this.replace(doc);
+    for (const e of early) {
+      if (this.byId.has(e.eventId)) continue;
+      const added = { ...e, seq: this.nextSeq() };
+      this.events.push(added);
+      this.byId.set(added.eventId, added);
+    }
     this.prune();
   }
 

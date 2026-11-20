@@ -4848,6 +4848,8 @@ A WhatsApp slug that sets `WHATSAPP_EVENTS_ENABLED` publishes
   is never an event.
 - **The chat id in the eventId can change** from a LID to a phone JID once the
   bridge learns the mapping, so a later redelivery could be a second event.
+  For the same reason a `chat_ids` filter naming a phone JID misses a message
+  in a chat the bridge still knows only by its LID.
 - **One event per message.** Zimmer's WhatsApp trigger fires once per batch.
 - **No status tool.** The event's state is in the bundle's logs only.
 

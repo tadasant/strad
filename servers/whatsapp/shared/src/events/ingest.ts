@@ -124,11 +124,6 @@ export class WhatsAppEvents {
   private flushing: Promise<void> | null = null;
   private lastStandbyReload = 0;
 
-  // What `status()` reports.
-  private received = 0;
-  private lastEventAt: number | null = null;
-  private lastFlushAt: number | null = null;
-  private lastFlushError: string | null = null;
 
   constructor(private readonly deps: WhatsAppEventsDeps) {
     this.clock = deps.clock ?? Date.now;
@@ -199,9 +194,9 @@ export class WhatsAppEvents {
     const buffer = this.buffer!;
     try {
       const doc = await this.store.readBuffer();
-      // Anything the bridge handed over while this read was in flight carries
-      // a later sequence than the document's, so a plain merge keeps both.
-      if (doc) buffer.merge(doc, { resequence: false });
+      // Anything the bridge handed over while this read was in flight is
+      // re-sequenced after the document's head (`adopt`).
+      if (doc) buffer.adopt(doc);
       this.booted = true;
       this.bootFailure = null;
       this.state = "running";
@@ -264,11 +259,9 @@ export class WhatsAppEvents {
         eventId: eventIdFor(m.chat_id, m.id),
         timestamp: new Date(m.timestamp * 1000).toISOString(),
         data: toMessageReceived(incoming),
+        ...(incoming.chat_alt_id ? { chat_alt: incoming.chat_alt_id } : {}),
       });
-      if (!added) return;
-      this.received++;
-      this.lastEventAt = this.clock();
-      this.scheduleFlush();
+      if (added) this.scheduleFlush();
     } catch (err) {
       this.warn(`could not buffer an event: ${errText(err)}`);
     }
@@ -281,6 +274,8 @@ export class WhatsAppEvents {
    */
   async wipe(): Promise<void> {
     if (!this.buffer) return;
+    // A boot read in flight would fold the pre-wipe document back in.
+    await this.ready?.catch(() => {});
     await this.flushing;
     this.buffer.clear();
     try {
@@ -326,15 +321,12 @@ export class WhatsAppEvents {
       )
       .then(() => {
         this.flushedRevision = Math.max(this.flushedRevision, revision);
-        this.lastFlushAt = this.clock();
-        this.lastFlushError = null;
       })
       .catch((err: unknown) => {
         if (err instanceof EventsSuperseded) {
           this.state = "standby";
           return;
         }
-        this.lastFlushError = errText(err);
         this.warn(`event buffer flush failed (will retry): ${errText(err)}`);
         this.scheduleFlush();
       })
@@ -446,28 +438,6 @@ export class WhatsAppEvents {
     } catch (err) {
       this.warn(`re-reading the owner's event buffer failed: ${errText(err)}`);
     }
-  }
-
-  // --- status ---------------------------------------------------------------------------
-
-  status(): Record<string, unknown> {
-    const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
-    if (!this.config) return { state: this.state, events_served: false, reason: this.configProblem };
-    return {
-      state: this.state,
-      events_served: true,
-      event_types: [MESSAGE_RECEIVED],
-      owner: this.owner,
-      buffer: {
-        events: this.buffer!.size,
-        retention_days: this.config.retentionDays,
-        received_since_boot: this.received,
-        last_event_buffered_at: iso(this.lastEventAt),
-        last_flush_at: iso(this.lastFlushAt),
-        last_flush_error: this.lastFlushError,
-      },
-      webhook_subscriptions: this.webhooks?.status() ?? [],
-    };
   }
 }
 

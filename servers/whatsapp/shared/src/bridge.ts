@@ -451,14 +451,18 @@ export class WhatsAppBridge {
     }
   }
 
-  /** True while this process holds the account's lease: what the event buffer's writer is. */
+  /**
+   * True while this process holds the account's lease: what the event
+   * buffer's writer is. Not ended by `close()`, which releases nothing, so
+   * the event's last flush on SIGTERM still writes.
+   */
   ownsAccount(): boolean {
-    return this.leaseClaimed && !this.closed && !this.store.superseded;
+    return this.leaseClaimed && !this.store.superseded;
   }
 
   /** A fresh read of the lease. False once another process has the account. */
   async confirmOwnership(): Promise<boolean> {
-    return this.leaseClaimed && !this.closed && (await this.store.checkLease(true));
+    return this.leaseClaimed && (await this.store.checkLease(true));
   }
 
   private loadIndex(index: IndexDoc): void {
@@ -865,7 +869,16 @@ export class WhatsAppBridge {
         const quoted = await this.buffer.get(m.chat_id, m.quoted_message_id).catch(() => undefined);
         replyToSelf = quoted?.from_me === true;
       }
+      // The chat's other address, so a `chat_ids` filter naming either form
+      // matches: a LID chat's phone JID once known, or a direct chat's LID,
+      // which is the sender's other address when the other person wrote.
+      const chatAlt = isLidJid(m.chat_id)
+        ? (this.buffer.lidToPn.get(m.chat_id) ?? (!m.from_me ? m.sender_alt_jid : undefined))
+        : !isGroupJid(m.chat_id) && !m.from_me
+          ? m.sender_alt_jid
+          : undefined;
       this.onLiveMessage!({
+        ...(chatAlt && chatAlt !== m.chat_id ? { chat_alt_id: chatAlt } : {}),
         message: {
           ...m,
           sender_jid: m.from_me && self.jid ? self.jid : m.sender_jid,

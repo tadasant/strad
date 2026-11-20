@@ -98,7 +98,8 @@ export const MESSAGE_RECEIVED_DESCRIPTOR = {
         items: { type: "string" },
         description:
           'Only messages in these chats: WhatsApp chat ids as whatsapp_list_chats returns them ("…@g.us" for ' +
-          'a group, "…@s.whatsapp.net" for a person). Absent: every chat.',
+          'a group, "…@s.whatsapp.net" for a person). A direct chat also matches under its LID where the ' +
+          "bridge knows it. Absent: every chat.",
       },
       include_from_me: {
         type: "boolean",

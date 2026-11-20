@@ -8041,7 +8041,10 @@ call, no new credential and no new process.
 3. **The chat id in the eventId can change.** It is the chat as the bridge
    names it when the message arrives: the phone JID where the bridge knows it,
    otherwise a LID. A redelivery after the bridge learned the mapping would
-   carry the other id and be a second event.
+   carry the other id and be a second event. `chat_ids` matches a chat under
+   either address only when the bridge knew the other one as the message
+   arrived; a message in a chat still known only by its LID does not match a
+   filter that names the phone JID.
 4. **One event per message.** Zimmer's WhatsApp trigger fires once per batch
    per chat per tick. A burst is several events and one native fire.
 5. **No status tool.** The event's state is in the bundle's logs only, prefixed

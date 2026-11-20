@@ -41,6 +41,8 @@ export interface MessageReceived {
 /** What the bridge resolves about a new message at the moment it is ingested. */
 export interface IncomingMessage {
   message: StoredMessage;
+  /** The chat's other JID (LID ↔ phone), when the bridge knows it. Matched by `chat_ids`, never delivered. */
+  chat_alt_id?: string;
   chat_name: string;
   sender_name: string;
   mentions_self: boolean;

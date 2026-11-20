@@ -4,10 +4,10 @@ import { createHmac, randomBytes } from "node:crypto";
 import { ResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 
-import { MemoryBlobStore } from "../src/index.js";
+import { MemoryBlobStore, open } from "../src/index.js";
 import type { RawMessage } from "../src/normalize.js";
 import type { WebhookResponse, WebhookTransport } from "../src/events/webhook/transport.js";
-import { ADA_PN, fakeWhatsApp, GROUP, groupText, SELF_LID, waitFor } from "./fake-socket.js";
+import { ADA_PN, fakeWhatsApp, GRACE_LID, GRACE_PN, GROUP, groupText, SELF_LID, waitFor } from "./fake-socket.js";
 import { call, clock, config, connect, NOW, pairAndConnect } from "./harness.js";
 
 /**
@@ -190,7 +190,16 @@ test("a reply to the account and a media message carry reply_to_self and media_t
         extendedTextMessage: { text: "yes", contextInfo: { stanzaId: sent.json.id, participant: ADA_PN } },
       },
     }),
-    direct("I1", "", { message: { imageMessage: { caption: "the venue", mimetype: "image/jpeg" } } }),
+    direct("I1", "", {
+      message: {
+        imageMessage: {
+          caption: "the venue",
+          mimetype: "image/jpeg",
+          mediaKey: Buffer.from("k".repeat(32)).toString("base64"),
+          directPath: "/v/t62/fake-path",
+        },
+      },
+    }),
   );
   const got = await pollUntil(w.mcp, 2, {}, cursor);
   assert.equal(got.events[0]!.data.reply_to_self, true);
@@ -198,6 +207,12 @@ test("a reply to the account and a media message carry reply_to_self and media_t
   assert.equal(got.events[1]!.data.type, "image");
   assert.equal(got.events[1]!.data.media_type, "image");
   assert.equal(got.events[1]!.data.text, "the venue");
+  // The payload is the schema's sixteen fields and nothing else: no media key, no CDN path.
+  assert.deepEqual(Object.keys(got.events[1]!.data).sort(), [
+    "chat_id", "chat_name", "from_me", "is_group", "media_type", "mentions_self", "message_id",
+    "push_name", "quoted_message_id", "reply_to_self", "sender_jid", "sender_name", "text",
+    "text_truncated", "timestamp", "type",
+  ]);
 });
 
 test("never events: a history sync, a reaction, the bridge's own send; a redelivery is one event", async () => {
@@ -254,6 +269,26 @@ test("filters: from_me excluded by default, include_groups false is direct only,
   assert.deepEqual(await ids({ chat_ids: [GROUP], include_groups: false }), []);
 });
 
+test("chat_ids matches a direct chat under either of its addresses", async () => {
+  const w = await eventsWorld();
+  const { cursor } = await poll(w.mcp);
+  // WhatsApp addresses the chat by LID and gives its phone JID beside it: the
+  // bridge names the chat by the phone JID, and the LID is its other address.
+  upsert(w, {
+    key: { remoteJid: GRACE_LID, remoteJidAlt: GRACE_PN, fromMe: false, id: "A1" },
+    message: { conversation: "via lid" },
+    messageTimestamp: NOW,
+    pushName: "Grace",
+  });
+  const got = await pollUntil(w.mcp, 1, {}, cursor);
+  assert.equal(got.events[0]!.data.chat_id, GRACE_PN);
+  assert.equal("chat_alt" in got.events[0]!.data, false, "the other address is not delivered");
+  const count = async (ids: string[]) => (await poll(w.mcp, { chat_ids: ids }, cursor)).events.length;
+  assert.equal(await count([GRACE_PN]), 1);
+  assert.equal(await count([GRACE_LID]), 1);
+  assert.equal(await count([ADA_PN]), 0);
+});
+
 // --- 4. refusals ------------------------------------------------------------------------------
 
 test("unknown or malformed arguments are refused by name, with -32602", async () => {
@@ -299,6 +334,21 @@ test("the buffer is sealed beside the chats and a restart resumes from the curso
   const got = await poll(again.mcp, {}, cursor);
   assert.deepEqual(got.events.map((e) => e.eventId), [`whatsapp:${ADA_PN}:P1`]);
   assert.equal(got.truncated, false);
+});
+
+test("close() writes the last events, with no flush by hand", async () => {
+  const blobs = new MemoryBlobStore();
+  const key = randomBytes(32);
+  const w = await eventsWorld({ blobs, key });
+  const { cursor } = await poll(w.mcp);
+  upsert(w, direct("C1", "just before the deploy"));
+  await pollUntil(w.mcp, 1, {}, cursor);
+  await w.close();
+  const name = "whatsapp/events/buffer.bin";
+  const object = await blobs.read(name);
+  assert.ok(object, "flushed on close");
+  const doc = JSON.parse(open(key, name, object.data).toString("utf8"));
+  assert.deepEqual(doc.events.map((e: { eventId: string }) => e.eventId), [`whatsapp:${ADA_PN}:C1`]);
 });
 
 // --- 6. webhooks ------------------------------------------------------------------------------
@@ -377,7 +427,8 @@ test("a subscribe that did not come through strad is refused", async () => {
 
 test("logout wipes the event buffer with the chats; an old cursor reads as truncated", async () => {
   const blobs = new MemoryBlobStore();
-  const w = await eventsWorld({ blobs });
+  const key = randomBytes(32);
+  const w = await eventsWorld({ blobs, key });
   const { cursor } = await poll(w.mcp);
   upsert(w, direct("L1", "before logout"));
   await pollUntil(w.mcp, 1, {}, cursor);
@@ -387,8 +438,11 @@ test("logout wipes the event buffer with the chats; an old cursor reads as trunc
   const after = await poll(w.mcp, {}, cursor);
   assert.deepEqual(after.events, []);
   assert.equal(after.truncated, true);
-  const object = await blobs.read("whatsapp/events/buffer.bin");
+  const name = "whatsapp/events/buffer.bin";
+  const object = await blobs.read(name);
   assert.ok(object, "the emptied buffer is written");
-  assert.ok(!object.data.includes(Buffer.from("before logout")));
+  const doc = JSON.parse(open(key, name, object.data).toString("utf8"));
+  assert.deepEqual(doc.events, []);
+  assert.ok(doc.evicted_through >= Number(cursor.slice("v1.".length)));
 });
 

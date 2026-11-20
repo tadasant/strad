@@ -496,7 +496,7 @@ ingest with its own buffer and its own Gmail reads.
 The WhatsApp server can publish `message_received`: a message arrived on the
 paired account. It is off until the slug's `env:` sets
 `WHATSAPP_EVENTS_ENABLED: "true"`. Built for Zimmer, whose only WhatsApp feed
-today is a nightly batch sweep, so a direct message can start work as it
+for the account is a nightly batch sweep, so a direct message can start work as it
 arrives.
 
 ### Where the events come from
@@ -545,7 +545,7 @@ cannot widen a trigger.
 
 | Argument          | Default | Narrows to                                                                 |
 | ----------------- | ------- | -------------------------------------------------------------------------- |
-| `chat_ids`        | —       | these chats, as `whatsapp_list_chats` lists them (at most 100)             |
+| `chat_ids`        | —       | these chats, as `whatsapp_list_chats` lists them (at most 100); a direct chat matches under its phone JID or its LID, where the bridge knows both |
 | `include_from_me` | `false` | `true` keeps messages the account sent from its own devices                |
 | `include_groups`  | `true`  | `false` is the direct-messages-only filter: one-to-one chats only          |
 
