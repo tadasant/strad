@@ -1169,8 +1169,11 @@ async function handleSecretAction(
           if (!(err instanceof ParameterStoreError && err.status === 409)) {
             throw err;
           }
-          const answer = await collided(store, fullPath);
-          forgetConsoleStores();
+          // The held listing is what missed it. This store's alone: dropping
+          // every console store would re-enumerate every project on the next
+          // page load.
+          store.forget?.();
+          const answer = await collided(store, fullPath, secret);
           await renderSecretsPage(res, view, store_, opts, {
             signedInAs,
             namespace,
@@ -1674,29 +1677,52 @@ class ConsoleInputError extends Error {
  * "That parameter already exists" on its own is a dead end whenever the
  * parameter is not on the page — and a 409 is exactly the case where the human
  * did not see it, or they would have rotated it rather than created it. So the
- * store is asked, live, what is at the path:
+ * store is asked, live, what is at the path, and only a confirmed answer earns
+ * either the form or advice to delete anything:
  *
- *   - a parameter whose envelope names THIS path: the page offers a new version
- *     of it, which is what the human came to do;
- *   - an id that folds onto a DIFFERENT path, or a resource strad cannot read
- *     as a parameter (no version yet, or only the Secret Manager half): no
- *     version can be added through strad, and the message says what is there
- *     and what clears it rather than claiming a parameter the page cannot show.
+ *   - LISTED at exactly this path (a managed parameter — see
+ *     `READABLE_MANAGERS` in `src/secrets/parameters/wire.ts`): the page offers
+ *     a new version of it, unless the create asked for a SECRET and the
+ *     parameter is not one — a rotate keeps the parameter's kind, and a
+ *     credential written into a non-secret envelope is readable by anything
+ *     holding `parameterViewer`, the `/mcp` viewer included;
+ *   - an id that folds onto a DIFFERENT path: no version can be added here;
+ *   - a parameter at this path that is not listed: some other tool's, and
+ *     strad does not write into it;
+ *   - CONFIRMED absent as a parameter (no Parameter Manager parameter, or one
+ *     with no version): a write that stopped part-way, and only then is
+ *     deleting the leftovers the advice;
+ *   - anything else — a throttled or failed read — says so and advises
+ *     nothing destructive.
  *
- * Read live rather than from the held listing: the listing is what missed it.
+ * `listDetailed` (or `list`) runs over the parent of the path; the caller has
+ * dropped the held reading, so it is a fresh read. `isSecret` reads the
+ * envelope directly and ignores the label, which is what tells "not managed"
+ * apart from "not there".
  */
 async function collided(
   store: ParameterStore,
   path: string,
+  wantedSecret: boolean,
 ): Promise<{ message: string; addVersion: boolean }> {
   const id = parameterId(path);
-  let exists: boolean | undefined;
+  const parent = path.slice(0, path.lastIndexOf("/") + 1);
+  const unknown = {
+    addVersion: false,
+    message:
+      `${path} could not be created: the store says a resource with its id ` +
+      `("${id}") already exists, and reading it back to find out what it is ` +
+      `failed. Nothing was written. Re-read the store and look for it in the ` +
+      `list, or try again in a minute.`,
+  };
+  let listed: ParameterMeta | undefined;
+  let held: boolean | undefined;
   try {
-    exists = store.isSecret
-      ? (await store.isSecret(path)) !== undefined
-      : (await store.list(path.slice(0, path.lastIndexOf("/") + 1))).some(
-          (p) => p.path === path,
-        );
+    const listing = store.listDetailed
+      ? (await store.listDetailed(parent)).parameters
+      : await store.list(parent);
+    listed = listing.find((p) => p.path === path);
+    if (!listed && store.isSecret) held = await store.isSecret(path);
   } catch (err) {
     if (err instanceof ParameterStoreError && err.status === 404) {
       return {
@@ -1708,16 +1734,36 @@ async function collided(
           `or punctuation.`,
       };
     }
-    exists = undefined;
+    return unknown;
   }
-  if (exists) {
+  if (listed) {
+    if (wantedSecret && !listed.secret) {
+      return {
+        addVersion: false,
+        message:
+          `${path} already exists as a NON-SECRET parameter, so nothing was ` +
+          `created. A new version keeps that kind, which would store this value ` +
+          `where any parameter viewer can read it. To hold a secret here, delete ` +
+          `the parameter from its row and create it again as a secret.`,
+      };
+    }
     return {
       addVersion: true,
       message:
-        `${path} already exists, so nothing was created. To change its value, ` +
-        `add a new version below.`,
+        `${path} already exists (${listed.secret ? "secret" : "non-secret"}), so ` +
+        `nothing was created. To change its value, add a new version below.`,
     };
   }
+  if (held !== undefined) {
+    return {
+      addVersion: false,
+      message:
+        `${path} already exists, but it was not written by strad or Zimmer (its ` +
+        `managed-by label is neither), so this console does not list it or write ` +
+        `into it. Nothing was created. Change it with the tool that owns it.`,
+    };
+  }
+  if (!store.isSecret) return unknown;
   return {
     addVersion: false,
     message:

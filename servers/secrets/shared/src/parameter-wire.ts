@@ -290,12 +290,11 @@ export const MANAGED_BY_STRAD = "strad";
  *
  * `zimmer` is here because Zimmer writes into the SAME stores, the same way:
  * the same id fold, the same envelope, the same `__REF__` at `versions/latest`
- * (`tadasant/zimmer` `app/services/parameter_store/write_client.rb`). Zimmer
- * already reads `strad`-labelled parameters for the mirror-image reason. A
- * reader keyed on `strad` alone hid every Zimmer-written parameter from the
- * console's list while the create path still collided with it, so a human
- * could neither see the parameter nor add a version to it: "That parameter
- * already exists", with no row to rotate.
+ * (tadasant/zimmer, app/services/parameter_store/write_client.rb). Zimmer
+ * reads `strad`-labelled parameters for the mirror-image reason. A reader keyed
+ * on `strad` alone shows a namespace without Zimmer's parameters while a create
+ * at one of their paths still collides with it — "already exists", with no row
+ * to add a version to.
  *
  * The label keeps a hand-made or foreign parameter from being read at all. It
  * is not the namespace fence — every reader still filters on the envelope's

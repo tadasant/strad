@@ -2798,6 +2798,11 @@ vendored into the `secrets` server so the `/mcp` listing agrees with the page �
 nothing else: a parameter labelled by any other system, or by nobody, is not
 listed.
 
+It is not only the console: the resolver reads the same labels, so a
+`managed-by=zimmer` parameter inside a namespace a deployment resolves is part of
+that namespace's values. Every one is read on each enumeration, so in a Zimmer store
+the console's listing costs one version read per Zimmer parameter as well.
+
 A Zimmer-written parameter is a row like any other. Rotating it adds a Secret Manager
 version and, the first time, a Parameter Manager version that declares
 `"encoding":"base64url"` — Zimmer's reader honours that. Deleting it removes the
@@ -2807,21 +2812,28 @@ the label is absent.
 ### "Already exists" offers a new version
 
 A create whose path is already taken is refused, and the page asks the store, live,
-what is there. A parameter at exactly that path gets an **Add a new version** form
-for it on the same page: paste the value again and it becomes the current version,
-which is what the row's Rotate does. The value from the refused create is not
-carried back into the page. The `/mcp` half says the same thing to an agent:
+what is there. A listed parameter at exactly that path gets an **Add a new version**
+form for it on the same page: paste the value again and it becomes the current
+version, which is what the row's Rotate does. The value from the refused create is
+not carried back into the page. The `/mcp` half says the same thing to an agent:
 `create_parameter` on a taken path answers with an error naming
 `set_parameter_value`, which adds the version.
 
-Two collisions have no version to add, and the page says which one it is:
+The other answers offer no form, and say why:
 
-- the path folds to an id a **different** path already holds — choose a name that
-  differs by more than case or punctuation;
-- Google Cloud holds a resource under the id that strad cannot read as a parameter —
-  no version yet, or only the Secret Manager half — which is a write that stopped
-  part-way. Delete the parameter and the secret named in the message, in that
-  store's project, and create it again.
+- **A secret asked for over a non-secret parameter.** A new version keeps the
+  parameter's kind, so it would put the value where any parameter viewer — the
+  `/mcp` viewer included — can read it. Delete the parameter and create it again as
+  a secret.
+- **The path folds to an id a different path already holds.** Choose a name that
+  differs by more than case or punctuation.
+- **A parameter at that path that another tool labelled.** strad does not list it
+  or write into it; change it with the tool that owns it.
+- **A resource strad cannot read as a parameter** — no version yet, or only the
+  Secret Manager half — which is a write that stopped part-way. Delete the parameter
+  and the secret named in the message, in that store's project, and create it
+  again. This is said only when the store confirmed it; a read-back that failed says
+  that, and advises nothing destructive.
 
 ### Several at once: bulk add
 

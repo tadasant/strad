@@ -612,8 +612,7 @@ test("the viewer enumerates versions and reads the greatest ENABLED one", async 
 
 test("the viewer lists a Zimmer-written parameter and skips an unlabelled one", async () => {
   // Zimmer writes the same envelope into the same stores, labelled
-  // `managed-by=zimmer`. A listing keyed on `strad` alone hid it from both
-  // doors while a create still collided with it.
+  // `managed-by=zimmer`. Both labels are listed; any other is not.
   const projectId = "test-project";
   const ns = "/zimmer/production/secrets/";
   const zimmerPath = `${ns}static/OPENROUTER_API_KEY`;

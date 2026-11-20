@@ -112,8 +112,8 @@ const LOCATION = "global";
 
 /**
  * The label a listing finds managed parameters by, and what strad stamps on
- * its own. Both are the wire's (`parameter-wire.ts`), re-exported under the
- * names this package has always exported.
+ * its own. Both are the wire's (`parameter-wire.ts`), re-exported under this
+ * package's public names.
  */
 export {
   MANAGED_BY_LABEL,

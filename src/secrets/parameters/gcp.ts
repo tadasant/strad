@@ -639,8 +639,8 @@ export function createGcpParameterStore(
    * Every parameter in the project that strad reads as managed — labelled
    * `managed-by` with one of `READABLE_MANAGERS` (`strad`, `zimmer`) — with its
    * envelope. Zimmer writes the same envelope into the same stores, and a
-   * listing that skipped its parameters showed a namespace without them while
-   * `create()` still collided with them.
+   * listing that skips its parameters shows a namespace without them while
+   * `create()` still collides with them.
    *
    * The namespace is INSIDE the envelope, not on a label, so there is no way to
    * ask the store for one namespace: enumerating means reading a version of

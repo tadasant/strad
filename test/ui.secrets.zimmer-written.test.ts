@@ -20,11 +20,10 @@ import {
  * labelled `managed-by=zimmer`, with no `secret` label, no `encoding` (the
  * Secret Manager bytes are literal), and its first version minted as `v1`.
  *
- * The console's listing read `managed-by=strad` and nothing else, so such a
- * parameter was invisible on the page, while a create at its path still met
- * Google's `409 ALREADY_EXISTS`. A human rotating
- * `/zimmer/production/secrets/static/OPENROUTER_API_KEY` got "That parameter
- * already exists." with no row to rotate and no other route to a new version.
+ * A reader that keeps `managed-by=strad` alone makes such a parameter invisible
+ * on the page while a create at its path still meets Google's
+ * `409 ALREADY_EXISTS`: "That parameter already exists." with no row to rotate
+ * and no other route to a new version.
  *
  * Proven here, through the real Express app over a real socket:
  *
@@ -203,6 +202,14 @@ describe("the store reads a Zimmer-written parameter as managed", () => {
     ).rejects.toMatchObject({ status: 409 });
   });
 
+  it("destroy() removes the secret of a parameter that carries no `secret` label", async () => {
+    const id = seedZimmerWritten(PATH, OLD_VALUE);
+    expect(fake.parameters.get(id)!.labels.secret).toBeUndefined();
+    await fake.store.destroy(PATH);
+    expect(fake.parameters.has(id)).toBe(false);
+    expect(fake.secrets.has(id)).toBe(false);
+  });
+
   it("still skips a parameter some other system labelled", async () => {
     const id = seedZimmerWritten(PATH, OLD_VALUE);
     fake.parameters.get(id)!.labels = { "managed-by": "terraform" };
@@ -235,7 +242,9 @@ describe("the console, end to end", () => {
     });
     const html = await res.text();
     expect(res.status).toBe(409);
-    expect(html).toContain(`${PATH} already exists, so nothing was created.`);
+    expect(html).toContain(
+      `${PATH} already exists (secret), so nothing was created.`,
+    );
     expect(html).toContain("Add a new version to OPENROUTER_API_KEY");
     // The offered form rotates THIS path in THIS store.
     expect(html).toMatch(
@@ -280,6 +289,92 @@ describe("the console, end to end", () => {
       value: NEW_VALUE,
     });
     expect(created.status).toBe(200);
+  });
+
+  it("refuses to offer a new version when a secret was asked for over a non-secret parameter", async () => {
+    const id = seedZimmerWritten(PATH, OLD_VALUE);
+    const plain = JSON.stringify({ path: PATH, secret: false, value: "plain" });
+    fake.parameters.get(id)!.versions = [
+      {
+        id: "v1",
+        data: Buffer.from(plain, "utf8").toString("base64"),
+        // A distinct createTime: the store caches an envelope by version AND
+        // createTime, and a new version always carries a new one.
+        createTime: "2026-11-02T00:00:00.000Z",
+      },
+    ];
+
+    const res = await post("/ui/secrets/create", {
+      ns: NS,
+      prefix: "static/",
+      variable: "OPENROUTER_API_KEY",
+      secret: "on",
+      value: NEW_VALUE,
+    });
+    const html = await res.text();
+    expect(res.status).toBe(409);
+    expect(html).toContain("already exists as a NON-SECRET parameter");
+    expect(html).not.toContain("Add a new version to");
+    expect(html).not.toContain(NEW_VALUE);
+  });
+
+  it("does not offer to write into a parameter another tool labelled", async () => {
+    const id = seedZimmerWritten(PATH, OLD_VALUE);
+    fake.parameters.get(id)!.labels = { "managed-by": "terraform" };
+
+    const res = await post("/ui/secrets/create", {
+      ns: NS,
+      prefix: "static/",
+      variable: "OPENROUTER_API_KEY",
+      secret: "on",
+      value: NEW_VALUE,
+    });
+    const html = await res.text();
+    expect(res.status).toBe(409);
+    expect(html).toContain("it was not written by strad or Zimmer");
+    expect(html).not.toContain("Add a new version to");
+  });
+
+  it("names a fold collision rather than offering another path's parameter", async () => {
+    // A different path whose id is the same fold: case and punctuation differ.
+    seedZimmerWritten(`${NS}static/openrouter-api-key`, OLD_VALUE);
+
+    const res = await post("/ui/secrets/create", {
+      ns: NS,
+      prefix: "static/",
+      variable: "OPENROUTER_API_KEY",
+      secret: "on",
+      value: NEW_VALUE,
+    });
+    const html = await res.text();
+    expect(res.status).toBe(409);
+    expect(html).toContain("a different parameter already holds that id");
+    expect(html).not.toContain("Add a new version to");
+  });
+
+  it("advises nothing destructive when the read-back itself fails", async () => {
+    const id = seedZimmerWritten(PATH, OLD_VALUE);
+    // A payload that is not an envelope: the store cannot read it back.
+    fake.parameters.get(id)!.versions = [
+      {
+        id: "v1",
+        data: Buffer.from("not json", "utf8").toString("base64"),
+        createTime: "2026-11-03T00:00:00.000Z",
+      },
+    ];
+
+    const res = await post("/ui/secrets/create", {
+      ns: NS,
+      prefix: "static/",
+      variable: "OPENROUTER_API_KEY",
+      secret: "on",
+      value: NEW_VALUE,
+    });
+    const html = await res.text();
+    expect(res.status).toBe(409);
+    expect(html).toContain("reading it back to find out what it is failed");
+    expect(html).not.toContain("Delete the Parameter Manager");
+    expect(html).not.toContain("Add a new version to");
   });
 
   it("explains a collision with a resource strad cannot read as a parameter", async () => {

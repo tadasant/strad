@@ -282,6 +282,15 @@ test("a create that collides names set_parameter_value as the way through", asyn
   assert.equal(res.isError, true);
   assert.match(res.content[0].text, /already exists/);
   assert.match(res.content[0].text, /set_parameter_value/);
+
+  // Asked for a secret over a non-secret parameter: no tool is offered, since a
+  // new version keeps the kind and would store the value where a viewer reads it.
+  const secretOverPlain = await client.callTool({
+    name: "create_parameter",
+    arguments: { name: STAGING_PARAM, value: "v", secret: true },
+  });
+  assert.equal(secretOverPlain.isError, true);
+  assert.match(secretOverPlain.content[0].text, /NON-SECRET/);
   await close();
 });
 
