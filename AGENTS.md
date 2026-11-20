@@ -165,7 +165,9 @@ does not use it.
     the registry, the Standard Webhooks signing, the SSRF-guarded transport,
     the delivery engine and the cursor's wire form — into
     `images/bundle-google/src/events/webhook/`, where Gmail's
-    `message_received` runs on it. Edit it in the Slack tree. A drift is two
+    `message_received` runs on it, and
+    `servers/whatsapp/shared/src/events/webhook/`, where WhatsApp's does.
+    Edit it in the Slack tree. A drift is two
     webhook semantics under one `/mcp`: a receiver right about one source's
     signatures, retries or cursors would be wrong about the other's.
   - `npm run deposit:sync` (`--only deposit`) re-vendors
@@ -286,6 +288,7 @@ not a confession.
 | `src/http/retry.ts` — the transient-status set, `Retry-After`, a budget's ceilings                                                   | `operate/operations.md`, `operate/secrets.md`, `limitations.md`                                                                                                                      |
 | `src/http/async-route.ts` — the one async-route guard, or a route's failure answer                                                   | `intro/architecture.md`, `operate/telemetry.md`                                                                                                                                      |
 | `servers/bundle-api/fork/slack/src/events/**`, `images/bundle-google/src/events/**` — an event type, an argument, the webhook engine | `servers/events.md`, `limitations.md`, `docs/mcp-events-spec-pin.md`, and `npm run eventswebhook:sync` if `webhook/` moved                                                           |
+| `servers/whatsapp/shared/src/events/**` — the WhatsApp event, an argument, the payload                                               | `servers/events.md`, `servers/whatsapp.md`, `limitations.md`, `docs/mcp-events-spec-pin.md`                                                                                          |
 | `src/telemetry/**`, `telemetry/bundle/instrument.mjs`                                                                                | `operate/telemetry.md`                                                                                                                                                               |
 | `servers/bundle/**` — a mount added or removed, the Chromium, the `op` CLI                                                           | `intro/architecture.md`, `operate/telemetry.md`, and every count                                                                                                                     |
 | `infra/strad.staging.yaml`                                                                                                           | `operate/operations.md`, `servers/adding.md`                                                                                                                                         |

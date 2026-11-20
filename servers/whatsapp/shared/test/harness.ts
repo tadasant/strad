@@ -9,6 +9,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { createMCPServer, MemoryBlobStore, type WhatsAppConfig } from "../src/index.js";
 import type { BridgeOptions } from "../src/bridge.js";
+import type { WebhookTransport } from "../src/events/webhook/transport.js";
 import { fakeWhatsApp, waitFor, type FakeWhatsApp } from "./fake-socket.js";
 
 export const NOW = 1_790_000_000;
@@ -48,13 +49,19 @@ export async function connect(
     env?: NodeJS.ProcessEnv;
     clock?: () => number;
     bridgeOptions?: Partial<BridgeOptions>;
+    /** The slug's env beside an injected config: what switches the event on. */
+    eventsEnv?: NodeJS.ProcessEnv;
+    webhookTransport?: WebhookTransport;
   } = {},
 ) {
   const blobs = options.blobs ?? new MemoryBlobStore();
   const fake = options.fake ?? fakeWhatsApp(clock);
   const created = createMCPServer({
     version: "test",
-    ...(options.env ? { env: options.env } : { config: options.cfg ?? config() }),
+    ...(options.env
+      ? { env: options.env }
+      : { config: options.cfg ?? config(), env: options.eventsEnv ?? {} }),
+    events: { manualTimers: true, webhookTransport: options.webhookTransport },
     blobs,
     socketFactory: fake.factory,
     bridgeOptions: {

@@ -11,6 +11,9 @@ import { errMessage, logInfo, logWarning, redact } from "./logging.js";
 import { createBaileysSocket, type SocketFactory } from "./socket.js";
 import { parseToolGroups, registerTools, type ToolGroup } from "./tools.js";
 import type { BridgeFactory } from "./tools/shared.js";
+import { eventsRequested, WhatsAppEvents } from "./events/ingest.js";
+import { registerWhatsAppEventHandlers } from "./events/protocol.js";
+import type { WebhookTransport } from "./events/webhook/transport.js";
 
 export interface CreateMCPServerOptions {
   version: string;
@@ -35,6 +38,8 @@ export interface CreateMCPServerOptions {
    * not host this account.
    */
   autoStart?: boolean;
+  /** Injected in tests: the event side's webhook transport, and manual timers. */
+  events?: { webhookTransport?: WebhookTransport; manualTimers?: boolean };
 }
 
 /**
@@ -55,24 +60,63 @@ export function createMCPServer(options: CreateMCPServerOptions) {
   );
 
   let bridge: WhatsAppBridge | undefined;
+  const configured = options.config !== undefined || missingCredentials(env).length === 0;
+
+  // The `message_received` event (./events/), when this slug asks for it.
+  // It shares the bridge's bucket, folder, key and lease, so it exists only
+  // where the bridge can: a slug that asks without the bridge's variables is
+  // answered by the tools' own "not configured" error, not by this.
+  let events: WhatsAppEvents | null = null;
+  let blobs: BlobStore | undefined = options.blobs;
+  const getConfig = (): WhatsAppConfig => options.config ?? loadConfig(env);
+  const getBlobs = (config: WhatsAppConfig): BlobStore =>
+    (blobs ??= new GcsBlobStore({
+      bucket: config.bucket,
+      clientEmail: config.clientEmail,
+      privateKey: config.privateKey,
+      who: "this bridge",
+      privateKeyVariable: config.privateKeyVariable,
+      warn: logWarning,
+    }));
+  if (configured && eventsRequested(env)) {
+    try {
+      const config = getConfig();
+      events = new WhatsAppEvents({
+        env,
+        blobs: getBlobs(config),
+        key: config.encryptionKey,
+        prefix: config.prefix,
+        ownership: {
+          owns: () => bridge?.ownsAccount() ?? false,
+          confirm: async () => (bridge ? bridge.confirmOwnership() : false),
+        },
+        webhookTransport: options.events?.webhookTransport,
+        manualTimers: options.events?.manualTimers,
+        clock: options.bridgeOptions?.clock,
+      });
+      if (events.configured) {
+        logInfo("events: message_received is on for this slug");
+        void events.start().catch(() => {});
+      }
+    } catch (err) {
+      logWarning(`events: not starting: ${errMessage(err)}`);
+      events = null;
+    }
+  }
+  const served = events?.configured ? events : null;
+
   const getBridge = (): WhatsAppBridge => {
     if (!bridge) {
       // Throws a ConfigError naming the missing variables; not memoised, so a
       // variable that arrives later (a redeploy) is picked up.
-      const config = options.config ?? loadConfig(env);
+      const config = getConfig();
       bridge = new WhatsAppBridge({
         config,
-        blobs:
-          options.blobs ??
-          new GcsBlobStore({
-            bucket: config.bucket,
-            clientEmail: config.clientEmail,
-            privateKey: config.privateKey,
-            who: "this bridge",
-            privateKeyVariable: config.privateKeyVariable,
-            warn: logWarning,
-          }),
+        blobs: getBlobs(config),
         socketFactory: options.socketFactory ?? createBaileysSocket,
+        ...(served
+          ? { onLiveMessage: (m) => served.add(m), onWipe: () => served.wipe() }
+          : {}),
         ...options.bridgeOptions,
       });
     }
@@ -80,7 +124,6 @@ export function createMCPServer(options: CreateMCPServerOptions) {
   };
   const bridgeFactory: BridgeFactory = async () => getBridge();
 
-  const configured = options.config !== undefined || missingCredentials(env).length === 0;
   if (configured && !options.config) {
     const link = downloadLinkConfig(env);
     logInfo(
@@ -107,10 +150,13 @@ export function createMCPServer(options: CreateMCPServerOptions) {
       bridgeFactory,
       options.toolGroups ?? parseToolGroups(env.ENABLED_TOOLGROUPS),
     );
+    if (events) registerWhatsAppEventHandlers(target, events);
   };
 
   const close = async (): Promise<void> => {
+    // The bridge first: its last ingest can still hand the event a message.
     await bridge?.close();
+    await events?.close();
   };
 
   /**
@@ -128,5 +174,5 @@ export function createMCPServer(options: CreateMCPServerOptions) {
     }
   };
 
-  return { server, registerHandlers, close, handleDownload, bridge: () => bridge };
+  return { server, registerHandlers, close, handleDownload, bridge: () => bridge, events: () => events };
 }

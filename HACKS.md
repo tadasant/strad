@@ -8011,3 +8011,43 @@ package is to vet.
 
 **Undo.** A live run against a real GlitchTip with a read token retires the
 first item. The rest are what the API offers.
+
+## 156. WhatsApp `message_received` is cut from the bridge's live feed, and has met only the fake socket
+
+**What.** The WhatsApp server publishes `message_received`
+(`servers/whatsapp/shared/src/events/`) on a slug that sets
+`WHATSAPP_EVENTS_ENABLED: "true"`. The bridge hands every message WhatsApp
+delivers live (`messages.upsert`) to the event as it buffers it. The buffer and
+the webhook registry are sealed objects in the bridge's own folder, under its
+key and its lease, and delivery is the shared webhook engine.
+
+**Why.** Zimmer's only WhatsApp feed for the personal account is a nightly
+batch sweep, so a direct message waits up to a day. The bridge already holds
+the one socket and already sees every message, so the event costs no upstream
+call, no new credential and no new process.
+
+**What it costs.**
+
+1. **Untested against WhatsApp.** The suite (`servers/whatsapp/shared/test/events.test.ts`)
+   drives the fake socket in Baileys' shapes. Which `messages.upsert` batches a
+   real account produces on a reconnect, and whether any of them replays
+   something old, has not been observed. A message older than the retention
+   is never an event, and a redelivery of one already buffered is deduplicated
+   by eventId; anything between those is an event.
+2. **Only what the socket saw.** A message that arrives while the bridge is
+   down, superseded or unpaired is an event only if WhatsApp delivers it on the
+   next connection. A message that reaches the account only through a history
+   sync is never an event.
+3. **The chat id in the eventId can change.** It is the chat as the bridge
+   names it when the message arrives: the phone JID where the bridge knows it,
+   otherwise a LID. A redelivery after the bridge learned the mapping would
+   carry the other id and be a second event.
+4. **One event per message.** Zimmer's WhatsApp trigger fires once per batch
+   per chat per tick. A burst is several events and one native fire.
+5. **No status tool.** The event's state is in the bundle's logs only, prefixed
+   `[whatsapp] WARN events:`. A status tool would change the server's seven
+   tools, which Zimmer's poller and `smoke.mjs` pin.
+
+**Undo.** A live run on a paired account retires the first item. Unset
+`WHATSAPP_EVENTS_ENABLED` and the event is gone; delete `events/` in the
+bridge's folder to drop what it kept.

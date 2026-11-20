@@ -15,6 +15,12 @@ Each server gets its own folder and its own encryption key.
 | [Messenger](/servers/messenger/) bridge                        | `messenger` (`messenger/prod`, `messenger/staging`) | `MESSENGER_STATE_ENCRYPTION_KEY`    | `MESSENGER_STATE_PREFIX`    |
 | [Gmail events](/servers/events/#gmail-message_received) ingest | `gmail-events/<slug>`                               | `GMAIL_EVENTS_STATE_ENCRYPTION_KEY` | `GMAIL_EVENTS_STATE_PREFIX` |
 
+The [WhatsApp `message_received` event](/servers/events/#whatsapp-message_received)
+is not a consumer of its own. Its buffer and webhook registry are
+`events/buffer.bin` and `events/webhooks.bin` inside the WhatsApp bridge's
+folder, under the bridge's key and lease, because the bridge is what receives
+the messages they are cut from.
+
 The code is one module, `src/state/store.ts`: the GCS client, the seal, the
 single-writer lease and the rules on this page. Each consumer is its own npm
 tree, so the module is vendored into each one (`npm run statestore:sync`) and
