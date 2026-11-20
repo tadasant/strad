@@ -1157,12 +1157,32 @@ async function handleSecretAction(
         const prefix = normalisePathPrefix(prefixRaw);
         const fullPath = `${namespace}${prefix}${variable}`;
         assertWellFormed(fullPath);
-        const grant = await createParameter(store, opts, {
-          path: fullPath,
-          secret,
-          value,
-          note,
-        });
+        let grant: Awaited<ReturnType<typeof createParameter>>;
+        try {
+          grant = await createParameter(store, opts, {
+            path: fullPath,
+            secret,
+            value,
+            note,
+          });
+        } catch (err) {
+          if (!(err instanceof ParameterStoreError && err.status === 409)) {
+            throw err;
+          }
+          // The held listing is what missed it. This store's alone: dropping
+          // every console store would re-enumerate every project on the next
+          // page load.
+          store.forget?.();
+          const answer = await collided(store, fullPath, secret);
+          await renderSecretsPage(res, view, store_, opts, {
+            signedInAs,
+            namespace,
+            flash: { tone: "error", message: answer.message },
+            addVersion: answer.addVersion ? { path: fullPath } : undefined,
+            status: 409,
+          });
+          return;
+        }
         forgetStoreReading(opts);
         await renderSecretsPage(res, view, store_, opts, {
           signedInAs,
@@ -1336,6 +1356,8 @@ interface PageExtras {
   revealed?: { name: string; value: string };
   /** The per-line outcome of a bulk add. See handleBulkCreate. */
   bulk?: BulkReport;
+  /** A create that collided: offer a new version of this path. See `collided`. */
+  addVersion?: { path: string };
   status?: number;
 }
 
@@ -1461,6 +1483,7 @@ async function renderSecretsPage(
         flash: extras.flash,
         revealed: extras.revealed,
         bulk: extras.bulk,
+        addVersion: extras.addVersion,
       }),
     );
 }
@@ -1645,6 +1668,112 @@ class ConsoleInputError extends Error {
     super(message);
     this.name = "ConsoleInputError";
   }
+}
+
+/**
+ * What a create that met `409 ALREADY_EXISTS` tells the human, and whether it can
+ * offer them the way through.
+ *
+ * "That parameter already exists" on its own is a dead end whenever the
+ * parameter is not on the page — and a 409 is exactly the case where the human
+ * did not see it, or they would have rotated it rather than created it. So the
+ * store is asked, live, what is at the path, and only a confirmed answer earns
+ * either the form or advice to delete anything:
+ *
+ *   - LISTED at exactly this path (a managed parameter — see
+ *     `READABLE_MANAGERS` in `src/secrets/parameters/wire.ts`): the page offers
+ *     a new version of it, unless the create asked for a SECRET and the
+ *     parameter is not one — a rotate keeps the parameter's kind, and a
+ *     credential written into a non-secret envelope is readable by anything
+ *     holding `parameterViewer`, the `/mcp` viewer included;
+ *   - an id that folds onto a DIFFERENT path: no version can be added here;
+ *   - a parameter at this path that is not listed: some other tool's, and
+ *     strad does not write into it;
+ *   - CONFIRMED absent as a parameter (no Parameter Manager parameter, or one
+ *     with no version): a write that stopped part-way, and only then is
+ *     deleting the leftovers the advice;
+ *   - anything else — a throttled or failed read — says so and advises
+ *     nothing destructive.
+ *
+ * `listDetailed` (or `list`) runs over the parent of the path; the caller has
+ * dropped the held reading, so it is a fresh read. `isSecret` reads the
+ * envelope directly and ignores the label, which is what tells "not managed"
+ * apart from "not there".
+ */
+async function collided(
+  store: ParameterStore,
+  path: string,
+  wantedSecret: boolean,
+): Promise<{ message: string; addVersion: boolean }> {
+  const id = parameterId(path);
+  const parent = path.slice(0, path.lastIndexOf("/") + 1);
+  const unknown = {
+    addVersion: false,
+    message:
+      `${path} could not be created: the store says a resource with its id ` +
+      `("${id}") already exists, and reading it back to find out what it is ` +
+      `failed. Nothing was written. Re-read the store and look for it in the ` +
+      `list, or try again in a minute.`,
+  };
+  let listed: ParameterMeta | undefined;
+  let held: boolean | undefined;
+  try {
+    const listing = store.listDetailed
+      ? (await store.listDetailed(parent)).parameters
+      : await store.list(parent);
+    listed = listing.find((p) => p.path === path);
+    if (!listed && store.isSecret) held = await store.isSecret(path);
+  } catch (err) {
+    if (err instanceof ParameterStoreError && err.status === 404) {
+      return {
+        addVersion: false,
+        message:
+          `${path} folds to the store id "${id}", and a different parameter already ` +
+          `holds that id, so this path cannot be created as typed. Rotate that ` +
+          `parameter from its row, or choose a name that differs by more than case ` +
+          `or punctuation.`,
+      };
+    }
+    return unknown;
+  }
+  if (listed) {
+    if (wantedSecret && !listed.secret) {
+      return {
+        addVersion: false,
+        message:
+          `${path} already exists as a NON-SECRET parameter, so nothing was ` +
+          `created. A new version keeps that kind, which would store this value ` +
+          `where any parameter viewer can read it. To hold a secret here, delete ` +
+          `the parameter from its row and create it again as a secret.`,
+      };
+    }
+    return {
+      addVersion: true,
+      message:
+        `${path} already exists (${listed.secret ? "secret" : "non-secret"}), so ` +
+        `nothing was created. To change its value, add a new version below.`,
+    };
+  }
+  if (held !== undefined) {
+    return {
+      addVersion: false,
+      message:
+        `${path} already exists, but it was not written by strad or Zimmer (its ` +
+        `managed-by label is neither), so this console does not list it or write ` +
+        `into it. Nothing was created. Change it with the tool that owns it.`,
+    };
+  }
+  if (!store.isSecret) return unknown;
+  return {
+    addVersion: false,
+    message:
+      `Google Cloud already holds a resource with this parameter's id ("${id}"), ` +
+      `but strad cannot read it as a parameter: it has no version yet, or only ` +
+      `its Secret Manager half exists — a write that stopped part-way, by strad ` +
+      `or another tool. Nothing was created. Delete the Parameter Manager ` +
+      `parameter and the Secret Manager secret named "${id}" in this store's ` +
+      `project, then create it again.`,
+  };
 }
 
 /**

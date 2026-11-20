@@ -5,6 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import {
   anyPermits,
+  ParameterManagerError,
   createMCPServer,
   loadConfig,
   storeForPath,
@@ -121,7 +122,7 @@ function twoStoreConfig(overrides = {}) {
  * test can assert not merely that no value came back but that the restricted
  * store's client was never reached at all.
  */
-async function twoStoreServer({ caps = {} } = {}) {
+async function twoStoreServer({ caps = {}, createError } = {}) {
   const reads = [];
   const writes = [];
   const values = {
@@ -148,7 +149,10 @@ async function twoStoreServer({ caps = {} } = {}) {
       },
     }),
     writerFactory: (store) => ({
-      create: async (input) => void writes.push(["create", store.project, input.path]),
+      create: async (input) => {
+        if (createError) throw createError;
+        writes.push(["create", store.project, input.path]);
+      },
       rotate: async (path) => void writes.push(["rotate", store.project, path]),
       setNote: async (path) => void writes.push(["note", store.project, path]),
       destroy: async (path) => void writes.push(["destroy", store.project, path]),
@@ -263,6 +267,30 @@ test("write and delete are refused per store, not per server", async () => {
     assert.equal(res.isError, undefined, `${attempt.name} must work on staging`);
   }
   assert.equal(writes.filter((w) => w[1] === STAGING.project).length, 3);
+  await close();
+});
+
+test("a create that collides names set_parameter_value as the way through", async () => {
+  const { client, close } = await twoStoreServer({
+    caps: { [STAGING.project]: CAPS.permissive },
+    createError: new ParameterManagerError("POST parameters 409", 409),
+  });
+  const res = await client.callTool({
+    name: "create_parameter",
+    arguments: { name: STAGING_PARAM, value: "v" },
+  });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /already exists/);
+  assert.match(res.content[0].text, /set_parameter_value/);
+
+  // Asked for a secret over a non-secret parameter: no tool is offered, since a
+  // new version keeps the kind and would store the value where a viewer reads it.
+  const secretOverPlain = await client.callTool({
+    name: "create_parameter",
+    arguments: { name: STAGING_PARAM, value: "v", secret: true },
+  });
+  assert.equal(secretOverPlain.isError, true);
+  assert.match(secretOverPlain.content[0].text, /NON-SECRET/);
   await close();
 });
 

@@ -61,6 +61,10 @@ describe("the secrets tree has no second implementation", () => {
     "decodeStoredValue",
     "parameterId",
     "variableOf",
+    "MANAGED_BY_LABEL",
+    "MANAGED_BY_STRAD",
+    "READABLE_MANAGERS",
+    "isReadableManaged",
   ];
 
   it("owns every name the wire declares", () => {

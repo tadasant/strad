@@ -10,7 +10,10 @@ import {
   storeForPath,
 } from "./config.js";
 import { variableOf } from "./parameter-wire.js";
-import type { ParametersReader } from "./parameter-manager.js";
+import {
+  ParameterManagerError,
+  type ParametersReader,
+} from "./parameter-manager.js";
 import {
   anyPermits,
   NO_CAPABILITIES,
@@ -611,12 +614,46 @@ export function registerTools(server: Server, deps: ToolDeps): void {
           }
           const writer = deps.writer?.(found.store);
           if (!writer) return error("no client is configured for writes");
-          await writer.create({
-            path,
-            secret,
-            value: a.value,
-            note: typeof a.note === "string" && a.note ? a.note : undefined,
-          });
+          try {
+            await writer.create({
+              path,
+              secret,
+              value: a.value,
+              note: typeof a.note === "string" && a.note ? a.note : undefined,
+            });
+          } catch (err) {
+            // A collision is not a dead end when there is a parameter at
+            // exactly this path: `set_parameter_value` adds a version to it.
+            // The reader is asked first, so the tool is named only when it
+            // would work — `getParameter` is null for an id that folds onto
+            // another path, or a resource with no readable version.
+            if (err instanceof ParameterManagerError && err.status === 409) {
+              const existing = await deps
+                .reader(found.store)
+                .getParameter(path)
+                .catch(() => undefined);
+              if (existing) {
+                if (secret && existing.envelope.secret !== true) {
+                  return error(
+                    `${path} already exists in ${found.store.project} as a NON-SECRET parameter, so nothing was created. ` +
+                      "A new version keeps that kind, so set_parameter_value would store this value where any parameter viewer can read it. " +
+                      "Ask a human to delete it and create it again as a secret.",
+                  );
+                }
+                return error(
+                  `${path} already exists in ${found.store.project}, so nothing was created. ` +
+                    "To change its value, call set_parameter_value with the same name — it adds a new version.",
+                );
+              }
+              return error(
+                `${path} could not be created in ${found.store.project}: a resource with its id already exists, ` +
+                  "and it is not a readable parameter at this exact path (another path folding to the same id, " +
+                  "a write that stopped part-way, or a read that failed). Nothing was written. " +
+                  "Ask a human to look at it in the console.",
+              );
+            }
+            throw err;
+          }
           return text({
             created: path,
             project: found.store.project,

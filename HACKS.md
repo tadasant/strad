@@ -8071,3 +8071,36 @@ call, no new credential and no new process.
 **Undo.** A live run on a paired account retires the first item. Unset
 `WHATSAPP_EVENTS_ENABLED` and the event is gone; delete `events/` in the
 bridge's folder to drop what it kept.
+
+## 157. strad reads Zimmer's `managed-by` label, and a Zimmer upsert after a strad rotate writes the wrong encoding
+
+**What.** Every reader of a parameter store — the console, the resolver and the
+`secrets` server — keeps a parameter whose `managed-by` label is `strad` or
+`zimmer` (`READABLE_MANAGERS` in `src/secrets/parameters/wire.ts`). Zimmer's
+own name is written into strad.
+
+**Why.** Zimmer writes its stores with its own client, labelled
+`managed-by=zimmer`. A reader keyed on `strad` alone hid every such parameter
+from the console while a create at its path still met Google's 409, so a human
+could neither see `/zimmer/production/secrets/static/OPENROUTER_API_KEY` nor add
+a version to it. The label is the only thing a listing can filter on before it
+reads an envelope; there is no neutral "written by a cooperating system" value
+both sides stamp.
+
+**What it costs.**
+
+1. **A third writer is invisible until it is named here.** A parameter some
+   other system writes in the same envelope shape is still skipped.
+2. **Zimmer's `upsert` does not read the envelope it writes under.** A strad
+   rotate of a parameter with no `encoding` declares `"encoding":"base64url"`
+   and writes base64url bytes. Zimmer's `WriteClient#upsert` adds a Secret
+   Manager version of LITERAL bytes and leaves the envelope alone, so a Zimmer
+   write after a strad rotate stores bytes the envelope misdescribes. Zimmer's
+   reader refuses bytes that are not canonical base64url, but a literal value
+   made only of `[A-Za-z0-9_-]` that decodes to valid UTF-8 is read as garbage
+   instead. This was already true of every parameter the strad console created
+   in Zimmer's stores; reading Zimmer-written parameters extends it to them.
+
+**Undo.** A shared writer, or Zimmer's `upsert` honouring the envelope's
+declared encoding, retires the second item. A `managed-by` value both systems
+stamp retires the first.
