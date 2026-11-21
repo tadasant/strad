@@ -393,13 +393,16 @@ Add one on the Mac:
 strad-hostd destination add pulsemcp --url https://strad.pulsemcp.com --title "PulseMCP's strad"
 # prints:  custody deposit → pulsemcp (strad.pulsemcp.com)  <key>
 strad-hostd keys        # prints it again later
-# restart the daemon to serve the new destination
 ```
 
-`strad-hostd destination remove pulsemcp` drops it, and a running daemon
-stops depositing there at once. Delete the key from that strad too. A
-destination added while the daemon runs can be deposited into straight away,
-but the tool's list of names updates at the next restart.
+`destination add` tells a running daemon to re-read its config, so a deposit
+naming the new destination goes through straight away, with no restart. What
+does wait for a restart is the `deposit` tool's advertised list of names — its
+description and the `destination` enum are built when the daemon boots — so a
+client that checks arguments against that enum may refuse the new name until
+then. `strad-hostd destination remove pulsemcp` drops one the same way: a
+running daemon stops depositing there at once. Delete the key from that strad
+too.
 
 ### What the other strad needs
 
