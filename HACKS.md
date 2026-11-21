@@ -8143,3 +8143,50 @@ general-purpose client.
 
 **Undo.** A live call against each vendor retires the first item. OpenRouter
 issuing a read-only management scope would retire the fourth.
+
+## 159. `oauthRefresh.registration:` registers Figma's client as Claude Code
+
+**What.** A `remote-http` slug with `oauthRefresh.registration: { clientName }`
+registers with that RFC 7591 `client_name` instead of `strad (<env>) <slug>`.
+With `clientSecret:` declared as one `${NAME}` too, Connect registers a
+CONFIDENTIAL client (`client_secret_<clientAuth>`), carries the issued secret
+to the callback AES-256-GCM-encrypted in the connect transaction
+(`UpstreamTerms.sealedClientSecret`, under `ConsoleSessions.connectorSecret`),
+and writes it beside the client id (`src/connectors/upstream.ts`,
+`src/ui/upstream-connector.ts`).
+
+**Why.** Figma's MCP authorization server registers only clients on its list,
+and it decides on `client_name` alone. Probed on 2026-11-21 against
+`https://api.figma.com/v1/oauth/mcp/register`, all with strad's redirect URI:
+`strad (staging) figma`, `Claude`, `ClaudeCode`, `claude code` and
+`strad Claude Code` got `403`. `Claude Code`, `Claude Code (strad)` and
+`Claude Codex` got `201`, so the rule is a case-sensitive prefix. Neither the
+redirect URI (an `https://example.com` one was registered too) nor the
+user agent (`claude-code/2.0` with strad's name was still `403`) changed the
+answer. Zimmer passes the same check by registering as `Claude Code (Zimmer)`.
+Every registration came back with a `client_secret`, even one that asked for
+`token_endpoint_auth_method: none` and had `none` echoed back. The token
+endpoint advertises only `client_secret_basic` and `client_secret_post`, and a
+refresh without the secret is answered `Client ID and client secret are
+required`. A public client would connect and then fail its first refresh.
+
+**What it costs.**
+
+1. **strad claims to be another product.** If Figma tightens the check, the next
+   Connect fails at registration with a `403`, loudly. Tokens already stored keep
+   working until Figma revokes them.
+2. **A client secret rides in a browser cookie, encrypted.** It is encrypted
+   under its own key, HKDF-derived from the console session key (`CONSOLE_SESSION_SECRET`, else `GOOGLE_CLIENT_SECRET`), it lives for the ten minutes the transaction
+   does, and it is never logged or rendered. No other Connect carries a secret
+   through the browser.
+3. **Not run end to end against Figma.** Registration and the secret
+   requirement were observed against the real server. A consent needs a human
+   at Figma's sign-in, and that, the code exchange and a real refresh have run
+   only against `test/helpers/fake-oauth.ts` with `clientNamePrefix` and
+   `issueSecret`, which copy what was observed.
+
+**Undo.** A client Figma issues by hand, seeded under `clientId` and
+`clientSecret`, with `registration:` dropped — and the `oauth/` client id and
+secret an earlier Connect wrote deleted, because `oauth/` is read ahead of
+`static/` and would shadow the seeded pair. Or Figma adding strad to its list,
+which needs only `registration:` dropped.

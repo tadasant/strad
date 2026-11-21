@@ -4,11 +4,12 @@ import {
   authorizationServerCandidates,
   bearerChallenge,
   checkTokenEndpoint,
+  clientSource,
   discoverUpstream,
   endpointAllowed,
   parseSuppliedDocument,
   protectedResourceCandidates,
-  registerPublicClient,
+  registerClient,
   resourceCovers,
   upstreamConnectorFor,
   upstreamPlan,
@@ -182,6 +183,54 @@ describe("upstreamPlan: what the flow may write", () => {
     expect(plan.scopes).toEqual(["read", "offline_access"]);
     expect(plan.problems).toHaveLength(1);
     expect(plan.problems[0]).toContain("oauthRefresh.tokenUrl");
+  });
+
+  it("registration: is null unless declared, and only then may a declared secret be registered", () => {
+    const secret = `${ALL_REFS}
+      clientSecret: "\${RIPPLING_CLIENT_SECRET}"`;
+    const without = upstreamPlan(
+      upstreamConnectorFor(configOf(secret), "rippling")!,
+    );
+    expect(without.registration).toBeNull();
+    expect(clientSource(without, true, new Map())).toBeNull();
+    expect(
+      upstreamPlan(upstreamConnectorFor(configOf(ALL_REFS), "rippling")!)
+        .registration,
+    ).toBeNull();
+
+    const withIt = upstreamPlan(
+      upstreamConnectorFor(
+        configOf(`${secret}
+      registration:
+        clientName: Claude Code (strad)`),
+        "rippling",
+      )!,
+    );
+    expect(withIt.problems).toEqual([]);
+    expect(withIt.registration).toEqual({ clientName: "Claude Code (strad)" });
+    expect(clientSource(withIt, true, new Map())).toEqual({ kind: "register" });
+    // No registration endpoint: still the seeded client, as without it.
+    expect(clientSource(withIt, false, new Map())).toBeNull();
+  });
+
+  it("registration: with a literal clientId is a problem, and a ${NAME} clientName does not parse", () => {
+    const plan = upstreamPlan(
+      upstreamConnectorFor(
+        configOf(`
+      tokenUrl: "\${RIPPLING_TOKEN_URL}"
+      clientId: fixed-client
+      refreshToken: "\${RIPPLING_REFRESH_TOKEN}"
+      registration:
+        clientName: Claude Code (strad)`),
+        "rippling",
+      )!,
+    );
+    expect(plan.problems[0]).toContain("oauthRefresh.registration is set");
+    expect(() =>
+      configOf(`${ALL_REFS}
+      registration:
+        clientName: "\${NAME}"`),
+    ).toThrow(/clientName must be a literal/);
   });
 
   it("a url carrying a ${NAME} cannot be discovered from", () => {
@@ -482,7 +531,7 @@ describe("discoverUpstream", () => {
   });
 });
 
-describe("registerPublicClient", () => {
+describe("registerClient", () => {
   const input = {
     registrationEndpoint: `${AS}/register`,
     redirectUri: "https://strad.example/ui/oauth/callback",
@@ -497,12 +546,56 @@ describe("registerPublicClient", () => {
         json: { client_id: "c1", token_endpoint_auth_method: "none" },
       },
     });
-    expect(await registerPublicClient(input, f)).toBe("c1");
+    expect(await registerClient(input, f)).toEqual({ clientId: "c1" });
+  });
+
+  it("confidential: asks for client_secret_<clientAuth> and returns the issued secret, whatever method is echoed", async () => {
+    const f = scripted({
+      [`${AS}/register`]: {
+        status: 201,
+        // Figma's answer: `none` echoed back, a secret issued regardless.
+        json: {
+          client_id: "c2",
+          client_secret: "issued",
+          token_endpoint_auth_method: "none",
+        },
+      },
+    });
+    const sent: Record<string, unknown>[] = [];
+    const spy: typeof fetch = async (url, init) => {
+      sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return f(url, init);
+    };
+    expect(
+      await registerClient(
+        {
+          ...input,
+          clientName: "Claude Code (strad)",
+          confidential: { clientAuth: "post" },
+        },
+        spy,
+      ),
+    ).toEqual({ clientId: "c2", clientSecret: "issued" });
+    expect(sent[0]).toMatchObject({
+      client_name: "Claude Code (strad)",
+      token_endpoint_auth_method: "client_secret_post",
+    });
+  });
+
+  it("confidential: a registration that issues no secret is refused", async () => {
+    await expect(
+      registerClient(
+        { ...input, confidential: { clientAuth: "basic" } },
+        scripted({
+          [`${AS}/register`]: { status: 201, json: { client_id: "c3" } },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "registration_failed" });
   });
 
   it("refuses a confidential answer and a refusal, without quoting either body", async () => {
     await expect(
-      registerPublicClient(
+      registerClient(
         input,
         scripted({
           [`${AS}/register`]: {
@@ -511,7 +604,7 @@ describe("registerPublicClient", () => {
         }),
       ),
     ).rejects.toMatchObject({ code: "registration_confidential" });
-    const refused = await registerPublicClient(
+    const refused = await registerClient(
       input,
       scripted({
         [`${AS}/register`]: {

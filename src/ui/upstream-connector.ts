@@ -24,7 +24,7 @@ import {
   heldVariables,
   parseSuppliedDocument,
   protectedResourceCandidates,
-  registerPublicClient,
+  registerClient,
   shown,
   storeUpstreamWrites,
   UPSTREAM_PROVIDER,
@@ -320,15 +320,22 @@ export async function handleUpstreamConnect(
           ? `The authorization server ${shown(discovery.issuer)} offers no dynamic ` +
             `client registration`
           : `This server declares oauthRefresh.clientSecret, so strad cannot ` +
-            `register a client for it (it registers public clients only)`) +
+            `register a client for it (without oauthRefresh.registration: it registers public clients only)`) +
           `, and \${${variable}} is not seeded in this server's own ` +
           `namespace. Register a client at the upstream with the redirect URI ` +
-          `${redirectUri}, seed its id as ${variable} under ` +
+          `${redirectUri}, seed its id as ${variable}` +
+          (plan.clientSecretVariable !== null
+            ? ` and its secret as ${plan.clientSecretVariable}`
+            : "") +
+          ` under ` +
           `${staticNamespace(opts.config.gateway.env, slug)}, and Connect ` +
           `uses it. Nothing was registered or written.`,
       );
     }
+    // A confidential client strad registers brings its own secret; only a
+    // seeded or literal client needs one already in the store.
     if (
+      source.kind !== "register" &&
       plan.clientSecretVariable !== null &&
       !state.held.has(plan.clientSecretVariable)
     ) {
@@ -343,19 +350,38 @@ export async function handleUpstreamConnect(
     }
 
     let clientId: string | null = null;
+    let sealedClientSecret: string | undefined;
     if (source.kind === "literal") {
       clientId = source.clientId;
     } else if (source.kind === "register") {
       try {
-        clientId = await registerPublicClient(
+        // `registration:` is the per-server opt-in that changes WHO strad
+        // registers as, and — with `clientSecret:` declared — lets it keep a
+        // confidential client's secret. Every other server registers a public
+        // client under strad's own name.
+        const confidential =
+          plan.registration !== null && plan.clientSecretVariable !== null;
+        const registered = await registerClient(
           {
             registrationEndpoint: discovery.registrationEndpoint!,
             redirectUri,
-            clientName: `strad (${opts.config.gateway.env}) ${slug}`,
+            clientName:
+              plan.registration?.clientName ??
+              `strad (${opts.config.gateway.env}) ${slug}`,
             scopes: discovery.scopes,
+            ...(confidential
+              ? { confidential: { clientAuth: entry.oauth.clientAuth } }
+              : {}),
           },
           fetchImpl,
         );
+        clientId = registered.clientId;
+        if (registered.clientSecret !== undefined) {
+          sealedClientSecret = opts.sessions!.connectorSecret.seal({
+            v: 1,
+            secret: registered.clientSecret,
+          });
+        }
       } catch (err) {
         // A registration endpoint that REFUSES (401/403: it wants an initial
         // access token, or a firewall stands in front of it) is the case the
@@ -370,6 +396,22 @@ export async function handleUpstreamConnect(
           (err.status === 401 || err.status === 403);
         if (!refused || !variable || !seeded) throw err;
         source = { kind: "seeded", variable, path: seeded.path };
+        // A seeded client of a server that declares a secret needs that
+        // secret seeded too — checked above only for a client strad would not
+        // register, so asked again here, before anyone signs in.
+        if (
+          plan.clientSecretVariable !== null &&
+          !state.held.has(plan.clientSecretVariable)
+        ) {
+          throw new UpstreamConnectError(
+            "no_client",
+            `The registration endpoint refused to register a client ` +
+              `(HTTP ${(err as UpstreamConnectError).status}), and \${${variable}} ` +
+              `is seeded but \${${plan.clientSecretVariable}} is not. Seed ` +
+              `both under ${staticNamespace(opts.config.gateway.env, slug)}. ` +
+              `Nothing was registered or written.`,
+          );
+        }
       }
     }
     if (source.kind === "seeded") {
@@ -392,6 +434,7 @@ export async function handleUpstreamConnect(
     terms = {
       clientId,
       registered: source.kind === "register",
+      ...(sealedClientSecret ? { sealedClientSecret } : {}),
       tokenUrl: discovery.tokenEndpoint,
       resource: discovery.resource,
       issuer: discovery.issuer,
@@ -569,9 +612,28 @@ export async function handleUpstreamCallback(
   };
 
   // A configured confidential client's secret, from the store — never from the
-  // transaction, which is a signed cookie in a browser.
+  // transaction, which is a signed cookie in a browser. The exception is a
+  // confidential client strad registered on THIS Connect: its secret is in the
+  // transaction ENCRYPTED, and is written beside the client id below.
   let clientSecret: string | undefined;
-  if (plan.clientSecretVariable !== null) {
+  let registeredSecret: string | undefined;
+  if (plan.clientSecretVariable !== null && terms.registered) {
+    const opened = opts.sessions?.connectorSecret.open<{
+      v: 1;
+      secret: string;
+    }>(terms.sealedClientSecret);
+    if (typeof opened?.secret !== "string" || opened.secret === "") {
+      // The transaction verified, so this is a value this key did not seal —
+      // in practice, a console key rotated mid-Connect. Never a store read.
+      connectFailed("callback", slug, "client_unreadable", {
+        variable: plan.clientSecretVariable,
+        failure: "unreadable",
+      });
+      back("?error=client_unreadable");
+      return;
+    }
+    clientSecret = registeredSecret = opened.secret;
+  } else if (plan.clientSecretVariable !== null) {
     const variable = plan.clientSecretVariable;
     const meta = state.held.get(variable);
     const path =
@@ -621,6 +683,7 @@ export async function handleUpstreamCallback(
       plan,
       terms,
       grant.refreshToken,
+      registeredSecret,
     );
     await storeUpstreamWrites(
       state.store,
@@ -850,18 +913,29 @@ ${button(
       break;
   }
 
+  const clientVariable =
+    plan.clientId?.mode === "write" ? plan.clientId.variable : "";
+  const registersAs = plan.registration
+    ? ` registered under the name <code>${esc(plan.registration.clientName)}</code> ` +
+      `(this server's <code>registration:</code>)`
+    : "";
   const clientLine =
     plan.clientId?.mode === "literal"
       ? `the configured client <code>${esc(plan.clientId.value)}</code>`
-      : plan.clientSecretVariable !== null
-        ? `the client seeded as <code>\${${esc(
-            plan.clientId?.mode === "write" ? plan.clientId.variable : "",
-          )}}</code> and <code>\${${esc(plan.clientSecretVariable)}}</code>`
-        : `a public client strad registers at the upstream (RFC 7591), or — if ` +
-          `the upstream offers no registration — the client id seeded as ` +
-          `<code>\${${esc(
-            plan.clientId?.mode === "write" ? plan.clientId.variable : "",
-          )}}</code>`;
+      : plan.registration && plan.clientSecretVariable !== null
+        ? `a confidential client strad registers at the upstream (RFC 7591)${registersAs}, ` +
+          `whose id and secret it writes as <code>\${${esc(clientVariable)}}</code> and ` +
+          `<code>\${${esc(plan.clientSecretVariable)}}</code> — or, if the upstream offers no ` +
+          `registration, the client seeded under those names`
+        : plan.clientSecretVariable !== null
+          ? `the client seeded as <code>\${${esc(
+              plan.clientId?.mode === "write" ? plan.clientId.variable : "",
+            )}}</code> and <code>\${${esc(plan.clientSecretVariable)}}</code>`
+          : `a public client strad registers at the upstream (RFC 7591)${registersAs}, or — if ` +
+            `the upstream offers no registration — the client id seeded as ` +
+            `<code>\${${esc(
+              plan.clientId?.mode === "write" ? plan.clientId.variable : "",
+            )}}</code>`;
 
   const body = `
 <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/connectors" class="crumb">connectors</a><span class="crumb-sep">/</span><span class="crumb crumb-current">${esc(slug)}</span></nav>
@@ -906,6 +980,11 @@ ${state.kind === "ready" || state.kind === "connected" ? pasteForm(action, entry
   <ul class="scope-list">
     ${describeField("tokenUrl", plan.tokenUrl, "the discovered token endpoint")}
     ${describeField("clientId", plan.clientId, "the client id, when strad registered it")}
+    ${
+      plan.registration && plan.clientSecretVariable !== null
+        ? `<li><code>\${${esc(plan.clientSecretVariable)}}</code> — the client secret, when strad registered the client, as a secret parameter</li>`
+        : ""
+    }
     ${describeField("resource", plan.resource, "the resource the tokens are bound to")}
     <li><code>\${${esc(plan.refreshVariable)}}</code> — the refresh token, as a secret parameter</li>
   </ul>

@@ -701,6 +701,50 @@ const DiscoveryProxySchema = z.object({
 });
 
 /**
+ * `oauthRefresh.registration:` — the client identity Connect registers with, for
+ * an upstream that only registers clients it recognises.
+ *
+ *     oauthRefresh:
+ *       tokenUrl: ${FIGMA_TOKEN_URL}
+ *       clientId: ${FIGMA_CLIENT_ID}
+ *       clientSecret: ${FIGMA_CLIENT_SECRET}
+ *       clientAuth: post
+ *       refreshToken: ${FIGMA_REFRESH_TOKEN}
+ *       resource: https://mcp.figma.com/mcp
+ *       registration:
+ *         clientName: Claude Code (strad)
+ *
+ * Without it strad registers as `strad (<env>) <slug>`. Figma's registration
+ * endpoint answers that with a 403: it registers a client only when its
+ * `client_name` starts with the name of an MCP client on Figma's list, and strad
+ * is not on it. `clientName` is the whole override — the redirect URI, the
+ * grant types and everything else strad sends stay strad's own.
+ *
+ * It also lets Connect REGISTER a confidential client. Without this block a
+ * server that declares `clientSecret:` must have its client seeded by hand; with
+ * it, and `clientSecret:` as one `${NAME}`, Connect registers with
+ * `client_secret_<clientAuth>` and writes the secret it is issued beside the
+ * client id. Figma issues one to every client it registers and refuses a
+ * refresh without it. See src/connectors/upstream.ts.
+ *
+ * Opt in per slug. It is an identity claim made to a third party, and it does
+ * nothing for an upstream that registers anyone.
+ */
+const RegistrationSchema = z.object({
+  /**
+   * The RFC 7591 `client_name`. A literal: the consent screen shows it, and the
+   * Connect page shows it before anyone clicks.
+   */
+  clientName: z
+    .string()
+    .min(1)
+    .max(200)
+    .refine((v) => secretRefsIn(v).length === 0, {
+      message: "registration.clientName must be a literal, not a ${NAME}",
+    }),
+});
+
+/**
  * `oauthRefresh:` — this upstream takes short-lived OAuth access tokens, and
  * strad holds the refresh token that mints them.
  *
@@ -749,6 +793,8 @@ const OAuthRefreshSchema = z.object({
   resource: z.string().min(1).optional(),
   /** Read Connect's metadata through a proxy. See {@link DiscoveryProxySchema}. */
   discoveryProxy: DiscoveryProxySchema.optional(),
+  /** How Connect registers its client. See {@link RegistrationSchema}. */
+  registration: RegistrationSchema.optional(),
 });
 
 /**

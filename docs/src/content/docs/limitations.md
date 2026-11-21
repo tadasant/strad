@@ -3460,7 +3460,7 @@ A `remote-http` server with `oauthRefresh:` has a **Connect** button that runs t
 
   Registration, the code exchange and every refresh still leave from strad. Before it registers anything or sends anyone to sign in, Connect GETs the token endpoint and refuses (`token_endpoint_blocked`) on a `403` page a firewall signed (`cf-ray`, `server: cloudflare`, `AkamaiGHost`). An unsigned `403` page passes, so a firewall that signs nothing is found at the code exchange instead, after the sign-in. A firewall there means no refresh would ever work, and neither workaround helps.
 
-- **Public clients only, when strad registers one.** The transaction that carries a registered client from the button to the callback is a signed cookie, not an encrypted one, so strad registers with `token_endpoint_auth_method: none` and refuses a confidential answer. A server that needs a client secret gets a client a human registered at the upstream, seeded under the `clientId` and `clientSecret` `${NAME}`s.
+- **Public clients only, when strad registers one — unless the slug declares `registration:`.** The transaction that carries a registered client from the button to the callback is a signed cookie, not an encrypted one, so strad registers with `token_endpoint_auth_method: none` and refuses a confidential answer. A server that needs a client secret gets a client a human registered at the upstream, seeded under the `clientId` and `clientSecret` `${NAME}`s. A slug with `registration:` and `clientSecret:` instead registers a confidential client and carries its secret encrypted (#159).
 - **A fresh client on every Connect.** Each Connect registers a new client and stops using the old one; nothing deletes the old registration at the upstream.
 - **No identity is proved.** As with `provider: generic`, strad stores whichever account signed in. The page says `account: not checked`.
 - **Other replicas catch up on their TTL.** Connect drops the cached reading of the process that served it. Another core replica sees the new values within `ttlSeconds`; core runs one instance today.
@@ -4916,3 +4916,40 @@ against OpenRouter, OpenAI and a Cloud Billing BigQuery export.
   Job User there.
 
 See `HACKS.md` #158.
+
+### 159. Figma's Connect registers under Claude Code's name, and has not met a real sign-in
+
+Figma's MCP registration endpoint registers a client only when its `client_name`
+starts with `Claude Code`, so a slug with `oauthRefresh.registration:` registers
+under the name it gives (`Claude Code (strad)`) instead of strad's own. See
+[`registration:`](/operate/connectors/#registration-an-upstream-that-registers-only-clients-it-knows).
+
+- **It is an identity claim to a third party.** strad says it is Claude Code
+  because Figma's allowlist leaves no other way in. Zimmer makes the same
+  claim (`Claude Code (Zimmer)`). If Figma starts checking anything beyond the
+  name, such as the redirect URI or a client ID metadata document, the slug's
+  next Connect is refused at registration, a `403`. Existing clients and tokens
+  keep working until Figma revokes them.
+- **The secret crosses the browser, encrypted.** Figma issues a secret to every
+  client and refuses a refresh without it, so the connect transaction carries
+  it AES-256-GCM-encrypted under a key derived from the console session key
+  (`CONSOLE_SESSION_SECRET`, else `GOOGLE_CLIENT_SECRET`). A leaked cookie
+  holds only ciphertext, and it is useless once its ten minutes run out.
+  Rotating that key voids any Connect in flight.
+- **Checked against Figma only up to the sign-in.** Registration was verified
+  against the real endpoint: `strad (staging) figma` got `403`, and
+  `Claude Code (strad)` got `201` with a `client_secret`. Figma's token endpoint
+  answered a secret-less refresh with `Client ID and client secret are
+required`. A completed consent, the code exchange and a refresh with a real
+  token were exercised only against the fake (`test/connector.upstream.e2e.test.ts`).
+
+**How you would know.** Connect on the slug answers `409` with
+`registration_failed` and status `403`, and `strad.connector_connect_failed`
+carries both.
+
+**Undo:** register a client with Figma by hand, if Figma will issue one, seed it
+under `clientId` and `clientSecret`, drop `registration:`, and delete the client
+id and secret an earlier Connect wrote under `oauth/`, which is read ahead of
+`static/`.
+
+See `HACKS.md` #159.

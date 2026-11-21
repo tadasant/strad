@@ -894,3 +894,220 @@ describe("discoveryProxy: the metadata a firewall refuses strad, read through Br
     expect(h.oauth.registrations).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+
+/**
+ * `oauthRefresh.registration:` — Figma's client allowlist, against a fake that
+ * enforces what Figma's registration endpoint was observed to enforce: a 403
+ * unless `client_name` starts with "Claude Code", a `client_secret` issued to
+ * every client whatever method it asked for, and a token endpoint that refuses
+ * a grant without that secret.
+ */
+describe("registration: — an upstream that registers only clients it recognises", () => {
+  const FIGMA_LIKE = {
+    mcpAuth: {
+      scopes: ["mcp:connect"],
+      clientNamePrefix: "Claude Code",
+      issueSecret: true,
+    },
+  };
+  const WITH_REGISTRATION = `
+      tokenUrl: "\${RIPPLING_TOKEN_URL}"
+      clientId: "\${RIPPLING_CLIENT_ID}"
+      clientSecret: "\${RIPPLING_CLIENT_SECRET}"
+      clientAuth: post
+      refreshToken: "\${RIPPLING_REFRESH_TOKEN}"
+      resource: "\${RIPPLING_RESOURCE}"
+      registration:
+        clientName: Claude Code (strad)
+    mayBeUnseeded:
+      [RIPPLING_TOKEN_URL, RIPPLING_CLIENT_ID, RIPPLING_CLIENT_SECRET, RIPPLING_REFRESH_TOKEN, RIPPLING_RESOURCE]`;
+
+  it("without it, strad registers under its own name and the allowlist refuses it", async () => {
+    const h = await harness(FIGMA_LIKE);
+    const res = await connect(h);
+    expect(res.status).toBe(409);
+    expect(await res.text()).toContain("refused to register a client");
+    expect(h.oauth.registrations).toHaveLength(1);
+    expect(h.oauth.registrations[0]).toMatchObject({
+      client_name: "strad (test) rippling",
+      token_endpoint_auth_method: "none",
+    });
+    expect(await listed(h.fake, OAUTH_NS)).toEqual([]);
+  });
+
+  it("without it, a declared clientSecret still means a seeded client: nothing is registered", async () => {
+    const h = await harness(
+      FIGMA_LIKE,
+      `
+      tokenUrl: "\${RIPPLING_TOKEN_URL}"
+      clientId: "\${RIPPLING_CLIENT_ID}"
+      clientSecret: "\${RIPPLING_CLIENT_SECRET}"
+      clientAuth: post
+      refreshToken: "\${RIPPLING_REFRESH_TOKEN}"
+    mayBeUnseeded:
+      [RIPPLING_TOKEN_URL, RIPPLING_CLIENT_ID, RIPPLING_CLIENT_SECRET, RIPPLING_REFRESH_TOKEN]`,
+    );
+    const res = await connect(h);
+    expect(res.status).toBe(409);
+    expect(await res.text()).toContain("cannot register a client for it");
+    expect(h.oauth.registrations).toHaveLength(0);
+  });
+
+  it("with it, Connect registers as the named client, keeps the issued secret encrypted, and /mcp is served", async () => {
+    const h = await harness(FIGMA_LIKE, WITH_REGISTRATION);
+
+    const page = await (
+      await fetch(`${h.base}/ui/${SLUG}`, { headers: auth })
+    ).text();
+    expect(page).toContain("Claude Code (strad)");
+    expect(page).toContain("a confidential client strad registers");
+
+    const { begin, authorizeUrl, callback } = await roundTrip(h);
+    expect(h.oauth.registrations).toHaveLength(1);
+    expect(h.oauth.registrations[0]).toMatchObject({
+      client_name: "Claude Code (strad)",
+      token_endpoint_auth_method: "client_secret_post",
+      redirect_uris: ["https://strad.example/ui/oauth/callback"],
+      grant_types: ["authorization_code", "refresh_token"],
+      scope: "mcp:connect offline_access",
+    });
+    expect(authorizeUrl.searchParams.get("client_id")).toBe("client-1");
+
+    // The issued secret crossed the browser only encrypted: not in the
+    // signed transaction cookie, not in the redirect.
+    expect(begin.headers.getSetCookie().join("")).not.toContain(
+      "dcr-issued-SECRET",
+    );
+    const cookie = decodeURIComponent(
+      begin.headers
+        .getSetCookie()
+        .find((c) => c.startsWith(`${CONNECTOR_TX_COOKIE}=`))!,
+    );
+    const body = cookie.split("=")[1]!.split(".")[0]!;
+    expect(Buffer.from(body, "base64url").toString()).not.toContain(
+      "dcr-issued-SECRET",
+    );
+    expect(begin.headers.get("location")).not.toContain("SECRET");
+
+    expect(callback.headers.get("location")).toBe(`/ui/${SLUG}?connected=1`);
+    const exchange = h.oauth.tokenRequests.find(
+      (r) => r.grantType === "authorization_code",
+    )!;
+    expect(exchange).toMatchObject({
+      clientId: "client-1",
+      clientSecret: "dcr-issued-SECRET-1",
+      authorization: undefined,
+    });
+
+    // The secret is written beside the id, as a SECRET parameter.
+    expect(await listed(h.fake, OAUTH_NS)).toEqual([
+      "RIPPLING_CLIENT_ID",
+      "RIPPLING_CLIENT_SECRET",
+      "RIPPLING_REFRESH_TOKEN",
+      "RIPPLING_RESOURCE",
+      "RIPPLING_TOKEN_URL",
+    ]);
+    expect(await h.fake.store.reveal(`${OAUTH_NS}RIPPLING_CLIENT_SECRET`)).toBe(
+      "dcr-issued-SECRET-1",
+    );
+    expect(JSON.stringify([...h.fake.parameters.values()])).not.toContain(
+      "dcr-issued-SECRET-1",
+    );
+
+    // The refresh that mints the bearer presents the secret — the fake, like
+    // Figma, refuses one that does not — and the slug serves.
+    expect(await whoami(await h.mcp())).toBe("tadas");
+    const refresh = h.oauth.tokenRequests.find(
+      (r) => r.grantType === "refresh_token",
+    )!;
+    expect(refresh).toMatchObject({
+      clientId: "client-1",
+      clientSecret: "dcr-issued-SECRET-1",
+    });
+
+    const connected = await (
+      await fetch(`${h.base}/ui/${SLUG}`, { headers: auth })
+    ).text();
+    expect(connected).toContain("a confidential client strad registered");
+    expect(connected).not.toContain("dcr-issued-SECRET");
+  });
+
+  it("Reconnect registers a fresh client and rotates its secret in place", async () => {
+    const h = await harness(FIGMA_LIKE, WITH_REGISTRATION);
+    await roundTrip(h);
+    const { callback } = await roundTrip(h);
+    expect(callback.headers.get("location")).toBe(`/ui/${SLUG}?connected=1`);
+    expect(h.oauth.registrations).toHaveLength(2);
+    expect(await h.fake.store.reveal(`${OAUTH_NS}RIPPLING_CLIENT_ID`)).toBe(
+      "client-2",
+    );
+    expect(await h.fake.store.reveal(`${OAUTH_NS}RIPPLING_CLIENT_SECRET`)).toBe(
+      "dcr-issued-SECRET-2",
+    );
+    expect(await whoami(await h.mcp())).toBe("tadas");
+  });
+
+  it("a refused registration falls back to a seeded client only when its secret is seeded too", async () => {
+    const h = await harness(
+      { mcpAuth: { scopes: ["mcp:read"], registrationStatus: 403 } },
+      WITH_REGISTRATION,
+    );
+    await h.fake.store.create({
+      path: `${STATIC_NS}RIPPLING_CLIENT_ID`,
+      secret: false,
+      value: "hand-registered-client",
+    });
+    // The id alone: refused before anyone is sent to sign in.
+    const refused = await connect(h);
+    expect(refused.status).toBe(409);
+    expect(await refused.text()).toContain(
+      "is seeded but ${RIPPLING_CLIENT_SECRET} is not",
+    );
+    expect(h.oauth.authorizations).toHaveLength(0);
+
+    await h.fake.store.create({
+      path: `${STATIC_NS}RIPPLING_CLIENT_SECRET`,
+      secret: true,
+      value: "seeded-SECRET",
+    });
+    const { callback } = await roundTrip(h);
+    expect(callback.headers.get("location")).toBe(`/ui/${SLUG}?connected=1`);
+    const exchange = h.oauth.tokenRequests.find(
+      (r) => r.grantType === "authorization_code",
+    )!;
+    expect(exchange).toMatchObject({
+      clientId: "hand-registered-client",
+      clientSecret: "seeded-SECRET",
+    });
+    // Neither was strad's to write: both stay where they were seeded.
+    expect(await listed(h.fake, OAUTH_NS)).toEqual([
+      "RIPPLING_REFRESH_TOKEN",
+      "RIPPLING_RESOURCE",
+      "RIPPLING_TOKEN_URL",
+    ]);
+  });
+
+  it("a name alone, with no clientSecret, registers a public client under that name", async () => {
+    const h = await harness(
+      { mcpAuth: { scopes: ["mcp:read"], clientNamePrefix: "Claude Code" } },
+      `
+      tokenUrl: "\${RIPPLING_TOKEN_URL}"
+      clientId: "\${RIPPLING_CLIENT_ID}"
+      refreshToken: "\${RIPPLING_REFRESH_TOKEN}"
+      resource: "\${RIPPLING_RESOURCE}"
+      registration:
+        clientName: Claude Code (strad)
+    mayBeUnseeded:
+      [RIPPLING_TOKEN_URL, RIPPLING_CLIENT_ID, RIPPLING_REFRESH_TOKEN, RIPPLING_RESOURCE]`,
+    );
+    const { callback } = await roundTrip(h);
+    expect(callback.headers.get("location")).toBe(`/ui/${SLUG}?connected=1`);
+    expect(h.oauth.registrations[0]).toMatchObject({
+      client_name: "Claude Code (strad)",
+      token_endpoint_auth_method: "none",
+    });
+    expect(await whoami(await h.mcp())).toBe("tadas");
+  });
+});

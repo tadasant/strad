@@ -99,6 +99,17 @@ export interface McpAuthOptions {
   omitRefreshToken?: boolean;
   /** The authorization-code grant drops the connection without answering. */
   dropExchange?: boolean;
+  /**
+   * FIGMA'S SHAPE. `/register` answers 403 unless `client_name` starts with
+   * this — case-sensitive, as Figma's is.
+   */
+  clientNamePrefix?: string;
+  /**
+   * FIGMA'S SHAPE. `/register` issues a `client_secret` to every client while
+   * echoing whatever `token_endpoint_auth_method` it was asked for, and
+   * `/token` refuses either grant for that client without the secret.
+   */
+  issueSecret?: boolean;
 }
 
 export interface FakeOAuthOptions {
@@ -172,6 +183,8 @@ export async function startFakeOAuth(
   >();
   /** refresh token -> the client it was issued to, for code-issued tokens. */
   const refreshClients = new Map<string, string>();
+  /** client id -> the secret `/register` issued it, under `issueSecret`. */
+  const clientSecrets = new Map<string, string>();
   let base = "";
 
   const app = express();
@@ -230,7 +243,26 @@ export async function startFakeOAuth(
         });
         return;
       }
+      if (
+        auth.clientNamePrefix !== undefined &&
+        !String(body.client_name ?? "").startsWith(auth.clientNamePrefix)
+      ) {
+        res.status(403).type("text").send("Forbidden");
+        return;
+      }
       const clientId = `client-${registrations.length}`;
+      if (auth.issueSecret) {
+        const secret = `dcr-issued-SECRET-${registrations.length}`;
+        clientSecrets.set(clientId, secret);
+        res.status(201).json({
+          client_id: clientId,
+          client_secret: secret,
+          client_secret_expires_at: 0,
+          token_endpoint_auth_method: body.token_endpoint_auth_method,
+          redirect_uris: body.redirect_uris,
+        });
+        return;
+      }
       res.status(201).json(
         auth.confidential
           ? {
@@ -291,6 +323,23 @@ export async function startFakeOAuth(
         if (failure) {
           res.status(failure.status).json(failure.body ?? {});
           return;
+        }
+        // A client `/register` issued a secret must present it, on either
+        // grant: in the body, or as the Basic password.
+        const owed = clientSecrets.get(body.client_id ?? "");
+        if (owed !== undefined) {
+          const basic = req.get("authorization")?.replace(/^Basic /, "");
+          const presented =
+            body.client_secret ??
+            (basic
+              ? Buffer.from(basic, "base64").toString().split(":")[1]
+              : undefined);
+          if (presented !== owed) {
+            res.status(400).json({
+              error: "Client ID and client secret are required",
+            });
+            return;
+          }
         }
         if (auth?.dropExchange && body.grant_type === "authorization_code") {
           req.socket.destroy();
