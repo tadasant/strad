@@ -245,6 +245,10 @@ export function registerEventHandlers(
           );
           return events.map((e) => ({ ...e, name: namespaced(slug, e.name) }));
         } catch (err) {
+          // An `oauth:` slug nobody has connected is unconfigured, not broken
+          // (`awaitingConsent`), and is skipped as quietly as the handshake
+          // skips one: the same answer a tool listing gives it.
+          if (err instanceof ServerUnconfiguredError) return [];
           // One upstream that cannot list does not hide the others' events.
           // Its own message is not ours to log; its status, JSON-RPC code and
           // error class are, and they are what tells a page apart (#475).

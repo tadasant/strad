@@ -1,6 +1,11 @@
 import { SecretNotFoundError } from "../secrets/provider/index.ts";
 import type { ErrorKind, SelfClassifyingError } from "../telemetry/index.ts";
-import type { ServerAdapter } from "./adapters/types.ts";
+import type {
+  PollEventsParams,
+  ServerAdapter,
+  WebhookSubscribeParams,
+  WebhookUnsubscribeParams,
+} from "./adapters/types.ts";
 
 /**
  * A slug that is waiting for a credential nobody has seeded yet.
@@ -183,5 +188,37 @@ export function awaitingConsent(
   }
   if (adapter.postRaw) wrapped.postRaw = adapter.postRaw.bind(adapter);
   if (adapter.getRaw) wrapped.getRaw = adapter.getRaw.bind(adapter);
+  // MCP EVENTS. An optional method this wrapper does not copy is a capability
+  // the slug silently loses: core decides "does this slug serve events" from
+  // `supportsEvents` alone, so an `oauth:` slug whose mount advertised the
+  // extension answered `initialize` without it and `events/list` with nothing,
+  // and nothing anywhere failed. `test/unconfigured.forwarding.test.ts` holds
+  // every optional `ServerAdapter` method to being carried across.
+  //
+  // `supportsEvents` is NOT translated. It answers from the cached handshake,
+  // its caller already reads any failure as "no", and it runs on every
+  // `initialize` that selects the slug, so a translation would put a store
+  // listing behind each one for an answer nobody sees.
+  if (adapter.supportsEvents) {
+    wrapped.supportsEvents = adapter.supportsEvents.bind(adapter);
+  }
+  if (adapter.listEvents) {
+    wrapped.listEvents = guarded(() => adapter.listEvents!());
+  }
+  if (adapter.pollEvents) {
+    wrapped.pollEvents = guarded((params: PollEventsParams) =>
+      adapter.pollEvents!(params),
+    );
+  }
+  if (adapter.subscribeEvents) {
+    wrapped.subscribeEvents = guarded((params: WebhookSubscribeParams) =>
+      adapter.subscribeEvents!(params),
+    );
+  }
+  if (adapter.unsubscribeEvents) {
+    wrapped.unsubscribeEvents = guarded((params: WebhookUnsubscribeParams) =>
+      adapter.unsubscribeEvents!(params),
+    );
+  }
   return wrapped;
 }
