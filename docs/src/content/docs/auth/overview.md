@@ -306,11 +306,12 @@ connected. Nothing is copied or pasted.
 | `GET /oauth/authorize`                        | authorization code + PKCE; the Google sign-in starts here        |
 | `GET /oauth/callback/google`                  | Google comes back; the domain is enforced here                   |
 | `POST /oauth/approve`                         | the consent screen's decision                                    |
-| `POST /oauth/token`                           | `authorization_code` and `refresh_token`                         |
+| `POST /oauth/token`                           | `authorization_code`, `refresh_token`, and token exchange        |
 | `POST /oauth/revoke`                          | [RFC 7009](https://www.rfc-editor.org/rfc/rfc7009) revocation    |
 
 The metadata advertises `code` as the only response type, `authorization_code`
-and `refresh_token` as the grants, `S256` as the only PKCE method, and `none` as
+and `refresh_token` as the grants (plus
+[token exchange](#token-exchange-child-tokens) where a client may use it), `S256` as the only PKCE method, and `none` as
 the only token-endpoint auth method — `none` and `private_key_jwt`, with an
 algorithm list, on a deployment that turns
 [confidential clients](#confidential-clients-private_key_jwt) on. It sets
@@ -646,13 +647,14 @@ The authorization server issues grants one of two ways, and
 time. The two can coexist: a stateless token issued before records were turned
 on is governed by `grants.legacyTokens`.
 
-|                       | Stateless (`grants.enabled: false`)                                              | Record-backed (`grants.enabled: true`)                                                             |
-| --------------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Refresh token         | never expires, never rotates — the same token comes back                         | rotates on every refresh; a spent one presented again revokes the grant                            |
-| Refresh lifetime      | none                                                                             | `grants.refreshTokenTtlSeconds`, per client `clients[].refreshTokenTtlSeconds`; absent = none      |
-| Google refresh token  | sealed inside the code and the refresh token                                     | in the record, server-side; no token carries it                                                    |
-| `POST /oauth/revoke`  | refresh tokens only, and revokes **at Google** — every connector for the account | an access token (that token), a refresh token (that grant), each within seconds; nothing at Google |
-| Listed in the console | no                                                                               | `/tokens/grants`, with a Revoke                                                                    |
+|                       | Stateless (`grants.enabled: false`)                                              | Record-backed (`grants.enabled: true`)                                                                  |
+| --------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Refresh token         | never expires, never rotates — the same token comes back                         | rotates on every refresh; a spent one presented again revokes the grant                                 |
+| Refresh lifetime      | none                                                                             | `grants.refreshTokenTtlSeconds`, per client `clients[].refreshTokenTtlSeconds`; absent = none           |
+| Google refresh token  | sealed inside the code and the refresh token                                     | in the record, server-side; no token carries it                                                         |
+| `POST /oauth/revoke`  | refresh tokens only, and revokes **at Google** — every connector for the account | an access token (that token), a refresh token (that grant), each within seconds; nothing at Google      |
+| Listed in the console | no                                                                               | `/tokens/grants`, with a Revoke                                                                         |
+| Token exchange        | not available                                                                    | a listed confidential client with `tokenExchange` can mint [child tokens](#token-exchange-child-tokens) |
 
 ### Access tokens
 
@@ -796,8 +798,8 @@ that names it.
 - `refuse` — refused at `/oauth/token` and at `/mcp`; the holder signs in again.
 
 **Child grants.** A record may name a `parentGid`. A child holds no Google
-credential of its own — it refreshes against its root's — and it is dead whenever
-any ancestor is. That is the seam token exchange (RFC 8693) mints under.
+credential of its own, and it is dead whenever any ancestor is dead or past its
+deadline. [Token exchange](#token-exchange-child-tokens) mints under it.
 
 The blunt instrument behind all of this is **`STRAD_OAUTH_KEY`**. Rotating it
 invalidates every access token, every refresh token and every dynamic client
@@ -805,6 +807,133 @@ registration at once, and leaves console sessions signed in. Absent, the key is
 derived from `CONSOLE_SESSION_SECRET`, else `GOOGLE_CLIENT_SECRET` — so the flow
 works on any deployment that already has a console OAuth client, with no second
 secret to seed.
+
+### Token exchange: child tokens
+
+A confidential client can trade its own access token for a narrower,
+shorter-lived **child** access token
+([RFC 8693](https://www.rfc-editor.org/rfc/rfc8693)). This is how an
+orchestrator holding one grant hands each agent session a token that reaches
+only that session's slugs, for only as long as the session needs, and that can
+be revoked on its own. Zimmer is the client it was built for: it holds one
+grant, consented once, and mints a child before each agent turn.
+
+**Off unless configured.** It needs all three of:
+
+- grant records on (`auth.mcpOAuth.grants.enabled: true`), because a child is a
+  record under its parent;
+- a `clients[]` entry with `tokenEndpointAuthMethod: private_key_jwt`;
+- a `tokenExchange:` block on that same entry.
+
+`config:check` refuses the block without the first two. Until some entry has the
+block, the token endpoint answers this grant type the way it answers any unknown
+one, and the metadata does not list it.
+
+```yaml
+auth:
+  mcpOAuth:
+    clients:
+      - clientId: https://zimmer.example.com/oauth-client/metadata.json
+        tokenEndpointAuthMethod: private_key_jwt
+        jwksUri: https://zimmer.example.com/oauth-client/jwks.json
+        tokenExchange:
+          childTokenTtlSeconds: 21600 # used when the request names none; default 3600
+          maxChildTokenTtlSeconds: 21600 # most a request may ask for; default = the line above
+          maxLiveChildren: 500 # per grant; default 500, max 2000
+    grants:
+      enabled: true
+```
+
+**The request** is a form `POST /oauth/token` carrying the client's assertion:
+
+| Field                  | Value                                                                                                                 |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `grant_type`           | `urn:ietf:params:oauth:grant-type:token-exchange`                                                                     |
+| `client_assertion*`    | required, as for every confidential call                                                                              |
+| `subject_token`        | one of this client's own live, record-backed access tokens                                                            |
+| `subject_token_type`   | `urn:ietf:params:oauth:token-type:access_token`                                                                       |
+| `scope`                | required: one or more `slug:<name>`, all inside what the subject token reaches                                        |
+| `requested_token_type` | optional; only `…:access_token`                                                                                       |
+| `resource`, `audience` | optional; if sent, must be the grant's resource (`https://<host>/mcp`)                                                |
+| `expires_in`           | optional, seconds; capped at `maxChildTokenTtlSeconds`, floor 60 s (or the grant's remaining life). strad's extension |
+| `label`                | optional, 1–64 of `A-Z a-z 0-9 . : -`. strad's extension. Zimmer sends the session id                                 |
+
+`actor_token` is refused: a child is the client's own token, not a delegation.
+
+**The answer** is RFC 8693's shape, with **no refresh token**. A child is renewed
+by exchanging again, and that is when its scope gets decided again:
+
+```json
+{
+  "access_token": "strad_oat_…",
+  "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+  "token_type": "Bearer",
+  "expires_in": 21600,
+  "scope": "slug:alpha slug:beta"
+}
+```
+
+**What a child is.** A record of its own: the parent's account and resource, the
+named slugs, its expiry, and the label. Its token is presented at `/mcp` like
+any other, and `/mcp` judges it the same way, plus three rules:
+
+- It is **dead the moment its parent is**, because `/mcp` walks the chain on
+  every request. That covers the parent's refresh token revoked, a replay that
+  revoked the grant, a console revoke, or the parent's deadline passing,
+  including a deadline shortened later by config.
+- It **never outlives its parent's deadline** at the moment it is minted.
+- It is **not a subject token**. Exchanging a child is `invalid_request`.
+
+A child holds no Google credential and is not re-checked at Google during its
+life. Minting one needs a live parent access token, which is at most one access
+token lifetime past the parent's last check at Google. So an account that has
+left the Workspace can keep a child until the child expires, unless the parent
+grant is revoked
+([limitations](/limitations/#165-mcp-oauth-token-exchange-children-are-counted-on-the-parent-record-and-are-not-re-checked-at-google)).
+
+**Revoking a child** is `POST /oauth/revoke` with the child's access token and
+the client's assertion. It ends that child and frees its slot. The parent and
+its other children keep working. RFC 7009 still applies: an unknown or
+already-dead token is a `200`. Revoking the parent's refresh token ends every
+child. Removing `tokenExchange` from the client's entry also ends every live
+child at its next request. Revoking only the parent's access token does not end
+the children: they belong to the grant, not to the one access token that
+minted them, so that the parent can refresh hourly while its children run for
+six hours.
+
+**The cap.** The parent record counts its live children, and the count is capped
+at `maxLiveChildren`. At the cap, an exchange is refused:
+`400 invalid_request`, "this grant already holds N live child tokens; revoke
+one, or wait for one to expire". Nothing is evicted, because a live child is
+somebody's running session. A child leaves the count when it is revoked or when
+it expires; expired entries are dropped on the parent's next write. A dead
+child's record stays on `/tokens/grants` for a day after it expires or is
+revoked, then the sweep deletes it.
+
+**Errors**, after the client has authenticated:
+
+- `unauthorized_client`: this client's entry has no `tokenExchange`.
+- `invalid_request`: the subject token is unknown, belongs to another client, is
+  revoked or expired, or is a child; a field has the wrong shape; or the grant
+  is at the cap.
+- `invalid_scope`: no `slug:` was named, or one is outside the subject.
+- `invalid_target`: the `resource` or `audience` is not the grant's.
+- `503 temporarily_unavailable`: the grant store did not answer. Retry.
+
+A missing or bad assertion is `401 invalid_client`, as on every confidential
+call.
+
+**What is seen, and where.** `/tokens/grants` marks each child with its label
+and the grant it sits under, and has a Revoke button for it. The
+`mcp_oauth.exchange` event (`outcome`, `reason`, `client`, `label`,
+`slug_count`, `ttl_seconds`) ships to the obs stack for each issued exchange,
+and for each exchange refused after the client authenticated. A child
+revocation's `mcp_oauth.revoked` event carries the label too. The label is the
+one client-authored string strad exports, and it is allowed on purpose. Its
+shape is the boundary: it can't contain `_`, so no `strad_…` credential fits,
+and 64 characters is shorter than any strad token. No strad token, subject or
+child, reaches a log. The label is still the client's own bytes: send an id,
+never a secret.
 
 ### Audience binding, and the `?servers=` trap
 

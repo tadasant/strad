@@ -50,10 +50,13 @@ import {
 } from "../auth/mcp-oauth/client-auth.ts";
 import {
   grantDeadline,
+  verifyAccessToken,
+  type AccessVerdict,
   type GrantsRuntime,
   type McpOAuth,
 } from "../auth/mcp-oauth/index.ts";
 import {
+  ACCESS_TOKEN_TYPE,
   APPROVE_PATH,
   AUTHORIZATION_SERVER_ROUTES,
   authorizationServerMetadata,
@@ -64,6 +67,7 @@ import {
   normalizeResource,
   REGISTER_PATH,
   REVOKE_PATH,
+  TOKEN_EXCHANGE_GRANT,
   TOKEN_PATH,
 } from "../auth/mcp-oauth/metadata.ts";
 import {
@@ -102,7 +106,9 @@ import { asyncRoute, jsonFailure } from "./async-route.ts";
  *   6. The consent screen, and `POST /oauth/approve`.
  *   7. `POST /oauth/token` — `authorization_code`, then `refresh_token`: the
  *      same token forever for a stateless grant, a rotated one each time for a
- *      record-backed one (`auth.mcpOAuth.grants`, `grant-store.ts`).
+ *      record-backed one (`auth.mcpOAuth.grants`, `grant-store.ts`). A client
+ *      whose entry carries `tokenExchange` may also exchange its own access
+ *      token for a narrower, shorter-lived CHILD (RFC 8693, `exchangeGrant`).
  *
  * ## Two rules that shape every handler below
  *
@@ -159,6 +165,13 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
 
   const origin = (req: Request): string | null =>
     metadataBaseUrl(req, declared);
+  /**
+   * Is RFC 8693 token exchange served here at all? Some client entry carries
+   * `tokenExchange` (with `private_key_jwt`) AND grant records are live. Off,
+   * the grant type is answered exactly as any unknown one, and the metadata
+   * does not name it — every config that predates it.
+   */
+  const exchangeOn = oauth.policies.tokenExchange && oauth.grants !== null;
 
   /**
    * The public, credential-free documents and endpoints get permissive CORS.
@@ -210,6 +223,7 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
           ...(oauth.policies.privateKeyJwt
             ? { privateKeyJwtAlgs: ASSERTION_ALGORITHMS }
             : {}),
+          ...(exchangeOn ? { tokenExchange: true } : {}),
         }),
       );
     });
@@ -850,11 +864,17 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
         await refreshGrant(req, res);
         return;
       }
+      if (exchangeOn && grantType === TOKEN_EXCHANGE_GRANT) {
+        await exchangeGrant(req, res);
+        return;
+      }
       tokenError(
         res,
         400,
         "unsupported_grant_type",
-        "this server supports authorization_code and refresh_token.",
+        exchangeOn
+          ? "this server supports authorization_code, refresh_token and token exchange."
+          : "this server supports authorization_code and refresh_token.",
       );
     }, jsonFailure("mcp_oauth_token")),
   );
@@ -981,6 +1001,22 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
     const store = grants.store;
     const access = readRecordAccessToken(oauth.keys.access, token, now());
     if (access) {
+      // A token-exchange CHILD is one access token with its own record, so
+      // revoking the token revokes the record: the slot under its parent is
+      // given back, and the console shows it ended. The parent and its other
+      // children are untouched.
+      const grant = await store.get(access.gid);
+      if (grant?.exchange && grant.cid === access.cid) {
+        const done = await store.revoke(access.gid, "revoked");
+        if (done) grantEvent("revoked", "child");
+        log({
+          evt: "mcp_oauth.revoked",
+          token: "child",
+          outcome: done ? "ok" : "unknown",
+          ...(grant.exchange.label ? { label: grant.exchange.label } : {}),
+        });
+        return;
+      }
       const done = await store.revokeAccess(access.gid, access.jti, access.exp);
       log({
         evt: "mcp_oauth.revoked",
@@ -1157,6 +1193,339 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
       return { ok: false, description: outcome.description };
     }
     return { ok: true, client: outcome.client, policy };
+  }
+
+  /**
+   * RFC 8693 TOKEN EXCHANGE: a confidential client trades one of its own live
+   * record-backed access tokens for a CHILD access token — a `slug:` subset
+   * of what that token reaches, with its own (usually longer, never
+   * grant-outliving) lifetime, and no refresh token.
+   *
+   * The child is a record of its own (`GrantRecord.exchange`, `parentGid` =
+   * the subject's grant), so:
+   *
+   *   - revoking the child's token (`/oauth/revoke`) ends that record and no
+   *     other;
+   *   - revoking, replaying or expiring the parent ends every child, because
+   *     `/mcp` walks the chain and judges every link's state and deadline;
+   *   - a child is never a subject token: no delegation chains.
+   *
+   * The parent grant holds the live-children count (`GrantRecord.children`),
+   * capped by the client's `maxLiveChildren`. At the cap the exchange is
+   * refused and nothing is evicted.
+   *
+   * Errors follow RFC 8693 §2.2.2: a subject token that is not acceptable is
+   * `invalid_request`; a scope outside it is `invalid_scope`; a resource or
+   * audience other than the grant's is `invalid_target`.
+   */
+  async function exchangeGrant(req: Request, res: Response): Promise<void> {
+    const body = req.body as Record<string, unknown>;
+    // Confidential only, whatever the client's entry says: passing
+    // `private_key_jwt` as the grant's auth makes the assertion mandatory.
+    const authn = await authenticateClient(
+      req,
+      "exchange",
+      TOKEN_PATH,
+      "private_key_jwt",
+    );
+    if (!authn.ok) {
+      tokenError(res, 401, "invalid_client", authn.description);
+      return;
+    }
+    const { client, policy } = authn;
+    const exchange = policy.tokenExchange;
+    const grants = oauth.grants;
+    const handle = clientIdOf(client.clientId, oauth.keys.client);
+    const refuse = (
+      status: number,
+      error: string,
+      reason: string,
+      description: string,
+    ): void => {
+      exchangeEvent("refused", reason, handle);
+      tokenError(res, status, error, description);
+    };
+    if (!exchange || !grants) {
+      refuse(
+        400,
+        "unauthorized_client",
+        "not_allowed",
+        "this client may not use token exchange.",
+      );
+      return;
+    }
+
+    // --- the request's shape ----------------------------------------------
+    if (str(body.subject_token_type) !== ACCESS_TOKEN_TYPE) {
+      refuse(
+        400,
+        "invalid_request",
+        "subject_token_type",
+        `subject_token_type must be ${ACCESS_TOKEN_TYPE}.`,
+      );
+      return;
+    }
+    const requestedType = sent(body.requested_token_type);
+    if (requestedType !== undefined && requestedType !== ACCESS_TOKEN_TYPE) {
+      refuse(
+        400,
+        "invalid_request",
+        "requested_token_type",
+        `only ${ACCESS_TOKEN_TYPE} is issued.`,
+      );
+      return;
+    }
+    if (body.actor_token !== undefined || body.actor_token_type !== undefined) {
+      refuse(
+        400,
+        "invalid_request",
+        "actor_token",
+        "actor_token is not supported: a child is the client's own token.",
+      );
+      return;
+    }
+    const label = body.label === undefined ? undefined : sent(body.label);
+    if (body.label !== undefined && !validExchangeLabel(label)) {
+      refuse(
+        400,
+        "invalid_request",
+        "label",
+        "label must be 1-64 characters of A-Z a-z 0-9 . : - and start with a letter or digit.",
+      );
+      return;
+    }
+    const askedRaw = body.expires_in;
+    let askedMs: number | undefined;
+    if (askedRaw !== undefined) {
+      const text = sent(askedRaw);
+      if (text === undefined || !/^[1-9][0-9]{0,6}$/.test(text)) {
+        refuse(
+          400,
+          "invalid_request",
+          "expires_in",
+          "expires_in must be a positive whole number of seconds.",
+        );
+        return;
+      }
+      askedMs = Number(text) * 1000;
+    }
+
+    // --- the subject token ------------------------------------------------
+    const subject = str(body.subject_token);
+    const payload = readRecordAccessToken(oauth.keys.access, subject, now());
+    if (!subject || !payload) {
+      refuse(
+        400,
+        "invalid_request",
+        "subject_unknown",
+        "subject_token is not a live, record-backed access token from this server.",
+      );
+      return;
+    }
+    if (payload.cid !== clientFingerprint(client.clientId)) {
+      refuse(
+        400,
+        "invalid_request",
+        "subject_client_mismatch",
+        "subject_token was issued to another client.",
+      );
+      return;
+    }
+    let verdict: AccessVerdict;
+    let parent: GrantRecord | null;
+    try {
+      // The SAME judgement `/mcp` makes of this token — envelope, audience
+      // (its own), Workspace, client policy, record, chain, deadline, a
+      // per-token revocation — so nothing that `/mcp` would refuse can be
+      // exchanged into something it accepts.
+      verdict = await verifyAccessToken(subject, oauth, payload.aud, now());
+      parent = verdict.ok ? await grants.store.get(payload.gid) : null;
+    } catch (err) {
+      if (!(err instanceof GrantStoreUnavailable)) throw err;
+      storeUnavailable(res, "exchange", err);
+      return;
+    }
+    if (!verdict.ok || !parent) {
+      refuse(
+        400,
+        "invalid_request",
+        "subject_dead",
+        "subject_token is not live: it, or its grant, has been revoked or has expired.",
+      );
+      return;
+    }
+    if (parent.exchange || parent.parentGid) {
+      refuse(
+        400,
+        "invalid_request",
+        "subject_is_child",
+        "a token minted by token exchange cannot itself be exchanged.",
+      );
+      return;
+    }
+    if (!confidentialSatisfied(parent, client)) {
+      tokenError(res, 401, "invalid_client", "client authentication required.");
+      return;
+    }
+
+    // --- resource and audience: the grant's, unchanged ---------------------
+    for (const field of ["resource", "audience"] as const) {
+      if (body[field] === undefined) continue;
+      const value = sent(body[field]);
+      if (value === undefined || normalizeResource(value) !== parent.resource) {
+        refuse(
+          400,
+          "invalid_target",
+          field,
+          `this grant is for ${parent.resource}.`,
+        );
+        return;
+      }
+    }
+
+    // --- scope: a named subset of what the subject token reaches -----------
+    const wanted = requestedSlugs(sent(body.scope));
+    if (!wanted) {
+      refuse(
+        400,
+        "invalid_scope",
+        "scope_missing",
+        "name the child's slugs as slug:<name> scopes.",
+      );
+      return;
+    }
+    const allowed = new Set(
+      verdict.principal.slugs ?? ceilingSlugs(policy, cfg),
+    );
+    if (parent.slugs) {
+      const granted = new Set(parent.slugs);
+      for (const s of [...allowed]) if (!granted.has(s)) allowed.delete(s);
+    }
+    const beyond = wanted.filter((s) => !allowed.has(s));
+    if (beyond.length > 0) {
+      refuse(
+        400,
+        "invalid_scope",
+        "scope_beyond",
+        `the subject token does not include: ${beyond.map((s) => `slug:${s}`).join(" ")}.`,
+      );
+      return;
+    }
+
+    // --- lifetime ----------------------------------------------------------
+    const at = now();
+    let ttlMs = Math.max(
+      60_000,
+      Math.min(askedMs ?? exchange.defaultTtlMs, exchange.maxTtlMs),
+    );
+    // A child never outlives the grant it was minted under.
+    const deadline = grantDeadline(parent, policy);
+    if (deadline !== null) {
+      ttlMs = Math.max(1000, Math.min(ttlMs, deadline - at));
+    }
+    const expiresAt = at + ttlMs;
+
+    // --- record it, under the cap -----------------------------------------
+    const gid = GrantStore.newGid();
+    let slot: "ok" | "dead" | "full";
+    try {
+      slot = await grants.store.reserveChild(
+        parent.gid,
+        gid,
+        expiresAt,
+        exchange.maxLiveChildren,
+      );
+    } catch (err) {
+      // The write may have landed before the failure (a timeout, not a 412):
+      // give the slot back rather than hold it until the child would expire.
+      await grants.store.releaseChild(parent.gid, gid).catch(() => undefined);
+      storeUnavailable(res, "exchange", err);
+      return;
+    }
+    if (slot === "dead") {
+      refuse(
+        400,
+        "invalid_request",
+        "subject_dead",
+        "subject_token is not live: its grant has ended.",
+      );
+      return;
+    }
+    if (slot === "full") {
+      refuse(
+        400,
+        "invalid_request",
+        "child_cap",
+        `this grant already holds ${exchange.maxLiveChildren} live child tokens; ` +
+          "revoke one, or wait for one to expire.",
+      );
+      return;
+    }
+    const child: GrantRecord = {
+      v: 1,
+      gid,
+      cid: parent.cid,
+      ...(parent.clientName ? { clientName: parent.clientName } : {}),
+      identity: parent.identity,
+      resource: parent.resource,
+      slugs: [...wanted].sort(),
+      parentGid: parent.gid,
+      auth: "private_key_jwt",
+      state: "active",
+      generation: 0,
+      createdAt: at,
+      expiresAt,
+      exchange: label ? { label } : {},
+    };
+    try {
+      await grants.store.create(child);
+    } catch (err) {
+      await grants.store.releaseChild(parent.gid, gid).catch(() => undefined);
+      storeUnavailable(res, "exchange", err);
+      return;
+    }
+    const { token } = mintRecordAccessToken(
+      oauth.keys.access,
+      {
+        gid,
+        cid: parent.cid,
+        aud: parent.resource,
+        identity: parent.identity,
+        ttlMs,
+        slugs: child.slugs,
+        auth: "private_key_jwt",
+      },
+      at,
+    );
+    exchangeEvent("issued", "exchange", handle, {
+      ...(label ? { label } : {}),
+      slug_count: wanted.length,
+      ttl_seconds: Math.floor(ttlMs / 1000),
+    });
+    // RFC 8693 §2.2.1. No refresh token, by design: a child is renewed by
+    // exchanging again, which is the moment its scope is decided again.
+    res.json({
+      access_token: token,
+      issued_token_type: ACCESS_TOKEN_TYPE,
+      token_type: "Bearer",
+      expires_in: Math.floor(ttlMs / 1000),
+      scope: scopeString(child.slugs),
+    });
+  }
+
+  /**
+   * A token exchange, issued or refused AFTER the client proved itself with
+   * its assertion — refusals before that go through `refused`, which does
+   * not ship. Every field is a closed set or a count, except `label`, which
+   * is the client's and is admitted only in the `EXCHANGE_LABEL` shape.
+   */
+  function exchangeEvent(
+    outcome: "issued" | "refused",
+    reason: string,
+    client: string,
+    extra: Record<string, unknown> = {},
+  ): void {
+    log({ evt: "mcp_oauth.exchange", outcome, reason, client, ...extra });
   }
 
   async function codeGrant(req: Request, res: Response): Promise<void> {
@@ -2107,6 +2476,21 @@ function formList(value: unknown): string[] {
   if (Array.isArray(value))
     return value.filter((v): v is string => typeof v === "string");
   return [];
+}
+
+/**
+ * The token-exchange `label`: 1–64 characters of letters, digits, `.`, `:`
+ * and `-`, starting with a letter or digit. Narrow on purpose. It is
+ * client-authored and it is EXPORTED (`mcp_oauth.exchange`,
+ * `mcp_oauth.revoked`), so its shape is the boundary: no `_` means no strad
+ * credential (every one starts `strad_`) can be a label, 64 characters is
+ * shorter than any sealed token, and no markup or whitespace reaches the
+ * console or the ingestor. A Zimmer session id (`29970`) fits.
+ */
+export const EXCHANGE_LABEL = /^[A-Za-z0-9][A-Za-z0-9.:-]{0,63}$/;
+
+export function validExchangeLabel(label: string | undefined): label is string {
+  return label !== undefined && EXCHANGE_LABEL.test(label);
 }
 
 /** RFC 6749 §5.2 — the token endpoint's error shape. */

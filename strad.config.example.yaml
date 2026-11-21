@@ -204,6 +204,13 @@ auth:
       # - clientId: https://zimmer.example.com/oauth/client-metadata.json
       #   tokenEndpointAuthMethod: private_key_jwt
       #   jwksUri: https://zimmer.example.com/oauth/jwks.json
+      #   # RFC 8693 token exchange: trade its own access token for a CHILD
+      #   # token — a slug: subset, no refresh token, revocable on its own,
+      #   # dead with its grant. Needs the two lines above and grants.enabled.
+      #   tokenExchange:
+      #     childTokenTtlSeconds: 21600     # when the request names none
+      #     maxChildTokenTtlSeconds: 21600  # most a request may ask for
+      #     maxLiveChildren: 500            # per grant; refused at the cap
     # false = only the clients listed above may sign in, refresh, or use a
     # token they already hold.
     allowUnlistedClients: true

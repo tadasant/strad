@@ -69,6 +69,14 @@ export const AUTHORIZATION_SERVER_ROUTES: readonly string[] = [
  */
 export const MCP_SCOPE = "mcp";
 
+/** RFC 8693 §2.1: the token-exchange grant type. */
+export const TOKEN_EXCHANGE_GRANT =
+  "urn:ietf:params:oauth:grant-type:token-exchange";
+
+/** RFC 8693 §3: the one token type strad exchanges from and issues. */
+export const ACCESS_TOKEN_TYPE =
+  "urn:ietf:params:oauth:token-type:access_token";
+
 /**
  * The resource identifier a token issued by this server is bound to: the `/mcp`
  * endpoint of `origin`, with no query and no fragment, ever.
@@ -163,6 +171,8 @@ export function authorizationServerMetadata(
     registration?: boolean;
     /** The signing algorithms, when `private_key_jwt` is on. */
     privateKeyJwtAlgs?: readonly string[];
+    /** Some client may use RFC 8693 token exchange. */
+    tokenExchange?: boolean;
   } = {},
 ): AuthorizationServerMetadata {
   const methods = opts.privateKeyJwtAlgs
@@ -178,7 +188,11 @@ export function authorizationServerMetadata(
       : { registration_endpoint: `${origin}${REGISTER_PATH}` }),
     revocation_endpoint: `${origin}${REVOKE_PATH}`,
     response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code", "refresh_token"],
+    grant_types_supported: [
+      "authorization_code",
+      "refresh_token",
+      ...(opts.tokenExchange ? [TOKEN_EXCHANGE_GRANT] : []),
+    ],
     code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: methods,
     ...(algs ? { token_endpoint_auth_signing_alg_values_supported: algs } : {}),

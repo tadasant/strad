@@ -1141,6 +1141,137 @@ describe("the contract with Zimmer's client (tadasant/zimmer#1601)", () => {
   });
 });
 
+describe("the contract with Zimmer's broker: token exchange and child revocation", () => {
+  // The requests Zimmer's per-turn broker sends, field for field: the parent
+  // grant is Zimmer's own (consented once), the subject is its current access
+  // token, the scope is one agent session's slug set, the label is that
+  // session's id, and the child is revoked when the session comes to rest.
+  // Same CIMD, JWKS, key shape and token-endpoint `aud` as the contract above.
+  const ZIMMER_CIMD = "https://zimmer.example.com/oauth-client/metadata.json";
+  const ZIMMER_JWKS = "https://zimmer.example.com/oauth-client/jwks.json";
+  const ZIMMER_CB = "https://zimmer.example.com/oauth/strad/callback";
+  const kms = makeKey("ES256", "zimmer-kms-1");
+  let g: Gateway;
+  beforeAll(async () => {
+    g = await gateway(`    clients:
+      - clientId: ${ZIMMER_CIMD}
+        tokenEndpointAuthMethod: private_key_jwt
+        jwksUri: ${ZIMMER_JWKS}
+        tokenExchange:
+          childTokenTtlSeconds: 21600
+          maxChildTokenTtlSeconds: 21600
+          maxLiveChildren: 500
+    grants:
+      enabled: true
+      store: memory`);
+    g.documents.set(
+      ZIMMER_CIMD,
+      json({
+        client_id: ZIMMER_CIMD,
+        client_name: "Zimmer",
+        redirect_uris: [ZIMMER_CB],
+        grant_types: [
+          "authorization_code",
+          "refresh_token",
+          "urn:ietf:params:oauth:grant-type:token-exchange",
+        ],
+        response_types: ["code"],
+        token_endpoint_auth_method: "private_key_jwt",
+        jwks_uri: ZIMMER_JWKS,
+      }),
+    );
+    g.documents.set(ZIMMER_JWKS, json({ keys: [kms.jwk] }));
+  });
+  afterAll(async () => g.close());
+
+  const assertion = () => ({
+    client_assertion_type: CLIENT_ASSERTION_TYPE,
+    client_assertion: signJwt(
+      kms,
+      claimsFor(ZIMMER_CIMD, `${g.base}/oauth/token`),
+    ),
+  });
+
+  it("exchanges for a six-hour slug-scoped child, and revokes it", async () => {
+    const w = await walk(g, ZIMMER_CIMD, ZIMMER_CB);
+    const parent = await post(g, "/oauth/token", {
+      grant_type: "authorization_code",
+      code: w.code ?? "",
+      client_id: ZIMMER_CIMD,
+      code_verifier: w.verifier,
+      ...assertion(),
+    });
+    expect(parent.status).toBe(200);
+
+    const res = await fetch(`${g.base}/oauth/token`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+        client_id: ZIMMER_CIMD,
+        ...assertion(),
+        subject_token: parent.json.access_token ?? "",
+        subject_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        requested_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        resource: `${g.base}/mcp`,
+        scope: "slug:alpha",
+        label: "29970",
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const child = (await res.json()) as Record<string, unknown>;
+    expect(child).toEqual({
+      access_token: expect.stringMatching(/^strad_oat_/),
+      issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+      token_type: "Bearer",
+      expires_in: 21600,
+      scope: "slug:alpha",
+    });
+
+    const tools = async () =>
+      (
+        await fetch(`${g.base}/mcp?servers=alpha`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${String(child.access_token)}`,
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+        })
+      ).status;
+    expect(await tools()).toBe(200);
+
+    const revoked = await post(g, "/oauth/revoke", {
+      token: String(child.access_token),
+      token_type_hint: "access_token",
+      client_id: ZIMMER_CIMD,
+      ...assertion(),
+    });
+    expect(revoked).toEqual({ status: 200, json: {} });
+    expect(await tools()).toBe(401);
+
+    // Revoking again, or an already-dead child, is still a 200 (RFC 7009).
+    expect(
+      (
+        await post(g, "/oauth/revoke", {
+          token: String(child.access_token),
+          token_type_hint: "access_token",
+          client_id: ZIMMER_CIMD,
+          ...assertion(),
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  it("advertises the grant type", async () => {
+    expect((await metadata(g)).grant_types_supported).toContain(
+      "urn:ietf:params:oauth:grant-type:token-exchange",
+    );
+  });
+});
+
 describe("a confidential client with grant records on", () => {
   let g: Gateway;
   beforeAll(

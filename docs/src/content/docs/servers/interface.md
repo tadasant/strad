@@ -1410,6 +1410,10 @@ config error, as are a duplicate and an unknown role):
         tokenEndpointAuthMethod: private_key_jwt # optional; confidential client
         jwksUri: https://example.com/jwks.json # optional pin; needs the line above
         refreshTokenTtlSeconds: 21600 # optional; record-backed grants only
+        tokenExchange: # optional; RFC 8693 child tokens, confidential + grants only
+          childTokenTtlSeconds: 21600 # default 3600; 300..86400
+          maxChildTokenTtlSeconds: 21600 # default = childTokenTtlSeconds
+          maxLiveChildren: 500 # default 500; 1..2000, per grant
 ```
 
 `tokenEndpointAuthMethod: private_key_jwt` makes the client confidential
@@ -1421,6 +1425,18 @@ and advertises it; unset, it is on exactly when an entry requires it, and
 `gateway.publicUrl` (an assertion's `aud` is checked against the declared
 origin only). The assertion rules are in
 [Auth](/auth/overview/#confidential-clients-private_key_jwt).
+
+`tokenExchange` lets that client exchange its own access token for a child
+token: a `slug:` subset, no refresh token, recorded under its grant. A request
+with no `expires_in` gets `childTokenTtlSeconds`. A request may ask for up to
+`maxChildTokenTtlSeconds`. A child never outlives its grant, and a grant holds at
+most `maxLiveChildren` live children. The block needs
+`tokenEndpointAuthMethod: private_key_jwt` and `grants.enabled: true`.
+`config:check` refuses it otherwise, and also refuses a maximum below the
+default — including the implicit one, so `maxChildTokenTtlSeconds: 1800` alone is
+refused against the 3600 default. Absent, the grant type is unsupported and not advertised. The request
+and response shapes are in
+[Auth](/auth/overview/#token-exchange-child-tokens).
 
 A slug in `servers` the roster does not have grants nothing and is not refused,
 for the reason a role's `servers` is not: a runtime roster write may remove it.

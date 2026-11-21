@@ -5057,3 +5057,32 @@ Off by default.
   `list_tabs`, `open_tab` and `navigate_tab` return.** `read_page`'s own are.
 
 See `HACKS.md` #164.
+
+---
+
+### 165. `/mcp` OAuth token-exchange children are counted on the parent record, and are not re-checked at Google
+
+A client entry with `tokenExchange:` can trade its own access token for a
+[child token](/auth/overview/#token-exchange-child-tokens): a `slug:` subset, no
+refresh token, revocable on its own, dead with its grant. Off by default.
+
+- **Every exchange writes the parent's record**, which is what makes the
+  live-children cap hold across a deploy overlap. A burst queues in one
+  process. Split across two cores, it can answer `503`; retry. A parent refresh
+  landing in a large burst can answer `503` the same way; the refresh token
+  the client holds stays current.
+- **A child is not re-checked at Google.** It lives to its own expiry (at most
+  a day, six hours for Zimmer) unless its grant is revoked. An account that left
+  the Workspace keeps its children until then. Revoke the parent on
+  `/tokens/grants` to end them all.
+- **Children belong to the grant, not to the access token that minted them.**
+  Revoking only that access token leaves them live. Revoking the refresh token
+  or the grant ends them.
+- **A slot can outlive its child** when a write fails at the wrong moment. It
+  frees itself when the child would have expired.
+- **The label is client-authored and exported.** Its shape keeps it from being
+  a credential: up to 64 of `A-Za-z0-9.:-`, no `_`.
+- **A rollback keeps live children working until they expire.** The previous
+  build honours them, and its revoke still works. It does not end them when
+  `tokenExchange` is removed from config.
+- **Dead children stay listed for a day**, then the sweep deletes them.
