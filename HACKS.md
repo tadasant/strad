@@ -8448,10 +8448,15 @@ item 6) and off a human's consent screen.
    sustains about one write per second per object. Exchanges in one process
    are serialised per parent, so a burst queues. A burst split across two
    processes during an overlap contends, retries up to four times, and then
-   answers `503 temporarily_unavailable`. The client should retry.
-2. **A slot can outlive its child.** A child whose record write failed after
-   its slot was reserved, or a revoke whose slot release failed, keeps its slot
-   until the child would have expired. The child itself is refused either way.
+   answers `503 temporarily_unavailable`. The client should retry. The
+   parent's own refresh rotation writes the same object and is not in that
+   queue, so a refresh landing in the middle of a large exchange burst can lose
+   its conditional-write retries and answer `503` too. The client keeps the
+   refresh token it has, which is still current, and retries.
+2. **A slot can outlive its child.** A failed child-record write, or a
+   reservation that failed ambiguously, gives its slot back on a best-effort
+   basis. If that release fails too, or a revoke's release fails, the slot is
+   held until the child would have expired. The child itself is refused either way.
 3. **A child is not re-checked at Google.** Minting one needs a live parent
    access token, so the account was a Workspace member at most one access-token
    lifetime before the exchange. After that, the child lives to its own expiry
@@ -8479,7 +8484,9 @@ item 6) and off a human's consent screen.
    does), free the slot on revoke, or judge the parent's deadline separately
    from the child's. A child's own deadline is already clipped to the parent's
    deadline at the time it was minted.
-8. **Dead children are kept for a day, then swept.** Sweeping runs at most
+8. **Dead children are kept for a day after they expire or are revoked, then
+   swept.** A child that died with its parent is kept until its own expiry plus
+   a day. Sweeping runs at most
    hourly, off the request path, after a write. A client minting one child per
    agent turn leaves up to a day of rows on `/tokens/grants`.
 

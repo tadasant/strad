@@ -184,7 +184,10 @@ ${flash}
   const byGid = new Map(records.map((r) => [r.gid, r]));
   const live = (r: GrantRecord, depth = 0): boolean => {
     if (r.state !== "active" || depth > 8) return false;
-    const deadline = grantDeadline(r, oauth.policies.forFingerprint(r.cid));
+    const policy = oauth.policies.forFingerprint(r.cid);
+    // A child whose client no longer has `tokenExchange` is refused at /mcp.
+    if (r.exchange && !policy?.tokenExchange) return false;
+    const deadline = grantDeadline(r, policy);
     if (deadline !== null && deadline <= now) return false;
     if (!r.parentGid) return true;
     const parent = byGid.get(r.parentGid);
@@ -202,9 +205,11 @@ ${flash}
       const client =
         (policy?.listed && policy.name) || r.clientName || "unnamed client";
       const status =
-        r.state === "active" && r.parentGid && !live(r)
-          ? `<span class="chip chip-off">parent ended</span>`
-          : statusChip(r, deadline, now);
+        r.state === "active" && r.exchange && !policy?.tokenExchange
+          ? `<span class="chip chip-off">exchange off</span>`
+          : r.state === "active" && r.parentGid && !live(r)
+            ? `<span class="chip chip-off">parent ended</span>`
+            : statusChip(r, deadline, now);
       const lastUsed = grants.store.lastUsed(r);
       const slugs = r.slugs
         ? r.slugs.map((s) => `<code>${esc(s)}</code>`).join(" ")

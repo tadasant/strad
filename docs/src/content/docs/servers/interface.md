@@ -1433,7 +1433,8 @@ with no `expires_in` gets `childTokenTtlSeconds`. A request may ask for up to
 most `maxLiveChildren` live children. The block needs
 `tokenEndpointAuthMethod: private_key_jwt` and `grants.enabled: true`.
 `config:check` refuses it otherwise, and also refuses a maximum below the
-default. Absent, the grant type is unsupported and not advertised. The request
+default — including the implicit one, so `maxChildTokenTtlSeconds: 1800` alone is
+refused against the 3600 default. Absent, the grant type is unsupported and not advertised. The request
 and response shapes are in
 [Auth](/auth/overview/#token-exchange-child-tokens).
 

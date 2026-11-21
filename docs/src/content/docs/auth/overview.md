@@ -846,17 +846,17 @@ auth:
 
 **The request** is a form `POST /oauth/token` carrying the client's assertion:
 
-| Field                  | Value                                                                                             |
-| ---------------------- | ------------------------------------------------------------------------------------------------- |
-| `grant_type`           | `urn:ietf:params:oauth:grant-type:token-exchange`                                                 |
-| `client_assertion*`    | required, as for every confidential call                                                          |
-| `subject_token`        | one of this client's own live, record-backed access tokens                                        |
-| `subject_token_type`   | `urn:ietf:params:oauth:token-type:access_token`                                                   |
-| `scope`                | required: one or more `slug:<name>`, all inside what the subject token reaches                    |
-| `requested_token_type` | optional; only `…:access_token`                                                                   |
-| `resource`, `audience` | optional; if sent, must be the grant's resource (`https://<host>/mcp`)                            |
-| `expires_in`           | optional, seconds; capped at `maxChildTokenTtlSeconds`, floor 60. strad's extension, not RFC 8693 |
-| `label`                | optional, 1–64 of `A-Z a-z 0-9 . : -`. strad's extension. Zimmer sends the session id             |
+| Field                  | Value                                                                                                                 |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `grant_type`           | `urn:ietf:params:oauth:grant-type:token-exchange`                                                                     |
+| `client_assertion*`    | required, as for every confidential call                                                                              |
+| `subject_token`        | one of this client's own live, record-backed access tokens                                                            |
+| `subject_token_type`   | `urn:ietf:params:oauth:token-type:access_token`                                                                       |
+| `scope`                | required: one or more `slug:<name>`, all inside what the subject token reaches                                        |
+| `requested_token_type` | optional; only `…:access_token`                                                                                       |
+| `resource`, `audience` | optional; if sent, must be the grant's resource (`https://<host>/mcp`)                                                |
+| `expires_in`           | optional, seconds; capped at `maxChildTokenTtlSeconds`, floor 60 s (or the grant's remaining life). strad's extension |
+| `label`                | optional, 1–64 of `A-Z a-z 0-9 . : -`. strad's extension. Zimmer sends the session id                                 |
 
 `actor_token` is refused: a child is the client's own token, not a delegation.
 
@@ -907,7 +907,8 @@ at `maxLiveChildren`. At the cap, an exchange is refused:
 one, or wait for one to expire". Nothing is evicted, because a live child is
 somebody's running session. A child leaves the count when it is revoked or when
 it expires; expired entries are dropped on the parent's next write. A dead
-child's record stays on `/tokens/grants` for a day, then the sweep deletes it.
+child's record stays on `/tokens/grants` for a day after it expires or is
+revoked, then the sweep deletes it.
 
 **Errors**, after the client has authenticated:
 
@@ -930,8 +931,9 @@ and for each exchange refused after the client authenticated. A child
 revocation's `mcp_oauth.revoked` event carries the label too. The label is the
 one client-authored string strad exports, and it is allowed on purpose. Its
 shape is the boundary: it can't contain `_`, so no `strad_…` credential fits,
-and 64 characters is shorter than any token. No token, subject or child,
-reaches a log.
+and 64 characters is shorter than any strad token. No strad token, subject or
+child, reaches a log. The label is still the client's own bytes: send an id,
+never a secret.
 
 ### Audience binding, and the `?servers=` trap
 

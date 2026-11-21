@@ -5068,7 +5068,9 @@ refresh token, revocable on its own, dead with its grant. Off by default.
 
 - **Every exchange writes the parent's record**, which is what makes the
   live-children cap hold across a deploy overlap. A burst queues in one
-  process. Split across two cores, it can answer `503`; retry.
+  process. Split across two cores, it can answer `503`; retry. A parent refresh
+  landing in a large burst can answer `503` the same way; the refresh token
+  the client holds stays current.
 - **A child is not re-checked at Google.** It lives to its own expiry (at most
   a day, six hours for Zimmer) unless its grant is revoked. An account that left
   the Workspace keeps its children until then. Revoke the parent on

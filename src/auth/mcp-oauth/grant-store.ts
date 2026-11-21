@@ -657,33 +657,43 @@ export class GrantStore {
     expiresAt: number,
     cap: number,
   ): Promise<"ok" | "dead" | "full"> {
-    const prior = this.reserving.get(parentGid) ?? Promise.resolve();
-    const run = prior
-      .catch(() => undefined)
-      .then(async () => {
-        const at = this.now();
-        const out = await this.update(parentGid, (current) => {
-          if (!current || current.state !== "active") {
-            return { write: null, result: "dead" as const };
-          }
-          const live = liveChildren(current.children, at);
-          if (live[childGid] !== undefined) {
-            // Our own reservation, landed and then replayed by the transport.
-            return { write: null, result: "ok" as const };
-          }
-          if (Object.keys(live).length >= cap) {
-            return { write: null, result: "full" as const };
-          }
-          return {
-            write: {
-              ...current,
-              children: { ...live, [childGid]: expiresAt },
-            },
-            result: "ok" as const,
-          };
-        });
-        return out.result;
+    return this.queued(parentGid, async () => {
+      const at = this.now();
+      const out = await this.update(parentGid, (current) => {
+        if (!current || current.state !== "active") {
+          return { write: null, result: "dead" as const };
+        }
+        const live = liveChildren(current.children, at);
+        if (live[childGid] !== undefined) {
+          // Our own reservation, landed and then replayed by the transport.
+          return { write: null, result: "ok" as const };
+        }
+        if (Object.keys(live).length >= cap) {
+          return { write: null, result: "full" as const };
+        }
+        return {
+          write: {
+            ...current,
+            children: { ...live, [childGid]: expiresAt },
+          },
+          result: "ok" as const,
+        };
       });
+      return out.result;
+    });
+  }
+
+  /**
+   * Run `work` after every earlier child write on this parent in this
+   * process. Bounded by the blob client's own per-request timeout and retry
+   * deadline (`GcsBlobStore`), so a hung write cannot hold the queue forever.
+   */
+  private async queued<T>(
+    parentGid: string,
+    work: () => Promise<T>,
+  ): Promise<T> {
+    const prior = this.reserving.get(parentGid) ?? Promise.resolve();
+    const run = prior.catch(() => undefined).then(work);
     this.reserving.set(parentGid, run);
     try {
       return await run;
@@ -700,12 +710,14 @@ export class GrantStore {
    * would have expired, and the child itself is refused either way.
    */
   async releaseChild(parentGid: string, childGid: string): Promise<void> {
-    await this.update(parentGid, (current) => {
-      if (!current?.children || current.children[childGid] === undefined) {
-        return { write: null, result: undefined };
-      }
-      const { [childGid]: _gone, ...rest } = current.children;
-      return { write: { ...current, children: rest }, result: undefined };
+    await this.queued(parentGid, async () => {
+      await this.update(parentGid, (current) => {
+        if (!current?.children || current.children[childGid] === undefined) {
+          return { write: null, result: undefined };
+        }
+        const { [childGid]: _gone, ...rest } = current.children;
+        return { write: { ...current, children: rest }, result: undefined };
+      });
     });
   }
 

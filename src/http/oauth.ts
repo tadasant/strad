@@ -872,7 +872,9 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
         res,
         400,
         "unsupported_grant_type",
-        "this server supports authorization_code and refresh_token.",
+        exchangeOn
+          ? "this server supports authorization_code, refresh_token and token exchange."
+          : "this server supports authorization_code and refresh_token.",
       );
     }, jsonFailure("mcp_oauth_token")),
   );
@@ -1006,6 +1008,7 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
       const grant = await store.get(access.gid);
       if (grant?.exchange && grant.cid === access.cid) {
         const done = await store.revoke(access.gid, "revoked");
+        if (done) grantEvent("revoked", "child");
         log({
           evt: "mcp_oauth.revoked",
           token: "child",
@@ -1433,6 +1436,9 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
         exchange.maxLiveChildren,
       );
     } catch (err) {
+      // The write may have landed before the failure (a timeout, not a 412):
+      // give the slot back rather than hold it until the child would expire.
+      await grants.store.releaseChild(parent.gid, gid).catch(() => undefined);
       storeUnavailable(res, "exchange", err);
       return;
     }

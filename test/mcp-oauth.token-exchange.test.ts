@@ -959,6 +959,110 @@ describe("the cap on live children", () => {
   });
 });
 
+describe("the parent record under two writers", () => {
+  const parentOf = (now: number): GrantRecord => ({
+    v: 1,
+    gid: GrantStore.newGid(),
+    cid: clientFingerprint(ZIMMER),
+    identity: { sub: "1", email: "person@tadasant.com", hd: "tadasant.com" },
+    resource: "https://strad.test/mcp",
+    state: "active",
+    generation: 1,
+    rotatedAt: now,
+    createdAt: now,
+    expiresAt: null,
+  });
+  const storeOver = (blobs: MemoryBlobStore) =>
+    new GrantStore({
+      kind: "memory",
+      blobs: () => Promise.resolve(blobs),
+      key: Buffer.alloc(32, 7),
+      prefix: "mcp-oauth/test",
+      staleAfterMs: 0,
+    });
+
+  it("holds the cap across two processes sharing one bucket", async () => {
+    const blobs = new MemoryBlobStore();
+    const a = storeOver(blobs);
+    const b = storeOver(blobs);
+    const parent = parentOf(Date.now());
+    await a.create(parent);
+    const exp = Date.now() + 60_000;
+    const results = await Promise.all(
+      Array.from({ length: 6 }, (_, i) =>
+        (i % 2 ? a : b)
+          .reserveChild(parent.gid, GrantStore.newGid(), exp, 3)
+          .catch(() => "unavailable" as const),
+      ),
+    );
+    // Never more than the cap; a writer that lost every retry says so.
+    expect(results.filter((r) => r === "ok").length).toBeLessThanOrEqual(3);
+    const durable = await storeOver(blobs).get(parent.gid, { fresh: true });
+    expect(Object.keys(durable?.children ?? {}).length).toBe(
+      results.filter((r) => r === "ok").length,
+    );
+  });
+
+  it("a refresh rotation and a reservation on the same parent keep each other's writes", async () => {
+    const blobs = new MemoryBlobStore();
+    const store = storeOver(blobs);
+    const parent = parentOf(Date.now());
+    await store.create(parent);
+    const child = GrantStore.newGid();
+    expect(
+      await store.reserveChild(parent.gid, child, Date.now() + 60_000, 3),
+    ).toBe("ok");
+    // The rotation's own shape (`refreshRecord`): spread the latest record.
+    await store.update(parent.gid, (latest) => ({
+      write: latest ? { ...latest, generation: 2, writeId: "w1" } : null,
+      result: undefined,
+    }));
+    expect(
+      await store.reserveChild(
+        parent.gid,
+        GrantStore.newGid(),
+        Date.now() + 60_000,
+        3,
+      ),
+    ).toBe("ok");
+    const after = await storeOver(blobs).get(parent.gid, { fresh: true });
+    expect(after).toMatchObject({ generation: 2, writeId: "w1" });
+    expect(Object.keys(after?.children ?? {})).toHaveLength(2);
+    expect(after?.children?.[child]).toBeDefined();
+  });
+
+  it("the console shows a child as ended once its client's exchange is off", async () => {
+    const g = await gateway(EXCHANGE_ON());
+    const parent = await connect(g);
+    await exchange(g, parent.access_token ?? "", { label: "7" });
+    const records = (await g.oauth.grants?.store.list()) ?? [];
+    const off = resolveMcpOAuth({
+      config: parseConfig(
+        yaml(
+          `    clients:
+      - clientId: ${ZIMMER}
+        tokenEndpointAuthMethod: private_key_jwt
+        jwksUri: ${ZIMMER_JWKS}
+    grants:
+      enabled: true
+      store: memory`,
+          g.publicUrl,
+        ),
+      ),
+      env: { STRAD_OAUTH_KEY: KEY } as NodeJS.ProcessEnv,
+      google: fakeGoogleGrant("tadasant.com"),
+      grantBlobs: g.blobs,
+      log: () => {},
+    });
+    if (!off) throw new Error("no oauth");
+    const html = renderGrantsPage({ oauth: off, records, readError: null });
+    expect(html).toContain("exchange off");
+    expect(
+      renderGrantsPage({ oauth: g.oauth, records, readError: null }),
+    ).not.toContain("exchange off");
+  });
+});
+
 describe("labels and logs", () => {
   it("shows the label on the console, ships it in telemetry, and never logs a token", async () => {
     const g = await gateway(EXCHANGE_ON());
