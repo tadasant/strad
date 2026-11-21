@@ -1,6 +1,6 @@
 # bundle — THE strad supplementary image
 
-Thirty-eight MCP servers. One container. One Chromium. One `op` binary. One
+Thirty-seven MCP servers. One container. One Chromium. One `op` binary. One
 `mcp-grafana` binary and one `mcp-victorialogs` binary.
 
 ```
@@ -8,15 +8,15 @@ Thirty-eight MCP servers. One container. One Chromium. One `op` binary. One
 /x-twitter /telegram /whatsapp /messenger /bill-spend /aws-device-farm /liveoak /ssh /image-diff
 /svg-tracer /nutrition-facts /airtable /flightaware /digitalocean /hetzner /glitchtip /vendor-billing
 /pulse-subregistry
-/strad-fetch /grafana /victorialogs /appsignal
+/strad-fetch /grafana /victorialogs
 /google-flights /gmail /google-calendar /google-docs /google-sheets
 /onepassword /secrets
 /good-eggs /fetchpet /pointsyeah
 ```
 
-Thirty-eight is the floor, not a constant: seven of those mounts (`/telegram`,
+Thirty-seven is the floor, not a constant: six of those mounts (`/telegram`,
 `/remote-filesystem-tmp-public`, `/google-sheets`, `/grafana`, `/victorialogs`,
-`/appsignal`, `/glitchtip`) are re-mounted once more per slug the container holds a separate
+`/glitchtip`) are re-mounted once more per slug the container holds a separate
 credential for, and four trees
 (telegram, google-sheets, grafana, ssh) also serve store-served instances at
 `/_instance/{tree}/{slug}` — the ONLY way an SSH host is served; `/ssh` itself
@@ -25,8 +25,7 @@ the one a real deployment uses that way — an OAuth refresh token is one Google
 account, so six `google-sheets-*` slugs over three accounts are three more mounts.
 `/grafana` is the same shape for the same reason: a Grafana service-account token
 is one Grafana, so `grafana-registry` is its own mount and its own child process.
-`/victorialogs` (one entrypoint is one VictoriaLogs) and `/appsignal` (one app id
-is one AppSignal app) take the same shape.
+`/victorialogs` takes the same shape: one entrypoint is one VictoriaLogs.
 
 strad's staging app is **three components**: `core` (the public gateway),
 `bundle` (this), and `bundle-zimmer-secrets` — a second copy of this image that
@@ -52,10 +51,8 @@ the same path in this one container.
 
 `grafana` is the one exception, and it is deliberate: its child process runs with
 `-disable-write`, so the 13 write tools are not in it to withhold. See below.
-`victorialogs` and `appsignal` are read-only for a plainer reason: neither has a
-write tool. mcp-victorialogs wraps LogsQL's query API and nothing else, and
-appsignal's one tool that could write, `custom_graphql_query`, refuses a mutation
-in strad's layer (`servers/appsignal/README.md`).
+`victorialogs` is read-only for a plainer reason: it has no write tool.
+mcp-victorialogs wraps LogsQL's query API and nothing else.
 
 This host therefore **scrubs** every `*_ENABLED_TOOLGROUPS`-shaped variable out of
 its environment at boot. A stale one would not just be ignored — it would strip
@@ -76,10 +73,10 @@ binaries sit in the image unused. `/healthz` reports the sidecar under
 `tailnet` and never folds it into `ok`. See
 [`docs/operate/tailnet`](../../docs/src/content/docs/operate/tailnet.md).
 
-## How twenty-nine projects become one image
+## How twenty-eight projects become one image
 
 `Dockerfile`'s build context is the **repo root**, because the servers live in
-twenty-nine different places:
+twenty-eight different places:
 
 | tree | source | servers |
 | --- | --- | --- |
@@ -93,7 +90,6 @@ twenty-nine different places:
 | `strad-fetch` | `servers/strad-fetch` | strad-fetch (web fetching, strad's own fork) |
 | `grafana` | `servers/grafana` | grafana (proxies the pinned `mcp-grafana` Go binary, baked in) |
 | `victorialogs` | `servers/victorialogs` | victorialogs (proxies the pinned `mcp-victorialogs` Go binary, baked in; read-only) |
-| `appsignal` | `servers/appsignal` | appsignal (pulsemcp/mcp-servers' AppSignal server, vendored with a delta, behind strad's layer; read-only) |
 | `telegram` | `servers/telegram` | telegram (MTProto, a user session) |
 | `whatsapp` | `servers/whatsapp` | whatsapp (a WhatsApp linked device, Baileys) |
 | `messenger` | `servers/messenger` | messenger (Facebook Messenger, read-only; supervises the Go `strad-messenger-bridge`, AGPL-3.0, built in its own stage) |
@@ -115,7 +111,7 @@ twenty-nine different places:
 
 Each is built **in its own stage, with its own lockfile and its own
 `node_modules`**, exactly as its standalone image builds it, and lands at
-`/app/trees/<name>`. Nothing is merged. Merging twenty-nine dependency trees is how
+`/app/trees/<name>`. Nothing is merged. Merging twenty-eight dependency trees is how
 you find out in production that two of them wanted different Playwright versions.
 
 `host/` imports across the trees **by path** (`src/trees.ts`). Node resolves each
@@ -213,12 +209,12 @@ could perform one. See [`servers/secrets/README.md`](../secrets/README.md).
 
 ## Blast radius, honestly
 
-Thirty-eight servers share a process. A crash is a thirty-eight-server outage. Everything
+Thirty-seven servers share a process. A crash is a thirty-seven-server outage. Everything
 that *can* be made survivable is:
 
 - a browser server whose **login fails** is marked `degraded` in `/healthz`; the
   container keeps serving. (The standalone images `process.exit(1)` here — correct
-  when the process *is* the server, catastrophic when it is thirty-seven others too.)
+  when the process *is* the server, catastrophic when it is thirty-six others too.)
   For fetchpet the mark is a report on the last attempt: the next tool call retries
   the login and a success clears it, so a form that changed and was fixed does not
   cost a redeploy. good-eggs still holds its first failure until the container

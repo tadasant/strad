@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# bundle — THE strad supplementary image. Thirty-eight MCP servers, one container.
+# bundle — THE strad supplementary image. Thirty-seven MCP servers, one container.
 #
 # BUILD CONTEXT IS THE REPO ROOT (not servers/bundle/), because this image is
-# assembled from twenty-nine existing projects that live in different places:
+# assembled from twenty-eight existing projects that live in different places:
 #
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
 #                           gcs, google-flights
@@ -45,12 +45,10 @@
 #                                                  Go binary, baked below)
 #   servers/victorialogs    victorialogs           (proxies the pinned
 #                                                  mcp-victorialogs Go binary, baked below)
-#   servers/appsignal       appsignal              (AppSignal, read-only; vendored from
-#                                                  pulsemcp/mcp-servers + strad's layer)
 #
 # Each is built in its OWN stage with its OWN lockfile and its OWN node_modules,
 # exactly as its standalone image builds it, and copied into /app/trees/<name>.
-# Nothing is merged. That is on purpose: merging twenty-nine dependency trees is how you
+# Nothing is merged. That is on purpose: merging twenty-eight dependency trees is how you
 # discover in production that two of them wanted different Playwright versions.
 # The host (servers/bundle/host) imports across them by path — Node resolves each
 # package's own imports from its own tree — and owns the one thing that MUST be
@@ -461,17 +459,6 @@ RUN set -eux; \
     rm -f /tmp/mcp-victorialogs.tar.gz; \
     rm -rf /var/lib/apt/lists/*
 
-# ---- appsignal ---------------------------------------------------------------
-# pulsemcp/mcp-servers' AppSignal server with strad's delta and layer
-# (servers/appsignal/README.md). GraphQL over HTTPS; no browser.
-FROM ${PW} AS build-appsignal
-WORKDIR /src
-COPY servers/appsignal/package.json servers/appsignal/package-lock.json ./
-COPY servers/appsignal/shared/package.json ./shared/
-RUN npm ci --no-audit --no-fund
-COPY servers/appsignal/shared ./shared
-RUN npm run build && npm prune --omit=dev
-
 # ---- tailscale (userspace tailscaled, for tailnet egress) --------------------
 # Started by the host ONLY on a component rendered with a bundle `tailnet:`
 # block (servers/bundle/host/src/tailnet.ts); on every other component the two
@@ -545,7 +532,7 @@ RUN npm run build && npm prune --omit=dev
 FROM ${PW}
 
 LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
-LABEL org.opencontainers.image.description="strad's single supplementary image — 38 MCP servers (API, Google, X.com, Telegram, WhatsApp, Messenger, web fetching, Grafana, VictoriaLogs, AppSignal, banking, Airtable, FlightAware, DigitalOcean, Hetzner Cloud, GlitchTip, vendor billing, image diff/tracing, nutrition facts, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
+LABEL org.opencontainers.image.description="strad's single supplementary image — 37 MCP servers (API, Google, X.com, Telegram, WhatsApp, Messenger, web fetching, Grafana, VictoriaLogs, banking, Airtable, FlightAware, DigitalOcean, Hetzner Cloud, GlitchTip, vendor billing, image diff/tracing, nutrition facts, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
 LABEL org.opencontainers.image.licenses="MIT"
 
 # --- 1Password CLI (op), pinned ----------------------------------------------
@@ -609,7 +596,6 @@ COPY --from=build-pulse-subregistry /src /app/trees/pulse-subregistry
 COPY --from=build-strad-fetch /src /app/trees/strad-fetch
 COPY --from=build-grafana /src /app/trees/grafana
 COPY --from=build-victorialogs /src /app/trees/victorialogs
-COPY --from=build-appsignal /src /app/trees/appsignal
 
 # The two upstream MCP servers in this image that are Go binaries. Each goes on
 # PATH because that is where its tree's supervisor looks for it
