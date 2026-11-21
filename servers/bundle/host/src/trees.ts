@@ -3,16 +3,16 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /**
- * The collapsed bundle is ONE image assembled from TWENTY-NINE existing npm projects —
+ * The collapsed bundle is ONE image assembled from TWENTY-EIGHT existing npm projects —
  * bundle-api, bundle-google, onepassword, secrets, remote-filesystem, good-eggs,
  * fetchpet, pointsyeah, x-twitter, telegram, whatsapp, messenger, bill-spend,
  * aws-device-farm, liveoak, ssh, airtable, flightaware, digitalocean, hetzner,
  * glitchtip, vendor-billing, image-tools, nutrition-facts,
- * pulse-subregistry, strad-fetch, grafana, victorialogs, appsignal — each of
+ * pulse-subregistry, strad-fetch, grafana, victorialogs — each of
  * which is copied in, installed and built exactly as its own image builds it,
  * keeping its own `node_modules` and its own lockfile.
  *
- * WHY NOT ONE FLAT npm PROJECT. Because merging twenty-nine dependency trees into one
+ * WHY NOT ONE FLAT npm PROJECT. Because merging twenty-eight dependency trees into one
  * is how you find out, in production, that fetchpet pinned playwright-extra and
  * bundle-google pinned express 4 and someone's transitive zod moved. Each tree
  * stays byte-for-byte the tree its own CI already proves; this host just imports
@@ -24,7 +24,7 @@ import { pathToFileURL } from "node:url";
  * is deliberate: three browsers on one vCPU is the thing we are trying not to do.
  */
 
-/** Where the Dockerfile lays the twenty-nine trees down. */
+/** Where the Dockerfile lays the twenty-eight trees down. */
 export const TREES_DIR = process.env.STRAD_TREES_DIR ?? "/app/trees";
 
 export type TreeName =
@@ -55,8 +55,7 @@ export type TreeName =
   | "pulse-subregistry"
   | "strad-fetch"
   | "grafana"
-  | "victorialogs"
-  | "appsignal";
+  | "victorialogs";
 
 export function treeDir(tree: TreeName): string {
   return join(TREES_DIR, tree);

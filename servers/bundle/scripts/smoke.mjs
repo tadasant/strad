@@ -15,7 +15,7 @@
  * credential-dependent. CI has no credential, the probe fails closed, and the
  * count is the read-only 4 below.
  *
- * What it is really checking is that thirty-eight servers, twenty-nine dependency trees and
+ * What it is really checking is that thirty-seven servers, twenty-eight dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  *
@@ -160,10 +160,6 @@ const EXPECT = {
   // entrypoint that cannot resolve (no credential in CI), which is still the
   // binary's own list.
   victorialogs: 13,
-  // pulsemcp/mcp-servers' AppSignal tools in upstream's LOCKED mode — no app
-  // selection — all reads. custom_graphql_query is one of the twenty and refuses
-  // a mutation in strad's layer (servers/appsignal/README.md).
-  appsignal: 20,
 };
 
 /**
@@ -322,7 +318,7 @@ if (unchecked.length || absent.length) {
 
 // Two trees registering the SAME slug is the collision a twelve-tree single process
 // invites, and it collapses to one route — the set above cannot see it, because a
-// Set of 38 mounts' slugs is 37 entries wide and matches EXPECT exactly.
+// Set of 37 mounts' slugs is 36 entries wide and matches EXPECT exactly.
 if (health.servers.length !== mounted.size) {
   failed += 1;
   console.log(

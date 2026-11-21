@@ -138,7 +138,6 @@ export default defineConfig({
             { label: "Nutrition facts", slug: "servers/nutrition-facts" },
             { label: "Grafana", slug: "servers/grafana" },
             { label: "VictoriaLogs", slug: "servers/victorialogs" },
-            { label: "AppSignal", slug: "servers/appsignal" },
           ],
         },
         {
