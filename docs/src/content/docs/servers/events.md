@@ -33,7 +33,9 @@ Three things, all on the ordinary `/mcp` endpoint:
   the first use after five minutes, so a bundle redeployed with events switched
   on is advertised within about that window, without a core restart. A
   `local-tunnel` slug is never asked: it is a machine that is often off, and
-  nothing on one serves events.
+  nothing on one serves events. A slug with an `oauth:` connector is asked the
+  same way. Under a store provider, a failed poll or subscribe on one nobody
+  has connected yet is reported as unconfigured, the way a failed tool call is.
 - **`events/list`** only asks a slug whose handshake advertised events, so an
   unconfigured, offline or tools-only slug is skipped quietly. A listing that
   fails after the handshake advertised events is a fault, and exports
