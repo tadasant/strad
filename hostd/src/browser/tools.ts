@@ -66,6 +66,18 @@ export type ClickResult =
 /** click_element needs a selector verbatim; a page does not put a credential in one. */
 const KEEP_SELECTOR = new Set(["selector"]);
 
+/**
+ * A page's exception text is page-authored too — V8's JSON.parse error quotes
+ * its input — so a failed read is redacted like a successful one.
+ */
+async function redactingErrors<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    throw new Error(redactText(String((err as Error)?.message ?? err)).text);
+  }
+}
+
 /** Say how many values were taken out, so a caller does not mistake them for the page's. */
 function withRedacted<T extends object>(
   out: T,
@@ -333,48 +345,53 @@ load is "complete", or "timeout" if the page was still loading after 15s (it is 
       readOnlyHint: true,
       openWorldHint: true,
     },
-    handler: async (a, { grant }) => {
-      const s = sessions.for(grant);
-      const page = await s.evaluate<{ url: string; title: string }>(
-        a.tab_id,
-        "({url: location.href, title: document.title})",
-      );
-      const matched = credentialPage(page.url);
-      if (matched && a.format !== "elements")
-        return text(
-          credentialPageRefusal(redactText(page.url).text, matched),
-          true,
+    handler: (a, { grant }) =>
+      redactingErrors(async () => {
+        const s = sessions.for(grant);
+        const page = await s.evaluate<{ url: string; title: string }>(
+          a.tab_id,
+          "({url: location.href, title: document.title})",
         );
-      const head = redactValue(page);
-      if (a.format === "elements") {
-        const elements = redactValue(
-          await s.evaluate<unknown[]>(a.tab_id, LIST_ELEMENTS),
-          KEEP_SELECTOR,
+        const matched = credentialPage(page.url);
+        if (matched && a.format !== "elements")
+          return text(
+            credentialPageRefusal(redactText(page.url).text, matched),
+            true,
+          );
+        const head = redactValue(page);
+        if (a.format === "elements") {
+          const elements = redactValue(
+            await s.evaluate<{ label?: string }[]>(a.tab_id, LIST_ELEMENTS),
+            KEEP_SELECTOR,
+          );
+          if (Array.isArray(elements.value))
+            for (const el of elements.value)
+              if (typeof el.label === "string")
+                el.label = el.label.slice(0, 80);
+          return json(
+            withRedacted(
+              { ...head.value, elements: elements.value },
+              head.count + elements.count,
+            ),
+          );
+        }
+        const raw = await s.evaluate<string>(
+          a.tab_id,
+          a.format === "html"
+            ? "document.documentElement.outerHTML"
+            : "document.body ? document.body.innerText : ''",
         );
+        // Redact BEFORE clipping, so a clip cannot cut a token in half and
+        // leave each half too short to recognise.
+        const body = redactText(raw ?? "");
+        const out = clip(body.text, a.max_chars);
         return json(
           withRedacted(
-            { ...head.value, elements: elements.value },
-            head.count + elements.count,
+            { ...head.value, [a.format]: out.text, truncated: out.truncated },
+            head.count + body.count,
           ),
         );
-      }
-      const raw = await s.evaluate<string>(
-        a.tab_id,
-        a.format === "html"
-          ? "document.documentElement.outerHTML"
-          : "document.body ? document.body.innerText : ''",
-      );
-      // Redact BEFORE clipping, so a clip cannot cut a token in half and
-      // leave each half too short to recognise.
-      const body = redactText(raw ?? "");
-      const out = clip(body.text, a.max_chars);
-      return json(
-        withRedacted(
-          { ...head.value, [a.format]: out.text, truncated: out.truncated },
-          head.count + body.count,
-        ),
-      );
-    },
+      }),
   });
 
   const clickElement = defineTool({
@@ -567,23 +584,27 @@ It runs with the page's full privileges in the owner's signed-in session. Keep i
       openWorldHint: true,
     },
     summarize: (a) => `evaluate_script: ${a.expression.slice(0, 200)}`,
-    handler: async (a, { grant }) => {
-      const s = sessions.for(grant);
-      const url = await s.evaluate<string>(a.tab_id, "location.href");
-      const matched = credentialPage(url);
-      if (matched)
-        return text(credentialPageRefusal(redactText(url).text, matched), true);
-      const value = redactValue(await s.evaluate(a.tab_id, a.expression));
-      const out = clip(
-        JSON.stringify(
-          withRedacted({ value: value.value ?? null }, value.count),
-          null,
-          2,
-        ),
-        a.max_chars,
-      );
-      return text(out.text);
-    },
+    handler: (a, { grant }) =>
+      redactingErrors(async () => {
+        const s = sessions.for(grant);
+        const url = await s.evaluate<string>(a.tab_id, "location.href");
+        const matched = credentialPage(url);
+        if (matched)
+          return text(
+            credentialPageRefusal(redactText(url).text, matched),
+            true,
+          );
+        const value = redactValue(await s.evaluate(a.tab_id, a.expression));
+        const out = clip(
+          JSON.stringify(
+            withRedacted({ value: value.value ?? null }, value.count),
+            null,
+            2,
+          ),
+          a.max_chars,
+        );
+        return text(out.text);
+      }),
   });
 
   const takeScreenshot = defineTool({

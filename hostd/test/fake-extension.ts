@@ -233,6 +233,14 @@ export class FakeExtension {
         return value({ url: tab.url, title: tab.title });
       if (expr.includes("innerText")) return value(tab.text);
       if (expr.includes("outerHTML")) return value(`<html>${tab.text}</html>`);
+      if (expr.startsWith("throw:"))
+        return {
+          result: {},
+          exceptionDetails: {
+            text: "Uncaught",
+            exception: { description: `SyntaxError: ${expr.slice(6)}` },
+          },
+        };
       if (expr === "throw")
         return {
           result: {},

@@ -11,8 +11,9 @@
  *
  * This is a heuristic, and it says so: a credential with no recognisable prefix
  * and too little length or entropy to look random passes through. Custody's
- * exact-value egress filter (`src/custody/enforce.ts`) is unaffected and still
- * runs after this, over every result. Custody's own capture tools do not pass
+ * exact-value egress filter (`src/custody/enforce.ts`) still runs after this,
+ * over every result; a value this has already taken out no longer trips it,
+ * which leaks nothing (reads are refused during a hold anyway). Custody's own capture tools do not pass
  * through here at all — they never return a value.
  */
 
@@ -40,12 +41,23 @@ const PREFIXED: RegExp[] = [
   /\bpat[A-Za-z0-9]{14}\.[a-f0-9]{64}/g, // Airtable
   /\bshp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}/g, // Shopify
   /\bops_[A-Za-z0-9_-]{40,}/g, // 1Password service account
+  /\b\d{8,10}:AA[A-Za-z0-9_-]{33}\b/g, // Telegram bot
+  /\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/g, // SendGrid
+  /\bSK[0-9a-fA-F]{32}\b/g, // Twilio API key
+  /\br8_[A-Za-z0-9]{30,}/g, // Replicate
+  /\bglsa_[A-Za-z0-9_]{30,}/g, // Grafana service account
   /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, // JWT
 ];
 
-/** A whole PEM block, or a BEGIN whose END was cut off by a clip. */
+/**
+ * A PEM block: its body is base64 and the odd `Proc-Type:` header line, so a
+ * BEGIN line quoted in prose does not swallow the text up to a later END. A
+ * body stops at the next `-----`, which keeps a page of BEGIN lines linear.
+ */
 const PEM =
-  /-----BEGIN [A-Z0-9 ]+-----[\s\S]*?(?:-----END [A-Z0-9 ]+-----|$(?![\s\S]))/g;
+  /-----BEGIN [A-Z0-9 ]+-----(?:[A-Za-z0-9+/=\s:,.]|-(?!----))*?-----END [A-Z0-9 ]+-----/g;
+/** A BEGIN whose END never came (the page itself is cut off): body to the end. */
+const PEM_OPEN = /-----BEGIN [A-Z0-9 ]+-----\s*[A-Za-z0-9+/=\s]{40,}$/g;
 
 /**
  * A URL's userinfo: `https://<key>@o1.ingest.sentry.io/2` (a Sentry/GlitchTip
@@ -53,17 +65,24 @@ const PEM =
  * user long enough to be a key. A short bare user (`git@`, `me@`) is left.
  */
 const USERINFO =
-  /\b([a-z][a-z0-9+.-]*:\/\/)([^\s/?#@'"<>]+)@(?=[^\s/?#@'"<>])/gi;
+  /\b([a-z][a-z0-9+.-]*:\/\/)([^\s/?#'"<>]+)@(?=[^\s/?#@'"<>])/gi;
 
-/** A value right after a word that names a credential: `token: …`, `"api_key":"…"`. */
+/**
+ * A value right after a word that names a credential: `token: …`,
+ * `"api_key":"…"`, `"access_token":"…"`, `refreshToken=…`, `Bearer …`.
+ */
 const LABELLED =
-  /\b(token|secret|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|password|passwd|bearer|authorization|dsn)([\s"':=]{1,6})([A-Za-z0-9_\-+/=.~]{16,})/gi;
+  /((?<![A-Za-z0-9])[A-Za-z0-9]*[_-]?(?:token|secret|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|bearer|authorization|dsn))([\s"':=]{1,6})([A-Za-z0-9_\-+/=.~%]{16,})/gi;
 
 /** 48+ hex: long enough to skip a git SHA (40) and catch a 64-hex API token. */
 const LONG_HEX =
   /(?<![A-Za-z0-9])(?<!sha(?:256|384|512)[:-])[0-9a-fA-F]{48,}(?![A-Za-z0-9])/g;
 
-/** 40+ chars from the base64 / base64url alphabet. Kept only if it looks random. */
+/**
+ * 40+ chars from the base64 / base64url alphabet. Kept only if it looks random.
+ * A run that starts at a `/`, or right after a `.` or `:`, is a URL path (the
+ * `.` is the end of a host name): only its random-looking segments go.
+ */
 const LONG_B64 =
   /(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{40,}={0,2}(?![A-Za-z0-9+/_=-])/g;
 
@@ -86,14 +105,6 @@ function entropy(s: string): number {
 export function looksRandom(s: string): boolean {
   if (!/[A-Z]/.test(s) || !/[a-z]/.test(s)) return false;
   if ((s.match(/[0-9]/g) ?? []).length < 2) return false;
-  // A path is judged by its longest segment: a long URL path is many short
-  // words, a key with a `/` in it is one long random run either side.
-  if (s.includes("/")) {
-    const longest = s
-      .split("/")
-      .reduce((a, b) => (b.length > a.length ? b : a));
-    if (longest.length < 24) return false;
-  }
   // 40 random base64 characters run ~4.9 bits each; CamelCase English ~4.2.
   return entropy(s) >= 4.5;
 }
@@ -104,13 +115,16 @@ function looksRandomHex(s: string): boolean {
 }
 
 /** Redact every token-shaped value in one string. */
-export function redactText(input: string): { text: string; count: number } {
+export function redactText(
+  input: string,
+  opts: { url?: boolean } = {},
+): { text: string; count: number } {
   let count = 0;
   const hit = () => {
     count++;
     return REDACTED;
   };
-  let s = input.replace(PEM, hit);
+  let s = input.replace(PEM, hit).replace(PEM_OPEN, hit);
   for (const re of PREFIXED) s = s.replace(re, hit);
   s = s.replace(USERINFO, (m, scheme: string, info: string) => {
     if (info.includes(REDACTED)) return m;
@@ -126,10 +140,33 @@ export function redactText(input: string): { text: string; count: number } {
     count++;
     return `${word}${sep}${REDACTED}`;
   });
+  if (opts.url) {
+    // A link's PATH is an address, often with a random id in it (a Google
+    // Doc, a Drive folder): redacting it breaks the link and protects
+    // nothing. Its query and fragment are judged like any text.
+    const at = s.search(/[?#]/);
+    if (at < 0) return { text: s, count };
+    const tail = redactText(s.slice(at));
+    return { text: s.slice(0, at) + tail.text, count: count + tail.count };
+  }
   s = s.replace(LONG_HEX, (m) => (looksRandomHex(m) ? hit() : m));
-  s = s.replace(LONG_B64, (m) => (looksRandom(m) ? hit() : m));
+  s = s.replace(LONG_B64, (m: string, offset: number, all: string) => {
+    const before = all[offset - 1];
+    if (
+      m.includes("/") &&
+      (m.startsWith("/") || before === "." || before === ":")
+    )
+      return m
+        .split("/")
+        .map((seg) => (seg.length >= 24 && looksRandom(seg) ? hit() : seg))
+        .join("/");
+    return looksRandom(m) ? hit() : m;
+  });
   return { text: s, count };
 }
+
+/** Keys whose string value is a link, redacted with `url: true`. */
+const URL_KEYS = new Set(["url", "href", "src"]);
 
 /**
  * Redact every string in a JSON-shaped value — object keys too — except the
@@ -141,18 +178,24 @@ export function redactValue<T>(
   keep: ReadonlySet<string> = new Set(),
 ): { value: T; count: number } {
   let count = 0;
-  const walk = (v: unknown): unknown => {
+  const walk = (v: unknown, key?: string): unknown => {
     if (typeof v === "string") {
-      const r = redactText(v);
+      const r = redactText(v, {
+        url:
+          key !== undefined && URL_KEYS.has(key) && /^https?:\/\/\S+$/i.test(v),
+      });
       count += r.count;
       return r.text;
     }
-    if (Array.isArray(v)) return v.map(walk);
+    if (Array.isArray(v)) return v.map((x) => walk(x));
     if (v && typeof v === "object") {
       const out: Record<string, unknown> = {};
       for (const [k, inner] of Object.entries(v)) {
-        const key = walk(k) as string;
-        out[key] = keep.has(k) ? inner : walk(inner);
+        let name = walk(k) as string;
+        // Two keys that both redact must not overwrite each other.
+        for (let i = 2; name !== k && name in out; i++)
+          name = `${walk(k) as string}#${i}`;
+        out[name] = keep.has(k) ? inner : walk(inner, k);
       }
       return out;
     }
@@ -172,6 +215,11 @@ export const DEFAULT_CREDENTIAL_PAGES: readonly string[] = [
   "*://*/settings/*auth-tokens*", // Sentry, account and organization
   "https://github.com/settings/tokens*",
   "https://github.com/settings/personal-access-tokens*",
+  "https://cloud.digitalocean.com/account/api/tokens*",
+  "https://dashboard.stripe.com/*apikeys*",
+  "https://platform.openai.com/*api-keys*",
+  "https://console.anthropic.com/settings/keys*",
+  "https://dash.cloudflare.com/profile/api-tokens*",
   "*://*/-/user_settings/personal_access_tokens*", // GitLab
   "*://*/-/profile/personal_access_tokens*",
 ];

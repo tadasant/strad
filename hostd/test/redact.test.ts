@@ -127,8 +127,77 @@ describe("redacting token-shaped values", () => {
     ],
     ["a preview", "sk-or-v1-abc...xyz  Created just now"],
     ["a label next to a word", "Token authentication_documentation"],
+    ["an SRI-free asset path", "/static/js/main.3f2a9c1d.chunk.js"],
   ])("leaves %s alone", (_name, s) => {
     expect(redactText(s)).toEqual({ text: s, count: 0 });
+  });
+
+  it("OAuth-shaped JSON keys, snake and camel", () => {
+    const v = rand(ALNUM, 32, 3);
+    for (const s of [
+      `{"access_token":"${v}"}`,
+      `{"refresh_token": "${v}"}`,
+      `id_token=${v}`,
+      `accessToken: ${v}`,
+      `X_TOKEN=${v}`,
+      `token=${v.slice(0, 10)}%2F${v.slice(10)}`,
+    ]) {
+      const r = gone(s);
+      expect(r.leaked(v.slice(10)), s).toBe(false);
+    }
+  });
+
+  it("a BEGIN line quoted in prose does not swallow the rest of the page", () => {
+    const s =
+      "A certificate starts with -----BEGIN CERTIFICATE----- and ends with a matching END line. More docs follow here.";
+    expect(redactText(s)).toEqual({ text: s, count: 0 });
+  });
+
+  it("a password with an @ in it goes whole", () => {
+    const r = gone("https://user:p4ss@w0rd-Xyz@db.example.com/x");
+    expect(r.text).toBe(`https://${REDACTED}@db.example.com/x`);
+  });
+
+  it("keeps a link's path, and judges its query", () => {
+    const id = "1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCdE";
+    const doc = `https://docs.google.com/document/d/${id}/edit`;
+    expect(redactValue({ href: doc }).value.href).toBe(doc);
+    expect(redactValue({ url: doc }).value.url).toBe(doc);
+    // In page text, only the random segment goes; the host and path stay.
+    expect(redactText(`see ${doc} for more`).text).toBe(
+      `see https://docs.google.com/document/d/${REDACTED}/edit for more`,
+    );
+    const t = rand(HEX, 64, 4);
+    expect(
+      redactValue({ href: `https://ci.example/run?token=${t}` }).value.href,
+    ).toBe(`https://ci.example/run?token=${REDACTED}`);
+    const pat = `ghp_${rand(ALNUM, 36, 5)}`;
+    expect(redactValue({ href: `https://x.example/${pat}` }).value.href).toBe(
+      `https://x.example/${REDACTED}`,
+    );
+  });
+
+  it("two keys that both redact keep both values", () => {
+    const a = `ghp_${rand(ALNUM, 36, 8)}`;
+    const b = `ghp_${rand(ALNUM, 36, 9)}`;
+    const r = redactValue({ [a]: 1, [b]: 2 });
+    expect(Object.values(r.value).sort()).toEqual([1, 2]);
+  });
+
+  it("runs in linear time on a large adversarial page", () => {
+    const big = 2_000_000;
+    for (const page of [
+      rand(B64, big),
+      "token: ".repeat(big / 7),
+      "-----BEGIN X-----\n".repeat(big / 18),
+      "a://".repeat(big / 4),
+      "x".repeat(big) + "_token",
+      `https://${"a".repeat(big)}`,
+    ]) {
+      const t0 = performance.now();
+      redactText(page);
+      expect(performance.now() - t0).toBeLessThan(3000);
+    }
   });
 
   it("walks a JSON value, keys included, keeping what it is told to", () => {

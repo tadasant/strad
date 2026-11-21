@@ -316,6 +316,16 @@ describe("what a read lets leave the machine", () => {
     expect(resultJson<{ redacted: number }>(ev).redacted).toBe(2);
   });
 
+  it("redacts a page's exception text too", async () => {
+    const res = await call("evaluate_script", {
+      tab_id: "100",
+      expression: `throw:"${pat}" is not valid JSON`,
+    });
+    expect(res.isError).toBe(true);
+    expect(resultText(res)).toMatch(/is not valid JSON/);
+    expect(JSON.stringify(res)).not.toContain(pat);
+  });
+
   it("a page with nothing token-shaped comes back untouched, with no redacted field", async () => {
     const read = resultJson<Record<string, unknown>>(
       await call("read_page", { tab_id: "100" }),

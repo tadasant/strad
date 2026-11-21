@@ -5053,6 +5053,7 @@ Off by default.
   take a credential, use custody.
 - **Credential pages are URL globs** checked just before the read, so a token
   page the list does not name gets redaction alone.
-- **Screenshots, tab titles and URLs are not redacted.**
+- **Screenshots are not redacted, and neither are the titles and URLs that
+  `list_tabs`, `open_tab` and `navigate_tab` return.** `read_page`'s own are.
 
 See `HACKS.md` #164.
