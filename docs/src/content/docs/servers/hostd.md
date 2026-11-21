@@ -469,6 +469,12 @@ outward; the cursor clicks), four frames a second, and it holds still between
 calls. With **Reduce motion** on in Accessibility settings it does not
 animate; `defaults write strad-hostd-ax statusIconAnimation never` (or
 `always`, or `auto`, the default) overrides that either way.
+The icon is a status item named `strad-hostd`, owned by the bundle identifier
+`com.strad.hostd-ax` that is linked into the helper's binary, so macOS and a
+menu-bar manager such as Bartender remember its position and whether it is
+shown across every restart of the helper. To keep it always in view, allow
+**strad-hostd** under System Settings › Menu Bar › **Allow in the Menu Bar**,
+⌘-drag it right of the notch, and put it in Bartender's shown section.
 Its menu has **Show banner** when the banner is put away, a Kill per grant with
 its session and current call, and the four choices. The text of a
 call is caller-authored, so before it reaches the screen the daemon scrubs
