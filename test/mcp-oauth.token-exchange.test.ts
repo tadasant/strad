@@ -833,6 +833,45 @@ describe("revocation", () => {
   });
 });
 
+describe("turning exchange off", () => {
+  it("ends every live child, and leaves the parent working", async () => {
+    const g = await gateway(EXCHANGE_ON());
+    const parent = await connect(g);
+    const child =
+      (await exchange(g, parent.access_token ?? "")).json.access_token ?? "";
+    const resource = `${g.base}/mcp`;
+    // The same records, read by a build whose config dropped `tokenExchange`
+    // from Zimmer's entry.
+    const off = parseConfig(
+      yaml(
+        `    clients:
+      - clientId: ${ZIMMER}
+        tokenEndpointAuthMethod: private_key_jwt
+        jwksUri: ${ZIMMER_JWKS}
+    grants:
+      enabled: true
+      store: memory`,
+        g.publicUrl,
+      ),
+    );
+    const view = resolveMcpOAuth({
+      config: off,
+      env: { STRAD_OAUTH_KEY: KEY } as NodeJS.ProcessEnv,
+      google: fakeGoogleGrant("tadasant.com"),
+      grantBlobs: g.blobs,
+      log: () => {},
+    });
+    if (!view) throw new Error("no oauth");
+    expect(await verifyAccessToken(child, view, resource)).toEqual({
+      ok: false,
+      reason: "oauth_exchange_disabled",
+    });
+    expect(
+      (await verifyAccessToken(parent.access_token ?? "", view, resource)).ok,
+    ).toBe(true);
+  });
+});
+
 describe("the cap on live children", () => {
   it("refuses at the cap without evicting, and a revoke frees a slot", async () => {
     const g = await gateway(EXCHANGE_ON({ cap: 2 }));

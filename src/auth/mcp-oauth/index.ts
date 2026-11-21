@@ -273,7 +273,8 @@ export type AccessVerdict =
         | "oauth_grant_unknown"
         | "oauth_grant_dead"
         | "oauth_grant_expired"
-        | "oauth_token_revoked";
+        | "oauth_token_revoked"
+        | "oauth_exchange_disabled";
     };
 
 /**
@@ -358,6 +359,12 @@ export async function verifyAccessToken(
     const grant = await store.get(record.gid);
     if (!grant || grant.cid !== record.cid) {
       return { ok: false, reason: "oauth_grant_unknown" };
+    }
+    // A token-exchange child is honoured only while its client's entry still
+    // allows exchange, so removing `tokenExchange` from config ends every
+    // child at once rather than at each one's expiry.
+    if (grant.exchange && !policy.tokenExchange) {
+      return { ok: false, reason: "oauth_exchange_disabled" };
     }
     const { dead, path } = await store.chain(grant);
     if (dead) return { ok: false, reason: "oauth_grant_dead" };
