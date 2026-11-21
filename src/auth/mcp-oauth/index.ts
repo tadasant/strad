@@ -2,6 +2,7 @@ import type { StradConfig } from "../../config/schema.ts";
 import type { Principal } from "../index.ts";
 import { ACCESS_TOKEN_PREFIX, readAccessToken, SpentCodes } from "./grants.ts";
 import { ClientMetadataResolver, type DocumentFetcher } from "./cimd.ts";
+import { ClientAssertionVerifier, ClientAuthenticator } from "./client-auth.ts";
 import { grantProviderFromEnv, type McpGoogleProvider } from "./google.ts";
 import {
   mcpOAuthKeysFromEnv,
@@ -45,6 +46,13 @@ export interface McpOAuth {
    * reason open registration has none.
    */
   clientMetadata: ClientMetadataResolver;
+  /**
+   * `private_key_jwt` client authentication (`client-auth.ts`). Always
+   * present: whether a request must authenticate is decided per request, and
+   * a grant sealed to a confidential client still demands its assertion after
+   * the feature is switched off.
+   */
+  clientAuth: ClientAuthenticator;
 }
 
 export interface ResolveMcpOAuthOptions {
@@ -122,14 +130,24 @@ export function resolveMcpOAuth(opts: ResolveMcpOAuthOptions): McpOAuth | null {
     );
   }
 
+  const policies = new ClientPolicies(settings);
+  const clientMetadata = new ClientMetadataResolver({
+    ...(opts.clientMetadataFetch ? { fetch: opts.clientMetadataFetch } : {}),
+    parse: { privateKeyJwt: policies.privateKeyJwt },
+  });
+
   return {
     hostedDomain,
-    policies: new ClientPolicies(settings),
+    policies,
     keys,
     google,
     spent: new SpentCodes(),
-    clientMetadata: new ClientMetadataResolver(
-      opts.clientMetadataFetch ? { fetch: opts.clientMetadataFetch } : {},
+    clientMetadata,
+    clientAuth: new ClientAuthenticator(
+      new ClientAssertionVerifier(
+        opts.clientMetadataFetch ? { fetch: opts.clientMetadataFetch } : {},
+      ),
+      clientMetadata,
     ),
   };
 }

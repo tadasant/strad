@@ -1,5 +1,6 @@
 import { RESERVED_AUTHORIZE_PARAMS } from "../connectors/oauth-flow.ts";
 import { z } from "zod";
+import { jwksUriProblem } from "../auth/mcp-oauth/cimd.ts";
 import {
   MAX_VARIABLE_LENGTH,
   isEnvName,
@@ -1754,6 +1755,15 @@ const AuthConfig = z.object({
        *                           what those roles reach. Absent = no extra
        *                           narrowing.
        *   accessTokenTtlSeconds — optional, same bounds as the global one.
+       *   tokenEndpointAuthMethod — `private_key_jwt` makes this client
+       *                           CONFIDENTIAL whatever its document says: every
+       *                           token and revocation call must carry a valid
+       *                           RFC 7523 assertion, so a document tampered to
+       *                           say `none` cannot downgrade it to public.
+       *   jwksUri               — optional PIN for that client's keys. Set, the
+       *                           document's `jwks`/`jwks_uri` are ignored, so a
+       *                           tampered document cannot swap the keys either.
+       *                           Only with `tokenEndpointAuthMethod`.
        *
        * An entry REPLACES the defaults, so its `roles` may be wider than the
        * global ones as well as narrower. Applied at every verification and
@@ -1775,9 +1785,22 @@ const AuthConfig = z.object({
               .min(300)
               .max(86_400)
               .optional(),
+            tokenEndpointAuthMethod: z.literal("private_key_jwt").optional(),
+            jwksUri: z.string().min(1).max(2048).optional(),
           }),
         )
         .default([]),
+      /**
+       * Accept `private_key_jwt` client authentication (RFC 7523) from client
+       * id metadata document clients: a document may then declare
+       * `token_endpoint_auth_method: private_key_jwt` with `jwks_uri` or
+       * `jwks`, and the metadata advertises the method. Unset, it is on
+       * exactly when some `clients[]` entry requires the method, and off
+       * otherwise — which is every deployment that predates it, and leaves
+       * them byte-identical. `false` with such an entry is refused below.
+       * `src/auth/mcp-oauth/client-auth.ts` is the verifier.
+       */
+      privateKeyJwt: z.boolean().optional(),
       /**
        * May a client NOT listed in `clients` complete a grant, refresh one, or
        * use an access token? `true` is the open default every deployment had
@@ -2273,6 +2296,19 @@ export const StradConfig = z
     // order) and a key that is not a metadata-document URL (a dynamically
     // registered client's id is minted at registration and cannot be listed,
     // so such an entry would match nothing, silently).
+    if (
+      cfg.auth.mcpOAuth.privateKeyJwt === true &&
+      cfg.gateway.publicUrl === undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "auth.mcpOAuth.privateKeyJwt needs gateway.publicUrl: an assertion's " +
+          "aud is checked against the declared origin, never one taken from " +
+          "the request.",
+        path: ["auth", "mcpOAuth", "privateKeyJwt"],
+      });
+    }
     const seenClients = new Set<string>();
     cfg.auth.mcpOAuth.clients.forEach((client, i) => {
       const at = ["auth", "mcpOAuth", "clients", i];
@@ -2308,6 +2344,51 @@ export const StradConfig = z
             path: [...at, "roles"],
           });
         }
+      }
+      if (client.jwksUri !== undefined) {
+        if (client.tokenEndpointAuthMethod !== "private_key_jwt") {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `auth.mcpOAuth.clients[${i}].jwksUri pins keys for a client that ` +
+              "does not authenticate with them: set tokenEndpointAuthMethod: " +
+              "private_key_jwt as well.",
+            path: [...at, "jwksUri"],
+          });
+        }
+        const problem = jwksUriProblem(client.jwksUri);
+        if (problem) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `auth.mcpOAuth.clients[${i}].jwksUri: ${problem}`,
+            path: [...at, "jwksUri"],
+          });
+        }
+      }
+      if (
+        client.tokenEndpointAuthMethod === "private_key_jwt" &&
+        cfg.gateway.publicUrl === undefined
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `auth.mcpOAuth.clients[${i}] requires private_key_jwt, which needs ` +
+            "gateway.publicUrl: an assertion's aud is checked against the " +
+            "declared origin, never one taken from the request.",
+          path: [...at, "tokenEndpointAuthMethod"],
+        });
+      }
+      if (
+        client.tokenEndpointAuthMethod === "private_key_jwt" &&
+        cfg.auth.mcpOAuth.privateKeyJwt === false
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `auth.mcpOAuth.clients[${i}] requires private_key_jwt but ` +
+            "auth.mcpOAuth.privateKeyJwt is false.",
+          path: [...at, "tokenEndpointAuthMethod"],
+        });
       }
       // `servers` naming a slug the roster does not have is NOT refused, for
       // the reason a role's `servers` is not: a runtime roster write may

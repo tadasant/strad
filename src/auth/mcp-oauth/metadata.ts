@@ -119,7 +119,11 @@ export interface AuthorizationServerMetadata {
   grant_types_supported: string[];
   code_challenge_methods_supported: string[];
   token_endpoint_auth_methods_supported: string[];
+  /** Present only when `private_key_jwt` is advertised. */
+  token_endpoint_auth_signing_alg_values_supported?: string[];
   revocation_endpoint_auth_methods_supported: string[];
+  /** Present only when `private_key_jwt` is advertised. */
+  revocation_endpoint_auth_signing_alg_values_supported?: string[];
   scopes_supported: string[];
   service_documentation: string;
   /** RFC 9207: every authorization response carries `iss`. */
@@ -144,14 +148,27 @@ const SERVICE_DOCUMENTATION = "https://docs.strad.tadasant.com/auth/overview/";
  * which would tell an OAuth 2.1 client to give up.
  *
  * `token_endpoint_auth_methods_supported` is `["none"]` because every client
- * here is a PUBLIC client: an MCP client registers itself dynamically and runs
- * where its user can read it, so a client secret it was handed would be a
- * secret in a browser. PKCE is what binds the code to the client instead.
+ * here is a PUBLIC client by default: an MCP client registers itself
+ * dynamically and runs where its user can read it, so a client secret it was
+ * handed would be a secret in a browser. PKCE is what binds the code to the
+ * client instead. A deployment that turns on `private_key_jwt`
+ * (`client-auth.ts`) advertises it beside `none`, with its algorithm list, on
+ * both the token and the revocation endpoint — and only then, so a deployment
+ * that has not turned it on publishes the document it always did.
  */
 export function authorizationServerMetadata(
   origin: string,
-  opts: { scopes?: string[]; registration?: boolean } = {},
+  opts: {
+    scopes?: string[];
+    registration?: boolean;
+    /** The signing algorithms, when `private_key_jwt` is on. */
+    privateKeyJwtAlgs?: readonly string[];
+  } = {},
 ): AuthorizationServerMetadata {
+  const methods = opts.privateKeyJwtAlgs
+    ? ["none", "private_key_jwt"]
+    : ["none"];
+  const algs = opts.privateKeyJwtAlgs ? [...opts.privateKeyJwtAlgs] : undefined;
   return {
     issuer: origin,
     authorization_endpoint: `${origin}${AUTHORIZE_PATH}`,
@@ -163,8 +180,12 @@ export function authorizationServerMetadata(
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code", "refresh_token"],
     code_challenge_methods_supported: ["S256"],
-    token_endpoint_auth_methods_supported: ["none"],
-    revocation_endpoint_auth_methods_supported: ["none"],
+    token_endpoint_auth_methods_supported: methods,
+    ...(algs ? { token_endpoint_auth_signing_alg_values_supported: algs } : {}),
+    revocation_endpoint_auth_methods_supported: [...methods],
+    ...(algs
+      ? { revocation_endpoint_auth_signing_alg_values_supported: [...algs] }
+      : {}),
     scopes_supported: opts.scopes ?? [MCP_SCOPE],
     service_documentation: SERVICE_DOCUMENTATION,
     authorization_response_iss_parameter_supported: true,

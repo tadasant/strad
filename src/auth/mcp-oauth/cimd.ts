@@ -56,8 +56,12 @@ import { redirectUriProblem } from "./clients.ts";
  *     size, and a deadline on the whole exchange rather than per socket event.
  *   - Status `200` and a JSON content type, or it is not a document.
  *
- * Nothing the document CONTAINS is fetched: not `logo_uri`, not `jwks_uri`,
- * not `client_uri`. The consent screen names hosts; it never loads them.
+ * Nothing the document CONTAINS is fetched at `/oauth/authorize`: not
+ * `logo_uri`, not `client_uri`, not `jwks_uri`. The consent screen names
+ * hosts; it never loads them. The one exception is later and narrower: a
+ * confidential client's `jwks_uri` is fetched at the token and revocation
+ * endpoints, by the same `guardedFetch`, when it presents an assertion
+ * (`client-auth.ts`).
  *
  * ## Caching
  *
@@ -118,6 +122,24 @@ export interface MetadataClient {
   name?: string;
   /** The document's redirect URIs, exactly as listed. */
   uris: string[];
+  /**
+   * `private_key_jwt` when the document declares it — only ever set when the
+   * deployment accepts the method (`auth.mcpOAuth.privateKeyJwt`). Absent is
+   * a public client.
+   */
+  auth?: "private_key_jwt";
+  /** The document's `jwks_uri`, validated as a URL but not fetched here. */
+  jwksUri?: string;
+  /** The document's inline `jwks`, parsed only when an assertion arrives. */
+  jwks?: unknown;
+  /** The document's `token_endpoint_auth_signing_alg`, when it names one. */
+  signingAlg?: string;
+}
+
+/** What a deployment lets a document declare beyond a public client. */
+export interface ParseOptions {
+  /** Accept `token_endpoint_auth_method: private_key_jwt`, `jwks`, `jwks_uri`. */
+  privateKeyJwt?: boolean;
 }
 
 export type MetadataOutcome =
@@ -211,6 +233,7 @@ export function clientIdUrlProblem(clientId: string): string | null {
 export function parseClientMetadata(
   clientId: string,
   body: unknown,
+  opts: ParseOptions = {},
 ): MetadataOutcome {
   const invalid = (description: string): MetadataOutcome => ({
     ok: false,
@@ -231,17 +254,65 @@ export function parseClientMetadata(
     );
   }
 
-  // The draft forbids shared secrets in a public document outright, and strad
-  // serves public clients only: `none` is the one method it can honour, and it
-  // is the one its metadata advertises.
+  // The draft forbids shared secrets in a public document outright. `none` is
+  // the method every deployment honours; `private_key_jwt` is honoured only
+  // where the operator turned it on, and every other method — each of which
+  // needs a shared secret — never.
   if ("client_secret" in doc || "client_secret_expires_at" in doc) {
     return invalid("a client metadata document may not carry a client_secret");
   }
   const auth = doc.token_endpoint_auth_method;
-  if (auth !== undefined && auth !== "none") {
+  const confidential =
+    opts.privateKeyJwt === true && auth === "private_key_jwt";
+  if (auth !== undefined && auth !== "none" && !confidential) {
     return invalid(
-      'strad serves public clients only: token_endpoint_auth_method must be "none"',
+      opts.privateKeyJwt
+        ? 'token_endpoint_auth_method must be "none" or "private_key_jwt"'
+        : 'strad serves public clients only: token_endpoint_auth_method must be "none"',
     );
+  }
+  let jwksUri: string | undefined;
+  let jwks: unknown;
+  let signingAlg: string | undefined;
+  // Read only for a client that declares the method. A public client's
+  // document may carry any of these for other servers' sake, and must parse
+  // exactly as it always did.
+  if (confidential) {
+    // RFC 7591 §2: one or the other, never both.
+    if (doc.jwks !== undefined && doc.jwks_uri !== undefined) {
+      return invalid(
+        "a client metadata document may carry jwks or jwks_uri, not both",
+      );
+    }
+    if (doc.jwks_uri !== undefined) {
+      if (typeof doc.jwks_uri !== "string")
+        return invalid("jwks_uri must be a string");
+      const problem = jwksUriProblem(doc.jwks_uri);
+      if (problem) return invalid(problem);
+      jwksUri = doc.jwks_uri;
+    }
+    if (doc.jwks !== undefined) {
+      if (
+        typeof doc.jwks !== "object" ||
+        doc.jwks === null ||
+        Array.isArray(doc.jwks)
+      ) {
+        return invalid("jwks must be a JWK Set object");
+      }
+      jwks = doc.jwks;
+    }
+    if (jwksUri === undefined && jwks === undefined) {
+      return invalid(
+        'a private_key_jwt client must publish its keys as "jwks_uri" or "jwks"',
+      );
+    }
+    const alg = doc.token_endpoint_auth_signing_alg;
+    if (alg !== undefined) {
+      if (typeof alg !== "string") {
+        return invalid("token_endpoint_auth_signing_alg must be a string");
+      }
+      signingAlg = alg;
+    }
   }
 
   const rawUris = doc.redirect_uris;
@@ -291,8 +362,25 @@ export function parseClientMetadata(
       host: new URL(clientId).host,
       ...(name ? { name } : {}),
       uris,
+      ...(confidential ? { auth: "private_key_jwt" as const } : {}),
+      ...(jwksUri !== undefined ? { jwksUri } : {}),
+      ...(jwks !== undefined ? { jwks } : {}),
+      ...(signingAlg !== undefined ? { signingAlg } : {}),
     },
   };
+}
+
+/**
+ * Why this cannot be a `jwks_uri`, or null: the client id URL rules, applied
+ * to the key set's URL, worded for it.
+ */
+export function jwksUriProblem(uri: string): string | null {
+  const problem = clientIdUrlProblem(uri);
+  return problem
+    ? problem
+        .replaceAll("client_id URL", "jwks_uri")
+        .replaceAll("client_id", "jwks_uri")
+    : null;
 }
 
 /**
@@ -345,6 +433,8 @@ export interface GuardedFetchOptions {
   addressAllowed?: (address: string) => boolean;
   /** Test seam: the transport. `https.request`, by default. */
   request?: typeof httpsRequest;
+  /** What the refusal sentences call the thing being fetched. */
+  subject?: string;
 }
 
 /**
@@ -363,13 +453,14 @@ export function guardedFetch(
   const allowed = opts.addressAllowed ?? isPublicAddress;
   const resolve = opts.lookup ?? dnsLookup;
   const send = opts.request ?? httpsRequest;
+  const subject = opts.subject ?? "client metadata document";
 
   return new Promise<FetchedDocument>((done, fail) => {
     // An IP literal never reaches `lookup` — the socket dials it directly — so
     // it is checked here, on the same rule.
     const literal = ipLiteral(url.hostname);
     if (literal !== null && !allowed(literal)) {
-      fail(blocked());
+      fail(blocked(subject));
       return;
     }
 
@@ -390,7 +481,7 @@ export function guardedFetch(
         }
         const list = addresses as unknown as LookupAddress[];
         if (list.length === 0 || list.some((a) => !allowed(a.address))) {
-          callback(blocked(), "", 4);
+          callback(blocked(subject), "", 4);
           return;
         }
         if (options.all) {
@@ -435,7 +526,7 @@ export function guardedFetch(
             fail(
               new MetadataFetchRefused(
                 "client_metadata_unreachable",
-                `the client metadata document is larger than ${maxBytes} bytes`,
+                `the ${subject} is larger than ${maxBytes} bytes`,
               ),
             ),
           );
@@ -453,7 +544,7 @@ export function guardedFetch(
           }),
         ),
       );
-      res.on("error", (err) => settle(() => fail(unreachable(err))));
+      res.on("error", (err) => settle(() => fail(unreachable(err, subject))));
     });
 
     const timer = setTimeout(() => {
@@ -461,30 +552,35 @@ export function guardedFetch(
         fail(
           new MetadataFetchRefused(
             "client_metadata_unreachable",
-            `the client metadata document did not arrive within ${timeoutMs} ms`,
+            `the ${subject} did not arrive within ${timeoutMs} ms`,
           ),
         ),
       );
       req.destroy();
     }, timeoutMs);
 
-    req.on("error", (err) => settle(() => fail(unreachable(err))));
+    req.on("error", (err) => settle(() => fail(unreachable(err, subject))));
     req.end();
   });
 }
 
-function blocked(): MetadataFetchRefused {
+function blocked(subject: string): MetadataFetchRefused {
+  const what =
+    subject === "client metadata document" ? "client_id URL" : `${subject} URL`;
   return new MetadataFetchRefused(
     "client_metadata_blocked",
-    "the client_id URL resolves to a private, loopback or reserved address",
+    `the ${what} resolves to a private, loopback or reserved address`,
   );
 }
 
-function unreachable(err: unknown): MetadataFetchRefused {
+function unreachable(
+  err: unknown,
+  subject = "client metadata document",
+): MetadataFetchRefused {
   if (err instanceof MetadataFetchRefused) return err;
   return new MetadataFetchRefused(
     "client_metadata_unreachable",
-    "the client metadata document could not be fetched",
+    `the ${subject} could not be fetched`,
   );
 }
 
@@ -586,6 +682,8 @@ export interface ClientMetadataResolverOptions {
   now?: () => number;
   /** Test seam: the ceiling on concurrent fetches. */
   maxConcurrent?: number;
+  /** What a document may declare beyond a public client. */
+  parse?: ParseOptions;
 }
 
 /**
@@ -600,8 +698,10 @@ export class ClientMetadataResolver {
   private readonly cache = new Map<string, CacheEntry>();
   private readonly inFlight = new Map<string, Promise<MetadataOutcome>>();
   private readonly maxConcurrent: number;
+  private readonly parseOptions: ParseOptions;
 
   constructor(opts: ClientMetadataResolverOptions = {}) {
+    this.parseOptions = opts.parse ?? {};
     this.fetchDocument = opts.fetch ?? ((url) => guardedFetch(url));
     this.now = opts.now ?? (() => Date.now());
     this.maxConcurrent = opts.maxConcurrent ?? CIMD_MAX_CONCURRENT_FETCHES;
@@ -686,7 +786,7 @@ export class ClientMetadataResolver {
       };
     }
 
-    const outcome = parseClientMetadata(clientId, body);
+    const outcome = parseClientMetadata(clientId, body, this.parseOptions);
     if (outcome.ok) {
       const ttl = freshnessMs(fetched.headers);
       if (ttl > 0) this.remember(clientId, outcome.client, ttl);

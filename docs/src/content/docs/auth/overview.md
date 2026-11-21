@@ -301,7 +301,9 @@ connected. Nothing is copied or pasted.
 
 The metadata advertises `code` as the only response type, `authorization_code`
 and `refresh_token` as the grants, `S256` as the only PKCE method, and `none` as
-the only token-endpoint auth method. It sets
+the only token-endpoint auth method — `none` and `private_key_jwt`, with an
+algorithm list, on a deployment that turns
+[confidential clients](#confidential-clients-private_key_jwt) on. It sets
 `authorization_response_iss_parameter_supported`, and every authorization
 response carries `iss` ([RFC 9207](https://www.rfc-editor.org/rfc/rfc9207)), so a
 client talking to more than one server cannot be tricked into exchanging a code
@@ -400,8 +402,9 @@ At `GET /oauth/authorize` strad fetches the document and checks it:
   cannot speak for another.
 - `redirect_uris` is present and each entry passes the same rules as a
   registration's; the request's `redirect_uri` must be an exact match against
-  it. `token_endpoint_auth_method`, when present, is `none`, and a
-  `client_secret` is refused. `grant_types` and `response_types`, when present,
+  it. `token_endpoint_auth_method`, when present, is `none` (or
+  `private_key_jwt` where [confidential clients](#confidential-clients-private_key_jwt)
+  are on), and a `client_secret` is refused. `grant_types` and `response_types`, when present,
   must include `authorization_code` and `code`; anything else they list is
   ignored.
 
@@ -539,6 +542,90 @@ fail (the client signs in again) rather than read as the whole ceiling.
 The roster editor honours the same set: a narrowed token's `save_connector`,
 `set_connector_enabled`, `remove_connector` and `restore_connector` may name
 only slugs inside it.
+
+### Confidential clients: `private_key_jwt`
+
+Every client above is **public**: whoever holds its refresh token is the
+client. A confidential client instead proves, on every call to `/oauth/token`
+and `/oauth/revoke`, that it holds a private key whose public half it
+published ([RFC 7523](https://www.rfc-editor.org/rfc/rfc7523) §2.2). A refresh
+token stolen from its backend is then worthless without the key, and a key in a
+KMS cannot be copied out to go with it. It is for metadata-document clients
+only, and it is **off** unless configured:
+
+```yaml
+auth:
+  mcpOAuth:
+    clients:
+      - clientId: https://zimmer.example.com/oauth/client-metadata.json
+        tokenEndpointAuthMethod: private_key_jwt # required, whatever the document says
+        jwksUri: https://zimmer.example.com/oauth/jwks.json # optional pin
+    # privateKeyJwt: true  # optional; see below
+```
+
+`privateKeyJwt` decides whether a **document** may declare the method and
+whether the metadata advertises it. Unset, it is on exactly when some
+`clients[]` entry requires the method. `true` turns it on for any
+metadata-document client; `false` beside an entry that requires it is a config
+error. Either way it needs `gateway.publicUrl`: an assertion's `aud` is
+checked against the declared origin, never one derived from the request's
+`Host`, which a caller could otherwise set to another server's name and replay
+an assertion minted for it. With none of this set, the metadata says `["none"]`
+and a document that declares `private_key_jwt` is refused at
+`/oauth/authorize`, as before. A public client's document parses exactly as it
+did with the feature on: its `jwks` and `jwks_uri` are not read.
+
+**The client's document** declares `"token_endpoint_auth_method":
+"private_key_jwt"` and publishes its keys as `jwks_uri` (an `https` URL under
+the same rules as a client id) or an inline `jwks`, never both. It may name
+`token_endpoint_auth_signing_alg`, which then binds every assertion to that
+algorithm. A `client_secret`, and every secret-based method, is still refused.
+
+**The assertion** goes in the token or revocation request as
+`client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer`
+and `client_assertion=<compact JWS>`. `client_id` may be sent or left out, and
+when it is sent it must equal `iss`. The JWS must have:
+
+| Part         | Rule                                                                                                                                                         |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `alg`        | `RS256` `RS384` `RS512` `PS256` `PS384` `PS512` `ES256` `ES384` `ES512` `EdDSA` (Ed25519). Nothing symmetric, never `none`.                                  |
+| `kid`        | the published key's `kid`. Required when more than one published key fits `alg`.                                                                             |
+| `typ`        | absent, `JWT` or `client-authentication+jwt`. No `crit`. `jku`, `x5u` and `jwk` are ignored: keys come from the registration.                                |
+| `iss`, `sub` | both exactly the client id.                                                                                                                                  |
+| `aud`        | the issuer (the origin, as in the metadata's `issuer`), or the token endpoint URL, or the URL the request was sent to. A string, or an array containing one. |
+| `exp`        | required, in the future, and at most 300 seconds ahead.                                                                                                      |
+| `nbf`, `iat` | optional; not in the future.                                                                                                                                 |
+| `jti`        | required, at most 256 characters, never reused while the assertion is live.                                                                                  |
+
+Every time check allows 30 seconds of clock skew. RSA keys under 2048 bits are
+skipped, as are keys with `use` other than `sig`. A key set that publishes any
+private or symmetric material is refused whole.
+
+**Keys** come from the config entry's `jwksUri` when it has one — a pin, which
+a tampered document cannot swap — else from the document. A `jwks_uri` is
+fetched with every rule the document fetch has (public addresses only, no
+redirects, 16 KiB, five seconds) and cached by its `Cache-Control`, five
+minutes by default and an hour at most. An assertion naming a `kid` the cached
+set lacks triggers one refetch, at most once every 30 seconds per URL, so a
+rotation lands without waiting out the cache. Publish the new key before
+signing with it.
+
+**When it is required.** A client is confidential when its config entry says
+`tokenEndpointAuthMethod: private_key_jwt`, or its document declared the method
+at `/oauth/authorize`. The second is sealed into the code and the refresh token,
+so a document that later says `none` cannot turn an existing grant public; the
+first holds whatever the document says, which is what stops a tampered
+document from downgrading the client at all. Either way:
+
+- the code exchange, every refresh and every revocation must carry a valid
+  assertion, or the answer is `401 invalid_client`, and
+- a grant sealed confidential stays confidential after the feature is switched
+  off.
+
+A grant sealed to a confidential client is payload version `3`, which a build
+that predates this refuses, so a **rollback** signs confidential clients out
+rather than letting their grants be spent without the key. A public client is
+untouched: it sends nothing new, and an assertion it sends anyway is not read.
 
 ### Access tokens expire hourly; refresh tokens never expire
 

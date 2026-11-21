@@ -1352,6 +1352,7 @@ auth:
     allowUnlistedClients: true # default
     dynamicRegistration: true # default
     advertiseSlugScopes: false # default
+    privateKeyJwt: # unset by default; see below
 ```
 
 It is **additive**. `auth.staticTokens` is untouched by it, `/mcp` accepts either
@@ -1400,7 +1401,19 @@ config error, as are a duplicate and an unknown role):
         roles: [admin] # optional; defaults to auth.mcpOAuth.roles
         servers: [granola] # optional slug allowlist inside those roles
         accessTokenTtlSeconds: 900 # optional; same bounds as the global one
+        tokenEndpointAuthMethod: private_key_jwt # optional; confidential client
+        jwksUri: https://example.com/jwks.json # optional pin; needs the line above
 ```
+
+`tokenEndpointAuthMethod: private_key_jwt` makes the client confidential
+whatever its document says: every token and revocation call needs an RFC 7523
+assertion. `jwksUri` pins the keys it is checked against, so a tampered
+document can swap neither. `privateKeyJwt` lets a document declare the method
+and advertises it; unset, it is on exactly when an entry requires it, and
+`false` beside such an entry is a config error, as is either without
+`gateway.publicUrl` (an assertion's `aud` is checked against the declared
+origin only). The assertion rules are in
+[Auth](/auth/overview/#confidential-clients-private_key_jwt).
 
 A slug in `servers` the roster does not have grants nothing and is not refused,
 for the reason a role's `servers` is not: a runtime roster write may remove it.

@@ -69,9 +69,19 @@ import type { Cipher } from "./keys.ts";
  * the whole ceiling. An unnarrowed grant stays `v: 1` so that the default
  * config mints exactly what it always did.
  */
-export type GrantVersion = 1 | 2;
+export type GrantVersion = 1 | 2 | 3;
 
-export function grantVersion(narrowing: unknown): GrantVersion {
+/**
+ * `3` is a grant sealed to a CONFIDENTIAL client (`auth: "private_key_jwt"`),
+ * narrowed or not, for the same rollback reason one step further: a build that
+ * predates `auth` would spend it without the client's assertion, so it must
+ * not be able to open it at all.
+ */
+export function grantVersion(
+  narrowing: unknown,
+  auth?: "private_key_jwt",
+): GrantVersion {
+  if (auth !== undefined) return 3;
   return narrowing === undefined ? 1 : 2;
 }
 
@@ -153,6 +163,13 @@ export interface AuthorizationRequest {
    * against its ceiling. Absent when it asked for none (`mcp`, or nothing).
    */
   slugs?: string[];
+  /**
+   * `private_key_jwt` when the client was confidential at `/oauth/authorize` —
+   * its document or its config entry said so. Sealed so that every later
+   * spend of this grant demands the client's assertion, even if the document
+   * changes its mind. Absent is a public client.
+   */
+  auth?: "private_key_jwt";
 }
 
 /** The consent screen's hidden field: a validated request awaiting a decision. */
@@ -186,6 +203,8 @@ export interface CodePayload {
   googleRefreshToken: string;
   /** The granted slug narrowing. Absent = the client's whole ceiling. */
   slugs?: string[];
+  /** See `AuthorizationRequest.auth`. */
+  auth?: "private_key_jwt";
   exp: number;
 }
 
@@ -200,6 +219,8 @@ export interface RefreshPayload {
   googleRefreshToken: string;
   /** The granted slug narrowing. Absent = the client's whole ceiling. */
   slugs?: string[];
+  /** See `AuthorizationRequest.auth`. */
+  auth?: "private_key_jwt";
   iat: number;
 }
 
@@ -262,7 +283,7 @@ export function mintCode(
   slugs: string[] | undefined = approval.slugs,
 ): string {
   const payload: CodePayload = {
-    v: grantVersion(slugs),
+    v: grantVersion(slugs, approval.auth),
     jti: randomBytes(12).toString("base64url"),
     cid,
     redirectUri: approval.redirectUri,
@@ -271,6 +292,7 @@ export function mintCode(
     identity: approval.identity,
     googleRefreshToken: approval.googleRefreshToken,
     ...(slugs ? { slugs } : {}),
+    ...(approval.auth ? { auth: approval.auth } : {}),
     exp: now + CODE_TTL_MS,
   };
   return cipher.seal(payload);
@@ -310,17 +332,19 @@ export function mintRefreshToken(
     identity: GrantIdentity;
     googleRefreshToken: string;
     slugs?: string[];
+    auth?: "private_key_jwt";
   },
   now: number = Date.now(),
 ): string {
   const payload: RefreshPayload = {
-    v: grantVersion(opts.slugs),
+    v: grantVersion(opts.slugs, opts.auth),
     jti: randomBytes(12).toString("base64url"),
     cid: opts.cid,
     resource: opts.resource,
     identity: opts.identity,
     googleRefreshToken: opts.googleRefreshToken,
     ...(opts.slugs ? { slugs: opts.slugs } : {}),
+    ...(opts.auth ? { auth: opts.auth } : {}),
     iat: now,
   };
   return `${REFRESH_TOKEN_PREFIX}${cipher.seal(payload)}`;
@@ -341,6 +365,7 @@ export function readCode(
   if (typeof payload.jti !== "string" || payload.jti === "") return null;
   if (!validIdentity(payload.identity)) return null;
   if (!validSlugs(payload.slugs)) return null;
+  if (!validAuth(payload.auth)) return null;
   return payload;
 }
 
@@ -359,6 +384,7 @@ export function readRefreshToken(
   if (!validIdentity(payload.identity)) return null;
   if (typeof payload.googleRefreshToken !== "string") return null;
   if (!validSlugs(payload.slugs)) return null;
+  if (!validAuth(payload.auth)) return null;
   return payload;
 }
 
@@ -390,6 +416,11 @@ function validSlugs(slugs: unknown): boolean {
     slugs === undefined ||
     (Array.isArray(slugs) && slugs.every((s) => typeof s === "string"))
   );
+}
+
+/** Absent, or the one confidential method. Anything else reads as unknown. */
+function validAuth(auth: unknown): boolean {
+  return auth === undefined || auth === "private_key_jwt";
 }
 
 function validIdentity(identity: unknown): identity is GrantIdentity {
