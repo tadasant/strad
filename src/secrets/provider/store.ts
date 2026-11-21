@@ -67,9 +67,12 @@ import type { SecretProvider } from "./types.ts";
  * take `/mcp` down; strad would otherwise trade "secrets are stale" for "the
  * gateway is offline", which is the worse failure by a wide margin.
  *
- * With nothing held — the very first read failed — the error DOES propagate.
- * There is nothing to serve, and pretending the secret is absent would report a
- * config error for what is an outage.
+ * With nothing held — a cold start, or the read straight after `invalidate()`
+ * — a failed read is retried within a small budget first (see
+ * `src/secrets/provider/view.ts`), so one bad response right after a write is
+ * not an outage. Once that budget is spent the error DOES propagate. There is
+ * nothing to serve, and pretending the secret is absent would report a config
+ * error for what is an outage.
  */
 export interface StoreSecretProviderOptions {
   /** Minimum interval between miss-triggered re-reads. Default one hour. */
@@ -78,6 +81,10 @@ export interface StoreSecretProviderOptions {
   now?: () => number;
   /** Injected in tests to assert we never log a value. */
   onWarn?: (message: string) => void;
+  /** Injected in tests so the nothing-held retry's backoff is not slept through. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Injected in tests so the nothing-held retry's jitter is fixed. */
+  random?: () => number;
 }
 
 export const DEFAULT_NEGATIVE_TTL_MS = 3_600_000;
@@ -102,6 +109,8 @@ export class StoreSecretProvider implements SecretProvider {
     this.view = new NamespaceView((ns) => resolver.resolve(ns), {
       now: opts.now,
       onWarn: opts.onWarn,
+      sleep: opts.sleep,
+      random: opts.random,
       label: `secret provider "${this.name}"`,
     });
   }
