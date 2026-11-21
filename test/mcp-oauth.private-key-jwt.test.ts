@@ -1067,3 +1067,72 @@ describe("the replay record", () => {
     expect(cache.spend("a", "3", later, later + 1)).toBe("fresh");
   });
 });
+
+describe("the contract with Zimmer's client (tadasant/zimmer#1601)", () => {
+  // Zimmer's shape exactly: CIMD at <base>/oauth-client/metadata.json, JWKS
+  // at <base>/oauth-client/jwks.json, ES256 from an EC P-256 key,
+  // iss = sub = the CIMD URL, aud = the token endpoint URL.
+  const ZIMMER_CIMD = "https://zimmer.example.com/oauth-client/metadata.json";
+  const ZIMMER_JWKS = "https://zimmer.example.com/oauth-client/jwks.json";
+  const ZIMMER_CB = "https://zimmer.example.com/oauth/strad/callback";
+  const kms = makeKey("ES256", "zimmer-kms-1");
+  let g: Gateway;
+  beforeAll(async () => {
+    g = await gateway(`    clients:
+      - clientId: ${ZIMMER_CIMD}
+        tokenEndpointAuthMethod: private_key_jwt
+        jwksUri: ${ZIMMER_JWKS}`);
+    g.documents.set(
+      ZIMMER_CIMD,
+      json({
+        client_id: ZIMMER_CIMD,
+        client_name: "Zimmer",
+        redirect_uris: [ZIMMER_CB],
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+        token_endpoint_auth_method: "private_key_jwt",
+        jwks_uri: ZIMMER_JWKS,
+      }),
+    );
+    g.documents.set(ZIMMER_JWKS, json({ keys: [kms.jwk] }));
+  });
+  afterAll(async () => g.close());
+
+  const assertion = () => ({
+    client_assertion_type: CLIENT_ASSERTION_TYPE,
+    client_assertion: signJwt(
+      kms,
+      claimsFor(ZIMMER_CIMD, `${g.base}/oauth/token`),
+    ),
+  });
+
+  it("redeems, refreshes and revokes with ES256 and a token-endpoint aud", async () => {
+    const w = await walk(g, ZIMMER_CIMD, ZIMMER_CB);
+    const issued = await post(g, "/oauth/token", {
+      grant_type: "authorization_code",
+      code: w.code ?? "",
+      client_id: ZIMMER_CIMD,
+      code_verifier: w.verifier,
+      ...assertion(),
+    });
+    expect(issued.status).toBe(200);
+    const refresh = {
+      grant_type: "refresh_token",
+      refresh_token: issued.json.refresh_token ?? "",
+      client_id: ZIMMER_CIMD,
+    };
+    expect((await post(g, "/oauth/token", refresh)).status).toBe(401);
+    expect(
+      (await post(g, "/oauth/token", { ...refresh, ...assertion() })).status,
+    ).toBe(200);
+    expect(
+      (
+        await post(g, "/oauth/revoke", {
+          token: issued.json.refresh_token ?? "",
+          client_id: ZIMMER_CIMD,
+          ...assertion(),
+        })
+      ).status,
+    ).toBe(200);
+  });
+});
