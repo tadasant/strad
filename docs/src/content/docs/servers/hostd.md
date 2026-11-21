@@ -565,22 +565,28 @@ all of these: this is an unsandboxed shell. strad then reports the slugs `offlin
 
 `~/.strad-hostd/audit.jsonl` records each request, decision and tool call,
 including the commands that ran. It stays on the machine, and it never holds
-a secret's bytes. Every entry is redacted before it is written, and the same
-redaction applies to the status page (its activity table, purposes and
-running commands, and `/state.json`) and to the grant notifications that
-Notification Center keeps. It runs in two passes. The first is exact: every
+a custody value or a daemon key; other text is scrubbed by shape. Every entry
+is redacted before it is written, and the same redaction applies to the
+status page (its activity table, purposes, running commands and calls, and
+`/state.json`), to the banner's call text, to the grant notifications that
+Notification Center keeps, and to the daemon's own log lines (the exact pass
+only). It runs in two passes. The first is exact: every
 value custody holds or has just deposited is replaced by `[secret h_…]`,
 naming the handle, and every key the daemon holds is replaced by name (each
 server and client key, each custody destination key, and the deposit bearer
-derived from it). The second is the banner's shape scrubber. Text typed or set
-into a field is recorded as its length only. A deposit is recorded as
+derived from it). The second is the banner's shape scrubber, which a summary
+made only of ids (a deposit, a tab or handle id) skips so that a long variable
+name stays readable. Text typed or set into a field is recorded as its length
+only. A password passed as a bare word in a shell command is still recorded as
+written. A deposit is recorded as
 `deposit: h_… → destination:slug/VARIABLE`, so the record still shows which
 secret went where, and when.
 
 The first time a daemon with this redaction starts, it rewrites what an older
 daemon left on disk, once: `audit.jsonl`, where every free-text tool summary
-(a command, a script, a URL, a selector, typed text) is cut to the tool's name
-and everything else is scrubbed as above, and the launchd logs
+(a command, a script, a URL, a selector, typed text) is cut to the tool's name,
+every purpose is removed, and everything else is scrubbed as above (a line
+the new daemon wrote is stamped and left alone), and the launchd logs
 `~/Library/Logs/com.strad.hostd.{out,err}.log`, scrubbed line by line.
 `~/.strad-hostd/at-rest-redaction` records that it ran. Overwriting a file on
 APFS does not erase the old blocks, and an earlier Time Machine backup or

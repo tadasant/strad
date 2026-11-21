@@ -69,6 +69,11 @@ export class Presence {
       controlUrl?: string;
       /** The shell commands a grant has running, in full. */
       running?: (grantId: string) => string[];
+      /**
+       * How a call summary is redacted for the screen. The daemon passes the
+       * audit's, so the banner matches what the in-flight summaries carry.
+       */
+      scrub?: (summary: string) => string;
       log?: (line: string) => void;
     },
   ) {}
@@ -99,7 +104,7 @@ export class Presence {
         // commands are not folded into one.
         const waiting = g.inFlight.map((f) => f.summary);
         const background = (this.deps.running?.(g.id) ?? [])
-          .map((c) => screenText(`run_command: ${c.slice(0, 200)}`))
+          .map((c) => (this.deps.scrub ?? screenText)(`run_command: ${c}`))
           .filter((s) => {
             const i = waiting.indexOf(s);
             if (i === -1) return true;

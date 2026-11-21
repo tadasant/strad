@@ -234,7 +234,7 @@ shape.kind is "token", "json", "pem" or "text". prefix is the longest known one.
       openWorldHint: true,
     },
     summarize: (a) =>
-      `click_and_capture: click ${a.click_selector?.slice(0, 100) ?? "(none)"}, capture ${a.capture_selector?.slice(0, 100) ?? "(diff)"}`,
+      `click_and_capture: click ${a.click_selector ?? "(none)"}, capture ${a.capture_selector ?? "(diff)"}`,
     handler: async (a, { grant }) => {
       if (!a.click_selector && !a.capture_selector)
         return text(
@@ -459,8 +459,7 @@ While this runs the shell server is refused, so nothing can read the file in the
       destructiveHint: true,
       openWorldHint: true,
     },
-    summarize: (a) =>
-      `capture_download: click ${a.click_selector.slice(0, 120)}`,
+    summarize: (a) => `capture_download: click ${a.click_selector}`,
     handler: async (a, { grant }) => {
       const blocked = busy();
       if (blocked)

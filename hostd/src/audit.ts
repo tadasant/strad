@@ -1,7 +1,13 @@
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { recordText, type Redactor } from "./redact.js";
+import {
+  ID_ONLY_TOOLS,
+  recordText,
+  REDACTION_VERSION,
+  summaryTool,
+  type Redactor,
+} from "./redact.js";
 
 export interface AuditEntry {
   at: string;
@@ -22,6 +28,8 @@ export interface AuditEntry {
    * Redacted before it is kept anywhere (`src/redact.ts`): never a value.
    */
   detail: string;
+  /** The redaction version `detail` was written under (`src/at-rest.ts` skips these). */
+  redacted?: number;
 }
 
 /**
@@ -56,11 +64,28 @@ export class AuditLog {
     return recordText(text, this.known, max);
   }
 
+  /**
+   * A tool call's summary. One built only of ids (a deposit's handle,
+   * destination, slug and variable) gets the exact pass and not the shape
+   * pass, which would eat `GOOGLE_APPLICATION_CREDENTIALS_JSON_B64` or a
+   * destination named `myauth`.
+   */
+  scrubSummary(detail: string, max?: number): string {
+    const tool = summaryTool(detail);
+    return recordText(detail, this.known, max, {
+      shapes: !(tool && ID_ONLY_TOOLS.has(tool)),
+    });
+  }
+
   record(entry: Omit<AuditEntry, "at">): void {
     const full: AuditEntry = {
       at: new Date().toISOString(),
       ...entry,
-      detail: this.scrub(entry.detail),
+      detail:
+        entry.kind === "tool"
+          ? this.scrubSummary(entry.detail)
+          : this.scrub(entry.detail),
+      redacted: REDACTION_VERSION,
     };
     this.recent.push(full);
     if (this.recent.length > this.keep) this.recent.shift();

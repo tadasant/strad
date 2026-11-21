@@ -1,44 +1,28 @@
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  fsyncSync,
+  openSync,
   readFileSync,
   renameSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { recordText, type Redactor } from "./redact.js";
+import {
+  ID_ONLY_TOOLS,
+  recordText,
+  REDACTION_VERSION,
+  summaryTool,
+  type Redactor,
+} from "./redact.js";
 
-/**
- * Bumped when what counts as redacted changes. The marker in the state
- * directory records the version the files on disk were last rewritten to, so
- * the rewrite runs once per version and a restart does not redo it.
- */
-export const AT_REST_REDACTION_VERSION = 1;
+/** The version the files on disk were last rewritten to; bump `REDACTION_VERSION` to rerun. */
+export const AT_REST_REDACTION_VERSION = REDACTION_VERSION;
 const MARKER = "at-rest-redaction";
-
-/**
- * Tool calls whose summary carries only ids, coordinates, key names, handles
- * and destinations — nothing a caller could have put a secret in. Every other
- * tool's historic summary (a shell command, a script, a URL, a selector, a
- * typed or set value) is reduced to the tool's name, because an older daemon
- * wrote those raw and no heuristic can prove a free-text line clean.
- */
-const ID_ONLY_TOOLS = new Set([
-  "activate_tab",
-  "close_tab",
-  "release_tab",
-  "discard_handle",
-  "deposit",
-  "kill_command",
-  "take_screenshot",
-  "click",
-  "move_mouse",
-  "drag",
-  "scroll",
-  "imessage_get_attachment",
-]);
 
 /** The launchd logs `serve` writes to on macOS: `install/com.strad.hostd.plist`. */
 export function launchdLogFiles(): string[] {
@@ -61,13 +45,27 @@ function redactAuditLine(line: string, known: Redactor): string | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const e = raw as Record<string, unknown>;
   if (typeof e.at !== "string" || typeof e.kind !== "string") return undefined;
+  // Written by a daemon that already redacted it: kept exactly as it is, so
+  // a re-run (a failed one, or a version bump) never cuts a new record.
+  if (typeof e.redacted === "number" && e.redacted >= AT_REST_REDACTION_VERSION)
+    return line;
   const detail = typeof e.detail === "string" ? e.detail : "";
+  const removed = `[removed by at-rest redaction v${AT_REST_REDACTION_VERSION}]`;
   let kept: string;
   if (e.kind === "tool") {
-    const name = /^([a-z_]+)(?::|$)/.exec(detail)?.[1] ?? "tool";
+    // Historic summaries were recorded raw, and no heuristic can prove a
+    // free-text line clean: everything but an id-only summary is cut to the
+    // tool's name.
+    const name = summaryTool(detail) ?? "tool";
     kept = ID_ONLY_TOOLS.has(name)
-      ? recordText(detail, known)
-      : `${name}: [arguments removed by at-rest redaction v${AT_REST_REDACTION_VERSION}]`;
+      ? recordText(detail, known, undefined, { shapes: false })
+      : `${name}: ${removed}`;
+  } else if (e.kind === "request" || e.kind === "granted") {
+    // A purpose is caller-authored free text too. What precedes it — the
+    // server, or how and for how long it was granted — is the daemon's.
+    const colon = detail.indexOf(": ");
+    kept = colon === -1 ? removed : `${detail.slice(0, colon)}: ${removed}`;
+    kept = recordText(kept, known);
   } else {
     kept = recordText(detail, known);
   }
@@ -77,6 +75,7 @@ function redactAuditLine(line: string, known: Redactor): string | undefined {
     ...(typeof e.capability === "string" ? { capability: e.capability } : {}),
     ...(typeof e.grantId === "string" ? { grantId: e.grantId } : {}),
     detail: kept,
+    redacted: AT_REST_REDACTION_VERSION,
   });
 }
 
@@ -100,7 +99,11 @@ export interface AtRestResult {
  * The audit file is written whole to a sibling and renamed over the original,
  * so a crash mid-way leaves one complete file or the other. A launchd log is
  * rewritten IN PLACE instead: launchd holds it open for append, and a rename
- * would leave the running daemon writing into an unlinked file.
+ * would leave the running daemon writing into an unlinked file. A crash in
+ * the middle of that write can lose the log, which is the cheaper failure.
+ *
+ * `stdio` runs do not migrate. One appending while `serve` rewrites can lose
+ * its line to the rename.
  *
  * What this cannot do, and the docs say so: an SSD with APFS gives no
  * guarantee that the old blocks are overwritten, and a Time Machine backup or
@@ -139,7 +142,13 @@ export function redactAtRest(
       out.push(kept);
     }
     const tmp = `${audit}.redacting`;
-    writeFileSync(tmp, out.map((l) => l + "\n").join(""), { mode: 0o600 });
+    const fd = openSync(tmp, "w", 0o600);
+    try {
+      writeSync(fd, out.map((l) => l + "\n").join(""));
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
     chmodSync(tmp, 0o600);
     renameSync(tmp, audit);
   }

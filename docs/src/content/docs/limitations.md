@@ -5144,19 +5144,20 @@ See `HACKS.md` #167.
 
 ### 168. strad-hostd's records are redacted, and an older daemon's disk is only rewritten
 
-strad-hostd's audit log, status page and grant notifications never hold a
+strad-hostd's audit log, status page, banner and grant notifications never hold a
 custody value or a daemon key: those are replaced exactly, with the handle
 named, so a deposit still reads as `deposit: h_… → destination:slug/VARIABLE`.
 Everything else goes through the banner's shape scrubber, and typed text is a
 length only.
 
 - **Free text is scrubbed by heuristic.** A secret that never went through
-  custody, or that was pasted into a command after its grant ended, is
+  custody, or a deposited one used in a command after its grant ended, is
   removed only if it looks like one. A password passed as a bare word in a
   shell command is recorded as written.
 - **The old disk is rewritten, not erased.** On first start the daemon
-  rewrites `audit.jsonl` (cutting old free-text summaries to the tool's name)
-  and the launchd logs, once. APFS keeps no promise about the old blocks, and
+  rewrites `audit.jsonl` (cutting old free-text summaries to the tool's name
+  and removing old purposes) and the launchd logs, once. If that fails, the
+  failure is logged and the daemon serves anyway. APFS keeps no promise about the old blocks, and
   a Time Machine backup or local snapshot taken earlier still has the old
   files. Treat anything an older daemon recorded as exposed on that disk.
 

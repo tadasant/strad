@@ -5,6 +5,7 @@ import type { Duplex } from "node:stream";
 
 import { redactAtRest } from "./at-rest.js";
 import { AuditLog } from "./audit.js";
+import { MAX_SCREEN_CHARS } from "./consent/display.js";
 import { configSecrets, replaceKnown } from "./redact.js";
 import { ExtensionBridge } from "./browser/bridge.js";
 import { browserCapability } from "./browser/tools.js";
@@ -91,7 +92,25 @@ export function buildCore(
     log?: (line: string) => void;
   },
 ): Core {
-  const log = opts.log ?? (() => {});
+  // ONE vault for the whole daemon, whichever servers are on: the custody
+  // server fills it, and every server's calls are checked against it
+  // (src/custody/enforce.ts), so a shell grant cannot read what a custody
+  // grant captured.
+  const vault = new Vault({
+    handleTtlMs: config.custody.handleMinutes * 60_000,
+  });
+  // Everything the audit records — and the status page, the banner and the
+  // notifications show — has every value the vault knows and every key this
+  // daemon holds taken out first, then the secret-shaped rest (src/redact.ts).
+  const known = (t: string) =>
+    replaceKnown(t, [...vault.known(), ...configSecrets(config)]);
+  const audit = new AuditLog(opts.stateDir);
+  audit.redactKnown(known);
+  // The log reaches launchd's files on disk. Its lines are the daemon's own
+  // and its helpers' stderr, never a tool's arguments; the exact pass is the
+  // net for a key one of them might echo.
+  const rawLog = opts.log ?? (() => {});
+  const log = (line: string) => rawLog(known(line));
   const killSwitch = new KillSwitch(opts.stateDir);
   const bridge = opts.extensionToken
     ? new ExtensionBridge({
@@ -100,21 +119,6 @@ export function buildCore(
         log,
       })
     : undefined;
-
-  // ONE vault for the whole daemon, whichever servers are on: the custody
-  // server fills it, and every server's calls are checked against it
-  // (src/custody/enforce.ts), so a shell grant cannot read what a custody
-  // grant captured.
-  const vault = new Vault({
-    handleTtlMs: config.custody.handleMinutes * 60_000,
-  });
-  // Everything the audit records — and the status page and notifications
-  // show — has every value the vault knows and every key this daemon holds
-  // taken out first, then the secret-shaped rest (src/redact.ts).
-  const audit = new AuditLog(opts.stateDir);
-  audit.redactKnown((t) =>
-    replaceKnown(t, [...vault.known(), ...configSecrets(config)]),
-  );
 
   // The gate and the helper each need the presence sync, which needs both.
   const late: { presence?: Presence } = {};
@@ -160,6 +164,7 @@ export function buildCore(
     killSwitch,
     controlUrl: opts.controlUrl,
     running: (grantId) => commandsFor(grantId),
+    scrub: (s) => audit.scrubSummary(s, MAX_SCREEN_CHARS),
     log,
   });
   late.presence = presence;
@@ -209,8 +214,9 @@ export function buildCore(
       .list(grantId)
       .filter((c) => c.status === "running")
       .map((c) => c.command) ?? [];
-  const runningFor = (grantId: string): string[] =>
-    commandsFor(grantId).map((c) => c.slice(0, 160));
+  // In full: the status page redacts and only then caps, so a key the cap
+  // would cut in two is still matched whole.
+  const runningFor = commandsFor;
 
   const sweep = setInterval(() => {
     // A `touch`ed DISABLED file calls nothing: the sweep is what notices it,
@@ -314,7 +320,9 @@ export async function startDaemon(
       );
     }
   }
-  const log = opts.log ?? (() => {});
+  const rawLog = opts.log ?? (() => {});
+  const log = (line: string) =>
+    rawLog(replaceKnown(line, configSecrets(config)));
   // Before anything is written: an older daemon recorded tool summaries,
   // purposes and refusals raw, and they are still on this disk.
   try {

@@ -35,8 +35,8 @@ Every server also has `request_control`, `end_control` and `get_control_status`.
 `grant_id`, which every other tool requires.
 
 The audit log (`~/.strad-hostd/audit.jsonl`), the status page and the
-notifications never hold a secret's bytes. Custody values and the daemon's own
-keys are replaced exactly, and the rest is scrubbed by shape. The first start of
+notifications never hold a custody value or one of the daemon's own keys:
+those are replaced exactly, and the rest is scrubbed by shape. The first start of
 a daemon with this redaction rewrites what an older one left on disk, once
 (`src/redact.ts`, `src/at-rest.ts`).
 

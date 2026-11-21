@@ -8589,16 +8589,22 @@ fallback instead, and keystrokes kept answering it.
 ## 168. strad-hostd redacts what it writes down by exact match and by heuristic, and cannot unwrite an older daemon's disk
 
 **What.** strad-hostd's audit log (`~/.strad-hostd/audit.jsonl` and its
-in-memory tail), the status page and `/state.json`, and the grant
-notifications are redacted before anything is kept (`hostd/src/redact.ts`).
+in-memory tail), the status page and `/state.json`, the banner's call text,
+the grant notifications and the daemon's log lines are redacted before anything is kept (`hostd/src/redact.ts`).
 The first pass is exact: every value the custody vault holds or watches, as
 `[secret h_…]`, and every key the daemon holds, plus the deposit bearers
 derived from them. The second pass is `screenText`, the banner's shape
-scrubber. `type_text` and `set_value` summaries carry a length and never the
+scrubber, skipped for a summary built only of ids (`ID_ONLY_TOOLS`: a
+deposit's handle, destination, slug and variable) so that it stays readable.
+Log lines get the exact pass only. `type_text` and `set_value` summaries carry a length and never the
 text. On its first start, a daemon with this redaction rewrites `audit.jsonl`
 and the launchd `com.strad.hostd.{out,err}.log` once (`hostd/src/at-rest.ts`,
 marker `~/.strad-hostd/at-rest-redaction`). Historic free-text tool summaries
-are cut to the tool's name, because no heuristic can prove an old line clean.
+are cut to the tool's name, and historic purposes are removed, because no
+heuristic can prove an old line clean. Every new entry is stamped
+`"redacted": 1`, and the rewrite leaves stamped lines alone, so a re-run after
+a failure or a version bump never cuts a new record. A failed rewrite is
+logged and the daemon serves anyway. `stdio` runs do not rewrite.
 
 **Why.** An older daemon recorded every tool summary raw: a shell command
 carrying a bearer header or a key, an `evaluate_script` with a token in it,
@@ -8608,14 +8614,17 @@ rest on disk.
 
 **What it costs.** The exact pass only knows values the vault holds now or
 deposited under a grant that is still running, and the daemon's own keys. A
-secret that never went through custody, or one pasted into a command after its
-grant ended, is caught only if it has a shape the scrubber knows. A password
+secret that never went through custody, or a deposited one used in a command
+after the grant that deposited it ended, is caught only if it has a shape the
+scrubber knows. A value custody still holds never gets that far: a call whose
+arguments carry it is refused before anything is recorded. A password
 passed as a bare word in a shell command is still recorded as written. The
 rewrite replaces the file's contents, but APFS on an SSD does not promise the
 old blocks are gone, and an earlier Time Machine backup or local snapshot
 still has the old files. A secret an older daemon recorded should be treated
-as exposed on that disk and rotated. Commands in the new audit are cut at 400
-characters.
+as exposed on that disk and rotated. A crash during the in-place rewrite of a
+launchd log can lose that log. Commands in the new audit are cut at 400
+characters, after redaction.
 
 **Undo.** Nothing to undo; this is the floor. Doing better on free text means
 not recording it: summaries carrying only a tool name and an argument hash.

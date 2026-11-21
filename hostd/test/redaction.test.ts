@@ -1,4 +1,10 @@
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, type Server } from "node:http";
 import http from "node:http";
 import { join } from "node:path";
@@ -83,6 +89,19 @@ describe("redaction of what is written down", () => {
     for (const s of text.split(" ")) expect(out).not.toContain(s);
   });
 
+  it("keeps a label whole when a shape rule runs over it", () => {
+    const audit = new AuditLog();
+    audit.redactKnown((t) => replaceKnown(t, configSecrets(testConfig())));
+    // Swallowed whole by the header rule, never cut in two.
+    expect(audit.scrub(`curl -H "Authorization: Bearer ${SHELL_KEY}"`)).toBe(
+      'curl -H "Authorization: Bearer [redacted]"',
+    );
+    // Not touched by the opaque-run rule it would otherwise trip.
+    expect(audit.scrub(`echo ${SHELL_KEY} done`)).toBe(
+      "echo [redacted shell key] done",
+    );
+  });
+
   it("never puts a typed or set value in a tool's summary", () => {
     const helper = {} as HelperClient;
     const config = testConfig();
@@ -104,14 +123,14 @@ describe("redaction of what is written down", () => {
 });
 
 /** Raw http, because fetch will not let a test forge `Host`. */
-function getPage(port: number): Promise<string> {
+function getPage(port: number, path = "/"): Promise<string> {
   return new Promise((resolve, reject) => {
     http
       .get(
         {
           host: "127.0.0.1",
           port,
-          path: "/",
+          path,
           headers: { host: `127.0.0.1:${port}` },
         },
         (res) => {
@@ -129,6 +148,9 @@ describe("a deposit and a secret-carrying shell call, through the daemon", () =>
   let strad: Server;
   let stateDir: string;
   const deposited: string[] = [];
+  const notes: string[][] = [];
+  /** Long and digit-bearing: the shape rules alone would eat it. */
+  const VARIABLE = "GOOGLE_APPLICATION_CREDENTIALS_JSON_B64";
   type C = Awaited<ReturnType<typeof connect>>;
   let custody: C;
   let shell: C;
@@ -144,6 +166,8 @@ describe("a deposit and a secret-carrying shell call, through the daemon", () =>
     readFileSync(join(stateDir, "audit.jsonl"), "utf8"),
     JSON.stringify(daemon.core.deps.audit.tail(300)),
     await getPage(daemon.controlPort),
+    await getPage(daemon.controlPort, "/state.json"),
+    JSON.stringify(notes),
   ];
 
   beforeAll(async () => {
@@ -170,7 +194,8 @@ describe("a deposit and a secret-carrying shell call, through the daemon", () =>
       custody: {
         stradUrl,
         destinations: {
-          other: { url: stradUrl, key: DESTINATION_KEY },
+          // A name with "auth" in it: the shape rules alone would eat it.
+          myauth: { url: stradUrl, key: DESTINATION_KEY },
         },
       },
     });
@@ -184,6 +209,7 @@ describe("a deposit and a secret-carrying shell call, through the daemon", () =>
     daemon = await startDaemon(config, {
       stateDir,
       prompter: new ScriptedPrompter("allowed"),
+      notifier: { notify: (title, body) => notes.push([title, body]) },
       ephemeralPorts: true,
     });
     custody = await connect(daemon.mcpPort, "/custody/mcp", CUSTODY_KEY);
@@ -217,9 +243,9 @@ describe("a deposit and a secret-carrying shell call, through the daemon", () =>
     );
     const res = await call(custody, "custody", "deposit", {
       handle,
-      destination: "other",
+      destination: "myauth",
       slug: "ssh-redaction-test",
-      variable: "SSH_PRIVATE_KEY",
+      variable: VARIABLE,
     });
     expect(res.isError).toBeFalsy();
     const value = deposited.at(-1)!;
@@ -249,12 +275,16 @@ describe("a deposit and a secret-carrying shell call, through the daemon", () =>
       expect(sink).not.toContain(QUERY_SECRET);
       expect(sink).not.toContain(depositToken(DESTINATION_KEY));
     }
-    const [file, , page] = all;
+    const [file, , page, state, notified] = all;
     // Still auditable: which handle, which destination, which slug/variable.
     expect(file).toContain(
-      `deposit: ${handle} → other:ssh-redaction-test/SSH_PRIVATE_KEY`,
+      `deposit: ${handle} → myauth:ssh-redaction-test/${VARIABLE}`,
     );
-    expect(file).toContain("[redacted other destination key]");
+    expect(file).toContain("[redacted myauth destination key]");
+    expect(file).toContain('"redacted":1');
+    // The banner's call text, which /state.json carries, got the exact pass.
+    expect(state).toContain("[redacted myauth destination key]");
+    expect(notified).toContain("Redaction test with password=[redacted]");
     expect(page).toContain("sleep 20");
     expect(page).toContain("Redaction test with password=[redacted]");
     expect(resultText(refused)).toMatch(/arguments contain the secret/);
@@ -300,13 +330,24 @@ describe("what an older daemon left on disk", () => {
     },
   ];
 
+  const STAMPED = {
+    at: "2026-11-02T10:00:00.000Z",
+    kind: "tool",
+    capability: "shell",
+    grantId: "g_new",
+    detail: "run_command: ls -la",
+    redacted: AT_REST_REDACTION_VERSION,
+  };
+
   it("rewrites audit.jsonl and the launchd logs once, keeping who/what/when", async () => {
     const stateDir = tmpState();
     const audit = join(stateDir, "audit.jsonl");
     writeFileSync(
       audit,
       OLD_LINES.map((l) => JSON.stringify(l)).join("\n") +
-        `\n{"torn line ${BEARER}\n`,
+        `\n{"torn line ${BEARER}\n` +
+        JSON.stringify(STAMPED) +
+        "\n",
       { mode: 0o644 },
     );
     const log = join(stateDir, "com.strad.hostd.err.log");
@@ -337,14 +378,24 @@ describe("what an older daemon left on disk", () => {
       .trim()
       .split("\n")
       .map((l) => JSON.parse(l) as Record<string, string>);
-    expect(entries).toHaveLength(OLD_LINES.length);
-    expect(entries.map((e) => e.at)).toEqual(OLD_LINES.map((l) => l.at));
+    expect(entries).toHaveLength(OLD_LINES.length + 1);
+    // A purpose is free text: the server is kept, the purpose is not.
+    expect(entries[0]!.detail).toBe(
+      `shell-test-mbp: [removed by at-rest redaction v${AT_REST_REDACTION_VERSION}]`,
+    );
+    // A line a redacting daemon wrote is kept exactly.
+    expect(entries.at(-1)).toEqual(STAMPED);
+    expect(entries.map((e) => e.at)).toEqual([
+      ...OLD_LINES.map((l) => l.at),
+      STAMPED.at,
+    ]);
     expect(entries[1]).toEqual({
       at: OLD_LINES[1]!.at,
       kind: "tool",
       capability: "shell",
       grantId: "g_old",
-      detail: `run_command: [arguments removed by at-rest redaction v${AT_REST_REDACTION_VERSION}]`,
+      detail: `run_command: [removed by at-rest redaction v${AT_REST_REDACTION_VERSION}]`,
+      redacted: AT_REST_REDACTION_VERSION,
     });
     expect(entries[4]!.detail).toBe(
       "deposit: h_old → default:linear/LINEAR_API_KEY",
@@ -363,5 +414,13 @@ describe("what an older daemon left on disk", () => {
     const again = redactAtRest(stateDir, (t) => replaceKnown(t, []), [log]);
     expect(again.ran).toBe(false);
     expect(readFileSync(audit, "utf8")).toContain('"detail":"new"');
+
+    // A re-run without the marker (one that failed after the audit) leaves
+    // every line it already rewrote exactly as it was.
+    writeFileSync(audit, after);
+    unlinkSync(join(stateDir, "at-rest-redaction"));
+    const rerun = redactAtRest(stateDir, (t) => replaceKnown(t, []), []);
+    expect(rerun).toMatchObject({ ran: true, auditChanged: 0 });
+    expect(readFileSync(audit, "utf8")).toBe(after);
   }, 30_000);
 });

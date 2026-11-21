@@ -227,7 +227,7 @@ load is "complete", or "timeout" if the page was still loading after 15s (it is 
       readOnlyHint: false,
       openWorldHint: true,
     },
-    summarize: (a) => `open_tab: ${a.url.slice(0, 200)}`,
+    summarize: (a) => `open_tab: ${a.url}`,
     handler: async (a, { grant }) => {
       const bad = checkUrl(a.url);
       if (bad) return text(bad, true);
@@ -273,7 +273,7 @@ load is "complete", or "timeout" if the page was still loading after 15s (it is 
       readOnlyHint: false,
       openWorldHint: true,
     },
-    summarize: (a) => `navigate_tab: ${a.url.slice(0, 200)}`,
+    summarize: (a) => `navigate_tab: ${a.url}`,
     handler: async (a, { grant }) => {
       const bad = checkUrl(a.url);
       if (bad) return text(bad, true);
@@ -424,7 +424,7 @@ If the selector matches nothing the result is an error and nothing is clicked; r
       destructiveHint: true,
       openWorldHint: true,
     },
-    summarize: (a) => `click_element: ${a.selector.slice(0, 120)}`,
+    summarize: (a) => `click_element: ${a.selector}`,
     handler: async (a, { grant }) => {
       const s = sessions.for(grant);
       const at = await clickSelector(s, a.tab_id, a.selector);
@@ -494,8 +494,7 @@ Do not type credentials the owner did not give you for this purpose: their brows
       destructiveHint: true,
       openWorldHint: true,
     },
-    summarize: (a) =>
-      `type_text: ${a.text.length} chars into ${a.selector.slice(0, 120)}`,
+    summarize: (a) => `type_text: ${a.text.length} chars into ${a.selector}`,
     handler: async (a, { grant }) => {
       const s = sessions.for(grant);
       const found = await s.evaluate<boolean>(
@@ -583,7 +582,7 @@ It runs with the page's full privileges in the owner's signed-in session. Keep i
       destructiveHint: true,
       openWorldHint: true,
     },
-    summarize: (a) => `evaluate_script: ${a.expression.slice(0, 200)}`,
+    summarize: (a) => `evaluate_script: ${a.expression}`,
     handler: (a, { grant }) =>
       redactingErrors(async () => {
         const s = sessions.for(grant);
