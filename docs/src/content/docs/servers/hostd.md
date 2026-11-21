@@ -323,6 +323,47 @@ nobody objects, set `"consent": { "onTimeout": "allow" }` in
 `~/.strad-hostd/config.json` and restart. Read the design page's consent section
 first: with that setting and nobody at the screen, the dialog protects nothing.
 
+### What a read takes out
+
+`read_page` and `evaluate_script` redact token-shaped values before the result
+leaves the Mac, because a page that lists credentials in full (an API-tokens
+settings page, a project's DSN) is otherwise a read away from a transcript.
+Each one becomes `[redacted:token]`, and the result gains
+`"redacted": <count>` with a note saying so. What counts as token-shaped:
+
+- a known prefix: `ghp_`/`gho_`/`ghs_`…, `github_pat_`, `xox[abposr]-`,
+  `xapp-`, `sk-` (OpenAI, Anthropic, OpenRouter), `glpat-` and GitLab's other
+  prefixes, `sk_live_`/`rk_live_`, `whsec_`, `lin_api_`, `sntrys_`/`sntryu_`,
+  `AKIA`/`ASIA`, `AIza`, `ya29.`, `GOCSPX-`, `npm_`, `hf_`, `dop_v1_`,
+  Airtable's `pat…`, Shopify's `shpat_`, 1Password's `ops_`, and JWTs;
+- a URL's userinfo when it has a password or a key-length user, which is a
+  Sentry or GlitchTip DSN and a `postgres://user:pass@` string;
+- a PEM block, whole or cut off;
+- a value right after a word that names one (`token:`, `"api_key": "…"`,
+  `Bearer …`);
+- 48 or more hex characters (a GlitchTip or legacy Sentry token is 64; a git
+  SHA, at 40, is left alone, and so is a `sha256:` digest);
+- 40 or more base64 characters that look random: upper and lower case, digits,
+  and high per-character entropy.
+
+`read_page`'s `elements` format keeps each `selector` verbatim, since
+`click_element` needs it. Redaction runs before `max_chars` clips, so a clip
+cannot halve a token into two pieces too short to recognise.
+
+On a **credential page** the browser server does not read at all: `read_page`
+`text` and `html` and `evaluate_script` are refused, and `elements` still
+lists buttons. The defaults are GlitchTip's `/profile/auth-tokens`, Sentry's
+`/settings/…auth-tokens`, GitHub's `/settings/tokens` and
+`/settings/personal-access-tokens`, and GitLab's personal access tokens page.
+`browser.credentialPages` in `~/.strad-hostd/config.json` replaces the list
+(URL globs, `*` for any run of characters); `[]` turns the refusal off and
+leaves redaction on.
+
+This is a heuristic ([limitation #164](/limitations/)). A credential with no
+known prefix, too short, or not random enough passes through. To take a
+credential, use [custody](/servers/hostd-custody/), whose capture tools never
+return a value and are not touched by any of this.
+
 ### Copying a secret a page shows once
 
 A console that mints a token (GitHub's new-token page, say) shows it once,

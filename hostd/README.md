@@ -146,6 +146,12 @@ To point the DevTools route at a different Chrome, write
 
 or `{ "browser": { "userDataDir": "/path/to/profile" } }`.
 
+`read_page` and `evaluate_script` redact token-shaped values (`ghp_…`, `sk-…`,
+64-hex tokens, DSNs, PEM blocks, long random base64) to `[redacted:token]`
+before they leave the machine, and refuse text, html and scripts on credential
+pages. `"browser": { "credentialPages": ["https://ci.example/keys*"] }`
+replaces the default list of those pages; `src/browser/redact.ts` has both.
+
 #### Installing the extension
 
 `strad-hostd extension` prints everything below for your machine, with the
