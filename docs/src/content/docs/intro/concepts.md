@@ -62,8 +62,14 @@ two directions that must _both_ agree:
 2. The **server** must list that role under its `entitlements`.
 
 Neither side grants access alone. A server with `entitlements: []` (the default)
-is reachable by nobody — strad fails closed. The final selection for a request is
-`entitled ∩ requested`.
+is reachable by nobody — strad fails closed.
+
+An OAuth access token may also carry a **slug set** — its `slug:` scopes, the
+slugs left ticked on the consent screen, and its client's `servers` allowlist —
+and that set is intersected last, so it can only remove. Every other credential
+carries none, and roles are the whole answer. See
+[Auth](/auth/overview/#per-client-policy-and-slug-scopes). The final selection
+for a request is `entitled ∩ requested`.
 
 ## The 424 contract
 

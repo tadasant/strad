@@ -557,6 +557,10 @@ them vouch for what the next write reaches would be circular. It is the same
 two-way intersection `/mcp` computes — a role names the slug, and the slug's
 `entitlements:` name the role — minus the `enabled` filter, because the question
 is what the deploy **authorised** rather than what is switched on today.
+An author whose credential carries a slug set — an `/mcp` OAuth token scoped to
+named `slug:`s ([Auth](/auth/overview/#per-client-policy-and-slug-scopes)) —
+reaches only the slugs in it, whatever its roles name, so a token confined to
+the roster editor cannot re-point a credential on a slug it was never granted.
 
 Both doors supply the author: the console hands over the signed-in session, and
 the `connectors` builtin hands over the principal that authenticated the `/mcp`

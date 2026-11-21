@@ -431,6 +431,7 @@ export function createMcpHandler(opts: McpHandlerOptions) {
       principalId: principal.id,
       principalAttr: caller,
       principalRoles: principal.roles,
+      ...(principal.slugs ? { principalSlugs: principal.slugs } : {}),
       log,
       clientCapabilities,
       elicitation,

@@ -45,8 +45,13 @@ export function entitledServers(
   // A role may name a server, but the server also declares which roles may use
   // it. Both must agree. Intersecting the two directions means neither side can
   // grant access on its own.
+  //
+  // Then the principal's own slug narrowing, when it carries one — an OAuth
+  // token scoped to named slugs. Intersected last, so it can only remove.
+  const narrowed = principal.slugs ? new Set(principal.slugs) : null;
   const out = new Set<string>();
   for (const slug of granted) {
+    if (narrowed && !narrowed.has(slug)) continue;
     const server = cfg.servers.find((s) => s.slug === slug);
     if (!server) continue;
     if (server.entitlements.some((r) => principal.roles.includes(r))) {

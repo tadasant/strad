@@ -927,6 +927,31 @@ describe("a runtime write cannot re-point a checked-in slug it cannot reach", ()
     }
   });
 
+  it("judges an author narrowed to named slugs by those slugs, not by its roles", () => {
+    // An OAuth token scoped to `slug:shop` holds `admin` but reaches one slug
+    // at `/mcp`; through the roster editor it must reach no more than that.
+    const tunnel = {
+      slug: "tunnel",
+      kind: "local-tunnel",
+      url: "https://new.example.trycloudflare.com/",
+      entitlements: ["admin", "fleet"],
+      headers: { Authorization: "Bearer ${TUNNEL_TOKEN}" },
+    };
+    const before = { ...tunnel, url: "https://old.example.trycloudflare.com/" };
+    expect(() =>
+      reachRuntime().assertAcceptable(tunnel, before, {
+        roles: ["admin"],
+        slugs: ["shop"],
+      }),
+    ).toThrow(ReachExceeded);
+    expect(() =>
+      reachRuntime().assertAcceptable(tunnel, before, {
+        roles: ["admin"],
+        slugs: ["shop", "tunnel"],
+      }),
+    ).not.toThrow();
+  });
+
   it("STILL lets admin re-point anything, which is what makes this a tightening", () => {
     expect(() =>
       reachRuntime().assertAcceptable(

@@ -41,6 +41,12 @@ import {
   REVOKE_PATH,
   TOKEN_PATH,
 } from "../auth/mcp-oauth/metadata.ts";
+import {
+  ceilingSlugs,
+  requestedSlugs,
+  scopeString,
+  advertisedScopes,
+} from "../auth/mcp-oauth/policy.ts";
 import { stateMatches, unsealCookie, type Sealer } from "../auth/session.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { event } from "../telemetry/index.ts";
@@ -169,14 +175,34 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
         res.status(404).json({ error: "no_issuer_identifier" });
         return;
       }
-      res.json(authorizationServerMetadata(base));
+      res.json(
+        authorizationServerMetadata(base, {
+          scopes: advertisedScopes(oauth.policies, cfg),
+          registration: oauth.policies.dynamicRegistration,
+        }),
+      );
     });
   }
 
   // --- RFC 7591 dynamic client registration -------------------------------
+  //
+  // `auth.mcpOAuth.dynamicRegistration: false` answers 404 here — the same
+  // answer as a route that does not exist, which is what the metadata document
+  // (with no `registration_endpoint`) says it is. A client registered before
+  // the switch keeps its id; whether it may still use it is
+  // `allowUnlistedClients`' question, not this route's.
   app.options(REGISTER_PATH, cors, (_req, res) => res.status(204).end());
   app.post(REGISTER_PATH, cors, (req, res) => {
     res.set("Cache-Control", "no-store");
+    if (!oauth.policies.dynamicRegistration) {
+      refused("register", "registration_disabled");
+      res.status(404).json({
+        error: "registration_disabled",
+        error_description:
+          "this authorization server does not accept dynamic client registration.",
+      });
+      return;
+    }
     const outcome = registerClient(
       req.body,
       oauth.keys.client,
@@ -272,6 +298,26 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
         return;
       }
 
+      // The client's policy (`src/auth/mcp-oauth/policy.ts`). Null only when
+      // `auth.mcpOAuth.allowUnlistedClients` is false and this client is not
+      // listed — a page and not a redirect, because a human is looking at it
+      // and a client would render `unauthorized_client` as "connection failed".
+      const policy = oauth.policies.forClient(clientId);
+      if (!policy) {
+        refused("authorize", "client_not_allowed");
+        page(
+          res,
+          403,
+          renderAuthorizeError({
+            heading: "This client is not allowed on this gateway",
+            detail:
+              "This gateway's operator admits only the OAuth clients listed in its " +
+              "configuration (auth.mcpOAuth.clients), and this one is not among them.",
+          }),
+        );
+        return;
+      }
+
       const redirectUri = resolveRedirectUri(
         client,
         single(req.query.redirect_uri),
@@ -360,18 +406,27 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
         return;
       }
 
-      // SCOPE IS IGNORED, not refused, and RFC 6749 §3.3 is explicit that an
-      // authorization server may issue a scope other than the one asked for as
-      // long as it says so in the response — which `/oauth/token` does, always
-      // answering `scope: "mcp"`.
-      //
-      // Refusing an unrecognised scope would be the stricter reading and the
-      // wrong trade here. Scope grants NOTHING on this gateway: what a principal
-      // may reach is decided entirely by `roles` and the two-way entitlement,
-      // server-side, on every request (`src/gateway/entitlements.ts`). So a
-      // client asking for a scope it invented cannot widen anything, and the only
-      // effect of an `invalid_scope` would be a connector that fails to set up
-      // over a word that was never going to matter.
+      // SCOPE NARROWS, and only `slug:<name>` does. `mcp` — or no scope, or a
+      // scope this server never heard of — asks for the client's whole ceiling,
+      // which is what every client got before slug scopes existed; an unknown
+      // word is ignored rather than refused, because a connector that fails to
+      // set up over it protects nothing. Slug scopes can only name slugs the
+      // ceiling already reaches (`src/auth/mcp-oauth/policy.ts`); naming one it
+      // does not is `invalid_scope`, said to the client by name, since quietly
+      // dropping it would hand the client a narrower toolset than it asked for
+      // with nothing saying why.
+      const wanted = requestedSlugs(single(req.query.scope));
+      if (wanted) {
+        const ceiling = new Set(ceilingSlugs(policy, cfg));
+        const beyond = wanted.filter((s) => !ceiling.has(s));
+        if (beyond.length > 0) {
+          fail(
+            "invalid_scope",
+            `this client may not be granted: ${beyond.map((s) => `slug:${s}`).join(" ")}.`,
+          );
+          return;
+        }
+      }
 
       const request: AuthorizationRequest = {
         cid: clientFingerprint(clientId),
@@ -380,6 +435,7 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
         ...(clientState !== undefined ? { state: clientState } : {}),
         resource,
         issuer: base,
+        ...(wanted ? { slugs: wanted } : {}),
       };
 
       const googleRedirectUri = `${base}${GOOGLE_CALLBACK_PATH}`;
@@ -511,12 +567,35 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
         return;
       }
 
+      // Re-resolved from the sealed `cid` rather than carried in the cookie, so
+      // the screen shows the ceiling the config holds NOW. Null only if the
+      // config stopped admitting this client in the minutes since authorize.
+      const policy = oauth.policies.forFingerprint(request.cid);
+      if (!policy) {
+        refused("callback", "client_not_allowed");
+        res.redirect(
+          302,
+          errorRedirect(
+            request.redirectUri,
+            request.issuer,
+            "unauthorized_client",
+            "this client is not admitted by this gateway.",
+            request.state,
+          ),
+        );
+        return;
+      }
+      // One checkbox per slug the grant would reach: what the client asked
+      // for, or — for `mcp` — the whole ceiling as it stands today.
+      const offered = request.slugs ?? ceilingSlugs(policy, cfg);
+
       const approval: PendingApproval = {
         v: 1,
         ...request,
         identity: grant.identity,
         googleRefreshToken: grant.refreshToken,
         ...(tx.clientName ? { clientName: tx.clientName } : {}),
+        offered,
         exp: now() + APPROVAL_TTL_MS,
       };
 
@@ -530,7 +609,10 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
           loopbackRedirect: isLoopbackRedirect(request.redirectUri),
           email: grant.identity.email,
           resource: request.resource,
-          roles: oauth.roles,
+          roles: policy.roles,
+          slugs: offered,
+          narrowed: request.slugs !== undefined,
+          ...(policy.name ? { configuredName: policy.name } : {}),
           approval: oauth.keys.approval.seal(approval),
           action: APPROVE_PATH,
         }),
@@ -575,7 +657,48 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
       return;
     }
 
-    const code = mintCode(oauth.keys.code, approval, approval.cid, now());
+    // The human's slug choice. Intersected with what the screen OFFERED —
+    // sealed, so the form can only untick, never add. Leaving every box ticked
+    // on an `mcp` request grants `mcp` (no narrowing): the same grant this
+    // server issued before the boxes existed, which keeps following the
+    // ceiling as the roster changes. An approval sealed before slug consent
+    // existed has no `offered` and grants the request unchanged.
+    //
+    // The choice counts only when the form carried the list (`slug_choice`):
+    // an unticked checkbox posts nothing, so without the marker "every box
+    // unticked" and "no list was rendered" would be the same request.
+    let slugs = approval.slugs;
+    if (Array.isArray(approval.offered) && body.slug_choice === "1") {
+      const ticked = new Set(formList(body.slug));
+      const chosen = approval.offered.filter((s) => ticked.has(s));
+      if (approval.offered.length > 0 && chosen.length === 0) {
+        denied("no_servers_selected");
+        res.redirect(
+          302,
+          errorRedirect(
+            approval.redirectUri,
+            approval.issuer,
+            "access_denied",
+            "The account holder approved no servers for this connection.",
+            approval.state,
+          ),
+        );
+        return;
+      }
+      slugs =
+        approval.slugs === undefined &&
+        chosen.length === approval.offered.length
+          ? undefined
+          : chosen;
+    }
+
+    const code = mintCode(
+      oauth.keys.code,
+      approval,
+      approval.cid,
+      now(),
+      slugs,
+    );
     const url = new URL(approval.redirectUri);
     url.searchParams.set("code", code);
     if (approval.state !== undefined)
@@ -669,6 +792,10 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
    * host up.
    */
   function knownClient(clientId: string): boolean {
+    // The config's admission rule first: an unlisted client on a deployment
+    // with `allowUnlistedClients: false` cannot spend a code or a refresh
+    // token, whatever it holds.
+    if (!oauth.policies.forClient(clientId)) return false;
     if (isMetadataClientId(clientId))
       return clientIdUrlProblem(clientId) === null;
     return readClient(clientId, oauth.keys.client) !== null;
@@ -754,6 +881,7 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
         resource: code.resource,
         identity: code.identity,
         googleRefreshToken: code.googleRefreshToken,
+        ...(code.slugs ? { slugs: code.slugs } : {}),
       },
       now(),
     );
@@ -765,6 +893,7 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
       code.cid,
       code.identity,
       refresh,
+      code.slugs,
     );
   }
 
@@ -851,6 +980,33 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
       return;
     }
 
+    // RFC 6749 §6: a refresh may ask for LESS than the grant, never more. A
+    // request naming no slug — `mcp`, or no scope at all — gets the grant as it
+    // was given, which is what a client that knows nothing of slug scopes, or
+    // one whose human unticked boxes it never saw, will always send. Slugs it
+    // does name must all lie inside the grant (or, for an `mcp` grant, inside
+    // the client's ceiling today). The narrowing lands on the ACCESS token
+    // only; the refresh token keeps the grant's scope.
+    let slugs = payload.slugs;
+    const wanted = requestedSlugs(sent(body.scope));
+    if (wanted) {
+      const policy = oauth.policies.forClient(clientId);
+      const allowed = new Set(
+        payload.slugs ?? (policy ? ceilingSlugs(policy, cfg) : []),
+      );
+      const beyond = wanted.filter((s) => !allowed.has(s));
+      if (beyond.length > 0) {
+        tokenError(
+          res,
+          400,
+          "invalid_scope",
+          `this grant does not include: ${beyond.map((s) => `slug:${s}`).join(" ")}.`,
+        );
+        return;
+      }
+      slugs = wanted;
+    }
+
     // The SAME refresh token comes back, deliberately — see
     // docs/auth/overview.md. Rotation's value is detecting the replay of a
     // stolen token, which needs a server-side record of the one just spent;
@@ -864,6 +1020,7 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
       payload.cid,
       identity,
       str(body.refresh_token) ?? "",
+      slugs,
     );
   }
 
@@ -890,10 +1047,22 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
     cid: string,
     identity: PendingApproval["identity"],
     refreshToken: string,
+    slugs: string[] | undefined,
   ): void {
+    // `knownClient` has already admitted this id, so the policy exists; the
+    // fallback keeps the type honest rather than adding a third answer.
+    const ttlMs =
+      oauth.policies.forClient(clientId)?.accessTokenTtlMs ??
+      cfg.auth.mcpOAuth.accessTokenTtlSeconds * 1000;
     const access = mintAccessToken(
       oauth.keys.access,
-      { cid, aud: resource, identity, ttlMs: oauth.accessTokenTtlMs },
+      {
+        cid,
+        aud: resource,
+        identity,
+        ttlMs,
+        ...(slugs ? { slugs } : {}),
+      },
       now(),
     );
     log({
@@ -904,12 +1073,13 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
     res.json({
       access_token: access,
       token_type: "Bearer",
-      expires_in: Math.floor(oauth.accessTokenTtlMs / 1000),
+      expires_in: Math.floor(ttlMs / 1000),
       refresh_token: refreshToken,
-      // Always `mcp`, whatever was asked for. See the scope comment on
-      // `/oauth/authorize`; RFC 6749 §3.3 requires saying so when the issued
-      // scope differs from the requested one, and this is that.
-      scope: MCP_SCOPE,
+      // The scope THIS access token carries: `mcp` for an unnarrowed grant,
+      // otherwise its `slug:` set. RFC 6749 §3.3 requires saying so when the
+      // issued scope differs from the requested one — an unknown word dropped,
+      // or slugs the human unticked — and this is that.
+      scope: scopeString(slugs),
     });
   }
 
@@ -979,6 +1149,17 @@ function page(res: Response, status: number, html: string): void {
     .set("X-Frame-Options", "DENY")
     .set("Content-Security-Policy", "frame-ancestors 'none'")
     .send(html);
+}
+
+/**
+ * A repeated form field as a list. `express.urlencoded({ extended: false })`
+ * gives a string for one value and an array for several.
+ */
+function formList(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value))
+    return value.filter((v): v is string => typeof v === "string");
+  return [];
 }
 
 /** RFC 6749 §5.2 — the token endpoint's error shape. */

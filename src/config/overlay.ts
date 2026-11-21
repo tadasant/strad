@@ -886,6 +886,12 @@ function assertNoDepositChange(
  */
 export interface WritingPrincipal {
   roles: readonly string[];
+  /**
+   * The author's slug narrowing, when its credential carries one — an OAuth
+   * token scoped to named slugs (`Principal.slugs`). A slug outside it is a
+   * slug the author does not reach, whatever its roles say.
+   */
+  slugs?: readonly string[];
 }
 
 export class ReachExceeded extends Error {}
@@ -934,9 +940,11 @@ function destination(
  */
 function principalReachesSlug(
   config: StradConfig,
-  roles: readonly string[],
+  principal: WritingPrincipal,
   server: ServerConfig,
 ): boolean {
+  const { roles } = principal;
+  if (principal.slugs && !principal.slugs.includes(server.slug)) return false;
   const roleNamesSlug = roles.some((r) => {
     // `Object.hasOwn`, for the same reason entitledServers uses it: a role named
     // "__proto__" must not resolve to Object.prototype.
@@ -1033,7 +1041,7 @@ export function assertWithinReach(
     );
     if (
       moved.length > 0 &&
-      !principalReachesSlug(baseConfig, principal.roles, declared)
+      !principalReachesSlug(baseConfig, principal, declared)
     ) {
       throw new ReachExceeded(
         `${moved.join(", ")} cannot be changed at runtime on ${slug} by this ` +
@@ -1084,7 +1092,7 @@ export function assertWithinReach(
       (s) =>
         s.kind === "supplementary-image" &&
         s.bundle === bundle &&
-        principalReachesSlug(baseConfig, principal.roles, s),
+        principalReachesSlug(baseConfig, principal, s),
     );
     if (!reachesComponent) {
       throw new ReachExceeded(
@@ -1103,7 +1111,7 @@ export function assertWithinReach(
       s.kind === "supplementary-image" &&
       s.bundle === bundle &&
       (s.path ?? "/mcp") === path &&
-      principalReachesSlug(baseConfig, principal.roles, s),
+      principalReachesSlug(baseConfig, principal, s),
   );
   if (mounts.length === 0) {
     throw new ReachExceeded(

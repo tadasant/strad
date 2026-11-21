@@ -40,6 +40,16 @@ import type { Cipher } from "./keys.ts";
  * anything that decodes a bearer token in transit, and cannot be replayed as a
  * refresh token because the two are under different keys (`keys.ts`).
  *
+ * ## The slug set, when there is one
+ *
+ * The code, the refresh token and the access token carry an OPTIONAL `slugs`
+ * array: the `slug:<name>` scopes the grant was narrowed to, at the client's
+ * request or by the human on the consent screen (`policy.ts`). Absent means
+ * the whole of the client's ceiling — the `mcp` scope — and is what every
+ * token minted before the field existed reads as. It is a narrowing, so a
+ * token carrying it can only reach less than its roles would; it is never a
+ * grant on its own.
+ *
  * ## What the token does NOT carry
  *
  * Roles. `Principal.roles` is server-side by construction
@@ -123,6 +133,11 @@ export interface AuthorizationRequest {
    * happened to be unreadable.
    */
   issuer: string;
+  /**
+   * The slugs the client asked for as `slug:<name>` scopes, already checked
+   * against its ceiling. Absent when it asked for none (`mcp`, or nothing).
+   */
+  slugs?: string[];
 }
 
 /** The consent screen's hidden field: a validated request awaiting a decision. */
@@ -133,6 +148,13 @@ export interface PendingApproval extends AuthorizationRequest {
   googleRefreshToken: string;
   /** Display only: the client's registered name, for the screen. */
   clientName?: string;
+  /**
+   * The slugs the consent screen offered, one checkbox each. What the human
+   * posts back is intersected with this, so the form can only narrow. Absent
+   * on an approval sealed before slug consent existed, which grants the
+   * request unchanged.
+   */
+  offered?: string[];
   exp: number;
 }
 
@@ -147,6 +169,8 @@ export interface CodePayload {
   resource: string;
   identity: GrantIdentity;
   googleRefreshToken: string;
+  /** The granted slug narrowing. Absent = the client's whole ceiling. */
+  slugs?: string[];
   exp: number;
 }
 
@@ -159,6 +183,8 @@ export interface RefreshPayload {
   /** The subject and email at issue time; both re-verified on every refresh. */
   identity: GrantIdentity;
   googleRefreshToken: string;
+  /** The granted slug narrowing. Absent = the client's whole ceiling. */
+  slugs?: string[];
   iat: number;
 }
 
@@ -172,6 +198,8 @@ export interface AccessPayload {
   sub: string;
   email: string;
   hd: string;
+  /** This token's slug narrowing. Absent = the client's whole ceiling. */
+  slugs?: string[];
   iat: number;
   exp: number;
 }
@@ -216,6 +244,7 @@ export function mintCode(
   approval: PendingApproval,
   cid: string,
   now: number = Date.now(),
+  slugs: string[] | undefined = approval.slugs,
 ): string {
   const payload: CodePayload = {
     v: 1,
@@ -226,6 +255,7 @@ export function mintCode(
     resource: approval.resource,
     identity: approval.identity,
     googleRefreshToken: approval.googleRefreshToken,
+    ...(slugs ? { slugs } : {}),
     exp: now + CODE_TTL_MS,
   };
   return cipher.seal(payload);
@@ -233,7 +263,13 @@ export function mintCode(
 
 export function mintAccessToken(
   cipher: Cipher,
-  opts: { cid: string; aud: string; identity: GrantIdentity; ttlMs: number },
+  opts: {
+    cid: string;
+    aud: string;
+    identity: GrantIdentity;
+    ttlMs: number;
+    slugs?: string[];
+  },
   now: number = Date.now(),
 ): string {
   const payload: AccessPayload = {
@@ -244,6 +280,7 @@ export function mintAccessToken(
     sub: opts.identity.sub,
     email: opts.identity.email,
     hd: opts.identity.hd,
+    ...(opts.slugs ? { slugs: opts.slugs } : {}),
     iat: now,
     exp: now + opts.ttlMs,
   };
@@ -257,6 +294,7 @@ export function mintRefreshToken(
     resource: string;
     identity: GrantIdentity;
     googleRefreshToken: string;
+    slugs?: string[];
   },
   now: number = Date.now(),
 ): string {
@@ -267,6 +305,7 @@ export function mintRefreshToken(
     resource: opts.resource,
     identity: opts.identity,
     googleRefreshToken: opts.googleRefreshToken,
+    ...(opts.slugs ? { slugs: opts.slugs } : {}),
     iat: now,
   };
   return `${REFRESH_TOKEN_PREFIX}${cipher.seal(payload)}`;
@@ -286,6 +325,7 @@ export function readCode(
   if (typeof payload.exp !== "number" || payload.exp <= now) return null;
   if (typeof payload.jti !== "string" || payload.jti === "") return null;
   if (!validIdentity(payload.identity)) return null;
+  if (!validSlugs(payload.slugs)) return null;
   return payload;
 }
 
@@ -303,6 +343,7 @@ export function readRefreshToken(
   // omission — see the header, and `docs/auth/overview.md`.
   if (!validIdentity(payload.identity)) return null;
   if (typeof payload.googleRefreshToken !== "string") return null;
+  if (!validSlugs(payload.slugs)) return null;
   return payload;
 }
 
@@ -320,7 +361,20 @@ export function readAccessToken(
   if (typeof payload.sub !== "string" || payload.sub === "") return null;
   if (typeof payload.email !== "string" || payload.email === "") return null;
   if (typeof payload.aud !== "string" || payload.aud === "") return null;
+  if (!validSlugs(payload.slugs)) return null;
   return payload;
+}
+
+/**
+ * Absent, or an array of strings. A sealed payload is ours, so anything else
+ * is a bug rather than an attack — and a narrowing strad cannot read must not
+ * be read as "no narrowing", which is the widest answer.
+ */
+function validSlugs(slugs: unknown): boolean {
+  return (
+    slugs === undefined ||
+    (Array.isArray(slugs) && slugs.every((s) => typeof s === "string"))
+  );
 }
 
 function validIdentity(identity: unknown): identity is GrantIdentity {

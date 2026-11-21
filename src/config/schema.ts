@@ -1740,8 +1740,73 @@ const AuthConfig = z.object({
         .min(300)
         .max(86_400)
         .default(3600),
+      /**
+       * Per-client policy, keyed by the exact `client_id` — a client id
+       * metadata document URL, since a dynamically registered client's id is a
+       * sealed blob nobody can write down in advance.
+       *
+       * A listed client's grants are bounded by ITS entry instead of the
+       * defaults above:
+       *
+       *   roles                 — the role ceiling. Defaults to
+       *                           `auth.mcpOAuth.roles`.
+       *   servers               — optional slug allowlist, intersected with
+       *                           what those roles reach. Absent = no extra
+       *                           narrowing.
+       *   accessTokenTtlSeconds — optional, same bounds as the global one.
+       *
+       * Read from the CURRENT config at every verification and every refresh,
+       * like the global roles, so narrowing an entry narrows tokens already
+       * issued. Empty (the default) changes nothing about any grant.
+       * `src/auth/mcp-oauth/policy.ts` is the one reader.
+       */
+      clients: z
+        .array(
+          z.object({
+            clientId: z.string().min(1).max(2048),
+            /** Display only, shown on the consent screen beside the client's own name. */
+            name: z.string().min(1).max(200).optional(),
+            roles: z.array(Role).optional(),
+            servers: z.array(SLUG).optional(),
+            accessTokenTtlSeconds: z
+              .number()
+              .int()
+              .min(300)
+              .max(86_400)
+              .optional(),
+          }),
+        )
+        .default([]),
+      /**
+       * May a client NOT listed in `clients` complete a grant, refresh one, or
+       * use an access token? `true` is the open default every deployment had
+       * before `clients` existed. `false` closes the server to the list, and —
+       * because it is read at verification — revokes an unlisted client's live
+       * tokens within one access-token lifetime and its refresh tokens at once.
+       */
+      allowUnlistedClients: z.boolean().default(true),
+      /**
+       * RFC 7591 `POST /oauth/register`. Off answers `404` there and drops
+       * `registration_endpoint` from the metadata document; clients already
+       * registered keep working, subject to `allowUnlistedClients`.
+       */
+      dynamicRegistration: z.boolean().default(true),
+      /**
+       * Advertise one `slug:<name>` scope per slug an OAuth grant could reach
+       * in `scopes_supported`. Off by default because both metadata documents
+       * are unauthenticated, and the list is the gateway's roster.
+       */
+      advertiseSlugScopes: z.boolean().default(false),
     })
-    .default({ enabled: false, roles: [], accessTokenTtlSeconds: 3600 }),
+    .default({
+      enabled: false,
+      roles: [],
+      accessTokenTtlSeconds: 3600,
+      clients: [],
+      allowUnlistedClients: true,
+      dynamicRegistration: true,
+      advertiseSlugScopes: false,
+    }),
 
   /**
    * Console dev bypass: sign in to /console without Google OAuth, by presenting
@@ -2201,6 +2266,53 @@ export const StradConfig = z
         });
       }
     }
+
+    // A PER-CLIENT ENTRY is checked the same way, plus two things only it can
+    // get wrong: a duplicate key (which entry wins would be an accident of
+    // order) and a key that is not a metadata-document URL (a dynamically
+    // registered client's id is minted at registration and cannot be listed,
+    // so such an entry would match nothing, silently).
+    const seenClients = new Set<string>();
+    cfg.auth.mcpOAuth.clients.forEach((client, i) => {
+      const at = ["auth", "mcpOAuth", "clients", i];
+      if (seenClients.has(client.clientId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `auth.mcpOAuth.clients lists "${client.clientId}" twice`,
+          path: [...at, "clientId"],
+        });
+      }
+      seenClients.add(client.clientId);
+      let url: URL | null = null;
+      try {
+        url = new URL(client.clientId);
+      } catch {
+        url = null;
+      }
+      if (!url || url.protocol !== "https:" || url.pathname === "/") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `auth.mcpOAuth.clients[${i}].clientId must be a client id metadata ` +
+            "document URL (https, with a path). A dynamically registered " +
+            "client's id is minted at registration and cannot be listed.",
+          path: [...at, "clientId"],
+        });
+      }
+      for (const role of client.roles ?? []) {
+        if (!cfg.roles[role]) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `auth.mcpOAuth.clients[${i}].roles grants unknown role "${role}"`,
+            path: [...at, "roles"],
+          });
+        }
+      }
+      // `servers` naming a slug the roster does not have is NOT refused, for
+      // the reason a role's `servers` is not: a runtime roster write may
+      // remove a slug, and a merged config must not turn invalid over it. An
+      // unknown slug grants nothing (`entitledServers`).
+    });
 
     // A TOKEN STORE STRAD CANNOT READ IS A GATEWAY WITH NO DOOR.
     //

@@ -8157,3 +8157,37 @@ required`. A public client would connect and then fail its first refresh.
 secret an earlier Connect wrote deleted, because `oauth/` is read ahead of
 `static/` and would shadow the seeded pair. Or Figma adding strad to its list,
 which needs only `registration:` dropped.
+
+## 160. `/mcp` OAuth client policy keys on metadata-document URLs, and a `slug:` grant is a fixed set
+
+**What.** `auth.mcpOAuth.clients` gives a client its own role ceiling, slug
+allowlist and access-token TTL, keyed by its exact `client_id`.
+`allowUnlistedClients: false` admits listed clients only; `dynamicRegistration:
+false` turns `POST /oauth/register` off. A `slug:<name>` scope, or a box
+unticked on the consent screen, seals a slug set into the code, the refresh
+token and the access token (`src/auth/mcp-oauth/policy.ts`,
+`src/auth/mcp-oauth/grants.ts`), and `entitledServers` intersects it last.
+
+**Why.** Every OAuth sign-in got `auth.mcpOAuth.roles` — `[admin]` in prod —
+whatever client asked. Narrowing needs a key to narrow by, and the scope
+parameter is the one OAuth gives a client to ask with.
+
+**What it costs.**
+
+1. **A dynamically registered client cannot be listed.** Its id is a sealed
+   blob minted at registration, so there is nothing to write down in advance.
+   With `allowUnlistedClients: false`, only metadata-document clients connect;
+   the schema refuses an entry that is not an `https` URL with a path, because
+   it could never match.
+2. **A narrowed grant does not follow the roster.** An `mcp` grant reaches
+   whatever the ceiling reaches today, new slugs included. A grant narrowed to
+   `slug:a slug:b` stays that set until the client signs in again. A slug that
+   leaves the ceiling drops out at the next request, since the ceiling is read
+   from current config.
+3. **There is no per-grant revocation.** Narrowing a client's entry narrows
+   every token it holds. Revoking one grant without touching the others still
+   means Google revocation (see the OAuth bounds in `docs/src/content/docs/limitations.md`), which is per user
+   and per OAuth client. A grant store is what changes that.
+
+**Undo.** Delete the `clients` block and the three flags. Tokens carrying a
+slug set keep it; every other token behaves as it did before any of this.

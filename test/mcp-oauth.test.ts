@@ -29,6 +29,7 @@ import {
   normalizeResource,
 } from "../src/auth/mcp-oauth/metadata.ts";
 import { Cipher, mcpOAuthKeysFromEnv } from "../src/auth/mcp-oauth/keys.ts";
+import { ClientPolicies } from "../src/auth/mcp-oauth/policy.ts";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { mintToken } from "../src/auth/tokens.ts";
 import { parseConfig } from "../src/config/load.ts";
@@ -862,7 +863,13 @@ describe("the audience is the endpoint, never the URL", () => {
       identity: { sub: "s", email: "t@tadasant.com", hd: "tadasant.com" },
       ttlMs: 60_000,
     });
-    const narrowed = { ...oauth, roles: [] as string[] };
+    const narrowed = {
+      ...oauth,
+      policies: new ClientPolicies({
+        ...CONFIG.auth.mcpOAuth,
+        roles: [],
+      }),
+    };
     const verdict = verifyAccessToken(issued, narrowed, `${ORIGIN}/mcp`);
     expect(verdict.ok && verdict.principal.roles).toEqual([]);
     const wide = verifyAccessToken(issued, oauth, `${ORIGIN}/mcp`);

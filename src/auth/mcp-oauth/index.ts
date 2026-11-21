@@ -8,6 +8,7 @@ import {
   oauthKeyProblem,
   type McpOAuthKeys,
 } from "./keys.ts";
+import { ClientPolicies, principalSlugs } from "./policy.ts";
 
 /**
  * Is strad an authorization server on this deployment, and what does it issue?
@@ -28,9 +29,12 @@ import {
 export interface McpOAuth {
   /** The Workspace domain enforced on every authorization and every refresh. */
   hostedDomain: string;
-  /** Roles an authenticated member of that domain holds at `/mcp`. */
-  roles: string[];
-  accessTokenTtlMs: number;
+  /**
+   * Per-client roles, slug allowlist and TTL, plus the two open-door flags
+   * (`policy.ts`). The global `auth.mcpOAuth.roles` and TTL are its fallback,
+   * which is the whole answer when no `clients` are configured.
+   */
+  policies: ClientPolicies;
   keys: McpOAuthKeys;
   google: McpGoogleProvider;
   /** The one piece of server-side state in the flow. See `SpentCodes`. */
@@ -111,10 +115,16 @@ export function resolveMcpOAuth(opts: ResolveMcpOAuthOptions): McpOAuth | null {
       `<publicUrl>/oauth/callback/google`,
   );
 
+  if (!settings.allowUnlistedClients && settings.clients.length === 0) {
+    log(
+      `[strad] auth.mcpOAuth.allowUnlistedClients is false and no clients are ` +
+        `listed, so no client can complete the /mcp OAuth flow.`,
+    );
+  }
+
   return {
     hostedDomain,
-    roles: settings.roles,
-    accessTokenTtlMs: settings.accessTokenTtlSeconds * 1000,
+    policies: new ClientPolicies(settings),
     keys,
     google,
     spent: new SpentCodes(),
@@ -138,7 +148,8 @@ export type AccessVerdict =
         | "oauth_expired_or_forged"
         | "oauth_audience_mismatch"
         | "oauth_domain_changed"
-        | "oauth_no_resource_identifier";
+        | "oauth_no_resource_identifier"
+        | "oauth_client_not_allowed";
     };
 
 /**
@@ -163,8 +174,15 @@ export type AccessVerdict =
  *    — or turning the flow off — takes effect on tokens already in the wild
  *    within the access token's lifetime rather than at its issuer's discretion.
  *
- * Roles come from the current config too, never from the token. Every failure
- * mode returns the same `401` to the caller; the reason is for our logs.
+ * 4. **The client, against the CURRENT config.** The token's `cid` picks the
+ *    client's policy (`policy.ts`): a listed client's roles and slug
+ *    allowlist, or the global roles. A client the config no longer admits —
+ *    `allowUnlistedClients: false` and not listed — is refused.
+ *
+ * Roles come from the current config too, never from the token. The token
+ * contributes only its optional slug narrowing, which `entitledServers`
+ * intersects last and which can therefore only remove. Every failure mode
+ * returns the same `401` to the caller; the reason is for our logs.
  */
 export function verifyAccessToken(
   raw: string,
@@ -193,6 +211,10 @@ export function verifyAccessToken(
     return { ok: false, reason: "oauth_domain_changed" };
   }
 
+  const policy = oauth.policies.forFingerprint(payload.cid);
+  if (!policy) return { ok: false, reason: "oauth_client_not_allowed" };
+  const slugs = principalSlugs(policy, payload.slugs);
+
   return {
     ok: true,
     principal: {
@@ -202,7 +224,8 @@ export function verifyAccessToken(
       // the logs and the spans.
       id: payload.sub,
       label: payload.email,
-      roles: oauth.roles,
+      roles: policy.roles,
+      ...(slugs ? { slugs } : {}),
     },
   };
 }
