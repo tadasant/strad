@@ -54,6 +54,8 @@ import { originFor, playgroundAccess } from "./playground.ts";
 import { entitledServers } from "../gateway/entitlements.ts";
 import { forgetConsoleStores, storeFor } from "./store-client.ts";
 import { mountTokensConsole } from "./tokens.ts";
+import { mountGrantsConsole } from "./grants.ts";
+import type { McpOAuth } from "../auth/mcp-oauth/index.ts";
 import {
   CONNECTORS_PREFIX,
   SERVER_ROUTE,
@@ -157,6 +159,11 @@ function validateNote(note: string): string | null {
 
 export interface ConsoleUiOptions {
   config: StradConfig;
+  /**
+   * strad's own `/mcp` authorization server, when this deployment runs one.
+   * `/tokens/grants` lists and revokes its grant records.
+   */
+  mcpOAuth?: McpOAuth | null;
   /**
    * The mounted servers, for the playground.
    *
@@ -354,6 +361,10 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     reader: opts.resolver,
     parametersStore: opts.parametersStore,
   });
+
+  // `/tokens/grants` — the OAuth grants the authorization server holds a
+  // record for, and a Revoke on each. See src/ui/grants.ts.
+  mountGrantsConsole(app, gate, { oauth: opts.mcpOAuth ?? null });
 
   // Create / edit / remove a server entry, when this deployment keeps its
   // roster in a store. Mounted at its own top-level prefix rather than under

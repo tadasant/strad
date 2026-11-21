@@ -14,12 +14,22 @@ Each server gets its own folder and its own encryption key.
 | [Slack events](/servers/events/) ingest                        | `slack-events`                                      | `SLACK_EVENTS_STATE_ENCRYPTION_KEY` | `SLACK_EVENTS_STATE_PREFIX` |
 | [Messenger](/servers/messenger/) bridge                        | `messenger` (`messenger/prod`, `messenger/staging`) | `MESSENGER_STATE_ENCRYPTION_KEY`    | `MESSENGER_STATE_PREFIX`    |
 | [Gmail events](/servers/events/#gmail-message_received) ingest | `gmail-events/<slug>`                               | `GMAIL_EVENTS_STATE_ENCRYPTION_KEY` | `GMAIL_EVENTS_STATE_PREFIX` |
+| Core's [OAuth grant records](/auth/overview/#grant-records)    | `mcp-oauth/<gateway.env>`                           | derived from the OAuth key          | none                        |
 
 The [WhatsApp `message_received` event](/servers/events/#whatsapp-message_received)
 is not a consumer of its own. Its buffer and webhook registry are
 `events/buffer.bin` and `events/webhooks.bin` inside the WhatsApp bridge's
 folder, under the bridge's key and lease, because the bridge is what receives
 the messages they are cut from.
+
+**Core is a consumer too**, when `auth.mcpOAuth.grants` is on with `store: gcs`.
+It is the one consumer that is not a bundle server: it reads the three shared
+names through the gateway's own secret provider rather than an `env:` map, so
+nothing is referenced or baked for it, and the store credential sits in core's
+memory only once a grant operation needs it. Its key is derived from the OAuth
+key core already holds, so it seeds nothing; its magic is `SOG1`; and it takes
+no lease, because every write is conditional on the generation it read — a
+deploy's two overlapping cores cannot overwrite each other's records.
 
 The code is one module, `src/state/store.ts`: the GCS client, the seal, the
 single-writer lease and the rules on this page. Each consumer is its own npm

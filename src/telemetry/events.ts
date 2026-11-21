@@ -347,14 +347,30 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      */
     "mcp_oauth.denied": ["reason"],
     /**
-     * A refresh token revoked through `/oauth/revoke` (RFC 7009). `outcome` is
-     * `ok` or `failed` — whether GOOGLE accepted the revocation, which is where
-     * revocation actually happens on a gateway with no datastore. A `failed`
-     * here means a grant the holder believes is dead is still live until the
-     * call is retried, which is the one thing about this endpoint worth an
-     * alert.
+     * A token revoked through `/oauth/revoke` (RFC 7009). `token` is `access`,
+     * `refresh` (a record-backed grant) or `legacy_refresh` (a stateless one).
+     * `outcome` is `ok`, `unknown` (no record to revoke), or — without grant
+     * records, where revocation happens at Google — `failed`, which means a
+     * grant the holder believes is dead is still live until the call is
+     * retried, and is the one thing about this endpoint worth an alert.
      */
-    "mcp_oauth.revoked": ["outcome"],
+    "mcp_oauth.revoked": ["token", "outcome"],
+    /**
+     * A server-side grant record changed state (`grant-store.ts`). `action` is
+     * `created`, `upgraded`, `rotated`, `reissued` or `revoked`; `reason` is a
+     * closed set this repo wrote (`consent`, `refresh`, `grace`,
+     * `refresh_replay`, `code_replay`, `console`, …). Every one of these costs
+     * a completed sign-in or a valid refresh token to produce, so the volume
+     * argument that keeps pre-authentication refusals off this list does not
+     * reach it — and `revoked` / `refresh_replay` is the record of a
+     * suspected stolen token.
+     */
+    "mcp_oauth.grant": ["action", "reason"],
+    /**
+     * The grant store could not be read or written at `stage`. Record-backed
+     * grants are failing closed while this fires.
+     */
+    "mcp_oauth.grant_store_unavailable": ["stage"],
     /** Secrets plumbing, where a silent failure has the same shape as this one. */
     "strad.secrets_hydrated": ["provider", "keys"],
     /**

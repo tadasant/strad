@@ -32,6 +32,13 @@ import type { Cipher } from "./keys.ts";
  * So strad's refresh token never expires and is individually revocable, and
  * neither property is a promise this process keeps in memory.
  *
+ * That is the STATELESS grant (payload `v: 1 | 2 | 3`), and it is every grant while
+ * `auth.mcpOAuth.grants` is off. With it on, a new grant gets a server-side
+ * record (`grant-store.ts`) and its values are `v: 4`: the code, refresh token
+ * and access token carry a grant id and no Google credential, the record holds
+ * the Google refresh token for the same re-check, and the record is what
+ * rotates, expires and revokes.
+ *
  * ## Why the access token is opaque
  *
  * strad is BOTH the authorization server and the resource server, in one
@@ -70,6 +77,18 @@ import type { Cipher } from "./keys.ts";
  * config mints exactly what it always did.
  */
 export type GrantVersion = 1 | 2 | 3;
+
+/**
+ * The payload version of a value backed by a server-side grant record
+ * (`grant-store.ts`). It carries a grant id instead of a Google refresh token,
+ * and no build before records existed opens it (`keys.ts`), so a rollback
+ * refuses it outright — the holder signs in again — rather than reading a
+ * token whose revocation lives somewhere that build cannot see. It is its own
+ * version rather than a flag on `3`: a build that knows `3` (confidential
+ * clients) but not records would otherwise spend a record-backed token
+ * without its record.
+ */
+export const RECORD_VERSION = 4;
 
 /**
  * `3` is a grant sealed to a CONFIDENTIAL client (`auth: "private_key_jwt"`),
@@ -240,6 +259,47 @@ export interface AccessPayload {
   exp: number;
 }
 
+/**
+ * The authorization code of a grant that has a record. The Google refresh
+ * token, the identity and the slug set are in the record, so the code — which
+ * travels through the browser to the client — carries none of them.
+ */
+export interface RecordCodePayload {
+  v: typeof RECORD_VERSION;
+  jti: string;
+  gid: string;
+  cid: string;
+  redirectUri: string;
+  challenge: string;
+  resource: string;
+  /** See `AuthorizationRequest.auth`; the record carries it too. */
+  auth?: "private_key_jwt";
+  exp: number;
+}
+
+/**
+ * The refresh token of a grant that has a record: which grant, and which
+ * GENERATION of it. The record holds the current generation, so a token one
+ * behind it is a token already spent (`grant-store.ts`, `classifyRefresh`).
+ */
+export interface RecordRefreshPayload {
+  v: typeof RECORD_VERSION;
+  gid: string;
+  gen: number;
+  cid: string;
+  /** See `AuthorizationRequest.auth`; the record carries it too. */
+  auth?: "private_key_jwt";
+  iat: number;
+}
+
+/** The access token of a grant that has a record: the v1/v2 shape plus `gid`. */
+export interface RecordAccessPayload extends Omit<AccessPayload, "v"> {
+  v: typeof RECORD_VERSION;
+  gid: string;
+  /** The grant's sealed client authentication, so a revocation can demand it. */
+  auth?: "private_key_jwt";
+}
+
 // ---------------------------------------------------------------------------
 // PKCE
 // ---------------------------------------------------------------------------
@@ -350,6 +410,73 @@ export function mintRefreshToken(
   return `${REFRESH_TOKEN_PREFIX}${cipher.seal(payload)}`;
 }
 
+export function mintRecordCode(
+  cipher: Cipher,
+  opts: {
+    gid: string;
+    cid: string;
+    redirectUri: string;
+    challenge: string;
+    resource: string;
+    auth?: "private_key_jwt";
+  },
+  now: number = Date.now(),
+): string {
+  const payload: RecordCodePayload = {
+    v: RECORD_VERSION,
+    jti: randomBytes(12).toString("base64url"),
+    ...opts,
+    exp: now + CODE_TTL_MS,
+  };
+  return cipher.seal(payload);
+}
+
+export function mintRecordAccessToken(
+  cipher: Cipher,
+  opts: {
+    gid: string;
+    cid: string;
+    aud: string;
+    identity: GrantIdentity;
+    ttlMs: number;
+    slugs?: string[];
+    auth?: "private_key_jwt";
+  },
+  now: number = Date.now(),
+): { token: string; payload: RecordAccessPayload } {
+  const payload: RecordAccessPayload = {
+    v: RECORD_VERSION,
+    jti: randomBytes(12).toString("base64url"),
+    gid: opts.gid,
+    cid: opts.cid,
+    aud: opts.aud,
+    sub: opts.identity.sub,
+    email: opts.identity.email,
+    hd: opts.identity.hd,
+    ...(opts.slugs ? { slugs: opts.slugs } : {}),
+    ...(opts.auth ? { auth: opts.auth } : {}),
+    iat: now,
+    exp: now + opts.ttlMs,
+  };
+  return { token: `${ACCESS_TOKEN_PREFIX}${cipher.seal(payload)}`, payload };
+}
+
+export function mintRecordRefreshToken(
+  cipher: Cipher,
+  opts: { gid: string; gen: number; cid: string; auth?: "private_key_jwt" },
+  now: number = Date.now(),
+): string {
+  const payload: RecordRefreshPayload = {
+    v: RECORD_VERSION,
+    gid: opts.gid,
+    gen: opts.gen,
+    cid: opts.cid,
+    ...(opts.auth ? { auth: opts.auth } : {}),
+    iat: now,
+  };
+  return `${REFRESH_TOKEN_PREFIX}${cipher.seal(payload)}`;
+}
+
 // ---------------------------------------------------------------------------
 // Reading back
 // ---------------------------------------------------------------------------
@@ -360,7 +487,7 @@ export function readCode(
   now: number = Date.now(),
 ): CodePayload | null {
   const payload = cipher.open<CodePayload>(code);
-  if (!payload) return null;
+  if (!payload || (payload.v as number) === RECORD_VERSION) return null;
   if (typeof payload.exp !== "number" || payload.exp <= now) return null;
   if (typeof payload.jti !== "string" || payload.jti === "") return null;
   if (!validIdentity(payload.identity)) return null;
@@ -377,7 +504,7 @@ export function readRefreshToken(
   const payload = cipher.open<RefreshPayload>(
     token.slice(REFRESH_TOKEN_PREFIX.length),
   );
-  if (!payload) return null;
+  if (!payload || (payload.v as number) === RECORD_VERSION) return null;
   // No expiry check. That is the whole point of this token, and it is the one
   // place in strad where the absence of a deadline is deliberate rather than an
   // omission — see the header, and `docs/auth/overview.md`.
@@ -397,13 +524,71 @@ export function readAccessToken(
   const payload = cipher.open<AccessPayload>(
     token.slice(ACCESS_TOKEN_PREFIX.length),
   );
-  if (!payload) return null;
+  if (!payload || (payload.v as number) === RECORD_VERSION) return null;
   if (typeof payload.exp !== "number" || payload.exp <= now) return null;
   if (typeof payload.sub !== "string" || payload.sub === "") return null;
   if (typeof payload.email !== "string" || payload.email === "") return null;
   if (typeof payload.aud !== "string" || payload.aud === "") return null;
   if (!validSlugs(payload.slugs)) return null;
   return payload;
+}
+
+/** A record-backed code, or null. Expiry checked here, the record by the caller. */
+export function readRecordCode(
+  cipher: Cipher,
+  code: string | undefined,
+  now: number = Date.now(),
+): RecordCodePayload | null {
+  const payload = cipher.open<RecordCodePayload>(code);
+  if (!payload || payload.v !== RECORD_VERSION) return null;
+  if (typeof payload.exp !== "number" || payload.exp <= now) return null;
+  if (!nonEmpty(payload.jti) || !nonEmpty(payload.gid)) return null;
+  if (!nonEmpty(payload.cid) || !nonEmpty(payload.challenge)) return null;
+  if (!validAuth(payload.auth)) return null;
+  return payload;
+}
+
+/**
+ * A record-backed refresh token, or null. No expiry here either: the deadline
+ * is the RECORD's, so it can be tightened, extended by config, or revoked
+ * without the token in the client's hands knowing anything about it.
+ */
+export function readRecordRefreshToken(
+  cipher: Cipher,
+  token: string | undefined,
+): RecordRefreshPayload | null {
+  if (!token || !token.startsWith(REFRESH_TOKEN_PREFIX)) return null;
+  const payload = cipher.open<RecordRefreshPayload>(
+    token.slice(REFRESH_TOKEN_PREFIX.length),
+  );
+  if (!payload || payload.v !== RECORD_VERSION) return null;
+  if (!nonEmpty(payload.gid) || !nonEmpty(payload.cid)) return null;
+  if (!Number.isInteger(payload.gen) || payload.gen < 1) return null;
+  if (!validAuth(payload.auth)) return null;
+  return payload;
+}
+
+export function readRecordAccessToken(
+  cipher: Cipher,
+  token: string | undefined,
+  now: number = Date.now(),
+): RecordAccessPayload | null {
+  if (!token || !token.startsWith(ACCESS_TOKEN_PREFIX)) return null;
+  const payload = cipher.open<RecordAccessPayload>(
+    token.slice(ACCESS_TOKEN_PREFIX.length),
+  );
+  if (!payload || payload.v !== RECORD_VERSION) return null;
+  if (typeof payload.exp !== "number" || payload.exp <= now) return null;
+  if (!nonEmpty(payload.gid) || !nonEmpty(payload.jti)) return null;
+  if (!nonEmpty(payload.sub) || !nonEmpty(payload.email)) return null;
+  if (!nonEmpty(payload.aud)) return null;
+  if (!validSlugs(payload.slugs)) return null;
+  if (!validAuth(payload.auth)) return null;
+  return payload;
+}
+
+function nonEmpty(value: unknown): value is string {
+  return typeof value === "string" && value !== "";
 }
 
 /**

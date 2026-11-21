@@ -796,7 +796,7 @@ describe("the audience is the endpoint, never the URL", () => {
     }
   });
 
-  it("refuses a token minted for another gateway's /mcp", () => {
+  it("refuses a token minted for another gateway's /mcp", async () => {
     const keys = mcpOAuthKeysFromEnv({ STRAD_OAUTH_KEY: KEY });
     if (!keys) throw new Error("no keys");
     const oauth = resolveMcpOAuth({
@@ -813,19 +813,19 @@ describe("the audience is the endpoint, never the URL", () => {
       identity: { sub: "s", email: "t@tadasant.com", hd: "tadasant.com" },
       ttlMs: 60_000,
     });
-    expect(verifyAccessToken(foreign, oauth, `${ORIGIN}/mcp`)).toEqual({
+    expect(await verifyAccessToken(foreign, oauth, `${ORIGIN}/mcp`)).toEqual({
       ok: false,
       reason: "oauth_audience_mismatch",
     });
     // And with no origin to compare against, the answer is a refusal rather
     // than a check that quietly did not happen.
-    expect(verifyAccessToken(foreign, oauth, null)).toEqual({
+    expect(await verifyAccessToken(foreign, oauth, null)).toEqual({
       ok: false,
       reason: "oauth_no_resource_identifier",
     });
   });
 
-  it("refuses a token whose Workspace the config no longer admits", () => {
+  it("refuses a token whose Workspace the config no longer admits", async () => {
     const env = { STRAD_OAUTH_KEY: KEY } as NodeJS.ProcessEnv;
     const oauth = resolveMcpOAuth({
       config: CONFIG,
@@ -842,13 +842,13 @@ describe("the audience is the endpoint, never the URL", () => {
     });
     // Re-pointing the deployment takes effect on tokens already issued.
     const moved = { ...oauth, hostedDomain: "elsewhere.example" };
-    expect(verifyAccessToken(issued, moved, `${ORIGIN}/mcp`)).toEqual({
+    expect(await verifyAccessToken(issued, moved, `${ORIGIN}/mcp`)).toEqual({
       ok: false,
       reason: "oauth_domain_changed",
     });
   });
 
-  it("reads roles from the config at verification time, never from the token", () => {
+  it("reads roles from the config at verification time, never from the token", async () => {
     const env = { STRAD_OAUTH_KEY: KEY } as NodeJS.ProcessEnv;
     const oauth = resolveMcpOAuth({
       config: CONFIG,
@@ -870,9 +870,9 @@ describe("the audience is the endpoint, never the URL", () => {
         roles: [],
       }),
     };
-    const verdict = verifyAccessToken(issued, narrowed, `${ORIGIN}/mcp`);
+    const verdict = await verifyAccessToken(issued, narrowed, `${ORIGIN}/mcp`);
     expect(verdict.ok && verdict.principal.roles).toEqual([]);
-    const wide = verifyAccessToken(issued, oauth, `${ORIGIN}/mcp`);
+    const wide = await verifyAccessToken(issued, oauth, `${ORIGIN}/mcp`);
     expect(wide.ok && wide.principal).toEqual({
       kind: "mcp-oauth",
       id: "s",

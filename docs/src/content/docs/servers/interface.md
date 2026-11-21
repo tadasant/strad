@@ -1353,6 +1353,12 @@ auth:
     dynamicRegistration: true # default
     advertiseSlugScopes: false # default
     privateKeyJwt: # unset by default; see below
+    grants: # server-side grant records, below
+      enabled: false # default
+      store: gcs # default; or memory
+      # refreshTokenTtlSeconds: 2592000 # optional; min 300, max 31536000
+      refreshReuseGraceSeconds: 30 # default; min 0, max 300
+      legacyTokens: accept # default; or upgrade, or refuse
 ```
 
 It is **additive**. `auth.staticTokens` is untouched by it, `/mcp` accepts either
@@ -1383,10 +1389,10 @@ default `[]` is fail-closed — the flow completes, the token verifies, and ever
 `?servers=` gets the ordinary `424` — and boot warns when it is empty. A role no
 `roles:` block defines is a config error.
 
-`accessTokenTtlSeconds` is also the revocation window, because an access token is
-verified with no lookup and cannot be revoked before it expires. That is what the
-five-minute floor is for. Refresh tokens carry no expiry at all and are revoked
-at Google. The whole model is in
+`accessTokenTtlSeconds` is also the revocation window of a stateless grant,
+because its access token is verified with no lookup and cannot be revoked before
+it expires. That is what the five-minute floor is for. A stateless refresh token
+carries no expiry at all and is revoked at Google. The whole model is in
 [Auth](/auth/overview/#mcp--oauth-21-interactive-clients).
 
 `clients` sets a ceiling per client, keyed by the exact `clientId` — a client id
@@ -1403,6 +1409,7 @@ config error, as are a duplicate and an unknown role):
         accessTokenTtlSeconds: 900 # optional; same bounds as the global one
         tokenEndpointAuthMethod: private_key_jwt # optional; confidential client
         jwksUri: https://example.com/jwks.json # optional pin; needs the line above
+        refreshTokenTtlSeconds: 21600 # optional; record-backed grants only
 ```
 
 `tokenEndpointAuthMethod: private_key_jwt` makes the client confidential
@@ -1427,6 +1434,20 @@ changes tokens already issued, and their defaults leave every grant exactly as
 it was. An entry replaces the defaults for its client, so its `roles` may be
 wider than `auth.mcpOAuth.roles` as well as narrower. The scope grammar and the consent checkboxes are in
 [Auth](/auth/overview/#per-client-policy-and-slug-scopes).
+
+`grants.enabled: true` gives every new grant a server-side
+[record](/auth/overview/#grant-records): refresh tokens rotate, a spent one
+presented again revokes the grant, `POST /oauth/revoke` revokes one access token
+or one grant, and `/tokens/grants` lists them. `store: gcs` keeps records in the
+shared [state store](/operate/state-store/) under `mcp-oauth/<gateway.env>/`,
+through the three deployment-wide `STRAD_STATE_GCS_*` names; it seeds nothing
+new. `store: memory` forgets every grant on restart. `refreshTokenTtlSeconds` is
+measured from the grant's creation and applied from current config at every
+refresh; absent is no deadline, and `clients[].refreshTokenTtlSeconds` overrides
+it per client. `refreshReuseGraceSeconds` is how long the previous refresh token
+is honoured after a rotation, for a lost response. `legacyTokens` decides what a
+stateless token issued before records were on gets: `accept`, `upgrade` on its
+next refresh, or `refuse`.
 
 
 ## `mcpServers:` — the draft SEP-2633 input dialect

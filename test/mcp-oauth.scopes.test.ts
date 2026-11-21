@@ -285,8 +285,8 @@ async function mcp(g: Gateway, bearer: string, query: string): Promise<number> {
 }
 
 /** The slug set a token opens onto, through the real verifier. */
-function principalOf(g: Gateway, access: string) {
-  const verdict = verifyAccessToken(access, g.oauth, `${g.base}/mcp`);
+async function principalOf(g: Gateway, access: string) {
+  const verdict = await verifyAccessToken(access, g.oauth, `${g.base}/mcp`);
   if (!verdict.ok) throw new Error(verdict.reason);
   return verdict.principal;
 }
@@ -341,7 +341,7 @@ auth: { staticTokens: { enabled: true } }
       readRefreshToken(g.oauth.keys.refresh, json.refresh_token)?.slugs,
     ).toBe(undefined);
     // The exact principal a token verified to before this change.
-    expect(principalOf(g, json.access_token)).toEqual({
+    expect(await principalOf(g, json.access_token)).toEqual({
       kind: "mcp-oauth",
       id: "google-sub-1",
       label: "tadas@tadasant.com",
@@ -440,7 +440,7 @@ auth: { staticTokens: { enabled: true } }
       identity,
       ttlMs: 60_000,
     });
-    expect(principalOf(g, access)).toEqual({
+    expect(await principalOf(g, access)).toEqual({
       kind: "mcp-oauth",
       id: "google-sub-1",
       label: "tadas@tadasant.com",
@@ -466,7 +466,7 @@ auth: { staticTokens: { enabled: true } }
       expect(status).toBe(200);
       expect(json.scope).toBe("mcp");
       expect(json.refresh_token).toBe(refresh);
-      expect(principalOf(g, json.access_token).slugs).toBe(undefined);
+      expect((await principalOf(g, json.access_token)).slugs).toBe(undefined);
     }
   });
 });
@@ -489,7 +489,10 @@ describe("slug scopes", () => {
     expect(w.consent).toContain("asked for");
     const { json } = await exchange(g, CLAUDE, w);
     expect(json.scope).toBe("slug:alpha slug:beta");
-    expect(principalOf(g, json.access_token).slugs).toEqual(["alpha", "beta"]);
+    expect((await principalOf(g, json.access_token)).slugs).toEqual([
+      "alpha",
+      "beta",
+    ]);
     // `v: 2`, so a build that predates `slugs` refuses these rather than
     // reading them as the whole ceiling.
     expect(readAccessToken(g.oauth.keys.access, json.access_token)?.v).toBe(2);
@@ -559,7 +562,9 @@ describe("slug scopes", () => {
     expect(subset.status).toBe(200);
     expect(subset.json.scope).toBe("slug:alpha");
     expect(subset.json.refresh_token).toBe(first.refresh_token);
-    expect(principalOf(g, subset.json.access_token).slugs).toEqual(["alpha"]);
+    expect((await principalOf(g, subset.json.access_token)).slugs).toEqual([
+      "alpha",
+    ]);
 
     // The refresh token kept the grant's scope: the next one can ask for all
     // of it again.
@@ -620,7 +625,7 @@ describe("per-client configuration", () => {
     const { json } = await exchange(g, ZIMMER, w);
     expect(json.expires_in).toBe(600);
     expect(json.scope).toBe("mcp");
-    const p = principalOf(g, json.access_token);
+    const p = await principalOf(g, json.access_token);
     expect(p.roles).toEqual(["limited"]);
     expect(p.slugs).toEqual(["alpha"]);
     expect(await mcp(g, json.access_token, "?servers=alpha")).toBe(200);
@@ -640,7 +645,7 @@ describe("per-client configuration", () => {
     const w = await walk(g, { clientId: STRANGER, tick: "all" });
     const { json } = await exchange(g, STRANGER, w);
     expect(json.expires_in).toBe(3600);
-    expect(principalOf(g, json.access_token).roles).toEqual(["admin"]);
+    expect((await principalOf(g, json.access_token)).roles).toEqual(["admin"]);
   });
 
   it("advertises every slug some ceiling reaches, when asked to", async () => {
@@ -709,7 +714,7 @@ describe("closing the door to unlisted clients", () => {
       identity,
       ttlMs: 60_000,
     });
-    expect(verifyAccessToken(access, g.oauth, `${g.base}/mcp`)).toEqual({
+    expect(await verifyAccessToken(access, g.oauth, `${g.base}/mcp`)).toEqual({
       ok: false,
       reason: "oauth_client_not_allowed",
     });

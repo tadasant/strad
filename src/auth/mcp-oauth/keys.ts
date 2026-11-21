@@ -10,7 +10,8 @@ import { Sealer } from "../session.ts";
  * Key material for strad's own authorization server.
  *
  * strad has NO datastore, and that single fact decides the shape of everything
- * in this directory. There is no table of issued codes, no table of clients and
+ * in this directory — except the opt-in grant records (`grant-store.ts`), which
+ * live in the shared GCS state store and are sealed under `grantState` below. There is no table of issued codes, no table of clients and
  * no table of refresh tokens — every one of those is a self-contained value the
  * gateway hands out and later reads back, and the only thing that makes it
  * trustworthy is a key held by the process. The console session took the same
@@ -26,14 +27,14 @@ import { Sealer } from "../session.ts";
  * ENCRYPTED rather than signed: AES-256-GCM, which authenticates as well as
  * hides, so an encrypted value is still unforgeable.
  *
- * DOMAIN SEPARATION, as in `session.ts`: one input keying material, six derived
- * keys, one per kind of value. A refresh token presented as an access token, or
+ * DOMAIN SEPARATION, as in `session.ts`: one input keying material, seven
+ * derived keys, one per kind of value (the seventh seals grant records at rest). A refresh token presented as an access token, or
  * a client registration presented as an authorization code, is unreadable
  * garbage rather than a type confusion.
  *
  * It is the HKDF `info` string that does that work, and it is worth saying
  * exactly which half separates these from the CONSOLE's cookies, because the
- * six keys here do not all take the same route. The four `Cipher` keys are
+ * seven keys here do not all take the same route. The four `Cipher` keys (and the grant-state key) are
  * derived under this module's own salt; the two `Sealer` keys are derived by
  * `src/auth/session.ts`, under the console's salt, and are separated from the
  * console's own keys by their `info` alone. Both are sufficient — HKDF's
@@ -69,6 +70,13 @@ const INFO_APPROVAL = "strad.mcp-oauth.approval.v1";
 const INFO_ACCESS = "strad.mcp-oauth.access.v1";
 /** Encrypted: the refresh token. Carries a Google refresh token. */
 const INFO_REFRESH = "strad.mcp-oauth.refresh.v1";
+/**
+ * Raw: the AES-256 key grant records are sealed under in the state store
+ * (`grant-store.ts`). Derived rather than seeded, so turning grant records on
+ * needs no new secret — and it is held by core alone, because nothing else
+ * holds the input keying material.
+ */
+const INFO_GRANT_STATE = "strad.mcp-oauth.grant-state.v1";
 
 /**
  * The shortest key material we will derive from — the same floor, and the same
@@ -112,7 +120,7 @@ export class Cipher {
   }
 
   /** The payload, or null for anything this key did not seal. */
-  open<T extends { v: 1 | 2 | 3 }>(token: string | undefined): T | null {
+  open<T extends { v: 1 | 2 | 3 | 4 }>(token: string | undefined): T | null {
     if (!token) return null;
     const raw = Buffer.from(token, "base64url");
     if (raw.length <= IV_BYTES + TAG_BYTES) return null;
@@ -140,7 +148,16 @@ export class Cipher {
       // field refuses it rather than reading it as unnarrowed. `3` is a grant
       // sealed to a confidential client: a build that predates `auth` refuses
       // it rather than letting it be spent without the client's assertion.
-      if (payload?.v !== 1 && payload?.v !== 2 && payload?.v !== 3) return null;
+      // `4` is a value backed by a server-side grant record (`grant-store.ts`):
+      // a build that predates records refuses it rather than reading it
+      // without the record.
+      if (
+        payload?.v !== 1 &&
+        payload?.v !== 2 &&
+        payload?.v !== 3 &&
+        payload?.v !== 4
+      )
+        return null;
       return payload;
     } catch {
       // A failed tag, a truncated value, a body that is not JSON. One answer for
@@ -159,6 +176,8 @@ export interface McpOAuthKeys {
   approval: Cipher;
   access: Cipher;
   refresh: Cipher;
+  /** The 32-byte key grant records are sealed under. See `INFO_GRANT_STATE`. */
+  grantState: Buffer;
 }
 
 /** Build the keys, or null when there is no usable key material. */
@@ -174,6 +193,15 @@ export function mcpOAuthKeysFromEnv(
     approval: new Cipher(ikm, INFO_APPROVAL),
     access: new Cipher(ikm, INFO_ACCESS),
     refresh: new Cipher(ikm, INFO_REFRESH),
+    grantState: Buffer.from(
+      hkdfSync(
+        "sha256",
+        Buffer.from(ikm, "utf8"),
+        HKDF_SALT,
+        INFO_GRANT_STATE,
+        32,
+      ),
+    ),
   };
 }
 

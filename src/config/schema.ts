@@ -78,6 +78,13 @@ export const SLUG = z
   );
 
 /**
+ * A refresh-token lifetime for a record-backed OAuth grant, in seconds: five
+ * minutes to a year. The floor matches the access token's; below it a grant
+ * would expire before its first access token did.
+ */
+const REFRESH_TTL = z.number().int().min(300).max(31_536_000);
+
+/**
  * A reference to a secret value.
  *
  * `${FOO}` resolves against the secret bag returned by `loadSecrets()`
@@ -1787,6 +1794,12 @@ const AuthConfig = z.object({
               .optional(),
             tokenEndpointAuthMethod: z.literal("private_key_jwt").optional(),
             jwksUri: z.string().min(1).max(2048).optional(),
+            /**
+             * This client's refresh-token lifetime, overriding
+             * `grants.refreshTokenTtlSeconds`. Only read for record-backed
+             * grants (`grants.enabled`).
+             */
+            refreshTokenTtlSeconds: REFRESH_TTL.optional(),
           }),
         )
         .default([]),
@@ -1821,6 +1834,74 @@ const AuthConfig = z.object({
        * are unauthenticated, and the list is the gateway's roster.
        */
       advertiseSlugScopes: z.boolean().default(false),
+      /**
+       * Server-side GRANT RECORDS (`src/auth/mcp-oauth/grant-store.ts`). Off by
+       * default, and off is exactly the stateless server every deployment had
+       * before: sealed tokens, a refresh token that never expires and never
+       * rotates, revocation at Google.
+       *
+       * On, every NEW grant gets a record. Its tokens carry a grant id and no
+       * Google credential; its refresh token ROTATES on every use, and a spent
+       * one presented again revokes the grant; `POST /oauth/revoke` revokes
+       * one access token or one grant without touching any other; and the
+       * console lists live grants at `/tokens/grants`.
+       */
+      grants: z
+        .object({
+          enabled: z.boolean().default(false),
+          /**
+           * Where records are kept. `gcs` is the shared state store, read
+           * through the three deployment-wide `STRAD_STATE_GCS_*` names under
+           * the folder `mcp-oauth/<gateway.env>`. `memory` keeps them in this
+           * process only, so every record-backed client signs in again after
+           * a restart — for development, never for a deployment people use.
+           */
+          store: z.enum(["gcs", "memory"]).default("gcs"),
+          /**
+           * Refresh-token lifetime, seconds, measured from the grant's
+           * creation (rotation does not extend it). Absent means no deadline,
+           * which is what a stateless grant has always had. Applied at every
+           * refresh, so lowering it shortens grants already issued. Access
+           * tokens never outlive it.
+           */
+          refreshTokenTtlSeconds: REFRESH_TTL.optional(),
+          /**
+           * How long after a rotation the PREVIOUS refresh token is still
+           * honoured, for a client whose response was lost in flight. Inside
+           * it the client gets the current generation again; after it the old
+           * token is a replay and revokes the grant. `0` disables the grace.
+           */
+          refreshReuseGraceSeconds: z
+            .number()
+            .int()
+            .min(0)
+            .max(300)
+            .default(30),
+          /**
+           * What happens to a STATELESS token minted without a record — every
+           * token issued before this was turned on, including a connector's
+           * non-expiring refresh token.
+           *
+           *   accept  — it keeps working as before (the default), except
+           *             that revoking one through `/oauth/revoke` records the
+           *             revocation here instead of revoking at Google — so
+           *             its refresh consults the store, and answers 503
+           *             while the store is unreachable.
+           *   upgrade — its next refresh converts it into a record-backed
+           *             grant, and from then on it rotates like one. The
+           *             legacy token is then spent.
+           *   refuse  — refused: its holder signs in again.
+           */
+          legacyTokens: z
+            .enum(["accept", "upgrade", "refuse"])
+            .default("accept"),
+        })
+        .default({
+          enabled: false,
+          store: "gcs",
+          refreshReuseGraceSeconds: 30,
+          legacyTokens: "accept",
+        }),
     })
     .default({
       enabled: false,
@@ -1830,6 +1911,12 @@ const AuthConfig = z.object({
       allowUnlistedClients: true,
       dynamicRegistration: true,
       advertiseSlugScopes: false,
+      grants: {
+        enabled: false,
+        store: "gcs",
+        refreshReuseGraceSeconds: 30,
+        legacyTokens: "accept",
+      },
     }),
 
   /**
