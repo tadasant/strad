@@ -1,6 +1,19 @@
 import type { StradConfig } from "../../config/schema.ts";
 import type { Principal } from "../index.ts";
-import { ACCESS_TOKEN_PREFIX, readAccessToken, SpentCodes } from "./grants.ts";
+import type { BlobStore } from "../../state/store.ts";
+import {
+  ACCESS_TOKEN_PREFIX,
+  readAccessToken,
+  readRecordAccessToken,
+  SpentCodes,
+} from "./grants.ts";
+import {
+  grantBlobsFor,
+  grantPrefix,
+  GrantStore,
+  type CredentialReader,
+  type GrantRecord,
+} from "./grant-store.ts";
 import { ClientMetadataResolver, type DocumentFetcher } from "./cimd.ts";
 import { ClientAssertionVerifier, ClientAuthenticator } from "./client-auth.ts";
 import { grantProviderFromEnv, type McpGoogleProvider } from "./google.ts";
@@ -9,7 +22,7 @@ import {
   oauthKeyProblem,
   type McpOAuthKeys,
 } from "./keys.ts";
-import { ClientPolicies, principalSlugs } from "./policy.ts";
+import { ClientPolicies, principalSlugs, type ClientPolicy } from "./policy.ts";
 
 /**
  * Is strad an authorization server on this deployment, and what does it issue?
@@ -53,6 +66,20 @@ export interface McpOAuth {
    * the feature is switched off.
    */
   clientAuth: ClientAuthenticator;
+  /**
+   * Server-side grant records (`grant-store.ts`), or null when
+   * `auth.mcpOAuth.grants.enabled` is off — which is the stateless server,
+   * unchanged.
+   */
+  grants: GrantsRuntime | null;
+}
+
+/** What the grant-record half of the server needs at request time. */
+export interface GrantsRuntime {
+  store: GrantStore;
+  /** `refreshReuseGraceSeconds`, in ms. */
+  graceMs: number;
+  legacy: "accept" | "upgrade" | "refuse";
 }
 
 export interface ResolveMcpOAuthOptions {
@@ -69,6 +96,16 @@ export interface ResolveMcpOAuthOptions {
    * every loopback address, which is where a test's document server lives.
    */
   clientMetadataFetch?: DocumentFetcher;
+  /**
+   * How the grant store reads `STRAD_STATE_GCS_*`: the gateway's secret
+   * provider, so a store-backed deployment needs nothing hydrated. Falls back
+   * to `env`.
+   */
+  credentials?: CredentialReader;
+  /** Test seam: the durable layer under the grant store. */
+  grantBlobs?: () => Promise<BlobStore>;
+  /** Test seam: the clock the grant store measures staleness and sweeps on. */
+  now?: () => number;
   log?: (msg: string) => void;
 }
 
@@ -135,6 +172,50 @@ export function resolveMcpOAuth(opts: ResolveMcpOAuthOptions): McpOAuth | null {
     ...(opts.clientMetadataFetch ? { fetch: opts.clientMetadataFetch } : {}),
     parse: { privateKeyJwt: policies.privateKeyJwt },
   });
+  let grants: GrantsRuntime | null = null;
+  if (settings.grants.enabled) {
+    const read: CredentialReader =
+      opts.credentials ??
+      (async (name) => {
+        const value = env[name];
+        return value && value.trim() !== "" ? value : undefined;
+      });
+    const kind = settings.grants.store;
+    grants = {
+      store: new GrantStore({
+        kind,
+        blobs: opts.grantBlobs ?? grantBlobsFor(kind, read, log),
+        key: keys.grantState,
+        prefix: grantPrefix(cfg.gateway.env),
+        ...(opts.now ? { now: opts.now } : {}),
+        warn: log,
+      }),
+      graceMs: settings.grants.refreshReuseGraceSeconds * 1000,
+      legacy: settings.grants.legacyTokens,
+    };
+    // Said at boot rather than at the first refresh that needs it: with
+    // records on, a stateless refresh consults the store too, so a store this
+    // process cannot reach is every connector failing its next refresh.
+    const store = grants.store;
+    void store.probe().then((problem) => {
+      if (problem) {
+        log(
+          `[strad] auth.mcpOAuth.grants is on but the grant store cannot be ` +
+            `reached: ${problem} Record-backed grants are refused, and ` +
+            `refreshing or revoking a stateless one answers 503, until it can.`,
+        );
+      }
+    });
+    log(
+      kind === "memory"
+        ? `[strad] auth.mcpOAuth.grants is on with store: memory. Every ` +
+            `record-backed grant is forgotten on restart, and its client signs ` +
+            `in again. Use store: gcs on any deployment people rely on.`
+        : `[strad] auth.mcpOAuth.grants is on: new grants are record-backed, ` +
+            `kept under ${grantPrefix(cfg.gateway.env)}/ in the shared state ` +
+            `store. Legacy (stateless) tokens: ${settings.grants.legacyTokens}.`,
+    );
+  }
 
   return {
     hostedDomain,
@@ -149,7 +230,26 @@ export function resolveMcpOAuth(opts: ResolveMcpOAuthOptions): McpOAuth | null {
       ),
       clientMetadata,
     ),
+    grants,
   };
+}
+
+/**
+ * When a record-backed grant stops being refreshable: the record's own
+ * deadline, tightened by the client's CURRENT refresh TTL so that lowering it
+ * in config shortens grants already issued. Null = no deadline.
+ */
+export function grantDeadline(
+  record: GrantRecord,
+  policy: ClientPolicy | null,
+): number | null {
+  const fromPolicy =
+    policy?.refreshTokenTtlMs != null
+      ? record.createdAt + policy.refreshTokenTtlMs
+      : null;
+  if (record.expiresAt === null) return fromPolicy;
+  if (fromPolicy === null) return record.expiresAt;
+  return Math.min(record.expiresAt, fromPolicy);
 }
 
 /** Does this credential claim to be an access token this server issued? */
@@ -167,7 +267,13 @@ export type AccessVerdict =
         | "oauth_audience_mismatch"
         | "oauth_domain_changed"
         | "oauth_no_resource_identifier"
-        | "oauth_client_not_allowed";
+        | "oauth_client_not_allowed"
+        | "oauth_legacy_refused"
+        | "oauth_grants_disabled"
+        | "oauth_grant_unknown"
+        | "oauth_grant_dead"
+        | "oauth_grant_expired"
+        | "oauth_token_revoked";
     };
 
 /**
@@ -201,18 +307,32 @@ export type AccessVerdict =
  * contributes only its optional slug narrowing, which `entitledServers`
  * intersects last and which can therefore only remove. Every failure mode
  * returns the same `401` to the caller; the reason is for our logs.
+ *
+ * 5. **The grant record**, for a token that names one (`v: 4`): it must exist,
+ *    be active, be inside its deadline, have every ancestor active, and not
+ *    list this token's `jti` as revoked. Read through the grant store's cache,
+ *    so this is a map lookup on the hot path and a GCS read at most once per
+ *    `staleAfterMs` per grant. A store that cannot answer, with nothing
+ *    cached, THROWS — see `OAuthAccessVerifier`.
+ *
+ *    A stateless token (`v: 1 | 2`) has no record and is judged as it always
+ *    was, unless `grants.legacyTokens` is `refuse`.
  */
-export function verifyAccessToken(
+export async function verifyAccessToken(
   raw: string,
   oauth: McpOAuth,
   resource: string | null,
   now: number = Date.now(),
-): AccessVerdict {
+): Promise<AccessVerdict> {
   if (!looksLikeAccessToken(raw))
     return { ok: false, reason: "oauth_malformed" };
 
-  const payload = readAccessToken(oauth.keys.access, raw, now);
+  const record = readRecordAccessToken(oauth.keys.access, raw, now);
+  const payload = record ?? readAccessToken(oauth.keys.access, raw, now);
   if (!payload) return { ok: false, reason: "oauth_expired_or_forged" };
+  if (!record && oauth.grants?.legacy === "refuse") {
+    return { ok: false, reason: "oauth_legacy_refused" };
+  }
 
   if (resource === null) {
     // No origin means no canonical resource to compare against — the same
@@ -231,6 +351,26 @@ export function verifyAccessToken(
 
   const policy = oauth.policies.forFingerprint(payload.cid);
   if (!policy) return { ok: false, reason: "oauth_client_not_allowed" };
+
+  if (record) {
+    if (!oauth.grants) return { ok: false, reason: "oauth_grants_disabled" };
+    const store = oauth.grants.store;
+    const grant = await store.get(record.gid);
+    if (!grant || grant.cid !== record.cid) {
+      return { ok: false, reason: "oauth_grant_unknown" };
+    }
+    const { dead } = await store.chain(grant);
+    if (dead) return { ok: false, reason: "oauth_grant_dead" };
+    const deadline = grantDeadline(grant, policy);
+    if (deadline !== null && deadline <= now) {
+      return { ok: false, reason: "oauth_grant_expired" };
+    }
+    if (grant.revokedAccess?.[record.jti]) {
+      return { ok: false, reason: "oauth_token_revoked" };
+    }
+    store.touch(grant.gid);
+  }
+
   const slugs = principalSlugs(policy, payload.slugs);
 
   return {

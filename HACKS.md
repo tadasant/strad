@@ -4900,7 +4900,8 @@ hidden:
 2. **Refresh tokens are not rotated.** Rotation detects the replay of a stolen
    token, and detecting it needs a record of the token just spent. There is
    nowhere to keep one, so a new opaque string while the old stayed valid would
-   be the appearance of rotation without the property.
+   be the appearance of rotation without the property. `auth.mcpOAuth.grants`
+   (#163) is the opt-in that gives a grant a record, and records rotate.
 
 3. **Revocation happens at Google, per user and per OAuth client.** A strad
    refresh token embeds the Google refresh token behind the grant, so
@@ -4908,7 +4909,8 @@ hidden:
    strad-side denylist, because an in-memory one would come back to life on the
    next deploy. Google revokes the whole grant for that account and that client,
    so revoking one connector signs the account out of every strad OAuth connector
-   it holds.
+   it holds. With `auth.mcpOAuth.grants` on (#163), revocation is per grant and
+   per access token, and Google is not called.
 
 4. **An access token cannot be revoked before it expires.** It is verified with
    no lookup. The one-hour default lifetime is therefore also the revocation
@@ -4916,9 +4918,12 @@ hidden:
    `auth.mcpOAuth.accessTokenTtlSeconds` is for.
 
 And a fifth thing that is absent rather than degraded: **there is no console page
-listing or revoking issued grants**, because there is no list — a stateless token
-leaves no record to render. What the console could honestly show is the door's
-configuration and a link to Google's own access page.
+listing or revoking stateless grants**, because there is no list — a stateless
+token leaves no record to render. Record-backed grants (#163) are listed, and
+revocable, at `/tokens/grants`.
+
+All four hold for STATELESS grants — every grant while `auth.mcpOAuth.grants`
+is off, which is the default. #161 is what a record-backed grant costs instead.
 
 Two more properties follow from open registration rather than from the missing
 datastore, and they belong beside the four above because they are the same kind
@@ -8193,10 +8198,10 @@ parameter is the one OAuth gives a client to ask with.
    `slug:a slug:b` stays that set until the client signs in again. A slug that
    leaves the ceiling drops out at the next request, since the ceiling is read
    from current config.
-3. **There is no per-grant revocation.** Narrowing a client's entry narrows
-   every token it holds. Revoking one grant without touching the others still
-   means Google revocation (see the OAuth bounds in `docs/src/content/docs/limitations.md`), which is per user
-   and per OAuth client. A grant store is what changes that.
+3. **A stateless grant has no per-grant revocation.** Narrowing a client's
+   entry narrows every token it holds, and revoking one stateless grant alone
+   means Google revocation, per user and per OAuth client. Grant records (#163)
+   are what change that, for grants issued while they are on.
 
 4. **A rollback signs narrowed grants out.** Narrowed payloads are sealed
    `v: 2`, which a pre-slug build refuses rather than read as unnarrowed. The
@@ -8325,3 +8330,66 @@ a KMS, which is the precondition for giving a backend a long-lived grant.
 **Undo.** Delete `tokenEndpointAuthMethod`, `jwksUri` and `privateKeyJwt`.
 Grants already sealed confidential stay confidential (they keep demanding an
 assertion), so the client either keeps signing or signs in again.
+
+## 163. `/mcp` OAuth grant records live in the shared state bucket, read lazily, behind a 15-second cache
+
+**What.** `auth.mcpOAuth.grants.enabled` gives every new OAuth grant a record
+(`src/auth/mcp-oauth/grant-store.ts`): one AES-256-GCM-sealed object per grant
+in the shared GCS state store under `mcp-oauth/<gateway.env>/`, read through the
+gateway's secret provider's `STRAD_STATE_GCS_*`, sealed under a key derived from
+the OAuth key. Codes and tokens carry a grant id (payload `v: 4`) and no Google
+credential. Refresh tokens rotate, with replay detection and a grace window;
+`POST /oauth/revoke` revokes one access token or one grant; the console lists and
+revokes grants at `/tokens/grants`. Off by default.
+
+**Why.** Stateless grants cannot rotate, expire or be revoked one at a time
+(#94), and the MCP authorization spec requires rotation for public clients.
+Parameter Manager was the other durable store and is the wrong shape for it:
+versioned, cached for a day, read-only to core's resolver credential.
+
+**What it costs.**
+
+1. **Any container holding the bucket key can delete or roll back a record.**
+   The state store has one service account (`src/state/store.ts`), held by every
+   stateful bundle. It cannot open a record — the key is core's alone — but it
+   can delete one (the grant is then refused: fail closed) or put back an OLDER
+   sealed copy under the same name, which opens, and would un-revoke a grant
+   revoked after that copy was taken. This process keeps every revocation it
+   made in memory regardless, so the rollback lands only after core restarts.
+   A per-consumer service account would close it.
+2. **Another process's revocation lands within 15 seconds**, the bound on how
+   long a cached record is trusted on the `/mcp` path. Only matters during a
+   deploy's overlap, when two cores run. A refresh always reads fresh.
+3. **"Last used" is partly in memory.** The last refresh is durable; use at
+   `/mcp` is tracked per process and is lost on restart.
+4. **A store outage fails closed.** A record-backed access token whose grant is
+   not cached here gets a `500` (never a `401`); refresh, code exchange, consent
+   and revocation answer `503`. Stateless tokens under `legacyTokens: accept`
+   are unaffected, except that revoking or refreshing one needs the store to
+   learn whether it was revoked.
+5. **The consent form still carries the Google refresh token** — encrypted, in
+   the signing-in human's own browser, for at most ten minutes. The code, which
+   goes to the client, does not.
+6. **A revoked grant's Google refresh token is dropped, not revoked at Google**,
+   because Google revokes per account and client. Google caps live refresh
+   tokens at 100 per account per OAuth client and silently invalidates the
+   oldest, so a hundred later browser sign-ins would kill a long-lived grant's
+   Google token. Child grants (token exchange) hold no Google token, which is
+   what keeps per-session minting off that cap.
+7. **A rollback is a sign-in.** A pre-record build refuses `v: 4` codes and
+   tokens, so record-backed clients sign in again. It also ignores the store, so
+   a stateless token revoked under records works again on the old build, for
+   whoever still holds it.
+8. **`legacyTokens: upgrade` trusts the client to keep the rotated token.** A
+   client that keeps presenting the old stateless refresh token has its grant
+   revoked once the grace window has passed. That is why `accept` is the
+   default.
+9. **Turning records off again un-revokes stateless tokens revoked under
+   them.** With records on, revoking a stateless refresh token writes a
+   tombstone instead of calling Google. With records off, nothing reads the
+   tombstone, so that token refreshes again. Revoke it at Google (the account's
+   security page) if it matters.
+
+**Undo.** Set `auth.mcpOAuth.grants.enabled: false`. Record-backed tokens are
+refused (their holders sign in again, statelessly); stateless tokens behave as
+they did before — including any revoked while records were on (item 9).

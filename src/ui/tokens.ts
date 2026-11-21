@@ -349,6 +349,7 @@ export function renderTokensPage(opts: TokensPageOptions): string {
   <div class="stat"><span class="stat-n">${records.length - live.length}</span><span class="stat-l">revoked</span></div>
   <div class="scope">
     <span class="scope-l">store</span><code>${esc(storeLabel(config))}</code>
+    ${config.auth.mcpOAuth.enabled ? `<a class="scope-l" href="/tokens/grants">OAuth grants →</a>` : ""}
   </div>
 </section>
 

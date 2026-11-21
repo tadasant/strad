@@ -86,10 +86,19 @@ export class Unauthenticated extends Error {
  * `src/auth/mcp-oauth/index.ts` for why it is the origin plus `/mcp` and never
  * the URL the request arrived on. The router binds it per request; this module
  * only asks the question.
+ *
+ * Asynchronous because a token backed by a grant record is checked against
+ * that record (`src/auth/mcp-oauth/grant-store.ts`). When the record cannot be
+ * read and is not cached, the verifier THROWS rather than answering: like
+ * `TokenStoreUnavailable`, nothing was decided about the token, so it reaches
+ * the route guard as a 500 and never as a 401 that would send the client back
+ * through sign-in.
  */
 export type OAuthAccessVerifier = (
   raw: string,
-) => { ok: true; principal: Principal } | { ok: false; reason: string };
+) => Promise<
+  { ok: true; principal: Principal } | { ok: false; reason: string }
+>;
 
 /**
  * Authenticate a request to /mcp.
@@ -160,7 +169,7 @@ export async function authenticateMcp(
       // between one honest refusal and a confusing one about a `pubid`.
       throw new Unauthenticated("invalid token", "oauth_not_configured");
     }
-    const verdict = oauth(raw);
+    const verdict = await oauth(raw);
     if (!verdict.ok) throw new Unauthenticated("invalid token", verdict.reason);
     return verdict.principal;
   }

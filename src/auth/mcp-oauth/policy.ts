@@ -52,6 +52,11 @@ export interface ClientPolicy {
   requiresPrivateKeyJwt?: boolean;
   /** The config's pin for this client's keys. Wins over the document's. */
   jwksUri?: string;
+  /**
+   * The refresh-token lifetime of a record-backed grant, from its creation, or
+   * null for none. Unused while `grants` is off.
+   */
+  refreshTokenTtlMs: number | null;
 }
 
 /**
@@ -76,10 +81,14 @@ export class ClientPolicies {
 
   constructor(settings: StradConfig["auth"]["mcpOAuth"]) {
     const defaultTtlMs = settings.accessTokenTtlSeconds * 1000;
+    const refreshSeconds = settings.grants.refreshTokenTtlSeconds;
+    const defaultRefreshMs =
+      refreshSeconds === undefined ? null : refreshSeconds * 1000;
     this.fallback = {
       listed: false,
       roles: settings.roles,
       accessTokenTtlMs: defaultTtlMs,
+      refreshTokenTtlMs: defaultRefreshMs,
     };
     this.allowUnlisted = settings.allowUnlistedClients;
     this.dynamicRegistration = settings.dynamicRegistration;
@@ -102,6 +111,10 @@ export class ClientPolicies {
           ? { requiresPrivateKeyJwt: true }
           : {}),
         ...(entry.jwksUri ? { jwksUri: entry.jwksUri } : {}),
+        refreshTokenTtlMs:
+          entry.refreshTokenTtlSeconds !== undefined
+            ? entry.refreshTokenTtlSeconds * 1000
+            : defaultRefreshMs,
       };
       this.byId.set(entry.clientId, policy);
       this.byCid.set(clientFingerprint(entry.clientId), policy);

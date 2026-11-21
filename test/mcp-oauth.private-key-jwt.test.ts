@@ -23,7 +23,11 @@ import {
   parseJwks,
   type AssertionAlgorithm,
 } from "../src/auth/mcp-oauth/client-auth.ts";
-import { readRefreshToken } from "../src/auth/mcp-oauth/grants.ts";
+import {
+  readRecordCode,
+  readRecordRefreshToken,
+  readRefreshToken,
+} from "../src/auth/mcp-oauth/grants.ts";
 import { resolveMcpOAuth, type McpOAuth } from "../src/auth/mcp-oauth/index.ts";
 import { parseConfig } from "../src/config/load.ts";
 import { Registry } from "../src/gateway/registry.ts";
@@ -1134,5 +1138,81 @@ describe("the contract with Zimmer's client (tadasant/zimmer#1601)", () => {
         })
       ).status,
     ).toBe(200);
+  });
+});
+
+describe("a confidential client with grant records on", () => {
+  let g: Gateway;
+  beforeAll(
+    async () =>
+      (g = await gateway(`    privateKeyJwt: true
+    grants:
+      enabled: true
+      store: memory`)),
+  );
+  afterAll(async () => g.close());
+
+  it("seals the method into the record-backed code and refresh token, and demands the assertion on every spend", async () => {
+    const w = await walk(g);
+    expect(readRecordCode(g.oauth.keys.code, w.code)?.auth).toBe(
+      "private_key_jwt",
+    );
+    const bare = {
+      grant_type: "authorization_code",
+      code: w.code ?? "",
+      client_id: CID,
+      code_verifier: w.verifier,
+    };
+    expect((await post(g, "/oauth/token", bare)).status).toBe(401);
+    const issued = await post(g, "/oauth/token", {
+      ...bare,
+      ...assertionParams(g),
+    });
+    expect(issued.status).toBe(200);
+    const refreshToken = issued.json.refresh_token ?? "";
+    expect(
+      readRecordRefreshToken(g.oauth.keys.refresh, refreshToken),
+    ).toMatchObject({ gen: 1, auth: "private_key_jwt" });
+
+    const refreshBare = {
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: CID,
+    };
+    expect((await post(g, "/oauth/token", refreshBare)).status).toBe(401);
+    const rotated = await post(g, "/oauth/token", {
+      ...refreshBare,
+      ...assertionParams(g),
+    });
+    expect(rotated.status).toBe(200);
+    expect(rotated.json.refresh_token).not.toBe(refreshToken);
+
+    // Revoking either token needs the client too (RFC 7009 §2.1).
+    const access = rotated.json.access_token ?? "";
+    expect(
+      (await post(g, "/oauth/revoke", { token: access, client_id: CID }))
+        .status,
+    ).toBe(401);
+    const next = rotated.json.refresh_token ?? "";
+    expect(
+      (await post(g, "/oauth/revoke", { token: next, client_id: CID })).status,
+    ).toBe(401);
+    expect(
+      (
+        await post(g, "/oauth/revoke", {
+          token: next,
+          client_id: CID,
+          ...assertionParams(g),
+        })
+      ).status,
+    ).toBe(200);
+    const after = await post(g, "/oauth/token", {
+      grant_type: "refresh_token",
+      refresh_token: next,
+      client_id: CID,
+      ...assertionParams(g),
+    });
+    expect(after.status).toBe(400);
+    expect(after.json.error).toBe("invalid_grant");
   });
 });

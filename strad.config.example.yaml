@@ -182,8 +182,9 @@ auth:
     # inheriting it would mean this flag silently widened what /mcp hands out.
     # Empty is fail-closed — the flow completes and every ?servers= gets a 424.
     roles: [admin]
-    # Access tokens expire on this cadence; refresh tokens never expire, and are
-    # revoked at Google. See docs/auth/overview.md.
+    # Access tokens expire on this cadence. Without grant records (below) refresh
+    # tokens never expire, never rotate, and are revoked at Google. See
+    # docs/auth/overview.md.
     accessTokenTtlSeconds: 3600
     # Per-client ceilings, keyed by the exact client id metadata document URL.
     # Each REPLACES the defaults for its client: roles (default: the roles
@@ -196,6 +197,7 @@ auth:
         roles: [admin]
         # servers: [granola]
         # accessTokenTtlSeconds: 900
+        # refreshTokenTtlSeconds: 21600  # record-backed grants only
       # A CONFIDENTIAL client: every token and revocation call must carry an
       # RFC 7523 private_key_jwt assertion, whatever its document says. The
       # optional jwksUri pins its keys so a tampered document cannot swap them.
@@ -215,6 +217,20 @@ auth:
     # metadata advertises it. Unset = on exactly when an entry above requires
     # it. See docs/auth/overview.md.
     # privateKeyJwt: true
+    # Server-side grant records. Off is the stateless server above. On, each new
+    # grant is a sealed record in the shared GCS state store (the three
+    # STRAD_STATE_GCS_* names; nothing new to seed): its refresh token rotates,
+    # a spent one presented again revokes the grant, /oauth/revoke revokes one
+    # access token or one grant without touching any other, and /tokens/grants
+    # lists them. `memory` forgets every grant on restart.
+    grants:
+      enabled: false
+      store: gcs
+      # refreshTokenTtlSeconds: 2592000  # from creation; absent = no deadline
+      refreshReuseGraceSeconds: 30
+      # accept: stateless tokens work as before. upgrade: their next refresh
+      # makes them record-backed. refuse: their holders sign in again.
+      legacyTokens: accept
 
   # Temporary: lets a human into /console with ADMIN_BOOTSTRAP_TOKEN while
   # Google OAuth credentials are being provisioned. Requires ALLOW_DEV_AUTH=true.

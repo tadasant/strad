@@ -43,6 +43,7 @@ import {
 import type { DocumentFetcher } from "../auth/mcp-oauth/cimd.ts";
 import { advertisedScopes } from "../auth/mcp-oauth/policy.ts";
 import { mountMcpOAuth } from "./oauth.ts";
+import type { BlobStore } from "../state/store.ts";
 import {
   burnFromUrl,
   BYPASS_COOKIE,
@@ -176,6 +177,8 @@ export interface AppOptions {
    * The real one refuses loopback, which is where a test serves its documents.
    */
   mcpOAuthClientMetadataFetch?: DocumentFetcher;
+  /** Test seam: the durable layer under the OAuth grant store. */
+  mcpOAuthGrantBlobs?: () => Promise<BlobStore>;
   /**
    * The last tool-surface observation, for `/healthz`.
    *
@@ -231,6 +234,19 @@ export function createApp(opts: AppOptions): Express {
           ...(opts.mcpOAuthClientMetadataFetch
             ? { clientMetadataFetch: opts.mcpOAuthClientMetadataFetch }
             : {}),
+          ...(opts.mcpOAuthGrantBlobs
+            ? { grantBlobs: opts.mcpOAuthGrantBlobs }
+            : {}),
+          // The grant store's `STRAD_STATE_GCS_*`: the environment first, then
+          // the gateway's own secret provider — which is where a store-backed
+          // deployment keeps them (`/strad/<env>/gateway/static/`), so they
+          // need no hydration and sit in core's memory only once grants use
+          // them.
+          credentials: async (name: string) => {
+            const fromEnv = env[name];
+            if (fromEnv && fromEnv.trim() !== "") return fromEnv;
+            return (await opts.secretProvider?.shared.get(name)) ?? undefined;
+          },
         })
       : null;
 
@@ -618,6 +634,7 @@ export function createApp(opts: AppOptions): Express {
       consoleTokens,
       connectorFetch: opts.connectorFetch,
       runtimeConfig: opts.runtimeConfig,
+      mcpOAuth,
     });
   }
 

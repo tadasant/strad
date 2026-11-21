@@ -501,16 +501,17 @@ hidden:
   PKCE is mandatory and `S256`-only, so whoever intercepted the code does not
   hold the verifier — that is what actually stops the attack.
 - **Refresh tokens are not rotated.** Rotation detects the replay of a stolen
-  token, which needs a record of the token just spent. There is nowhere to keep
-  one, so minting a new string while the old one stayed valid would be the
-  appearance of rotation without the property.
+  token, which needs a record of the token just spent. A stateless grant has
+  nowhere to keep one, so minting a new string while the old one stayed valid
+  would be the appearance of rotation without the property. Turn on
+  [grant records](/auth/overview/#grant-records) to rotate.
 - **Revocation happens at Google, per user and per OAuth client.** A strad
   refresh token embeds the Google refresh token behind it, and `POST
 /oauth/revoke` calls Google — there is no strad-side denylist, because an
   in-memory one would come back to life on the next deploy. The upside is that
   revocation is durable and survives every restart. The cost is the granularity:
   revoking one connector signs that account out of every strad OAuth connector it
-  holds.
+  holds. With grant records on, revocation is per grant and per token instead.
 - **An access token cannot be revoked before it expires**, because it is verified
   with no lookup. The one-hour default is therefore also the revocation window,
   which is what the five-minute floor on `accessTokenTtlSeconds` is for.
@@ -4959,9 +4960,10 @@ See `HACKS.md` #159.
 - **A rollback signs narrowed grants out.** They are sealed as a payload
   version a pre-slug build refuses, so after a rollback those clients sign in
   again rather than getting the whole ceiling.
-- **No per-grant revocation yet.** Narrowing a client's entry narrows every
-  token it holds; revoking one grant alone is still Google revocation, per user
-  and per OAuth client.
+- **A stateless grant has no per-grant revocation.** Narrowing a client's entry
+  narrows every token it holds; revoking one stateless grant alone is Google
+  revocation, per user and per OAuth client. [Grant records](#163-mcp-oauth-grant-records-live-in-the-shared-state-bucket-read-lazily-behind-a-15-second-cache)
+  change that for grants issued while they are on.
 
 ---
 
@@ -5006,3 +5008,33 @@ signed assertion. See
   grants and their documents rather than treating them as public.
 - **Without a `jwksUri` pin, the document names the keys.** The config
   requirement stops a downgrade to public; the pin stops a key swap.
+
+### 163. `/mcp` OAuth grant records live in the shared state bucket, read lazily, behind a 15-second cache
+
+`auth.mcpOAuth.grants.enabled` gives each new OAuth grant a server-side
+[record](/auth/overview/#grant-records): refresh tokens rotate and can expire,
+and one access token or one grant can be revoked without touching any other.
+Off by default.
+
+- **Any container holding the state bucket's key can delete or roll back a
+  record.** It cannot read one. Deleting refuses the grant; restoring an older
+  sealed copy could un-revoke a grant revoked after it, once core restarts (a
+  running core keeps its own revocations in memory). One service account for the
+  bucket is the cause.
+- **Another core's revocation lands within 15 seconds**, during a deploy's
+  overlap. A refresh always reads the durable copy.
+- **"Last used" at `/mcp` is per process.** The last refresh is durable.
+- **A store outage fails closed.** An uncached record-backed token gets a `500`,
+  never a `401`; refresh, consent and revocation answer `503`.
+- **The consent form still carries the Google refresh token**, encrypted, in the
+  signing-in human's browser for at most ten minutes. The code does not.
+- **A revoked grant's Google token is dropped, not revoked at Google.** Google
+  keeps at most 100 live refresh tokens per account and client and silently
+  drops the oldest, so a hundred later sign-ins can end a long-lived grant.
+- **A rollback is a sign-in** for record-backed clients, and a stateless token
+  revoked under records works again on the old build — or on this one with
+  records turned off, since nothing then reads the tombstone.
+- **With records on, a stateless refresh consults the store** (was this token
+  revoked?), so it answers `503` while the store is unreachable.
+- **`legacyTokens: upgrade` revokes a grant whose client keeps using the old
+  stateless token** after the grace window. `accept` is the default.

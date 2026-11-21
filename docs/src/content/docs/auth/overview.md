@@ -154,6 +154,16 @@ id — which is the gateway's own access-control list.
 Under `store: env` the page still renders the roster, read-only, and says why it
 cannot write.
 
+**OAuth grants: `/tokens/grants`.** The same page's other half, for the other
+kind of `/mcp` credential. With [grant records](#grant-records) on, it lists every
+record — the client, the account, the granted slugs, when it was created, last
+used and expires, and whether it is live — with a **Revoke** on each. Revoking
+ends that grant and every child under it on their next request, and touches no
+other grant; it is refused for a console login token's look-only session. With
+records off it says so, because a stateless grant leaves nothing to list. The
+agent-side door to the same act is the standard one, `POST /oauth/revoke`, where
+holding a token is the authority to revoke it.
+
 **Two credentials, one each way.** A mint or revoke reads the records the store
 holds right now, changes them, and writes them back. The write goes through the
 console's admin credential. The read does not, because on prod that credential
@@ -627,53 +637,167 @@ that predates this refuses, so a **rollback** signs confidential clients out
 rather than letting their grants be spent without the key. A public client is
 untouched: it sends nothing new, and an assertion it sends anyway is not read.
 
-### Access tokens expire hourly; refresh tokens never expire
+### Two kinds of grant: stateless, and record-backed
+
+The authorization server issues grants one of two ways, and
+`auth.mcpOAuth.grants.enabled` picks which. Off — the default — is the
+**stateless** server every deployment had first. On, every new grant gets a
+**record** held server-side, and its tokens rotate, expire and revoke one at a
+time. The two can coexist: a stateless token issued before records were turned
+on is governed by `grants.legacyTokens`.
+
+|                       | Stateless (`grants.enabled: false`)                                              | Record-backed (`grants.enabled: true`)                                                             |
+| --------------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Refresh token         | never expires, never rotates — the same token comes back                         | rotates on every refresh; a spent one presented again revokes the grant                            |
+| Refresh lifetime      | none                                                                             | `grants.refreshTokenTtlSeconds`, per client `clients[].refreshTokenTtlSeconds`; absent = none      |
+| Google refresh token  | sealed inside the code and the refresh token                                     | in the record, server-side; no token carries it                                                    |
+| `POST /oauth/revoke`  | refresh tokens only, and revokes **at Google** — every connector for the account | an access token (that token), a refresh token (that grant), each within seconds; nothing at Google |
+| Listed in the console | no                                                                               | `/tokens/grants`, with a Revoke                                                                    |
+
+### Access tokens
 
 **Access tokens live one hour** (`auth.mcpOAuth.accessTokenTtlSeconds`, floor 5
-minutes, ceiling a day; a listed client may set its own). One hour is the conventional default and what an MCP
-client expects to refresh against. It is also the revocation window, and that is
-the reason for the floor: an access token is verified with no lookup, so it
-cannot be revoked before it expires.
+minutes, ceiling a day; a listed client may set its own). One hour is the
+conventional default and what an MCP client expects to refresh against. For a
+stateless grant it is also the revocation window, and that is the reason for the
+floor: a stateless access token is verified with no lookup, so it cannot be
+revoked before it expires. A record-backed access token is checked against its
+record on every request (see [Grant records](#grant-records)), and never outlives
+its grant's refresh deadline.
 
-**Refresh tokens never expire.** They carry no `exp` at all — not a long one, not
-a sliding one.
+An access token's audience comes from the **grant being spent** — carried in the
+code, the refresh token or the record — rather than from a resource recomputed at
+token time. So the value a client sent as `resource=` at `/oauth/authorize` is
+the value its token is checked against at `/mcp`.
 
-That is only safe because of what is inside them. A strad refresh token embeds
-the **Google refresh token** for the grant, and `POST /oauth/token` with
-`grant_type=refresh_token` spends it: strad calls Google, gets a **fresh ID
-token**, and re-runs the Workspace test on _that_. Two things follow.
+### Refreshing re-checks the Workspace, at Google
 
-- **The domain is re-enforced on every refresh**, against Google rather than
-  against a claim strad sealed an hour ago. An account that has left the
-  Workspace, been suspended or been deleted fails here. Re-pointing the
-  deployment at another Workspace ends every live grant too — at the next
-  refresh after the deploy that changed it, since a strad config change is a
-  deploy.
-- **Revocation is durable and individual, and does not need a database.**
-  Revoking strad from the account's own Google security page, from the Workspace
-  admin console, or through `POST /oauth/revoke` — which calls Google — kills the
-  grant permanently. It survives every restart and every redeploy, because the
-  state lives at Google and not in strad.
+Both kinds of grant are backed by a **Google refresh token**, and `POST
+/oauth/token` with `grant_type=refresh_token` spends it: strad calls Google, gets
+a **fresh ID token**, and re-runs the Workspace test on _that_. An account that
+has left the Workspace, been suspended or been deleted fails here, against Google
+rather than against a claim strad sealed an hour ago. Re-pointing the deployment
+at another Workspace ends every live grant too — at the next refresh after the
+deploy that changed it, since a strad config change is a deploy.
+
+A stateless grant carries the Google refresh token inside strad's own refresh
+token (encrypted). A record-backed one keeps it in the record, so no token handed
+to a client carries it; it is dropped from the record the moment the grant is
+revoked.
+
+### Stateless grants: refresh tokens never expire
+
+A stateless refresh token carries no `exp` at all — not a long one, not a
+sliding one. That is only safe because revocation lives at Google: revoking strad
+from the account's own Google security page, from the Workspace admin console, or
+through `POST /oauth/revoke` — which calls Google when records are off — kills the
+grant permanently, and survives every restart and every redeploy.
 
 Two consequences, stated rather than worked around:
 
 - **Google revokes per user and per OAuth client, not per token.** Revoking one
-  connector signs that account out of every strad OAuth connector it holds. On a
-  single-Workspace deployment that is the expected reading of "revoke my access".
+  connector signs that account out of every strad OAuth connector it holds.
 - **An access token already issued stays valid until it expires**, up to an hour
-  after a revocation. That is the ordinary bearer-token trade, and it is what the
-  one-hour lifetime is for.
+  after a revocation.
 
-An access token's audience comes from the **grant being spent** — carried in the
-code, and then in the refresh token — rather than from a resource recomputed at
-token time. So the value a client sent as `resource=` at `/oauth/authorize` is
-the value its token is checked against at `/mcp`.
+**Stateless refresh tokens are not rotated.** Rotation's value is detecting the
+replay of a stolen token, and detecting it requires a server-side record of the
+token just spent. A stateless grant has none — so minting a new opaque string
+while the old one stayed valid would be the _appearance_ of rotation without the
+property. The same token comes back. Record-backed grants are what rotate.
 
-**Refresh tokens are not rotated.** Rotation's value is detecting the replay of a
-stolen token, and detecting it requires a server-side record of the token just
-spent. strad has nowhere to keep one — so minting a new opaque string while the
-old one stayed valid would be the _appearance_ of rotation without the property.
-The same token comes back.
+### Grant records
+
+With `auth.mcpOAuth.grants.enabled: true`, consent writes a **record**: the
+client, the account, the resource, the granted slug set, the Google refresh
+token, a refresh **generation**, and the deadline. The authorization code, the
+refresh token and the access token then carry a grant id instead of any of
+that. They are sealed as payload version `4`, which no build before records opens. A
+[confidential client](#confidential-clients-private_key_jwt)'s grant keeps its
+`auth` in the record and in each of those tokens, so every code exchange,
+refresh and revocation of it still demands the client's assertion.
+
+**Rotation and replay.** Every refresh is answered with a NEW refresh token for
+the next generation, and the record advances before the response is sent. The
+presented generation decides:
+
+- the current one rotates;
+- the one before it, within `grants.refreshReuseGraceSeconds` (default 30) of
+  the rotation that spent it, gets the current generation again — a client whose
+  last response was lost in flight;
+- anything else is a spent token presented again, which is what a stolen copy
+  looks like, and **revokes the whole grant**. `0` disables the grace: two
+  concurrent refreshes of one token are then a replay too. The legitimate holder signs in
+  again.
+
+The rotation is a conditional write against the record's storage generation, so
+two refreshes of one token cannot both rotate, across processes as well as within
+one. An authorization code is single-use the same way — the record goes
+`pending` → `active` exactly once — and redeeming one twice revokes the grant.
+
+**Lifetime.** `grants.refreshTokenTtlSeconds` (five minutes to a year) is
+measured from the grant's creation; rotation does not extend it. A listed client
+may set its own (`clients[].refreshTokenTtlSeconds`), so Zimmer can hold a
+six-hour grant while claude.ai keeps a long one. It is applied at every refresh
+from the current config, so lowering it shortens grants already issued. Absent
+means no deadline. An access token never outlives its grant.
+
+**Revocation.** `POST /oauth/revoke` takes either token:
+
+- a record-backed **access token** revokes that token, by `jti`, until it would
+  have expired anyway. Its grant, its refresh token and its sibling access tokens
+  keep working.
+- a record-backed **refresh token** revokes its grant: every access token it
+  issued, its refresh token, and every child grant minted under it.
+- a **stateless refresh token** is recorded as revoked here (or, if it was
+  upgraded, its grant is), and Google is not called.
+- a stateless access token has nothing to revoke it by; it expires within its
+  lifetime, as before.
+
+None of these calls Google, so revoking one connector no longer touches any
+other. A revocation is in force in this process on the next request. A revocation
+made by the OTHER container during a deploy overlap reaches this one within 15
+seconds, the bound on how long a cached record is trusted.
+
+**Where records live.** `grants.store: gcs` (the default) keeps one sealed object
+per grant in strad's shared [state store](/operate/state-store/), under
+`mcp-oauth/<gateway.env>/`, sealed with AES-256-GCM under a key derived from the
+OAuth key — so turning records on seeds nothing new. It reads the three
+deployment-wide `STRAD_STATE_GCS_*` names through the gateway's secret provider,
+lazily. `grants.store: memory` keeps records in the process only: every
+record-backed client signs in again after a restart. It is for development.
+
+**Failing closed.** A grant whose record cannot be found is refused, so lost
+state never un-revokes anything. With the store unreachable:
+
+- a grant already cached in this process keeps working from the cache, and a
+  revocation made here still applies;
+- an access token for a grant not cached here is answered `500`, never `401` — a
+  `401` would make the client discard it and sign in again over a blip;
+- a refresh, a code exchange and a revocation answer `503 temporarily_unavailable`.
+  A refresh that could not write leaves the client holding a token that is still
+  current. A revocation that could not write is already in force here, and says
+  so.
+
+A **cold start** reads nothing up front: a record is read on the first request
+that names it.
+
+**Stateless tokens, with records on** — `grants.legacyTokens`:
+
+- `accept` (default) — they keep working as before, with the same refresh token
+  coming back, except that revoking one is recorded here instead of at Google.
+  So a stateless refresh now asks the store whether the token was revoked: with
+  the store unreachable it answers `503` rather than guessing, and boot logs a
+  store this process cannot reach.
+- `upgrade` — the next refresh converts the grant into a record: the client gets
+  a record-backed refresh token, and the stateless one is spent (inside the grace
+  window it is honoured once more; after it, it is a replay). Use this once a
+  client is known to store the refresh token a refresh returns.
+- `refuse` — refused at `/oauth/token` and at `/mcp`; the holder signs in again.
+
+**Child grants.** A record may name a `parentGid`. A child holds no Google
+credential of its own — it refreshes against its root's — and it is dead whenever
+any ancestor is. That is the seam token exchange (RFC 8693) mints under.
 
 The blunt instrument behind all of this is **`STRAD_OAUTH_KEY`**. Rotating it
 invalidates every access token, every refresh token and every dynamic client
@@ -705,67 +829,30 @@ A token whose `aud` names a _different_ gateway is refused. So is a token
 presented when strad cannot determine its own origin — the audience check is
 never skipped on the one request where it would matter most.
 
-### No datastore, and what that costs
+### What is written down, and where
 
-strad has no database, so none of the OAuth state above is written down
-anywhere. (The one thing `/mcp` auth does persist is the static-token roster,
-and it is a parameter rather than a database — see
-[Where the records live](#where-the-records-live). Nothing in this section
-shares that path.) Client
-registrations, authorization codes, access tokens and refresh tokens are all
-**self-contained values** sealed with a key only the process holds — HMAC where
-the contents are public (a registration), AES-256-GCM where they are not (an
-authorization code and a refresh token both carry a Google refresh token, and a
-code travels through a browser's address bar). Six derived keys, one per kind of
-value, so a refresh token presented as an access token is unreadable garbage
-rather than a type confusion.
+With grant records off, nothing in this section is written down anywhere.
+(The one thing `/mcp` auth does persist without them is the static-token
+roster, and it is a parameter rather than a database — see
+[Where the records live](#where-the-records-live).) Client registrations,
+authorization codes, access tokens and refresh tokens are all **self-contained
+values** sealed with a key only the process holds — HMAC where the contents are
+public (a registration), AES-256-GCM where they are not (a stateless code and
+refresh token both carry a Google refresh token, and a code travels through a
+browser's address bar). Seven derived keys, one per kind of value plus one for
+grant records at rest, so a refresh token presented as an access token is
+unreadable garbage rather than a type confusion.
 
-The one exception is **single-use codes**, which are a set of sixty-second
-entries in memory. It is per process, and strad core runs one instance; on a
-deployment scaled wider, a code replayed against another replica inside its
-sixty-second window would not be caught there. What catches it is PKCE, which is
-mandatory here — whoever replays an intercepted code does not hold the verifier.
-See [Known limitations](/limitations/).
+With grant records on, the [records](#grant-records) are the written-down
+state, in the shared GCS state store.
 
-### Authorization is unchanged
-
-An OAuth identity maps onto the **existing role model**. `auth.mcpOAuth.roles`
-names the roles a verified member of the domain holds, and from there
-`?servers=<slug>` behaves exactly as it does for a static token: the two-way
-agreement between a role's `servers` and a server's `entitlements`, the same
-`424` for a slug the principal cannot have.
-
-Roles are read from **config at verification time**, never from the token — the
-same rule the console session follows, and for the same reason: tightening the
-config has to take effect on tokens already issued, not only on the ones minted
-after it. Be precise about _when_, though: a strad config change is a **deploy**
-(the document is baked into the app spec), so "already issued" means it lands
-when the process restarts rather than within the hour. The same goes for the
-hosted domain, which is re-checked on every access token and every refresh
-against the config this process booted with.
-
-`auth.mcpOAuth.roles` is deliberately **not** defaulted from `auth.google.roles`.
-That grant is the console's, and inheriting it would mean flipping a flag
-silently widened what `/mcp` hands out. The default is `[]`, which is
-fail-closed — the flow completes, the token verifies, and every `?servers=` gets
-a `424` — and boot warns when it is empty.
-
-### A role is not a human
-
-Holding a role decides which tools a caller may reach. It does not stand in for
-a person saying yes. A tool that needs a human's confirmation before it acts,
-gmail's `send_email` or a 1Password reveal or write, asks at the URL the request
-names in `X-Elicitation-Url`, and refuses when the request names none. That
-applies to an `admin` token and to the console playground as well: neither has a
-prompt to show, so neither sends a mail or sees a password.
-The header is checked against `gateway.elicitation.allowedUrlPrefixes`, sent
-only to a slug that declares `confirmations: true`, and never logged. When an
-edge in front of that URL wants strad's own credential, such as a Cloudflare
-Access service token, the slug's `confirmationHeaders:` carry it. Core resolves
-them, and they go only to a URL that passed the allowlist. A slug whose mailbox
-is the agent's own can declare `skipConfirmations: true` instead: its confirmed
-tools run without a human, it never receives the header, and every other slug
-keeps asking. See [Confirming a tool before it acts](/servers/confirmations/).
+The other exception is **single-use stateless codes**, which are a set of
+sixty-second entries in memory. It is per process, and strad core runs one
+instance; on a deployment scaled wider, a code replayed against another replica
+inside its sixty-second window would not be caught there. What catches it is
+PKCE, which is mandatory here — whoever replays an intercepted code does not
+hold the verifier. A record-backed code needs neither: its record goes
+`pending` → `active` once, durably. See [Known limitations](/limitations/).
 
 ### Configuring it
 
@@ -777,6 +864,13 @@ auth:
     hostedDomain: tadasant.com
     roles: [admin]
     accessTokenTtlSeconds: 3600
+    # Optional: server-side grant records. Off is the stateless server.
+    grants:
+      enabled: true
+      store: gcs # or memory, for development
+      refreshTokenTtlSeconds: 2592000 # 30 days; absent = no deadline
+      refreshReuseGraceSeconds: 30
+      legacyTokens: accept # or upgrade, or refuse
 ```
 
 Enabling the flag is not enough on its own, exactly as it is not for
