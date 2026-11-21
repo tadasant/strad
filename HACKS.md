@@ -8425,3 +8425,65 @@ the text.
 
 **Undo.** `browser.credentialPages: []` turns the refusal off. Redaction has
 no switch.
+
+## 165. `/mcp` OAuth token-exchange children are counted on the parent record, and are not re-checked at Google
+
+**What.** A client entry with `tokenExchange:` (confidential, grant records on)
+may trade one of its own live access tokens for a CHILD access token through
+RFC 8693 token exchange (`exchangeGrant` in `src/http/oauth.ts`). A child is its
+own grant record (`GrantRecord.exchange`, `parentGid`): a `slug:` subset, its own
+expiry, no refresh token. Its parent's record counts its live children
+(`GrantRecord.children`), capped at `maxLiveChildren`. Off by default.
+
+**Why.** Zimmer holds one long-lived grant and needs a token per agent session
+that reaches only that session's slugs, lives about six hours, and can be revoked
+on its own when the session ends. Minting a child record instead of a new
+browser grant keeps that off Google's 100-refresh-tokens-per-account cap (#163
+item 6) and off a human's consent screen.
+
+**What it costs.**
+
+1. **Every exchange is a conditional write to the PARENT's object.** That is
+   what makes the cap hold across the two cores of a deploy overlap. GCS
+   sustains about one write per second per object. Exchanges in one process
+   are serialised per parent, so a burst queues. A burst split across two
+   processes during an overlap contends, retries up to four times, and then
+   answers `503 temporarily_unavailable`. The client should retry.
+2. **A slot can outlive its child.** A child whose record write failed after
+   its slot was reserved, or a revoke whose slot release failed, keeps its slot
+   until the child would have expired. The child itself is refused either way.
+3. **A child is not re-checked at Google.** Minting one needs a live parent
+   access token, so the account was a Workspace member at most one access-token
+   lifetime before the exchange. After that, the child lives to its own expiry
+   (up to `maxChildTokenTtlSeconds`, at most a day) unless its grant is revoked.
+   A failed parent refresh does not revoke the grant, so it does not end the
+   children. Revoke the parent on `/tokens/grants` to end them at once.
+4. **Children belong to the grant, not to the access token that minted them.**
+   Revoking only the parent's access token, by `jti`, leaves its children live.
+   This is deliberate: the parent refreshes hourly while its children run for
+   six hours. Revoking the parent's refresh token, or the grant, ends them all.
+5. **Another process's child revocation lands within 15 seconds**, the same
+   cache bound as #163 item 2. In the process that took the revoke, it is
+   immediate.
+6. **The label is a client-authored string on the telemetry allowlist**
+   (`mcp_oauth.exchange`, `mcp_oauth.revoked`). It is checked to `EXCHANGE_LABEL`
+   before it is stored or logged: 1–64 characters of `A-Za-z0-9.:-`. It cannot
+   contain `_`, so no `strad_…` credential fits, and it is shorter than any
+   sealed token. It is still the client's own bytes, so a client can put a word
+   in the ingestor. Only a client holding a valid assertion and a live access
+   token can do that.
+7. **A rollback keeps children working until they expire.** The #533 build opens
+   `v: 4` access tokens and walks `parentGid`, so it honours a live child, and
+   its revoke kills the child's one token by `jti`. What it does not do: refuse
+   a child once `tokenExchange` is removed from the client's entry (this build
+   does), free the slot on revoke, or judge the parent's deadline separately
+   from the child's. A child's own deadline is already clipped to the parent's
+   deadline at the time it was minted.
+8. **Dead children are kept for a day, then swept.** Sweeping runs at most
+   hourly, off the request path, after a write. A client minting one child per
+   agent turn leaves up to a day of rows on `/tokens/grants`.
+
+**Undo.** Remove the client's `tokenExchange:` block. Exchanges are then
+`unauthorized_client`, and every live child is refused at `/mcp` on its next
+request (`oauth_exchange_disabled`). Removing it from every entry also drops the
+grant type from the metadata and from the token endpoint.
