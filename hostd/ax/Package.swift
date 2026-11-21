@@ -11,8 +11,10 @@ import PackageDescription
 // Info.plist is linked into the binary's __TEXT,__info_plist section, which
 // gives the bare executable a bundle identifier (com.strad.hostd-ax) without
 // making it an .app: the menu bar remembers a status item by its owner's
-// identifier, and a binary with none gave it nothing stable to remember. The path is absolute
-// because the linker does not run from this directory.
+// identifier, and a binary without one has nothing stable to be remembered
+// by. The path is absolute because the linker does not run from this
+// directory, and SwiftPM does not track the file: after editing it, run
+// `swift package clean` before building.
 let infoPlist = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Info.plist").path
 
 let package = Package(

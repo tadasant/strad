@@ -5,15 +5,18 @@
   Package.swift), so the helper has a bundle identity without being an .app.
   macOS's System Settings › Menu Bar › "Allow in the Menu Bar" and menu-bar
   managers such as Bartender remember a status item under its owner's bundle
-  identifier; a binary with none gave them nothing stable to remember. CFBundleIdentifier matches the signing identifier
+  identifier, and a binary without one has nothing stable to be remembered
+  by. CFBundleIdentifier matches the signing identifier
   (install/sign-helper.sh), so the designated requirement the TCC grants are
-  keyed on does not change.
+  keyed on does not change. The name stays strad-hostd-ax, the name the
+  grant prompts and System Settings already show. Package.swift does not
+  track this file: after editing it, `swift package clean` before building.
 -->
 <plist version="1.0">
   <dict>
     <key>CFBundleIdentifier</key><string>com.strad.hostd-ax</string>
-    <key>CFBundleName</key><string>strad-hostd</string>
-    <key>CFBundleDisplayName</key><string>strad-hostd</string>
+    <key>CFBundleName</key><string>strad-hostd-ax</string>
+    <key>CFBundleDisplayName</key><string>strad-hostd-ax</string>
     <key>CFBundleExecutable</key><string>strad-hostd-ax</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>

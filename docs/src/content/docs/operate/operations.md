@@ -431,9 +431,10 @@ daemon's `hostd/src/messages/**` (the Messages smoke test runs its queries),
 both helpers' LaunchAgent plists, the signing script, the installer's launchd
 path and itself, and runs on a PR and on `main`.
 
-It proves the helper compiles, ad-hoc signs with `ax/Info.plist` linked in and
-bound to the signature (the bundle identifier the menu bar remembers its
-status item under, which the smoke test also reads back from `hello`), speaks its JSON-lines protocol over
+It proves the helper compiles and ad-hoc signs with `ax/Info.plist` linked in
+and bound to the signature, which is the bundle identifier the menu bar
+remembers its status item under; the smoke test reads it back from `hello`.
+It proves the helper speaks its JSON-lines protocol over
 stdio (`hostd/ax/smoke.mjs`), answers `hello`, lists apps and displays, and
 refuses every guarded op with the right code on a runner that holds no
 Accessibility or Screen Recording grant. It puts the banner away into the menu
