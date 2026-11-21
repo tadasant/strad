@@ -160,6 +160,10 @@ export default defineConfig({
             { label: "State store", slug: "operate/state-store" },
             { label: "Tailnet egress", slug: "operate/tailnet" },
             { label: "Operations & CI", slug: "operate/operations" },
+            {
+              label: "Staging OAuth rehearsal",
+              slug: "operate/staging-oauth-e2e",
+            },
             { label: "Telemetry", slug: "operate/telemetry" },
             { label: "DNS & domains", slug: "operate/dns" },
             {

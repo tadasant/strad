@@ -120,18 +120,56 @@ auth:
   staticTokens:
     enabled: true
     store: env # reserved; no code reads it, and `env` is the only value
-  # strad's own OAuth 2.1 authorization server in front of /mcp, so an
-  # interactive MCP client can connect through a Google sign-in rather than a
-  # pasted token. It flips to true with `auth.google` above and for the same
-  # reason: both need GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET, and the OAuth
-  # client must list https://staging.strad.tadasant.com/oauth/callback/google
-  # among its authorized redirect URIs. Enabled without those, the server does
-  # not run, publishes no metadata, and says so at boot — /mcp keeps taking
-  # static tokens exactly as it does now.
+  # strad's own OAuth 2.1 authorization server in front of /mcp, configured as
+  # the REHEARSAL for production's switch-on: every opt-in feature on, and the
+  # only thing it can hand out is `echo`.
+  #
+  # ENABLED AHEAD OF ITS SECRETS, on purpose. `ready` needs GOOGLE_CLIENT_ID and
+  # GOOGLE_CLIENT_SECRET in /strad/staging/gateway/static/ (an OAuth client
+  # whose authorized redirect URIs include
+  # https://staging.strad.tadasant.com/oauth/callback/google), and until they
+  # are there the server does not run, publishes no metadata, says so at boot,
+  # and /mcp keeps taking static tokens exactly as before. No `${NAME}` here, so
+  # nothing is added to what the render demands. The grant store reads the
+  # three STRAD_STATE_GCS_* through core's secret provider lazily; absent, it
+  # answers 503 to the grant-record paths and never opens them.
+  #
+  # CLOSED TO EVERYONE BUT THE TEST CLIENTS. Staging shares prod's third-party
+  # accounts, so the global roles are `echo-only`, an unlisted client is
+  # refused, and dynamic registration is off. The two listed clients are
+  # throwaway documents on the docs site (docs/public/oauth-test-clients/),
+  # one confidential (private_key_jwt, keys pinned) and one public, both capped
+  # to `echo`. scripts/staging-oauth-e2e.ts drives them; the procedure is
+  # docs/operate/staging-oauth-e2e.md.
   mcpOAuth:
-    enabled: false
+    enabled: true
     hostedDomain: tadasant.com
-    roles: [admin]
+    roles: [echo-only]
+    allowUnlistedClients: false
+    dynamicRegistration: false
+    advertiseSlugScopes: true
+    privateKeyJwt: true
+    clients:
+      - clientId: https://docs.strad.tadasant.com/oauth-test-clients/staging-confidential.json
+        name: strad staging OAuth test (confidential)
+        roles: [echo-only]
+        servers: [echo]
+        accessTokenTtlSeconds: 300
+        refreshTokenTtlSeconds: 3600
+        tokenEndpointAuthMethod: private_key_jwt
+        jwksUri: https://docs.strad.tadasant.com/oauth-test-clients/staging-confidential.jwks.json
+      - clientId: https://docs.strad.tadasant.com/oauth-test-clients/staging-public.json
+        name: strad staging OAuth test (public)
+        roles: [echo-only]
+        servers: [echo]
+        accessTokenTtlSeconds: 300
+        refreshTokenTtlSeconds: 3600
+    grants:
+      enabled: true
+      store: gcs
+      refreshTokenTtlSeconds: 86400
+      refreshReuseGraceSeconds: 30
+      legacyTokens: accept
   consoleDevBypass:
     enabled: true
     roles: [admin]
