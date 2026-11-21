@@ -321,6 +321,177 @@ describe("StoreSecretProvider", () => {
   });
 });
 
+/**
+ * The read with nothing to fall back on, and why one failure of it is not the
+ * answer (tadasant/strad#523).
+ *
+ * `invalidate()` drops the last known good map — it has to, or a write would be
+ * ignored the next time the store hiccups. So the read straight after a write
+ * is a read with nothing held, exactly like a cold start, and the gateway's
+ * token store reads through it on the `/mcp` request path. One transient
+ * failure there was a 500. It is retried now, within a stated budget, and only
+ * a store that STAYS unreadable propagates.
+ */
+describe("StoreSecretProvider, a read with nothing held", () => {
+  /** A resolver that fails its next `n` reads, then answers. */
+  function flaky(values: Record<string, string>) {
+    let failNext = 0;
+    let reads = 0;
+    let current = { ...values };
+    const resolver: ParameterResolver = {
+      async resolve() {
+        reads += 1;
+        if (failNext > 0) {
+          failNext -= 1;
+          throw new Error("fetch failed: ECONNRESET");
+        }
+        return { ...current };
+      },
+    };
+    return {
+      resolver,
+      failNext: (n: number) => (failNext = n),
+      set: (next: Record<string, string>) => (current = { ...next }),
+      reads: () => reads,
+    };
+  }
+
+  const noSleep = () => {
+    const slept: number[] = [];
+    return {
+      slept,
+      sleep: async (ms: number) => {
+        slept.push(ms);
+      },
+    };
+  };
+
+  it("a write, then invalidate, then ONE failed read: the get still answers, with the write", async () => {
+    const f = flaky({ TOKEN: "v1" });
+    const warnings: string[] = [];
+    const s = noSleep();
+    const p = new StoreSecretProvider(f.resolver, "/ns/", {
+      onWarn: (m) => warnings.push(m),
+      sleep: s.sleep,
+      random: () => 0,
+    });
+
+    expect(await p.get("TOKEN")).toBe("v1");
+    f.set({ TOKEN: "v2" }); // the write lands
+    p.invalidate(); // ...and the writer says so
+    f.failNext(1); // the read after it fails once
+
+    expect(await p.get("TOKEN")).toBe("v2");
+    expect(f.reads()).toBe(3);
+    expect(s.slept).toEqual([100]); // equal jitter, random 0: half the 200ms term
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("with nothing held; retrying in 100ms");
+    expect(warnings[0]).toContain("attempt 2 of 3");
+  });
+
+  it("a cold start whose first read fails once still answers", async () => {
+    const f = flaky({ TOKEN: "v1" });
+    f.failNext(1);
+    const s = noSleep();
+    const p = new StoreSecretProvider(f.resolver, "/ns/", {
+      onWarn: () => {},
+      sleep: s.sleep,
+    });
+    expect(await p.get("TOKEN")).toBe("v1");
+    expect(f.reads()).toBe(2);
+  });
+
+  it("a store that STAYS unreadable still propagates, after the budget and no more", async () => {
+    const f = flaky({ TOKEN: "v1" });
+    const s = noSleep();
+    const p = new StoreSecretProvider(f.resolver, "/ns/", {
+      onWarn: () => {},
+      sleep: s.sleep,
+      random: () => 0.5,
+    });
+    await p.get("TOKEN");
+    p.invalidate();
+    f.failNext(Infinity);
+
+    await expect(p.get("TOKEN")).rejects.toThrow("ECONNRESET");
+    // One read for the cold start; three for the invalidated get. The `get`
+    // does NOT re-read once more on top: a failed read leaves nothing
+    // discarded, only nothing held.
+    expect(f.reads()).toBe(4);
+    expect(s.slept).toEqual([150, 300]);
+    // And it does not stop failing closed: the next request tries again,
+    // rather than being handed an empty namespace.
+    await expect(p.get("TOKEN")).rejects.toThrow("ECONNRESET");
+  });
+
+  it("does not retry a read that failed by HANGING past the retry deadline", async () => {
+    const c = clock();
+    let reads = 0;
+    const resolver: ParameterResolver = {
+      async resolve() {
+        reads += 1;
+        c.advance(10_000); // the store client's own timeout, spent
+        throw new Error("The operation was aborted due to timeout");
+      },
+    };
+    const s = noSleep();
+    const p = new StoreSecretProvider(resolver, "/ns/", {
+      now: c.now,
+      onWarn: () => {},
+      sleep: s.sleep,
+    });
+    await expect(p.get("TOKEN")).rejects.toThrow("timeout");
+    expect(reads).toBe(1);
+    expect(s.slept).toEqual([]);
+  });
+
+  it("with something held, a failure is answered from it at once — no retry, no sleep", async () => {
+    const f = flaky({ TOKEN: "v1" });
+    const s = noSleep();
+    const p = new StoreSecretProvider(f.resolver, "/ns/", {
+      onWarn: () => {},
+      sleep: s.sleep,
+    });
+    await p.get("TOKEN");
+    f.failNext(1);
+    // A get with something held does not reach the resolver while the
+    // resolver's own snapshot is fresh; this fake holds none, so it does.
+    expect(await p.get("TOKEN")).toBe("v1");
+    expect(f.reads()).toBe(2);
+    expect(s.slept).toEqual([]);
+  });
+
+  it("a revocation is never undone by a failed read after it: the pre-write map is not served", async () => {
+    // The fallback this deliberately does NOT have. Keeping the map from before
+    // `invalidate()` for "the read after failed" would serve a token the
+    // operator was just told is revoked.
+    const f = flaky({ TOKEN: "live" });
+    const p = new StoreSecretProvider(f.resolver, "/ns/", {
+      onWarn: () => {},
+      sleep: noSleep().sleep,
+    });
+    expect(await p.get("TOKEN")).toBe("live");
+    f.set({});
+    p.invalidate();
+    f.failNext(Infinity);
+    await expect(p.get("TOKEN")).rejects.toThrow();
+  });
+
+  it("concurrent gets share one retrying read", async () => {
+    const f = flaky({ TOKEN: "v1" });
+    f.failNext(1);
+    const p = new StoreSecretProvider(f.resolver, "/ns/", {
+      onWarn: () => {},
+      sleep: noSleep().sleep,
+    });
+    const all = await Promise.all(
+      Array.from({ length: 10 }, () => p.get("TOKEN")),
+    );
+    expect(all.every((v) => v === "v1")).toBe(true);
+    expect(f.reads()).toBe(2);
+  });
+});
+
 describe("ChainSecretProvider", () => {
   it("prefers the first provider and falls through on a definitive absence", async () => {
     const chain = new ChainSecretProvider([

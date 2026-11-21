@@ -2251,7 +2251,7 @@ forgiving.
 
 Two things bound it: the layer is **lazy**, so a slug nobody seeded and nobody
 calls never reads at all, and a refresh that throws serves the last good snapshot —
-only a first read failing propagates.
+only a first read that still fails after its retries propagates.
 
 A slug seeded by nobody but _called_ does read its own empty namespace, and in
 principle a throw there fails a name the shared namespace holds. In practice an

@@ -93,6 +93,9 @@ npm run token:mint -- --label "my agent" --roles admin --env staging
   a perfectly good token to throw it away and re-authenticate, over a read that
   timed out. It is still **fail-closed**: an unreadable store is not an empty
   store and is certainly not an open one, and nothing is admitted from either.
+  One failed read is not `unavailable` on its own: a read with nothing held
+  (a cold start, or the first read after a secret write) is retried within a
+  sub-second budget first, so only a store that stays unreadable answers `500`.
 - An unknown `pubid` still hashes and compares against a dummy all-zero hash, so
   there's no timing oracle distinguishing "no such token" from "wrong secret."
 - `401`s carry

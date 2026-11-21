@@ -134,9 +134,15 @@ Three behaviours matter more than the numbers:
   process serves shares that one read.
 - **A failed read serves the last known good values** and logs a warning
   naming the provider and the error — never a secret, never a value. A store
-  outage must not take `/mcp` down. Only the very first read propagates its
-  error, because there is nothing to serve and reporting a config problem for
-  what is an outage would be a lie. A render that failed on a throttle, a server
+  outage must not take `/mcp` down. A read with NOTHING held — a cold start, or
+  the read straight after a write's `invalidate()`, which drops what was held so
+  the write is seen — is tried three times, sleeping 100–400ms between, before
+  its error propagates; no retry starts more than 5s after the first attempt, so
+  a read that hung to its deadline is not repeated. Then it propagates, because
+  there is nothing to serve and reporting a config problem for what is an outage
+  would be a lie. The map from before the write is deliberately not kept as a
+  fallback: the read after a token revocation would otherwise be able to serve
+  the revoked token. A render that failed on a throttle, a server
   error or a timeout is not remembered either: the next reader renders again,
   rather than inheriting one bad moment for the length of the TTL.
 - **Every store read carries a 10s deadline**, and a failed read backs off for
