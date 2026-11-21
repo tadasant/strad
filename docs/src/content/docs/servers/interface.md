@@ -1409,8 +1409,10 @@ including the tokens they already hold. `dynamicRegistration: false` turns
 `POST /oauth/register` into a `404` and drops `registration_endpoint` from the
 metadata. `advertiseSlugScopes: true` lists `slug:<name>` scopes in
 `scopes_supported`, which publishes the roster on two unauthenticated documents.
-All four are read from the current config, and their defaults leave every grant
-exactly as it was. The scope grammar and the consent checkboxes are in
+All four apply at every request and refresh, so a deploy that changes them
+changes tokens already issued, and their defaults leave every grant exactly as
+it was. An entry replaces the defaults for its client, so its `roles` may be
+wider than `auth.mcpOAuth.roles` as well as narrower. The scope grammar and the consent checkboxes are in
 [Auth](/auth/overview/#per-client-policy-and-slug-scopes).
 
 

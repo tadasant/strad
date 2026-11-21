@@ -186,9 +186,10 @@ auth:
     # revoked at Google. See docs/auth/overview.md.
     accessTokenTtlSeconds: 3600
     # Per-client ceilings, keyed by the exact client id metadata document URL.
-    # Each narrows its client: roles (default: the roles above), an optional
-    # slug allowlist inside them, an optional TTL. Read from the current config
-    # at every request and refresh. Empty changes nothing.
+    # Each REPLACES the defaults for its client: roles (default: the roles
+    # above; may be narrower OR wider), an optional slug allowlist inside them,
+    # an optional TTL. Applied at every request and refresh, so a deploy that
+    # changes an entry changes tokens already issued. Empty changes nothing.
     clients:
       - clientId: https://claude.ai/oauth/mcp-oauth-client-metadata
         name: claude.ai

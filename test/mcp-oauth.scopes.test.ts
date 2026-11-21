@@ -333,9 +333,10 @@ auth: { staticTokens: { enabled: true } }
     expect(status).toBe(200);
     expect(json.scope).toBe("mcp");
     expect(json.expires_in).toBe(3600);
-    expect(readAccessToken(g.oauth.keys.access, json.access_token)?.slugs).toBe(
-      undefined,
-    );
+    const access = readAccessToken(g.oauth.keys.access, json.access_token);
+    expect(access?.slugs).toBe(undefined);
+    // `v: 1` — the exact payload version a pre-slug build opens.
+    expect(access?.v).toBe(1);
     expect(
       readRefreshToken(g.oauth.keys.refresh, json.refresh_token)?.slugs,
     ).toBe(undefined);
@@ -352,6 +353,45 @@ auth: { staticTokens: { enabled: true } }
   it("grants the request unchanged when the approve post carries no slug list", async () => {
     const w = await walk(g, { clientId: CLAUDE });
     const { json } = await exchange(g, CLAUDE, w);
+    expect(json.scope).toBe("mcp");
+  });
+
+  it("grants an approval sealed before slug consent unchanged, whatever boxes are posted", async () => {
+    // Walk to a live Google grant, then post an approval in the pre-change
+    // shape: `v: 1`, no `offered`.
+    const w = await walk(g, { clientId: CLAUDE });
+    const code = w.landed?.searchParams.get("code") ?? "";
+    expect(code).not.toBe("");
+    const { verifier, challenge } = pkce();
+    const approval = g.oauth.keys.approval.seal({
+      v: 1,
+      cid: clientFingerprint(CLAUDE),
+      redirectUri: CALLBACK,
+      challenge,
+      state: "s",
+      resource: `${g.base}/mcp`,
+      issuer: g.base,
+      identity: {
+        sub: "google-sub-1",
+        email: "tadas@tadasant.com",
+        hd: "tadasant.com",
+      },
+      googleRefreshToken: g.google.lastRefreshToken,
+      exp: Date.now() + 60_000,
+    });
+    const approved = await fetch(`${g.base}/oauth/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams([
+        ["approval", approval],
+        ["decision", "allow"],
+        ["slug_choice", "1"],
+        ["slug", "alpha"],
+      ]),
+      redirect: "manual",
+    });
+    const landed = new URL(approved.headers.get("location") ?? "");
+    const { json } = await exchange(g, CLAUDE, { landed, verifier });
     expect(json.scope).toBe("mcp");
   });
 
@@ -450,6 +490,12 @@ describe("slug scopes", () => {
     const { json } = await exchange(g, CLAUDE, w);
     expect(json.scope).toBe("slug:alpha slug:beta");
     expect(principalOf(g, json.access_token).slugs).toEqual(["alpha", "beta"]);
+    // `v: 2`, so a build that predates `slugs` refuses these rather than
+    // reading them as the whole ceiling.
+    expect(readAccessToken(g.oauth.keys.access, json.access_token)?.v).toBe(2);
+    expect(readRefreshToken(g.oauth.keys.refresh, json.refresh_token)?.v).toBe(
+      2,
+    );
     expect(await mcp(g, json.access_token, "?servers=alpha")).toBe(200);
     // Not entitled: the ordinary 424, exactly as a narrower role answers.
     expect(await mcp(g, json.access_token, "?servers=gamma")).toBe(424);
@@ -630,6 +676,25 @@ describe("closing the door to unlisted clients", () => {
   it("admits the listed client", async () => {
     const w = await walk(g, { clientId: CLAUDE, tick: "all" });
     expect((await exchange(g, CLAUDE, w)).status).toBe(200);
+  });
+
+  it("refuses an unlisted DCR client's code exchange", async () => {
+    // Registration is off here, so mint the client id the way the route would.
+    const { registerClient } = await import("../src/auth/mcp-oauth/clients.ts");
+    const outcome = registerClient(
+      { client_name: "DCR", redirect_uris: [CALLBACK] },
+      g.oauth.keys.client,
+      "mcp",
+    );
+    if (!outcome.ok) throw new Error("registration refused");
+    const { status, json } = await token(g, {
+      grant_type: "authorization_code",
+      code: "anything",
+      client_id: outcome.response.client_id,
+      code_verifier: "x".repeat(43),
+    });
+    expect(status).toBe(401);
+    expect(json.error).toBe("invalid_client");
   });
 
   it("refuses an unlisted client's tokens at /mcp and at /oauth/token", async () => {

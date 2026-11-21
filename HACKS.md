@@ -8189,5 +8189,11 @@ parameter is the one OAuth gives a client to ask with.
    means Google revocation (see the OAuth bounds in `docs/src/content/docs/limitations.md`), which is per user
    and per OAuth client. A grant store is what changes that.
 
+4. **A rollback signs narrowed grants out.** Narrowed payloads are sealed
+   `v: 2`, which a pre-slug build refuses rather than read as unnarrowed. The
+   price is a fresh sign-in for those clients after a rollback. The 10-minute
+   transaction cookie is not versioned: a sign-in that starts on the new build
+   and finishes on an old one loses its `slug:` request.
+
 **Undo.** Delete the `clients` block and the three flags. Tokens carrying a
 slug set keep it; every other token behaves as it did before any of this.

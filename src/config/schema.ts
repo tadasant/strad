@@ -1755,9 +1755,10 @@ const AuthConfig = z.object({
        *                           narrowing.
        *   accessTokenTtlSeconds — optional, same bounds as the global one.
        *
-       * Read from the CURRENT config at every verification and every refresh,
-       * like the global roles, so narrowing an entry narrows tokens already
-       * issued. Empty (the default) changes nothing about any grant.
+       * An entry REPLACES the defaults, so its `roles` may be wider than the
+       * global ones as well as narrower. Applied at every verification and
+       * every refresh, like the global roles, so a deploy that narrows an
+       * entry narrows tokens already issued. Empty (the default) changes nothing about any grant.
        * `src/auth/mcp-oauth/policy.ts` is the one reader.
        */
       clients: z

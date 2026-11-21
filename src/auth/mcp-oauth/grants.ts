@@ -60,6 +60,21 @@ import type { Cipher } from "./keys.ts";
  * only on the ones minted after the deploy.
  */
 
+/**
+ * The payload version. `1` is every grant with no slug set — byte for byte the
+ * shape minted before slug scopes existed. `2` is a grant that carries one, or
+ * an approval that carries the consent screen's `offered` list, and it exists
+ * for ROLLBACK: a build that predates the `slugs` field opens only `v: 1`
+ * (`keys.ts`), so it refuses a narrowed token outright rather than reading it as
+ * the whole ceiling. An unnarrowed grant stays `v: 1` so that the default
+ * config mints exactly what it always did.
+ */
+export type GrantVersion = 1 | 2;
+
+export function grantVersion(narrowing: unknown): GrantVersion {
+  return narrowing === undefined ? 1 : 2;
+}
+
 /** The prefixes that decide which door a presented credential goes through. */
 export const ACCESS_TOKEN_PREFIX = "strad_oat_";
 export const REFRESH_TOKEN_PREFIX = "strad_ort_";
@@ -142,7 +157,7 @@ export interface AuthorizationRequest {
 
 /** The consent screen's hidden field: a validated request awaiting a decision. */
 export interface PendingApproval extends AuthorizationRequest {
-  v: 1;
+  v: GrantVersion;
   identity: GrantIdentity;
   /** Google's refresh token for this grant. The reason this is encrypted. */
   googleRefreshToken: string;
@@ -160,7 +175,7 @@ export interface PendingApproval extends AuthorizationRequest {
 
 /** The authorization code. */
 export interface CodePayload {
-  v: 1;
+  v: GrantVersion;
   jti: string;
   /** `clientFingerprint(client_id)` — the grant's binding to its client. */
   cid: string;
@@ -176,7 +191,7 @@ export interface CodePayload {
 
 /** The refresh token. Note the absence of `exp`: it does not expire. */
 export interface RefreshPayload {
-  v: 1;
+  v: GrantVersion;
   jti: string;
   cid: string;
   resource: string;
@@ -190,7 +205,7 @@ export interface RefreshPayload {
 
 /** The access token. */
 export interface AccessPayload {
-  v: 1;
+  v: GrantVersion;
   jti: string;
   cid: string;
   /** The RFC 8707 audience. Compared against the canonical resource, only. */
@@ -247,7 +262,7 @@ export function mintCode(
   slugs: string[] | undefined = approval.slugs,
 ): string {
   const payload: CodePayload = {
-    v: 1,
+    v: grantVersion(slugs),
     jti: randomBytes(12).toString("base64url"),
     cid,
     redirectUri: approval.redirectUri,
@@ -273,7 +288,7 @@ export function mintAccessToken(
   now: number = Date.now(),
 ): string {
   const payload: AccessPayload = {
-    v: 1,
+    v: grantVersion(opts.slugs),
     jti: randomBytes(12).toString("base64url"),
     cid: opts.cid,
     aud: opts.aud,
@@ -299,7 +314,7 @@ export function mintRefreshToken(
   now: number = Date.now(),
 ): string {
   const payload: RefreshPayload = {
-    v: 1,
+    v: grantVersion(opts.slugs),
     jti: randomBytes(12).toString("base64url"),
     cid: opts.cid,
     resource: opts.resource,

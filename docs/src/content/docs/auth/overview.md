@@ -481,8 +481,14 @@ A token then reaches
 entitledServers(ceiling roles)  ∩  client servers allowlist  ∩  grant's slugs
 ```
 
-where the first two are read from the **current config** at every request and
-every refresh, and only the third comes from the token. `Principal.slugs` is the
+where the first two come from the **deployed config**, applied at every request
+and every refresh, and only the third comes from the token. A deploy that
+narrows an entry therefore narrows tokens already issued. An entry
+**replaces** the defaults rather than intersecting with them, so a listed
+client's `roles` may be wider than `auth.mcpOAuth.roles` — the shape for "no
+roles for unknown clients, `admin` for claude.ai" — and delisting a client
+while `allowUnlistedClients` is `true` moves its live tokens onto the global
+roles. `Principal.slugs` is the
 last two intersected, and `entitledServers` applies it after the two-way role
 check, so it can only remove.
 
@@ -516,9 +522,19 @@ auth:
   scope. A refresh naming no slug — `mcp`, or nothing — gets the grant as given,
   which is what a client whose human unticked boxes it never saw will send.
 
-The empty defaults change nothing: with no `clients` block every client gets the
-global roles and TTL, no token carries a slug set, and a token minted before slug
-scopes existed verifies to exactly the principal it always did.
+The empty defaults change nothing about any grant: with no `clients` block every
+client gets the global roles and TTL, and a token minted before slug scopes
+existed verifies to exactly the principal it always did. A token carries a slug
+set only when its client asked for `slug:` scopes or its human unticked a box.
+
+A narrowed grant is sealed as payload version `2`; an unnarrowed one stays `1`,
+exactly the shape minted before. A build that predates slug scopes opens only
+version `1`, so **rolling back** makes every narrowed token and refresh token
+fail (the client signs in again) rather than read as the whole ceiling.
+
+The roster editor honours the same set: a narrowed token's `save_connector`,
+`set_connector_enabled`, `remove_connector` and `restore_connector` may name
+only slugs inside it.
 
 ### Access tokens expire hourly; refresh tokens never expire
 

@@ -15,6 +15,7 @@ import {
 } from "../src/config/overlay.ts";
 import { RuntimeConfig } from "../src/config/runtime.ts";
 import { MemoryConfigStore } from "../src/config/store.ts";
+import connectorsServer from "../src/servers/connectors.ts";
 import { entitledServers } from "../src/gateway/entitlements.ts";
 import { buildGatewayServer } from "../src/gateway/mcpServer.ts";
 import { Registry } from "../src/gateway/registry.ts";
@@ -950,6 +951,50 @@ describe("a runtime write cannot re-point a checked-in slug it cannot reach", ()
         slugs: ["shop", "tunnel"],
       }),
     ).not.toThrow();
+  });
+
+  it("refuses every roster write outside a narrowed author's slugs, at the tool", async () => {
+    const runtime = reachRuntime();
+    const ctx = (principal: WritingPrincipal) =>
+      ({ runtime: () => runtime, principal }) as unknown as Parameters<
+        typeof connectorsServer.call
+      >[2];
+    const narrowed = { roles: ["admin"], slugs: ["shop"] };
+    for (const [name, args] of [
+      ["set_connector_enabled", { slug: "tunnel", enabled: false }],
+      ["remove_connector", { slug: "tunnel" }],
+      ["restore_connector", { slug: "tunnel" }],
+      ["save_connector", { entry: { slug: "brand-new", kind: "remote-http" } }],
+      [
+        "save_connector",
+        {
+          entry: { slug: "shop", kind: "remote-http" },
+          previousSlug: "tunnel",
+        },
+      ],
+    ] as const) {
+      const result = await connectorsServer.call(
+        name,
+        { ...args },
+        ctx(narrowed),
+      );
+      expect(result.isError, name).toBe(true);
+      expect(JSON.stringify(result.content), name).toContain(
+        "confined to named servers",
+      );
+    }
+    // Inside the set it is an ordinary write; unnarrowed it is too.
+    for (const who of [
+      { roles: ["admin"], slugs: ["tunnel"] },
+      { roles: ["admin"] },
+    ]) {
+      const ok = await connectorsServer.call(
+        "set_connector_enabled",
+        { slug: "tunnel", enabled: false },
+        ctx(who),
+      );
+      expect(JSON.stringify(ok.content)).not.toContain("confined");
+    }
   });
 
   it("STILL lets admin re-point anything, which is what makes this a tightening", () => {

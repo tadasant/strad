@@ -23,6 +23,7 @@ import {
   TX_TTL_MS,
   validChallenge,
   verifierMatches,
+  grantVersion,
   type AuthorizationRequest,
   type PendingApproval,
 } from "../auth/mcp-oauth/grants.ts";
@@ -590,7 +591,9 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
       const offered = request.slugs ?? ceilingSlugs(policy, cfg);
 
       const approval: PendingApproval = {
-        v: 1,
+        // `2` because it carries `offered`: a pre-slug build would ignore the
+        // human's unticked boxes and mint the whole request (`grantVersion`).
+        v: grantVersion(offered),
         ...request,
         identity: grant.identity,
         googleRefreshToken: grant.refreshToken,

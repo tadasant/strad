@@ -4956,6 +4956,9 @@ See `HACKS.md` #159.
   the client's ceiling reaches today, new slugs included. A grant narrowed to
   named slugs keeps that set until the client signs in again. A slug that
   leaves the ceiling drops out at the next request.
+- **A rollback signs narrowed grants out.** They are sealed as a payload
+  version a pre-slug build refuses, so after a rollback those clients sign in
+  again rather than getting the whole ceiling.
 - **No per-grant revocation yet.** Narrowing a client's entry narrows every
   token it holds; revoking one grant alone is still Google revocation, per user
   and per OAuth client.

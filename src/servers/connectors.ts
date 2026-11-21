@@ -446,6 +446,28 @@ async function write(
     );
   }
 
+  // An author confined to named slugs — an `/mcp` OAuth token scoped by
+  // `slug:` (`Principal.slugs`) — writes only those slugs: no create, edit,
+  // toggle, removal or restore of any other, whatever its roles reach. Every
+  // slug the call names is checked, a rename's old name included.
+  if (principal?.slugs) {
+    const allowed = principal.slugs;
+    const entrySlug =
+      typeof args.entry === "object" && args.entry !== null
+        ? (args.entry as Record<string, unknown>).slug
+        : undefined;
+    const named = [args.slug, entrySlug, args.previousSlug].filter(
+      (s): s is string => typeof s === "string" && s !== "",
+    );
+    const outside = named.filter((s) => !allowed.includes(s));
+    if (outside.length > 0) {
+      return FAILURE(
+        `This credential is confined to named servers, and ${outside.join(", ")} ` +
+          `is not among them. Nothing was written.`,
+      );
+    }
+  }
+
   const overlay = runtime.overlay();
   const expected = args.expectedRevision;
   if (typeof expected === "number" && expected !== overlay.revision) {
