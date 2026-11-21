@@ -62,7 +62,13 @@ import {
   sign as cryptoSign,
   type KeyObject,
 } from "node:crypto";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
 import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -89,6 +95,26 @@ interface Args {
   state?: string;
   port: number;
 }
+
+/** The loopback ports the client documents list; any other is a redirect mismatch. */
+const CALLBACK_PORTS = [53682, 53683];
+
+function callbackPort(raw: string | undefined): number {
+  const port = Number(raw ?? CALLBACK_PORTS[0]);
+  if (!CALLBACK_PORTS.includes(port)) {
+    throw new Error(`--port is one of ${CALLBACK_PORTS.join(", ")}`);
+  }
+  return port;
+}
+
+/**
+ * Mirrors staging's `grants.refreshReuseGraceSeconds: 30` in
+ * infra/strad.staging.yaml, plus a second. Change both together.
+ */
+const REUSE_GRACE_MS = 31_000;
+
+/** The test clients' `refreshTokenTtlSeconds: 3600`, measured from sign-in. */
+const GRANT_LIFETIME_MS = 3_600_000;
 
 function parseArgs(argv: string[]): Args {
   const [command = "help", ...rest] = argv;
@@ -124,7 +150,7 @@ function parseArgs(argv: string[]): Args {
       `${home}/.config/strad-oauth-test/staging-confidential.private.jwk.json`,
     keep: flags.get("keep"),
     state: flags.get("state"),
-    port: Number(flags.get("port") ?? 53682),
+    port: callbackPort(flags.get("port")),
   };
 }
 
@@ -143,6 +169,10 @@ function pass(what: string): void {
 function fail(what: string, detail: string): void {
   failures++;
   console.log(`  FAIL  ${what}: ${detail}`);
+}
+
+function skip(what: string, why: string): void {
+  console.log(`  skip  ${what}: ${why}`);
 }
 
 function expect(cond: boolean, what: string, detail: string): boolean {
@@ -188,15 +218,16 @@ function keygen(path: string): void {
     use: "sig",
     alg: "ES256",
   };
-  writeFileSync(path, JSON.stringify(priv, null, 2) + "\n", { mode: 0o600 });
-  chmodSync(path, 0o600);
   const jwks = existsSync(JWKS_FILE)
     ? (JSON.parse(readFileSync(JWKS_FILE, "utf8")) as { keys: unknown[] })
     : { keys: [] };
-  jwks.keys.push(pub);
-  if (jwks.keys.length > 16) {
+  if (jwks.keys.length >= 16) {
     throw new Error("strad reads at most 16 keys per set; drop an old one");
   }
+  jwks.keys.push(pub);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(path, JSON.stringify(priv, null, 2) + "\n", { mode: 0o600 });
+  chmodSync(path, 0o600);
   writeFileSync(JWKS_FILE, JSON.stringify(jwks, null, 2) + "\n");
   console.log(`private key: ${path} (mode 600, kid ${kid})`);
   console.log(`public key added to ${JWKS_FILE}`);
@@ -393,8 +424,19 @@ function authorizeUrl(
 async function check(ctx: Ctx): Promise<boolean> {
   const { base, docs } = ctx.args;
   stage(`metadata at ${base}`);
-  const prm = await getJson(`${base}/.well-known/oauth-protected-resource/mcp`);
-  const asm = await getJson(`${base}/.well-known/oauth-authorization-server`);
+  let prm: Awaited<ReturnType<typeof getJson>>;
+  let asm: Awaited<ReturnType<typeof getJson>>;
+  try {
+    prm = await getJson(`${base}/.well-known/oauth-protected-resource/mcp`);
+    asm = await getJson(`${base}/.well-known/oauth-authorization-server`);
+  } catch (err) {
+    notRunning = true;
+    fail(
+      "the deployment answers",
+      `${err instanceof Error ? err.message : String(err)}. Is staging deployed?`,
+    );
+    return false;
+  }
   if (asm.status === 404) {
     notRunning = true;
     fail(
@@ -504,12 +546,12 @@ async function check(ctx: Ctx): Promise<boolean> {
         kid?: string;
       }>
     ).map((k) => k.kid);
-    expect(
-      ctx.key !== null && kids.includes(ctx.key.kid),
-      "the published JWKS carries this machine's key",
+    const what = "the published JWKS carries this machine's key";
+    const detail =
       `local kid ${ctx.key?.kid ?? "(none)"}, published ${JSON.stringify(kids)}. ` +
-        "Run keygen and merge the JWKS before `run`.",
-    );
+      "Run keygen and merge the JWKS before `run`.";
+    if (ctx.args.command === "check" && ctx.key === null) skip(what, detail);
+    else expect(ctx.key !== null && kids.includes(ctx.key.kid), what, detail);
   }
 
   stage("authorize-time refusals (no sign-in needed)");
@@ -549,7 +591,7 @@ async function check(ctx: Ctx): Promise<boolean> {
 async function waitForCode(
   port: number,
   expectedState: string,
-): Promise<string> {
+): Promise<{ code: string; iss: string | null }> {
   return new Promise((resolveCode, reject) => {
     let done = false;
     const finish = (raw: string): boolean => {
@@ -575,7 +617,10 @@ async function waitForCode(
       } else if (url.searchParams.get("state") !== expectedState) {
         reject(new Error("state mismatch on the callback"));
       } else {
-        resolveCode(code ?? "");
+        resolveCode({
+          code: code ?? "",
+          iss: url.searchParams.get("iss"),
+        });
       }
       return true;
     };
@@ -608,6 +653,7 @@ interface Live {
   refresh: string;
   previousRefresh: string;
   rotatedAt: number;
+  signedInAt: number;
 }
 
 async function refresh(ctx: Ctx, token: string, withAssertion = true) {
@@ -624,7 +670,15 @@ async function refresh(ctx: Ctx, token: string, withAssertion = true) {
 }
 
 async function run(ctx: Ctx): Promise<void> {
-  if (!(await check(ctx))) return;
+  if (!(await check(ctx)) || failures > 0) {
+    console.log("\ncheck failed, so no sign-in was started.");
+    return;
+  }
+  console.log(
+    "\nReminder: with the grant store unreachable, consent answers 503 after the\n" +
+      "Google sign-in. Open /tokens/grants on the staging console first; if it says\n" +
+      "the grant store could not be read, stop here.",
+  );
 
   stage(`sign-in as the ${ctx.kind} test client`);
   const verifier = randomBytes(32).toString("base64url");
@@ -635,10 +689,18 @@ async function run(ctx: Ctx): Promise<void> {
     "\nOpen this URL, sign in with a tadasant.com Google account, and click Allow:\n\n" +
       `  ${url}\n\n` +
       `If the browser is on another machine, the last page fails to load; paste\n` +
-      `its full address here and press enter.\n`,
+      `its full address here and press enter WITHIN A MINUTE of clicking Allow\n` +
+      `(a code lives 60 s).\n`,
   );
-  const code = await waitForCode(ctx.args.port, state);
+  const callback = await waitForCode(ctx.args.port, state);
+  const code = callback.code;
+  const signedInAt = Date.now();
   pass("received an authorization code");
+  expect(
+    callback.iss === ctx.args.base,
+    "the callback's iss names this authorization server (RFC 9207)",
+    String(callback.iss),
+  );
 
   stage("code exchange");
   const exchange = {
@@ -750,6 +812,7 @@ async function run(ctx: Ctx): Promise<void> {
     refresh: current,
     previousRefresh: rt1,
     rotatedAt,
+    signedInAt,
   };
   if (ctx.args.keep) {
     writeFileSync(ctx.args.keep, JSON.stringify(live) + "\n", { mode: 0o600 });
@@ -788,7 +851,7 @@ async function terminal(ctx: Ctx, live: Live): Promise<void> {
     );
   } else {
     stage("refresh-token replay");
-    const wait = Math.max(0, live.rotatedAt + 31_000 - Date.now());
+    const wait = Math.max(0, live.rotatedAt + REUSE_GRACE_MS - Date.now());
     if (wait > 0) {
       console.log(
         `  waiting ${Math.ceil(wait / 1000)} s for the 30 s reuse grace to pass`,
@@ -819,12 +882,24 @@ async function resume(ctx: Ctx): Promise<void> {
   // An access token may have expired across a slow deploy; the refresh is the
   // real question, since it can only succeed from the durable record.
   if (ok.ok) pass("the kept access token still works");
+  if (Date.now() - live.signedInAt > GRANT_LIFETIME_MS) {
+    skip(
+      "the kept grant after a restart",
+      "more than an hour since sign-in, past the test clients' refresh lifetime. " +
+        "That is expiry, not a durability failure; run again and resume sooner.",
+    );
+    return;
+  }
   const r = await refresh(ctx, live.refresh);
-  expect(
-    r.status === 200,
-    "the kept refresh token rotates after the restart (the record is durable)",
-    `status ${r.status} ${String(r.body.error)}`,
-  );
+  if (
+    !expect(
+      r.status === 200,
+      "the kept refresh token rotates after the restart (the record is durable)",
+      `status ${r.status} ${String(r.body.error)}`,
+    )
+  ) {
+    return;
+  }
   await terminal(ctx, {
     ...live,
     access: String(r.body.access_token ?? live.access),

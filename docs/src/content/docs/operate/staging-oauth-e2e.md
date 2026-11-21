@@ -60,22 +60,24 @@ What the rehearsal needs, and whether staging has it:
 | ------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | A Google OAuth client (Web application, `tadasant.com`) with redirect URI `https://staging.strad.tadasant.com/oauth/callback/google` | Google Cloud Console, then `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` in `/strad/staging/gateway/static/`                          | absent ([#6](https://github.com/tadasant/strad/issues/6))                                      |
 | The key the server seals with                                                                                                        | `STRAD_OAUTH_KEY`, else `CONSOLE_SESSION_SECRET`, else `GOOGLE_CLIENT_SECRET`                                                       | falls back to `GOOGLE_CLIENT_SECRET` once that exists; a dedicated `STRAD_OAUTH_KEY` is better |
-| The grant store                                                                                                                      | `STRAD_STATE_GCS_BUCKET` / `_CLIENT_EMAIL` / `_PRIVATE_KEY` in `/strad/staging/gateway/static/`, a bucket that credential can write | absent: no staging component uses the state store yet                                          |
+| The grant store                                                                                                                      | `STRAD_STATE_GCS_BUCKET` / `_CLIENT_EMAIL` / `_PRIVATE_KEY` in `/strad/staging/gateway/static/`, a bucket that credential can write | not required by any enabled staging component, so probably unseeded                            |
 | The confidential client's private key                                                                                                | the machine running the test, never the store                                                                                       | generated with `keygen` (below)                                                                |
 | A human who can sign in to the `tadasant.com` Workspace                                                                              | a browser                                                                                                                           | every run, once                                                                                |
 
 With the Google client and no grant store, sign-in reaches the consent screen,
-and consent answers `503 temporarily_unavailable`, because a new grant needs a
-record. Seed both together.
+and consent answers a `503` page ("strad could not record this connection"),
+because a new grant needs a record. Seed both together.
 
 ## Running it
 
 Staging sleeps every night (`teardown-staging.yml`). Dispatch `deploy-staging.yml`
-on `main` first.
+on `main` first. Before a `run`, open `/tokens/grants` on the staging console. If
+it says the grant store could not be read, stop: the sign-in would end in that
+`503`, and `check` can't see the store from outside.
 
 **1. Hold a key the published set knows.** The confidential client only accepts
-assertions signed by a key in `staging-confidential.jwks.json`. If you don't hold
-one:
+assertions signed by a key in `staging-confidential.jwks.json`. The set ships
+empty, so the first operator has to add one. If you don't hold one:
 
 ```sh
 node --experimental-transform-types scripts/staging-oauth-e2e.ts keygen \
@@ -84,7 +86,8 @@ node --experimental-transform-types scripts/staging-oauth-e2e.ts keygen \
 
 That writes the private JWK (mode 600, never printed) and adds the public half
 to the set. Open a PR with the set change and merge it. strad re-fetches the set
-when it sees an unknown `kid`, so no staging deploy is needed. The set holds up
+when it sees an unknown `kid`, so no staging deploy is needed, though it can take
+a minute (a 30 s refetch interval, plus whatever the docs site caches). The set holds up
 to sixteen keys, so each operator can keep their own. Delete a key you have lost.
 
 **2. Check what no sign-in is needed for.**
@@ -99,7 +102,9 @@ slug scope, a revocation endpoint. It checks that `/oauth/register` answers `404
 and that the three client documents are served as JSON under their own URL. It
 also checks two authorize-time refusals: `slug:secrets` is `invalid_scope`, and
 the unlisted client gets `403`. Exit `2` means the authorization server isn't
-running at all, and says why.
+running at all (or staging isn't up), and says why. Without a local key, the
+JWKS comparison is a skip here. It is a failure in `run`, which refuses to start
+a sign-in when anything in `check` failed.
 
 **3. Run the confidential client.**
 
@@ -110,7 +115,9 @@ node --experimental-transform-types scripts/staging-oauth-e2e.ts run --client co
 It prints an authorize URL. Open it, sign in with a `tadasant.com` account and
 click Allow. If the browser is on the same machine, the loopback listener catches
 the code. If it isn't, the last page fails to load. Paste its address into the
-terminal. Everything after that runs unattended:
+terminal **within a minute** of clicking Allow, because a code lives 60 s. The
+callback's `iss` must name staging (RFC 9207). Everything after that runs
+unattended:
 
 | Step                | Asserts                                                                                                                                |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
@@ -126,7 +133,10 @@ presents the spent refresh token again. That replay must revoke the whole grant.
 
 **5. Durability across a restart (optional).** `run ... --keep <file>` stops
 before the terminal step and writes the live tokens to `<file>` (mode 600).
-Redeploy staging, then `resume --state <file>`. The kept refresh token must
+Redeploy staging, then `resume --state <file>` **within an hour of the sign-in**.
+The test clients' refresh tokens live an hour from creation, so a later resume
+reports a skip, not a durability failure. The nightly teardown doesn't wait for
+you. The kept refresh token must
 rotate, which only the durable record in GCS can make happen. Then it runs the
 terminal step.
 

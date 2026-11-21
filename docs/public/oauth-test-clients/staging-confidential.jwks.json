@@ -1,13 +1,3 @@
 {
-  "keys": [
-    {
-      "kty": "EC",
-      "x": "29D7bQDAp4SiVfQCFduGL61PpU3Jvxh1XXkOcDgeyxY",
-      "y": "UXzsok0SqhRKytr-o-D8RHzZT1nCBh7WHA0WS6k8jwA",
-      "crv": "P-256",
-      "kid": "staging-test-2026-11-21-015377",
-      "use": "sig",
-      "alg": "ES256"
-    }
-  ]
+  "keys": []
 }
