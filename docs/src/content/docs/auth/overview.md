@@ -647,13 +647,14 @@ The authorization server issues grants one of two ways, and
 time. The two can coexist: a stateless token issued before records were turned
 on is governed by `grants.legacyTokens`.
 
-|                       | Stateless (`grants.enabled: false`)                                              | Record-backed (`grants.enabled: true`)                                                             |
-| --------------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Refresh token         | never expires, never rotates — the same token comes back                         | rotates on every refresh; a spent one presented again revokes the grant                            |
-| Refresh lifetime      | none                                                                             | `grants.refreshTokenTtlSeconds`, per client `clients[].refreshTokenTtlSeconds`; absent = none      |
-| Google refresh token  | sealed inside the code and the refresh token                                     | in the record, server-side; no token carries it                                                    |
-| `POST /oauth/revoke`  | refresh tokens only, and revokes **at Google** — every connector for the account | an access token (that token), a refresh token (that grant), each within seconds; nothing at Google |
-| Listed in the console | no                                                                               | `/tokens/grants`, with a Revoke                                                                    |
+|                       | Stateless (`grants.enabled: false`)                                              | Record-backed (`grants.enabled: true`)                                                                  |
+| --------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Refresh token         | never expires, never rotates — the same token comes back                         | rotates on every refresh; a spent one presented again revokes the grant                                 |
+| Refresh lifetime      | none                                                                             | `grants.refreshTokenTtlSeconds`, per client `clients[].refreshTokenTtlSeconds`; absent = none           |
+| Google refresh token  | sealed inside the code and the refresh token                                     | in the record, server-side; no token carries it                                                         |
+| `POST /oauth/revoke`  | refresh tokens only, and revokes **at Google** — every connector for the account | an access token (that token), a refresh token (that grant), each within seconds; nothing at Google      |
+| Listed in the console | no                                                                               | `/tokens/grants`, with a Revoke                                                                         |
+| Token exchange        | not available                                                                    | a listed confidential client with `tokenExchange` can mint [child tokens](#token-exchange-child-tokens) |
 
 ### Access tokens
 
