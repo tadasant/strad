@@ -8393,3 +8393,35 @@ versioned, cached for a day, read-only to core's resolver credential.
 **Undo.** Set `auth.mcpOAuth.grants.enabled: false`. Record-backed tokens are
 refused (their holders sign in again, statelessly); stateless tokens behave as
 they did before — including any revoked while records were on (item 9).
+
+## 164. strad-hostd's browser reads redact token-shaped values by heuristic
+
+**What.** `read_page` and `evaluate_script` on strad-hostd's browser server
+replace token-shaped values with `[redacted:token]` before the result leaves
+the Mac (`hostd/src/browser/redact.ts`), and refuse `text`/`html` reads and
+scripts outright on configured credential pages (`browser.credentialPages`).
+
+**Why.** On 2026-11-21 a `read_page` of GlitchTip's auth-tokens list put two
+live tokens, one org-admin, into an agent transcript. The call carries only a
+`tab_id`, so nothing before it knows the URL, and anything after it is too
+late: the value is already in context. The daemon is the last place that holds
+the text.
+
+**What it costs.**
+
+1. **It is a heuristic.** A credential with no known prefix, shorter than the
+   thresholds (48 hex, 40 base64) and not labelled as one passes through. A
+   40-hex token (GitHub's legacy OAuth format) is indistinguishable from a git
+   SHA and is left.
+2. **It over-redacts.** A random-looking run that is not a credential — a CSRF
+   value, an inline `data:` image in `html`, a 64-hex checksum without a
+   `sha256:` prefix, a certificate PEM — comes back redacted. There is no
+   per-call opt-out on purpose; the custody server is the route to a value.
+3. **The credential-page list is URL globs** matched against `location.href`,
+   read just before the page. A navigation in between, or a token page on a
+   path the list does not name, falls back to redaction alone.
+4. **Other tools are not covered.** `take_screenshot` returns pixels, and
+   `list_tabs`/`open_tab`/`navigate_tab` return titles and URLs unredacted.
+
+**Undo.** `browser.credentialPages: []` turns the refusal off. Redaction has
+no switch.

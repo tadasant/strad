@@ -282,6 +282,81 @@ describe("the browser server through the extension", () => {
   });
 });
 
+describe("what a read lets leave the machine", () => {
+  const token = "0f".repeat(4) + "9a3c5e7b1d2f4a6c8e0b".repeat(3) + "d00d";
+  const pat = "ghp_Ab3dEf6hIj9lMn2pQr5tUv8xYz1bCd4fGh7j";
+
+  it("read_page and evaluate_script return a token-shaped value as [redacted:token]", async () => {
+    const tab = ext.addTab(
+      "Tokens",
+      "https://ci.example/keys",
+      `Deploy key\n${token}\nPersonal ${pat}\nCreated today`,
+    );
+    const read = await call("read_page", { tab_id: String(tab.id) });
+    expect(JSON.stringify(read)).not.toContain(token);
+    expect(JSON.stringify(read)).not.toContain(pat);
+    const out = resultJson<{ text: string; redacted: number }>(read);
+    expect(out.text).toBe(
+      "Deploy key\n[redacted:token]\nPersonal [redacted:token]\nCreated today",
+    );
+    expect(out.redacted).toBe(2);
+
+    const html = await call("read_page", {
+      tab_id: String(tab.id),
+      format: "html",
+    });
+    expect(JSON.stringify(html)).not.toContain(token);
+
+    const ev = await call("evaluate_script", {
+      tab_id: String(tab.id),
+      expression: "document.body.innerText",
+    });
+    expect(ev.isError).toBeFalsy();
+    expect(JSON.stringify(ev)).not.toContain(token);
+    expect(resultJson<{ redacted: number }>(ev).redacted).toBe(2);
+  });
+
+  it("redacts a page's exception text too", async () => {
+    const res = await call("evaluate_script", {
+      tab_id: "100",
+      expression: `throw:"${pat}" is not valid JSON`,
+    });
+    expect(res.isError).toBe(true);
+    expect(resultText(res)).toMatch(/is not valid JSON/);
+    expect(JSON.stringify(res)).not.toContain(pat);
+  });
+
+  it("a page with nothing token-shaped comes back untouched, with no redacted field", async () => {
+    const read = resultJson<Record<string, unknown>>(
+      await call("read_page", { tab_id: "100" }),
+    );
+    expect(read.text).toBe("You have mail");
+    expect(read).not.toHaveProperty("redacted");
+  });
+
+  it("refuses text, html and scripts on a credential page, and still lists its elements", async () => {
+    const tab = ext.addTab(
+      "Auth Tokens",
+      "https://app.glitchtip.com/profile/auth-tokens",
+      `Auth Tokens\n${token}\nDelete`,
+    );
+    const tab_id = String(tab.id);
+    for (const [tool, args] of [
+      ["read_page", { tab_id }],
+      ["read_page", { tab_id, format: "html" }],
+      ["evaluate_script", { tab_id, expression: "1" }],
+    ] as const) {
+      const res = await call(tool, args);
+      expect(res.isError, tool).toBe(true);
+      expect(resultText(res)).toMatch(/credential page pattern/);
+      expect(JSON.stringify(res)).not.toContain(token);
+    }
+    const elements = await call("read_page", { tab_id, format: "elements" });
+    expect(elements.isError).toBeFalsy();
+    expect(JSON.stringify(elements)).not.toContain(token);
+  });
+});
+
 describe("a click in a background tab", () => {
   const sent =
     (into: string[]) =>

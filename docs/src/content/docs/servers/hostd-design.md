@@ -350,6 +350,12 @@ grant and the kill switch. The tool description says it is not sandboxed.
 `list_tabs`, `open_tab`, `navigate_tab`, `read_page`, `click_element`,
 `type_text`, `evaluate_script`, `take_screenshot`, `activate_tab`, `close_tab`.
 
+`read_page` and `evaluate_script` results are redacted for token-shaped values
+in the daemon, and refused on configured credential pages, before they leave the
+machine ([what a read takes out](/servers/hostd/#what-a-read-takes-out)). The
+call carries a `tab_id` and no URL, so a client-side hook before it knows
+nothing, and one after it is too late.
+
 The requirement is the owner's real, running profile. The options differ on
 exactly that point:
 

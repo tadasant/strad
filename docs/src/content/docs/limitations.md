@@ -5038,3 +5038,22 @@ Off by default.
   revoked?), so it answers `503` while the store is unreachable.
 - **`legacyTokens: upgrade` revokes a grant whose client keeps using the old
   stateless token** after the grace window. `accept` is the default.
+
+### 164. strad-hostd's browser reads redact token-shaped values by heuristic
+
+`read_page` and `evaluate_script` replace token-shaped values with
+`[redacted:token]`, and refuse text, html and scripts on credential pages. See
+[what a read takes out](/servers/hostd/#what-a-read-takes-out).
+
+- **It is a heuristic.** A credential with no known prefix, under 48 hex or 40
+  random base64 characters, and not labelled as one, passes through. A 40-hex
+  token looks like a git SHA and is left.
+- **It over-redacts.** A CSRF value, an inline `data:` image or an unprefixed
+  64-hex checksum comes back as `[redacted:token]`. There is no opt-out; to
+  take a credential, use custody.
+- **Credential pages are URL globs** checked just before the read, so a token
+  page the list does not name gets redaction alone.
+- **Screenshots are not redacted, and neither are the titles and URLs that
+  `list_tabs`, `open_tab` and `navigate_tab` return.** `read_page`'s own are.
+
+See `HACKS.md` #164.

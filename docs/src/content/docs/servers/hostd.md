@@ -323,6 +323,57 @@ nobody objects, set `"consent": { "onTimeout": "allow" }` in
 `~/.strad-hostd/config.json` and restart. Read the design page's consent section
 first: with that setting and nobody at the screen, the dialog protects nothing.
 
+### What a read takes out
+
+`read_page` and `evaluate_script` redact token-shaped values before the result
+leaves the Mac, because a page that lists credentials in full (an API-tokens
+settings page, a project's DSN) is otherwise a read away from a transcript.
+Each one becomes `[redacted:token]`, and the result gains
+`"redacted": <count>` with a note saying so. What counts as token-shaped:
+
+- a known prefix: `ghp_`/`gho_`/`ghs_`…, `github_pat_`, `xox[abposr]-`,
+  `xapp-`, `sk-` (OpenAI, Anthropic, OpenRouter), `glpat-` and GitLab's other
+  prefixes, `sk_live_`/`rk_live_`, `whsec_`, `lin_api_`, `sntrys_`/`sntryu_`,
+  `AKIA`/`ASIA`, `AIza`, `ya29.`, `GOCSPX-`, `npm_`, `hf_`, `dop_v1_`,
+  Airtable's `pat…`, Shopify's `shpat_`, 1Password's `ops_`, Telegram bot
+  tokens, SendGrid's `SG.`, Twilio's `SK…`, Replicate's `r8_`, Grafana's
+  `glsa_`, and JWTs;
+- a URL's userinfo when it has a password or a key-length user, which is a
+  Sentry or GlitchTip DSN and a `postgres://user:pass@` string;
+- a PEM block, or a BEGIN line followed by base64 to the end of the page (a
+  BEGIN line quoted in prose is left);
+- a value right after a word that names one (`token:`, `"api_key": "…"`,
+  `"access_token": "…"`, `refreshToken=…`, `Bearer …`);
+- 48 or more hex characters (a GlitchTip or legacy Sentry token is 64; a git
+  SHA, at 40, is left alone, and so is a `sha256:` digest);
+- 40 or more base64 characters that look random: upper and lower case, digits,
+  and high per-character entropy. In a URL path only the random-looking
+  segment goes, so `docs.google.com/document/d/[redacted:token]/edit` keeps
+  its host.
+
+`read_page`'s `elements` format keeps each `selector` verbatim, since
+`click_element` needs it, and judges an `href` (and `read_page`'s own `url`)
+by its query and fragment only, so a link with a random id in its path still
+works. Redaction runs before `max_chars` clips, and before an element's label
+is cut to 80 characters, so a clip cannot halve a token into pieces too short
+to recognise. A page's exception text, which `evaluate_script` and `read_page`
+return on failure, is redacted too.
+
+On a **credential page** the browser server does not read at all: `read_page`
+`text` and `html` and `evaluate_script` are refused, and `elements` still
+lists buttons. The defaults are GlitchTip's `/profile/auth-tokens`, Sentry's
+`/settings/…auth-tokens`, GitHub's `/settings/tokens` and
+`/settings/personal-access-tokens`, GitLab's personal access tokens page, and
+the API-key pages of DigitalOcean, Stripe, OpenAI, Anthropic and Cloudflare.
+`browser.credentialPages` in `~/.strad-hostd/config.json` replaces the list
+(URL globs, `*` for any run of characters); `[]` turns the refusal off and
+leaves redaction on.
+
+This is a heuristic ([limitation #164](/limitations/)). A credential with no
+known prefix, too short, or not random enough passes through. To take a
+credential, use [custody](/servers/hostd-custody/), whose capture tools never
+return a value and are not touched by any of this.
+
 ### Copying a secret a page shows once
 
 A console that mints a token (GitHub's new-token page, say) shows it once,

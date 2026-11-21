@@ -5,6 +5,8 @@
  */
 
 /** The page's interactive elements, each with a selector that finds it again. */
+// Labels come back long (2000) and are clipped to 80 in the daemon AFTER
+// redaction, so a clip cannot leave a token's tail too short to recognise.
 export const LIST_ELEMENTS = `(() => {
   const pick = 'a[href],button,input,select,textarea,[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[contenteditable=true],[onclick]';
   const path = (el) => {
@@ -22,7 +24,7 @@ export const LIST_ELEMENTS = `(() => {
     const r = el.getBoundingClientRect();
     const st = getComputedStyle(el);
     if (r.width === 0 || r.height === 0 || st.visibility === 'hidden' || st.display === 'none') continue;
-    const label = (el.getAttribute('aria-label') || el.innerText || el.value || el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('name') || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
+    const label = (el.getAttribute('aria-label') || el.innerText || el.value || el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('name') || '').trim().replace(/\\s+/g, ' ').slice(0, 2000);
     out.push({ selector: path(el), tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || undefined, role: el.getAttribute('role') || undefined, label, href: el.tagName === 'A' ? el.href : undefined });
     if (out.length >= 400) break;
   }

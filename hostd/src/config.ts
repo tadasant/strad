@@ -9,6 +9,7 @@ import {
   slugFor,
   type CapabilityId,
 } from "./capabilities.js";
+import { DEFAULT_CREDENTIAL_PAGES } from "./browser/redact.js";
 import { keysMatch } from "./mcp/auth.js";
 
 /**
@@ -121,6 +122,16 @@ const BrowserConfig = z
     userDataDir: z.string().min(1).optional(),
     /** An explicit DevTools HTTP endpoint instead, e.g. http://127.0.0.1:9222. */
     cdpUrl: z.string().url().optional(),
+    /**
+     * Pages that exist to show a credential, as URL globs (`*` is any run of
+     * characters, matched against the tab's whole URL). On a match, read_page
+     * "text" / "html" and evaluate_script are refused; "elements" still works.
+     * Setting this REPLACES the defaults; `[]` turns the refusal off. Every
+     * read is redacted for token-shaped values either way.
+     */
+    credentialPages: z
+      .array(z.string().min(1))
+      .default([...DEFAULT_CREDENTIAL_PAGES]),
   })
   .default({});
 
