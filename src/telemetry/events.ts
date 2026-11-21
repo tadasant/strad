@@ -348,13 +348,50 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
     "mcp_oauth.denied": ["reason"],
     /**
      * A token revoked through `/oauth/revoke` (RFC 7009). `token` is `access`,
-     * `refresh` (a record-backed grant) or `legacy_refresh` (a stateless one).
+     * `child` (a token-exchange child, with its validated `label` when it has
+     * one — see `mcp_oauth.exchange`), `refresh` (a record-backed grant) or
+     * `legacy_refresh` (a stateless one).
      * `outcome` is `ok`, `unknown` (no record to revoke), or — without grant
      * records, where revocation happens at Google — `failed`, which means a
      * grant the holder believes is dead is still live until the call is
      * retried, and is the one thing about this endpoint worth an alert.
      */
-    "mcp_oauth.revoked": ["token", "outcome"],
+    "mcp_oauth.revoked": ["token", "outcome", "label"],
+    /**
+     * An RFC 8693 token exchange (`exchangeGrant` in src/http/oauth.ts),
+     * issued or refused AFTER the client's `private_key_jwt` assertion
+     * verified — a refusal before that is `mcp_oauth.refused` and does not
+     * ship, so producing one of these costs the client's private key and a
+     * live access token, and the volume argument does not reach it.
+     *
+     * `outcome` is `issued` or `refused`; `reason` is a closed set the
+     * handler wrote (`exchange`, `child_cap`, `scope_beyond`,
+     * `subject_dead`, …); `client` is the derived handle `mcp_oauth.granted`
+     * ships; `slug_count` and `ttl_seconds` are numbers this server computed.
+     *
+     * `label` is the ONE client-authored string on this list, and it is here
+     * on purpose: it is how an operator finds which agent session holds which
+     * child token, which is the reason it exists. What makes it safe is its
+     * shape, checked before it is stored or logged (`EXCHANGE_LABEL`): at
+     * most 64 characters of `A-Za-z0-9.:-`, so no strad credential (they all
+     * start `strad_`) and no sealed token can be one, and nothing else on
+     * this list shares the key. `mcp_oauth.revoked` carries the same
+     * label, read back from the child's record, when a child is revoked.
+     * No token, subject or child, is on any list.
+     *
+     * Not in `THROTTLED`, unlike most client-driven events: each `issued`
+     * record is the label → child record an operator looks a session up by,
+     * so dropping one loses the answer, and every record costs a fresh
+     * single-use signed assertion from the client's own key.
+     */
+    "mcp_oauth.exchange": [
+      "outcome",
+      "reason",
+      "client",
+      "label",
+      "slug_count",
+      "ttl_seconds",
+    ],
     /**
      * A server-side grant record changed state (`grant-store.ts`). `action` is
      * `created`, `upgraded`, `rotated`, `reissued` or `revoked`; `reason` is a

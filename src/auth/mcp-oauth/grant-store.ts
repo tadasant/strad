@@ -123,6 +123,22 @@ export interface GrantRecord {
   /** Set when this grant was upgraded from a stateless legacy refresh token. */
   fromLegacy?: boolean;
   /**
+   * Present on a CHILD minted by RFC 8693 token exchange (`exchangeGrant` in
+   * `src/http/oauth.ts`): one access token, no refresh token, `parentGid` set,
+   * `expiresAt` its own expiry. Such a record is never a subject token itself.
+   *
+   * `label` is the client's opaque tag for it — Zimmer sends its session id —
+   * shown on the console and exported with `mcp_oauth.exchange`. Validated to
+   * `EXCHANGE_LABEL` before it is stored, so it is never a credential.
+   */
+  exchange?: { label?: string };
+  /**
+   * On a PARENT: its live token-exchange children, child gid → expiry. This
+   * is the count `maxLiveChildren` caps. An entry leaves when the child
+   * expires (dropped on the parent's next write) or is revoked.
+   */
+  children?: Record<string, number>;
+  /**
    * A random id the last activating or rotating write stamped. A re-run of
    * that same decision (the transport replayed a write that had in fact
    * landed, and got a 412) recognises its own write by it, instead of reading
@@ -185,6 +201,12 @@ const PENDING_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_RETAIN_MS = 7 * 24 * 60 * 60 * 1000;
 /** The default staleness bound on the access-token path. */
 export const DEFAULT_STALE_AFTER_MS = 15_000;
+/**
+ * How long a dead token-exchange child is kept before the sweep deletes it.
+ * Shorter than a grant's: a client mints one per agent turn, and a week of
+ * those is thousands of rows nobody needs once the day is over.
+ */
+const CHILD_RETAIN_MS = 24 * 60 * 60 * 1000;
 /** How deep a parent chain may go. A token-exchange chain is one or two hops. */
 const MAX_DEPTH = 8;
 /** Conditional-write retries before a contended update gives up. */
@@ -211,6 +233,8 @@ export class GrantStore {
   private blobsPromise: Promise<BlobStore> | undefined;
   private lastSweep = 0;
   private lastStaleWarn = 0;
+  /** Per-grant serialisation of child reservations in this process. */
+  private readonly reserving = new Map<string, Promise<unknown>>();
 
   constructor(opts: GrantStoreOptions) {
     this.opts = opts;
@@ -474,6 +498,12 @@ export class GrantStore {
       if (durable.state === "revoked") return { write: null, result: true };
       return { write: revokedCopy(durable, reason, at), result: true };
     });
+    // A token-exchange child gives its slot under the parent back, so a
+    // client that revokes as it goes never meets `maxLiveChildren`.
+    const child = out.record;
+    if (child?.exchange && child.parentGid) {
+      await this.releaseChild(child.parentGid, gid).catch(() => undefined);
+    }
     return out.result;
   }
 
@@ -587,18 +617,96 @@ export class GrantStore {
   async chain(
     record: GrantRecord,
     opts: { fresh?: boolean } = {},
-  ): Promise<{ root: GrantRecord; dead: string | null }> {
+  ): Promise<{ root: GrantRecord; dead: string | null; path: GrantRecord[] }> {
     let current = record;
+    // Every record walked, the grant itself first: a caller that judges
+    // deadlines (an expired PARENT ends its children) needs all of them.
+    const path: GrantRecord[] = [];
     for (let depth = 0; depth < MAX_DEPTH; depth++) {
+      path.push(current);
       if (current.state !== "active") {
-        return { root: current, dead: current.state };
+        return { root: current, dead: current.state, path };
       }
-      if (!current.parentGid) return { root: current, dead: null };
+      if (!current.parentGid) return { root: current, dead: null, path };
       const parent = await this.get(current.parentGid, opts);
-      if (!parent) return { root: current, dead: "parent_missing" };
+      if (!parent) return { root: current, dead: "parent_missing", path };
       current = parent;
     }
-    return { root: current, dead: "chain_too_deep" };
+    return { root: current, dead: "chain_too_deep", path };
+  }
+
+  // -------------------------------------------------------------------------
+  // Token-exchange children
+  // -------------------------------------------------------------------------
+
+  /**
+   * Reserve a slot for a new child under `parentGid`, against the durable
+   * parent record and under its generation precondition — so the count holds
+   * across the two processes of a deploy overlap as well as within this one.
+   * Expired entries are dropped by the same write (`prune`). Reservations in
+   * this process are serialised per parent, so a burst of exchanges does not
+   * spend its conditional-write retries racing itself.
+   *
+   * `dead`: the parent is gone or not active. `full`: it already holds `cap`
+   * live children; nothing is evicted — a live child is somebody's running
+   * session.
+   */
+  async reserveChild(
+    parentGid: string,
+    childGid: string,
+    expiresAt: number,
+    cap: number,
+  ): Promise<"ok" | "dead" | "full"> {
+    const prior = this.reserving.get(parentGid) ?? Promise.resolve();
+    const run = prior
+      .catch(() => undefined)
+      .then(async () => {
+        const at = this.now();
+        const out = await this.update(parentGid, (current) => {
+          if (!current || current.state !== "active") {
+            return { write: null, result: "dead" as const };
+          }
+          const live = liveChildren(current.children, at);
+          if (live[childGid] !== undefined) {
+            // Our own reservation, landed and then replayed by the transport.
+            return { write: null, result: "ok" as const };
+          }
+          if (Object.keys(live).length >= cap) {
+            return { write: null, result: "full" as const };
+          }
+          return {
+            write: {
+              ...current,
+              children: { ...live, [childGid]: expiresAt },
+            },
+            result: "ok" as const,
+          };
+        });
+        return out.result;
+      });
+    this.reserving.set(parentGid, run);
+    try {
+      return await run;
+    } finally {
+      if (this.reserving.get(parentGid) === run) {
+        this.reserving.delete(parentGid);
+      }
+    }
+  }
+
+  /**
+   * Give a child's slot back: it was revoked, or never got its record. Best
+   * effort by design — a slot that is not released is freed when the child
+   * would have expired, and the child itself is refused either way.
+   */
+  async releaseChild(parentGid: string, childGid: string): Promise<void> {
+    await this.update(parentGid, (current) => {
+      if (!current?.children || current.children[childGid] === undefined) {
+        return { write: null, result: undefined };
+      }
+      const { [childGid]: _gone, ...rest } = current.children;
+      return { write: { ...current, children: rest }, result: undefined };
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -643,6 +751,13 @@ export class GrantStore {
 
   private sweepable(record: GrantRecord): boolean {
     const now = this.now();
+    if (record.exchange) {
+      const ended =
+        record.state === "revoked"
+          ? (record.revokedAt ?? record.createdAt)
+          : (record.expiresAt ?? Number.POSITIVE_INFINITY);
+      return ended + CHILD_RETAIN_MS < now;
+    }
     if (record.state === "pending") {
       return record.createdAt + PENDING_TTL_MS < now;
     }
@@ -700,17 +815,45 @@ function revokedCopy(
   return { ...rest, state: "revoked", revokedAt: at, revokedReason: reason };
 }
 
-/** Drop individually revoked access tokens that have expired on their own. */
+/**
+ * Drop what has expired on its own: individually revoked access tokens, and
+ * token-exchange children past their expiry. Every write prunes, so neither
+ * map grows past what is live.
+ */
 function prune(record: GrantRecord, now: number): GrantRecord {
-  if (!record.revokedAccess) return record;
-  const kept = Object.fromEntries(
-    Object.entries(record.revokedAccess).filter(([, exp]) => exp > now),
-  );
-  if (Object.keys(kept).length === 0) {
-    const { revokedAccess: _gone, ...rest } = record;
-    return rest;
+  let out = record;
+  if (out.revokedAccess) {
+    const kept = Object.fromEntries(
+      Object.entries(out.revokedAccess).filter(([, exp]) => exp > now),
+    );
+    if (Object.keys(kept).length === 0) {
+      const { revokedAccess: _gone, ...rest } = out;
+      out = rest;
+    } else {
+      out = { ...out, revokedAccess: kept };
+    }
   }
-  return { ...record, revokedAccess: kept };
+  if (out.children) {
+    const kept = liveChildren(out.children, now);
+    if (Object.keys(kept).length === 0) {
+      const { children: _gone, ...rest } = out;
+      out = rest;
+    } else {
+      out = { ...out, children: kept };
+    }
+  }
+  return out;
+}
+
+/** The children whose expiry is still ahead. */
+export function liveChildren(
+  children: Record<string, number> | undefined,
+  now: number,
+): Record<string, number> {
+  if (!children) return {};
+  return Object.fromEntries(
+    Object.entries(children).filter(([, exp]) => exp > now),
+  );
 }
 
 function asUnavailable(err: unknown): Error {

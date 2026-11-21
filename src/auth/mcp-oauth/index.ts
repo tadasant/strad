@@ -359,11 +359,19 @@ export async function verifyAccessToken(
     if (!grant || grant.cid !== record.cid) {
       return { ok: false, reason: "oauth_grant_unknown" };
     }
-    const { dead } = await store.chain(grant);
+    const { dead, path } = await store.chain(grant);
     if (dead) return { ok: false, reason: "oauth_grant_dead" };
-    const deadline = grantDeadline(grant, policy);
-    if (deadline !== null && deadline <= now) {
-      return { ok: false, reason: "oauth_grant_expired" };
+    // Every grant on the chain must be inside its deadline, not only this
+    // one: a token-exchange child dies when the grant it was minted under
+    // expires, including when a config change shortens that grant.
+    for (const link of path) {
+      const deadline = grantDeadline(
+        link,
+        link === grant ? policy : oauth.policies.forFingerprint(link.cid),
+      );
+      if (deadline !== null && deadline <= now) {
+        return { ok: false, reason: "oauth_grant_expired" };
+      }
     }
     if (grant.revokedAccess?.[record.jti]) {
       return { ok: false, reason: "oauth_token_revoked" };

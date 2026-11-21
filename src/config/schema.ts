@@ -1800,6 +1800,47 @@ const AuthConfig = z.object({
              * grants (`grants.enabled`).
              */
             refreshTokenTtlSeconds: REFRESH_TTL.optional(),
+            /**
+             * RFC 8693 TOKEN EXCHANGE for this client
+             * (`src/http/oauth.ts`, `exchangeGrant`). Present = on; absent
+             * (the default, and every entry that predates it) = the grant
+             * type is unsupported for this client. On, the client may present
+             * one of its own live record-backed access tokens as
+             * `subject_token` and get a CHILD access token: a `slug:` subset
+             * of its grant, no refresh token, recorded under the grant so it
+             * dies with it and can be revoked on its own.
+             *
+             * Only for a confidential client (`tokenEndpointAuthMethod:
+             * private_key_jwt`) on a deployment with grant records on — both
+             * refused below otherwise.
+             *
+             *   childTokenTtlSeconds    — a child's lifetime when the request
+             *                             names none. Default one hour.
+             *   maxChildTokenTtlSeconds — the most a request's `expires_in`
+             *                             may ask for. Default: the default.
+             *   maxLiveChildren         — live children one grant may hold at
+             *                             once. At the cap an exchange is
+             *                             refused; nothing is evicted.
+             *
+             * A child never outlives its grant's own deadline.
+             */
+            tokenExchange: z
+              .object({
+                childTokenTtlSeconds: z
+                  .number()
+                  .int()
+                  .min(300)
+                  .max(86_400)
+                  .default(3600),
+                maxChildTokenTtlSeconds: z
+                  .number()
+                  .int()
+                  .min(300)
+                  .max(86_400)
+                  .optional(),
+                maxLiveChildren: z.number().int().min(1).max(2000).default(500),
+              })
+              .optional(),
           }),
         )
         .default([]),
@@ -2476,6 +2517,41 @@ export const StradConfig = z
             "auth.mcpOAuth.privateKeyJwt is false.",
           path: [...at, "tokenEndpointAuthMethod"],
         });
+      }
+      if (client.tokenExchange !== undefined) {
+        const tx = client.tokenExchange;
+        if (client.tokenEndpointAuthMethod !== "private_key_jwt") {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `auth.mcpOAuth.clients[${i}].tokenExchange is for a confidential ` +
+              "client only: set tokenEndpointAuthMethod: private_key_jwt, so a " +
+              "stolen subject token cannot be exchanged without the client's key.",
+            path: [...at, "tokenExchange"],
+          });
+        }
+        if (!cfg.auth.mcpOAuth.grants.enabled) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `auth.mcpOAuth.clients[${i}].tokenExchange needs ` +
+              "auth.mcpOAuth.grants.enabled: a child token is recorded under " +
+              "its grant, which is what lets it be revoked and die with it.",
+            path: [...at, "tokenExchange"],
+          });
+        }
+        if (
+          tx.maxChildTokenTtlSeconds !== undefined &&
+          tx.maxChildTokenTtlSeconds < tx.childTokenTtlSeconds
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `auth.mcpOAuth.clients[${i}].tokenExchange.maxChildTokenTtlSeconds ` +
+              "is below childTokenTtlSeconds.",
+            path: [...at, "tokenExchange", "maxChildTokenTtlSeconds"],
+          });
+        }
       }
       // `servers` naming a slug the roster does not have is NOT refused, for
       // the reason a role's `servers` is not: a runtime roster write may

@@ -57,6 +57,21 @@ export interface ClientPolicy {
    * null for none. Unused while `grants` is off.
    */
   refreshTokenTtlMs: number | null;
+  /**
+   * RFC 8693 token exchange for this client, or absent when it may not use
+   * the grant. Only a listed client can have it.
+   */
+  tokenExchange?: TokenExchangePolicy;
+}
+
+/** A client's token-exchange bounds, resolved from its config entry. */
+export interface TokenExchangePolicy {
+  /** A child's lifetime when the request names none. */
+  defaultTtlMs: number;
+  /** The most a request may ask for. */
+  maxTtlMs: number;
+  /** Live children one grant may hold at once. */
+  maxLiveChildren: number;
 }
 
 /**
@@ -78,6 +93,11 @@ export class ClientPolicies {
    * `auth.mcpOAuth.privateKeyJwt`, else whether any entry requires it.
    */
   readonly privateKeyJwt: boolean;
+  /**
+   * Does any client hold the token-exchange grant? Decides whether the
+   * metadata advertises it and whether the token endpoint dispatches it.
+   */
+  readonly tokenExchange: boolean;
 
   constructor(settings: StradConfig["auth"]["mcpOAuth"]) {
     const defaultTtlMs = settings.accessTokenTtlSeconds * 1000;
@@ -98,6 +118,15 @@ export class ClientPolicies {
       settings.clients.some(
         (c) => c.tokenEndpointAuthMethod === "private_key_jwt",
       );
+    // Records are what a child is recorded under; the schema refuses the
+    // block without them, and this keeps a lenient boot from serving it.
+    this.tokenExchange =
+      settings.grants.enabled &&
+      settings.clients.some(
+        (c) =>
+          c.tokenExchange !== undefined &&
+          c.tokenEndpointAuthMethod === "private_key_jwt",
+      );
     for (const entry of settings.clients) {
       const policy: ClientPolicy = {
         listed: true,
@@ -115,6 +144,17 @@ export class ClientPolicies {
           entry.refreshTokenTtlSeconds !== undefined
             ? entry.refreshTokenTtlSeconds * 1000
             : defaultRefreshMs,
+        ...(entry.tokenExchange
+          ? {
+              tokenExchange: {
+                defaultTtlMs: entry.tokenExchange.childTokenTtlSeconds * 1000,
+                maxTtlMs:
+                  (entry.tokenExchange.maxChildTokenTtlSeconds ??
+                    entry.tokenExchange.childTokenTtlSeconds) * 1000,
+                maxLiveChildren: entry.tokenExchange.maxLiveChildren,
+              },
+            }
+          : {}),
       };
       this.byId.set(entry.clientId, policy);
       this.byCid.set(clientFingerprint(entry.clientId), policy);

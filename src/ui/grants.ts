@@ -211,7 +211,7 @@ ${flash}
         : `<span class="row-nonote">all its client may reach (mcp)</span>`;
       return `
       <div class="row secret-row">
-        <span class="row-name" title="${esc(r.gid)}"><span class="row-var">${esc(client)}</span><span class="row-pfx">${esc(r.identity.email)}${r.parentGid ? ` · under ${esc(r.parentGid)}` : ""}${r.fromLegacy ? " · upgraded" : ""}</span></span>
+        <span class="row-name" title="${esc(r.gid)}"><span class="row-var">${esc(client)}</span><span class="row-pfx">${esc(r.identity.email)}${r.exchange ? ` · child token${r.exchange.label ? ` <code>${esc(r.exchange.label)}</code>` : ""}` : ""}${r.parentGid ? ` · under ${esc(r.parentGid)}` : ""}${r.fromLegacy ? " · upgraded" : ""}</span></span>
         <span class="row-kind">${status}</span>
         <span class="row-note">${slugs}</span>
         <span class="row-time" title="${esc(iso(r.createdAt))}">${esc(formatTime(iso(r.createdAt)))}</span>
@@ -220,7 +220,11 @@ ${flash}
         <span class="row-actions">${
           r.state === "revoked"
             ? ""
-            : `<form method="post" action="/tokens/grants/revoke" class="inline" data-confirm="${esc(`Revoke this grant for ${client} (${r.identity.email})? Its tokens stop working on their next request, and the client has to sign in again.`)}">
+            : `<form method="post" action="/tokens/grants/revoke" class="inline" data-confirm="${esc(
+                r.exchange
+                  ? `Revoke this child token for ${client}${r.exchange.label ? ` (label ${r.exchange.label})` : ""}? It stops working on its next request; its parent grant is untouched.`
+                  : `Revoke this grant for ${client} (${r.identity.email})? Its tokens stop working on their next request, and the client has to sign in again.`,
+              )}">
             <input type="hidden" name="gid" value="${esc(r.gid)}" /><button class="btn btn-danger">Revoke</button>
           </form>`
         }</span>
@@ -280,6 +284,11 @@ every use; presenting a spent one again revokes the grant, because that is what 
 <p>Revoke here, or have the client call <code>POST /oauth/revoke</code>. It ends this grant and every
 grant minted under it, on their next request. Other grants — other connectors for the same account —
 are untouched. Nothing is revoked at Google.</p>
+<h3>Child tokens</h3>
+<p>A row marked <em>child token</em> was minted by a confidential client through token exchange
+(RFC 8693) under the grant it names: one access token, no refresh token, a subset of the grant's slugs.
+Its label is the client's own tag for it — Zimmer sends the agent session id. Revoking a child ends only
+that token; revoking its parent ends every child under it.</p>
 <h3>Last used</h3>
 <p>The last refresh is recorded durably; use at <code>/mcp</code> is tracked by this process only, so
 after a restart "last used" falls back to the last refresh.</p>
