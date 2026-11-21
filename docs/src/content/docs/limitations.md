@@ -614,12 +614,12 @@ nothing warns beforehand. Publishing the OAuth app removes the expiry.
 
 ## The deployment
 
-### 24. Thirty-seven servers share one process and one CPU
+### 24. Thirty-eight servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts thirty-seven MCP servers,
+The `bundle` component runs one Node process that mounts thirty-eight MCP servers,
 launches one shared Chromium and supervises an `mcp-grafana` and an
 `mcp-victorialogs` child process per mount that uses one, on
-`apps-s-1vcpu-2gb`. A crash in the host takes all thirty-seven down together, and
+`apps-s-1vcpu-2gb`. A crash in the host takes all thirty-eight down together, and
 Chromium contends with every other server for the single vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -1010,7 +1010,7 @@ a store-wide read.
 keeps a listed parameter current in a supplementary container's environment
 without a redeploy. It cannot make the MCP server inside that container **look**
 at the new value — that is a property of the upstream, and the bundle image runs
-thirty-seven of them, most written by other people.
+thirty-eight of them, most written by other people.
 
 `strad-fetch` builds its scraping clients inside a factory the host invokes per
 request, so a rotated key is used by the next tool call; that is the case the
@@ -2205,7 +2205,7 @@ ever rebuilt with a rootless or hand-installed docker, where buildx lives in
 
 **Serialising the workflows was the alternative.** A `concurrency:` group would
 have ended it too, at the cost of every push taking the sum of its builds rather
-than the longest — the bundle alone is twenty-eight dependency trees. Isolation costs a
+than the longest — the bundle alone is twenty-nine dependency trees. Isolation costs a
 `mkdir`.
 
 ### 49. The Telegram MTProto library is archived upstream
@@ -2305,7 +2305,7 @@ for the telegram pair, `BILL_SPEND_API_TOKEN` for the bill-spend pair,
 then delete that entry's `enabled:` line and add each seeded name to
 `PROVISIONED_STATICS` in `test/staging-config.test.ts`.
 
-### 56. Per-slug variable names are emitted for every server; only sixteen of the twenty-eight trees can read one
+### 56. Per-slug variable names are emitted for every server; only seventeen of the twenty-nine trees can read one
 
 Every supplementary server's `env:` lands on its bundle twice — under the bare
 name and under `<SLUG>__<NAME>` — with no condition attached, so what a server's
@@ -2323,7 +2323,7 @@ whatever the variables are called.
 **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
 `grafana`, `victorialogs`, `bill-spend`, `aws-device-farm`,
 `whatsapp`, `liveoak`, `airtable`, `flightaware`, `digitalocean`, `hetzner`,
-`glitchtip`, `vendor-billing` and `ssh` read an injected environment.** The other twelve
+`glitchtip`, `vendor-billing`, `postgres` and `ssh` read an injected environment.** The other twelve
 trees in the bundle image are vendored upstream code that reads `process.env` directly,
 often lazily at call time, so they see the bare names only. `bill-spend` reads
 the injected view for one mount rather than one per slug: one BILL token is one
@@ -2603,7 +2603,7 @@ leak. Nothing in the cache is a credential; it is public pages someone fetched.
 
 **What the fork DID bound is the memory.** Upstream's store grows for the life of
 the process, which is fine for a subprocess the OS reclaims and an out-of-memory
-kill in a container that hosts thirty-seven mounts. The cache is LRU-bounded on both
+kill in a container that hosts thirty-eight mounts. The cache is LRU-bounded on both
 entry count and bytes, and the filesystem backend is gone (App Platform gives the
 container no persistent volume, so it was memory with extra steps).
 
@@ -4962,3 +4962,30 @@ See `HACKS.md` #159.
 - **No per-grant revocation yet.** Narrowing a client's entry narrows every
   token it holds; revoking one grant alone is still Google revocation, per user
   and per OAuth client.
+
+---
+
+### 161. Postgres is strad's own server, and the role is still the boundary
+
+The [Postgres](/servers/postgres/) server runs every statement in a READ ONLY
+transaction that is rolled back, behind a guard that refuses more than one
+statement and anything that does not begin with a read keyword. Those are on
+top of the database role, not instead of it.
+
+- **The guard is a tokenizer, not a parser.** It refuses a short list of
+  functions whose effect a read-only transaction would not stop, by name. A
+  function the database defines that calls one of them is stopped only by the
+  role. The built-ins that run SQL given as a string (`query_to_xml`,
+  `ts_stat` and their kin) are on that list. Give the slug a role that can only
+  read.
+- **`sslmode=require` does not verify the certificate**, as in libpq, so it
+  does not stop an active man in the middle from asking for the password. Use
+  `verify-full` (or `verify-ca`) with `DATABASE_CA_CERT` where you can.
+- **Results are bounded, not paged:** at most 1,000 rows, 2,000 characters a
+  cell, 60,000 a result, 16 MB on the wire. Narrow the statement to see more.
+- **A slug must be on its own path.** The conventional `/postgres` never
+  serves a database a per-slug slug owns.
+- **It has met only a local Postgres**, in Docker with TLS on. No managed
+  Postgres or PgBouncer has been in front of it yet.
+
+See `HACKS.md` #159.

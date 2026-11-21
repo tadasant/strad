@@ -127,6 +127,7 @@ export default defineConfig({
             { label: "Hetzner Cloud", slug: "servers/hetzner" },
             { label: "GlitchTip", slug: "servers/glitchtip" },
             { label: "Vendor billing", slug: "servers/vendor-billing" },
+            { label: "Postgres", slug: "servers/postgres" },
             { label: "AWS Device Farm", slug: "servers/aws-device-farm" },
             {
               label: "AWS Device Farm: first-time setup",

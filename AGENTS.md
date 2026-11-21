@@ -264,6 +264,7 @@ not a confession.
 | `servers/hetzner/**` — a tool, a tier, the blast-radius text, what a result may carry                                                | `servers/hetzner.md`, `limitations.md`, the `hetzner-pulse-ro` allow list in `infra/strad.staging.yaml`, and the counts in `servers/bundle/scripts/smoke.mjs`                        |
 | `servers/glitchtip/**` — a tool, the path guard, the https rule, the result cap                                                      | `servers/glitchtip.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                       |
 | `servers/vendor-billing/**` — a tool, a vendor request, the scrubber, the table-identifier patterns                                  | `servers/vendor-billing.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                  |
+| `servers/postgres/**` — a tool, the statement guard, the read-only transaction, the TLS rule, a cap                                  | `servers/postgres.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                        |
 | `servers/grafana/**` — the pinned version, the read-only flags, the env allowlist                                                    | `servers/grafana.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                         |
 | `servers/victorialogs/**` — the pinned version, the env allowlist, the unconfigured placeholder                                      | `servers/victorialogs.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                    |
 | `servers/good-eggs/**` — the basket read, a cart tool, what a result may claim                                                       | `limitations.md`, and `servers/good-eggs/FORK.md`                                                                                                                                    |
@@ -312,8 +313,8 @@ numbers describe "how many servers," and they count different things:
 | The number | What it counts                                                                                     |
 | ---------- | -------------------------------------------------------------------------------------------------- |
 | **3**      | App Platform components: `core`, `bundle`, `bundle-zimmer-secrets`                                 |
-| **28**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
-| **37**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
+| **29**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
+| **38**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
 | **45**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included)         |
 | **48**     | total server slugs in staging (45 + `echo` builtin + `deepwiki` remote-http + `anki` local-tunnel) |
 
@@ -382,8 +383,8 @@ slop behind when you fix a stale fact.
   "did I typo a key" is answered here, by `scripts/check-config.ts`.
 - `src/deploy/appspec.ts` — turns the config into a DigitalOcean App Platform spec.
   The server list decides the container topology.
-- `servers/bundle/` — one image, 37 mounted MCP servers, one shared Chromium,
-  assembled from TWENTY-EIGHT independently-built dependency trees.
+- `servers/bundle/` — one image, 38 mounted MCP servers, one shared Chromium,
+  assembled from TWENTY-NINE independently-built dependency trees.
 - `servers/remote-filesystem/` — strad's own artifact store, behind the
   `remote-filesystem-tmp-public` slug. `is_sensitive` picks the KIND of link;
   GCS's 7-day V4 ceiling is why the 14-day default is signed with V2.
@@ -470,6 +471,15 @@ slop behind when you fix a stale fact.
   while the others work, and every credential is scrubbed from results and
   upstream errors. The export table is spliced into SQL only after strict
   identifier checks. `HACKS.md` #158.
+- `servers/postgres/` — strad's own read-only Postgres server: list schemas,
+  list tables, describe a table, and ONE read-only statement per call. One slug
+  is one database — `DATABASE_URI`, `sslmode=require` or stricter, refused
+  otherwise. Every call is its own `BEGIN TRANSACTION READ ONLY` … `ROLLBACK`
+  with a `SET LOCAL` statement timeout (so it works behind a transaction-mode
+  PgBouncer), multi-statement input is refused before and by the server, and
+  rows come through a cursor capped at `max_rows`. The role is the boundary;
+  these are on top of it. Its suite runs against a real Postgres in Docker.
+  `HACKS.md` #161.
 - `servers/image-tools/` — strad's own `image-diff` and `svg-tracer`, two
   mounts over one tree, replacing two npx packages that read the agent's disk.
   Inputs are URLs, fetched behind an SSRF guard at the connector (derived from

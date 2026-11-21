@@ -1,0 +1,14 @@
+{
+  "name": "postgres",
+  "version": "0.1.0",
+  "private": true,
+  "description": "strad's own read-only Postgres MCP server — schemas, tables, one table described, and a single read-only query, in a READ ONLY transaction over TLS, one database per slug. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared",
+    "test": "npm run test --workspace shared"
+  }
+}
