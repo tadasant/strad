@@ -653,10 +653,13 @@ What happens behind the button, in order:
    as is. A `${NAME}` is registered fresh (RFC 7591) when the server offers
    registration and the block declares no `clientSecret`: a **public** client,
    `token_endpoint_auth_method: none`, whose one redirect URI is this
-   deployment's `/ui/oauth/callback`. With no registration endpoint, or with a
-   `clientSecret`, the value already seeded under the slug's own namespace is
-   used, and its absence is a refusal that names the redirect URI to register
-   and where to seed the id.
+   deployment's `/ui/oauth/callback`, registered as `strad (<env>) <slug>`.
+   With no registration endpoint, or with a `clientSecret`, the value already
+   seeded under the slug's own namespace is used, and its absence is a refusal
+   that names the redirect URI to register and where to seed the id. The one
+   exception is a slug with
+   [`registration:`](#registration-an-upstream-that-registers-only-clients-it-knows),
+   which changes the name and lets strad register a client with a secret.
 3. **Authorize.** Code + PKCE (S256) with `resource=` (RFC 8707). Scopes are the
    literal `oauthRefresh.scope:`, or else what the `401` asked for, or else the
    resource's `scopes_supported`, plus `offline_access` when the authorization
@@ -664,8 +667,9 @@ What happens behind the button, in order:
 4. **Exchange and store.** The callback exchanges the code at the discovered
    token endpoint, with the same client and `resource`, and insists on a refresh
    token. Then it writes, under `/strad/{env}/mcp/{slug}/oauth/`: the token URL,
-   the client id (only when strad registered it) and the resource for whichever
-   of them are `${NAME}`s, and the refresh token last, as a secret parameter. It
+   the client id (only when strad registered it), the client secret (only when
+   strad registered a client with one) and the resource for whichever of them
+   are `${NAME}`s, and the refresh token last, as a secret parameter. It
    drops the process's cached reading of the store, and the minter takes the new
    lineage on the next request.
 
@@ -686,6 +690,65 @@ another is a slug that never works. `url:` and `scope:` must be literals, and a
 checks the slug's `oauth/` path first, then `static/`, then the gateway's, the
 order the resolver reads in. See
 [Secrets](/operate/secrets/#oauthrefresh--a-rotating-refresh-token-on-a-remote-http-server).
+
+### `registration:`: an upstream that registers only clients it knows
+
+Figma's hosted MCP server (`https://mcp.figma.com/mcp`) offers dynamic client
+registration, but only to MCP clients on its own list, and strad is not on it.
+`oauthRefresh.registration:` lets one slug register under another client's name:
+
+```yaml
+- slug: figma
+  kind: remote-http
+  url: https://mcp.figma.com/mcp
+  entitlements: [zimmer]
+  oauthRefresh:
+    tokenUrl: "${FIGMA_TOKEN_URL}"
+    clientId: "${FIGMA_CLIENT_ID}"
+    clientSecret: "${FIGMA_CLIENT_SECRET}"
+    clientAuth: post
+    refreshToken: "${FIGMA_REFRESH_TOKEN}"
+    resource: "${FIGMA_RESOURCE}"
+    registration:
+      clientName: Claude Code (strad)
+  mayBeUnseeded:
+    [
+      FIGMA_TOKEN_URL,
+      FIGMA_CLIENT_ID,
+      FIGMA_CLIENT_SECRET,
+      FIGMA_REFRESH_TOKEN,
+      FIGMA_RESOURCE,
+    ]
+```
+
+It does two things, and nothing on a slug without it changes:
+
+- **`clientName` is the `client_name` strad registers with.** Figma's
+  registration endpoint (`https://api.figma.com/v1/oauth/mcp/register`) decides
+  on that field alone. It answers `403` to any name that does not start with
+  `Claude Code`, case-sensitive, and `201` to one that does, with the same
+  redirect URI, grant types and user agent either way. strad's own
+  `strad (prod) figma` is refused; `Claude Code (strad)` is registered. It is
+  the same claim Zimmer makes when it connects to Figma directly: it registers
+  as `Claude Code (Zimmer)`. Only the name changes. The redirect URI is still
+  this deployment's callback.
+- **With `clientSecret:` declared too, strad registers a confidential client and
+  keeps its secret.** Figma issues a `client_secret` to every client, even one
+  that asked for `token_endpoint_auth_method: none`, and its token endpoint
+  refuses a refresh without it (`Client ID and client secret are required`). So
+  strad asks for `client_secret_<clientAuth>` and requires a secret in the
+  answer. The connect transaction is a signed cookie, not an encrypted one, so
+  the secret rides in it only AES-256-GCM-encrypted, under a key derived for that
+  alone. The callback decrypts it, sends it with the code exchange, and writes it
+  to `${FIGMA_CLIENT_SECRET}` as a secret parameter beside the client id. Every
+  refresh after that sends it like any configured secret.
+
+`clientName` must be a literal. A `clientId` literal with `registration:` is
+reported on the page, because a literal client is never registered. Without a
+registration endpoint, a slug with `registration:` falls back to a seeded client
+like any other. This is an identity claim to a third party, made because the
+upstream's allowlist leaves no other way in, so it is opt-in per slug. See
+[Known limitations](/limitations/) #159.
 
 ### Blocked metadata: paste it, or proxy it
 
@@ -745,7 +808,8 @@ words, with nothing registered or written. The one that matters most:
 The rest: `upstream_unreachable`, `metadata_unavailable`, `metadata_invalid`,
 `resource_mismatch` (the metadata describes another resource), `issuer_mismatch`,
 `insecure_endpoint`, `pkce_unsupported` (S256 not listed), `token_url_mismatch`,
-`registration_failed`, `registration_confidential` (a client secret came back),
+`registration_failed`, `registration_confidential` (a client secret came back to
+a slug without `registration:`),
 `no_client`, `proxy_failed`, `proxy_key_unreadable`, `not_connectable`, and `env_provider`: under
 `gateway.secrets.provider: env` the gateway reads its names from the environment,
 so a store write would reach nothing. No upstream response body is quoted. The

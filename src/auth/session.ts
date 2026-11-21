@@ -5,6 +5,7 @@ import {
   type StradConfig,
 } from "../config/schema.ts";
 import { secretEquals } from "./credential.ts";
+import { Cipher } from "./mcp-oauth/keys.ts";
 import type { Principal } from "./index.ts";
 
 /**
@@ -56,6 +57,8 @@ const INFO_SESSION = "strad.console.session.v1";
 const INFO_TX = "strad.console.oauth-tx.v1";
 /** The connector consent flow. See ConsoleSessions.connector. */
 const INFO_CONNECTOR = "strad.connector.oauth-tx.v1";
+/** A registered client's secret inside that flow. See ConsoleSessions.connectorSecret. */
+const INFO_CONNECTOR_SECRET = "strad.connector.client-secret.v1";
 
 /** The signed Google session. */
 export const SESSION_COOKIE = "strad_console_session";
@@ -194,6 +197,15 @@ export interface ConsoleSessions {
    * start. See src/connectors/state.ts.
    */
   connector: Sealer;
+  /**
+   * ENCRYPTS one value inside a connector transaction: the client secret an
+   * upstream issued to a client strad registered on that Connect (an
+   * `oauthRefresh.registration:` server — src/connectors/upstream.ts). The
+   * transaction is signed, not encrypted, and it lives in a browser; this is
+   * what keeps the secret out of it in the clear. Its own derived key, so
+   * nothing sealed for another purpose opens here.
+   */
+  connectorSecret: Cipher;
 }
 
 /**
@@ -223,6 +235,7 @@ export function consoleSessionsFromEnv(
     session: new Sealer(ikm, INFO_SESSION),
     tx: new Sealer(ikm, INFO_TX),
     connector: new Sealer(ikm, INFO_CONNECTOR),
+    connectorSecret: new Cipher(ikm, INFO_CONNECTOR_SECRET),
   };
 }
 

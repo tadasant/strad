@@ -41,6 +41,11 @@ import { Sealer } from "../session.ts";
  * different salt, so do not read the salt as the thing keeping an OAuth token
  * away from a console session.
  *
+ * `Cipher` has one consumer outside this module: `ConsoleSessions.connectorSecret`
+ * in `src/auth/session.ts`, which encrypts a registered client's secret inside a
+ * connector transaction. It derives from the CONSOLE's key material under its
+ * own `info`, and so shares this module's salt but none of its keys.
+ *
  * THE KEY ITSELF is `STRAD_OAUTH_KEY` when set, else the console's own chain
  * (`CONSOLE_SESSION_SECRET`, else `GOOGLE_CLIENT_SECRET`). The fallback is what
  * makes this feature work on a deployment that has already provisioned a Google

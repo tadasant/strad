@@ -59,7 +59,7 @@ import {
  * happens. Anything else — a `${NAME}` inside a longer string — is a value the
  * flow can neither write nor check, and the page says so instead of a button.
  *
- * ## Public clients only, when strad registers one
+ * ## Public clients, when strad registers one — unless the config opts out
  *
  * The transaction that carries the client from the connect POST to the
  * callback is a SIGNED cookie, not an encrypted one (src/connectors/state.ts).
@@ -69,6 +69,16 @@ import {
  * confidential. A server that declares `oauthRefresh.clientSecret:` uses a
  * client a human registered and seeded, and the callback reads its secret from
  * the store, never from the cookie.
+ *
+ * The one exception is a server that declares `clientSecret:` AND
+ * `registration:` — Figma, whose registration endpoint issues a secret to
+ * every client and whose token endpoint refuses a refresh without it. There
+ * strad registers a confidential client, AES-256-GCM-encrypts the issued secret
+ * under a key derived for this purpose alone, and puts THAT in the
+ * transaction (`UpstreamTerms.sealedClientSecret`). The callback decrypts it,
+ * exchanges with it and writes it beside the client id. `registration:` also
+ * carries the `client_name` strad registers under; see `RegistrationSchema` in
+ * src/config/schema.ts for why Figma needs that too.
  *
  * ## Nothing upstream-authored is quoted, except URLs strad validated
  *
@@ -143,6 +153,11 @@ export interface UpstreamPlan {
   scopes: string[] | null;
   /** The `${NAME}` holding a configured client secret, or null for a public client. */
   clientSecretVariable: string | null;
+  /**
+   * `oauthRefresh.registration:` — the identity Connect registers under, or
+   * null for strad's own. See {@link registerClient}.
+   */
+  registration: { clientName: string } | null;
   /** The `${NAME}` the refresh token is written to. Enforced by the schema. */
   refreshVariable: string;
   problems: string[];
@@ -195,6 +210,17 @@ export function upstreamPlan(entry: UpstreamConnector): UpstreamPlan {
   const clientSecretVariable =
     oauth.clientSecret === undefined ? null : soleRefName(oauth.clientSecret);
 
+  const registration = oauth.registration
+    ? { clientName: oauth.registration.clientName }
+    : null;
+  if (registration && clientId?.mode === "literal") {
+    problems.push(
+      `oauthRefresh.registration is set, but clientId is a literal: a literal ` +
+        `is a client registered elsewhere, so Connect never registers one. ` +
+        `Make clientId one \${NAME}, or drop registration:.`,
+    );
+  }
+
   // The schema already refuses anything else; this is the type narrowing.
   const refreshVariable = soleRefName(oauth.refreshToken) ?? "";
   if (!refreshVariable) {
@@ -208,6 +234,7 @@ export function upstreamPlan(entry: UpstreamConnector): UpstreamPlan {
     resource,
     scopes,
     clientSecretVariable,
+    registration,
     refreshVariable,
     problems,
   };
@@ -1006,29 +1033,45 @@ export async function discoverUpstream(
 // Registration
 // ---------------------------------------------------------------------------
 
+/** What a registration yields. `clientSecret` only for a confidential one. */
+export interface RegisteredClient {
+  clientId: string;
+  clientSecret?: string;
+}
+
 /**
- * Register a PUBLIC client (RFC 7591) whose only redirect URI is the console's.
+ * Register a client (RFC 7591) whose only redirect URI is the console's.
+ *
+ * PUBLIC unless `confidential` is given, and a public registration that comes
+ * back confidential is refused (see the header). `confidential` is set only for
+ * a server whose config declares both `clientSecret:` and `registration:` —
+ * there the secret has a `${NAME}` to be written to, and the callback receives
+ * it encrypted rather than signed.
  *
  * A fresh registration on every Connect, by design: the client is cheap, it is
  * bound to this deployment's exact callback, and re-using one registered by a
  * different flow is how a token ends up minted for a client whose redirect URI
  * strad does not own. The previous one is simply never used again.
  */
-export async function registerPublicClient(
+export async function registerClient(
   input: {
     registrationEndpoint: string;
     redirectUri: string;
     clientName: string;
     scopes: string[];
+    /** Register a confidential client that authenticates this way. */
+    confidential?: { clientAuth: "basic" | "post" };
   },
   fetchImpl: typeof fetch = fetch,
-): Promise<string> {
+): Promise<RegisteredClient> {
   const body: Record<string, unknown> = {
     client_name: input.clientName,
     redirect_uris: [input.redirectUri],
     grant_types: ["authorization_code", "refresh_token"],
     response_types: ["code"],
-    token_endpoint_auth_method: "none",
+    token_endpoint_auth_method: input.confidential
+      ? `client_secret_${input.confidential.clientAuth}`
+      : "none",
   };
   if (input.scopes.length > 0) body.scope = input.scopes.join(" ");
 
@@ -1092,6 +1135,22 @@ export async function registerPublicClient(
             `Nothing was written.`,
         );
       }
+      if (input.confidential) {
+        // The method the upstream echoes is not checked: Figma answers `none`
+        // and issues a secret anyway, then refuses a refresh without it. A
+        // secret is what this registration is for, so its absence is the
+        // refusal.
+        const secret = json.client_secret;
+        if (typeof secret !== "string" || secret === "") {
+          throw new UpstreamConnectError(
+            "registration_failed",
+            `The registration endpoint ${where} registered a client but ` +
+              `issued no client secret, and this server's config declares ` +
+              `oauthRefresh.clientSecret. Nothing was written.`,
+          );
+        }
+        return { clientId, clientSecret: secret };
+      }
       // A CONFIDENTIAL client is one strad could not carry to the callback
       // without putting its secret in a browser cookie. See the header.
       const method = json.token_endpoint_auth_method;
@@ -1109,7 +1168,7 @@ export async function registerPublicClient(
             `and clientSecret \${NAME}s, and Connect uses it. Nothing was written.`,
         );
       }
-      return clientId;
+      return { clientId };
     },
     () =>
       new UpstreamConnectError(
@@ -1132,6 +1191,12 @@ export interface UpstreamTerms {
   clientId: string;
   /** Did strad register `clientId` on this Connect? Then the callback writes it. */
   registered: boolean;
+  /**
+   * The secret issued with a confidential client strad registered, ENCRYPTED
+   * under `ConsoleSessions.connectorSecret`. The transaction itself is only
+   * signed, so the plaintext never rides in it. Absent for every other client.
+   */
+  sealedClientSecret?: string;
   tokenUrl: string;
   resource: string;
   issuer: string;
@@ -1157,8 +1222,10 @@ export type ClientSource =
  *
  * A literal is a client the config already names. A `${NAME}` is registered
  * fresh when the upstream offers registration and the block declares no client
- * secret; otherwise it must already be seeded in this slug's own namespace,
- * and that value is used. `held` is the slug's namespace listing.
+ * secret — or declares one AND `registration:`, which is what lets strad keep
+ * the secret it is issued. Otherwise it must already be seeded in this slug's
+ * own namespace, and that value is used. `held` is the slug's namespace
+ * listing.
  */
 export function clientSource(
   plan: UpstreamPlan,
@@ -1170,7 +1237,10 @@ export function clientSource(
   if (field.mode === "literal") {
     return { kind: "literal", clientId: field.value };
   }
-  if (canRegister && plan.clientSecretVariable === null) {
+  if (
+    canRegister &&
+    (plan.clientSecretVariable === null || plan.registration !== null)
+  ) {
     return { kind: "register" };
   }
   const meta = held.get(field.variable);
@@ -1301,6 +1371,8 @@ export function upstreamWrites(
   plan: UpstreamPlan,
   terms: UpstreamTerms,
   refreshToken: string,
+  /** The secret of a confidential client strad registered on this Connect. */
+  registeredSecret?: string,
 ): UpstreamWrite[] {
   const at = (variable: string) =>
     oauthParameterPath(config.gateway.env, entry.server.slug, variable);
@@ -1321,6 +1393,19 @@ export function upstreamWrites(
       path: at(v),
       value: terms.clientId,
       secret: false,
+    });
+  }
+  if (
+    plan.clientSecretVariable !== null &&
+    terms.registered &&
+    registeredSecret !== undefined
+  ) {
+    const v = plan.clientSecretVariable;
+    out.push({
+      variable: v,
+      path: at(v),
+      value: registeredSecret,
+      secret: true,
     });
   }
   if (plan.resource?.mode === "write") {
@@ -1344,8 +1429,9 @@ export function upstreamWrites(
 /**
  * Write each value: rotate what is already at its exact path, create the rest.
  *
- * `existing` is the set of exact paths the listing found. The note rides on the
- * refresh token only, and its failure is not the write's, for the reason
+ * `existing` is the set of exact paths the listing found. The note rides on
+ * each SECRET value — the refresh token, and a registered client's secret —
+ * and its failure is not the write's, for the reason
  * `storeRefreshToken` gives.
  */
 export async function storeUpstreamWrites(
@@ -1370,9 +1456,11 @@ export function upstreamNote(
   grantedScopes: readonly string[],
   at: Date,
 ): string {
-  const client = terms.registered
-    ? "a client strad registered"
-    : "the configured client";
+  const client = !terms.registered
+    ? "the configured client"
+    : terms.sealedClientSecret
+      ? "a confidential client strad registered"
+      : "a client strad registered";
   const granted =
     grantedScopes.length > 0
       ? `; granted: ${grantedScopes.join(" ")}`

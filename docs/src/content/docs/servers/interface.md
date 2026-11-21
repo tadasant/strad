@@ -254,7 +254,7 @@ does with it:
 | `refreshToken` | written (always a `${NAME}`)                                                                          | —                                                                    |
 | `resource`     | written with the resource the token is bound to                                                       | sent as `resource=` on the consent too                               |
 | `scope`        | not supported: Connect asks for scopes before anything is stored                                      | the scopes to request; omitted, strad asks for what the upstream advertises |
-| `clientSecret` | a confidential client a human registered and seeded; strad never registers one                        | —                                                                    |
+| `clientSecret` | a confidential client a human registered and seeded — or, with `registration:`, the secret of the client strad registers | —                                                                    |
 
 `url:` must be a literal, because discovery starts from it. With every name in
 `mayBeUnseeded:`, the slug deploys inactive and starts serving on the request
@@ -280,6 +280,29 @@ no running server is handed it. This works around the upstream's bot protection
 and sends its metadata URLs to a third party, so opt in deliberately.
 Without it, the page offers to take the document pasted from your own browser. See [Connectors](/operate/connectors/#remote-http-with-oauthrefresh-connect-an-upstream-mcp-server)
 and [Limitations](/limitations/) #111.
+
+The other is `registration:`, for an upstream that registers only clients it
+recognises by name. Figma's is one: it refuses any `client_name` that does not
+start with `Claude Code`.
+
+```yaml
+oauthRefresh:
+  clientId: ${FIGMA_CLIENT_ID}
+  clientSecret: ${FIGMA_CLIENT_SECRET} # with registration:, written by Connect
+  clientAuth: post
+  # ...
+  registration:
+    clientName: Claude Code (strad) # a literal, at most 200 characters
+```
+
+`clientName` replaces the `strad (<env>) <slug>` that Connect registers as by
+default, and nothing else in the registration. With `clientSecret:` declared as
+one `${NAME}` too, Connect registers a confidential client
+(`client_secret_<clientAuth>`) instead of a public one, carries the issued secret
+to the callback encrypted, and writes it beside the client id. A slug without
+`registration:` registers exactly as before. See
+[Connectors](/operate/connectors/#registration-an-upstream-that-registers-only-clients-it-knows)
+and [Limitations](/limitations/) #159.
 
 ### 2. `local-tunnel`
 

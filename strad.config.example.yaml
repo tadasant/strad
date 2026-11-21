@@ -378,6 +378,29 @@ servers:
   #     discoveryProxy: { via: brightdata, apiKeyFrom: strad-fetch }
   #   mayBeUnseeded:
   #     [RIPPLING_TOKEN_URL, RIPPLING_CLIENT_ID, RIPPLING_REFRESH_TOKEN, RIPPLING_RESOURCE]
+  #
+  # An upstream that registers only MCP clients on its own list (Figma's
+  # answers 403 to any client_name not starting "Claude Code") takes
+  # registration:. clientName replaces strad's own "strad (<env>) <slug>";
+  # with clientSecret: declared too, Connect registers a confidential client
+  # and writes the secret it is issued (Figma refuses a refresh without it).
+  # Opt in per slug: it is an identity claim made to a third party.
+  #
+  # - slug: figma
+  #   kind: remote-http
+  #   url: https://mcp.figma.com/mcp
+  #   entitlements: [admin]
+  #   oauthRefresh:
+  #     tokenUrl: ${FIGMA_TOKEN_URL}
+  #     clientId: ${FIGMA_CLIENT_ID}
+  #     clientSecret: ${FIGMA_CLIENT_SECRET}
+  #     clientAuth: post
+  #     refreshToken: ${FIGMA_REFRESH_TOKEN}
+  #     resource: ${FIGMA_RESOURCE}
+  #     registration:
+  #       clientName: Claude Code (strad)
+  #   mayBeUnseeded:
+  #     [FIGMA_TOKEN_URL, FIGMA_CLIENT_ID, FIGMA_CLIENT_SECRET, FIGMA_REFRESH_TOKEN, FIGMA_RESOURCE]
 
   # --- kind: local-tunnel ---------------------------------------------------
   # An MCP server running on a machine YOU own — a laptop, a desktop — reached
