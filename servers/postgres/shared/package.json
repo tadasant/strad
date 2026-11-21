@@ -1,0 +1,25 @@
+{
+  "name": "postgres-shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Postgres database as read-only MCP tools: list schemas, list tables, describe a table, run one read-only query.",
+  "main": "build/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "pg": "^8.16.3",
+    "pg-cursor": "^2.15.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.6",
+    "@types/pg": "^8.15.6",
+    "@types/pg-cursor": "^2.7.2",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.9"
+  },
+  "license": "MIT"
+}

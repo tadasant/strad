@@ -193,6 +193,16 @@ jobs:
   #               results and upstream errors, the OpenAI walk is bounded, and
   #               the BigQuery table's identifiers are validated before the query.
   #
+  #   postgres    test. strad's own read-only Postgres server, against a REAL
+  #               Postgres with TLS on: the suite starts `postgres:17` in Docker
+  #               itself (every hosted runner has Docker). What it holds: a write
+  #               the statement guard cannot see — a data-modifying CTE, EXPLAIN
+  #               ANALYZE DELETE, nextval — refused by the READ ONLY transaction
+  #               even under a SUPERUSER, multi-statement input refused, the
+  #               statement timeout, the row and character caps, the password
+  #               never in a result or error, and no credential ever sent to a
+  #               server that will not speak TLS.
+  #
   #   image-tools test. Two servers that fetch a URL a CALLER chose, from inside
   #               the bundle — so the suites that matter are the SSRF guard
   #               (private, loopback, link-local and metadata addresses refused,
@@ -324,7 +334,7 @@ jobs:
   #               repo would say so.
   #
   #   bundle/host test. THE host: the process every bundle container runs. It
-  #               mounts every tree in the image — 37 mounts, which staging's 45
+  #               mounts every tree in the image — 38 mounts, which staging's 45
   #               supplementary-image slugs resolve to, since a capability
   #               variant is another slug on the same mount. Its `tree:` carries
   #               a slash because it is a tree one level deeper than the rest —
@@ -438,6 +448,10 @@ jobs:
             build: false
             test: true
             skip-browser: false
+          - tree: postgres
+            build: false
+            test: true
+            skip-browser: true
           - tree: image-tools
             build: false
             test: true
@@ -566,7 +580,7 @@ jobs:
           node "$STRAD_HOSTD_HOME/app/build/cli.js" keys | awk '{ if (length($2) < 32) exit 1 }'
           ./install/uninstall.sh --purge
 
-  # THE bundle: thirty-seven MCP servers, twenty-eight dependency trees, one Chromium and the
+  # THE bundle: thirty-eight MCP servers, twenty-nine dependency trees, one Chromium and the
   # `op` CLI in one container. It is now the only supplementary component strad
   # deploys, so a PR that cannot build it — or that builds one where a server
   # silently lost half its tools — is a failing PR.

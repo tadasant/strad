@@ -392,7 +392,7 @@ one (hack #4).
 **✅ RESOLVED.** Core presents the internal token to every `supplementary-image`
 component, and the `strad-bundle` host refuses a mount request without it.
 
-**What.** The `strad-bundle` container — thirty-seven mounts, and every upstream
+**What.** The `strad-bundle` container — thirty-eight mounts, and every upstream
 credential behind them — serves every mount unauthenticated. Its only protection
 is the network boundary: an internal-only App Platform component
 (`internal_ports: [8080]`, no public route), reachable by core over the private
@@ -789,10 +789,10 @@ still what makes prod's read-only variants read-only.
 policies) → confirm → _then_ delete the per-server images, their workflows and the
 toggle plumbing.
 
-## 24. Thirty-seven servers share one process, and one Chromium
+## 24. Thirty-eight servers share one process, and one Chromium
 
-The collapsed bundle is one container running thirty-seven MCP servers and one
-headless Chromium. An OOM there is a thirty-seven-server outage; it used to be a
+The collapsed bundle is one container running thirty-eight MCP servers and one
+headless Chromium. An OOM there is a thirty-eight-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -2650,7 +2650,7 @@ both `infra/strad.staging.yaml` and `strad.config.example.yaml` — plus the cou
 in `servers/bundle/scripts/smoke.mjs`, `test/staging-config.test.ts` and
 `.github/workflows/ci.yml`.
 
-## 56. Per-slug box names are emitted for every server; sixteen of twenty-eight trees can read one
+## 56. Per-slug box names are emitted for every server; seventeen of twenty-nine trees can read one
 
 **What.** Every enabled `supplementary-image` server's resolved `env:` is emitted
 onto its bundle TWICE: under the bare name it always had, and under
@@ -2707,7 +2707,7 @@ DigitalOcean both times.
 - **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
   `grafana`, `victorialogs`, `bill-spend`, `aws-device-farm`,
   `whatsapp`, `liveoak`, `airtable`, `flightaware`, `digitalocean`, `hetzner`,
-  `glitchtip`, `vendor-billing` and `ssh` read an injected env.** The other twelve trees
+  `glitchtip`, `vendor-billing`, `postgres` and `ssh` read an injected env.** The other twelve trees
   are vendored upstream code reading `process.env`, often lazily at call time
   (`onepassword` builds its client per call off `OP_SERVICE_ACCOUNT_TOKEN`). A single process cannot overlay `process.env`
   per-request without a race, so each tree needs its own seam and gets it when it
@@ -3751,7 +3751,7 @@ behaviour, which is the pre-change one.
 a listed parameter current in a supplementary container's `process.env` without a
 redeploy. What it cannot do is make the MCP server inside that container LOOK at
 the new value. That is a property of the upstream, and this image runs
-thirty-seven of them, most written by other people.
+thirty-eight of them, most written by other people.
 
 The split is real and it is not subtle:
 
@@ -8206,3 +8206,80 @@ parameter is the one OAuth gives a client to ask with.
 
 **Undo.** Delete the `clients` block and the three flags. Tokens carrying a
 slug set keep it; every other token behaves as it did before any of this.
+
+## 161. Postgres is strad's own server, read-only by transaction, and the role is still the boundary
+
+**What.** `servers/postgres` serves one Postgres database per slug, from
+`DATABASE_URI`, as four reads: `list_schemas`, `list_tables`, `describe_table`
+and `query`. `query` runs one caller-written statement. Three layers stand
+between that statement and a write:
+
+1. **The statement guard** (`shared/src/sql.ts`). A tokenizer that knows
+   Postgres's strings, quoted identifiers, dollar quotes and nested comments.
+   It refuses a second statement, any statement that does not begin `SELECT`,
+   `WITH`, `VALUES`, `TABLE`, `EXPLAIN` or `SHOW`, unicode-escaped names, and a
+   short list of functions whose effect a read-only transaction does not stop
+   (`pg_terminate_backend`, `set_config`, advisory locks, `dblink`, large
+   objects, server file reads), and the built-ins that EXECUTE SQL given as a
+   string (`query_to_xml` and its family, `cursor_to_xml`, `ts_stat`,
+   `ts_rewrite`), which the guard cannot read into.
+2. **The transaction** (`shared/src/query.ts`). Every call is `BEGIN
+TRANSACTION READ ONLY`, `SET LOCAL` statement, lock and idle timeouts, the
+   statement through a cursor over the extended protocol (which refuses two
+   commands itself), then `ROLLBACK`. Nothing is ever committed. A caller's
+   statement runs on a connection that is closed afterwards, so a session-level
+   effect (an advisory lock, a session variable) cannot outlive the call on a
+   pooled session. `standard_conforming_strings` is forced on, since the guard's
+   idea of where a string ends depends on it.
+3. **The role** the URI names. This server grants nothing and cannot take a
+   grant away.
+
+**Why.** PulseMCP's previous orchestrator ran `postgres-mcp` (Python, via `uvx`)
+in restricted mode, and the bundle image is Node only. The four tools are what
+that server's restricted mode was used for; its index tuning and health tools
+are not here.
+
+**What it costs.**
+
+- **The guard is a tokenizer, not a parser.** It is there to give a readable
+  refusal and to catch the side-effect functions by name. A function the DBA
+  wrote that calls one of them, a built-in that executes a string and is not on
+  the list, or a function this list does not name, is stopped only by the role. Give the slug a role that can only read: `pg_read_all_data`, or
+  SELECT on what the slug is for.
+- **The settings are per transaction, not per session.** A transaction-mode
+  PgBouncer (the pool a managed Postgres offers) refuses startup parameters and
+  moves sessions between server connections, so nothing is set at connect
+  time. `SET LOCAL` inside the transaction is the only setting this server
+  relies on.
+- **`sslmode` means libpq's meaning, not node-postgres's.** node-postgres reads
+  `sslmode=require` as `verify-full`, which fails against a managed Postgres
+  whose certificate is signed by a provider CA no trust store carries. This
+  server parses the URI itself: `require` encrypts without verifying,
+  `verify-ca` checks the chain against `DATABASE_CA_CERT`, `verify-full` checks
+  the chain and the name. Anything weaker, or no `sslmode`, is refused. Any
+  other URI parameter is refused by name, and so is a URI without a password
+  (node-postgres would fall back to `PGPASSWORD` and `~/.pgpass`, the whole
+  bundle's, not the slug's).
+- **`sslmode=require` stops a passive eavesdropper, not an active one.** It does
+  not verify the certificate, so a man in the middle can present any
+  certificate and ask for the password in cleartext, and node-postgres sends it.
+  Use `verify-full` (or `verify-ca`) with `DATABASE_CA_CERT` wherever the
+  provider publishes its CA.
+- **Bounded, not paged.** `query` returns at most `max_rows` (100 by default,
+  1,000 at most), a cell is cut at 2,000 characters, and a result over 60,000
+  characters loses rows from the end. Under the row cap, the wire is capped too:
+  past 16 MB received in one call the connection is dropped, so one enormous row
+  is never assembled whole in the bundle process. There is no cursor to resume
+  from: narrow the statement.
+- **`DATABASE_URI` is a generic name, and the conventional mount stays empty.**
+  The renderer bakes each slug's variables under their bare names as well, so
+  the conventional `/postgres` refuses a bare URI a per-slug sibling owns: a slug
+  is served only on `path: /<its own slug>`. Any OTHER tree's slug that declares
+  `DATABASE_URI` and has its own path would also get a postgres instance
+  discovered under that path.
+- **It has met only a local Postgres.** The suite runs against `postgres:17` in
+  Docker, with TLS on and a self-signed certificate. No managed Postgres, no
+  PgBouncer and no real network path has been in front of it.
+
+**Undo.** A run against PulseMCP's production database through
+`pg-pulse-prod-ro` retires the last item. The rest are the design.
