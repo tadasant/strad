@@ -112,7 +112,7 @@ export class Cipher {
   }
 
   /** The payload, or null for anything this key did not seal. */
-  open<T extends { v: 1 | 2 }>(token: string | undefined): T | null {
+  open<T extends { v: 1 | 2 | 3 }>(token: string | undefined): T | null {
     if (!token) return null;
     const raw = Buffer.from(token, "base64url");
     if (raw.length <= IV_BYTES + TAG_BYTES) return null;
@@ -137,8 +137,10 @@ export class Cipher {
       // tag exists so a newer payload cannot be read as an older one under the
       // same key, and enforcing it is what makes it worth carrying. `2` is a
       // grant narrowed to named slugs (`grants.ts`): a build that predates the
-      // field refuses it rather than reading it as unnarrowed.
-      if (payload?.v !== 1 && payload?.v !== 2) return null;
+      // field refuses it rather than reading it as unnarrowed. `3` is a grant
+      // sealed to a confidential client: a build that predates `auth` refuses
+      // it rather than letting it be spent without the client's assertion.
+      if (payload?.v !== 1 && payload?.v !== 2 && payload?.v !== 3) return null;
       return payload;
     } catch {
       // A failed tag, a truncated value, a body that is not JSON. One answer for

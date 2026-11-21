@@ -28,6 +28,11 @@ import {
   type PendingApproval,
 } from "../auth/mcp-oauth/grants.ts";
 import { HostedDomainRefused } from "../auth/mcp-oauth/google.ts";
+import {
+  ASSERTION_ALGORITHMS,
+  assertionIssuer,
+  type ClientAuthentication,
+} from "../auth/mcp-oauth/client-auth.ts";
 import type { McpOAuth } from "../auth/mcp-oauth/index.ts";
 import {
   APPROVE_PATH,
@@ -47,6 +52,7 @@ import {
   requestedSlugs,
   scopeString,
   advertisedScopes,
+  type ClientPolicy,
 } from "../auth/mcp-oauth/policy.ts";
 import { stateMatches, unsealCookie, type Sealer } from "../auth/session.ts";
 import type { StradConfig } from "../config/schema.ts";
@@ -180,6 +186,9 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
         authorizationServerMetadata(base, {
           scopes: advertisedScopes(oauth.policies, cfg),
           registration: oauth.policies.dynamicRegistration,
+          ...(oauth.policies.privateKeyJwt
+            ? { privateKeyJwtAlgs: ASSERTION_ALGORITHMS }
+            : {}),
         }),
       );
     });
@@ -273,6 +282,7 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
           uris: outcome.client.uris,
           ...(outcome.client.name ? { name: outcome.client.name } : {}),
           host: outcome.client.host,
+          ...(outcome.client.auth ? { auth: outcome.client.auth } : {}),
         };
       } else if (clientId) {
         const record = readClient(clientId, oauth.keys.client);
@@ -429,6 +439,16 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
         }
       }
 
+      // CONFIDENTIAL, when the config entry or the document says so. Sealed
+      // into the grant, so every spend of it — the code, each refresh, a
+      // revocation — demands the client's assertion, and a document that later
+      // stops saying so cannot turn this grant public. Nothing is verified
+      // here: the browser leg carries no client credential, and PKCE still
+      // binds the code to whoever started this request.
+      const confidential =
+        policy.requiresPrivateKeyJwt === true ||
+        client.auth === "private_key_jwt";
+
       const request: AuthorizationRequest = {
         cid: clientFingerprint(clientId),
         redirectUri,
@@ -437,6 +457,7 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
         resource,
         issuer: base,
         ...(wanted ? { slugs: wanted } : {}),
+        ...(confidential ? { auth: "private_key_jwt" as const } : {}),
       };
 
       const googleRedirectUri = `${base}${GOOGLE_CALLBACK_PATH}`;
@@ -593,7 +614,7 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
       const approval: PendingApproval = {
         // `2` because it carries `offered`: a pre-slug build would ignore the
         // human's unticked boxes and mint the whole request (`grantVersion`).
-        v: grantVersion(offered),
+        v: grantVersion(offered, request.auth),
         ...request,
         identity: grant.identity,
         googleRefreshToken: grant.refreshToken,
@@ -758,6 +779,39 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
       const body = req.body as Record<string, unknown>;
       const payload = readRefreshToken(oauth.keys.refresh, str(body.token));
 
+      // A CONFIDENTIAL client's grant is revoked only by that client, proven
+      // (RFC 7009 §2.1). Without this, whoever stole the refresh token could
+      // not use it but could still kill it. A public grant is unchanged: no
+      // client credential, as before.
+      if (payload) {
+        const policy = oauth.policies.forFingerprint(payload.cid);
+        if (
+          payload.auth === "private_key_jwt" ||
+          policy?.requiresPrivateKeyJwt === true
+        ) {
+          const authn = await authenticateClient(
+            req,
+            "revoke",
+            REVOKE_PATH,
+            payload.auth,
+          );
+          if (!authn.ok) {
+            tokenError(res, 401, "invalid_client", authn.description);
+            return;
+          }
+          if (clientFingerprint(authn.client.clientId) !== payload.cid) {
+            refused("revoke", "client_mismatch");
+            tokenError(
+              res,
+              401,
+              "invalid_client",
+              "this token was issued to another client.",
+            );
+            return;
+          }
+        }
+      }
+
       // RFC 7009 §2.2: an unknown, malformed or already-dead token is a 200.
       // Saying otherwise turns this endpoint into an oracle for which tokens
       // exist, and there is nothing a client could usefully do with the answer.
@@ -804,15 +858,100 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
     return readClient(clientId, oauth.keys.client) !== null;
   }
 
+  /**
+   * "Was this request client-authenticated, and as whom?" — the one question
+   * every handler on the token and revocation endpoints asks, and the one a
+   * future grant (RFC 8693 token exchange) asks with `grantAuth` set to
+   * `"private_key_jwt"` to demand a confidential client.
+   *
+   * The client is the request's `client_id`, or — RFC 7523 §3 lets a client
+   * that authenticates with an assertion omit it — the assertion's `iss`.
+   * It must be a client this endpoint may answer for (`knownClient`).
+   *
+   * The request must carry a valid assertion when the client's config entry
+   * requires `private_key_jwt`, or `grantAuth` (the method sealed into the
+   * grant being spent) is `private_key_jwt`. Otherwise it is a public client,
+   * exactly as before, and an assertion it sent is not read.
+   */
+  async function authenticateClient(
+    req: Request,
+    stage: string,
+    endpointPath: string,
+    grantAuth: "private_key_jwt" | undefined,
+  ): Promise<
+    | { ok: true; client: ClientAuthentication; policy: ClientPolicy }
+    | { ok: false; description: string }
+  > {
+    const body = req.body as Record<string, unknown>;
+    const assertion = str(body.client_assertion);
+    const sentId = str(body.client_id);
+    const clientId =
+      sentId ??
+      (assertion !== undefined ? assertionIssuer(assertion) : undefined);
+    const policy =
+      clientId !== undefined && knownClient(clientId)
+        ? oauth.policies.forClient(clientId)
+        : null;
+    if (clientId === undefined || !policy) {
+      return { ok: false, description: "unknown client_id." };
+    }
+    const required =
+      policy.requiresPrivateKeyJwt === true || grantAuth === "private_key_jwt";
+    if (!required) {
+      // A public client names itself with `client_id`, as it always had to.
+      // The assertion's `iss` stands in for it only where the assertion is
+      // then verified, so a request shape that was `unknown client_id`
+      // before is still that.
+      if (sentId === undefined) {
+        return { ok: false, description: "unknown client_id." };
+      }
+      return { ok: true, client: { clientId, method: "none" }, policy };
+    }
+    // The audience an assertion must name is this server — the DECLARED
+    // origin, never one derived from the request. A `Host`-derived issuer
+    // would let a caller choose the audience, and so accept an assertion the
+    // client minted for some other authorization server.
+    const base = declared !== undefined ? origin(req) : null;
+    if (base === null) {
+      refused(stage, "no_issuer_identifier");
+      return {
+        ok: false,
+        description:
+          "this gateway has no public URL, so no client assertion can name it.",
+      };
+    }
+    const outcome = await oauth.clientAuth.authenticate({
+      clientId,
+      policy,
+      required,
+      assertion,
+      assertionType: str(body.client_assertion_type),
+      audiences: [
+        ...new Set([base, `${base}${TOKEN_PATH}`, `${base}${endpointPath}`]),
+      ],
+    });
+    if (!outcome.ok) {
+      refused(stage, outcome.reason);
+      return { ok: false, description: outcome.description };
+    }
+    return { ok: true, client: outcome.client, policy };
+  }
+
   async function codeGrant(req: Request, res: Response): Promise<void> {
     const body = req.body as Record<string, unknown>;
-    const clientId = str(body.client_id);
     const code = readCode(oauth.keys.code, str(body.code), now());
 
-    if (!clientId || !knownClient(clientId)) {
-      tokenError(res, 401, "invalid_client", "unknown client_id.");
+    const authn = await authenticateClient(
+      req,
+      "token",
+      TOKEN_PATH,
+      code?.auth,
+    );
+    if (!authn.ok) {
+      tokenError(res, 401, "invalid_client", authn.description);
       return;
     }
+    const { clientId } = authn.client;
     if (!code) {
       tokenError(res, 400, "invalid_grant", "the code is unknown or expired.");
       return;
@@ -885,6 +1024,7 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
         identity: code.identity,
         googleRefreshToken: code.googleRefreshToken,
         ...(code.slugs ? { slugs: code.slugs } : {}),
+        ...(code.auth ? { auth: code.auth } : {}),
       },
       now(),
     );
@@ -902,16 +1042,22 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
 
   async function refreshGrant(req: Request, res: Response): Promise<void> {
     const body = req.body as Record<string, unknown>;
-    const clientId = str(body.client_id);
     const payload = readRefreshToken(
       oauth.keys.refresh,
       str(body.refresh_token),
     );
 
-    if (!clientId || !knownClient(clientId)) {
-      tokenError(res, 401, "invalid_client", "unknown client_id.");
+    const authn = await authenticateClient(
+      req,
+      "token",
+      TOKEN_PATH,
+      payload?.auth,
+    );
+    if (!authn.ok) {
+      tokenError(res, 401, "invalid_client", authn.description);
       return;
     }
+    const { clientId } = authn.client;
     if (!payload) {
       tokenError(res, 400, "invalid_grant", "the refresh token is unknown.");
       return;
@@ -1244,6 +1390,8 @@ interface ResolvedClient {
   uris: string[];
   name?: string;
   host?: string;
+  /** The document declared `private_key_jwt` (and the deployment accepts it). */
+  auth?: "private_key_jwt";
 }
 
 function hostOf(uri: string): string {

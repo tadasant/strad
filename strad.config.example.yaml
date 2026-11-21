@@ -196,6 +196,12 @@ auth:
         roles: [admin]
         # servers: [granola]
         # accessTokenTtlSeconds: 900
+      # A CONFIDENTIAL client: every token and revocation call must carry an
+      # RFC 7523 private_key_jwt assertion, whatever its document says. The
+      # optional jwksUri pins its keys so a tampered document cannot swap them.
+      # - clientId: https://zimmer.example.com/oauth/client-metadata.json
+      #   tokenEndpointAuthMethod: private_key_jwt
+      #   jwksUri: https://zimmer.example.com/oauth/jwks.json
     # false = only the clients listed above may sign in, refresh, or use a
     # token they already hold.
     allowUnlistedClients: true
@@ -205,6 +211,10 @@ auth:
     # true = scopes_supported lists slug:<name> for every reachable slug, on two
     # unauthenticated documents. Off because that list is the roster.
     advertiseSlugScopes: false
+    # true = a client id metadata document may declare private_key_jwt, and the
+    # metadata advertises it. Unset = on exactly when an entry above requires
+    # it. See docs/auth/overview.md.
+    # privateKeyJwt: true
 
   # Temporary: lets a human into /console with ADMIN_BOOTSTRAP_TOKEN while
   # Google OAuth credentials are being provisioned. Requires ALLOW_DEV_AUTH=true.

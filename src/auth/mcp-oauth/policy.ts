@@ -45,6 +45,13 @@ export interface ClientPolicy {
   /** The operator's slug allowlist, when the entry has one. */
   servers?: string[];
   accessTokenTtlMs: number;
+  /**
+   * The config requires `private_key_jwt` of this client, whatever its
+   * document says. Only a listed client can have it.
+   */
+  requiresPrivateKeyJwt?: boolean;
+  /** The config's pin for this client's keys. Wins over the document's. */
+  jwksUri?: string;
 }
 
 /**
@@ -61,6 +68,11 @@ export class ClientPolicies {
   readonly allowUnlisted: boolean;
   readonly dynamicRegistration: boolean;
   readonly advertiseSlugScopes: boolean;
+  /**
+   * Is `private_key_jwt` accepted from documents and advertised? The explicit
+   * `auth.mcpOAuth.privateKeyJwt`, else whether any entry requires it.
+   */
+  readonly privateKeyJwt: boolean;
 
   constructor(settings: StradConfig["auth"]["mcpOAuth"]) {
     const defaultTtlMs = settings.accessTokenTtlSeconds * 1000;
@@ -72,6 +84,11 @@ export class ClientPolicies {
     this.allowUnlisted = settings.allowUnlistedClients;
     this.dynamicRegistration = settings.dynamicRegistration;
     this.advertiseSlugScopes = settings.advertiseSlugScopes;
+    this.privateKeyJwt =
+      settings.privateKeyJwt ??
+      settings.clients.some(
+        (c) => c.tokenEndpointAuthMethod === "private_key_jwt",
+      );
     for (const entry of settings.clients) {
       const policy: ClientPolicy = {
         listed: true,
@@ -81,6 +98,10 @@ export class ClientPolicies {
         accessTokenTtlMs:
           (entry.accessTokenTtlSeconds ?? settings.accessTokenTtlSeconds) *
           1000,
+        ...(entry.tokenEndpointAuthMethod === "private_key_jwt"
+          ? { requiresPrivateKeyJwt: true }
+          : {}),
+        ...(entry.jwksUri ? { jwksUri: entry.jwksUri } : {}),
       };
       this.byId.set(entry.clientId, policy);
       this.byCid.set(clientFingerprint(entry.clientId), policy);

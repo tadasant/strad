@@ -8283,3 +8283,45 @@ are not here.
 
 **Undo.** A run against PulseMCP's production database through
 `pg-pulse-prod-ro` retires the last item. The rest are the design.
+
+## 162. `/mcp` OAuth `private_key_jwt` keeps its replay record in memory, and a confidential client's token calls depend on its key host
+
+**What.** A metadata-document client may be CONFIDENTIAL: its config entry
+says `tokenEndpointAuthMethod: private_key_jwt`, or its document declares it
+(with `auth.mcpOAuth.privateKeyJwt` on). Its code exchange, every refresh and
+every revocation then need an RFC 7523 assertion signed by a key it published
+(`src/auth/mcp-oauth/client-auth.ts`). The method is sealed into the grant
+(payload `v: 3`) so a document cannot later turn the grant public.
+
+**Why.** A public client's refresh token is a bearer credential forever. A
+confidential client's is useless without a private key the client can hold in
+a KMS, which is the precondition for giving a backend a long-lived grant.
+
+**What it costs.**
+
+1. **The `jti` replay record is per process and in memory.** strad has no
+   datastore; on a core scaled past one instance, one assertion could be spent
+   once per replica inside its five-minute life. The bound is the assertion's
+   `exp` (at most 300 seconds ahead), and spending it still needs the grant
+   it was sent with. A redeploy forgets the record, which matters only for an
+   assertion captured within the last five minutes. The grant store is the
+   place to move it.
+2. **A confidential client's token calls fetch.** Its keys come from the config
+   pin or its document's `jwks_uri`, and without a pin its document too. Both
+   are cached (five minutes by default, an hour at most), so a key host down
+   for longer than the cache means the client cannot refresh. A public client's
+   token calls still fetch nothing.
+3. **A rollback signs confidential clients out.** A pre-`private_key_jwt` build
+   refuses a `v: 3` grant, and refuses a document declaring the method, so the
+   client cannot connect until the build comes back. It cannot be spent as
+   public; it also cannot be spent at all. A config requirement is stripped by
+   an older build's lenient boot parse, so on such a build an `auth`-less grant
+   from that client refreshes as public. Only grants minted before the
+   requirement existed are in that set.
+4. **Without a `jwksUri` pin, the document is the key authority.** A config
+   requirement stops a tampered document from turning the client public, but
+   the document's `jwks_uri` still names the keys. Pin `jwksUri` to close that.
+
+**Undo.** Delete `tokenEndpointAuthMethod`, `jwksUri` and `privateKeyJwt`.
+Grants already sealed confidential stay confidential (they keep demanding an
+assertion), so the client either keeps signing or signs in again.

@@ -4989,3 +4989,20 @@ top of the database role, not instead of it.
   Postgres or PgBouncer has been in front of it yet.
 
 See `HACKS.md` #159.
+
+### 162. `/mcp` OAuth `private_key_jwt` keeps its replay record in memory, and a confidential client's token calls depend on its key host
+
+A confidential client authenticates every token and revocation call with a
+signed assertion. See
+[confidential clients](/auth/overview/#confidential-clients-private_key_jwt).
+
+- **The replay record is per process.** On a core scaled past one instance,
+  an assertion could be spent once per replica within its five-minute life,
+  and a redeploy forgets the record.
+- **Its token calls depend on its key host.** Keys (and, without a `jwksUri`
+  pin, the document) are fetched and cached for at most an hour; a host down
+  for longer than that means the client cannot refresh.
+- **A rollback signs confidential clients out.** An older build refuses their
+  grants and their documents rather than treating them as public.
+- **Without a `jwksUri` pin, the document names the keys.** The config
+  requirement stops a downgrade to public; the pin stops a key swap.
