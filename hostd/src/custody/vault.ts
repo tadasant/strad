@@ -461,6 +461,24 @@ export class Vault {
     return hits;
   }
 
+  /**
+   * The match forms of every value `scan` would find, labelled with the
+   * handle: what `src/redact.ts` takes out of anything written down, so an
+   * audit record says WHICH secret and never what it was.
+   */
+  known(): { label: string; needles: string[] }[] {
+    return [
+      ...[...this.held.values()].map((h) => ({
+        label: `secret ${h.id}`,
+        needles: h.needles,
+      })),
+      ...[...this.watched].map(([id, w]) => ({
+        label: `secret ${id}`,
+        needles: w.needles,
+      })),
+    ];
+  }
+
   /** Whether `handle` is held, as opposed to deposited or discarded. */
   isHeld(handle: string): boolean {
     return this.held.has(handle);

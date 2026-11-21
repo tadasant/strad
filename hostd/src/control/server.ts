@@ -84,10 +84,17 @@ export function collectState(deps: ControlDeps): ControlState {
       name: displayName(config, id),
       onTimeout: onTimeoutFor(config, id),
     })),
-    pending: [...gate.pending.values()],
-    grants: gate.grants
-      .active()
-      .map((g) => ({ ...g, running: deps.runningFor(g.id) })),
+    // Caller-authored text, redacted as the audit is: a purpose or a running
+    // command is on this page for as long as the grant is, refreshed every 4s.
+    pending: [...gate.pending.values()].map((p) => ({
+      ...p,
+      purpose: deps.audit.scrub(p.purpose),
+    })),
+    grants: gate.grants.active().map((g) => ({
+      ...g,
+      purpose: deps.audit.scrub(g.purpose),
+      running: deps.runningFor(g.id).map((c) => deps.audit.scrub(c, 160)),
+    })),
     helper: deps.helperState?.(),
     messagesHelper: deps.messagesHelperState?.(),
     extension: deps.extension?.bridge.state(),

@@ -183,6 +183,13 @@ use shell or computer-use. A refusal says why and how to end the hold. The
 status page shows how many secrets custody holds and how many tabs are
 tainted.
 
+Nothing the daemon writes down holds a value either. The audit log, the status
+page and the notifications replace every value the vault holds or has just
+deposited with `[secret h_…]`, and every daemon key and deposit bearer by
+name, before the shape scrubber runs. A deposit is recorded as
+`deposit: h_… → destination:slug/VARIABLE`: which secret, where, and when
+(`servers/hostd`, "status page").
+
 ## The deposit route
 
 `POST /_strad/deposit/{slug}/{VARIABLE}` on strad core, with body

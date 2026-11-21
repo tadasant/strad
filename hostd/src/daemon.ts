@@ -3,7 +3,9 @@ import type { Server as HttpServer } from "node:http";
 import { join } from "node:path";
 import type { Duplex } from "node:stream";
 
+import { redactAtRest } from "./at-rest.js";
 import { AuditLog } from "./audit.js";
+import { configSecrets, replaceKnown } from "./redact.js";
 import { ExtensionBridge } from "./browser/bridge.js";
 import { browserCapability } from "./browser/tools.js";
 import { CAPABILITIES, helperFor, type CapabilityId } from "./capabilities.js";
@@ -91,7 +93,6 @@ export function buildCore(
 ): Core {
   const log = opts.log ?? (() => {});
   const killSwitch = new KillSwitch(opts.stateDir);
-  const audit = new AuditLog(opts.stateDir);
   const bridge = opts.extensionToken
     ? new ExtensionBridge({
         token: opts.extensionToken,
@@ -107,6 +108,13 @@ export function buildCore(
   const vault = new Vault({
     handleTtlMs: config.custody.handleMinutes * 60_000,
   });
+  // Everything the audit records — and the status page and notifications
+  // show — has every value the vault knows and every key this daemon holds
+  // taken out first, then the secret-shaped rest (src/redact.ts).
+  const audit = new AuditLog(opts.stateDir);
+  audit.redactKnown((t) =>
+    replaceKnown(t, [...vault.known(), ...configSecrets(config)]),
+  );
 
   // The gate and the helper each need the presence sync, which needs both.
   const late: { presence?: Presence } = {};
@@ -290,6 +298,8 @@ export async function startDaemon(
     extensionDir?: string;
     /** Where `strad-hostd key add` wrote: re-read on `POST /reload-keys`. Omitted, keys are fixed for the run. */
     configPath?: string;
+    /** Log files an older daemon may have written secrets into, redacted once at start. `serve` passes the launchd ones. */
+    atRestLogs?: string[];
   },
 ): Promise<RunningDaemon> {
   if (config.consent.mode === "none") {
@@ -305,6 +315,21 @@ export async function startDaemon(
     }
   }
   const log = opts.log ?? (() => {});
+  // Before anything is written: an older daemon recorded tool summaries,
+  // purposes and refusals raw, and they are still on this disk.
+  try {
+    const r = redactAtRest(
+      opts.stateDir,
+      (t) => replaceKnown(t, configSecrets(config)),
+      opts.atRestLogs ?? [],
+    );
+    if (r.ran)
+      log(
+        `at-rest redaction: ${r.auditChanged} audit entr${r.auditChanged === 1 ? "y" : "ies"} redacted, ${r.auditDropped} unreadable dropped, ${r.logLinesChanged} log line(s) redacted`,
+      );
+  } catch (err) {
+    log(`at-rest redaction failed: ${(err as Error).message}`);
+  }
   const serveBrowser = enabledCapabilities(config).includes("browser");
   const core = buildCore(config, {
     ...opts,

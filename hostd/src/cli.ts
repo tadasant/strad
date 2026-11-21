@@ -28,6 +28,7 @@ import {
   removeDestination,
   revokeClientKey,
 } from "./config.js";
+import { launchdLogFiles } from "./at-rest.js";
 import { platformNotifier } from "./consent/notifier.js";
 import { buildCore, startDaemon } from "./daemon.js";
 import { extensionIdFor, loadOrCreateSigningKey } from "./extension/crx.js";
@@ -259,6 +260,7 @@ async function main(argv: string[]): Promise<number> {
         log: (l) => console.error(l),
         notifier: platformNotifier(),
         configPath: configPath(),
+        atRestLogs: launchdLogFiles(),
       });
       const stop = () => void daemon.stop().then(() => process.exit(0));
       process.on("SIGTERM", stop);

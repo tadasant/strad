@@ -7517,7 +7517,8 @@ or more letters and digits. The banner is not excluded from capture: a
 foreground grant's screenshot includes it, which in compact is every grant's
 purpose, session and current call, and in **Details** more. Hiding it
 from capture would let a model driving the mouse click a Kill button it cannot
-see. The audit log on disk keeps the unscrubbed summary.
+see. The audit log and the status page get the same scrubbing, after an
+exact pass over known values (#168).
 
 **Undo.** If strad forwards a caller identity to `local-tunnel` slugs, read it
 in `buildServer` and drop the argument. A real exclusion from capture would
@@ -8584,3 +8585,37 @@ fallback instead, and keystrokes kept answering it.
    `runModal`, and by tests against a stand-in bridge. On a Mac, the checks
    were observed passing with no window shown. Nobody has pressed keys at a live
    dialog, and nothing in CI runs AppKit.
+
+## 168. strad-hostd redacts what it writes down by exact match and by heuristic, and cannot unwrite an older daemon's disk
+
+**What.** strad-hostd's audit log (`~/.strad-hostd/audit.jsonl` and its
+in-memory tail), the status page and `/state.json`, and the grant
+notifications are redacted before anything is kept (`hostd/src/redact.ts`).
+The first pass is exact: every value the custody vault holds or watches, as
+`[secret h_…]`, and every key the daemon holds, plus the deposit bearers
+derived from them. The second pass is `screenText`, the banner's shape
+scrubber. `type_text` and `set_value` summaries carry a length and never the
+text. On its first start, a daemon with this redaction rewrites `audit.jsonl`
+and the launchd `com.strad.hostd.{out,err}.log` once (`hostd/src/at-rest.ts`,
+marker `~/.strad-hostd/at-rest-redaction`). Historic free-text tool summaries
+are cut to the tool's name, because no heuristic can prove an old line clean.
+
+**Why.** An older daemon recorded every tool summary raw: a shell command
+carrying a bearer header or a key, an `evaluate_script` with a token in it,
+the first 80 characters of typed text. The status page rendered those
+summaries, so the owner saw secrets in plaintext on screen, and they were at
+rest on disk.
+
+**What it costs.** The exact pass only knows values the vault holds now or
+deposited under a grant that is still running, and the daemon's own keys. A
+secret that never went through custody, or one pasted into a command after its
+grant ended, is caught only if it has a shape the scrubber knows. A password
+passed as a bare word in a shell command is still recorded as written. The
+rewrite replaces the file's contents, but APFS on an SSD does not promise the
+old blocks are gone, and an earlier Time Machine backup or local snapshot
+still has the old files. A secret an older daemon recorded should be treated
+as exposed on that disk and rotated. Commands in the new audit are cut at 400
+characters.
+
+**Undo.** Nothing to undo; this is the floor. Doing better on free text means
+not recording it: summaries carrying only a tool name and an argument hash.

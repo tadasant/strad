@@ -256,7 +256,8 @@ export class ConsentGate {
     });
     this.deps.notifier?.notify(
       `${input.server} has control of ${config.machine}`,
-      `${how === "timeout-allow" ? "Nobody answered the dialog, so it was allowed. " : ""}${purpose.purpose}${
+      // Notification Center keeps this on disk: redacted as the audit is.
+      `${how === "timeout-allow" ? "Nobody answered the dialog, so it was allowed. " : ""}${this.deps.audit.scrub(purpose.purpose)}${
         this.deps.controlUrl
           ? ` — see or kill it at ${this.deps.controlUrl}`
           : ""

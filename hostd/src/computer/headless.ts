@@ -385,7 +385,8 @@ Not every field accepts a value this way (web content in Chrome often does not);
       destructiveHint: true,
     },
     summarize: (a) =>
-      `set_value: ${a.element} = ${JSON.stringify(a.value).slice(0, 120)}`,
+      // A value set into a field may be a password: its length, never the text.
+      `set_value: ${a.element} = ${typeof a.value === "string" ? `(text, ${a.value.length} chars)` : JSON.stringify(a.value)}`,
     handler: async (a) =>
       json(
         await helper.call("ax_set_value", {

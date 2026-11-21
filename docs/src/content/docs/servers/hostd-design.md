@@ -767,7 +767,11 @@ machine. The daemon adds:
   without the gate. That mode exists for stdio.
 - **A local audit log**, `~/.strad-hostd/audit.jsonl`, mode 0600. It records
   requests, decisions and one line per tool call including the command. No tool
-  returns it and nothing ships it. strad's own telemetry still records no
+  returns it and nothing ships it. Every line is redacted before it is written
+  (`hostd/src/redact.ts`): first every value the custody vault knows and every
+  key the daemon holds, matched exactly, then the banner's shape scrubber. The
+  status page and the notifications show the same redacted text.
+  `hostd/src/at-rest.ts` rewrites what an older daemon wrote, once. strad's own telemetry still records no
   arguments.
 - **A key per local client, on top of the key per server.**
   `capabilities.<server>.clientKeys` names further keys, one per Claude Code
