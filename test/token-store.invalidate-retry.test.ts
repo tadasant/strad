@@ -162,6 +162,9 @@ describe("/mcp after a secret write invalidates the token store", () => {
     // The outage report is throttled per PROCESS, to one per minute
     // (src/auth/index.ts). Step the wall clock past that window so this
     // assertion does not depend on what ran before it in this worker.
+    // It leaves that module-level throttle stamped two minutes AHEAD of real
+    // time, so this stays the LAST test in the file: one after it expecting
+    // an outage report would have it suppressed.
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(Date.now() + 120_000);
 

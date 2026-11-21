@@ -29,14 +29,23 @@
  * With nothing held, a failed read is tried again before it is believed. There
  * are exactly two ways to hold nothing: a cold start, and the moment after an
  * `invalidate` — which every secret write makes, including the OAuth refresh
- * write-back a fresh pod runs seconds after boot. In both, one transient
- * failure used to be the whole answer: the gateway's token store reads through
- * this class, so a single bad read right after a write failed `/mcp` with a
- * 500 (tadasant/strad#523). The retry is bounded twice — `COLD_RETRY_BUDGET`
- * caps the attempts and the sleeps, and no further attempt starts once
- * `COLD_RETRY_DEADLINE_MS` has passed since the first, so a read that HUNG to
- * its own timeout is not repeated and a stalled store stays a stalled request,
- * not three of them back to back.
+ * write-back a fresh pod runs seconds after boot. Without the retry, one
+ * transient failure there is the whole answer: the gateway's token store reads
+ * through this class, so a single bad read right after a write would fail
+ * `/mcp` with a 500 (tadasant/strad#523). The retry is bounded on every side:
+ *
+ *   - `COLD_RETRY_BUDGET` caps the attempts and the sleeps.
+ *   - No retry starts once `COLD_RETRY_DEADLINE_MS` has passed since the first
+ *     attempt did. A read that hung to its own timeout, or that the store
+ *     client already spent its own backoff retrying, is not repeated — only a
+ *     read that failed FAST is.
+ *   - A status that says "not ever" (a `403`, a `404`, a `400` render
+ *     failure) is not retried: asking again rediscovers it.
+ *   - After a nothing-held read has failed, the next reads inside
+ *     `FAILURE_BACKOFF_MS` each make one attempt and no retry, so an outage
+ *     with nothing held costs one read per request, not three.
+ *   - A retry stops once an `invalidate` has superseded the read; `get` reads
+ *     again against the post-write state.
  *
  * Once the budget is spent the error DOES propagate. There is nothing to serve,
  * and reporting an empty namespace would turn an outage into a silent
@@ -49,7 +58,12 @@
  */
 
 import { errorSummary } from "../../util/error-text.ts";
-import { type RetryBudget, retryDelayMs, sleep } from "../../http/retry.ts";
+import {
+  isRetryableStatus,
+  type RetryBudget,
+  retryDelayMs,
+  sleep,
+} from "../../http/retry.ts";
 
 export interface NamespaceViewOptions {
   /** Injected in tests so the clock is not the thing under test. */
@@ -58,8 +72,6 @@ export interface NamespaceViewOptions {
   onWarn?: (message: string) => void;
   /** Prefixes a warning so it names the subsystem. Never carries a value. */
   label?: string;
-  /** How hard a read with nothing held is retried. Defaults to `COLD_RETRY_BUDGET`. */
-  coldRetry?: RetryBudget;
   /** Injected in tests so a backoff does not have to be slept through. */
   sleep?: (ms: number) => Promise<void>;
   /** Injected in tests so the jitter is fixed. Returns `[0, 1)`. */
@@ -84,17 +96,18 @@ const FAILURE_BACKOFF_MS = 5_000;
 
 /**
  * Three tries for a read with nothing held: sleeps of 100–200ms and 200–400ms,
- * at most 600ms in all.
+ * at most 600ms in all. `maxDelayMs` and `totalDelayMs` never bind at these
+ * terms; they are ceilings, there so a widened `baseDelayMs` cannot outgrow
+ * them.
  *
  * Sized for the failure it exists for — one bad response from the store in a
  * burst, the shape of #523 — and paid only when a read FAILS with nothing to
  * fall back on, which is on the request path of whoever is waiting. It is not
  * sized to ride out an outage; the store client already retries the statuses
  * that say "not now" (see `src/http/retry.ts`), and this covers what escapes
- * it: a reset connection, a failed token exchange, a payload that would not
- * parse.
+ * it fast: a reset connection, a failed token exchange, one 5xx too many.
  */
-export const COLD_RETRY_BUDGET: RetryBudget = {
+const COLD_RETRY_BUDGET: RetryBudget = {
   attempts: 3,
   baseDelayMs: 200,
   maxDelayMs: 1_000,
@@ -104,17 +117,32 @@ export const COLD_RETRY_BUDGET: RetryBudget = {
 /**
  * No retry STARTS later than this after the first attempt did.
  *
- * Below the store client's own per-request timeout (10s, parameters/gcp.ts),
- * so a read that failed by hanging to that timeout is never repeated here —
- * only one that failed fast.
+ * Well below the store client's own per-request timeout (10s,
+ * parameters/gcp.ts) and below the 2.8s of backoff its own retry budget can
+ * spend, so a read that failed by hanging, or after the client had already
+ * retried it, is never repeated here — only one that failed fast. It bounds
+ * when an attempt starts, not how long that attempt then takes: the attempt
+ * itself is bounded by the client's deadline.
  */
-export const COLD_RETRY_DEADLINE_MS = 5_000;
+const COLD_RETRY_DEADLINE_MS = 2_000;
+
+/**
+ * Is this error worth reading again for?
+ *
+ * An error that carries an HTTP status is judged by the same transient set the
+ * store client retries on; one that carries none (a reset connection, an
+ * aborted fetch, a payload that would not parse) is assumed to be a bad moment.
+ */
+function mayRetry(err: unknown): boolean {
+  const status = (err as { status?: unknown } | null)?.status;
+  if (typeof status !== "number" || status === 0) return true;
+  return isRetryableStatus(status, true);
+}
 
 export class NamespaceView {
   private readonly entries = new Map<string, Entry>();
   private readonly now: () => number;
   private readonly warn: (message: string) => void;
-  private readonly coldRetry: RetryBudget;
   private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(
@@ -128,7 +156,6 @@ export class NamespaceView {
       ((message: string) => {
         console.warn(message);
       });
-    this.coldRetry = opts.coldRetry ?? COLD_RETRY_BUDGET;
     this.sleep = opts.sleep ?? sleep;
   }
 
@@ -139,19 +166,30 @@ export class NamespaceView {
    * so there is nothing to wait for and the first error is returned. Each
    * retry is warned, by subsystem and error class — never a value — because
    * the warning is the only trace a retry that then succeeds leaves.
+   *
+   * `undefined` means an `invalidate` superseded this read while it was
+   * failing: whatever it read next would be discarded, so it stops, and
+   * `get` reads again against the post-write state.
    */
-  private async loadRetrying(key: string): Promise<Record<string, string>> {
+  private async loadRetrying(
+    key: string,
+    generation: number,
+    attempts: number,
+  ): Promise<Record<string, string> | undefined> {
     const startedAt = this.now();
     let spentMs = 0;
     for (let attempt = 0; ; attempt++) {
       try {
         return await this.load(key);
       } catch (err) {
-        if (this.held(key)) throw err;
+        if ((this.entries.get(key)?.generation ?? 0) !== generation) {
+          return undefined;
+        }
+        if (this.held(key) || !mayRetry(err)) throw err;
         const delay = retryDelayMs({
           attempt,
           spentMs,
-          budget: this.coldRetry,
+          budget: { ...COLD_RETRY_BUDGET, attempts },
           random: this.opts.random,
         });
         if (
@@ -163,11 +201,14 @@ export class NamespaceView {
         this.warn(
           `[strad] ${this.opts.label ?? "namespace"} read failed for "${key}" ` +
             `with nothing held; retrying in ${delay}ms ` +
-            `(attempt ${attempt + 2} of ${this.coldRetry.attempts}): ` +
+            `(attempt ${attempt + 2} of ${attempts}): ` +
             errorSummary(err),
         );
         await this.sleep(delay);
         spentMs += delay;
+        if ((this.entries.get(key)?.generation ?? 0) !== generation) {
+          return undefined;
+        }
       }
     }
   }
@@ -260,7 +301,19 @@ export class NamespaceView {
 
     const inflight = (async () => {
       try {
-        const values = await this.loadRetrying(key);
+        // Nothing held and a nothing-held read failed moments ago: one
+        // attempt, no retry, so an outage costs a read per request rather
+        // than a budget per request. Still a read — this fails closed, it
+        // does not fail stale.
+        const recentlyFailed =
+          existing?.lastFailureAt !== undefined &&
+          this.now() - existing.lastFailureAt < FAILURE_BACKOFF_MS;
+        const values = await this.loadRetrying(
+          key,
+          generation,
+          recentlyFailed ? 1 : COLD_RETRY_BUDGET.attempts,
+        );
+        if (values === undefined) return;
         const current = this.entries.get(key);
         // Discard a result an invalidate has already superseded: the read is not
         // wrong, just out of date — it began before a write we were told about.
@@ -272,7 +325,15 @@ export class NamespaceView {
         });
       } catch (err) {
         const current = this.entries.get(key);
-        if (!this.held(key)) throw err;
+        if (!this.held(key)) {
+          // Remember the failure so the next read inside the backoff does
+          // not spend a whole retry budget too — but only for THIS
+          // generation: a write since is a reason to try in earnest again.
+          if (current && current.generation === generation) {
+            this.entries.set(key, { ...current, lastFailureAt: this.now() });
+          }
+          throw err;
+        }
         this.entries.set(key, {
           values: current!.values,
           fetchedAt: current!.fetchedAt,

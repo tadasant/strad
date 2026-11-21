@@ -328,9 +328,9 @@ describe("StoreSecretProvider", () => {
  * `invalidate()` drops the last known good map — it has to, or a write would be
  * ignored the next time the store hiccups. So the read straight after a write
  * is a read with nothing held, exactly like a cold start, and the gateway's
- * token store reads through it on the `/mcp` request path. One transient
- * failure there was a 500. It is retried now, within a stated budget, and only
- * a store that STAYS unreadable propagates.
+ * token store reads through it on the `/mcp` request path, where one
+ * transient failure would be a 500. So it is retried, within a stated budget,
+ * and only a store that STAYS unreadable propagates.
  */
 describe("StoreSecretProvider, a read with nothing held", () => {
   /** A resolver that fails its next `n` reads, then answers. */
@@ -419,9 +419,154 @@ describe("StoreSecretProvider, a read with nothing held", () => {
     // discarded, only nothing held.
     expect(f.reads()).toBe(4);
     expect(s.slept).toEqual([150, 300]);
-    // And it does not stop failing closed: the next request tries again,
-    // rather than being handed an empty namespace.
+    // And it does not stop failing closed: the next request reads again,
+    // rather than being handed an empty namespace — but inside the backoff it
+    // makes ONE attempt, so an outage is a read per request, not a budget.
     await expect(p.get("TOKEN")).rejects.toThrow("ECONNRESET");
+    expect(f.reads()).toBe(5);
+    expect(s.slept).toEqual([150, 300]);
+  });
+
+  it("past the backoff, a nothing-held read gets its whole budget again", async () => {
+    const c = clock();
+    const f = flaky({ TOKEN: "v1" });
+    const s = noSleep();
+    const p = new StoreSecretProvider(f.resolver, "/ns/", {
+      now: c.now,
+      onWarn: () => {},
+      sleep: s.sleep,
+    });
+    f.failNext(3);
+    await expect(p.get("TOKEN")).rejects.toThrow();
+    expect(f.reads()).toBe(3);
+    c.advance(10_000);
+    f.failNext(1);
+    expect(await p.get("TOKEN")).toBe("v1");
+    expect(f.reads()).toBe(5);
+  });
+
+  it("a write after a failure earns a full budget at once, not the backoff's single try", async () => {
+    const f = flaky({ TOKEN: "v1" });
+    const p = new StoreSecretProvider(f.resolver, "/ns/", {
+      onWarn: () => {},
+      sleep: noSleep().sleep,
+    });
+    f.failNext(3);
+    await expect(p.get("TOKEN")).rejects.toThrow();
+    p.invalidate();
+    f.failNext(1);
+    expect(await p.get("TOKEN")).toBe("v1");
+  });
+
+  it("does not retry a status that says 'not ever'", async () => {
+    let reads = 0;
+    const resolver: ParameterResolver = {
+      async resolve() {
+        reads += 1;
+        throw Object.assign(new Error("permission denied"), { status: 403 });
+      },
+    };
+    const s = noSleep();
+    const p = new StoreSecretProvider(resolver, "/ns/", {
+      onWarn: () => {},
+      sleep: s.sleep,
+    });
+    await expect(p.get("TOKEN")).rejects.toThrow("permission denied");
+    expect(reads).toBe(1);
+    expect(s.slept).toEqual([]);
+  });
+
+  it("does retry a 5xx the store client let through", async () => {
+    let reads = 0;
+    const resolver: ParameterResolver = {
+      async resolve() {
+        reads += 1;
+        if (reads === 1) {
+          throw Object.assign(new Error("backend error"), { status: 503 });
+        }
+        return { TOKEN: "v1" };
+      },
+    };
+    const p = new StoreSecretProvider(resolver, "/ns/", {
+      onWarn: () => {},
+      sleep: noSleep().sleep,
+    });
+    expect(await p.get("TOKEN")).toBe("v1");
+    expect(reads).toBe(2);
+  });
+
+  it("does not START a retry whose sleep would cross the deadline", async () => {
+    // The first attempt fails at 1.9s; even the smallest sleep (100ms with
+    // random 0) would start the next one at 2.0s+, so it is not made.
+    const c = clock();
+    let reads = 0;
+    const resolver: ParameterResolver = {
+      async resolve() {
+        reads += 1;
+        c.advance(1_901);
+        throw new Error("fetch failed");
+      },
+    };
+    const s = noSleep();
+    const p = new StoreSecretProvider(resolver, "/ns/", {
+      now: c.now,
+      onWarn: () => {},
+      sleep: s.sleep,
+      random: () => 0,
+    });
+    await expect(p.get("TOKEN")).rejects.toThrow("fetch failed");
+    expect(reads).toBe(1);
+    expect(s.slept).toEqual([]);
+  });
+
+  it("a slow first failure inside the deadline is still retried", async () => {
+    const c = clock();
+    let reads = 0;
+    const resolver: ParameterResolver = {
+      async resolve() {
+        reads += 1;
+        if (reads === 1) {
+          c.advance(1_500);
+          throw new Error("fetch failed");
+        }
+        return { TOKEN: "v1" };
+      },
+    };
+    const p = new StoreSecretProvider(resolver, "/ns/", {
+      now: c.now,
+      onWarn: () => {},
+      sleep: noSleep().sleep,
+      random: () => 0,
+    });
+    expect(await p.get("TOKEN")).toBe("v1");
+    expect(reads).toBe(2);
+  });
+
+  it("stops retrying once an invalidate supersedes the read, and get reads the write", async () => {
+    let values: Record<string, string> = { TOKEN: "v1" };
+    let reads = 0;
+    const resolver: ParameterResolver = {
+      async resolve() {
+        reads += 1;
+        if (reads === 1) throw new Error("fetch failed");
+        return { ...values };
+      },
+    };
+    const slept: number[] = [];
+    const p: StoreSecretProvider = new StoreSecretProvider(resolver, "/ns/", {
+      onWarn: () => {},
+      sleep: async (ms) => {
+        slept.push(ms);
+        // A write lands while the retry sleeps.
+        values = { TOKEN: "v2" };
+        p.invalidate();
+      },
+    });
+    expect(await p.get("TOKEN")).toBe("v2");
+    // The superseded read made no attempt after its sleep; `get`'s re-read
+    // is the one that read the write.
+    expect(reads).toBe(2);
+    expect(slept).toHaveLength(1);
   });
 
   it("does not retry a read that failed by HANGING past the retry deadline", async () => {

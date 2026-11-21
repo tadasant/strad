@@ -136,17 +136,22 @@ Three behaviours matter more than the numbers:
   naming the provider and the error — never a secret, never a value. A store
   outage must not take `/mcp` down. A read with NOTHING held — a cold start, or
   the read straight after a write's `invalidate()`, which drops what was held so
-  the write is seen — is tried three times, sleeping 100–400ms between, before
-  its error propagates; no retry starts more than 5s after the first attempt, so
-  a read that hung to its deadline is not repeated. Then it propagates, because
-  there is nothing to serve and reporting a config problem for what is an outage
-  would be a lie. The map from before the write is deliberately not kept as a
-  fallback: the read after a token revocation would otherwise be able to serve
-  the revoked token. A render that failed on a throttle, a server
-  error or a timeout is not remembered either: the next reader renders again,
+  the write is seen — is tried up to three times, sleeping 100–400ms between.
+  Only a read that failed fast is retried: no retry starts more than 2s after
+  the first attempt, so a read that hung to its deadline (or that the store
+  client already retried) is not repeated, and a status that says "not ever"
+  (`403`, `404`, a `400` render failure) is not retried at all. After a
+  nothing-held read has failed, the next reads inside the 5s backoff make one
+  attempt each, so an outage still costs one read per request. Then the error
+  propagates, because there is nothing to serve and reporting a config problem
+  for what is an outage would be a lie. The map from before the write is
+  deliberately not kept as a fallback: the read after a token revocation would
+  otherwise be able to serve the revoked token. A render that failed on a
+  throttle, a server error or a timeout is not remembered either: the next
+  reader renders again,
   rather than inheriting one bad moment for the length of the TTL.
-- **Every store read carries a 10s deadline**, and a failed read backs off for
-  5s before being retried. Both exist for the same reason: a request that HANGS
+- **Every store read carries a 10s deadline**, and with something held, a
+  failed read backs off for 5s before being retried. Both exist for the same reason: a request that HANGS
   is worse than one that fails, because a never-settling read pins every
   concurrent reader behind the single-flight it shares — the availability claim
   above rests on reads eventually settling. The backoff keeps an outage from
