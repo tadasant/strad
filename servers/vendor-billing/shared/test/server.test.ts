@@ -1,0 +1,645 @@
+import { createVerify, generateKeyPairSync } from "node:crypto";
+
+import { describe, expect, it } from "vitest";
+
+import {
+  BIGQUERY_API,
+  BIGQUERY_SCOPE,
+  billingExportTable,
+  createMCPServer,
+  createScrubber,
+  dateRange,
+  GOOGLE_TOKEN_URL,
+  MAX_PAGES,
+  missingCredentials,
+  monthToDateQuery,
+  OPENAI_API,
+  OPENROUTER_API,
+  TOOL_NAMES,
+} from "../build/index.js";
+
+// ---- fixtures ---------------------------------------------------------------
+
+const MGMT_KEY = "sk-or-v1-management-0123456789abcdef0123456789abcdef";
+const PI_KEY = "sk-or-v1-apikey-fedcba9876543210fedcba9876543210";
+const ADMIN_KEY = "sk-admin-0123456789ABCDEFGHIJKLMNOPQRSTUV";
+const ACCESS_TOKEN = "ya29.fake-access-token-abcdefghijklmnop";
+
+const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const PEM = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+const SA_KEY = JSON.stringify({
+  type: "service_account",
+  project_id: "example-project",
+  private_key_id: "0123456789abcdef0123456789abcdef01234567",
+  private_key: PEM,
+  client_email: "test-service-account.invalid",
+  token_uri: "https://attacker.invalid/token",
+});
+
+const GCP_ENV = {
+  GCP_BILLING_SA_KEY_JSON: SA_KEY,
+  GCP_BILLING_EXPORT_PROJECT: "example-project",
+  GCP_BILLING_EXPORT_DATASET: "billing_export",
+  GCP_BILLING_EXPORT_TABLE: "gcp_billing_export_v1_EXAMPLE",
+};
+
+const FULL_ENV = {
+  OPENROUTER_MANAGEMENT_KEY: MGMT_KEY,
+  OPENROUTER_PI_API_KEY: PI_KEY,
+  OPENAI_ADMIN_KEY: ADMIN_KEY,
+  ...GCP_ENV,
+};
+
+interface Seen {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body?: string;
+  redirect?: string;
+}
+
+type Route = (req: Seen) => { status?: number; body: unknown } | undefined;
+
+function fakeFetch(route: Route) {
+  const seen: Seen[] = [];
+  const impl = (async (input: string | URL, init: RequestInit = {}) => {
+    const req: Seen = {
+      url: String(input),
+      method: init.method ?? "GET",
+      headers: Object.fromEntries(Object.entries((init.headers ?? {}) as Record<string, string>)),
+      ...(typeof init.body === "string" ? { body: init.body } : {}),
+      ...(init.redirect ? { redirect: init.redirect } : {}),
+    };
+    seen.push(req);
+    const answer = route(req);
+    if (!answer) return new Response(JSON.stringify({ error: { message: "no route" } }), { status: 599 });
+    return new Response(typeof answer.body === "string" ? answer.body : JSON.stringify(answer.body), {
+      status: answer.status ?? 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  return { impl, seen };
+}
+
+interface ToolResult {
+  content: Array<{ type: string; text: string }>;
+  isError?: boolean;
+}
+
+async function harness(env: Record<string, string>, route: Route, now = new Date("2026-11-21T12:00:00Z")) {
+  const { impl, seen } = fakeFetch(route);
+  const created = createMCPServer({ version: "test", env, fetch: impl, now: () => now });
+  const handlers = new Map<unknown, (req: never) => unknown>();
+  await created.registerHandlers({
+    setRequestHandler: (schema: unknown, handler: (req: never) => unknown) => handlers.set(schema, handler),
+  });
+  const [listHandler, callHandler] = [...handlers.values()];
+  return {
+    seen,
+    created,
+    list: async () => (await listHandler!({} as never)) as { tools: Array<{ name: string; inputSchema: unknown; annotations: Record<string, boolean> }> },
+    call: async (name: string, args: Record<string, unknown> = {}) =>
+      (await callHandler!({ params: { name, arguments: args } } as never)) as ToolResult,
+  };
+}
+
+function json(result: ToolResult): Record<string, unknown> {
+  expect(result.isError).toBeFalsy();
+  return JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+}
+
+const SECRETS = [MGMT_KEY, PI_KEY, ADMIN_KEY, ACCESS_TOKEN, "0123456789abcdef0123456789abcdef01234567"];
+
+function expectNoSecret(text: string) {
+  for (const s of SECRETS) expect(text).not.toContain(s);
+  expect(text).not.toContain("PRIVATE KEY");
+  for (const line of PEM.split("\n").filter((l) => l && !l.startsWith("-----"))) {
+    expect(text).not.toContain(line);
+  }
+}
+
+// ---- the surface ------------------------------------------------------------
+
+describe("the surface", () => {
+  it("lists four read-only tools with nothing configured", async () => {
+    const h = await harness({}, () => undefined);
+    const { tools } = await h.list();
+    expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES]);
+    for (const t of tools) {
+      expect(t.annotations.readOnlyHint).toBe(true);
+      expect(t.annotations.destructiveHint).toBe(false);
+      expect((t.inputSchema as { additionalProperties: boolean }).additionalProperties).toBe(false);
+    }
+    expect(h.seen).toHaveLength(0);
+  });
+
+  it("takes no free-form input: only get_openai_costs has properties, and they are dates", async () => {
+    const h = await harness({}, () => undefined);
+    const { tools } = await h.list();
+    const props = Object.fromEntries(
+      tools.map((t) => [t.name, Object.keys((t.inputSchema as { properties: object }).properties)]),
+    );
+    expect(props).toEqual({
+      get_openrouter_credits: [],
+      get_openrouter_key_usage: [],
+      get_openai_costs: ["start_date", "end_date"],
+      get_gcp_month_to_date: [],
+    });
+  });
+
+  it("refuses an argument a tool does not declare, before any request", async () => {
+    const h = await harness(FULL_ENV, () => undefined);
+    const r = await h.call("get_openrouter_credits", { url: "https://evil.invalid" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/Unexpected argument: url/);
+    const q = await h.call("get_gcp_month_to_date", { query: "DROP TABLE x" });
+    expect(q.isError).toBe(true);
+    expect(h.seen).toHaveLength(0);
+  });
+
+  it("reports the mount unconfigured only when NO tool is configured", () => {
+    expect(missingCredentials({})).toEqual([
+      "OPENROUTER_MANAGEMENT_KEY",
+      "OPENROUTER_PI_API_KEY",
+      "OPENAI_ADMIN_KEY",
+      "GCP_BILLING_SA_KEY_JSON",
+      "GCP_BILLING_EXPORT_PROJECT",
+      "GCP_BILLING_EXPORT_DATASET",
+      "GCP_BILLING_EXPORT_TABLE",
+    ]);
+    expect(missingCredentials({ OPENAI_ADMIN_KEY: ADMIN_KEY })).toEqual([]);
+    // A half-configured GCP tool configures nothing.
+    expect(missingCredentials({ GCP_BILLING_SA_KEY_JSON: SA_KEY })).toHaveLength(6);
+  });
+});
+
+// ---- not configured ---------------------------------------------------------
+
+describe("not configured", () => {
+  const cases: Array<[string, Record<string, string>, string[]]> = [
+    ["get_openrouter_credits", {}, ["OPENROUTER_MANAGEMENT_KEY"]],
+    ["get_openrouter_key_usage", {}, ["OPENROUTER_PI_API_KEY"]],
+    ["get_openai_costs", { start_date: "2026-11-01" }, ["OPENAI_ADMIN_KEY"]],
+    [
+      "get_gcp_month_to_date",
+      {},
+      ["GCP_BILLING_SA_KEY_JSON", "GCP_BILLING_EXPORT_PROJECT", "GCP_BILLING_EXPORT_DATASET", "GCP_BILLING_EXPORT_TABLE"],
+    ],
+  ];
+
+  for (const [tool, args, names] of cases) {
+    it(`${tool} names exactly what it lacks, and the other tools still work`, async () => {
+      // Every OTHER tool's variables set, this one's absent.
+      const env: Record<string, string> = { ...FULL_ENV };
+      for (const n of names) delete env[n];
+      const h = await harness(env, (req) => {
+        if (req.url === `${OPENROUTER_API}/credits`) return { body: { data: { total_credits: 1, total_usage: 0 } } };
+        if (req.url === `${OPENROUTER_API}/key`) return { body: { data: { usage: 0 } } };
+        if (req.url.startsWith(`${OPENAI_API}/organization/costs`)) return { body: { data: [], has_more: false } };
+        if (req.url === GOOGLE_TOKEN_URL) return { body: { access_token: ACCESS_TOKEN } };
+        if (req.url.startsWith(BIGQUERY_API)) return { body: { jobComplete: true, schema: { fields: [] }, rows: [] } };
+        return undefined;
+      });
+      const r = await h.call(tool, args);
+      expect(r.isError).toBe(true);
+      const text = r.content[0]!.text;
+      expect(text).toMatch(/^not configured: /);
+      for (const n of names) expect(text).toContain(n);
+      expectNoSecret(text);
+      expect(h.seen).toHaveLength(0);
+
+      for (const [other, otherArgs] of cases.filter(([t]) => t !== tool)) {
+        const ok = await h.call(other, otherArgs);
+        expect(ok.isError, `${other} after ${tool} unconfigured`).toBeFalsy();
+      }
+    });
+  }
+
+  it("treats a blank variable as absent", async () => {
+    const h = await harness({ OPENAI_ADMIN_KEY: "   " }, () => undefined);
+    const r = await h.call("get_openai_costs", { start_date: "2026-11-01" });
+    expect(r.content[0]!.text).toMatch(/not configured: get_openai_costs needs OPENAI_ADMIN_KEY/);
+  });
+});
+
+// ---- OpenRouter -------------------------------------------------------------
+
+describe("get_openrouter_credits", () => {
+  it("reads /credits with the management key and derives the balance", async () => {
+    const h = await harness(FULL_ENV, (req) =>
+      req.url === `${OPENROUTER_API}/credits`
+        ? { body: { data: { total_credits: 100.5, total_usage: 25.75 } } }
+        : undefined,
+    );
+    const out = json(await h.call("get_openrouter_credits"));
+    expect(out).toEqual({ currency: "USD", total_credits: 100.5, total_usage: 25.75, remaining: 74.75 });
+    expect(h.seen).toHaveLength(1);
+    expect(h.seen[0]!.method).toBe("GET");
+    expect(h.seen[0]!.headers.Authorization).toBe(`Bearer ${MGMT_KEY}`);
+    expect(h.seen[0]!.redirect).toBe("error");
+  });
+
+  it("rounds away float noise in the remaining balance", async () => {
+    const h = await harness(FULL_ENV, () => ({ body: { data: { total_credits: 0.3, total_usage: 0.1 } } }));
+    expect(json(await h.call("get_openrouter_credits")).remaining).toBe(0.2);
+  });
+
+  it("scrubs the key from an upstream error that echoes it", async () => {
+    const h = await harness(FULL_ENV, () => ({
+      status: 403,
+      body: { error: { code: 403, message: `Only management keys can perform this operation. Got ${MGMT_KEY}` } },
+    }));
+    const r = await h.call("get_openrouter_credits");
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/HTTP 403/);
+    expect(r.content[0]!.text).toMatch(/MANAGEMENT key/);
+    expectNoSecret(r.content[0]!.text);
+  });
+});
+
+describe("get_openrouter_key_usage", () => {
+  it("reads /key with the API key and keeps only usage and limit fields", async () => {
+    const h = await harness(FULL_ENV, (req) =>
+      req.url === `${OPENROUTER_API}/key`
+        ? {
+            body: {
+              data: {
+                label: "sk-or-v1-abc...xyz",
+                limit: 50,
+                limit_remaining: 38.2,
+                limit_reset: "monthly",
+                include_byok_in_limit: false,
+                usage: 120.4,
+                usage_daily: 0.9,
+                usage_weekly: 4.1,
+                usage_monthly: 11.8,
+                byok_usage: 0,
+                byok_usage_daily: 0,
+                byok_usage_weekly: 0,
+                byok_usage_monthly: 0,
+                is_free_tier: false,
+                creator_user_id: "user_123",
+                organization_id: "org_123",
+                workspace_id: "ws_123",
+                rate_limit: { requests: 10, interval: "10s" },
+              },
+            },
+          }
+        : undefined,
+    );
+    const out = json(await h.call("get_openrouter_key_usage"));
+    expect(out).toEqual({
+      currency: "USD",
+      limit: 50,
+      limit_remaining: 38.2,
+      limit_reset: "monthly",
+      include_byok_in_limit: false,
+      usage: 120.4,
+      usage_daily: 0.9,
+      usage_weekly: 4.1,
+      usage_monthly: 11.8,
+      byok_usage: 0,
+      byok_usage_daily: 0,
+      byok_usage_weekly: 0,
+      byok_usage_monthly: 0,
+      is_free_tier: false,
+    });
+    expect(h.seen[0]!.headers.Authorization).toBe(`Bearer ${PI_KEY}`);
+  });
+
+  it("scrubs the key from a 401 and says retrying will not help", async () => {
+    const h = await harness(FULL_ENV, () => ({ status: 401, body: { error: { code: 401, message: `bad key ${PI_KEY}` } } }));
+    const r = await h.call("get_openrouter_key_usage");
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/Retrying will not help/);
+    expectNoSecret(r.content[0]!.text);
+  });
+});
+
+// ---- OpenAI -----------------------------------------------------------------
+
+const DAY = 86_400;
+const NOV1 = Date.parse("2026-11-01T00:00:00Z") / 1000;
+
+describe("get_openai_costs", () => {
+  it("asks for daily buckets grouped by project over the inclusive range", async () => {
+    const h = await harness(FULL_ENV, () => ({ body: { object: "page", data: [], has_more: false, next_page: null } }));
+    json(await h.call("get_openai_costs", { start_date: "2026-11-01", end_date: "2026-11-03" }));
+    const url = new URL(h.seen[0]!.url);
+    expect(`${url.origin}${url.pathname}`).toBe(`${OPENAI_API}/organization/costs`);
+    expect(url.searchParams.get("start_time")).toBe(String(NOV1));
+    expect(url.searchParams.get("end_time")).toBe(String(NOV1 + 3 * DAY));
+    expect(url.searchParams.get("bucket_width")).toBe("1d");
+    expect(url.searchParams.get("group_by")).toBe("project_id");
+    expect(url.searchParams.get("limit")).toBe("3");
+    expect(url.searchParams.has("page")).toBe(false);
+    expect(h.seen[0]!.headers.Authorization).toBe(`Bearer ${ADMIN_KEY}`);
+  });
+
+  it("follows next_page to the end and merges every page", async () => {
+    const pages: Record<string, unknown> = {
+      first: {
+        data: [
+          {
+            object: "bucket",
+            start_time: NOV1,
+            end_time: NOV1 + DAY,
+            results: [
+              { object: "organization.costs.result", amount: { value: 1.25, currency: "usd" }, project_id: "proj_a" },
+              { object: "organization.costs.result", amount: { value: 0.5, currency: "usd" }, project_id: null },
+            ],
+          },
+        ],
+        has_more: true,
+        next_page: "page_2",
+      },
+      page_2: {
+        data: [
+          {
+            object: "bucket",
+            start_time: NOV1 + DAY,
+            end_time: NOV1 + 2 * DAY,
+            results: [{ amount: { value: 2, currency: "usd" }, project_id: "proj_b" }],
+          },
+        ],
+        has_more: false,
+        next_page: null,
+      },
+    };
+    const h = await harness(FULL_ENV, (req) => {
+      const page = new URL(req.url).searchParams.get("page") ?? "first";
+      return { body: pages[page] };
+    });
+    const out = json(await h.call("get_openai_costs", { start_date: "2026-11-01", end_date: "2026-11-02" }));
+    expect(h.seen.map((s) => new URL(s.url).searchParams.get("page"))).toEqual([null, "page_2"]);
+    expect(out.pages).toBe(2);
+    expect(out.totals).toEqual([{ currency: "usd", amount: 3.75 }]);
+    expect(out.days).toEqual([
+      {
+        date: "2026-11-01",
+        projects: [
+          { project_id: "proj_a", amount: 1.25, currency: "usd" },
+          { project_id: "(none)", amount: 0.5, currency: "usd" },
+        ],
+      },
+      { date: "2026-11-02", projects: [{ project_id: "proj_b", amount: 2, currency: "usd" }] },
+    ]);
+    expect(out.start_date).toBe("2026-11-01");
+    expect(out.end_date).toBe("2026-11-02");
+  });
+
+  it("stops a walk that never ends instead of looping", async () => {
+    let n = 0;
+    const h = await harness(FULL_ENV, () => ({ body: { data: [], has_more: true, next_page: `p${++n}` } }));
+    const r = await h.call("get_openai_costs", { start_date: "2026-11-01" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(new RegExp(`after ${MAX_PAGES} pages`));
+    expect(h.seen).toHaveLength(MAX_PAGES);
+  });
+
+  it("bounds and validates the dates before any request", async () => {
+    const h = await harness(FULL_ENV, () => undefined);
+    const bad: Array<[Record<string, unknown>, RegExp]> = [
+      [{}, /start_date` is required/],
+      [{ start_date: "11/01/2026" }, /YYYY-MM-DD/],
+      [{ start_date: "2026-02-30" }, /not a real date/],
+      [{ start_date: "2026-11-05", end_date: "2026-11-01" }, /before/],
+      [{ start_date: "2026-01-01", end_date: "2026-02-01" }, /32 days; at most 31/],
+      [{ start_date: "2026-11-25" }, /in the future/],
+      [{ start_date: 20261101 }, /must be a string/],
+    ];
+    for (const [args, message] of bad) {
+      const r = await h.call("get_openai_costs", args);
+      expect(r.isError, JSON.stringify(args)).toBe(true);
+      expect(r.content[0]!.text).toMatch(message);
+    }
+    expect(h.seen).toHaveLength(0);
+  });
+
+  it("allows exactly 31 days", () => {
+    expect(dateRange("2026-01-01", "2026-01-31", new Date("2026-11-21T00:00:00Z")).days).toBe(31);
+  });
+
+  it("scrubs the admin key, and any key-shaped text, from an upstream error", async () => {
+    const h = await harness(FULL_ENV, () => ({
+      status: 401,
+      body: { error: { message: `Incorrect API key provided: ${ADMIN_KEY}. Also sk-proj-someoneelse12345678.` } },
+    }));
+    const r = await h.call("get_openai_costs", { start_date: "2026-11-01" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/HTTP 401/);
+    expect(r.content[0]!.text).not.toContain("sk-proj-someoneelse12345678");
+    expectNoSecret(r.content[0]!.text);
+  });
+
+  it("does not quote a non-JSON error page", async () => {
+    const h = await harness(FULL_ENV, () => ({ status: 502, body: `<html>${ADMIN_KEY}</html>` }));
+    const r = await h.call("get_openai_costs", { start_date: "2026-11-01" });
+    expect(r.content[0]!.text).toMatch(/HTTP 502\. OpenAI is failing/);
+    expectNoSecret(r.content[0]!.text);
+  });
+});
+
+// ---- Google Cloud -----------------------------------------------------------
+
+function gcpRoute(overrides: { query?: Route; token?: Route; poll?: Route } = {}): Route {
+  return (req) => {
+    if (req.url === GOOGLE_TOKEN_URL) return overrides.token?.(req) ?? { body: { access_token: ACCESS_TOKEN, expires_in: 3599 } };
+    if (req.url === `${BIGQUERY_API}/projects/example-project/queries` && req.method === "POST") {
+      return (
+        overrides.query?.(req) ?? {
+          body: {
+            jobComplete: true,
+            schema: {
+              fields: [
+                { name: "invoice_month" },
+                { name: "currency" },
+                { name: "cost" },
+                { name: "credits" },
+                { name: "latest_usage_end_time" },
+              ],
+            },
+            rows: [{ f: [{ v: "202611" }, { v: "USD" }, { v: "41.2" }, { v: "-3.1" }, { v: "2026-11-20T18:00:00Z" }] }],
+          },
+        }
+      );
+    }
+    if (req.url.startsWith(`${BIGQUERY_API}/projects/example-project/queries/`)) return overrides.poll?.(req);
+    return undefined;
+  };
+}
+
+describe("get_gcp_month_to_date", () => {
+  it("signs a readonly assertion for Google's own token endpoint, then runs the fixed query", async () => {
+    const h = await harness(FULL_ENV, gcpRoute());
+    const out = json(await h.call("get_gcp_month_to_date"));
+    expect(out).toEqual({
+      invoice_month_timezone: "America/Los_Angeles",
+      rows: [
+        {
+          invoice_month: "202611",
+          currency: "USD",
+          cost: 41.2,
+          credits: -3.1,
+          net: 38.1,
+          latest_usage_end_time: "2026-11-20T18:00:00Z",
+        },
+      ],
+    });
+
+    // The token exchange went to Google — never to the key file's token_uri.
+    expect(h.seen.map((s) => s.url)).toEqual([GOOGLE_TOKEN_URL, `${BIGQUERY_API}/projects/example-project/queries`]);
+    const form = new URLSearchParams(h.seen[0]!.body);
+    expect(form.get("grant_type")).toBe("urn:ietf:params:oauth:grant-type:jwt-bearer");
+    const [header, claims, signature] = form.get("assertion")!.split(".");
+    const payload = JSON.parse(Buffer.from(claims!, "base64url").toString()) as Record<string, unknown>;
+    expect(payload.scope).toBe(BIGQUERY_SCOPE);
+    expect(payload.aud).toBe(GOOGLE_TOKEN_URL);
+    expect(payload.iss).toBe("test-service-account.invalid");
+    expect(
+      createVerify("RSA-SHA256").update(`${header}.${claims}`).verify(publicKey, signature!, "base64url"),
+    ).toBe(true);
+
+    const query = JSON.parse(h.seen[1]!.body!) as Record<string, unknown>;
+    expect(h.seen[1]!.headers.Authorization).toBe(`Bearer ${ACCESS_TOKEN}`);
+    expect(query.useLegacySql).toBe(false);
+    expect(query.maximumBytesBilled).toBe(String(10 * 1024 ** 3));
+    expect(query.query).toBe(
+      monthToDateQuery({ project: "example-project", dataset: "billing_export", table: "gcp_billing_export_v1_EXAMPLE" }),
+    );
+    expect(query.query).toContain("FROM `example-project.billing_export.gcp_billing_export_v1_EXAMPLE`");
+    expect(query.query).toContain("invoice.month = FORMAT_DATE('%Y%m', CURRENT_DATE('America/Los_Angeles'))");
+    expect(query.query).toContain("MAX(usage_end_time)");
+    expect(Object.keys(query).sort()).toEqual(["maximumBytesBilled", "query", "timeoutMs", "useLegacySql"]);
+  });
+
+  it("polls an incomplete job at its own location until it finishes", async () => {
+    let polls = 0;
+    const h = await harness(
+      FULL_ENV,
+      gcpRoute({
+        query: () => ({
+          body: { jobComplete: false, jobReference: { projectId: "example-project", jobId: "job_1", location: "US" } },
+        }),
+        poll: () =>
+          ++polls < 2
+            ? { body: { jobComplete: false, jobReference: { projectId: "example-project", jobId: "job_1", location: "US" } } }
+            : { body: { jobComplete: true, schema: { fields: [] }, rows: [] } },
+      }),
+    );
+    const out = json(await h.call("get_gcp_month_to_date"));
+    expect(out.rows).toEqual([]);
+    expect(out.note).toMatch(/no rows/);
+    const poll = new URL(h.seen[2]!.url);
+    expect(poll.pathname).toBe("/bigquery/v2/projects/example-project/queries/job_1");
+    expect(poll.searchParams.get("location")).toBe("US");
+    expect(h.seen).toHaveLength(4);
+  });
+
+  it("scrubs the access token and the key from a BigQuery error", async () => {
+    const h = await harness(
+      FULL_ENV,
+      gcpRoute({
+        query: () => ({
+          status: 403,
+          body: {
+            error: {
+              code: 403,
+              message: `Access Denied: token ${ACCESS_TOKEN}, Authorization: Bearer ${ACCESS_TOKEN}`,
+              status: "PERMISSION_DENIED",
+            },
+          },
+        }),
+      }),
+    );
+    const r = await h.call("get_gcp_month_to_date");
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/HTTP 403/);
+    expect(r.content[0]!.text).toMatch(/Data Viewer/);
+    expectNoSecret(r.content[0]!.text);
+  });
+
+  it("scrubs the private key from a token-exchange error that quotes it", async () => {
+    const h = await harness(
+      FULL_ENV,
+      gcpRoute({
+        token: () => ({
+          status: 400,
+          body: { error: "invalid_grant", error_description: `bad key ${PEM.split("\n")[1]} ${JSON.stringify(PEM)}` },
+        }),
+      }),
+    );
+    const r = await h.call("get_gcp_month_to_date");
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/invalid_grant/);
+    expectNoSecret(r.content[0]!.text);
+    expect(h.seen).toHaveLength(1);
+  });
+
+  it("refuses a key that is not a service-account key, without quoting it", async () => {
+    const h = await harness({ ...FULL_ENV, GCP_BILLING_SA_KEY_JSON: `{"type":"authorized_user","refresh_token":"1//abcdefghijkl"}` }, gcpRoute());
+    const r = await h.call("get_gcp_month_to_date");
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/not a service-account key/);
+    expect(r.content[0]!.text).not.toContain("1//abcdefghijkl");
+    expect(h.seen).toHaveLength(0);
+  });
+});
+
+describe("the export table's identifiers", () => {
+  const ok = {
+    GCP_BILLING_EXPORT_PROJECT: "example-project",
+    GCP_BILLING_EXPORT_DATASET: "billing_export",
+    GCP_BILLING_EXPORT_TABLE: "gcp_billing_export_v1_0A0A0A_B1B1B1_C2C2C2",
+  };
+
+  it("accepts a standard export's address", () => {
+    expect(billingExportTable(ok)).toEqual({
+      project: "example-project",
+      dataset: "billing_export",
+      table: "gcp_billing_export_v1_0A0A0A_B1B1B1_C2C2C2",
+    });
+  });
+
+  const injections: Array<[keyof typeof ok, string]> = [
+    ["GCP_BILLING_EXPORT_PROJECT", "example-project`; DROP TABLE x; --"],
+    ["GCP_BILLING_EXPORT_PROJECT", "Example-Project"],
+    ["GCP_BILLING_EXPORT_PROJECT", "short"],
+    ["GCP_BILLING_EXPORT_PROJECT", "ends-in-hyphen-"],
+    ["GCP_BILLING_EXPORT_PROJECT", "example.com:project"],
+    ["GCP_BILLING_EXPORT_DATASET", "billing.export"],
+    ["GCP_BILLING_EXPORT_DATASET", "billing`export"],
+    ["GCP_BILLING_EXPORT_DATASET", "billing export"],
+    ["GCP_BILLING_EXPORT_TABLE", "t` UNION ALL SELECT 1 --"],
+    ["GCP_BILLING_EXPORT_TABLE", "gcp_billing_export_*"],
+    ["GCP_BILLING_EXPORT_TABLE", "other_dataset.table"],
+    ["GCP_BILLING_EXPORT_TABLE", "x\nWHERE"],
+  ];
+
+  for (const [name, bad] of injections) {
+    it(`refuses ${name}=${JSON.stringify(bad)} before any request, naming the variable only`, async () => {
+      const h = await harness({ ...FULL_ENV, [name]: bad }, gcpRoute());
+      const r = await h.call("get_gcp_month_to_date");
+      expect(r.isError).toBe(true);
+      expect(r.content[0]!.text).toMatch(/misconfigured/);
+      expect(r.content[0]!.text).toContain(name);
+      expect(h.seen).toHaveLength(0);
+    });
+  }
+});
+
+describe("the scrubber", () => {
+  it("removes each held secret, every PEM line, and credential-shaped text", () => {
+    const scrub = createScrubber(FULL_ENV);
+    const text = [MGMT_KEY, PI_KEY, ADMIN_KEY, PEM, PEM.split("\n")[3], "Bearer abc.def", "sk-live-abcdefghijkl", "ya29.zzz"].join(" ");
+    const out = scrub(text);
+    expectNoSecret(out);
+    expect(out).not.toMatch(/Bearer abc|sk-live|ya29\.zzz/);
+  });
+
+  it("removes a token added at call time", () => {
+    const scrub = createScrubber({});
+    scrub.add("minted-at-call-time-123");
+    expect(scrub("x minted-at-call-time-123 y")).toBe("x [redacted] y");
+  });
+});

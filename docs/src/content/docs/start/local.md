@@ -167,7 +167,7 @@ the same commit what it is for.
 
 - **A production-shaped local run.** These paths run the core gateway from
   source. The supplementary MCP servers under `servers/` each have their own
-  lockfile and their own image, and the bundle image assembles twenty-eight dependency
+  lockfile and their own image, and the bundle image assembles twenty-nine dependency
   trees behind one shared Chromium; none of that is built by either path. See
   [Adding a server](/servers/adding/).
 - **Real secrets.** Nothing local resolves a `${NAME}`. How secrets reach a

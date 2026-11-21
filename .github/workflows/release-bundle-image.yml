@@ -1,6 +1,6 @@
 name: Release bundle image
 
-# Build THE strad bundle image — all thirty-seven MCP servers in one container — and
+# Build THE strad bundle image — all thirty-eight MCP servers in one container — and
 # push it to ghcr.
 #
 # The build itself is `release-supplementary-image.yml`, which every
@@ -23,12 +23,12 @@ name: Release bundle image
 # (`--wait-for-image`). See "which image a deploy ships" in
 # docs/operate/operations.md.
 #
-# BUILD CONTEXT IS THE REPO ROOT. This image is assembled from twenty-eight projects
+# BUILD CONTEXT IS THE REPO ROOT. This image is assembled from twenty-nine projects
 # that live in different directories (servers/bundle-api, images/bundle-google,
 # servers/onepassword, servers/remote-filesystem, servers/pulse-subregistry,
 # servers/strad-fetch, servers/grafana, servers/victorialogs, servers/appsignal,
 # servers/{good-eggs,fetchpet,pointsyeah,x-twitter,telegram,whatsapp,bill-spend,aws-device-farm,liveoak,ssh},
-# servers/{airtable,flightaware,digitalocean,hetzner,glitchtip,image-tools,nutrition-facts}),
+# servers/{airtable,flightaware,digitalocean,hetzner,glitchtip,vendor-billing,image-tools,nutrition-facts}),
 # each built in its own stage with its own lockfile. So `paths:` below has to watch all of them: a
 # change to any one of those servers changes this image.
 #
@@ -79,6 +79,7 @@ on:
       - "servers/digitalocean/**"
       - "servers/hetzner/**"
       - "servers/glitchtip/**"
+      - "servers/vendor-billing/**"
       - "servers/image-tools/**"
       - "servers/nutrition-facts/**"
       - "images/bundle-google/**"
@@ -107,7 +108,7 @@ jobs:
       contents: read
       packages: write
     with:
-      # The repo root, because the Dockerfile COPYs from twenty-eight trees.
+      # The repo root, because the Dockerfile COPYs from twenty-nine trees.
       context: .
       file: servers/bundle/Dockerfile
       image: ghcr.io/tadasant/strad-bundle

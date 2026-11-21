@@ -126,6 +126,7 @@ export default defineConfig({
             { label: "DigitalOcean", slug: "servers/digitalocean" },
             { label: "Hetzner Cloud", slug: "servers/hetzner" },
             { label: "GlitchTip", slug: "servers/glitchtip" },
+            { label: "Vendor billing", slug: "servers/vendor-billing" },
             { label: "AWS Device Farm", slug: "servers/aws-device-farm" },
             {
               label: "AWS Device Farm: first-time setup",

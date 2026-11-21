@@ -1,12 +1,12 @@
 # bundle — THE strad supplementary image
 
-Thirty-seven MCP servers. One container. One Chromium. One `op` binary. One
+Thirty-eight MCP servers. One container. One Chromium. One `op` binary. One
 `mcp-grafana` binary and one `mcp-victorialogs` binary.
 
 ```
 /slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-filesystem-tmp-public
 /x-twitter /telegram /whatsapp /messenger /bill-spend /aws-device-farm /liveoak /ssh /image-diff
-/svg-tracer /nutrition-facts /airtable /flightaware /digitalocean /hetzner /glitchtip
+/svg-tracer /nutrition-facts /airtable /flightaware /digitalocean /hetzner /glitchtip /vendor-billing
 /pulse-subregistry
 /strad-fetch /grafana /victorialogs /appsignal
 /google-flights /gmail /google-calendar /google-docs /google-sheets
@@ -14,7 +14,7 @@ Thirty-seven MCP servers. One container. One Chromium. One `op` binary. One
 /good-eggs /fetchpet /pointsyeah
 ```
 
-Thirty-seven is the floor, not a constant: seven of those mounts (`/telegram`,
+Thirty-eight is the floor, not a constant: seven of those mounts (`/telegram`,
 `/remote-filesystem-tmp-public`, `/google-sheets`, `/grafana`, `/victorialogs`,
 `/appsignal`, `/glitchtip`) are re-mounted once more per slug the container holds a separate
 credential for, and four trees
@@ -76,10 +76,10 @@ binaries sit in the image unused. `/healthz` reports the sidecar under
 `tailnet` and never folds it into `ok`. See
 [`docs/operate/tailnet`](../../docs/src/content/docs/operate/tailnet.md).
 
-## How twenty-eight projects become one image
+## How twenty-nine projects become one image
 
 `Dockerfile`'s build context is the **repo root**, because the servers live in
-twenty-eight different places:
+twenty-nine different places:
 
 | tree | source | servers |
 | --- | --- | --- |
@@ -106,6 +106,7 @@ twenty-eight different places:
 | `digitalocean` | `servers/digitalocean` | digitalocean (droplets, App Platform apps, managed databases) |
 | `hetzner` | `servers/hetzner` | hetzner (Hetzner Cloud servers, power, metrics, firewalls, volumes; strad's own — Hetzner publishes no MCP server) |
 | `glitchtip` | `servers/glitchtip` | glitchtip (GlitchTip issues, events, projects and teams, read-only; strad's own, over the Sentry-compatible API) |
+| `vendor-billing` | `servers/vendor-billing` | vendor-billing (fixed billing reads: OpenRouter credits and key usage, OpenAI costs, a GCP billing export's month to date; strad's own) |
 | `image-tools` | `servers/image-tools` | image-diff, svg-tracer (compare two images; trace a bitmap to SVG — inputs are URLs) |
 | `nutrition-facts` | `servers/nutrition-facts` | nutrition-facts (USDA FDC + MenuStat data built into the image; FatSecret live) |
 | `good-eggs` | `servers/good-eggs` | good-eggs |
@@ -114,7 +115,7 @@ twenty-eight different places:
 
 Each is built **in its own stage, with its own lockfile and its own
 `node_modules`**, exactly as its standalone image builds it, and lands at
-`/app/trees/<name>`. Nothing is merged. Merging twenty-eight dependency trees is how
+`/app/trees/<name>`. Nothing is merged. Merging twenty-nine dependency trees is how
 you find out in production that two of them wanted different Playwright versions.
 
 `host/` imports across the trees **by path** (`src/trees.ts`). Node resolves each
@@ -212,12 +213,12 @@ could perform one. See [`servers/secrets/README.md`](../secrets/README.md).
 
 ## Blast radius, honestly
 
-Thirty-seven servers share a process. A crash is a thirty-seven-server outage. Everything
+Thirty-eight servers share a process. A crash is a thirty-eight-server outage. Everything
 that *can* be made survivable is:
 
 - a browser server whose **login fails** is marked `degraded` in `/healthz`; the
   container keeps serving. (The standalone images `process.exit(1)` here — correct
-  when the process *is* the server, catastrophic when it is thirty-six others too.)
+  when the process *is* the server, catastrophic when it is thirty-seven others too.)
   For fetchpet the mark is a report on the last attempt: the next tool call retries
   the login and a success clears it, so a form that changed and was fixed does not
   cost a redeploy. good-eggs still holds its first failure until the container
