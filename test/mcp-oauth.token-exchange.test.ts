@@ -774,7 +774,7 @@ describe("revocation", () => {
     const cid = clientFingerprint(ZIMMER);
     const identity = {
       sub: "1",
-      email: "tadas@tadasant.com",
+      email: "person@tadasant.com",
       hd: "tadasant.com",
     };
     const old: GrantRecord = {
@@ -917,7 +917,7 @@ describe("the cap on live children", () => {
       v: 1,
       gid: GrantStore.newGid(),
       cid: clientFingerprint(ZIMMER),
-      identity: { sub: "1", email: "t@tadasant.com", hd: "tadasant.com" },
+      identity: { sub: "1", email: "person@tadasant.com", hd: "tadasant.com" },
       resource: "https://strad.test/mcp",
       state: "active",
       generation: 1,
