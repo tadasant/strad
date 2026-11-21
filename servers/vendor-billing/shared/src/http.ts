@@ -2,7 +2,8 @@
  * The one HTTP call every tool makes, and the one error shape it fails with.
  *
  * Every URL is built by this server from constants and validated parts:
- * nothing fetches a URL a caller or a response supplied, and a redirect is
+ * nothing fetches a URL a caller or a response supplied (a response's ids are
+ * at most an encoded path segment on the same fixed host), and a redirect is
  * refused rather than followed with a credential attached. Every request is
  * bounded by a timeout.
  *
@@ -27,6 +28,18 @@ export class UpstreamError extends Error {
 export interface HttpOptions {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /**
+   * An absolute `Date.now()` past which no request starts, and which bounds
+   * the one in flight. A tool that makes several requests sets it, so the
+   * whole call ends inside the gateway's own tool-call timeout with this
+   * server's error rather than a generic one.
+   */
+  deadline?: number;
+}
+
+/** A deadline `ms` from now, for a tool that makes more than one request. */
+export function deadlineIn(ms: number, http: HttpOptions): HttpOptions {
+  return { ...http, deadline: Math.min(http.deadline ?? Infinity, Date.now() + ms) };
 }
 
 export interface JsonRequest {
@@ -62,7 +75,11 @@ export function upstreamDetail(raw: string): string {
 
 export async function requestJson<T>(request: JsonRequest, options: HttpOptions = {}): Promise<T> {
   const doFetch = options.fetchImpl ?? fetch;
-  const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  const left = options.deadline === undefined ? Infinity : options.deadline - Date.now();
+  if (left <= 0) {
+    throw new UpstreamError(`${request.what} was not attempted: this call ran out of time. A read is safe to retry.`, 0);
+  }
+  const timeoutMs = Math.min(options.timeoutMs ?? REQUEST_TIMEOUT_MS, left);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let response: Response;
@@ -90,11 +107,18 @@ export async function requestJson<T>(request: JsonRequest, options: HttpOptions 
   }
 
   if (response.status >= 200 && response.status < 300) {
+    let body: unknown;
     try {
-      return JSON.parse(text) as T;
+      body = JSON.parse(text);
     } catch {
       throw new UpstreamError(`${request.what} answered ${response.status} with a body that is not JSON.`, response.status);
     }
+    // Every answer this server reads is an object; `null` or a bare value is
+    // not one, and is refused here rather than crashing a reader below.
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      throw new UpstreamError(`${request.what} answered ${response.status} with a body that is not a JSON object.`, response.status);
+    }
+    return body as T;
   }
   const detail = upstreamDetail(text);
   throw new UpstreamError(

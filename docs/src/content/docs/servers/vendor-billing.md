@@ -58,7 +58,9 @@ scan is refused by BigQuery rather than billed.
 Each tool is configured on its own. A tool whose variables are absent answers
 `not configured`, naming the missing variables by name only, and the other
 tools keep working. Nothing here fails a boot, and `tools/list` needs no
-variable. The mount reports itself `degraded` only while none of the four
+variable. The variables are read on each call from the mount's view of the
+container environment, which the bundle host copies when the mount loads, so a
+rotated value arrives with the next restart. The mount reports itself `degraded` only while none of the four
 tools is configured.
 
 | Variable                     | Secret | Tool                       | What it is                                                                 |
@@ -120,17 +122,23 @@ its tool unconfigured.
 
 ## What reaches each vendor
 
-Every URL is built from constants and the validated export address. Nothing
-fetches a URL a caller or a response supplied, a redirect is refused rather
-than followed with a credential attached, and every request times out at 30
-seconds. Each key goes to its own vendor only. The service-account assertion
-goes to Google's own token endpoint; the key file's `token_uri` is not read.
+Every URL is built from constants and the validated export address. A
+BigQuery poll carries the job id the query answered with, encoded, to the same
+fixed host; nothing fetches a URL a caller or a response supplied. A redirect
+is refused rather than followed with a credential attached. Each request times
+out at 30 seconds, and the two tools that make more than one request,
+`get_openai_costs` and `get_gcp_month_to_date`, stop after 90 seconds in all,
+so a slow vendor ends in this server's own error rather than the gateway's
+tool-call timeout. Each key goes to its own vendor only. The service-account
+assertion goes to Google's own token endpoint; the key file's `token_uri` is
+not read.
 
 **No credential leaves the server.** Every result and every error is scrubbed
 before it is returned: each secret variable's value, the service account's
 private key, its key id and every line of its PEM body, and the access token
-minted for the call. Anything shaped like a credential is scrubbed too: an
-`sk-…` key, a `Bearer` header, a Google access token, a PEM block. An upstream
+minted for the call and the signed assertion that minted it. Anything shaped
+like a credential is scrubbed too: an `sk-…` key, a `Bearer` header, a Google
+access token, a JWT, a PEM block. An upstream
 error is quoted only as the vendor's own `message`, cut to 300 characters, and
 never with a header. The server logs nothing.
 

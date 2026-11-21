@@ -26,7 +26,8 @@
 import { createSign } from "node:crypto";
 
 import type { BillingExportTable, ServiceAccountKey } from "./config.js";
-import { requestJson, UpstreamError, type HttpOptions } from "./http.js";
+import { deadlineIn, requestJson, UpstreamError, type HttpOptions } from "./http.js";
+import type { Scrubber } from "./scrub.js";
 
 export const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 export const BIGQUERY_API = "https://bigquery.googleapis.com/bigquery/v2";
@@ -39,7 +40,14 @@ export const MAXIMUM_BYTES_BILLED = String(10 * 1024 ** 3);
 export const QUERY_WAIT_MS = 20_000;
 
 /** How many times an incomplete job is asked about before giving up. */
-export const MAX_POLLS = 5;
+export const MAX_POLLS = 3;
+
+/**
+ * The whole tool call: token exchange, query and polls. Under the gateway's
+ * 120 s tool-call default, so a slow job ends in this server's own "call
+ * again" rather than a generic gateway timeout.
+ */
+export const CALL_BUDGET_MS = 90_000;
 
 export function monthToDateQuery(t: BillingExportTable): string {
   return [
@@ -86,7 +94,10 @@ export function signedAssertion(key: ServiceAccountKey, nowSeconds: number): str
   return `${header}.${claims}.${signature}`;
 }
 
-export async function accessToken(key: ServiceAccountKey, http: HttpOptions): Promise<string> {
+export async function accessToken(key: ServiceAccountKey, http: HttpOptions, scrub?: Scrubber): Promise<string> {
+  // The assertion is a bearer credential for an hour; it is scrubbed too.
+  const assertion = signedAssertion(key, Math.floor(Date.now() / 1000));
+  scrub?.add(assertion);
   const body = await requestJson<{ access_token?: unknown }>(
     {
       what: "Google OAuth (token exchange)",
@@ -95,7 +106,7 @@ export async function accessToken(key: ServiceAccountKey, http: HttpOptions): Pr
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        assertion: signedAssertion(key, Math.floor(Date.now() / 1000)),
+        assertion,
       }).toString(),
       advice: (status) =>
         status === 400 || status === 401 || status === 403
@@ -122,8 +133,7 @@ function bigQueryAdvice(status: number): string {
     case 403:
       return (
         " The service account needs BigQuery Data Viewer on the export dataset and " +
-        "BigQuery Job User on the project the query runs in, or the query would bill " +
-        "more bytes than this server allows."
+        "BigQuery Job User on the project the query runs in."
       );
     case 404:
       return (
@@ -132,7 +142,11 @@ function bigQueryAdvice(status: number): string {
         "Cloud Billing export settings."
       );
     case 400:
-      return " BigQuery refused the query; the table may not be a standard usage cost export.";
+      return (
+        " BigQuery refused the query: the table may not be a standard usage cost " +
+        "export, or the scan would bill more than this server's 10 GiB ceiling " +
+        "(the message says bytesBilledLimitExceeded when it is that)."
+      );
     default:
       return status >= 500 ? " BigQuery is failing on its side; a read is safe to retry shortly." : "";
   }
@@ -206,9 +220,9 @@ export async function monthToDate(table: BillingExportTable, options: MonthToDat
         0,
       );
     }
-    const url = new URL(
-      `${BIGQUERY_API}/projects/${encodeURIComponent(job.projectId ?? table.project)}/queries/${encodeURIComponent(job.jobId)}`,
-    );
+    // The job runs in the export's project, so that is where it is asked
+    // about. Only the job id and location come from the answer, encoded.
+    const url = new URL(`${BIGQUERY_API}/projects/${project}/queries/${encodeURIComponent(job.jobId)}`);
     url.searchParams.set("timeoutMs", String(QUERY_WAIT_MS));
     if (job.location) url.searchParams.set("location", job.location);
     response = await requestJson<QueryResponse>(

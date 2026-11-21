@@ -1,6 +1,6 @@
 import { createVerify, generateKeyPairSync } from "node:crypto";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   BIGQUERY_API,
@@ -11,6 +11,7 @@ import {
   dateRange,
   GOOGLE_TOKEN_URL,
   MAX_PAGES,
+  MAX_POLLS,
   missingCredentials,
   monthToDateQuery,
   OPENAI_API,
@@ -239,6 +240,13 @@ describe("get_openrouter_credits", () => {
     expect(h.seen[0]!.redirect).toBe("error");
   });
 
+  it("refuses a 200 whose body is not a JSON object, without crashing", async () => {
+    const h = await harness(FULL_ENV, () => ({ body: "null" }));
+    const r = await h.call("get_openrouter_credits");
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/not a JSON object/);
+  });
+
   it("rounds away float noise in the remaining balance", async () => {
     const h = await harness(FULL_ENV, () => ({ body: { data: { total_credits: 0.3, total_usage: 0.1 } } }));
     expect(json(await h.call("get_openrouter_credits")).remaining).toBe(0.2);
@@ -346,7 +354,7 @@ describe("get_openai_costs", () => {
             end_time: NOV1 + DAY,
             results: [
               { object: "organization.costs.result", amount: { value: 1.25, currency: "usd" }, project_id: "proj_a" },
-              { object: "organization.costs.result", amount: { value: 0.5, currency: "usd" }, project_id: null },
+              { object: "organization.costs.result", amount: { value: "0.5", currency: "USD" }, project_id: null },
             ],
           },
         ],
@@ -583,6 +591,112 @@ describe("get_gcp_month_to_date", () => {
     expect(r.content[0]!.text).toMatch(/not a service-account key/);
     expect(r.content[0]!.text).not.toContain("1//abcdefghijkl");
     expect(h.seen).toHaveLength(0);
+  });
+});
+
+describe("get_gcp_month_to_date, the edges", () => {
+  const incomplete = { body: { jobComplete: false, jobReference: { projectId: "example-project", jobId: "job_1", location: "EU" } } };
+
+  it("maps rows that arrive on a poll, not only on the first answer", async () => {
+    const h = await harness(
+      FULL_ENV,
+      gcpRoute({
+        query: () => incomplete,
+        poll: () => ({
+          body: {
+            jobComplete: true,
+            schema: { fields: [{ name: "invoice_month" }, { name: "currency" }, { name: "cost" }, { name: "credits" }, { name: "latest_usage_end_time" }] },
+            rows: [
+              { f: [{ v: "202611" }, { v: "EUR" }, { v: "1.5" }, { v: "0" }, { v: "2026-11-20T10:00:00Z" }] },
+              { f: [{ v: "202611" }, { v: "USD" }, { v: "10" }, { v: "-2.25" }, { v: null }] },
+            ],
+          },
+        }),
+      }),
+    );
+    const out = json(await h.call("get_gcp_month_to_date"));
+    expect(out.rows).toEqual([
+      { invoice_month: "202611", currency: "EUR", cost: 1.5, credits: 0, net: 1.5, latest_usage_end_time: "2026-11-20T10:00:00Z" },
+      { invoice_month: "202611", currency: "USD", cost: 10, credits: -2.25, net: 7.75, latest_usage_end_time: null },
+    ]);
+  });
+
+  it(`gives up after ${MAX_POLLS} polls with an error that says to call again`, async () => {
+    const h = await harness(FULL_ENV, gcpRoute({ query: () => incomplete, poll: () => incomplete }));
+    const r = await h.call("get_gcp_month_to_date");
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/did not finish .* safe to call again/);
+    // token + query + MAX_POLLS polls
+    expect(h.seen).toHaveLength(2 + MAX_POLLS);
+  });
+
+  it("refuses an incomplete answer with no job id rather than loop", async () => {
+    const h = await harness(FULL_ENV, gcpRoute({ query: () => ({ body: { jobComplete: false } }) }));
+    const r = await h.call("get_gcp_month_to_date");
+    expect(r.isError).toBe(true);
+    expect(h.seen).toHaveLength(2);
+  });
+
+  it("says when the byte ceiling is the reason for a 400", async () => {
+    const h = await harness(
+      FULL_ENV,
+      gcpRoute({ query: () => ({ status: 400, body: { error: { code: 400, message: "Query exceeded limit for bytes billed: 10737418240.", errors: [{ reason: "bytesBilledLimitExceeded" }] } } }) }),
+    );
+    const r = await h.call("get_gcp_month_to_date");
+    expect(r.content[0]!.text).toMatch(/10 GiB ceiling/);
+  });
+
+  it("scrubs the signed assertion if an error quotes it back", async () => {
+    let assertion = "";
+    const h = await harness(
+      FULL_ENV,
+      gcpRoute({
+        token: (req) => {
+          assertion = new URLSearchParams(req.body).get("assertion")!;
+          return { status: 400, body: { error: "invalid_grant", error_description: `assertion ${assertion} rejected` } };
+        },
+      }),
+    );
+    const r = await h.call("get_gcp_month_to_date");
+    expect(assertion.length).toBeGreaterThan(100);
+    expect(r.content[0]!.text).not.toContain(assertion);
+    expect(r.content[0]!.text).not.toContain(assertion.split(".")[1]!);
+  });
+});
+
+describe("transport failures", () => {
+  it("reports a network failure and its cause, scrubbed", async () => {
+    const created = createMCPServer({
+      version: "test",
+      env: FULL_ENV,
+      fetch: (async () => {
+        throw Object.assign(new TypeError("fetch failed"), { cause: new Error(`getaddrinfo ENOTFOUND (key ${ADMIN_KEY})`) });
+      }) as typeof fetch,
+    });
+    let call: ((req: never) => unknown) | undefined;
+    await created.registerHandlers({ setRequestHandler: (_s: unknown, h: (req: never) => unknown) => (call = h) });
+    const r = (await call!({ params: { name: "get_openai_costs", arguments: { start_date: "2026-11-01" } } } as never)) as ToolResult;
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/failed before any answer: fetch failed \(getaddrinfo ENOTFOUND/);
+    expectNoSecret(r.content[0]!.text);
+  });
+
+  it("stops a multi-request call at its deadline instead of starting another request", async () => {
+    let clock = Date.parse("2026-11-21T12:00:00Z");
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => clock);
+    try {
+      let n = 0;
+      const h = await harness(FULL_ENV, () => {
+        clock += 31_000; // each page takes 31 s; the 90 s walk budget allows three
+        return { body: { data: [], has_more: true, next_page: `p${++n}` } };
+      });
+      const r = await h.call("get_openai_costs", { start_date: "2026-11-01" });
+      expect(r.isError).toBe(true);
+      expect(r.content[0]!.text).toMatch(/ran out of time/);
+      expect(h.seen).toHaveLength(3);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

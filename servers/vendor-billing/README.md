@@ -27,7 +27,9 @@ Each tool is configured on its own. A tool missing a variable answers
 | `GCP_BILLING_EXPORT_DATASET` | no     | `get_gcp_month_to_date`    |
 | `GCP_BILLING_EXPORT_TABLE`   | no     | `get_gcp_month_to_date`    |
 
-The variables are read on every call, never at boot. Every credential, and the
+The variables are read on every call, never at boot, from the environment the
+server was given. In the bundle that is the host's per-mount view, copied when
+the mount loads, so a rotated value arrives on the next restart. Every credential, and the
 access token a Google call mints, is scrubbed from every result and error.
 
 The full page, with the minimum permissions each credential needs, is

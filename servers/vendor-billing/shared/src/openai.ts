@@ -16,11 +16,14 @@
  * @see https://developers.openai.com/api/reference/resources/organization/subresources/audit_logs/subresources/usage
  */
 
-import { requestJson, UpstreamError, type HttpOptions } from "./http.js";
+import { deadlineIn, requestJson, UpstreamError, type HttpOptions } from "./http.js";
 
 export const OPENAI_API = "https://api.openai.com/v1";
 export const MAX_RANGE_DAYS = 31;
 export const MAX_PAGES = 20;
+
+/** The whole walk, every page included. Under the gateway's 120 s tool-call default. */
+export const WALK_BUDGET_MS = 90_000;
 
 const DAY_SECONDS = 86_400;
 
@@ -68,7 +71,8 @@ function isoDate(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toISOString().slice(0, 10);
 }
 
-export async function getCosts(adminKey: string, range: DateRange, http: HttpOptions) {
+export async function getCosts(adminKey: string, range: DateRange, httpOptions: HttpOptions) {
+  const http = deadlineIn(WALK_BUDGET_MS, httpOptions);
   const days = new Map<string, Map<string, { amount: number; currency: string }>>();
   const totals = new Map<string, number>();
   let page: string | undefined;

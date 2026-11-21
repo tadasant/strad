@@ -11,8 +11,9 @@ import { InputError, TOOLS } from "./tools.js";
 /**
  * The mount: four fixed, read-only billing reads.
  *
- * CREDENTIALS ARE READ PER CALL from the environment this server was GIVEN,
- * never from a global, and each tool reads only its own. `tools/list` needs
+ * CREDENTIALS ARE READ PER CALL from the environment this server was GIVEN
+ * (in the bundle, the host's per-mount view, copied at mount time), never from
+ * a global, and each tool reads only its own. `tools/list` needs
  * none, so an unconfigured mount still shows what it would offer, and a tool
  * whose variables are absent answers `not configured` while the others work.
  *

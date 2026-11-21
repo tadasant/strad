@@ -7,8 +7,10 @@
  * answer `not configured` naming what they lack — by NAME, never by value.
  * Nothing here fails a boot: `tools/list` needs no variable at all.
  *
- * READ AT CALL TIME, NEVER AT BOOT. A rotated key reaches the next call, and a
- * missing one is one refused call rather than a degraded bundle.
+ * READ AT CALL TIME, NEVER AT BOOT, from the environment the server was
+ * given. A missing variable is one refused call rather than a failed boot. In
+ * the bundle that environment is the host's per-mount view, copied when the
+ * mount loads, so a rotated value reaches this server on the next restart.
  *
  * THE BIGQUERY TABLE IS CONFIGURATION, AND IT IS SPLICED INTO SQL. BigQuery
  * cannot bind a table name as a query parameter, so the project, dataset and

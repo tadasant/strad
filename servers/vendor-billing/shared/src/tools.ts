@@ -6,8 +6,8 @@ import {
   type Env,
   type ToolName,
 } from "./config.js";
-import { accessToken, monthToDate } from "./gcp.js";
-import type { HttpOptions } from "./http.js";
+import { accessToken, CALL_BUDGET_MS, monthToDate } from "./gcp.js";
+import { deadlineIn, type HttpOptions } from "./http.js";
 import { dateRange, getCosts, MAX_RANGE_DAYS } from "./openai.js";
 import { getCredits, getKeyUsage } from "./openrouter.js";
 import type { Scrubber } from "./scrub.js";
@@ -158,9 +158,10 @@ export const TOOLS: readonly ToolDefinition[] = [
       const vars = requireFor("get_gcp_month_to_date", ctx.env);
       const table = billingExportTable(vars);
       const key = serviceAccountKey(vars[ENV.gcpServiceAccountKey]!);
-      const token = await accessToken(key, ctx.http);
+      const http = deadlineIn(CALL_BUDGET_MS, ctx.http);
+      const token = await accessToken(key, http, ctx.scrub);
       ctx.scrub.add(token);
-      return monthToDate(table, { ...ctx.http, token });
+      return monthToDate(table, { ...http, token });
     },
   },
 ];

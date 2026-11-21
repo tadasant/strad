@@ -30,6 +30,8 @@ const SHAPES: readonly RegExp[] = [
   /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi,
   /\bsk-[A-Za-z0-9_-]{8,}/g,
   /\bya29\.[A-Za-z0-9._-]+/g,
+  // A JWT: the signed service-account assertion is one.
+  /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
   /"private_key"\s*:\s*"[^"]*"/g,
 ];
 
