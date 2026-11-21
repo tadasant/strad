@@ -52,8 +52,17 @@ export interface ConsentPageOptions {
   email: string;
   /** The resource the grant is for — the canonical `/mcp` URL. */
   resource: string;
-  /** The roles the grant carries, which is what decides `?servers=`. */
+  /** The roles the grant carries — the client's ceiling. */
   roles: string[];
+  /**
+   * The slugs the grant would reach, one checkbox each, all ticked. Unticking
+   * narrows the grant to the rest. Absent renders the page without the list.
+   */
+  slugs?: string[];
+  /** True when the CLIENT asked for these slugs by `slug:` scope. */
+  narrowed?: boolean;
+  /** The operator's name for a client listed in `auth.mcpOAuth.clients`. */
+  configuredName?: string;
   /** The encrypted pending-grant blob, posted back to `/oauth/approve`. */
   approval: string;
   /** Where the decision is posted. */
@@ -79,6 +88,30 @@ export function renderConsent(opts: ConsentPageOptions): string {
     computer.
   </p>`
     : "";
+  const slugList = opts.slugs
+    ? opts.slugs.length
+      ? `
+  <fieldset class="card consent-detail consent-slugs">
+    <legend>${
+      opts.narrowed
+        ? `Servers ${whoInline} asked for`
+        : `Servers this connection would reach`
+    }</legend>
+    <input type="hidden" name="slug_choice" value="1" />
+    <p class="state-detail">Untick any it should not reach. The token is confined to the ones left ticked.</p>
+    ${opts.slugs
+      .map(
+        (slug) =>
+          `<label><input type="checkbox" name="slug" value="${esc(slug)}" checked /> <code>${esc(slug)}</code></label>`,
+      )
+      .join("\n    ")}
+  </fieldset>`
+      : `
+  <p class="state-detail">This client's roles reach no servers, so the grant will reach none.</p>`
+    : "";
+  const configured = opts.configuredName
+    ? `<dt>Configured as</dt><dd>${esc(opts.configuredName)} — listed by this gateway's operator</dd>`
+    : "";
   const roles = opts.roles.length
     ? opts.roles.map((r) => `<code>${esc(r)}</code>`).join(" ")
     : `<span class="state-detail">none — this grant will reach no servers</span>`;
@@ -94,6 +127,7 @@ export function renderConsent(opts: ConsentPageOptions): string {
   <div class="card consent-detail">
     <dl>
       <dt>Client</dt><dd>${who}, ${identifiedBy}</dd>
+      ${configured}
       <dt>Endpoint</dt><dd><code>${esc(opts.resource)}</code></dd>
       <dt>Signed in as</dt><dd>${esc(opts.email)}</dd>
       <dt>Delivered to</dt><dd><code>${esc(opts.redirectHost)}</code></dd>
@@ -101,13 +135,15 @@ export function renderConsent(opts: ConsentPageOptions): string {
     </dl>
   </div>${loopbackWarning}
   <p class="state-detail">
-    Only approve this if you started it. The token expires hourly and refreshes
+    Only approve this if you started it. The token is short-lived and refreshes
     until you revoke strad's access to your Google account.
   </p>
-  <form method="post" action="${esc(opts.action)}" class="consent-actions">
+  <form method="post" action="${esc(opts.action)}" class="consent-form">${slugList}
     <input type="hidden" name="approval" value="${esc(opts.approval)}" />
+    <div class="consent-actions">
     <button class="btn btn-danger" type="submit" name="decision" value="deny">Deny</button>
     <button class="btn btn-primary" type="submit" name="decision" value="allow">Approve</button>
+    </div>
   </form>
 </div>
 <style>
@@ -117,6 +153,10 @@ export function renderConsent(opts: ConsentPageOptions): string {
 .consent-detail dd{margin:0;color:var(--g1);font-size:.86rem;overflow-wrap:anywhere}
 .consent-actions{display:flex;gap:.6rem;margin-top:.8rem}
 .consent-warning{max-width:30rem;color:var(--g1)}
+.consent-form{display:flex;flex-direction:column;align-items:center;width:100%}
+.consent-slugs{border:1px solid var(--g4,#ccc);padding:.6rem .9rem;display:flex;flex-direction:column;gap:.25rem;max-height:18rem;overflow:auto}
+.consent-slugs legend{color:var(--g3);font-size:.82rem;padding:0 .3rem}
+.consent-slugs label{font-size:.86rem;color:var(--g1)}
 </style>`;
 
   return layout({

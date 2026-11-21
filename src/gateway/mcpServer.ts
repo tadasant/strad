@@ -114,6 +114,8 @@ export interface GatewayServerOptions {
    * has already decided which slugs this session may touch at all.
    */
   principalRoles?: readonly string[];
+  /** The principal's slug narrowing (`Principal.slugs`), for the same reader. */
+  principalSlugs?: readonly string[];
   log: (event: Record<string, unknown>) => void;
   clientCapabilities?: ClientCapabilities;
   /**
@@ -173,7 +175,10 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
     explicit,
   } = opts;
   const surface: Surface = opts.surface ?? "mcp";
-  const principal = { roles: opts.principalRoles ?? [] };
+  const principal = {
+    roles: opts.principalRoles ?? [],
+    ...(opts.principalSlugs ? { slugs: opts.principalSlugs } : {}),
+  };
 
   const relayResources = opts.resources ?? true;
   const server = new Server(

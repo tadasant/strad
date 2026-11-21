@@ -185,6 +185,26 @@ auth:
     # Access tokens expire on this cadence; refresh tokens never expire, and are
     # revoked at Google. See docs/auth/overview.md.
     accessTokenTtlSeconds: 3600
+    # Per-client ceilings, keyed by the exact client id metadata document URL.
+    # Each REPLACES the defaults for its client: roles (default: the roles
+    # above; may be narrower OR wider), an optional slug allowlist inside them,
+    # an optional TTL. Applied at every request and refresh, so a deploy that
+    # changes an entry changes tokens already issued. Empty changes nothing.
+    clients:
+      - clientId: https://claude.ai/oauth/mcp-oauth-client-metadata
+        name: claude.ai
+        roles: [admin]
+        # servers: [granola]
+        # accessTokenTtlSeconds: 900
+    # false = only the clients listed above may sign in, refresh, or use a
+    # token they already hold.
+    allowUnlistedClients: true
+    # false = POST /oauth/register is a 404 and the metadata names no
+    # registration_endpoint. Already-registered clients keep their ids.
+    dynamicRegistration: true
+    # true = scopes_supported lists slug:<name> for every reachable slug, on two
+    # unauthenticated documents. Off because that list is the roster.
+    advertiseSlugScopes: false
 
   # Temporary: lets a human into /console with ADMIN_BOOTSTRAP_TOKEN while
   # Google OAuth credentials are being provisioned. Requires ALLOW_DEV_AUTH=true.

@@ -41,7 +41,7 @@ import {
   type McpOAuth,
 } from "../auth/mcp-oauth/index.ts";
 import type { DocumentFetcher } from "../auth/mcp-oauth/cimd.ts";
-import { MCP_SCOPE } from "../auth/mcp-oauth/metadata.ts";
+import { advertisedScopes } from "../auth/mcp-oauth/policy.ts";
 import { mountMcpOAuth } from "./oauth.ts";
 import {
   burnFromUrl,
@@ -458,7 +458,12 @@ export function createApp(opts: AppOptions): Express {
             // The issuer is this same origin — strad serves the flow from the
             // same root it serves `/mcp` from — and it is named only when the
             // flow can actually complete. See `resolveMcpOAuth`.
-            mcpOAuth ? { issuer: origin, scopes: [MCP_SCOPE] } : null,
+            mcpOAuth
+              ? {
+                  issuer: origin,
+                  scopes: advertisedScopes(mcpOAuth.policies, opts.config),
+                }
+              : null,
           ),
         );
       });

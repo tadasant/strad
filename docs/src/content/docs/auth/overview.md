@@ -307,14 +307,27 @@ response carries `iss` ([RFC 9207](https://www.rfc-editor.org/rfc/rfc9207)), so 
 client talking to more than one server cannot be tricked into exchanging a code
 at the wrong one. It sets `client_id_metadata_document_supported` beside
 `registration_endpoint`, so a client can pick either way of identifying itself.
+With `auth.mcpOAuth.dynamicRegistration: false` the `registration_endpoint`
+member is gone and `POST /oauth/register` answers `404`.
 
-**Scope is ignored rather than refused.** The one scope strad issues is `mcp`,
-and a client that asks for something else gets a token anyway, with
-`scope: "mcp"` in the response — the substitution RFC 6749 §3.3 asks to be
-declared. Scope grants nothing here: what a principal may reach is decided
-entirely by `roles` and the two-way entitlement, server-side, on every request.
-So an `invalid_scope` would only ever be a connector that failed to set up over
-a word that was never going to matter.
+**Scope narrows, and nothing else does anything.** There are two kinds of scope
+value. `mcp`, or no scope at all, asks for everything the client's ceiling
+grants. `slug:<name>` asks for that one slug, and a token issued for
+`slug:granola slug:linear-ro` reaches those two slugs and no others, whatever
+its roles reach. Any other word is ignored, as it always was: a client that
+sends `openid` still gets a connection. A scope can never add anything — the
+ceiling is server-side config (see
+[per-client policy](#per-client-policy-and-slug-scopes) below) — so the only
+refusal is `invalid_scope` for a `slug:` the ceiling does not reach, named in
+the error, because quietly dropping it would hand the client a smaller toolset
+than it asked for with nothing saying why. The token response's `scope` is what
+the access token actually carries: `mcp` for an unnarrowed grant, otherwise its
+`slug:` set.
+
+`scopes_supported`, in both metadata documents, is `["mcp"]`. With
+`auth.mcpOAuth.advertiseSlugScopes: true` it also lists one `slug:<name>` per
+slug some client's ceiling reaches. That is off by default because both
+documents are unauthenticated, and the list is the gateway's roster.
 
 The metadata documents and the `register` / `token` / `revoke` endpoints answer
 with `Access-Control-Allow-Origin: *` and a preflight, because a browser-resident
@@ -443,8 +456,16 @@ been verified yet. See [Known limitations](/limitations/) for what this costs.
 4. **The consent screen.** Registration is open, so any client can arrive with a
    name and a destination it chose for itself. Google's consent screen cannot
    help — it asks whether the human trusts _strad_. This screen names the client,
-   the account, the endpoint and the roles the grant will carry, and is where the
-   human approves or denies. It also says who vouches for the name: "published by
+   the account, the endpoint and the roles the grant will carry, lists the slugs
+   it would reach as checkboxes, and is where the human approves or denies. The
+   list is what the client asked for by `slug:` scope, or — for `mcp` — every
+   slug its ceiling reaches today, all ticked. Unticking any narrows the grant to
+   the rest; unticking all of them is a denial. Leaving every box ticked on an
+   `mcp` request grants `mcp`, which keeps following the ceiling as the roster
+   changes. The posted boxes are intersected with the sealed list the page
+   offered, so the form can only untick. A client listed in
+   `auth.mcpOAuth.clients` with a `name` is also shown under the operator's
+   name. It also says who vouches for the name: "published by
    `claude.ai`" for a metadata-document client, "self-registered" for a
    registered one. When the code is going to a loopback listener it warns that
    any program on the machine could claim that name.
@@ -453,10 +474,76 @@ been verified yet. See [Known limitations](/limitations/) for what this costs.
    bound to the client it was issued to, and is only redeemable with the PKCE
    verifier that matches its challenge.
 
+### Per-client policy and slug scopes
+
+Every client has a **ceiling**: a set of roles, and optionally a slug allowlist.
+A client listed in `auth.mcpOAuth.clients` — by its exact metadata-document URL —
+gets its entry's; every other client gets `auth.mcpOAuth.roles` and no allowlist.
+A token then reaches
+
+```
+entitledServers(ceiling roles)  ∩  client servers allowlist  ∩  grant's slugs
+```
+
+where the first two come from the **deployed config**, applied at every request
+and every refresh, and only the third comes from the token. A deploy that
+narrows an entry therefore narrows tokens already issued. An entry
+**replaces** the defaults rather than intersecting with them, so a listed
+client's `roles` may be wider than `auth.mcpOAuth.roles` — the shape for "no
+roles for unknown clients, `admin` for claude.ai" — and delisting a client
+while `allowUnlistedClients` is `true` moves its live tokens onto the global
+roles. `Principal.slugs` is the
+last two intersected, and `entitledServers` applies it after the two-way role
+check, so it can only remove.
+
+```yaml
+auth:
+  mcpOAuth:
+    enabled: true
+    roles: [admin] # the ceiling for any unlisted client
+    clients:
+      - clientId: https://claude.ai/oauth/mcp-oauth-client-metadata
+        name: claude.ai
+        roles: [admin] # defaults to auth.mcpOAuth.roles
+        servers: [granola, linear-ro] # optional allowlist inside those roles
+        accessTokenTtlSeconds: 900 # optional; defaults to the global one
+    allowUnlistedClients: true # default; false admits listed clients only
+    dynamicRegistration: true # default; false turns POST /oauth/register off
+    advertiseSlugScopes: false # default; true lists slug:<name> in scopes_supported
+```
+
+- **`allowUnlistedClients: false`** closes the server to the list. An unlisted
+  client gets a page at `/oauth/authorize`, `invalid_client` at the token
+  endpoint, and a `401` at `/mcp` — so flipping it revokes an unlisted client's
+  refresh tokens at once and its access tokens within one access-token lifetime.
+  A dynamically registered client's id is a sealed blob minted at registration,
+  so it cannot be listed: with this off, only metadata-document clients connect.
+- **`dynamicRegistration: false`** stops new registrations. Clients already
+  registered keep their ids, subject to `allowUnlistedClients`.
+- **A refresh may ask for less, never more.** A `scope` naming `slug:` values
+  must lie inside the grant (or, for an `mcp` grant, inside the ceiling today);
+  the access token carries the subset and the refresh token keeps the grant's
+  scope. A refresh naming no slug — `mcp`, or nothing — gets the grant as given,
+  which is what a client whose human unticked boxes it never saw will send.
+
+The empty defaults change nothing about any grant: with no `clients` block every
+client gets the global roles and TTL, and a token minted before slug scopes
+existed verifies to exactly the principal it always did. A token carries a slug
+set only when its client asked for `slug:` scopes or its human unticked a box.
+
+A narrowed grant is sealed as payload version `2`; an unnarrowed one stays `1`,
+exactly the shape minted before. A build that predates slug scopes opens only
+version `1`, so **rolling back** makes every narrowed token and refresh token
+fail (the client signs in again) rather than read as the whole ceiling.
+
+The roster editor honours the same set: a narrowed token's `save_connector`,
+`set_connector_enabled`, `remove_connector` and `restore_connector` may name
+only slugs inside it.
+
 ### Access tokens expire hourly; refresh tokens never expire
 
 **Access tokens live one hour** (`auth.mcpOAuth.accessTokenTtlSeconds`, floor 5
-minutes, ceiling a day). One hour is the conventional default and what an MCP
+minutes, ceiling a day; a listed client may set its own). One hour is the conventional default and what an MCP
 client expects to refresh against. It is also the revocation window, and that is
 the reason for the floor: an access token is verified with no lookup, so it
 cannot be revoked before it expires.

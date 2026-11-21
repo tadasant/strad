@@ -1348,6 +1348,10 @@ auth:
     hostedDomain: tadasant.com # optional; falls back to auth.google.hostedDomain
     roles: [admin] # default []
     accessTokenTtlSeconds: 3600 # default; min 300, max 86400
+    clients: [] # default; per-client ceilings, below
+    allowUnlistedClients: true # default
+    dynamicRegistration: true # default
+    advertiseSlugScopes: false # default
 ```
 
 It is **additive**. `auth.staticTokens` is untouched by it, `/mcp` accepts either
@@ -1383,6 +1387,33 @@ verified with no lookup and cannot be revoked before it expires. That is what th
 five-minute floor is for. Refresh tokens carry no expiry at all and are revoked
 at Google. The whole model is in
 [Auth](/auth/overview/#mcp--oauth-21-interactive-clients).
+
+`clients` sets a ceiling per client, keyed by the exact `clientId` — a client id
+metadata document URL (`https`, with a path; a dynamically registered client's
+id cannot be written down in advance, and an entry that could never match is a
+config error, as are a duplicate and an unknown role):
+
+```yaml
+    clients:
+      - clientId: https://claude.ai/oauth/mcp-oauth-client-metadata
+        name: claude.ai # optional; shown on the consent screen
+        roles: [admin] # optional; defaults to auth.mcpOAuth.roles
+        servers: [granola] # optional slug allowlist inside those roles
+        accessTokenTtlSeconds: 900 # optional; same bounds as the global one
+```
+
+A slug in `servers` the roster does not have grants nothing and is not refused,
+for the reason a role's `servers` is not: a runtime roster write may remove it.
+`allowUnlistedClients: false` admits listed clients only, at every door
+including the tokens they already hold. `dynamicRegistration: false` turns
+`POST /oauth/register` into a `404` and drops `registration_endpoint` from the
+metadata. `advertiseSlugScopes: true` lists `slug:<name>` scopes in
+`scopes_supported`, which publishes the roster on two unauthenticated documents.
+All four apply at every request and refresh, so a deploy that changes them
+changes tokens already issued, and their defaults leave every grant exactly as
+it was. An entry replaces the defaults for its client, so its `roles` may be
+wider than `auth.mcpOAuth.roles` as well as narrower. The scope grammar and the consent checkboxes are in
+[Auth](/auth/overview/#per-client-policy-and-slug-scopes).
 
 
 ## `mcpServers:` — the draft SEP-2633 input dialect

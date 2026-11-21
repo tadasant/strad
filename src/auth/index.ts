@@ -33,6 +33,13 @@ export interface Principal {
   id: string;
   label: string;
   roles: string[];
+  /**
+   * An optional slug narrowing, applied AFTER `roles` by `entitledServers`. It
+   * can only remove slugs, never add them. Set by an OAuth access token whose
+   * grant or client is narrowed to named slugs (`src/auth/mcp-oauth/policy.ts`);
+   * absent on every other principal, which leaves `roles` the whole answer.
+   */
+  slugs?: readonly string[];
 }
 
 /**

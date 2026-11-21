@@ -57,10 +57,15 @@ export const AUTHORIZATION_SERVER_ROUTES: readonly string[] = [
 ];
 
 /**
- * The one scope strad issues. It is not a capability — what a principal may
- * reach is decided by `roles` and the two-way entitlement, server-side, on
- * every request (`src/gateway/entitlements.ts`). It exists so a client that
- * insists on asking for something has something to ask for.
+ * The scope that means "everything this client's ceiling grants".
+ *
+ * A scope on this server can only NARROW. The ceiling is server-side config —
+ * the client's role ceiling and optional slug allowlist
+ * (`src/auth/mcp-oauth/policy.ts`), intersected with the two-way entitlement on
+ * every request (`src/gateway/entitlements.ts`). `mcp`, or no scope, asks for
+ * all of it; `slug:<name>` scopes ask for those slugs only, and the token is
+ * then confined to them. No scope value adds anything the ceiling does not
+ * already reach.
  */
 export const MCP_SCOPE = "mcp";
 
@@ -107,7 +112,8 @@ export interface AuthorizationServerMetadata {
   issuer: string;
   authorization_endpoint: string;
   token_endpoint: string;
-  registration_endpoint: string;
+  /** Absent when `auth.mcpOAuth.dynamicRegistration` is false. */
+  registration_endpoint?: string;
   revocation_endpoint: string;
   response_types_supported: string[];
   grant_types_supported: string[];
@@ -144,19 +150,22 @@ const SERVICE_DOCUMENTATION = "https://docs.strad.tadasant.com/auth/overview/";
  */
 export function authorizationServerMetadata(
   origin: string,
+  opts: { scopes?: string[]; registration?: boolean } = {},
 ): AuthorizationServerMetadata {
   return {
     issuer: origin,
     authorization_endpoint: `${origin}${AUTHORIZE_PATH}`,
     token_endpoint: `${origin}${TOKEN_PATH}`,
-    registration_endpoint: `${origin}${REGISTER_PATH}`,
+    ...(opts.registration === false
+      ? {}
+      : { registration_endpoint: `${origin}${REGISTER_PATH}` }),
     revocation_endpoint: `${origin}${REVOKE_PATH}`,
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code", "refresh_token"],
     code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: ["none"],
     revocation_endpoint_auth_methods_supported: ["none"],
-    scopes_supported: [MCP_SCOPE],
+    scopes_supported: opts.scopes ?? [MCP_SCOPE],
     service_documentation: SERVICE_DOCUMENTATION,
     authorization_response_iss_parameter_supported: true,
     client_id_metadata_document_supported: true,

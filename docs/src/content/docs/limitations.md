@@ -4942,3 +4942,23 @@ id and secret an earlier Connect wrote under `oauth/`, which is read ahead of
 `static/`.
 
 See `HACKS.md` #159.
+
+### 160. `/mcp` OAuth client policy keys on metadata-document URLs, and a `slug:` grant is a fixed set
+
+`auth.mcpOAuth.clients` narrows a client by its exact `client_id`, and a
+`slug:` scope or an unticked consent box narrows one grant. See
+[per-client policy](/auth/overview/#per-client-policy-and-slug-scopes).
+
+- **A dynamically registered client cannot be listed.** Its id is minted at
+  registration, so with `allowUnlistedClients: false` only metadata-document
+  clients (claude.ai, VS Code) can connect.
+- **A narrowed grant does not follow the roster.** An `mcp` grant reaches what
+  the client's ceiling reaches today, new slugs included. A grant narrowed to
+  named slugs keeps that set until the client signs in again. A slug that
+  leaves the ceiling drops out at the next request.
+- **A rollback signs narrowed grants out.** They are sealed as a payload
+  version a pre-slug build refuses, so after a rollback those clients sign in
+  again rather than getting the whole ceiling.
+- **No per-grant revocation yet.** Narrowing a client's entry narrows every
+  token it holds; revoking one grant alone is still Google revocation, per user
+  and per OAuth client.
