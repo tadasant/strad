@@ -1,7 +1,9 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
@@ -434,4 +436,119 @@ describe("deposit with no default strad set up", () => {
     expect(r.ok).toBe(false);
     expect(r.ok ? "" : r.message).toMatch(/custody\.stradUrl is unset/);
   });
+});
+
+/** The BUILT cli, against a state dir, as the owner runs it on the Mac. */
+const cli = (home: string, args: string[]) =>
+  promisify(execFile)(process.execPath, ["build/cli.js", ...args], {
+    env: { ...process.env, STRAD_HOSTD_HOME: home },
+  });
+
+describe("`strad-hostd destination add` against a running daemon", () => {
+  let daemon: RunningDaemon;
+  let pulse: Server;
+  const toPulse: Seen[] = [];
+  let pulseUrl = "";
+  let home = "";
+  let custody: Awaited<ReturnType<typeof connect>>;
+  let grant = "";
+  const call = (name: string, args: Record<string, unknown> = {}) =>
+    custody.callTool({ name, arguments: { grant_id: grant, ...args } });
+  const depositToPulse = async () => {
+    const { handle } = resultJson<{ handle: string }>(
+      await call("generate_keypair", { comment: "destination add test" }),
+    );
+    return call("deposit", {
+      handle,
+      slug: "linear",
+      variable: "LINEAR_API_KEY",
+      destination: "pulsemcp",
+    });
+  };
+
+  beforeAll(async () => {
+    pulse = fakeStrad(toPulse, "prod");
+    pulseUrl = await listen(pulse);
+    home = tmpState();
+    const configPath = join(home, "config.json");
+    const config = testConfig({ consent: { rejectCooldownSeconds: 0 } });
+    config.capabilities.custody = {
+      enabled: true,
+      key: CUSTODY_KEY,
+      displayName: "custody-test-mbp",
+      clientKeys: {},
+    };
+    writeFileSync(configPath, JSON.stringify(config, null, 2));
+    daemon = await startDaemon(config, {
+      stateDir: home,
+      prompter: new ScriptedPrompter("allowed"),
+      ephemeralPorts: true,
+      configPath,
+    });
+    // The cli finds the control listener by the file's controlPort.
+    writeFileSync(
+      configPath,
+      JSON.stringify({ ...config, controlPort: daemon.controlPort }, null, 2),
+    );
+    custody = await connect(daemon.mcpPort, "/custody/mcp", CUSTODY_KEY);
+    grant = resultJson<{ grant_id: string }>(
+      await custody.callTool({
+        name: "request_control",
+        arguments: { purpose: "Destination add test. Nothing else." },
+      }),
+    ).grant_id;
+  }, 30_000);
+
+  afterAll(async () => {
+    await custody?.close();
+    await daemon?.stop();
+    pulse?.close();
+  });
+
+  it("deposits into the new destination with no restart", async () => {
+    const before = await depositToPulse();
+    expect(before.isError).toBe(true);
+    expect(resultText(before)).toMatch(
+      /No deposit destination named "pulsemcp"/,
+    );
+
+    const { stdout } = await cli(home, [
+      "destination",
+      "add",
+      "pulsemcp",
+      "--url",
+      pulseUrl,
+    ]);
+    expect(stdout).toMatch(/The running daemon deposits there at once/);
+    const key = (
+      JSON.parse(readFileSync(join(home, "config.json"), "utf8")) as {
+        custody: { destinations: Record<string, { key: string }> };
+      }
+    ).custody.destinations.pulsemcp!.key;
+
+    const after = await depositToPulse();
+    expect(resultJson(after)).toMatchObject({
+      deposited: true,
+      destination: "pulsemcp",
+    });
+    expect(toPulse).toHaveLength(1);
+    expect(toPulse[0]!.authorization).toBe(`Bearer ${depositToken(key)}`);
+  }, 30_000);
+
+  it("says so when no daemon is running, and still writes the file", async () => {
+    const stopped = tmpState();
+    const { stdout } = await cli(stopped, ["init"]).then(() =>
+      cli(stopped, ["destination", "add", "pulsemcp", "--url", pulseUrl]),
+    );
+    expect(stdout).toMatch(/The daemon is not running/);
+    expect(
+      Object.keys(
+        (
+          JSON.parse(readFileSync(join(stopped, "config.json"), "utf8")) as {
+            custody: { destinations: object };
+          }
+        ).custody.destinations,
+      ),
+    ).toEqual(["pulsemcp"]);
+  }, 30_000);
 });

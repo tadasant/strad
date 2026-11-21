@@ -358,9 +358,20 @@ async function main(argv: string[]): Promise<number> {
         return 1;
       }
       writeFileSync(path, JSON.stringify(raw, null, 2) + "\n", { mode: 0o600 });
+      // A running daemon deposits there at once; a stopped one from its next
+      // boot. The deposit tool's advertised list of names is built at boot.
+      const reload = await control("/reload-keys").then(
+        (r) => r.status,
+        () => undefined,
+      );
       console.log(
         `custody deposit → ${name} (${new URL(url).host})\t${key}\n\n` +
-          `Store this key in THAT strad as the custody deposit caller's key (docs: servers/hostd-custody, "Another strad"), then restart the daemon.\n` +
+          `Store this key in THAT strad as the custody deposit caller's key (docs: servers/hostd-custody, "Another strad").\n` +
+          (reload === undefined
+            ? "The daemon is not running; it deposits there once it is.\n"
+            : reload >= 200 && reload < 300
+              ? `The running daemon deposits there at once; the deposit tool lists "${name}" from its next restart.\n`
+              : `The running daemon did not reload its config (HTTP ${reload}); restart it to deposit there.\n`) +
           "It opens nothing on this machine; it only lets this machine deposit there.",
       );
       return 0;
