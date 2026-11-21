@@ -1511,14 +1511,16 @@ declares forty-eight server slugs:
 Roles are `admin: ["*"]`, a deliberately narrow `echo-only: [echo]` — which
 keeps the [424 fail-closed path](/intro/concepts/#the-424-contract) meaningful —
 and `zimmer: [zimmer-secrets, secrets, echo]`, the role Zimmer's own sessions
-hold. `google.enabled` is `false` (it flips true when OAuth creds land),
-`mcpOAuth.enabled` is `false` for the same reason and at the same moment — both
-need `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`, and the OAuth client must also
-list `https://staging.strad.tadasant.com/oauth/callback/google` among its
-authorized redirect URIs — and `consoleDevBypass.enabled` is `true`. Flipping
-`mcpOAuth` without those seeded is not a dead end: the authorization server does
-not run, publishes no metadata, says why at boot, and `/mcp` keeps accepting
-static tokens exactly as it does now. See
+hold. `google.enabled` is `false` (it flips true when OAuth creds land), and
+`consoleDevBypass.enabled` is `true`. `mcpOAuth` is **on**, with every opt-in
+feature, and can reach `echo` and nothing else: global roles `echo-only`,
+unlisted clients refused, no dynamic registration, and two listed throwaway test
+clients capped to `echo`. It still doesn't run until
+`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` are seeded (and the OAuth client lists
+`https://staging.strad.tadasant.com/oauth/callback/google`). Until then it
+publishes no metadata, says why at boot, and `/mcp` keeps accepting static tokens.
+[Staging OAuth rehearsal](/operate/staging-oauth-e2e/) has what it still needs
+and the test that drives it. See also
 [Auth](/auth/overview/#mcp--oauth-21-interactive-clients).
 
 The breadth of `zimmer` is a security decision rather than a default, and it is

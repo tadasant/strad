@@ -1,0 +1,12 @@
+{
+  "client_id": "https://docs.strad.tadasant.com/oauth-test-clients/staging-public.json",
+  "client_name": "strad staging OAuth test (public)",
+  "client_uri": "https://docs.strad.tadasant.com/operate/staging-oauth-e2e/",
+  "redirect_uris": [
+    "http://127.0.0.1:53682/callback",
+    "http://127.0.0.1:53683/callback"
+  ],
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "none"
+}
