@@ -1,0 +1,14 @@
+{
+  "name": "vendor-billing",
+  "version": "0.1.0",
+  "private": true,
+  "description": "strad's own vendor billing MCP server — a fixed set of read-only balance, usage and cost reads against OpenRouter, OpenAI and a Google Cloud Billing BigQuery export, each tool configured independently. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared",
+    "test": "npm run test --workspace shared"
+  }
+}

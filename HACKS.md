@@ -392,7 +392,7 @@ one (hack #4).
 **✅ RESOLVED.** Core presents the internal token to every `supplementary-image`
 component, and the `strad-bundle` host refuses a mount request without it.
 
-**What.** The `strad-bundle` container — thirty-seven mounts, and every upstream
+**What.** The `strad-bundle` container — thirty-eight mounts, and every upstream
 credential behind them — serves every mount unauthenticated. Its only protection
 is the network boundary: an internal-only App Platform component
 (`internal_ports: [8080]`, no public route), reachable by core over the private
@@ -789,10 +789,10 @@ still what makes prod's read-only variants read-only.
 policies) → confirm → _then_ delete the per-server images, their workflows and the
 toggle plumbing.
 
-## 24. Thirty-seven servers share one process, and one Chromium
+## 24. Thirty-eight servers share one process, and one Chromium
 
-The collapsed bundle is one container running thirty-seven MCP servers and one
-headless Chromium. An OOM there is a thirty-seven-server outage; it used to be a
+The collapsed bundle is one container running thirty-eight MCP servers and one
+headless Chromium. An OOM there is a thirty-eight-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -2650,7 +2650,7 @@ both `infra/strad.staging.yaml` and `strad.config.example.yaml` — plus the cou
 in `servers/bundle/scripts/smoke.mjs`, `test/staging-config.test.ts` and
 `.github/workflows/ci.yml`.
 
-## 56. Per-slug box names are emitted for every server; sixteen of twenty-eight trees can read one
+## 56. Per-slug box names are emitted for every server; seventeen of twenty-nine trees can read one
 
 **What.** Every enabled `supplementary-image` server's resolved `env:` is emitted
 onto its bundle TWICE: under the bare name it always had, and under
@@ -2707,7 +2707,7 @@ DigitalOcean both times.
 - **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
   `grafana`, `victorialogs`, `appsignal`, `bill-spend`, `aws-device-farm`,
   `whatsapp`, `liveoak`, `airtable`, `flightaware`, `digitalocean`, `hetzner`,
-  `glitchtip` and `ssh` read an injected env.** The other twelve trees
+  `glitchtip`, `vendor-billing` and `ssh` read an injected env.** The other twelve trees
   are vendored upstream code reading `process.env`, often lazily at call time
   (`onepassword` builds its client per call off `OP_SERVICE_ACCOUNT_TOKEN`). A single process cannot overlay `process.env`
   per-request without a race, so each tree needs its own seam and gets it when it
@@ -3751,7 +3751,7 @@ behaviour, which is the pre-change one.
 a listed parameter current in a supplementary container's `process.env` without a
 redeploy. What it cannot do is make the MCP server inside that container LOOK at
 the new value. That is a property of the upstream, and this image runs
-thirty-seven of them, most written by other people.
+thirty-eight of them, most written by other people.
 
 The split is real and it is not subtle:
 
@@ -8104,3 +8104,42 @@ both sides stamp.
 **Undo.** A shared writer, or Zimmer's `upsert` honouring the envelope's
 declared encoding, retires the second item. A `managed-by` value both systems
 stamp retires the first.
+
+## 158. vendor-billing is strad's own server, and has met only fakes
+
+**What.** `servers/vendor-billing` serves four fixed billing reads:
+`get_openrouter_credits` (`GET /api/v1/credits`), `get_openrouter_key_usage`
+(`GET /api/v1/key`), `get_openai_costs` (`GET /v1/organization/costs`, daily,
+by project) and `get_gcp_month_to_date` (one BigQuery query over a Cloud
+Billing standard usage cost export). Paths, parameters and response shapes come
+from each vendor's published API documentation.
+
+**Why.** A cost-collection agent needs balances and in-month spend, and the
+credentials that read them are broad: an OpenRouter management key can mint
+and delete keys, and an OpenAI admin key is an organization credential. A server
+whose every request is fixed is the boundary, so the agent never holds a
+general-purpose client.
+
+**What it costs.**
+
+- Every test runs against a fake vendor. No real account has answered any of
+  the four, so every success shape is documented, not observed.
+- The BigQuery table is spliced into the SQL, because a table name cannot be
+  bound as a parameter. The project, dataset and table are held to strict
+  patterns first (`config.ts`), which are narrower than what BigQuery accepts.
+  A domain-scoped project (`example.com:project`) or a table name with a hyphen
+  or a space is refused.
+- The query has no partition filter, because a standard export's partitioning
+  is not documented as stable. It scans the export's `invoice`, `currency`,
+  `cost`, `credits` and `usage_end_time` columns every call, under a 10 GiB
+  `maximumBytesBilled` ceiling. An export past that ceiling makes the tool fail
+  until the ceiling moves.
+- OpenRouter's `/credits` takes only a management key, and a management key can
+  also manage keys. Nothing here calls those endpoints, but the credential the
+  container holds can.
+- The query job runs in the export's own project, so the service account needs
+  `roles/bigquery.jobUser` there. A deployment that bills jobs to a different
+  project cannot say so.
+
+**Undo.** A live call against each vendor retires the first item. OpenRouter
+issuing a read-only management scope would retire the fourth.

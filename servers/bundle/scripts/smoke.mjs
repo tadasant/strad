@@ -15,7 +15,7 @@
  * credential-dependent. CI has no credential, the probe fails closed, and the
  * count is the read-only 4 below.
  *
- * What it is really checking is that thirty-seven servers, twenty-eight dependency trees and
+ * What it is really checking is that thirty-eight servers, twenty-nine dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  *
@@ -139,6 +139,9 @@ const EXPECT = {
   // GlitchTip: seven reads and no writes — strad's own server. An eighth tool
   // is a new capability, not a version bump.
   glitchtip: 7,
+  // vendor-billing: four fixed billing reads and nothing else — strad's own.
+  // A fifth tool is a new capability, not a version bump.
+  "vendor-billing": 4,
   // One tool each, and the count is the claim that neither grew a tool that
   // writes a file: these replace npx packages that wrote to the agent's disk,
   // and here they write nothing anywhere.
@@ -319,7 +322,7 @@ if (unchecked.length || absent.length) {
 
 // Two trees registering the SAME slug is the collision a twelve-tree single process
 // invites, and it collapses to one route — the set above cannot see it, because a
-// Set of 37 mounts' slugs is 36 entries wide and matches EXPECT exactly.
+// Set of 38 mounts' slugs is 37 entries wide and matches EXPECT exactly.
 if (health.servers.length !== mounted.size) {
   failed += 1;
   console.log(

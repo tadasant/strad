@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * bundle — THE strad supplementary image. All 37 MCP servers (37
+ * bundle — THE strad supplementary image. All 38 MCP servers (38
  * mounts, see `buildMounts`), one container, one process, one Chromium, and one
  * mcp-grafana and one mcp-victorialogs child per mount that uses them. The
  * gateway's config names more SLUGS than that — 45 supplementary-image entries
@@ -11,7 +11,7 @@
  * is named by none BY DESIGN: every SSH host is its own store-served instance
  * at `/_instance/ssh/{slug}`, and the conventional mount is the degraded one.
  *
- * THIRTY-SEVEN IS THE FLOOR, not a constant. Ten trees (telegram,
+ * THIRTY-EIGHT IS THE FLOOR, not a constant. Ten trees (telegram,
  * remote-filesystem, google-sheets, gmail, google-docs, grafana, victorialogs,
  * appsignal, glitchtip, onepassword) mount ONE INSTANCE PER SLUG the environment carries
  * per-slug values for — see
@@ -23,7 +23,7 @@
  * app id IS one AppSignal app, a URL and token IS one GlitchTip, and a 1Password service-account token
  * IS one 1Password account at one vault scope, so each extra account is another
  * mount here. The conventional path is always mounted, so a config that asks for
- * none of this sees exactly the thirty-seven it saw before.
+ * none of this sees exactly the thirty-eight it saw before.
  *
  * STORE-SERVED INSTANCES are the other way in, and the one that needs no deploy.
  * A strad server on `path: /_instance/{tree}/{slug}` puts nothing on this
@@ -67,8 +67,8 @@
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
  *
- * BLAST RADIUS, honestly. Thirty-seven servers share a process. A crash is
- * a 37-server outage, not a 1-server outage. Everything below that CAN be made
+ * BLAST RADIUS, honestly. Thirty-eight servers share a process. A crash is
+ * a 38-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
  * catastrophic here); a dead Chromium is relaunched on next use; an unhandled
@@ -394,6 +394,9 @@ async function buildMounts(): Promise<Mount[]> {
   mounts.push(await loadKeyedApiServer("flightaware", "strad-flightaware"));
   mounts.push(await loadKeyedApiServer("digitalocean", "strad-digitalocean"));
   mounts.push(await loadKeyedApiServer("hetzner", "strad-hetzner"));
+  // vendor-billing: four fixed billing reads, each tool configured on its own,
+  // so the mount is degraded only while ALL four are unconfigured.
+  mounts.push(await loadKeyedApiServer("vendor-billing", "strad-vendor-billing"));
 
   // glitchtip: the conventional mount (degraded until configured) plus one per
   // slug the environment carries a whole GlitchTip — origin and token — for.
@@ -1459,7 +1462,7 @@ async function loadXTwitter(): Promise<Mount> {
     // The client caches its OAuth provider for the host process, so the factory
     // is built once here and memoised inside registerHandlers. Building it
     // LAZILY matters: `createXClientFromEnv` throws when no X credential is
-    // configured at all, and a throw at boot would take all thirty-seven mounts down
+    // configured at all, and a throw at boot would take all thirty-eight mounts down
     // over one unconfigured server.
     register: (s) =>
       created.registerHandlers(s, () =>
@@ -1703,7 +1706,7 @@ async function loadBillSpend(): Promise<Mount> {
  * every call fails naming the variable.
  */
 async function loadKeyedApiServer(
-  tree: "airtable" | "flightaware" | "digitalocean" | "hetzner",
+  tree: "airtable" | "flightaware" | "digitalocean" | "hetzner" | "vendor-billing",
   serverName: string,
 ): Promise<Mount> {
   const mod = (await loadFromTree(tree, "shared/build/index.js")) as {
@@ -2533,7 +2536,7 @@ async function main(): Promise<void> {
   //
   // NOT AWAITED, and that is deliberate. A pass is one sequential read per
   // listed variable, each with its own timeout, so awaiting it would put a slow
-  // or unreachable core directly in front of `listen()` below — thirty-seven
+  // or unreachable core directly in front of `listen()` below — thirty-eight
   // mounts held off serving because one credential could not be re-read. The
   // container starting with the value the deploy baked is exactly the behaviour
   // every deployment has today, so falling back to it costs nothing; blocking
@@ -2546,7 +2549,7 @@ async function main(): Promise<void> {
   // STORE-SERVED INSTANCES — the mounts no deploy named. See the header.
   //
   // The first sync is NOT awaited, for the reason the refresh pass above is
-  // not: a slow core must not stand in front of `listen()` for thirty-seven
+  // not: a slow core must not stand in front of `listen()` for thirty-eight
   // mounts that need nothing from it. A request that arrives before the sync
   // lands takes the miss path in the route below, which syncs then.
   const instances = createInstanceReconciler<Mount>({
@@ -2599,7 +2602,7 @@ async function main(): Promise<void> {
   const internalOnly = requireInternalToken(process.env, timingSafeEqual);
 
   // Liveness for App Platform. Reports every mount and whether it is degraded —
-  // with 37 servers behind one health check, "ok: true" alone is not information.
+  // with 38 servers behind one health check, "ok: true" alone is not information.
   //
   // Deliberately OUTSIDE `internalOnly`. The platform's health prober holds no
   // token, and a 401 here is a component App Platform takes out of service — an
@@ -2823,8 +2826,8 @@ async function main(): Promise<void> {
     });
   });
 
-  // One stray rejection from one of thirty-seven servers must not kill the other
-  // thirty-six. The standalone images exit here (correct, when the process IS the
+  // One stray rejection from one of thirty-eight servers must not kill the other
+  // thirty-seven. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {
     logError("unhandledRejection", reason);
