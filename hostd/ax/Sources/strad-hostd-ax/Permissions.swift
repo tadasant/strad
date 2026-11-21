@@ -18,6 +18,10 @@ enum Permissions {
         [
             "version": VERSION,
             "pid": Int(getpid()),
+            // From the Info.plist linked into the binary; null is a build
+            // without it, whose status item the menu bar has no owner to
+            // remember by.
+            "bundle_id": Bundle.main.bundleIdentifier.map { $0 as Any } ?? NSNull(),
             "executable": Bundle.main.executablePath ?? CommandLine.arguments[0],
             "trusted": [
                 "accessibility": accessibility(),

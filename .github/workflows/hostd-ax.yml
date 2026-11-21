@@ -101,6 +101,15 @@ jobs:
         run: |
           codesign --force --sign - --identifier com.strad.hostd-ax .build/release/strad-hostd-ax
           codesign --verify --verbose=2 .build/release/strad-hostd-ax
+      - name: The Info.plist is linked in and bound to the signature
+        # The menu bar remembers a status item under its owner's bundle
+        # identifier; Package.swift links hostd/ax/Info.plist into the binary.
+        working-directory: hostd/ax
+        run: |
+          plutil -lint Info.plist
+          codesign --display --verbose=2 .build/release/strad-hostd-ax 2>&1 | tee "$RUNNER_TEMP/codesign.txt"
+          grep -q "Info.plist entries=" "$RUNNER_TEMP/codesign.txt"
+          grep -q "Identifier=com.strad.hostd-ax" "$RUNNER_TEMP/codesign.txt"
       - name: Permission state on a bare runner
         working-directory: hostd/ax
         run: .build/release/strad-hostd-ax --status

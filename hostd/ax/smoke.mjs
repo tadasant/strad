@@ -79,6 +79,13 @@ try {
     typeof trusted.accessibility === "boolean" &&
       typeof trusted.screen_recording === "boolean",
   );
+  // The Info.plist linked in by Package.swift: without it the menu bar has no
+  // bundle identifier to remember the status item under.
+  check(
+    "the binary carries its bundle identifier",
+    hello.result?.bundle_id === "com.strad.hostd-ax",
+    String(hello.result?.bundle_id),
+  );
 
   const apps = await call("list_apps");
   check(
@@ -168,6 +175,11 @@ try {
     fg.result?.animating === false &&
       fg.result?.icon === "cursorarrow.motionlines",
     JSON.stringify(fg.result),
+  );
+  check(
+    "the status item has its stable autosave name",
+    fg.result?.status_item === "strad-hostd",
+    String(fg.result?.status_item),
   );
   // The owner's banner size lives in this helper's preferences, and this
   // script also runs on the owner's Mac: note it, and put it back at the end.

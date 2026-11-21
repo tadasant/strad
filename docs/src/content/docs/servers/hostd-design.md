@@ -550,7 +550,8 @@ https — the helper checks the scheme again before it opens anything), the
 calls in flight and the shell commands it left running (the oldest three of
 each, with their totals), and its last five calls. It answers with what the
 owner can see — whether the strip is on screen, its size, and whether the
-menu-bar icon is animating — which only the smoke test reads. One more op,
+menu-bar icon is animating, and the status item's autosave name — which only
+the smoke test reads. One more op,
 `banner_mode`, sets the size the way a menu pick does; it is controller-only,
 the daemon never sends it, and it is there so the smoke test can drive the
 put-away path.
@@ -560,7 +561,8 @@ still asks only whether the connection is the controller and whether a grant,
 or a foreground grant, is in force. Input
 and the banner run on the helper's main thread, which AppKit needs; reading an
 Accessibility tree and capturing the screen run on a serial queue of their own,
-so a stuck app cannot freeze the Kill button. `hello` reports the two grants, and the
+so a stuck app cannot freeze the Kill button. `hello` reports the two grants (and the
+bundle identifier linked into the binary), and the
 daemon asks it **before** showing a consent dialog: a server that cannot work
 gets `helper_unavailable` and no dialog, because nothing the person at the
 screen can click in ten seconds would fix a missing grant.

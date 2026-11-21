@@ -269,6 +269,14 @@ Reduce motion, unless `defaults write strad-hostd-ax statusIconAnimation
 always` (or `never`) says otherwise. Call text is scrubbed of
 obvious secrets before it is drawn, and typed text is shown only as its length.
 
+The icon is a status item named `strad-hostd`, owned by `com.strad.hostd-ax`
+(the bundle identifier linked into the binary from `ax/Info.plist`), so macOS
+and a menu-bar manager remember where you put it and whether it is shown,
+across every restart of the helper. To keep it in view: turn
+**strad-hostd-ax** on under System Settings › Menu Bar › **Allow in the Menu
+Bar**, ⌘-drag it toward the right end of the menu bar, past the notch, and in
+Bartender (or Ice) move it to the always-shown section. Neither the helper nor strad can override a hide you set there.
+
 ### The Messages helper (macOS): `strad-hostd-messages`
 
 The `messages` server reads iMessage and SMS history through a second small

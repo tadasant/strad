@@ -92,6 +92,18 @@ final class Banner: NSObject {
         var isOpen: Bool { self == .compact || self == .expanded }
     }
 
+    /// The helper's own preferences, in the `strad-hostd-ax` domain whatever
+    /// the bundle identifier is: `defaults write strad-hostd-ax …` is the
+    /// documented way to set them, and the identifier linked in from
+    /// Info.plist (com.strad.hostd-ax) would otherwise move them.
+    static let defaults = UserDefaults(suiteName: "strad-hostd-ax") ?? .standard
+
+    /// The status item's autosave name. Stable across launches, so macOS
+    /// keeps the icon's position and visibility for the next process rather
+    /// than placing a new item at the far left, where a crowded or notched
+    /// menu bar hides it.
+    static let statusItemName = "strad-hostd"
+
     private static let modeKey = "bannerMode"
     /// What Show goes back to from the sliver or the menu bar.
     private static let openModeKey = "bannerOpenMode"
@@ -107,7 +119,7 @@ final class Banner: NSObject {
     private var disabled = false
     private var controlUrl: String?
     private weak var controller: Channel?
-    private var mode: Mode = Mode(rawValue: UserDefaults.standard.string(forKey: Banner.modeKey) ?? "") ?? .compact
+    private var mode: Mode = Mode(rawValue: Banner.defaults.string(forKey: Banner.modeKey) ?? "") ?? .compact
     private var panel: NSPanel?
     private var root: NSView?
     private var stack: NSStackView?
@@ -136,7 +148,7 @@ final class Banner: NSObject {
     var isEmpty: Bool { grants.isEmpty }
 
     private var animation: Animation {
-        Animation(rawValue: UserDefaults.standard.string(forKey: Banner.animationKey) ?? "") ?? .auto
+        Animation(rawValue: Banner.defaults.string(forKey: Banner.animationKey) ?? "") ?? .auto
     }
 
     private var mayAnimate: Bool {
@@ -159,8 +171,9 @@ final class Banner: NSObject {
             "animating": animator != nil,
             "animation": animation.rawValue,
             "reduce_motion": NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-            "open_mode": UserDefaults.standard.string(forKey: Banner.openModeKey) ?? Mode.compact.rawValue,
+            "open_mode": Banner.defaults.string(forKey: Banner.openModeKey) ?? Mode.compact.rawValue,
             "icon": iconName,
+            "status_item": statusItem?.autosaveName ?? "",
         ]
     }
 
@@ -202,7 +215,7 @@ final class Banner: NSObject {
         controller = channel
         // Re-read on each push, so a `defaults write` lands within a tick
         // rather than on the helper's next restart.
-        if let stored = Mode(rawValue: UserDefaults.standard.string(forKey: Banner.modeKey) ?? "") { mode = stored }
+        if let stored = Mode(rawValue: Banner.defaults.string(forKey: Banner.modeKey) ?? "") { mode = stored }
         disabled = args.bool("disabled", default: false)
         controlUrl = args.string("control_url")
         grants = ((args.raw["grants"] as? [[String: Any]]) ?? []).compactMap { g in
@@ -601,8 +614,8 @@ final class Banner: NSObject {
 
     private func setMode(_ next: Mode) {
         mode = next
-        UserDefaults.standard.set(next.rawValue, forKey: Banner.modeKey)
-        if next.isOpen { UserDefaults.standard.set(next.rawValue, forKey: Banner.openModeKey) }
+        Banner.defaults.set(next.rawValue, forKey: Banner.modeKey)
+        if next.isOpen { Banner.defaults.set(next.rawValue, forKey: Banner.openModeKey) }
         render()
     }
 
@@ -654,6 +667,11 @@ final class Banner: NSObject {
     private func ensureStatusItem() {
         if statusItem != nil { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.autosaveName = Banner.statusItemName
+        // The icon carries the kill switch, so the helper asks for it to be
+        // shown on every launch. Whether macOS draws it is still the owner's
+        // call (System Settings › Menu Bar), and a crowded bar can drop it.
+        item.isVisible = true
         item.button?.image = StatusIcon.still(disabled: false, hasGrants: false, foreground: false).image
         item.button?.imagePosition = .imageLeading
         statusItem = item
@@ -802,7 +820,7 @@ final class Banner: NSObject {
     }
 
     @objc private func restoreTapped() {
-        let open = Mode(rawValue: UserDefaults.standard.string(forKey: Banner.openModeKey) ?? "") ?? .compact
+        let open = Mode(rawValue: Banner.defaults.string(forKey: Banner.openModeKey) ?? "") ?? .compact
         setMode(open.isOpen ? open : .compact)
     }
 

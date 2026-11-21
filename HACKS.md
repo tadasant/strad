@@ -5699,7 +5699,16 @@ radius, named in #159 from the start, and why every hostd slug stays
 menu bar, remembered for every grant after. The menu-bar icon then carries it
 alone — tinted, counting, animating while a call runs — and macOS drops status
 items that do not fit, so on a notched MacBook with a crowded menu bar there
-can be nothing on screen at all. The start and end notifications still post,
+can be nothing on screen at all. The item carries a stable autosave name
+(`strad-hostd`) and the binary a linked-in bundle identifier
+(`com.strad.hostd-ax`), so where the owner pins it survives every restart
+after the first launch that carries them, which places the icon afresh; a
+hide set in System Settings › Menu Bar or in Bartender is the owner's, and the
+helper can neither read nor undo it. Whether macOS's privacy database keeps
+the helper's Accessibility and Screen Recording grants once the binary has a
+bundle identifier has not been seen on a real Mac: the designated requirement
+is unchanged, but if the grants lapse, `strad-hostd helper` says so and they
+are granted again once. The start and end notifications still post,
 a foreground grant still ends on the owner's first key or click, and **Show
 banner** in the icon's menu (or `defaults write strad-hostd-ax bannerMode
 compact`) brings the strip back.
