@@ -580,10 +580,15 @@ describe.skipIf(!chrome)(
           "document.documentElement.dataset.foreignFrames",
         );
       /**
-       * The clipboard, read from ANOTHER origin that alone was granted the
-       * read, so the page under test gets no clipboard permission from it.
+       * Run `expression` with a user gesture in a fresh tab on ANOTHER origin
+       * that alone is granted the clipboard, so the page under test gets no
+       * clipboard permission from it.
+       *
+       * A target opens on its initial `about:blank` — an opaque origin, not a
+       * secure context, so no `navigator.clipboard` — whose readyState is
+       * already "complete". Wait for the READER's document, not any document.
        */
-      const clipboard = async (): Promise<string> => {
+      const onReader = async <T>(expression: string): Promise<T> => {
         const reader = `http://localhost:${new URL(origin).port}/blank`;
         await cdp.send("Browser.grantPermissions", {
           origin: new URL(reader).origin,
@@ -598,61 +603,46 @@ describe.skipIf(!chrome)(
             "Target.attachToTarget",
             { targetId, flatten: true },
           );
+          let seen: unknown;
           await until(
-            async () =>
-              (await inPage<string>(sessionId, "document.readyState")) ===
-              "complete",
-            "the clipboard reader loads",
+            async () => {
+              // Mid-navigation, Chrome can refuse the evaluate outright (no
+              // execution context yet): that is "not yet", not a failure.
+              const s = await inPage<{
+                href: string;
+                readyState: string;
+                secure: boolean;
+              }>(
+                sessionId,
+                "({ href: location.href, readyState: document.readyState, secure: isSecureContext })",
+              ).catch((err: Error) => `evaluate failed: ${err.message}`);
+              seen = s;
+              return (
+                typeof s === "object" &&
+                s.href === reader &&
+                s.readyState === "complete" &&
+                s.secure
+              );
+            },
+            "the clipboard tab has loaded its own page",
+            () => seen,
           );
           await cdp.send(
             "Emulation.setFocusEmulationEnabled",
             { enabled: true },
             sessionId,
           );
-          return await inPage<string>(
-            sessionId,
-            "navigator.clipboard.readText()",
-            true,
-          );
+          return await inPage<T>(sessionId, expression, true);
         } finally {
           await cdp.send("Target.closeTarget", { targetId });
         }
       };
-      const setClipboard = async (value: string) => {
-        const reader = `http://localhost:${new URL(origin).port}/blank`;
-        await cdp.send("Browser.grantPermissions", {
-          origin: new URL(reader).origin,
-          permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
-        });
-        const { targetId } = await cdp.send<{ targetId: string }>(
-          "Target.createTarget",
-          { url: reader },
+      const clipboard = () =>
+        onReader<string>("navigator.clipboard.readText()");
+      const setClipboard = (value: string) =>
+        onReader<void>(
+          `navigator.clipboard.writeText(${JSON.stringify(value)})`,
         );
-        try {
-          const { sessionId } = await cdp.send<{ sessionId: string }>(
-            "Target.attachToTarget",
-            { targetId, flatten: true },
-          );
-          await until(
-            async () =>
-              (await inPage<string>(sessionId, "document.readyState")) ===
-              "complete",
-            "the clipboard writer loads",
-          );
-          await cdp.send(
-            "Emulation.setFocusEmulationEnabled",
-            { enabled: true },
-            sessionId,
-          );
-          await inPage(
-            sessionId,
-            `navigator.clipboard.writeText(${JSON.stringify(value)})`,
-            true,
-          );
-        } finally {
-          await cdp.send("Target.closeTarget", { targetId });
-        }
-      };
 
       beforeAll(async () => {
         ({ grant_id: grant } = resultJson<{ grant_id: string }>(
