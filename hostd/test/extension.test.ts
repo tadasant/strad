@@ -606,17 +606,22 @@ describe.skipIf(!chrome)(
           let seen: unknown;
           await until(
             async () => {
-              seen = await inPage(
-                sessionId,
-                "({ href: location.href, readyState: document.readyState, secure: isSecureContext })",
-              );
-              const s = seen as {
+              // Mid-navigation, Chrome can refuse the evaluate outright (no
+              // execution context yet): that is "not yet", not a failure.
+              const s = await inPage<{
                 href: string;
                 readyState: string;
                 secure: boolean;
-              };
+              }>(
+                sessionId,
+                "({ href: location.href, readyState: document.readyState, secure: isSecureContext })",
+              ).catch((err: Error) => `evaluate failed: ${err.message}`);
+              seen = s;
               return (
-                s.href === reader && s.readyState === "complete" && s.secure
+                typeof s === "object" &&
+                s.href === reader &&
+                s.readyState === "complete" &&
+                s.secure
               );
             },
             "the clipboard tab has loaded its own page",
