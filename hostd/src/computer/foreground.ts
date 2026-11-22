@@ -379,7 +379,8 @@ Click into the field first, and screenshot afterwards if it matters. Keep it to 
       readOnlyHint: false,
       destructiveHint: true,
     },
-    summarize: (a) => `type_text: ${JSON.stringify(a.text.slice(0, 80))}`,
+    // What is typed may be a password: the record gets its length, never the text.
+    summarize: (a) => `type_text: ${a.text.length} chars`,
     handler: async (a, { grant }) => {
       watch(grant);
       return json(

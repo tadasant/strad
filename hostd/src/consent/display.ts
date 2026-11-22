@@ -9,7 +9,9 @@
  * credential-looking flags, URL userinfo, well-known token prefixes, JWTs,
  * private keys and long opaque runs — and capped. It is a heuristic and the
  * docs say so: it catches the shapes above, not a password typed as a bare
- * word. The audit log on disk is not touched by any of this.
+ * word. The audit log, the status page and the notifications go through the
+ * same rules, after an exact pass over every value the daemon knows
+ * (`src/redact.ts`).
  */
 export const MAX_SCREEN_CHARS = 240;
 
@@ -72,7 +74,8 @@ function looksOpaque(run: string): boolean {
 /** Scrub and cap one line of caller-authored text for the banner. */
 export function screenText(raw: string, max = MAX_SCREEN_CHARS): string {
   // What is typed into the foreground may be a password typed as a word, which
-  // no pattern catches: the screen gets its length, the audit log the text.
+  // no pattern catches: it is reduced to its length. A summary carries only
+  // the length already; this shape is what an older daemon's audit holds.
   const typed = /^type_text: ("(?:[^"\\]|\\.)*")$/s.exec(raw)?.[1];
   if (typed !== undefined) {
     let n = typed.length - 2;
@@ -81,7 +84,6 @@ export function screenText(raw: string, max = MAX_SCREEN_CHARS): string {
     } catch {
       // the escaped length is close enough
     }
-    // The audit summary keeps the first 80 characters.
     return `type_text: ${n >= 80 ? "80+" : n} chars`;
   }
   // The same for a value set into a field through Accessibility.

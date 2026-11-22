@@ -535,8 +535,9 @@ pairs, credential-looking flags, `curl -u` passwords, URL userinfo,
 well-known token prefixes, JWTs, private keys, long opaque runs — and caps it
 at 240 characters. Text typed or set into a field (`type_text`, `set_value`)
 is shown only as its length. That is a heuristic: a password passed as a bare
-word in a shell command is shown as written. The audit log keeps the
-unscrubbed summary, on the machine. The banner is part of the screen, so a
+word in a shell command is shown as written. The audit log, the status
+page and the grant notifications get the same scrubbing, after an exact pass
+described below. The banner is part of the screen, so a
 screenshot a foreground grant takes includes it: in compact that is every
 grant's purpose, session and current call, and in **Details** the rest. In
 compact the banner's height changes only when a grant starts or ends, not per
@@ -563,4 +564,31 @@ that moved itself into a new session (`setsid`, a launchd job) is out of reach o
 all of these: this is an unsandboxed shell. strad then reports the slugs `offline`.
 
 `~/.strad-hostd/audit.jsonl` records each request, decision and tool call,
-including the commands that ran. It stays on the machine.
+including the commands that ran. It stays on the machine, and it never holds
+a custody value or a daemon key; other text is scrubbed by shape. Every entry
+is redacted before it is written, and the same redaction applies to the
+status page (its activity table, purposes, running commands and calls, and
+`/state.json`), to the banner's call text, to the grant notifications that
+Notification Center keeps, and to the daemon's own log lines (the exact pass
+only). It runs in two passes. The first is exact: every
+value custody holds or has just deposited is replaced by `[secret h_…]`,
+naming the handle, and every key the daemon holds is replaced by name (each
+server and client key, each custody destination key, and the deposit bearer
+derived from it). The second is the banner's shape scrubber, which a summary
+made only of ids (a deposit, a tab or handle id) skips so that a long variable
+name stays readable. Text typed or set into a field is recorded as its length
+only. A password passed as a bare word in a shell command is still recorded as
+written. A deposit is recorded as
+`deposit: h_… → destination:slug/VARIABLE`, so the record still shows which
+secret went where, and when.
+
+The first time a daemon with this redaction starts, it rewrites what an older
+daemon left on disk, once: `audit.jsonl`, where every free-text tool summary
+(a command, a script, a URL, a selector, typed text) is cut to the tool's name,
+every purpose is removed, and everything else is scrubbed as above (a line
+the new daemon wrote is stamped and left alone), and the launchd logs
+`~/Library/Logs/com.strad.hostd.{out,err}.log`, scrubbed line by line.
+`~/.strad-hostd/at-rest-redaction` records that it ran. Overwriting a file on
+APFS does not erase the old blocks, and an earlier Time Machine backup or
+local snapshot still has the old file, so a secret an older daemon recorded
+should be treated as exposed on that disk (`HACKS.md` #168).

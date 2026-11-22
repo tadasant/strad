@@ -9,7 +9,7 @@ import {
 import type { AuditLog } from "../audit.js";
 import { CAPABILITIES, type CapabilityId } from "../capabilities.js";
 import { displayName, onTimeoutFor, type Config } from "../config.js";
-import { screenText } from "../consent/display.js";
+import { MAX_SCREEN_CHARS } from "../consent/display.js";
 import type { ConsentGate } from "../consent/gate.js";
 import {
   custodyAfter,
@@ -356,8 +356,13 @@ Idempotent: ending a grant that is already gone returns {"ended":false}.`,
         grantId: used.grant.id,
         detail,
       });
-      // The banner's "now" line: display only, scrubbed for the screen.
-      const done = gate.grants.begin(used.grant.id, tool, screenText(detail));
+      // The banner's "now" line, also on the status page and /state.json:
+      // redacted as the audit is, and capped for the screen.
+      const done = gate.grants.begin(
+        used.grant.id,
+        tool,
+        audit.scrubSummary(detail, MAX_SCREEN_CHARS),
+      );
       let result: CallToolResult;
       try {
         result = await def.handler(parsed.data, { grant: used.grant });

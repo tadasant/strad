@@ -112,7 +112,7 @@ Do NOT background with "&": a command ends when its shell exits, and whatever it
       destructiveHint: true,
       openWorldHint: true,
     },
-    summarize: (a) => `run_command: ${a.command.slice(0, 200)}`,
+    summarize: (a) => `run_command: ${a.command}`,
     handler: async (a, { grant }) => {
       let record: CommandRecord;
       try {

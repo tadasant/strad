@@ -4580,7 +4580,8 @@ runs) and capped, and typed text is shown as its length. A password passed as
 a plain word in a shell command is still shown, and some harmless long tokens
 are redacted. The banner appears in a foreground grant's screenshots, so a
 screenshot carries every grant's purpose, session and current call (more with
-**Details** open). The audit log on the machine keeps the full summary.
+**Details** open). The audit log and the status page get the same scrubbing
+(#168).
 
 See `HACKS.md` #143.
 
@@ -5138,3 +5139,26 @@ Only a mouse click answers the consent dialog. See
   window shown, and the tests run the script against a stand-in bridge.
 
 See `HACKS.md` #167.
+
+---
+
+### 168. strad-hostd's records are redacted, and an older daemon's disk is only rewritten
+
+strad-hostd's audit log, status page, banner and grant notifications never hold a
+custody value or a daemon key: those are replaced exactly, with the handle
+named, so a deposit still reads as `deposit: h_… → destination:slug/VARIABLE`.
+Everything else goes through the banner's shape scrubber, and typed text is a
+length only.
+
+- **Free text is scrubbed by heuristic.** A secret that never went through
+  custody, or a deposited one used in a command after its grant ended, is
+  removed only if it looks like one. A password passed as a bare word in a
+  shell command is recorded as written.
+- **The old disk is rewritten, not erased.** On first start the daemon
+  rewrites `audit.jsonl` (cutting old free-text summaries to the tool's name
+  and removing old purposes) and the launchd logs, once. If that fails, the
+  failure is logged and the daemon serves anyway. APFS keeps no promise about the old blocks, and
+  a Time Machine backup or local snapshot taken earlier still has the old
+  files. Treat anything an older daemon recorded as exposed on that disk.
+
+See `HACKS.md` #168.
