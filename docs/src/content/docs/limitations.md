@@ -5086,3 +5086,30 @@ refresh token, revocable on its own, dead with its grant. Off by default.
   build honours them, and its revoke still works. It does not end them when
   `tokenExchange` is removed from config.
 - **Dead children stay listed for a day**, then the sweep deletes them.
+
+---
+
+### 166. google-calendar's read tools search every shown calendar by default
+
+With no calendar named, `list_calendar_events` and `query_calendar_freebusy`
+search every calendar ticked in the user's Google Calendar, shared ones
+included, plus primary. `calendar_ids` narrows it. Each event says which
+calendar it came from.
+
+- **strad added this, not upstream.** Re-copying the server from upstream
+  removes it unless the change is applied again, and a test fails if it is not.
+- **An unticked calendar is not searched** unless it is named. The default stops
+  at 50 calendars.
+- **It costs one Calendar API request per calendar**, plus one to read the list.
+- **`max_results` is a total**, and the result says when more events matched.
+  A ticked holidays or birthdays calendar puts its all-day entries first each
+  day, so it can fill a small `max_results`.
+- **An event from a shared calendar is fetched or edited by naming that
+  calendar.** `get_calendar_event` and the write tools still default to
+  `primary`.
+- **A calendar that cannot be read is named in the result**; the others still
+  answer.
+- **One invite on two calendars is listed once**, read from the first calendar
+  (primary first), with the other named.
+
+See `HACKS.md` #166.

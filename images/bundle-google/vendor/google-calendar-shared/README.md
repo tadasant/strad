@@ -19,6 +19,7 @@ standalone entrypoint is strad's too, and lives outside the tree in
 | A personal OAuth mode, chosen by `GOOGLE_CALENDAR_AUTH_MODE=oauth`, beside the default service account (`HACKS.md` #125) | `src/server.ts` (`parseAuthMode`, `OAuthCalendarClient`, `createDefaultClient`), `src/index.ts` (exports) | `../../test/calendar-auth-mode.test.ts`, `../../test/standalone.test.ts` |
 | `create_calendar_event` takes `send_updates` (`all` \| `externalOnly` \| `none`) and passes it to `events.insert` as `sendUpdates`, the way update and delete already do. `none` creates the event without emailing invites. Omitted, the request carries no `sendUpdates` and Google's default stands | `src/tools/create-event.ts`, `src/calendar-client/lib/create-event.ts`, `src/server.ts` (the `createEvent` options) | `../../test/calendar-create-send-updates.test.ts` |
 | Show as Free / Busy: `create_calendar_event` and `update_calendar_event` take `transparency` (`opaque` = Busy \| `transparent` = Free) and its alias `show_as` (`busy` \| `free`), set on the event body; the two disagreeing is an error before any request. Omitted, the body carries no `transparency`, so a new event is Busy (Google's default) and an update leaves it as it was. The create, update, get and list results print `**Show as:** Free (transparent)` or `Busy (opaque)`, reading an absent field as Busy; a cancelled event gets no line, and a value Google may add later prints as `Unknown (…)` | `src/utils/show-as.ts`, `src/tools/create-event.ts`, `src/tools/update-event.ts`, `src/tools/get-event.ts`, `src/tools/list-events.ts` | `../../test/calendar-show-as.test.ts` |
+| The read tools default to every shown calendar (`HACKS.md` #166). With no calendar named, `list_calendar_events` and `query_calendar_freebusy` search every calendar in the user's calendar list with `selected` set, plus primary (first), at most 50, eight requests at a time. `list_calendar_events` takes `calendar_ids` (a list) beside `calendar_id` (no longer defaulting to `primary`; both are unioned), asks each calendar for `max_results` ordered by start (exact while `single_events` is true; with it false and no `order_by` the merge is approximate and says so), merges by start (all-day at local midnight), lists one occurrence on two calendars once (`**Also on:**`), and prints `**Calendar:**` on every event. `max_results` is a total; the result says when more matched. A calendar that fails is named and the rest still answer; all failing is an error. An explicit empty or blank id is refused rather than widened. `query_calendar_freebusy`'s `calendar_ids` is optional (still at least one when given) and batched at 50 | `src/utils/calendar-fanout.ts`, `src/tools/list-events.ts`, `src/tools/query-freebusy.ts` | `../../test/calendar-all-calendars.test.ts` |
 
 ## Tools
 
@@ -43,6 +44,15 @@ so it does not show up as busy in `query_calendar_freebusy`. Left out, a new
 event is Busy and an update leaves the setting alone. The read tools take
 neither, and every event they print carries a `**Show as:**` line, so a write
 can be checked by reading the event back.
+
+`list_calendar_events` and `query_calendar_freebusy` search every calendar
+the user has ticked in Google Calendar, plus the primary one, when you name
+none: the user's own calendars and the ones shared with them. Each event says
+which calendar it came from, and `max_results` counts events across all of
+them. Pass `calendar_ids` (for example `["primary"]`) to search only those
+calendars; `calendar_id` still works for one. A calendar that cannot be read is
+named in the result and does not fail the call. `get_calendar_event` and the
+write tools still take one calendar and default to `primary`.
 
 All seven are served unless you set `GOOGLE_CALENDAR_ENABLED_TOOLGROUPS`. The
 standalone entrypoint refuses to start on a group it does not recognise

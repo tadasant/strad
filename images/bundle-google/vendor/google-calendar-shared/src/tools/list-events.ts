@@ -1,27 +1,49 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
+import type { CalendarEvent, CalendarEventList } from '../types.js';
 import { logError } from '../logging.js';
 import { buildCalendarEventUrl } from '../utils/calendar-helpers.js';
 import { showAsLine } from '../utils/show-as.js';
+import {
+  calendarLabel,
+  eventStartMs,
+  occurrenceKey,
+  resolveCalendars,
+  settleAll,
+  type CalendarTarget,
+} from '../utils/calendar-fanout.js';
 
 export const ListEventsSchema = z.object({
+  calendar_ids: z
+    .array(z.string().trim().min(1))
+    .min(1)
+    .optional()
+    .describe(
+      'Calendar IDs to list events from, to narrow the search (e.g. ["primary", "someone@example.com"]). ' +
+        'Omit it, and calendar_id, to search every calendar shown in the user\'s calendar list (the "Selected: Yes" ones in list_calendars, plus primary): the user\'s own calendars and the ones shared with them. ' +
+        'Use "primary" for the user\'s primary calendar alone.',
+    ),
   calendar_id: z
     .string()
+    .trim()
+    .min(1)
     .optional()
-    .default('primary')
-    .describe('Calendar ID to list events from. Defaults to "primary" (user\'s primary calendar).'),
+    .describe(
+      'One calendar ID to list events from. The same as calendar_ids with one entry; if both are given, both are searched. ' +
+        'Omit both to search every shown calendar.',
+    ),
   time_min: z
     .string()
     .optional()
     .describe(
-      'Lower bound (inclusive) for event start time in RFC3339 format (e.g., "2024-01-01T00:00:00Z"). Defaults to current time if not specified.'
+      'Lower bound (inclusive) for event start time in RFC3339 format (e.g., "2024-01-01T00:00:00Z"). Defaults to current time if not specified.',
     ),
   time_max: z
     .string()
     .optional()
     .describe(
-      'Upper bound (exclusive) for event start time in RFC3339 format (e.g., "2024-12-31T23:59:59Z").'
+      'Upper bound (exclusive) for event start time in RFC3339 format (e.g., "2024-12-31T23:59:59Z").',
     ),
   max_results: z
     .number()
@@ -29,34 +51,51 @@ export const ListEventsSchema = z.object({
     .max(250)
     .optional()
     .default(10)
-    .describe('Maximum number of events to return. Defaults to 10, maximum is 250.'),
+    .describe(
+      'Maximum number of events to return in total, across every calendar searched. Defaults to 10, maximum is 250. ' +
+        'The result says when more events matched than were shown.',
+    ),
   query: z.string().optional().describe('Free text search query to filter events.'),
   single_events: z
     .boolean()
     .optional()
     .default(true)
     .describe(
-      'Whether to expand recurring events into instances. Defaults to true to show individual occurrences.'
+      'Whether to expand recurring events into instances. Defaults to true to show individual occurrences.',
     ),
   order_by: z
     .enum(['startTime', 'updated'])
     .optional()
     .describe(
-      'Order of events. "startTime" orders by start time (requires single_events=true), "updated" orders by last modification time.'
+      'Order of events. "startTime" orders by start time (requires single_events=true; the default when single_events is true), "updated" orders by last modification time, oldest first.',
     ),
 });
+
+interface CalendarResult {
+  target: CalendarTarget;
+  list: CalendarEventList;
+}
 
 export function listEventsTool(server: Server, clientFactory: ClientFactory) {
   return {
     name: 'list_calendar_events',
     description:
-      'Lists events from a Google Calendar within an optional time range. ' +
+      'Lists events within an optional time range. ' +
+      'By default it searches EVERY calendar shown in the user\'s calendar list (their own calendars and the calendars shared with them, the "Selected: Yes" ones in list_calendars, plus primary) and merges the results by start time; ' +
+      'each event says which calendar it came from. ' +
+      'Pass calendar_ids (or calendar_id) to narrow the search to specific calendars, e.g. ["primary"] for the user\'s own primary calendar only. ' +
       'Returns event details including title, time, location, attendees, and description. ' +
       'Useful for checking upcoming meetings, finding events by search query, or reviewing a specific time period. ' +
-      'By default, shows the next 10 events from the primary calendar.',
+      'Shows the next 10 events unless max_results says otherwise. A calendar that cannot be read is named in the result and does not fail the others. ' +
+      'To get, update or delete an event from a calendar other than primary, pass the calendar ID from its **Calendar:** line as calendar_id.',
     inputSchema: {
       type: 'object' as const,
       properties: {
+        calendar_ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description: ListEventsSchema.shape.calendar_ids.description,
+        },
         calendar_id: {
           type: 'string',
           description: ListEventsSchema.shape.calendar_id.description,
@@ -93,38 +132,98 @@ export function listEventsTool(server: Server, clientFactory: ClientFactory) {
         const parsed = ListEventsSchema.parse(args);
         const client = clientFactory();
 
-        const [result, accountEmail] = await Promise.all([
-          client.listEvents(parsed.calendar_id, {
+        const explicit = [
+          ...(parsed.calendar_ids ?? []),
+          ...(parsed.calendar_id !== undefined ? [parsed.calendar_id] : []),
+        ];
+        const [resolved, accountEmail] = await Promise.all([
+          resolveCalendars(client, explicit),
+          client.getAccountEmail(),
+        ]);
+
+        // Each calendar is asked for up to max_results, ordered, so the merged
+        // first max_results are the true first max_results across all of them.
+        // With no order (single_events false, no order_by) Google's cut per
+        // calendar is unordered and the merge is approximate; the result says so.
+        const orderBy = parsed.order_by ?? (parsed.single_events ? 'startTime' : undefined);
+        const settled = await settleAll(resolved.targets, (target) =>
+          client.listEvents(target.id, {
             timeMin: parsed.time_min,
             timeMax: parsed.time_max,
             maxResults: parsed.max_results,
             q: parsed.query,
             singleEvents: parsed.single_events,
-            orderBy: parsed.order_by,
+            orderBy,
           }),
-          client.getAccountEmail(),
-        ]);
+        );
 
-        const events = result.items || [];
-
-        if (events.length === 0) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: 'No events found matching the criteria.',
+        const ok: CalendarResult[] = [];
+        const failed: Array<{ target: CalendarTarget; error: string }> = [];
+        settled.forEach((s, i) => {
+          const target = resolved.targets[i];
+          if (s.ok) {
+            ok.push({
+              target: {
+                id: target.id,
+                summary: target.summary ?? s.value?.summary,
               },
-            ],
+              list: s.value,
+            });
+          } else {
+            failed.push({ target, error: s.error });
+          }
+        });
+
+        if (ok.length === 0) {
+          const detail =
+            failed.length === 1
+              ? failed[0].error
+              : failed.map((f) => `${calendarLabel(f.target)}: ${f.error}`).join('; ');
+          return {
+            content: [{ type: 'text', text: `Error listing events: ${detail}` }],
+            isError: true,
           };
         }
 
-        let output = `# Calendar Events (${events.length} found)\n\n`;
-        output += `**Calendar:** ${result.summary}\n`;
-        output += `**Time Zone:** ${result.timeZone}\n\n`;
+        const merged = mergeEvents(ok, parsed.order_by === 'updated');
+        const shown = merged.slice(0, parsed.max_results);
+        const more = merged.length > shown.length || ok.some((r) => Boolean(r.list.nextPageToken));
+        const single = resolved.targets.length === 1;
 
-        for (const event of events) {
+        let output = '';
+        if (shown.length === 0) {
+          output += 'No events found matching the criteria.\n\n';
+        } else {
+          output += `# Calendar Events (${shown.length} found)\n\n`;
+        }
+
+        if (single) {
+          output += `**Calendar:** ${ok[0].list.summary ?? ok[0].target.id}\n`;
+          if (ok[0].list.timeZone) output += `**Time Zone:** ${ok[0].list.timeZone}\n`;
+        } else {
+          output += `**Calendars searched:** ${resolved.scope}. Narrow with calendar_ids.\n`;
+          for (const r of ok) output += `  - ${calendarLabel(r.target)}\n`;
+        }
+        if (resolved.warning) output += `**Note:** ${resolved.warning}\n`;
+        if (!orderBy && !single) {
+          output += `**Note:** with single_events false and no order_by, Google returns each calendar's events unordered, so the merge by start time is approximate and a series sorts at its first occurrence.\n`;
+        }
+        if (failed.length > 0) {
+          output += `**Could not read ${failed.length} calendar${failed.length === 1 ? '' : 's'}** (their events are missing below):\n`;
+          for (const f of failed) output += `  - ${calendarLabel(f.target)}: ${f.error}\n`;
+        }
+        if (more) {
+          output += `**More events match than are shown** (max_results ${parsed.max_results}). Raise max_results, narrow time_min/time_max, or narrow calendar_ids.\n`;
+        }
+        output += '\n';
+
+        for (const { event, calendars } of shown) {
           output += `## ${event.summary || '(No title)'}\n\n`;
           output += `**Event ID:** ${event.id}\n`;
+          output += `**Calendar:** ${calendarLabel(calendars[0])}\n`;
+          if (calendars.length > 1) {
+            output += `**Also on:** ${calendars.slice(1).map(calendarLabel).join(', ')}\n`;
+          }
 
           // Start time
           if (event.start?.dateTime) {
@@ -220,4 +319,48 @@ export function listEventsTool(server: Server, clientFactory: ClientFactory) {
       }
     },
   };
+}
+
+interface MergedEvent {
+  event: CalendarEvent;
+  /** The calendars this occurrence is on, in search order. The first is where it was read from. */
+  calendars: CalendarTarget[];
+  sortKey: number;
+  /** Position in the search: calendar order, then the calendar's own order. Breaks ties stably. */
+  seq: number;
+}
+
+/**
+ * Merges every calendar's events into one list: by start time (or by
+ * last-modified time, oldest first, for order_by=updated), all-day events
+ * before that day's timed ones. The same occurrence on two calendars (an
+ * invite both people have) is listed once, read from the first calendar
+ * searched, with the others named.
+ */
+export function mergeEvents(results: CalendarResult[], byUpdated: boolean): MergedEvent[] {
+  const byKey = new Map<string, MergedEvent>();
+  const out: MergedEvent[] = [];
+  let seq = 0;
+  for (const { target, list } of results) {
+    for (const event of list.items ?? []) {
+      const key = occurrenceKey(event);
+      const existing = byKey.get(key);
+      if (existing) {
+        if (!existing.calendars.some((c) => c.id === target.id)) existing.calendars.push(target);
+        continue;
+      }
+      const raw = byUpdated ? Date.parse(event.updated ?? '') : eventStartMs(event, list.timeZone);
+      const sortKey = Number.isNaN(raw) ? Infinity : raw;
+      const merged: MergedEvent = {
+        event,
+        calendars: [target],
+        sortKey,
+        seq: seq++,
+      };
+      byKey.set(key, merged);
+      out.push(merged);
+    }
+  }
+  out.sort((a, b) => (a.sortKey === b.sortKey ? a.seq - b.seq : a.sortKey - b.sortKey));
+  return out;
 }

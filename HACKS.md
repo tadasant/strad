@@ -8494,3 +8494,58 @@ item 6) and off a human's consent screen.
 `unauthorized_client`, and every live child is refused at `/mcp` on its next
 request (`oauth_exchange_disabled`). Removing it from every entry also drops the
 grant type from the metadata and from the token endpoint.
+
+## 166. google-calendar's read tools search every shown calendar by default, a strad patch on a vendored copy
+
+**What.** `list_calendar_events` and `query_calendar_freebusy` in
+`images/bundle-google/vendor/google-calendar-shared` search every calendar in the
+user's calendar list that is shown in Google Calendar (`selected`), plus the
+primary calendar, when the caller names none. `calendar_ids` (a list) narrows
+the search, and `calendar_id` still works and is added to it. Each listed event
+carries a `**Calendar:**` line, and the same occurrence on two calendars is
+listed once with an `**Also on:**` line. The fan-out lives in
+`src/utils/calendar-fanout.ts`.
+
+**Why.** Upstream read `primary` unless an agent named a calendar. A calendar
+shared with the user was in reach, but an agent asked "what's on my calendar"
+never looked at it, and missed events because of it.
+
+**What it costs.**
+
+1. **One request per calendar, plus one for the calendar list.** A default
+   search over six shown calendars is seven Calendar API calls, eight at a time
+   at most. A named calendar skips the calendar-list read.
+2. **"Shown" is Google's `selected` flag**, the checkbox beside a calendar in
+   Google Calendar. An unticked calendar is not searched by default. A hidden
+   one is not in the list at all. Primary is always searched. The default stops
+   at 50 calendars and names how many it skipped.
+3. **`max_results` is the total across calendars.** Each calendar is asked for
+   up to `max_results`, ordered by start time, so the merged first
+   `max_results` are exact, and the result says when more matched. That holds
+   while `single_events` is true (the default). With `single_events: false`
+   and no `order_by`, Google's cut per calendar is unordered, so the merge is
+   approximate, and the result says that too.
+4. **A calendar that fails is named in the result, and the others still
+   answer.** Only when every calendar fails is the call an error. A calendar
+   list that cannot be read falls back to `primary` and says so.
+5. **De-duplication keys on iCalUID and start.** Two copies of one invite on
+   two calendars become one entry read from the first calendar searched
+   (primary first). If the copies differ, say a private event shown as busy on
+   one, the other's details are not shown.
+6. **All-day events sort at local midnight in their calendar's time zone**, so
+   they come before that day's timed events. A ticked holidays or birthdays
+   calendar can therefore fill a small `max_results` with all-day entries.
+   Raise it, or narrow with `calendar_ids`.
+7. **An event read from a shared calendar is addressed by that calendar.**
+   `get_calendar_event` and the write tools still default to `primary`, so a
+   follow-up call passes the id from the event's `**Calendar:**` line as
+   `calendar_id`. The tool description says so.
+8. **An explicit empty or blank calendar list is refused.** Only omitting the
+   field widens to every calendar. `"primary"` named beside the primary
+   calendar's own id is queried twice; the list collapses the copies, and
+   freebusy prints both.
+
+**Undo.** Pass `calendar_ids: ["primary"]` for the old behaviour on one call.
+Reverting the delta takes `src/utils/calendar-fanout.ts` and the two tools back
+to upstream, and `images/bundle-google/test/calendar-all-calendars.test.ts`
+fails until the test goes too.
