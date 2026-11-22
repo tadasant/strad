@@ -52,7 +52,13 @@ const quiet = () => {};
  * button the window's default button cell only if its key is still Return.
  */
 function bridge(
-  opts: { keySticks?: boolean; focusSticks?: boolean; modal?: number } = {},
+  opts: {
+    keySticks?: boolean;
+    focusSticks?: boolean;
+    keyViewSticks?: boolean;
+    defaultSticks?: boolean;
+    modal?: number;
+  } = {},
 ) {
   const events: string[] = [];
   const NIL = { isNil: () => true };
@@ -81,7 +87,7 @@ function bridge(
         if (!opts.focusSticks) b.refuses = v;
       },
       get canBecomeKeyView() {
-        return !b.refuses;
+        return opts.keyViewSticks ? true : !b.refuses;
       },
     };
   };
@@ -106,15 +112,16 @@ function bridge(
     informativeText: "",
     addButtonWithTitle: button,
     get layout() {
-      defaultCell = buttons.some((b) => b.key === "\r")
-        ? { isNil: () => false }
-        : NIL;
+      defaultCell =
+        opts.defaultSticks || buttons.some((b) => b.key === "\r")
+          ? { isNil: () => false }
+          : NIL;
       return undefined;
     },
     window,
     get runModal() {
       events.push("runModal");
-      return opts.modal ?? -1000;
+      return opts.modal ?? -1001;
     },
   };
   const app = {
@@ -185,7 +192,21 @@ describe("the macOS consent dialog", () => {
   it("reads each modal code the way the prompter does", () => {
     expect(bridge({ modal: 1000 }).run()).toBe("Allow");
     expect(bridge({ modal: 1002 }).run()).toBe("Cooldown");
-    expect(bridge({ modal: -1000 }).run()).toBe("timeout"); // abortModal
+    expect(bridge({ modal: -1001 }).run()).toBe("timeout"); // abortModal
+  });
+
+  it("does not read any other end of the modal as the countdown, which onTimeout: allow would grant", () => {
+    expect(() => bridge({ modal: -1000 }).run()).toThrow(/unexpected modal/); // stopModal
+    expect(() => bridge({ modal: 0 }).run()).toThrow(/unexpected modal/);
+  });
+
+  it("refuses to show the dialog if a default button survives, or a button is still a key view", () => {
+    const d = bridge({ defaultSticks: true });
+    expect(() => d.run()).toThrow(/default button remains/);
+    expect(d.events).not.toContain("runModal");
+    const k = bridge({ keyViewSticks: true });
+    expect(() => k.run()).toThrow(/is a key view/);
+    expect(k.events).not.toContain("runModal");
   });
 
   it("refuses to show the dialog if Return would still answer it", () => {
@@ -213,7 +234,6 @@ describe("the macOS consent dialog", () => {
     expect(lines.join("\n")).toMatch(
       /exit 1\): execution error: Error: a button kept a key/,
     );
-    expect(lines.join("\n")).not.toContain(REQ.purpose);
   });
 
   it("has no keyboard-answerable dialog anywhere in the module", () => {
@@ -223,16 +243,24 @@ describe("the macOS consent dialog", () => {
     expect(src).not.toMatch(/"zenity"/);
   });
 
-  it("reads an unanswered or hung dialog as the countdown, once", async () => {
-    const b = scripted(out("", 0));
-    expect(await new MacDialogPrompter(b.runner, quiet).prompt(REQ)).toBe(
-      "timeout",
+  it("never reads an exit it does not recognise as the countdown, which onTimeout: allow would grant", async () => {
+    for (const o of [out("", 0), out("garbage\n", 0), out("", null)]) {
+      const r = scripted(o);
+      expect(await new MacDialogPrompter(r.runner, quiet).prompt(REQ)).toBe(
+        "unavailable",
+      );
+      expect(r.calls).toHaveLength(1);
+    }
+  });
+
+  it("cuts the purpose out of a diagnostic before logging it", async () => {
+    const lines: string[] = [];
+    const { runner } = scripted(
+      out("", 1, `error near: ${REQ.purpose} (-2700)\n`),
     );
-    expect(b.calls).toHaveLength(1);
-    const c = scripted(out("", null));
-    expect(await new MacDialogPrompter(c.runner, quiet).prompt(REQ)).toBe(
-      "timeout",
-    );
+    await new MacDialogPrompter(runner, (l) => lines.push(l)).prompt(REQ);
+    expect(lines.join("\n")).not.toContain(REQ.purpose);
+    expect(lines.join("\n")).toContain("error near: [purpose] (-2700)");
   });
 
   it("is unavailable when aborted, or when osascript will not start", async () => {
@@ -246,6 +274,7 @@ describe("the macOS consent dialog", () => {
     const runner: DialogRunner = async () => ({
       stdout: "",
       code: null,
+      stderr: "",
       spawnFailed: true,
     });
     expect(await new MacDialogPrompter(runner, quiet).prompt(REQ)).toBe(

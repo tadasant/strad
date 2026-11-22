@@ -8574,6 +8574,13 @@ fallback instead, and keystrokes kept answering it.
    `no_display`, and the stdio form needs `--no-consent`.
 3. The dialog still takes focus when it appears, so typing that lands on it is
    swallowed. It does not answer it.
-4. The mouse-only behaviour is checked by the script's own assertions and by
-   tests against a stand-in bridge. A real keystroke against a real dialog has
-   not been driven in CI; nothing in CI runs AppKit.
+4. Only the countdown is a `timeout`. Any other end of the dialog (an
+   unexpected modal response, an exit with no answer, a hang) is `no_display`,
+   so a machine on `onTimeout: "allow"` denies those rather than granting.
+5. Keyboard-proof is not Accessibility-proof. VoiceOver, Voice Control and any
+   process with Accessibility (hostd's computer-use servers included) can press
+   a button, as anything holding the mouse can click one.
+6. The mouse-only behaviour is checked by the script's own assertions before
+   `runModal`, and by tests against a stand-in bridge. On a Mac, the checks
+   were observed passing with no window shown. Nobody has pressed keys at a live
+   dialog, and nothing in CI runs AppKit.

@@ -179,7 +179,10 @@ refuses this one request. Disallow and cool down refuses it and holds that
 server off for the cooldown (see the table below). It takes focus when it appears, and the owner may be typing
 in another app at that moment, so a key that answered it would decide requests
 nobody meant to decide. No key decides it, in either direction. Typing that
-lands on it is swallowed.
+lands on it is swallowed. "Only a click" means only the keyboard is shut out:
+an Accessibility press (VoiceOver, Voice Control, or any process holding
+Accessibility, which includes hostd's own computer-use servers) still presses a
+button, the same way anything that controls the mouse can click one.
 
 On macOS it is an `NSAlert` built from JavaScript for Automation
 (`osascript -l JavaScript`), which needs no TCC grant and no helper app. Each
@@ -187,8 +190,11 @@ button has its key equivalent cleared and refuses first responder, so Return,
 Escape, Space (under Full Keyboard Access) and Tab do nothing. Clearing Allow's
 key equivalent is also what leaves the window with no default button: AppKit
 only makes a button the default if its key is Return. The countdown is
-`abortModal` scheduled on the run loop, and an aborted dialog is a `timeout`
-that goes to `onTimeout` like any other. The purpose travels as an argument to
+`abortModal` scheduled on the run loop, and an aborted dialog
+(`NSModalResponseAbort`) is a `timeout` that goes to `onTimeout` like any other.
+Only that is a `timeout`. Any other modal response, an `osascript` that exits
+without an answer the prompter knows, or one killed for hanging is
+`no_display`, because under `onTimeout: "allow"` a `timeout` is a grant. The purpose travels as an argument to
 a constant script. It is never interpolated into script source, so a purpose
 cannot close a string and start a `do shell script`.
 
@@ -203,21 +209,20 @@ to. When the dialog is not shown, the daemon's log
 (`~/Library/Logs/com.strad.hostd.err.log`) has a `[consent]` line with
 `osascript`'s error.
 
-A `display dialog` fallback is what every Mac showed while the script carried
-one line: `alert.window.defaultButtonCell = null`. The JXA bridge passes
-JavaScript `null` as `NSNull`, not `nil`, and AppKit throws on it, so every
-`NSAlert` failed before it appeared and the fallback came up instead. With Full
-Keyboard Access on, a space typed into another app pressed its focused button,
-"Disallow and cool down". The script assigns `null` to no Objective-C property,
-and the tests run it against a stand-in bridge that throws the way the real one
-does.
+The script assigns `null` to no Objective-C property. The JXA bridge passes
+JavaScript `null` as `NSNull`, not `nil`, and AppKit throws on it, so a line
+like `alert.window.defaultButtonCell = null` fails every dialog before it
+appears (`HACKS.md` #166 has what that cost). The tests run the script against a
+stand-in bridge that throws the way the real one does.
 
-What has been observed on a Mac (macOS 27.2.1): the script builds the alert,
-clears every key, leaves no default button and no button that can take focus,
-and gets as far as `runModal` without throwing. Whether a first click on a
-button presses it rather than only bringing the window forward (macOS 14 can
-decline `activateIgnoringOtherApps`) is still reasoned from AppKit, not
-observed.
+What has been observed on a Mac (macOS 27.2.1), with the script run up to but
+not including `runModal`: it builds the alert, clears every key, and leaves no
+default button and no button that can take focus or be reached by Tab, so
+every check passes. A live dialog has not had keys pressed at it, so whether
+`runModal` leaves all of that as it found it is reasoned from AppKit, not
+observed. So is whether a first click on a button presses it rather than only
+bringing the window forward (macOS 14 can decline
+`activateIgnoringOtherApps`).
 
 Linux has no consent dialog. `zenity`'s keys cannot be switched off (Tab
 reaches Allow and Space presses it), so on Linux every request is `no_display`

@@ -5127,8 +5127,14 @@ Only a mouse click answers the consent dialog. See
   denies everything, and the stdio form needs `--no-consent`.
 - **It still takes focus.** Typing that lands on it is swallowed, not lost to a
   decision.
-- **No real keystroke has been driven against it in CI.** The script checks
-  its own buttons before showing, and the tests run it against a stand-in
-  bridge.
+- **Only the countdown is a timeout.** Any other end of the dialog is
+  `no_display`, so `onTimeout: "allow"` never grants on a dialog that hung or
+  exited oddly.
+- **Keyboard-proof, not Accessibility-proof.** VoiceOver, Voice Control and any
+  process with Accessibility, hostd's computer-use servers included, can press a
+  button.
+- **Nobody has pressed keys at a live dialog.** The script checks its own
+  buttons before showing; those checks were observed passing on a Mac with no
+  window shown, and the tests run the script against a stand-in bridge.
 
 See `HACKS.md` #167.

@@ -55,7 +55,7 @@ function run(
 ): Promise<{
   code: number | null;
   stdout: string;
-  stderr?: string;
+  stderr: string;
   spawnFailed: boolean;
 }> {
   return new Promise((resolve) => {
@@ -100,10 +100,7 @@ function run(
  * default if its key is Return. Typing into it is swallowed, not answered.
  *
  * No line here assigns JavaScript `null` to an Objective-C property. The bridge
- * passes `NSNull`, not `nil`, and AppKit throws on it: an
- * `alert.window.defaultButtonCell = null` made every one of these dialogs fail
- * on macOS, which is how the keyboard-answerable fallback became the dialog
- * that was actually shown.
+ * passes `NSNull`, not `nil`, and AppKit throws on it (`HACKS.md` #166).
  *
  * Before `runModal`, the script checks what it relies on — no key on any
  * button, none able to take focus, no default button cell — and throws rather
@@ -111,8 +108,10 @@ function run(
  * shown, so the request is `unavailable`, which is a denial.
  *
  * The countdown is `abortModal` scheduled on the run loop, the stock NSAlert
- * timeout: `runModal` then returns an abort code and the script prints
- * `timeout`, so an unanswered dialog reaches `onTimeout` like any other.
+ * timeout: `runModal` then returns `NSModalResponseAbort` (-1001) and the
+ * script prints `timeout`, so an unanswered dialog reaches `onTimeout` like any
+ * other. Any other code is not the countdown, and the script throws: under
+ * `onTimeout: "allow"` a `timeout` is a grant, so only the countdown may be one.
  * Text arrives as `argv`, never as source.
  */
 export const JXA_DIALOG = `ObjC.import("Cocoa");
@@ -140,7 +139,7 @@ function run(argv) {
     if (buttons[j].canBecomeKeyView !== false) throw new Error("a button is a key view");
   }
   var cell = alert.window.defaultButtonCell;
-  if (typeof cell.isNil !== "function" || !cell.isNil()) throw new Error("a default button remains");
+  if (!cell || typeof cell.isNil !== "function" || !cell.isNil()) throw new Error("a default button remains");
   alert.window.level = 3; // NSFloatingWindowLevel
   app.activateIgnoringOtherApps(true);
   app.performSelectorWithObjectAfterDelayInModes("abortModal", null, parseInt(argv[2], 10), $(["kCFRunLoopCommonModes"]));
@@ -148,7 +147,8 @@ function run(argv) {
   if (r === 1000) return "Allow"; // NSAlertFirstButtonReturn
   if (r === 1001) return "Reject"; // NSAlertSecondButtonReturn
   if (r === 1002) return "Cooldown"; // NSAlertThirdButtonReturn
-  return "timeout";
+  if (r === -1001) return "timeout"; // NSModalResponseAbort, from abortModal
+  throw new Error("unexpected modal response " + r);
 }`;
 
 /** Said under the request in the dialog, which no key answers. */
@@ -202,15 +202,21 @@ export class MacDialogPrompter implements Prompter {
     const answer = parseMac(r.stdout);
     if (answer) return answer;
     if (req.signal?.aborted) return "unavailable";
-    // Exited 0 having printed nothing: a dialog nobody answered. Killed by the
-    // backstop (`code: null`): it hung with a dialog up.
-    if (r.code === 0 || r.code === null) return "timeout";
-    // Failed: no window server (an ssh session, a logged-out Mac), or the
-    // script refused to show a dialog a key could answer. Its stderr is
-    // osascript's error and the script's own `throw`, never the purpose.
-    const why = (r.stderr ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
+    // Only the script's own `timeout` is the countdown. Anything else — a
+    // non-zero exit (no window server, or the script refused to show a dialog
+    // a key could answer), an exit 0 that printed nothing it knows, or a kill
+    // by the backstop — is a dialog nobody answered on purpose, and under
+    // `onTimeout: "allow"` a `timeout` would be a grant. The purpose travels
+    // as argv and is cut out of stderr before it is logged, in case a
+    // diagnostic echoes it.
+    const why = (
+      req.purpose ? r.stderr.split(req.purpose).join("[purpose]") : r.stderr
+    )
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 300);
     this.log(
-      `[consent] the dialog was not shown (osascript exit ${r.code}): ${why || "no error text"}`,
+      `[consent] the dialog did not answer (osascript exit ${r.code}): ${why || "no error text"}`,
     );
     return "unavailable";
   }
