@@ -100,7 +100,7 @@ function run(
  * default if its key is Return. Typing into it is swallowed, not answered.
  *
  * No line here assigns JavaScript `null` to an Objective-C property. The bridge
- * passes `NSNull`, not `nil`, and AppKit throws on it (`HACKS.md` #166).
+ * passes `NSNull`, not `nil`, and AppKit throws on it (`HACKS.md` #167).
  *
  * Before `runModal`, the script checks what it relies on — no key on any
  * button, none able to take focus, no default button cell — and throws rather

@@ -212,7 +212,7 @@ to. When the dialog is not shown, the daemon's log
 The script assigns `null` to no Objective-C property. The JXA bridge passes
 JavaScript `null` as `NSNull`, not `nil`, and AppKit throws on it, so a line
 like `alert.window.defaultButtonCell = null` fails every dialog before it
-appears (`HACKS.md` #166 has what that cost). The tests run the script against a
+appears (`HACKS.md` #167 has what that cost). The tests run the script against a
 stand-in bridge that throws the way the real one does.
 
 What has been observed on a Mac (macOS 27.2.1), with the script run up to but
