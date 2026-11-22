@@ -14,10 +14,7 @@ import { OAuth2Client } from 'google-auth-library';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
-import {
-  createDefaultClient,
-  createMCPServer,
-} from 'google-calendar-workspace-mcp-server-shared';
+import { createDefaultClient, createMCPServer } from 'google-calendar-workspace-mcp-server-shared';
 
 const realFetch = globalThis.fetch;
 
@@ -117,7 +114,9 @@ const timed = (id: string, start: string, extra: Ev = {}): Ev => ({
 });
 
 function calendarRequested(): string[] {
-  return eventRequests.map((u) => decodeURIComponent(u.pathname.split('/calendars/')[1]).replace(/\/events$/, ''));
+  return eventRequests.map((u) =>
+    decodeURIComponent(u.pathname.split('/calendars/')[1]).replace(/\/events$/, ''),
+  );
 }
 
 /** Titles in the order the tool printed them. */
@@ -156,7 +155,7 @@ test('with no calendar named, every selected calendar plus primary is searched, 
   expect(text).not.toContain('hidden@example.com');
 });
 
-test('merged events are ordered by start across calendars, all-day before the same day\'s timed events, and truncated to max_results in total', async () => {
+test("merged events are ordered by start across calendars, all-day before the same day's timed events, and truncated to max_results in total", async () => {
   standardList();
   eventsBy = {
     'me@example.com': [
@@ -166,7 +165,13 @@ test('merged events are ordered by start across calendars, all-day before the sa
     ],
     'shared@example.com': [
       // 08:00 Los Angeles on Dec 1 is 16:00Z: before m1.
-      { id: 's0', iCalUID: 's0@x', summary: 'Event s0', start: { date: '2026-12-01' }, end: { date: '2026-12-02' } },
+      {
+        id: 's0',
+        iCalUID: 's0@x',
+        summary: 'Event s0',
+        start: { date: '2026-12-01' },
+        end: { date: '2026-12-02' },
+      },
       timed('s1', '2026-12-01T16:00:00Z'),
       timed('s2', '2026-12-02T18:00:00Z'),
     ],
@@ -213,7 +218,10 @@ test('the single calendar_id still works, and combines with calendar_ids', async
   expect(titles(one.text)).toEqual(['Event p']);
 
   eventRequests = [];
-  await call('list_calendar_events', { calendar_id: 'primary', calendar_ids: ['x@example.com', 'primary'] });
+  await call('list_calendar_events', {
+    calendar_id: 'primary',
+    calendar_ids: ['x@example.com', 'primary'],
+  });
   expect(calendarRequested().sort()).toEqual(['primary', 'x@example.com']);
 });
 
@@ -286,7 +294,7 @@ test('freebusy with no calendar_ids checks every selected calendar and reports e
   expect(text).toContain('- global: notFound');
 });
 
-test('freebusy with calendar_ids checks only those, and batches past Google\'s 50-calendar limit', async () => {
+test("freebusy with calendar_ids checks only those, and batches past Google's 50-calendar limit", async () => {
   const ids = Array.from({ length: 55 }, (_, i) => `c${i}@example.com`);
   const { result, text } = await call('query_calendar_freebusy', {
     time_min: '2026-12-01T00:00:00Z',
@@ -298,4 +306,104 @@ test('freebusy with calendar_ids checks only those, and batches past Google\'s 5
   expect(freebusyBodies.map((b) => b.items.length).sort((x, y) => y - x)).toEqual([50, 5]);
   expect(text).toContain('## Calendar: c54@example.com');
   expect(text).not.toContain('Calendars checked');
+});
+
+test('recurring instances on one calendar stay separate; an instance on two calendars collapses', async () => {
+  standardList();
+  const inst = (start: string) => timed(`r_${start}`, start, { iCalUID: 'series@google.com' });
+  eventsBy = {
+    'me@example.com': [inst('2026-12-01T17:00:00Z'), inst('2026-12-08T17:00:00Z')],
+    'shared@example.com': [inst('2026-12-01T17:00:00Z')],
+  };
+  const { text } = await call('list_calendar_events', {});
+  expect(titles(text)).toHaveLength(2);
+  expect(text.match(/\*\*Also on:\*\*/g)).toHaveLength(1);
+});
+
+test('order_by updated merges by last-modified time, oldest first', async () => {
+  standardList();
+  eventsBy = {
+    'me@example.com': [timed('new', '2026-12-01T10:00:00Z', { updated: '2026-11-20T00:00:00Z' })],
+    'shared@example.com': [
+      timed('old', '2026-12-05T10:00:00Z', { updated: '2026-11-01T00:00:00Z' }),
+    ],
+  };
+  const { text } = await call('list_calendar_events', { order_by: 'updated' });
+  expect(titles(text)).toEqual(['Event old', 'Event new']);
+  for (const u of eventRequests) expect(u.searchParams.get('orderBy')).toBe('updated');
+});
+
+test('with single_events false and no order_by, the merge says it is approximate', async () => {
+  standardList();
+  eventsBy = { 'me@example.com': [timed('a', '2026-12-01T17:00:00Z')] };
+  const { text } = await call('list_calendar_events', { single_events: false });
+  for (const u of eventRequests) expect(u.searchParams.get('orderBy')).toBeNull();
+  expect(text).toContain('the merge by start time is approximate');
+});
+
+test('a calendar with more pages sets the more-events notice even when the merge fits', async () => {
+  calendarList = [{ id: 'me@example.com', summary: 'Me', primary: true, selected: true }];
+  eventsBy = { 'me@example.com': [timed('a', '2026-12-01T17:00:00Z')] };
+  const realList = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    const res = await realList(url, init);
+    if (!String(url).includes('/events')) return res;
+    const body = await res.json();
+    return json({ ...body, nextPageToken: 'next' });
+  }) as typeof fetch;
+  const { text } = await call('list_calendar_events', {});
+  expect(text).toContain('**More events match than are shown**');
+});
+
+test('an explicit empty or blank calendar is refused rather than widened to every calendar', async () => {
+  standardList();
+  for (const args of [
+    { calendar_id: '' },
+    { calendar_id: '  ' },
+    { calendar_ids: [] },
+    { calendar_ids: [''] },
+  ]) {
+    const { result } = await call('list_calendar_events', args);
+    expect(result.isError).toBe(true);
+  }
+  const fb = await call('query_calendar_freebusy', {
+    time_min: '2026-12-01T00:00:00Z',
+    time_max: '2026-12-02T00:00:00Z',
+    calendar_ids: [],
+  });
+  expect(fb.result.isError).toBe(true);
+  expect(eventRequests).toHaveLength(0);
+  expect(freebusyBodies).toHaveLength(0);
+  expect(calendarListRequests).toBe(0);
+});
+
+test('freebusy reports a failed batch against its calendars while the other batch answers', async () => {
+  const ids = Array.from({ length: 51 }, (_, i) => `c${i}@example.com`);
+  const realFb = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    if (String(url).endsWith('/freeBusy') && JSON.parse(String(init?.body)).items.length === 1) {
+      return json({}, 403);
+    }
+    return realFb(url, init);
+  }) as typeof fetch;
+  const { result, text } = await call('query_calendar_freebusy', {
+    time_min: '2026-12-01T00:00:00Z',
+    time_max: '2026-12-02T00:00:00Z',
+    calendar_ids: ids,
+  });
+  expect(result.isError).toBeFalsy();
+  expect(text).toMatch(/## Calendar: c50@example\.com\n\n\*\*Errors:\*\*\n- Permission denied/);
+  expect(text).toMatch(/## Calendar: c0@example\.com\n\n\*\*Busy Periods:\*\* 1/);
+});
+
+test('the default stops at 50 calendars and says how many it skipped', async () => {
+  calendarList = Array.from({ length: 53 }, (_, i) => ({
+    id: `c${i}@example.com`,
+    summary: `C${i}`,
+    selected: true,
+    primary: i === 0,
+  }));
+  const { text } = await call('list_calendar_events', {});
+  expect(eventRequests).toHaveLength(50);
+  expect(text).toContain('3 more shown calendars were not queried');
 });

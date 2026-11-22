@@ -16,7 +16,8 @@ export const QueryFreebusySchema = z.object({
     .string()
     .describe('End time for the query in RFC3339 format (e.g., "2024-01-01T23:59:59Z").'),
   calendar_ids: z
-    .array(z.string())
+    .array(z.string().trim().min(1))
+    .min(1)
     .optional()
     .describe(
       'Calendar IDs to check availability for, to narrow the query. Use "primary" for the user\'s primary calendar. ' +
@@ -91,7 +92,7 @@ export function queryFreebusyTool(server: Server, clientFactory: ClientFactory) 
         if (parsed.timezone) {
           output += `**Times shown in:** ${parsed.timezone}\n`;
         }
-        if (parsed.calendar_ids === undefined) {
+        if (!resolved.explicit) {
           output += `**Calendars checked:** ${resolved.scope}. Narrow with calendar_ids.\n`;
         }
         if (resolved.warning) {

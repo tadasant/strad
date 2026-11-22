@@ -16,7 +16,8 @@ import {
 
 export const ListEventsSchema = z.object({
   calendar_ids: z
-    .array(z.string())
+    .array(z.string().trim().min(1))
+    .min(1)
     .optional()
     .describe(
       'Calendar IDs to list events from, to narrow the search (e.g. ["primary", "someone@example.com"]). ' +
@@ -25,6 +26,8 @@ export const ListEventsSchema = z.object({
     ),
   calendar_id: z
     .string()
+    .trim()
+    .min(1)
     .optional()
     .describe(
       'One calendar ID to list events from. The same as calendar_ids with one entry; if both are given, both are searched. ' +
@@ -83,7 +86,8 @@ export function listEventsTool(server: Server, clientFactory: ClientFactory) {
       'Pass calendar_ids (or calendar_id) to narrow the search to specific calendars, e.g. ["primary"] for the user\'s own primary calendar only. ' +
       'Returns event details including title, time, location, attendees, and description. ' +
       'Useful for checking upcoming meetings, finding events by search query, or reviewing a specific time period. ' +
-      'Shows the next 10 events unless max_results says otherwise. A calendar that cannot be read is named in the result and does not fail the others.',
+      'Shows the next 10 events unless max_results says otherwise. A calendar that cannot be read is named in the result and does not fail the others. ' +
+      'To get, update or delete an event from a calendar other than primary, pass the calendar ID from its **Calendar:** line as calendar_id.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -139,6 +143,8 @@ export function listEventsTool(server: Server, clientFactory: ClientFactory) {
 
         // Each calendar is asked for up to max_results, ordered, so the merged
         // first max_results are the true first max_results across all of them.
+        // With no order (single_events false, no order_by) Google's cut per
+        // calendar is unordered and the merge is approximate; the result says so.
         const orderBy = parsed.order_by ?? (parsed.single_events ? 'startTime' : undefined);
         const settled = await settleAll(resolved.targets, (target) =>
           client.listEvents(target.id, {
@@ -199,6 +205,9 @@ export function listEventsTool(server: Server, clientFactory: ClientFactory) {
           for (const r of ok) output += `  - ${calendarLabel(r.target)}\n`;
         }
         if (resolved.warning) output += `**Note:** ${resolved.warning}\n`;
+        if (!orderBy && !single) {
+          output += `**Note:** with single_events false and no order_by, Google returns each calendar's events unordered, so the merge by start time is approximate and a series sorts at its first occurrence.\n`;
+        }
         if (failed.length > 0) {
           output += `**Could not read ${failed.length} calendar${failed.length === 1 ? '' : 's'}** (their events are missing below):\n`;
           for (const f of failed) output += `  - ${calendarLabel(f.target)}: ${f.error}\n`;

@@ -13,6 +13,8 @@ export interface CalendarTarget {
 
 export interface ResolvedCalendars {
   targets: CalendarTarget[];
+  /** True when the caller named the calendars; false for the default set. */
+  explicit: boolean;
   /** How the set was chosen, in words an agent can act on. */
   scope: string;
   /** Set when the calendar list could not be read and the tool fell back to primary. */
@@ -41,6 +43,7 @@ export async function resolveCalendars(
   if (ids.length > 0) {
     return {
       targets: ids.map((id) => ({ id })),
+      explicit: true,
       scope: ids.length === 1 ? 'the named calendar' : `the ${ids.length} named calendars`,
     };
   }
@@ -51,6 +54,7 @@ export async function resolveCalendars(
   } catch (error) {
     return {
       targets: [{ id: 'primary' }],
+      explicit: false,
       scope: 'the primary calendar only',
       warning: `Could not read the calendar list (${errorText(error)}), so only the primary calendar was queried.`,
     };
@@ -60,7 +64,7 @@ export async function resolveCalendars(
   // Primary first, then the list's own order.
   shown.sort((a, b) => Number(b.primary === true) - Number(a.primary === true));
   if (shown.length === 0) {
-    return { targets: [{ id: 'primary' }], scope: 'the primary calendar only' };
+    return { targets: [{ id: 'primary' }], explicit: false, scope: 'the primary calendar only' };
   }
   const targets = shown.slice(0, MAX_DEFAULT_CALENDARS).map((c) => ({
     id: c.id,
@@ -69,6 +73,7 @@ export async function resolveCalendars(
   const skipped = shown.length - targets.length;
   return {
     targets,
+    explicit: false,
     scope: `all ${targets.length} calendars shown in the user's calendar list (the "Selected: Yes" ones in list_calendars, plus primary)`,
     warning:
       skipped > 0

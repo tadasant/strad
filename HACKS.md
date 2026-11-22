@@ -8521,7 +8521,10 @@ never looked at it, and missed events because of it.
    at 50 calendars and names how many it skipped.
 3. **`max_results` is the total across calendars.** Each calendar is asked for
    up to `max_results`, ordered by start time, so the merged first
-   `max_results` are exact, and the result says when more matched.
+   `max_results` are exact, and the result says when more matched. That holds
+   while `single_events` is true (the default). With `single_events: false`
+   and no `order_by`, Google's cut per calendar is unordered, so the merge is
+   approximate, and the result says that too.
 4. **A calendar that fails is named in the result, and the others still
    answer.** Only when every calendar fails is the call an error. A calendar
    list that cannot be read falls back to `primary` and says so.
@@ -8530,7 +8533,17 @@ never looked at it, and missed events because of it.
    (primary first). If the copies differ, say a private event shown as busy on
    one, the other's details are not shown.
 6. **All-day events sort at local midnight in their calendar's time zone**, so
-   they come before that day's timed events.
+   they come before that day's timed events. A ticked holidays or birthdays
+   calendar can therefore fill a small `max_results` with all-day entries.
+   Raise it, or narrow with `calendar_ids`.
+7. **An event read from a shared calendar is addressed by that calendar.**
+   `get_calendar_event` and the write tools still default to `primary`, so a
+   follow-up call passes the id from the event's `**Calendar:**` line as
+   `calendar_id`. The tool description says so.
+8. **An explicit empty or blank calendar list is refused.** Only omitting the
+   field widens to every calendar. `"primary"` named beside the primary
+   calendar's own id is queried twice; the list collapses the copies, and
+   freebusy prints both.
 
 **Undo.** Pass `calendar_ids: ["primary"]` for the old behaviour on one call.
 Reverting the delta takes `src/utils/calendar-fanout.ts` and the two tools back
