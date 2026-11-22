@@ -107,11 +107,14 @@ at the keyboard and their MCP client already asks about each tool call, so the
 flag drops the second dialog. The `serve` command refuses to run without the
 dialog; the flag exists for stdio only.
 
-The dialog uses `osascript` on macOS and `zenity` on Linux. On macOS only a
-mouse click answers it: Return, Escape, Space and Tab do nothing, so typing
-that lands on it is swallowed rather than taken as a decision. `zenity` keeps
-its own keys (Return rejects). With neither, every request is denied as
-`no_display`, so use `--no-consent` there.
+The dialog is an `NSAlert` shown through `osascript`, on macOS only. Only a
+click answers it (an Accessibility press, such as VoiceOver's, still does):
+Return, Escape, Space and Tab do nothing, so typing
+that lands on it is swallowed rather than taken as a decision. If the dialog
+cannot be built that way, it is not shown and the request is denied as
+`no_display`; the daemon's log has a `[consent]` line saying why. Other
+platforms have no dialog whose keys can be switched off, so every request there
+is denied as `no_display`; use `--no-consent` over stdio.
 
 The dialog has three buttons: **Allow**, **Reject**, and **Disallow and cool
 down**. Reject refuses one request and the next gets a fresh dialog, as does an

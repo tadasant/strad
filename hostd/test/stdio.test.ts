@@ -66,7 +66,7 @@ describe("local-run mode: the same server over stdio", () => {
   });
 
   it("keeps the dialog ON by default, and denies when it cannot be shown", async () => {
-    // No display and no zenity in a test runner: the dialog is unavailable, which is a denial.
+    // No mouse-only dialog on a Linux test runner: the dialog is unavailable, which is a denial.
     const client = await launch(["stdio", "shell"]);
     const r = await client.callTool({
       name: "request_control",

@@ -1,12 +1,14 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import {
-  APPLESCRIPT_DIALOG,
   COOLDOWN_LABEL,
   JXA_DIALOG,
   MOUSE_ONLY_NOTE,
   MacDialogPrompter,
-  ZenityPrompter,
+  UnavailablePrompter,
+  platformPrompter,
   type DialogRunner,
   type PromptRequest,
 } from "../src/consent/prompter.js";
@@ -19,8 +21,13 @@ const REQ: PromptRequest = {
 };
 
 type Outcome = Awaited<ReturnType<DialogRunner>>;
-const out = (stdout: string, code: number | null = 0): Outcome => ({
+const out = (
+  stdout: string,
+  code: number | null = 0,
+  stderr = "",
+): Outcome => ({
   stdout,
+  stderr,
   code,
   spawnFailed: false,
 });
@@ -35,10 +42,111 @@ function scripted(...outcomes: Outcome[]) {
   return { runner, calls };
 }
 
+const quiet = () => {};
+
+/**
+ * A stand-in for the JXA Cocoa bridge, faithful in the two ways that matter
+ * here. A property assigned JavaScript `null` arrives as NSNull, not nil, and
+ * AppKit throws on it (observed on macOS 27.2.1:
+ * `-[NSNull setKeyEquivalent:]: unrecognized selector`). And `layout` makes a
+ * button the window's default button cell only if its key is still Return.
+ */
+function bridge(
+  opts: {
+    keySticks?: boolean;
+    focusSticks?: boolean;
+    keyViewSticks?: boolean;
+    defaultSticks?: boolean;
+    modal?: number;
+  } = {},
+) {
+  const events: string[] = [];
+  const NIL = { isNil: () => true };
+  const nsnullThrows = (prop: string) => (v: unknown) => {
+    if (v === null)
+      throw new Error(
+        `-[NSNull ${prop}]: unrecognized selector sent to instance`,
+      );
+  };
+  const buttons: { title: string; key: string; refuses: boolean }[] = [];
+  let defaultCell: unknown = NIL;
+  const button = (title: string) => {
+    const b = { title, key: buttons.length === 0 ? "\r" : "", refuses: false };
+    buttons.push(b);
+    return {
+      get keyEquivalent() {
+        return { js: b.key };
+      },
+      set keyEquivalent(v: string) {
+        if (!opts.keySticks) b.key = v;
+      },
+      get refusesFirstResponder() {
+        return b.refuses;
+      },
+      set refusesFirstResponder(v: boolean) {
+        if (!opts.focusSticks) b.refuses = v;
+      },
+      get canBecomeKeyView() {
+        return opts.keyViewSticks ? true : !b.refuses;
+      },
+    };
+  };
+  const window = {
+    get defaultButtonCell() {
+      return defaultCell;
+    },
+    set defaultButtonCell(v: unknown) {
+      nsnullThrows("setKeyEquivalent:")(v);
+      defaultCell = v;
+    },
+    get initialFirstResponder() {
+      return NIL;
+    },
+    set initialFirstResponder(v: unknown) {
+      nsnullThrows("acceptsFirstResponder")(v);
+    },
+    level: 0,
+  };
+  const alert = {
+    messageText: "",
+    informativeText: "",
+    addButtonWithTitle: button,
+    get layout() {
+      defaultCell =
+        opts.defaultSticks || buttons.some((b) => b.key === "\r")
+          ? { isNil: () => false }
+          : NIL;
+      return undefined;
+    },
+    window,
+    get runModal() {
+      events.push("runModal");
+      return opts.modal ?? -1001;
+    },
+  };
+  const app = {
+    setActivationPolicy: () => {},
+    activateIgnoringOtherApps: () => events.push("activate"),
+    performSelectorWithObjectAfterDelayInModes: () => {},
+  };
+  const $ = Object.assign((v: unknown) => v, {
+    NSApplication: { sharedApplication: app },
+    NSAlert: { alloc: { init: alert } },
+  });
+  const ObjC = { import: () => {} };
+  const run = new Function("ObjC", "$", `${JXA_DIALOG}\nreturn run;`)(
+    ObjC,
+    $,
+  ) as (argv: string[]) => string;
+  return { run: () => run(["text", "strad-hostd", "10"]), events, alert };
+}
+
 describe("the macOS consent dialog", () => {
   it("is the JXA dialog, with the text, title and window as arguments", async () => {
     const { runner, calls } = scripted(out("Allow\n"));
-    expect(await new MacDialogPrompter(runner).prompt(REQ)).toBe("allowed");
+    expect(await new MacDialogPrompter(runner, quiet).prompt(REQ)).toBe(
+      "allowed",
+    );
     expect(calls).toHaveLength(1);
     const [lang, js, e, script, text, title, seconds] = calls[0]!;
     expect([lang, js, e, script]).toEqual([
@@ -64,120 +172,122 @@ describe("the macOS consent dialog", () => {
     expect(JXA_DIALOG).toContain('if (r === 1002) return "Cooldown"');
   });
 
-  it("reads 'Disallow and cool down' as a rejection that asks for quiet", async () => {
-    expect(
-      await new MacDialogPrompter(scripted(out("Cooldown\n")).runner).prompt(
-        REQ,
-      ),
-    ).toBe("rejected_cooldown");
-    expect(
-      await new MacDialogPrompter(
-        scripted(out("", 1), out("Cooldown")).runner,
-      ).prompt(REQ),
-    ).toBe("rejected_cooldown");
+  it("maps each button and the countdown", async () => {
+    const p = (o: Outcome) =>
+      new MacDialogPrompter(scripted(o).runner, quiet).prompt(REQ);
+    expect(await p(out("Reject"))).toBe("rejected");
+    expect(await p(out("Cooldown\n"))).toBe("rejected_cooldown");
+    expect(await p(out("timeout"))).toBe("timeout");
   });
 
-  it("maps Reject and the countdown the way it always has", async () => {
-    expect(
-      await new MacDialogPrompter(scripted(out("Reject")).runner).prompt(REQ),
-    ).toBe("rejected");
-    expect(
-      await new MacDialogPrompter(scripted(out("timeout")).runner).prompt(REQ),
-    ).toBe("timeout");
+  it("runs on a bridge that turns null into NSNull, and reaches runModal with no key and no focus on any button", () => {
+    // The regression: `defaultButtonCell = null` threw on every Mac, so the
+    // keyboard-answerable fallback was the dialog that was really shown.
+    const b = bridge({ modal: 1001 });
+    expect(b.run()).toBe("Reject");
+    expect(b.events).toEqual(["activate", "runModal"]);
+    expect(JXA_DIALOG).not.toMatch(/=\s*null\b/);
   });
 
-  it("no button answers a key: every key equivalent is cleared and none can take focus", () => {
-    expect(JXA_DIALOG).toContain('keyEquivalent = ""');
-    expect(JXA_DIALOG).toContain("refusesFirstResponder = true");
-    expect(JXA_DIALOG).toContain("initialFirstResponder = null");
-    expect(JXA_DIALOG).toContain("defaultButtonCell = null");
-    // Allow is first, so a key that survived would allow: the script checks,
-    // and throws (osascript fails, the fallback runs) rather than show it.
-    expect(JXA_DIALOG).toContain('keyEquivalent.js !== ""');
-    expect(JXA_DIALOG).toContain("!cell.isNil()");
-    expect(JXA_DIALOG.indexOf("throw")).toBeLessThan(
-      JXA_DIALOG.indexOf("runModal"),
+  it("reads each modal code the way the prompter does", () => {
+    expect(bridge({ modal: 1000 }).run()).toBe("Allow");
+    expect(bridge({ modal: 1002 }).run()).toBe("Cooldown");
+    expect(bridge({ modal: -1001 }).run()).toBe("timeout"); // abortModal
+  });
+
+  it("does not read any other end of the modal as the countdown, which onTimeout: allow would grant", () => {
+    expect(() => bridge({ modal: -1000 }).run()).toThrow(/unexpected modal/); // stopModal
+    expect(() => bridge({ modal: 0 }).run()).toThrow(/unexpected modal/);
+  });
+
+  it("refuses to show the dialog if a default button survives, or a button is still a key view", () => {
+    const d = bridge({ defaultSticks: true });
+    expect(() => d.run()).toThrow(/default button remains/);
+    expect(d.events).not.toContain("runModal");
+    const k = bridge({ keyViewSticks: true });
+    expect(() => k.run()).toThrow(/is a key view/);
+    expect(k.events).not.toContain("runModal");
+  });
+
+  it("refuses to show the dialog if Return would still answer it", () => {
+    const b = bridge({ keySticks: true });
+    expect(() => b.run()).toThrow(/kept a key/);
+    expect(b.events).not.toContain("runModal");
+  });
+
+  it("refuses to show the dialog if a button could still take focus (Space under Full Keyboard Access)", () => {
+    const b = bridge({ focusSticks: true });
+    expect(() => b.run()).toThrow(/can take focus/);
+    expect(b.events).not.toContain("runModal");
+  });
+
+  it("has no fallback: a failed dialog is unavailable, logged, and never a second dialog", async () => {
+    const lines: string[] = [];
+    const { runner, calls } = scripted(
+      out("", 1, "execution error: Error: a button kept a key (-2700)\n"),
+      out("Allow"),
     );
-    // The countdown still ends the dialog, as an abort the script reads as timeout.
-    expect(JXA_DIALOG).toContain('"abortModal"');
-    // It is JavaScript osascript can parse; `$` and `ObjC` are its globals.
     expect(
-      () => new Function("ObjC", "$", `${JXA_DIALOG}\nreturn run;`),
-    ).not.toThrow();
-  });
-
-  it("the AppleScript fallback has no default button and no Cancel, so neither Return nor Escape answers it", () => {
-    expect(APPLESCRIPT_DIALOG).not.toMatch(/default button/);
-    expect(APPLESCRIPT_DIALOG).not.toMatch(/cancel button|"Cancel"/);
-    expect(APPLESCRIPT_DIALOG).toContain(
-      `buttons {"${COOLDOWN_LABEL}", "Reject", "Allow"}`,
-    );
-    expect(APPLESCRIPT_DIALOG).toContain(
-      `if button returned of r is "${COOLDOWN_LABEL}" then return "Cooldown"`,
+      await new MacDialogPrompter(runner, (l) => lines.push(l)).prompt(REQ),
+    ).toBe("unavailable");
+    expect(calls).toHaveLength(1);
+    expect(lines.join("\n")).toMatch(
+      /exit 1\): execution error: Error: a button kept a key/,
     );
   });
 
-  it("falls back to AppleScript only when the JXA dialog failed without answering", async () => {
-    const { runner, calls } = scripted(out("", 1), out("Reject"));
-    expect(await new MacDialogPrompter(runner).prompt(REQ)).toBe("rejected");
-    expect(calls).toHaveLength(2);
-    expect(calls[1]!.slice(0, 2)).toEqual(["-e", APPLESCRIPT_DIALOG]);
-    // Space can still answer that one, so it does not claim the keyboard cannot.
-    expect(calls[1]![2]).not.toContain(MOUSE_ONLY_NOTE);
+  it("has no keyboard-answerable dialog anywhere in the module", () => {
+    const src = readFileSync("src/consent/prompter.ts", "utf8");
+    expect(src).not.toMatch(/display dialog\b[^`]*with title/);
+    expect(src).not.toMatch(/on run argv/);
+    expect(src).not.toMatch(/"zenity"/);
   });
 
-  it("reads a fallback that exited 0 having answered nothing as the countdown", async () => {
-    const { runner } = scripted(out("", 1), out("", 0));
-    expect(await new MacDialogPrompter(runner).prompt(REQ)).toBe("timeout");
+  it("never reads an exit it does not recognise as the countdown, which onTimeout: allow would grant", async () => {
+    for (const o of [out("", 0), out("garbage\n", 0), out("", null)]) {
+      const r = scripted(o);
+      expect(await new MacDialogPrompter(r.runner, quiet).prompt(REQ)).toBe(
+        "unavailable",
+      );
+      expect(r.calls).toHaveLength(1);
+    }
   });
 
-  it("is unavailable when neither dialog could be shown", async () => {
-    const { runner } = scripted(out("", 1), out("", 1));
-    expect(await new MacDialogPrompter(runner).prompt(REQ)).toBe("unavailable");
+  it("cuts the purpose out of a diagnostic before logging it", async () => {
+    const lines: string[] = [];
+    const { runner } = scripted(
+      out("", 1, `error near: ${REQ.purpose} (-2700)\n`),
+    );
+    await new MacDialogPrompter(runner, (l) => lines.push(l)).prompt(REQ);
+    expect(lines.join("\n")).not.toContain(REQ.purpose);
+    expect(lines.join("\n")).toContain("error near: [purpose] (-2700)");
   });
 
-  it("does not show a second dialog after an aborted or unanswered first one", async () => {
+  it("is unavailable when aborted, or when osascript will not start", async () => {
     const aborted = new AbortController();
     aborted.abort();
-    const a = scripted(out("", null));
     expect(
-      await new MacDialogPrompter(a.runner).prompt({
-        ...REQ,
-        signal: aborted.signal,
-      }),
+      await new MacDialogPrompter(scripted(out("", null)).runner, quiet).prompt(
+        { ...REQ, signal: aborted.signal },
+      ),
     ).toBe("unavailable");
-    expect(a.calls).toHaveLength(1);
-
-    const b = scripted(out("", 0));
-    expect(await new MacDialogPrompter(b.runner).prompt(REQ)).toBe("timeout");
-    expect(b.calls).toHaveLength(1);
-
-    // Killed by the backstop with a dialog up: a second would double the stall.
-    const c = scripted(out("", null));
-    expect(await new MacDialogPrompter(c.runner).prompt(REQ)).toBe("timeout");
-    expect(c.calls).toHaveLength(1);
-  });
-
-  it("is unavailable when osascript itself will not start", async () => {
     const runner: DialogRunner = async () => ({
       stdout: "",
       code: null,
+      stderr: "",
       spawnFailed: true,
     });
-    expect(await new MacDialogPrompter(runner).prompt(REQ)).toBe("unavailable");
+    expect(await new MacDialogPrompter(runner, quiet).prompt(REQ)).toBe(
+      "unavailable",
+    );
   });
 });
 
-describe("the zenity consent dialog", () => {
-  it("tells its extra button from a plain Reject by what it prints", async () => {
-    const z = (o: Outcome) =>
-      new ZenityPrompter(scripted(o).runner).prompt(REQ);
-    expect(await z(out(`${COOLDOWN_LABEL}\n`, 1))).toBe("rejected_cooldown");
-    expect(await z(out("", 1))).toBe("rejected");
-    expect(await z(out("", 0))).toBe("allowed");
-    expect(await z(out("", 5))).toBe("timeout");
-    const { runner, calls } = scripted(out("", 1));
-    await new ZenityPrompter(runner).prompt(REQ);
-    expect(calls[0]).toContain(`--extra-button=${COOLDOWN_LABEL}`);
+describe("other platforms", () => {
+  it("show no dialog, because none there ignores the keyboard", async () => {
+    expect(platformPrompter("linux")).toBeInstanceOf(UnavailablePrompter);
+    expect(platformPrompter("win32")).toBeInstanceOf(UnavailablePrompter);
+    expect(platformPrompter("darwin")).toBeInstanceOf(MacDialogPrompter);
+    expect(await platformPrompter("linux").prompt(REQ)).toBe("unavailable");
   });
 });

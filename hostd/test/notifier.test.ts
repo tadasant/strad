@@ -76,7 +76,6 @@ describe("what the machine is told", () => {
     // the string and reach `do shell script`; as argv it is only ever data.
     const scripts: [string, string, string][] = [
       ["src/consent/notifier.ts", "APPLESCRIPT", "item 1 of argv"],
-      ["src/consent/prompter.ts", "APPLESCRIPT_DIALOG", "item 1 of argv"],
       ["src/consent/prompter.ts", "JXA_DIALOG", "argv[0]"],
     ];
     for (const [file, name, reads] of scripts) {

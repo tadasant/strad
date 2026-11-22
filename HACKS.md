@@ -8549,3 +8549,38 @@ never looked at it, and missed events because of it.
 Reverting the delta takes `src/utils/calendar-fanout.ts` and the two tools back
 to upstream, and `images/bundle-google/test/calendar-all-calendars.test.ts`
 fails until the test goes too.
+
+## 167. strad-hostd's consent dialog is macOS-only, and a dialog that fails its keyboard check is a denial
+
+**What.** `hostd/src/consent/prompter.ts` shows one dialog: a JXA `NSAlert`
+whose buttons answer only the mouse. If the script cannot make it that way (a
+button keeps its key, can take focus, or the window keeps a default button), it
+throws before `runModal` and the request is `no_display`. There is no
+`display dialog` fallback, and no Linux (`zenity`) dialog.
+
+**Why.** The owner types into other apps while dialogs appear. Under Full
+Keyboard Access, `display dialog` and `zenity` both let Space press the focused
+button, and Tab reaches Allow, so a stray keystroke can decide a request. The
+JXA script once set `defaultButtonCell = null`, which the bridge turns into
+`NSNull` and AppKit throws on, so every Mac showed the keyboard-answerable
+fallback instead, and keystrokes kept answering it.
+
+**What it costs.**
+
+1. A macOS change that breaks the JXA bridge denies every `request_control`
+   until the script is fixed, instead of degrading to a weaker dialog. The
+   reason is in `~/Library/Logs/com.strad.hostd.err.log` as a `[consent]` line.
+2. strad-hostd on Linux serves no consent dialog: `serve` denies everything as
+   `no_display`, and the stdio form needs `--no-consent`.
+3. The dialog still takes focus when it appears, so typing that lands on it is
+   swallowed. It does not answer it.
+4. Only the countdown is a `timeout`. Any other end of the dialog (an
+   unexpected modal response, an exit with no answer, a hang) is `no_display`,
+   so a machine on `onTimeout: "allow"` denies those rather than granting.
+5. Keyboard-proof is not Accessibility-proof. VoiceOver, Voice Control and any
+   process with Accessibility (hostd's computer-use servers included) can press
+   a button, as anything holding the mouse can click one.
+6. The mouse-only behaviour is checked by the script's own assertions before
+   `runModal`, and by tests against a stand-in bridge. On a Mac, the checks
+   were observed passing with no window shown. Nobody has pressed keys at a live
+   dialog, and nothing in CI runs AppKit.

@@ -16,9 +16,9 @@ export type PromptAnswer =
   "allowed" | "rejected" | "rejected_cooldown" | "timeout" | "unavailable";
 
 /**
- * The third button's label, in every dialog that has one. The scripts spell it
- * out rather than interpolate it, so no script source carries a `${`; the
- * prompter tests hold them to this constant.
+ * The third button's label. The dialog script spells it out rather than
+ * interpolate it, so its source carries no `${`; the prompter tests hold it to
+ * this constant.
  */
 export const COOLDOWN_LABEL = "Disallow and cool down";
 
@@ -52,18 +52,27 @@ function run(
   cmd: string,
   args: string[],
   req: PromptRequest,
-): Promise<{ code: number | null; stdout: string; spawnFailed: boolean }> {
+): Promise<{
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  spawnFailed: boolean;
+}> {
   return new Promise((resolve) => {
     let stdout = "";
+    let stderr = "";
     let settled = false;
     const done = (code: number | null, spawnFailed: boolean) => {
       if (settled) return;
       settled = true;
       clearTimeout(backstop);
-      resolve({ code, stdout, spawnFailed });
+      resolve({ code, stdout, stderr, spawnFailed });
     };
-    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
     child.stdout.on("data", (d: Buffer) => (stdout += d.toString("utf8")));
+    child.stderr.on("data", (d: Buffer) => {
+      if (stderr.length < 2000) stderr += d.toString("utf8");
+    });
     child.on("error", () => done(null, true));
     child.on("close", (code) => done(code, false));
     // The helper owns the countdown; this only covers one that hangs.
@@ -86,12 +95,23 @@ function run(
  * the focused button answers Space — so a dialog that takes focus while the
  * owner is typing in another app gets decided by the next keystroke. Here every
  * button has its key equivalent cleared and refuses first responder, so Return,
- * Escape, Space and Tab do nothing, the window has no default button cell for
- * Return to reach, and no initial first responder to fall back to. Typing into it is swallowed, not answered.
+ * Escape, Space and Tab do nothing. Clearing Allow's key equivalent is also what
+ * empties the window's default button cell: `layout` only makes a button the
+ * default if its key is Return. Typing into it is swallowed, not answered.
+ *
+ * No line here assigns JavaScript `null` to an Objective-C property. The bridge
+ * passes `NSNull`, not `nil`, and AppKit throws on it (`HACKS.md` #167).
+ *
+ * Before `runModal`, the script checks what it relies on — no key on any
+ * button, none able to take focus, no default button cell — and throws rather
+ * than show a dialog a key could answer. A throw is a dialog that was not
+ * shown, so the request is `unavailable`, which is a denial.
  *
  * The countdown is `abortModal` scheduled on the run loop, the stock NSAlert
- * timeout: `runModal` then returns an abort code and the script prints
- * `timeout`, so an unanswered dialog reaches `onTimeout` like any other.
+ * timeout: `runModal` then returns `NSModalResponseAbort` (-1001) and the
+ * script prints `timeout`, so an unanswered dialog reaches `onTimeout` like any
+ * other. Any other code is not the countdown, and the script throws: under
+ * `onTimeout: "allow"` a `timeout` is a grant, so only the countdown may be one.
  * Text arrives as `argv`, never as source.
  */
 export const JXA_DIALOG = `ObjC.import("Cocoa");
@@ -111,16 +131,15 @@ function run(argv) {
     buttons[i].refusesFirstResponder = true;
   }
   alert.layout;
-  alert.window.defaultButtonCell = null;
-  alert.window.initialFirstResponder = null;
   // Allow is the first button, the one AppKit gives Return. If clearing that
-  // did not take, Return would ALLOW: refuse to show this dialog, so osascript
-  // fails and the keyless AppleScript one is shown instead.
+  // did not take, Return would ALLOW: refuse to show this dialog at all.
   for (var j = 0; j < buttons.length; j++) {
     if (buttons[j].keyEquivalent.js !== "") throw new Error("a button kept a key");
+    if (buttons[j].refusesFirstResponder !== true) throw new Error("a button can take focus");
+    if (buttons[j].canBecomeKeyView !== false) throw new Error("a button is a key view");
   }
   var cell = alert.window.defaultButtonCell;
-  if (cell && typeof cell.isNil === "function" && !cell.isNil()) throw new Error("a default button remains");
+  if (!cell || typeof cell.isNil !== "function" || !cell.isNil()) throw new Error("a default button remains");
   alert.window.level = 3; // NSFloatingWindowLevel
   app.activateIgnoringOtherApps(true);
   app.performSelectorWithObjectAfterDelayInModes("abortModal", null, parseInt(argv[2], 10), $(["kCFRunLoopCommonModes"]));
@@ -128,23 +147,11 @@ function run(argv) {
   if (r === 1000) return "Allow"; // NSAlertFirstButtonReturn
   if (r === 1001) return "Reject"; // NSAlertSecondButtonReturn
   if (r === 1002) return "Cooldown"; // NSAlertThirdButtonReturn
-  return "timeout";
+  if (r === -1001) return "timeout"; // NSModalResponseAbort, from abortModal
+  throw new Error("unexpected modal response " + r);
 }`;
 
-/**
- * The fallback when the Cocoa bridge cannot run: `display dialog` with NO
- * default button and no button named Cancel, so neither Return nor Escape
- * answers it. Space on a focused button still does under Full Keyboard Access,
- * which is why this is the fallback and not the dialog.
- */
-export const APPLESCRIPT_DIALOG = `on run argv
-  set r to display dialog (item 1 of argv) with title (item 2 of argv) buttons {"Disallow and cool down", "Reject", "Allow"} giving up after ((item 3 of argv) as integer) with icon caution
-  if gave up of r then return "timeout"
-  if button returned of r is "Disallow and cool down" then return "Cooldown"
-  return button returned of r
-end run`;
-
-/** Said under the request in the JXA dialog, the one no key answers. */
+/** Said under the request in the dialog, which no key answers. */
 export const MOUSE_ONLY_NOTE =
   "Click a button. The keyboard cannot answer this dialog.";
 
@@ -160,18 +167,22 @@ function parseMac(stdout: string): PromptAnswer | undefined {
 }
 
 /**
- * macOS: `osascript`, which needs no TCC grant and no helper app. The JXA
- * dialog first; if it exits having answered nothing (a bridge that would not
- * load), the AppleScript one. Either way the purpose is an ARGUMENT to a
- * constant script — it is never interpolated into source, so a purpose cannot
- * close a string and start a `do shell script`.
+ * macOS: `osascript`, which needs no TCC grant and no helper app, running the
+ * JXA dialog and nothing else. There is no fallback: every other dialog
+ * `osascript` can show answers a key, so a JXA run that fails is a dialog that
+ * could not be shown, and the request is `unavailable`. The purpose is an
+ * ARGUMENT to a constant script — it is never interpolated into source, so a
+ * purpose cannot close a string and start a `do shell script`.
  */
 export class MacDialogPrompter implements Prompter {
-  constructor(private readonly runner: DialogRunner = run) {}
+  constructor(
+    private readonly runner: DialogRunner = run,
+    private readonly log: (line: string) => void = (line) =>
+      console.error(line),
+  ) {}
 
   async prompt(req: PromptRequest): Promise<PromptAnswer> {
-    const tail = ["strad-hostd", String(req.seconds)];
-    const jxa = await this.runner(
+    const r = await this.runner(
       "/usr/bin/osascript",
       [
         "-l",
@@ -179,61 +190,34 @@ export class MacDialogPrompter implements Prompter {
         "-e",
         JXA_DIALOG,
         `${dialogText(req)}\n\n${MOUSE_ONLY_NOTE}`,
-        ...tail,
+        "strad-hostd",
+        String(req.seconds),
       ],
       req,
     );
-    if (jxa.spawnFailed) return "unavailable";
-    const first = parseMac(jxa.stdout);
-    if (first) return first;
+    if (r.spawnFailed) {
+      this.log("[consent] the dialog could not start: osascript did not run");
+      return "unavailable";
+    }
+    const answer = parseMac(r.stdout);
+    if (answer) return answer;
     if (req.signal?.aborted) return "unavailable";
-    // Only a run that FAILED earns a second dialog. One that exited 0 showed a
-    // dialog nobody answered; one killed by the backstop (`code: null`) hung
-    // with a dialog up, and a second would double the stall.
-    if (jxa.code === 0 || jxa.code === null) return "timeout";
-
-    const as = await this.runner(
-      "/usr/bin/osascript",
-      ["-e", APPLESCRIPT_DIALOG, dialogText(req), ...tail],
-      req,
+    // Only the script's own `timeout` is the countdown. Anything else — a
+    // non-zero exit (no window server, or the script refused to show a dialog
+    // a key could answer), an exit 0 that printed nothing it knows, or a kill
+    // by the backstop — is a dialog nobody answered on purpose, and under
+    // `onTimeout: "allow"` a `timeout` would be a grant. The purpose travels
+    // as argv and is cut out of stderr before it is logged, in case a
+    // diagnostic echoes it.
+    const why = (
+      req.purpose ? r.stderr.split(req.purpose).join("[purpose]") : r.stderr
+    )
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 300);
+    this.log(
+      `[consent] the dialog did not answer (osascript exit ${r.code}): ${why || "no error text"}`,
     );
-    if (as.spawnFailed) return "unavailable";
-    const second = parseMac(as.stdout);
-    if (second) return second;
-    // No window server (an ssh session, a logged-out Mac): osascript exits
-    // non-zero having shown nothing.
-    return as.code === 0 ? "timeout" : "unavailable";
-  }
-}
-
-/** Linux desktops, for the run-it-on-a-friend's-laptop case: `zenity`. */
-export class ZenityPrompter implements Prompter {
-  constructor(private readonly runner: DialogRunner = run) {}
-
-  async prompt(req: PromptRequest): Promise<PromptAnswer> {
-    const { code, stdout, spawnFailed } = await this.runner(
-      "zenity",
-      [
-        "--question",
-        "--title=strad-hostd",
-        `--text=${dialogText(req)}`,
-        "--no-markup",
-        "--ok-label=Allow",
-        "--cancel-label=Reject",
-        `--extra-button=${COOLDOWN_LABEL}`,
-        "--default-cancel",
-        `--timeout=${req.seconds}`,
-      ],
-      req,
-    );
-    if (spawnFailed) return "unavailable";
-    if (code === 0) return "allowed";
-    // The extra button exits 1 like Reject, and says which it was on stdout.
-    if (code === 1)
-      return stdout.trim() === COOLDOWN_LABEL
-        ? "rejected_cooldown"
-        : "rejected";
-    if (code === 5) return "timeout";
     return "unavailable";
   }
 }
@@ -245,8 +229,13 @@ export class UnavailablePrompter implements Prompter {
   }
 }
 
+/**
+ * Only macOS has a dialog the keyboard cannot answer. `zenity`, the Linux one,
+ * keeps its keys — Tab reaches Allow and Space presses it — so Linux shows no
+ * dialog and every request there is `unavailable`. Run it with `--no-consent`
+ * over stdio, where the MCP client is the one asking.
+ */
 export function platformPrompter(platform = process.platform): Prompter {
   if (platform === "darwin") return new MacDialogPrompter();
-  if (platform === "linux") return new ZenityPrompter();
   return new UnavailablePrompter();
 }

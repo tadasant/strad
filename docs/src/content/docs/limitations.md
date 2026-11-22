@@ -5112,4 +5112,29 @@ calendar it came from.
 - **One invite on two calendars is listed once**, read from the first calendar
   (primary first), with the other named.
 
-See `HACKS.md` #166.
+---
+
+### 167. strad-hostd's consent dialog is macOS-only, and a dialog that fails its keyboard check is a denial
+
+Only a mouse click answers the consent dialog. See
+[the design page](/servers/hostd-design/).
+
+- **No fallback.** If the `NSAlert` cannot be made keyboard-proof, it is not
+  shown and the request is `no_display`. A macOS change that breaks the JXA
+  bridge denies every request until the script is fixed. The reason is a
+  `[consent]` line in `~/Library/Logs/com.strad.hostd.err.log`.
+- **No Linux dialog.** `zenity` cannot ignore the keyboard, so `serve` on Linux
+  denies everything, and the stdio form needs `--no-consent`.
+- **It still takes focus.** Typing that lands on it is swallowed, not lost to a
+  decision.
+- **Only the countdown is a timeout.** Any other end of the dialog is
+  `no_display`, so `onTimeout: "allow"` never grants on a dialog that hung or
+  exited oddly.
+- **Keyboard-proof, not Accessibility-proof.** VoiceOver, Voice Control and any
+  process with Accessibility, hostd's computer-use servers included, can press a
+  button.
+- **Nobody has pressed keys at a live dialog.** The script checks its own
+  buttons before showing; those checks were observed passing on a Mac with no
+  window shown, and the tests run the script against a stand-in bridge.
+
+See `HACKS.md` #167.

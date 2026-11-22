@@ -215,7 +215,7 @@ export class ConsentGate {
       if (answer === "unavailable") {
         return deny(
           "no_display",
-          `${config.machine} could not show the consent dialog (nobody is logged in to its desktop), so nobody could agree to this`,
+          `${config.machine} could not show the consent dialog (nobody is logged in to its desktop, or the dialog failed its own keyboard check — the daemon's log says which), so nobody could agree to this`,
         );
       }
       if (answer === "timeout" && onTimeout === "deny") {
