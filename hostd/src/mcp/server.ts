@@ -96,7 +96,7 @@ Calling it puts a dialog on the machine's screen — "Remote control requested b
 {"grant_id":"g_Zk3…","expires_at":"2026-01-01T12:30:00.000Z","minutes":30,"idle_minutes":10,"approved_by":"owner"}
 approved_by is "owner" (they clicked Allow), "timeout" (nobody objected, and this machine allows that) or "local" (a local stdio run with the dialog turned off).
 
-**On refusal** the result is an error naming one of: rejected (the owner said no — do not retry; tell your user), timeout, no_display (nobody is logged in to the desktop), cooldown (the owner just ended this server's control, or refused and asked for quiet; wait and tell your user), dialog_busy (another request is on screen; ask again in a few seconds), disabled (the owner switched remote control off), bad_purpose, too_many_grants, helper_unavailable (this server's native helper is not running or not permitted on the machine; the owner has to fix that, and no dialog was shown).
+**On refusal** the result is an error naming one of: rejected (the owner said no — do not retry; tell your user), timeout, no_display (no consent dialog could be shown: nobody is logged in to the desktop, or the dialog failed), cooldown (the owner just ended this server's control, or refused and asked for quiet; wait and tell your user), dialog_busy (another request is on screen; ask again in a few seconds), disabled (the owner switched remote control off), bad_purpose, too_many_grants, helper_unavailable (this server's native helper is not running or not permitted on the machine; the owner has to fix that, and no dialog was shown).
 
 **Use cases:**
 - First call of any task on this server
