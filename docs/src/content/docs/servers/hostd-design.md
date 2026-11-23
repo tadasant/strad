@@ -213,11 +213,12 @@ The script assigns `null` to no Objective-C property. The JXA bridge passes
 JavaScript `null` as `NSNull`, not `nil`, and AppKit throws on it, so a line
 like `alert.window.defaultButtonCell = null` fails every dialog before it
 appears (`HACKS.md` #167 has what that cost). The bridge also hands
-`runModal`'s answer back as a wrapped value that prints as `1000` and is never
-`=== 1000`, so the script reads it with `Number(String(…))`. Compared raw, every
-answer, the owner's click included, was an "unexpected modal response" and the
-request `no_display`. The tests run the script against a stand-in bridge that
-throws on `null` and wraps the modal answer the way the real one does.
+`runModal`'s answer back as a value that prints as `1000` and is not
+`=== 1000` (inferred from the daemon's log on a Mac, not inspected), so the
+script compares `Number(…)` of it. Compared raw, every answer, the owner's click
+included, was an "unexpected modal response" and the request `no_display`. The
+tests run the script against a stand-in bridge that throws on `null`, and one
+test has it return wrapped modal codes.
 
 What has been observed on a Mac (macOS 27.2.1), with the script run up to but
 not including `runModal`: it builds the alert, clears every key, and leaves no
