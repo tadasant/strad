@@ -3,8 +3,8 @@
 strad's MCP Events support tracks SEP-3415, the events extension
 (`io.modelcontextprotocol/events`). The SEP merged on 2026-11-19 with status
 Final, but it is an Extensions Track SEP, not part of any released MCP
-specification, and its official extension repository has not published it
-yet. Treat the wire as able to change until it has.
+specification. Its official extension repository publishes it at Beta, where
+breaking changes are expected to be rare. Treat the wire as able to change.
 
 | Field                | Value                                                                                                    |
 | -------------------- | -------------------------------------------------------------------------------------------------------- |
@@ -14,11 +14,12 @@ yet. Treat the wire as able to change until it has.
 | Pinned on            | 2026-11-19                                                                                               |
 | Delivery modes built | poll (`events/list`, `events/poll`) and webhook (`events/subscribe`, `events/unsubscribe`)               |
 | Not built            | push (`events/stream`), `notifications/events/list_changed`, `server/discover`                           |
-| Re-checked           | 2026-11-20: merged, status Final; `main` changed editorially only                                        |
+| Published copy       | `modelcontextprotocol/ext-events` `specification/beta/events/events.mdx`                                 |
+| Re-checked           | 2026-11-23: no wire change, in the SEP on `main` or in `ext-events` at `c77b843`                         |
 
 Before changing anything under MCP Events, compare this commit with the SEP
-on `main` (and, once it exists, the extension repository's copy). If the draft moved, decide what the change means for the wire here, then
-update this file in the same PR.
+on `main` and the extension repository's copy. If the draft moved, decide what
+the change means for the wire here, then update this file in the same PR.
 
 ## What is implemented against this commit
 
@@ -116,6 +117,13 @@ change both.
   added, and the text says the specification is published in
   `modelcontextprotocol/ext-events` under `specification/beta/events/`. That
   path does not exist in that repository yet. No wire change, no code change.
+
+- 2026-11-23 — re-checked while recovering the Slack mention that invites the
+  bot. The SEP on `main` is still at `bbc31f8`. The Beta specification is
+  published in `modelcontextprotocol/ext-events`
+  (`c77b84395eff0ae32f53b0516c2214fe276ed050`): the SEP's specification text
+  with the rationale, open questions and SDK guidance removed. No wire change,
+  no code change.
 
 Code: `src/gateway/events.ts` (core), `servers/bundle-api/fork/slack/src/events/`
 (the Slack `message_posted` event, and the webhook engine every source shares),

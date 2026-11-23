@@ -15,6 +15,9 @@ Read-only. Calls nothing on Slack or GCS; it reports what this process already k
 - \`socket\`: when the live connection opened, envelopes received, the last error
 - \`backfill\`: the last catch-up after a (re)connect — from when, how many conversations,
   how many events it recovered, and how many reads were cut short at their page cap
+- \`last_join\`: the last time the bot joined a conversation — when, where, and how many
+  mentions were found in the minutes before the join (the one that invited it) —
+  and \`joins_still_owed\`, how many joins have not been read back yet
 - \`buffer\`: events held, the retention window, oldest and newest event, the last write to GCS
 - \`lease\`: this process's id and the lease owner's
 

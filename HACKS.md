@@ -6758,8 +6758,7 @@ Withhold the tool from a slug with its `tools: allow` list in the meantime.
 ## 131. MCP Events tracks a draft SEP, in poll and webhook mode, and the Slack feed has met only fakes
 
 **What.** strad serves MCP Events (`events/list`, `events/poll`, the
-`io.modelcontextprotocol/events` extension) from draft SEP-3415, pinned at
-commit `4165cc2e580afa795842002f631edbbe17c63757` in
+`io.modelcontextprotocol/events` extension) from draft SEP-3415, pinned in
 `docs/mcp-events-spec-pin.md`. Poll and webhook mode are built (#140 is the
 webhook half): no `events/stream`, no `list_changed`, no `server/discover`. The error codes (`-32023`,
 `-32024`) are the draft's provisional numbers. The `Mcp-Method` / `Mcp-Name`
@@ -6770,8 +6769,7 @@ The one event source is Slack's `message_posted`
 7-day ring buffer and a lease in strad's shared state store (#138), beside the
 WhatsApp bridge's. The socket,
 the envelope ack, the backfill and GCS have met fakes only. Nothing in CI has
-held a real Socket Mode connection, and no deployment has seeded
-`SLACK_APP_TOKEN` yet.
+held a real Socket Mode connection.
 
 **Why.** Zimmer's deterministic triggers want a feed of Slack messages from the
 server strad already runs, rather than a second Slack client polling with its
@@ -6785,6 +6783,13 @@ public ingress.
 - Backfill sees a thread reply in a gap only if the thread's parent is less than
   48 hours older than the gap, and each read stops at 10 pages of 200. A read cut
   short is counted on `slack_events_status` as `reads_cut_short`.
+- The mention that invites the bot reaches Slack's apps as `app_mention` only,
+  which the ingest does not take. It is read back on the bot's join, for which
+  the only signal without a new subscription is the join notice, a message Slack
+  says it sometimes withholds and a workspace can hide. Subscribing the app to
+  `member_joined_channel` (no new scope) removes that dependence, except for a
+  join during a gap or still owed at a restart, which only its notice reveals. Five failed
+  reads give the join up. Not exercised against a live workspace.
 - The buffer is one object, rewritten at most every couple of seconds. Events
   buffered since the last write are lost if the process dies; the next
   connection's backfill recovers what Slack still returns.

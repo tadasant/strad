@@ -12,7 +12,9 @@
 //      still advances; a cursor below an evicted event says `truncated`.
 //   4. A reconnect BACKFILLS from just before the last moment a socket was live,
 //      and the newest process takes the lease from the old one.
-//   5. Unconfigured is inert and honest: no extension advertised, no event
+//   5. The mention that INVITES the bot is recovered when it joins, as one
+//      occurrence, and nothing else from before the join is.
+//   6. Unconfigured is inert and honest: no extension advertised, no event
 //      types listed, a poll that names the missing variable, and every existing
 //      tool exactly where it was.
 import { describe, expect, it } from 'vitest';
@@ -278,6 +280,8 @@ interface FakeSlack {
   calls: string[];
   history: Record<string, Record<string, unknown>[]>;
   replies: Record<string, Record<string, unknown>[]>;
+  /** `conversations.info` per channel; a public channel unless said otherwise. */
+  info: Record<string, Record<string, unknown>>;
 }
 
 function fakeSlack(): FakeSlack {
@@ -285,6 +289,7 @@ function fakeSlack(): FakeSlack {
     calls: [],
     history: {},
     replies: {},
+    info: {},
     fetch: (async (input: string | URL, init?: RequestInit) => {
       const method = String(input).split('/').pop()!;
       const params = new URLSearchParams(String(init?.body ?? ''));
@@ -300,10 +305,13 @@ function fakeSlack(): FakeSlack {
           return ok({
             channels: Object.keys(s.history).map((id) => ({ id, is_im: id.startsWith('D') })),
           });
+        case 'conversations.info':
+          return ok({ channel: { id: params.get('channel'), ...s.info[params.get('channel')!] } });
         case 'conversations.history': {
           const oldest = params.get('oldest')!;
+          const latest = params.get('latest') ?? '9';
           const msgs = (s.history[params.get('channel')!] ?? []).filter(
-            (m) => String(m.ts) > oldest
+            (m) => String(m.ts) > oldest && String(m.ts) < latest
           );
           return ok({ messages: [...msgs].reverse(), has_more: false });
         }
@@ -503,6 +511,457 @@ describe('SlackEventsIngest', () => {
     expect(slack.calls).not.toContain('conversations.history');
     expect(ingest.status().buffer).toMatchObject({ events: 0 });
     await ingest.close();
+  });
+
+  describe('the mention that invites the bot', () => {
+    // Slack sends it as `app_mention` only: the bot was not a member when it was
+    // posted, so there is no `message` for it.
+    const asked = T0 + 60_000;
+    const joined = asked + 30_000;
+    const mention = {
+      type: 'message',
+      ts: ts(asked, 1),
+      user: 'U1',
+      text: 'hey <@UBOT> can you look at this?',
+    };
+    const notice = {
+      type: 'message',
+      subtype: 'channel_join',
+      ts: ts(joined, 2),
+      user: 'UBOT',
+      inviter: 'U1',
+      text: '<@UBOT> has joined the channel',
+    };
+    /** `member_joined_channel`, as Slack documents it: no `ts`, an `event_ts`. */
+    const memberJoined = {
+      type: 'member_joined_channel',
+      user: 'UBOT',
+      channel: 'CNEW',
+      channel_type: 'C',
+      team: 'T1',
+      inviter: 'U1',
+      event_ts: ts(joined, 3),
+    };
+    let env = 0;
+    const deliver = (sock: FakeSocket, event: unknown) =>
+      sock.frame({ envelope_id: `j-${++env}`, type: 'events_api', payload: { event } });
+    const onWire = (m: Record<string, unknown>, channel = 'CNEW', channel_type = 'channel') => ({
+      ...m,
+      channel,
+      channel_type,
+      event_ts: m.ts,
+    });
+
+    async function live(blobs = new MemoryBlobStore()) {
+      const slack = fakeSlack();
+      const t = { now: T0 };
+      const { ingest, sockets } = await bootIngest(blobs, slack, () => t.now);
+      sockets[0]!.frame({ type: 'hello' });
+      await settle();
+      const { cursor } = await ingest.poll({ cursor: null });
+      t.now = joined + 500;
+      const got = async (args: Record<string, unknown> = {}) =>
+        (await ingest.poll({ cursor, arguments: args })).events;
+      return { slack, t, ingest, sock: sockets[0]!, got, blobs };
+    }
+
+    it.each([
+      ['the join notice', onWire(notice)],
+      ['the join notice of an older private channel', onWire({ ...notice, subtype: 'group_join' })],
+      ['member_joined_channel', memberJoined],
+    ])('becomes one occurrence, on %s', async (_, event) => {
+      const { slack, ingest, sock, got } = await live();
+      slack.history.CNEW = [mention, notice];
+      deliver(sock, event);
+      await settle();
+      const events = await got({ addressed_to_bot: true });
+      expect(events.map((e) => e.eventId)).toEqual([`slack:CNEW:${ts(asked, 1)}`]);
+      expect(events[0]!.timestamp).toBe(new Date(asked).toISOString());
+      // Exactly what a `message` for it would have produced.
+      expect(events[0]!.data).toEqual(toMessagePosted(onWire(mention), BOT)!.data);
+      expect(ingest.status().last_join).toMatchObject({
+        channel_id: 'CNEW',
+        mentions_found: 1,
+        error: null,
+      });
+      expect(ingest.status().joins_still_owed).toBe(0);
+      await ingest.close();
+    });
+
+    it('is one occurrence whatever else Slack sends for it', async () => {
+      const { slack, t, ingest, sock, got } = await live();
+      slack.history.CNEW = [mention, notice];
+      deliver(sock, { ...mention, type: 'app_mention', channel: 'CNEW', event_ts: mention.ts });
+      deliver(sock, onWire(notice));
+      await settle();
+      deliver(sock, memberJoined);
+      await settle();
+      // Were Slack ever to send the `message` too, late.
+      deliver(sock, onWire(mention));
+      // And a reconnect re-reads the same minutes, notice included.
+      await ingest.liveTick();
+      t.now += 30_000;
+      sock.frame({ type: 'hello' });
+      await settle();
+      expect((await got()).map((e) => e.eventId)).toEqual([`slack:CNEW:${ts(asked, 1)}`]);
+      // One join, read once, however often it was reported.
+      expect(slack.calls.filter((c) => c === 'conversations.info')).toHaveLength(1);
+      expect(ingest.status().last_join).toMatchObject({ mentions_found: 1 });
+      await ingest.close();
+    });
+
+    it('an ordinary mention in a joined channel, sent as message and app_mention, is one occurrence', async () => {
+      for (const order of [['message', 'app_mention'], ['app_mention', 'message']]) {
+        const { slack, ingest, sock, got } = await live();
+        for (const type of order) {
+          const { channel_type, ...bare } = onWire(mention, 'C1', 'group');
+          deliver(sock, type === 'message' ? { ...bare, channel_type } : { ...bare, type });
+        }
+        await settle();
+        const events = await got();
+        expect(events.map((e) => e.eventId)).toEqual([`slack:C1:${ts(asked, 1)}`]);
+        // `app_mention` carries no channel_type; the payload is the `message`'s.
+        expect(events[0]!.data.channel_type).toBe('group');
+        expect(slack.calls).not.toContain('conversations.info');
+        await ingest.close();
+      }
+    });
+
+    it('replays nothing else from a busy channel: only mentions, only from the minutes before the join', async () => {
+      const { slack, ingest, sock, got } = await live();
+      const at = (ms: number, n: number, extra: Record<string, unknown> = {}) => ({
+        type: 'message',
+        ts: ts(ms, n),
+        user: 'U2',
+        text: `chatter ${n}`,
+        ...extra,
+      });
+      slack.history.CNEW = [
+        at(joined - 86_400_000, 1, { text: 'yesterday, <@UBOT>' }),
+        at(joined - 11 * 60_000, 2, { text: 'eleven minutes ago, <@UBOT>' }),
+        ...Array.from({ length: 50 }, (_, i) => at(joined - 5 * 60_000, 100 + i)),
+        at(joined - 60_000, 3, { user: 'UBOT', text: 'the bot naming itself <@UBOT>' }),
+        at(joined - 60_000, 4, { subtype: 'channel_join', user: 'U9', text: '<@UBOT> no' }),
+        mention,
+        notice,
+      ];
+      deliver(sock, onWire(notice));
+      await settle();
+      expect((await got()).map((e) => e.data.text)).toEqual([mention.text]);
+      await ingest.close();
+    });
+
+    it('is recovered from a thread whose parent is older', async () => {
+      const { slack, ingest, sock, got } = await live();
+      const parent = ts(joined - 3600_000, 1);
+      slack.history.CNEW = [
+        { type: 'message', ts: parent, user: 'U2', text: 'parent <@UBOT>', latest_reply: mention.ts },
+        notice,
+      ];
+      slack.replies[`CNEW:${parent}`] = [
+        { type: 'message', ts: parent, user: 'U2', text: 'parent <@UBOT>' },
+        { ...mention, thread_ts: parent },
+      ];
+      deliver(sock, onWire(notice));
+      await settle();
+      const events = await got();
+      expect(events.map((e) => e.data.ts)).toEqual([mention.ts]);
+      expect(events[0]!.data.thread_ts).toBe(parent);
+      await ingest.close();
+    });
+
+    it("somebody else's join reads nothing", async () => {
+      const { slack, ingest, sock, got } = await live();
+      slack.history.CNEW = [mention];
+      deliver(sock, onWire({ ...notice, user: 'U7' }));
+      deliver(sock, { ...memberJoined, user: 'U7' });
+      await settle();
+      expect(slack.calls).not.toContain('conversations.history');
+      expect(await got()).toEqual([]);
+      await ingest.close();
+    });
+
+    it('takes the conversation kind from Slack: private is group, a group DM is nothing', async () => {
+      const { slack, ingest, sock, got } = await live();
+      slack.info.CNEW = { is_private: true };
+      slack.info.CMPIM = { is_private: true, is_mpim: true };
+      slack.history.CNEW = [mention];
+      slack.history.CMPIM = [mention];
+      deliver(sock, memberJoined);
+      deliver(sock, { ...memberJoined, channel: 'CMPIM' });
+      await settle();
+      expect((await got()).map((e) => [e.data.channel_id, e.data.channel_type])).toEqual([
+        ['CNEW', 'group'],
+      ]);
+      await ingest.close();
+    });
+
+    /** Fails `conversations.<method>` while `on`, for one channel or all; counts what it failed. */
+    function breakable(slack: FakeSlack) {
+      const real = slack.fetch;
+      const b = { on: false, method: 'conversations.history', channel: '', failed: 0 };
+      slack.fetch = (async (input: string | URL, init?: RequestInit) => {
+        const params = new URLSearchParams(String(init?.body ?? ''));
+        const hit = !b.channel || params.get('channel') === b.channel;
+        if (b.on && hit && String(input).endsWith(b.method)) {
+          b.failed++;
+          return new Response(JSON.stringify({ ok: false, error: 'internal_error' }));
+        }
+        return real(input, init);
+      }) as typeof fetch;
+      return b;
+    }
+    async function liveBreakable(blobs = new MemoryBlobStore()) {
+      const slack = fakeSlack();
+      const broken = breakable(slack);
+      const t = { now: T0 };
+      const { ingest, sockets } = await bootIngest(blobs, slack, () => t.now);
+      sockets[0]!.frame({ type: 'hello' });
+      await settle();
+      await ingest.liveTick(); // live_through = T0, persisted
+      const { cursor } = await ingest.poll({ cursor: null });
+      t.now = joined + 500;
+      return { slack, broken, t, ingest, sock: sockets[0]!, cursor };
+    }
+
+    it('a read that fails is retried on the live tick', async () => {
+      const { slack, broken, t, ingest, sock, cursor } = await liveBreakable();
+      slack.history.CNEW = [mention, notice];
+      broken.on = true;
+      deliver(sock, onWire(notice));
+      await settle();
+      expect((await ingest.poll({ cursor })).events).toEqual([]);
+      expect(ingest.status().joins_still_owed).toBe(1);
+      expect(ingest.status().last_join).toMatchObject({
+        error: 'Slack conversations.history failed: internal_error',
+      });
+      broken.on = false;
+      t.now += 60_000;
+      await ingest.liveTick();
+      await settle();
+      expect((await ingest.poll({ cursor })).events.map((e) => e.data.ts)).toEqual([mention.ts]);
+      expect(ingest.status().last_join).toMatchObject({ attempts: 2, error: null });
+      expect(ingest.status().joins_still_owed).toBe(0);
+      await ingest.close();
+    });
+
+    it('a read that keeps failing is given up after five, one per tick, and holds nothing else up', async () => {
+      const { slack, broken, t, ingest, sock, cursor } = await liveBreakable();
+      slack.history.CNEW = [mention, notice];
+      broken.on = true;
+      broken.channel = 'CNEW';
+      deliver(sock, onWire(notice));
+      await settle();
+      // Other joins and an early tick do not spend its attempts.
+      for (const c of ['CA', 'CB', 'CC', 'CD', 'CE']) deliver(sock, { ...memberJoined, channel: c });
+      await ingest.liveTick();
+      await settle();
+      expect(broken.failed).toBe(1);
+      // An ordinary message is buffered meanwhile.
+      deliver(sock, onWire({ type: 'message', ts: ts(t.now, 9), user: 'U2', text: 'other' }, 'C1'));
+      expect((await ingest.poll({ cursor })).events.map((e) => e.data.text)).toEqual(['other']);
+      for (let i = 0; i < 10; i++) {
+        t.now += 60_000;
+        await ingest.liveTick();
+        await settle();
+      }
+      expect(broken.failed).toBe(5);
+      expect(ingest.status().joins_still_owed).toBe(0);
+      // Given up: live_through moves again.
+      await ingest.liveTick();
+      expect((ingest.status().buffer as { live_through: string }).live_through).toBe(
+        new Date(t.now).toISOString()
+      );
+      await ingest.close();
+    });
+
+    it('one thread that cannot be read does not cost the mention, and stays owed', async () => {
+      const { slack, broken, t, ingest, sock, cursor } = await liveBreakable();
+      slack.history.CNEW = [
+        { type: 'message', ts: ts(joined - 3600_000, 1), user: 'U2', text: 'busy', latest_reply: ts(joined, 1) },
+        mention,
+        notice,
+      ];
+      Object.assign(broken, { on: true, method: 'conversations.replies' });
+      deliver(sock, onWire(notice));
+      await settle();
+      expect((await ingest.poll({ cursor })).events.map((e) => e.data.ts)).toEqual([mention.ts]);
+      expect(ingest.status().joins_still_owed).toBe(1);
+      broken.on = false;
+      t.now += 60_000;
+      await ingest.liveTick();
+      await settle();
+      expect(ingest.status().joins_still_owed).toBe(0);
+      expect((await ingest.poll({ cursor })).events).toHaveLength(1);
+      await ingest.close();
+    });
+
+    it('a join still owed at a restart is met by the next process', async () => {
+      const blobs = new MemoryBlobStore();
+      const a = await liveBreakable(blobs);
+      a.slack.history.CNEW = [mention, notice];
+      a.broken.on = true;
+      deliver(a.sock, onWire(notice));
+      await settle();
+      // Three ticks and traffic elsewhere: without the hold, live_through is
+      // past the notice by more than the backfill's overlap.
+      for (let i = 0; i < 3; i++) {
+        a.t.now += 60_000;
+        deliver(a.sock, onWire({ type: 'message', ts: ts(a.t.now, i), user: 'U2', text: `m${i}` }, 'C1'));
+        await a.ingest.liveTick();
+        await settle();
+      }
+      await a.ingest.close();
+      a.broken.on = false;
+
+      const b = await bootIngest(blobs, a.slack, () => a.t.now);
+      b.sockets[0]!.frame({ type: 'hello' });
+      await settle();
+      const { events } = await b.ingest.poll({ cursor: a.cursor });
+      expect(events.filter((e) => e.data.channel_id === 'CNEW').map((e) => e.data.ts)).toEqual([
+        mention.ts,
+      ]);
+      await b.ingest.close();
+    });
+
+    it('a read in flight when the process is superseded buffers nothing, and at a close loses nothing', async () => {
+      for (const end of ['close', 'superseded'] as const) {
+        const blobs = new MemoryBlobStore();
+        const slack = fakeSlack();
+        let release = () => {};
+        const held = new Promise<void>((r) => (release = r));
+        const real = slack.fetch;
+        slack.fetch = (async (input: string | URL, init?: RequestInit) => {
+          if (String(input).endsWith('conversations.info')) await held;
+          return real(input, init);
+        }) as typeof fetch;
+        const t = { now: T0 };
+        const a = await bootIngest(blobs, slack, () => t.now);
+        a.sockets[0]!.frame({ type: 'hello' });
+        await settle();
+        await a.ingest.liveTick(); // live_through = T0, persisted
+        t.now = joined + 500;
+        slack.history.CNEW = [mention, notice];
+        deliver(a.sockets[0]!, onWire(notice));
+        await settle(); // the read has started, and waits
+        let b: Awaited<ReturnType<typeof bootIngest>> | null = null;
+        if (end === 'close') await a.ingest.close();
+        else {
+          b = await bootIngest(blobs, slack, () => t.now);
+          t.now += 31_000;
+          await a.ingest.leaseTick();
+          expect(a.ingest.state).toBe('superseded');
+        }
+        release();
+        await settle();
+        if (b) expect(a.ingest.status().buffer).toMatchObject({ events: 0 });
+        await a.ingest.close();
+        b ??= await bootIngest(blobs, slack, () => t.now);
+        const { cursor } = await b.ingest.poll({ cursor: null });
+        b.sockets[0]!.frame({ type: 'hello' });
+        await settle();
+        if (end === 'close') {
+          expect(b.ingest.status().buffer).toMatchObject({ events: 1 });
+        } else {
+          expect((await b.ingest.poll({ cursor })).events.map((e) => e.data.ts)).toEqual([mention.ts]);
+        }
+        await b.ingest.close();
+      }
+    });
+
+    it('a join that happened while nobody was connected is caught up, with no replay however long the gap', async () => {
+      const blobs = new MemoryBlobStore();
+      const a = await liveBreakable(blobs);
+      await a.ingest.close();
+      const join = T0 + 47 * 3600_000;
+      const at = (ms: number, n: number, text: string) => ({ type: 'message', ts: ts(ms, n), user: 'U2', text });
+      a.slack.history.CNEW = [
+        at(T0 + 3600_000, 1, 'two days ago, <@UBOT>'),
+        at(join - 60_000, 2, 'chatter'),
+        at(join - 30_000, 3, 'ping <@UBOT>'),
+        { ...notice, ts: ts(join, 4) },
+        at(join + 60_000, 5, 'after the join'),
+      ];
+      a.t.now = join + 3600_000;
+      const b = await bootIngest(blobs, a.slack, () => a.t.now);
+      b.sockets[0]!.frame({ type: 'hello' });
+      await settle();
+      const { events } = await b.ingest.poll({ cursor: a.cursor });
+      expect(events.map((e) => e.data.text).sort()).toEqual(['after the join', 'ping <@UBOT>']);
+      await b.ingest.close();
+    });
+
+    it('a thread that cannot be read does not hide a join from the backfill', async () => {
+      const blobs = new MemoryBlobStore();
+      const a = await liveBreakable(blobs);
+      await a.ingest.close();
+      a.t.now = T0 + 10 * 60_000;
+      a.slack.history.CNEW = [
+        { type: 'message', ts: ts(T0 + 50_000, 1), user: 'U2', text: 'busy', latest_reply: ts(T0 + 60_000, 1) },
+        mention,
+        notice,
+      ];
+      Object.assign(a.broken, { on: true, method: 'conversations.replies' });
+      const b = await bootIngest(blobs, a.slack, () => a.t.now);
+      b.sockets[0]!.frame({ type: 'hello' });
+      await settle();
+      const { events } = await b.ingest.poll({ cursor: a.cursor });
+      expect(events.map((e) => e.data.ts)).toEqual([mention.ts]);
+      expect(b.ingest.status().backfill).toMatchObject({ gap_still_owed: true });
+      await b.ingest.close();
+    });
+
+    it('asked just before the gap, joined inside it', async () => {
+      const blobs = new MemoryBlobStore();
+      const a = await liveBreakable(blobs);
+      await a.ingest.close();
+      a.t.now = T0 + 10 * 60_000;
+      a.slack.history.CNEW = [
+        { ...mention, ts: ts(T0 - 5 * 60_000, 1) },
+        { ...notice, ts: ts(T0 + 120_000, 4) },
+      ];
+      const b = await bootIngest(blobs, a.slack, () => a.t.now);
+      b.sockets[0]!.frame({ type: 'hello' });
+      await settle();
+      const { events } = await b.ingest.poll({ cursor: a.cursor });
+      expect(events.map((e) => e.data.ts)).toEqual([ts(T0 - 5 * 60_000, 1)]);
+      await b.ingest.close();
+    });
+
+    it('a reconnect replays nothing from before a live join whose notice Slack withheld', async () => {
+      const { slack, t, ingest, sock, cursor } = await liveBreakable();
+      slack.history.CNEW = [
+        { type: 'message', ts: ts(T0 + 10_000, 7), user: 'U2', text: 'chatter' },
+        mention,
+      ];
+      deliver(sock, memberJoined);
+      await settle();
+      t.now += 30_000;
+      sock.frame({ type: 'hello' });
+      await settle();
+      expect((await ingest.poll({ cursor })).events.map((e) => e.data.ts)).toEqual([mention.ts]);
+      await ingest.close();
+    });
+
+    it('a channel left and rejoined inside the gap keeps what it was sent as a member, and no more', async () => {
+      const blobs = new MemoryBlobStore();
+      const a = await liveBreakable(blobs);
+      await a.ingest.close();
+      a.t.now = T0 + 10 * 60_000;
+      a.slack.history.CNEW = [
+        { type: 'message', ts: ts(T0 + 60_000, 1), user: 'U2', text: 'while a member' },
+        { type: 'message', subtype: 'channel_leave', ts: ts(T0 + 90_000, 2), user: 'UBOT', text: 'left' },
+        { type: 'message', ts: ts(T0 + 100_000, 3), user: 'U2', text: 'while out' },
+        { ...notice, ts: ts(T0 + 120_000, 4) },
+        { type: 'message', ts: ts(T0 + 130_000, 5), user: 'U2', text: 'back' },
+      ];
+      const b = await bootIngest(blobs, a.slack, () => a.t.now);
+      b.sockets[0]!.frame({ type: 'hello' });
+      await settle();
+      const { events } = await b.ingest.poll({ cursor: a.cursor });
+      expect(events.map((e) => e.data.text)).toEqual(['while a member', 'back']);
+      await b.ingest.close();
+    });
   });
 
   it('reconnects when Slack asks it to refresh', async () => {
