@@ -57,7 +57,7 @@ function bridge(
     focusSticks?: boolean;
     keyViewSticks?: boolean;
     defaultSticks?: boolean;
-    modal?: number;
+    modal?: unknown;
   } = {},
 ) {
   const events: string[] = [];
@@ -193,6 +193,39 @@ describe("the macOS consent dialog", () => {
     expect(bridge({ modal: 1000 }).run()).toBe("Allow");
     expect(bridge({ modal: 1002 }).run()).toBe("Cooldown");
     expect(bridge({ modal: -1001 }).run()).toBe("timeout"); // abortModal
+  });
+
+  it("reads each modal code when the bridge hands it back wrapped", () => {
+    // The daemon's log on a Mac showed codes that print as numbers and fail
+    // ===. Both conversion orders are covered: valueOf, and toString.
+    const byValue = (n: number) => ({
+      valueOf: () => n,
+      toString: () => "[object Ref]",
+    });
+    const byText = (n: number) => ({
+      valueOf: () => ({}),
+      toString: () => String(n),
+    });
+    for (const wrap of [byValue, byText]) {
+      expect(bridge({ modal: wrap(1000) }).run()).toBe("Allow");
+      expect(bridge({ modal: wrap(1001) }).run()).toBe("Reject");
+      expect(bridge({ modal: wrap(1002) }).run()).toBe("Cooldown");
+      expect(bridge({ modal: wrap(-1001) }).run()).toBe("timeout");
+      expect(() => bridge({ modal: wrap(-1000) }).run()).toThrow(
+        /unexpected modal/,
+      );
+    }
+  });
+
+  it("never reads a value that is not a modal code as the countdown", () => {
+    for (const odd of [
+      { toString: () => "[object Ref]" },
+      { valueOf: () => ({}), toString: () => "" },
+      "",
+      NaN,
+    ]) {
+      expect(() => bridge({ modal: odd }).run()).toThrow(/unexpected modal/);
+    }
   });
 
   it("does not read any other end of the modal as the countdown, which onTimeout: allow would grant", () => {
