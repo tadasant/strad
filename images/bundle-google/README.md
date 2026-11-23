@@ -96,7 +96,8 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
     plain-text reflow and the HTML part sent beside it, the sender-verification headers
     `get_email_conversation` returns, `delete_draft_email`, and attachments
     `download_email_attachments` returns as embedded resources rather than
-    paths on the server's disk, and a Drafts folder link on the draft tools.
+    paths on the server's disk, a Drafts folder link on the draft tools, and
+    labels by name (`list_email_labels`, `create_email_label`).
     `vendor/gmail-shared/FORK.md` lists every delta
     from upstream `0ed34de` and the tests that defend each one;
     `test/gmail-attachments.test.ts` is the main one. Its `README.md` is

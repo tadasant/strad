@@ -444,9 +444,10 @@ back as HTTP 400, and there was no tool to find the ID or to create the label.
   matches, without regard to case, is returned unchanged with "already
   exists". Gmail itself refuses a second label that differs only in case. A
   create that loses a race (Gmail's 409) re-lists and returns the winner.
+  A system label's name (`inbox`) is refused, not returned.
 - `change_email_conversation`'s `labels` and `remove_labels` take names or
   IDs, comma-separated:
-  - a system label ID (`INBOX`, `STARRED`, `UNREAD`, `CATEGORY_*`, …) is
+  - a system label ID (`INBOX`, `STARRED`, `UNREAD`, `CATEGORY_UPDATES`, …) is
     sent as given, and a call made only of those lists nothing, so starring,
     archiving and marking read cost what they did;
   - anything else is looked up in one label list per call, by exact ID first,
@@ -455,13 +456,16 @@ back as HTTP 400, and there was no tool to find the ID or to create the label.
     (through the same idempotent create) and then applied;
   - a name being REMOVED that matches no label is skipped, and the answer
     says so;
-  - a token shaped like a user label ID (`Label_<digits>`) that matches no
-    label is refused, naming `list_email_labels`. It is never created as a
+  - a token shaped like a label ID (`Label_<digits>`, `CATEGORY_<word>`) that
+    matches no label is refused, naming `list_email_labels`. It is never created as a
     label of that name.
-  Every token in both lists is resolved before any label is created, so a
-  call refused for a bad token creates nothing. A label created for a call
-  whose `messages.modify` then fails stays; a retry finds and reuses it.
-  The answer names each label as `Name (id)`.
+  - a label given in both lists is refused.
+
+  Every token in both lists is resolved before any label is created, so an
+  unknown ID or a label in both lists creates nothing. A label created
+  before a later create or the `messages.modify` fails stays, and the error
+  says it was created; a retry finds and reuses it. The answer names a label
+  as `Name (id)` when the call listed labels, and by ID when it did not.
 - Both new tools are in the `readwrite` and `readwrite_external` groups. Listing
   is a read, but it exists to label mail, and keeping it out of `readonly`
   leaves a read-only server's surface exactly as it was. Labels need

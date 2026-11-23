@@ -40,7 +40,7 @@ const TOOL_DESCRIPTION = `Modify an email conversation's status, labels, or star
 - Removing INBOX archives the email
 - Adding/removing UNREAD marks email as unread/read
 - A label may be given by name ("Added details to calendar") or by ID ("Label_12"). A name that matches no label is CREATED as a user label when adding, so labelling with a new name needs no separate step; when removing, it is skipped
-- An ID of the user-label form ("Label_…") that does not exist is refused, never created as a name
+- An unknown ID ("Label_<digits>" or "CATEGORY_<word>") is refused, never created as a name
 - list_email_labels shows every label's name and ID; create_email_label creates one without applying it
 
 **Use cases:**
@@ -83,6 +83,9 @@ export function changeEmailConversationTool(server: Server, clientFactory: Clien
       required: ['email_id'],
     },
     handler: async (args: unknown) => {
+      // Outside the try: a label created before a later step fails has to be in
+      // the error too, or nothing says it exists.
+      const notes: string[] = [];
       try {
         const parsed = ChangeEmailConversationSchema.parse(args ?? {});
         const client = clientFactory();
@@ -107,18 +110,25 @@ export function changeEmailConversationTool(server: Server, clientFactory: Clien
         }
 
         // Labels by name or ID (strad FORK.md delta 8). Every token in both
-        // lists is resolved before any label is created, so a bad token
-        // refuses the call with nothing created. A label created here stays
-        // if the modify below then fails; the create is idempotent, so a
-        // retry reuses it.
+        // lists is resolved before any label is created, so an unknown ID, or
+        // a label given in both lists, refuses the call with nothing created.
+        // A label created here stays if a later create or the modify fails;
+        // the create is idempotent, so a retry reuses it.
         const resolver = new LabelResolver(client);
-        const notes: string[] = [];
         const removed = await resolver.resolve(splitLabels(parsed.remove_labels), 'remove');
         const added = await resolver.resolve(splitLabels(parsed.labels), 'add');
+        const both = added.ids.filter((id) => removed.ids.includes(id));
+        if (both.length > 0) {
+          throw new Error(
+            `The same label is in both labels and remove_labels: ${both
+              .map((id) => resolver.describe(id))
+              .join(', ')}.`
+          );
+        }
         removeLabelIds.push(...removed.ids);
         notes.push(...removed.notes);
         const createdIds = await resolver.createMissing(added.missing, notes);
-        addLabelIds.push(...new Set([...added.ids, ...createdIds]));
+        addLabelIds.push(...added.ids, ...createdIds);
 
         // Only make API call if there are changes to make
         if (addLabelIds.length === 0 && removeLabelIds.length === 0) {
@@ -127,7 +137,9 @@ export function changeEmailConversationTool(server: Server, clientFactory: Clien
               {
                 type: 'text',
                 text: [
-                  'No changes specified. Provide at least one of: status, labels, remove_labels, or is_starred.',
+                  notes.length > 0
+                    ? 'Nothing to change.'
+                    : 'No changes specified. Provide at least one of: status, labels, remove_labels, or is_starred.',
                   ...notes,
                 ].join('\n'),
               },
@@ -136,8 +148,8 @@ export function changeEmailConversationTool(server: Server, clientFactory: Clien
         }
 
         const updatedEmail = await client.modifyMessage(parsed.email_id, {
-          addLabelIds: addLabelIds.length > 0 ? addLabelIds : undefined,
-          removeLabelIds: removeLabelIds.length > 0 ? removeLabelIds : undefined,
+          addLabelIds: addLabelIds.length > 0 ? [...new Set(addLabelIds)] : undefined,
+          removeLabelIds: removeLabelIds.length > 0 ? [...new Set(removeLabelIds)] : undefined,
         });
 
         const changes: string[] = [];
@@ -164,7 +176,10 @@ export function changeEmailConversationTool(server: Server, clientFactory: Clien
           content: [
             {
               type: 'text',
-              text: `Error modifying email: ${error instanceof Error ? error.message : 'Unknown error'}`,
+              text: [
+                `Error modifying email: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                ...notes,
+              ].join('\n'),
             },
           ],
           isError: true,
@@ -188,13 +203,18 @@ const SYSTEM_LABEL_IDS = new Set([
   'SENT',
   'DRAFT',
   'CHAT',
+  'CATEGORY_PERSONAL',
+  'CATEGORY_SOCIAL',
+  'CATEGORY_PROMOTIONS',
+  'CATEGORY_UPDATES',
+  'CATEGORY_FORUMS',
 ]);
 
-/** The ID shape Gmail gives a user label. One that is not found is refused, never created as a name. */
-const USER_LABEL_ID = /^Label_\d+$/;
+/** The shapes of Gmail's label IDs. A token of one that is not found is refused, never created as a name. */
+const LABEL_ID_SHAPE = /^(Label_\d+|CATEGORY_[A-Z]+)$/i;
 
 function isSystemLabelId(token: string): boolean {
-  return SYSTEM_LABEL_IDS.has(token) || /^CATEGORY_[A-Z]+$/.test(token);
+  return SYSTEM_LABEL_IDS.has(token);
 }
 
 export function splitLabels(value: string | undefined): string[] {
@@ -241,7 +261,7 @@ export class LabelResolver {
         ids.push(match.id);
         continue;
       }
-      if (USER_LABEL_ID.test(token)) {
+      if (LABEL_ID_SHAPE.test(token)) {
         throw new Error(
           `No label with ID "${token}" in this mailbox. Call list_email_labels for the names and IDs, ` +
             'or pass a label name instead.'

@@ -80,7 +80,7 @@
 #
 # The allow-lists below are derived from each upstream's own tool-group
 # definitions, so the counts stay honest: slack 8/14 · tailscale 7/15 ·
-# monarch 10/24 · gmail 5/8/9 · google-docs 4/13/14 · google-calendar 4/7 ·
+# monarch 10/24 · gmail 5/10/11 · google-docs 4/13/14 · google-calendar 4/7 ·
 # 1Password 5/9 · telegram 5/6 · bill-spend 4/5 · digitalocean 19/29 ·
 # hetzner 14/28.
 # test/staging-config.test.ts

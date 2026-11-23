@@ -5177,8 +5177,8 @@ not prevent it; leaving `change_email_conversation` off does.
 
 - **A typo makes a label.** The call succeeds, and the answer says
   `Created label "…"`.
-- **A failed call can leave an empty label.** The label is created before the
-  message is changed. A retry reuses it.
+- **A failed call can leave an empty label.** Labels are created before the
+  message is changed. The error lists them, and a retry reuses them.
 - **A comma splits a name.** Pass the label's ID when its name contains one.
 - **Nothing here deletes or renames a label.** Remove a stray one in Gmail.
 - **It has met only stubs.** No live mailbox was labelled.

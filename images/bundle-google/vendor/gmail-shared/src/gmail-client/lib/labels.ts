@@ -61,6 +61,11 @@ export async function createLabel(
   }
 
   const existing = findLabelByName(await listLabels(baseUrl, headers), trimmed);
+  if (existing?.type === 'system') {
+    throw new Error(
+      `"${trimmed}" is one of Gmail's system labels (${existing.id}), not a user label, and cannot be created.`
+    );
+  }
   if (existing) return { label: existing, created: false };
 
   const response = await fetch(`${baseUrl}/labels`, {
@@ -84,14 +89,14 @@ export async function createLabel(
   }
   if (response.status === 400) {
     throw new Error(
-      `Gmail refused the label name "${trimmed}" (HTTP 400). Names cannot be empty, ` +
-        'cannot be a system label name (INBOX, SENT, …), and nested names use "/".'
+      `Gmail refused the label name "${trimmed}" (HTTP 400). Usually it is reserved, too long, ` +
+        'or badly nested ("/").'
     );
   }
   if (response.status === 403) {
     throw new Error(
-      'Permission denied creating a label. The credential needs the gmail.modify ' +
-        '(or gmail.labels) scope; a gmail.readonly credential cannot create labels.'
+      'Permission denied creating a label (HTTP 403). Usually the credential lacks the ' +
+        'gmail.modify (or gmail.labels) scope; a gmail.readonly credential cannot create labels.'
     );
   }
   if (!response.ok) {

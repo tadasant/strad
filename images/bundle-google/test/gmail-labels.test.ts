@@ -17,7 +17,7 @@ import {
 import { listEmailLabelsTool } from "../vendor/gmail-shared/src/tools/list-email-labels.js";
 import { createEmailLabelTool } from "../vendor/gmail-shared/src/tools/create-email-label.js";
 import { changeEmailConversationTool } from "../vendor/gmail-shared/src/tools/change-email-conversation.js";
-import type { IGmailClient } from "../vendor/gmail-shared/src/server.js";
+import { OAuth2GmailClient, type IGmailClient } from "../vendor/gmail-shared/src/server.js";
 
 const BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 const HEADERS = { Authorization: "Bearer t", "Content-Type": "application/json" };
@@ -155,6 +155,44 @@ describe("list_email_labels", () => {
   });
 });
 
+describe("createLabel and system labels", () => {
+  it("refuses a system label's name instead of returning it, and sends no POST", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => json({ labels: LABELS }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(createLabel(BASE, HEADERS, "inbox")).rejects.toThrow(/system label/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a failed list, and reads a body with no labels as none", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json({}, 429)));
+    await expect(listLabels(BASE, HEADERS)).rejects.toThrow(/rate limit/);
+    vi.stubGlobal("fetch", vi.fn(async () => json({})));
+    expect(await listLabels(BASE, HEADERS)).toEqual([]);
+  });
+});
+
+describe("the client", () => {
+  it("lists and creates through the account's credential", async () => {
+    const client = new OAuth2GmailClient("id", "secret", "refresh");
+    vi.spyOn(
+      client as unknown as { refreshTokenImpl(): Promise<{ token: string; expiryDate: number }> },
+      "refreshTokenImpl",
+    ).mockResolvedValue({ token: "tok", expiryDate: Date.now() + 3_600_000 });
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) =>
+      init?.method === "POST"
+        ? json({ id: "Label_42", name: "New", type: "user" })
+        : json({ labels: LABELS }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await client.listLabels()).toEqual(LABELS);
+    expect((await client.createLabel("New")).label.id).toBe("Label_42");
+    for (const [url, init] of fetchMock.mock.calls) {
+      expect(url).toBe(`${BASE}/labels`);
+      expect(init?.headers).toMatchObject({ Authorization: "Bearer tok" });
+    }
+  });
+});
+
 describe("list_email_labels errors", () => {
   it("reports a failed list as an error result", async () => {
     const client = mailbox({
@@ -281,7 +319,52 @@ describe("change_email_conversation labels by name", () => {
     const result = await call(client, { labels: "Brand new" });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("Resource not found");
+    expect(result.content[0].text).toContain('Created label "Brand new" (Label_42).');
     expect(client.createLabel).toHaveBeenCalledTimes(1);
+  });
+
+  it("names the label it made when a second create is refused", async () => {
+    const client = mailbox();
+    client.createLabel
+      .mockResolvedValueOnce({ label: { id: "Label_42", name: "Good", type: "user" }, created: true })
+      .mockRejectedValueOnce(new Error("Gmail refused the label name"));
+    const result = await call(client, { labels: "Good, Bad" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Created label "Good" (Label_42).');
+    expect(client.modifyMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(["CATEGORY_FOO", "label_99"])("refuses %s, an ID shape Gmail has no label for", async (id) => {
+    const client = mailbox();
+    const result = await call(client, { labels: `Brand new, ${id}` });
+    expect(result.isError).toBe(true);
+    expect(client.createLabel).not.toHaveBeenCalled();
+  });
+
+  it("refuses a label in both lists, by name and by ID, with nothing sent", async () => {
+    const client = mailbox();
+    const result = await call(client, { labels: "Receipts, Brand new", remove_labels: "Label_7" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Receipts (Label_7)");
+    expect(client.createLabel).not.toHaveBeenCalled();
+    expect(client.modifyMessage).not.toHaveBeenCalled();
+  });
+
+  it("sends each ID once", async () => {
+    const client = mailbox();
+    await call(client, { labels: "STARRED, New, new", is_starred: true });
+    expect(client.modifyMessage).toHaveBeenCalledWith("m1", {
+      addLabelIds: ["STARRED", "Label_42"],
+      removeLabelIds: undefined,
+    });
+  });
+
+  it("says nothing changed when the only removal names no label", async () => {
+    const client = mailbox();
+    const result = await call(client, { remove_labels: "Nope" });
+    expect(client.modifyMessage).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("Nothing to change.");
+    expect(result.content[0].text).not.toContain("Provide at least one of");
   });
 
   it("resolves a lowercase system label name through the list", async () => {
