@@ -393,6 +393,7 @@ describe("entryFromForm", () => {
         oauthAuthorizeParams: "access_type: offline\nprompt: consent",
       }),
       before,
+      { editing: true },
     );
     expect(saved.oauthRefresh).toEqual({
       tokenUrl: "https://o.example.com/token",
@@ -403,11 +404,22 @@ describe("entryFromForm", () => {
     const cleared = entryFromForm(
       form({ oauthTokenUrl: "https://o.example.com/token" }),
       before,
+      { editing: true },
     );
     expect(cleared.oauthRefresh).not.toHaveProperty("authorizeParams");
     expect(cleared.oauthRefresh).toHaveProperty("registration");
     // No token URL is no OAuth refresh at all: nothing is carried into one.
-    expect(entryFromForm(form(), before)).not.toHaveProperty("oauthRefresh");
+    expect(entryFromForm(form(), before, { editing: true })).not.toHaveProperty(
+      "oauthRefresh",
+    );
+    // A COPY carries neither opt-in: they are one slug's.
+    const copied = entryFromForm(
+      form({ oauthTokenUrl: "https://o.example.com/token" }),
+      before,
+    );
+    expect(copied.oauthRefresh).toEqual({
+      tokenUrl: "https://o.example.com/token",
+    });
   });
 
   it("refuses a non-numeric timeout rather than coercing it", () => {

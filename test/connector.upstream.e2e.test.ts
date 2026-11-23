@@ -752,7 +752,12 @@ describe("authorizeParams: — an upstream that takes offline access as a parame
     expect(await listed(h.fake, OAUTH_NS)).toEqual(["G_REFRESH_TOKEN"]);
 
     expect(await whoami(await h.mcp())).toBe("tadas");
-    // The parameters are the sign-in link's alone, and Google's refresh answer
+    // The parameters are the sign-in link's alone.
+    for (const r of h.oauth.tokenRequests) {
+      expect(r.keys).not.toContain("access_type");
+      expect(r.keys).not.toContain("prompt");
+    }
+    // Google's refresh answer
     // carries no refresh token: the stored one stays.
     const refreshed = h.oauth.tokenRequests.filter(
       (r) => r.grantType === "refresh_token",
@@ -766,6 +771,16 @@ describe("authorizeParams: — an upstream that takes offline access as a parame
     const held = await h.fake.store.reveal(`${OAUTH_NS}G_REFRESH_TOKEN`);
     expect(refreshed.at(-1)!.refreshToken).toBe(held);
     expect(h.oauth.liveRefreshTokens()).toContain(held);
+  });
+
+  it("escapes a value on the page that lists it", async () => {
+    const h = await google(`
+      authorizeParams: { login_hint: "<script>alert(1)</script>" }`);
+    const page = await (
+      await fetch(`${h.base}/ui/${SLUG}`, { headers: auth })
+    ).text();
+    expect(page).toContain("login_hint=&lt;script&gt;");
+    expect(page).not.toContain("<script>alert(1)");
   });
 });
 

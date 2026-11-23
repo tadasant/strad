@@ -701,9 +701,10 @@ describe("beginUpstreamAuthorization", () => {
     expect(q.get("resource")).toBe("https://up.example/mcp");
   });
 
-  it("drops a reserved key even past the schema, in any spelling", () => {
-    const reserved = [
+  it("drops any other key even past the schema", () => {
+    const others = [
       "client_id",
+      "client_secret",
       "redirect_uri",
       "response_type",
       "scope",
@@ -711,15 +712,16 @@ describe("beginUpstreamAuthorization", () => {
       "code_challenge",
       "code_challenge_method",
       "resource",
+      "audience",
       "request",
       "request_uri",
       "response_mode",
-      "authorization_details",
       "include_granted_scopes",
       "SCOPE",
       " state ",
+      "redirect.uri",
     ];
-    const q = begin(Object.fromEntries(reserved.map((k) => [k, "evil"])));
+    const q = begin(Object.fromEntries(others.map((k) => [k, "evil"])));
     expect([...q.values()]).not.toContain("evil");
     expect([...q.keys()].sort()).toEqual([...begin().keys()].sort());
   });

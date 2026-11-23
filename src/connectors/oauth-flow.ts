@@ -111,39 +111,40 @@ export const RESERVED_AUTHORIZE_PARAMS = [
 const RESERVED = new Set<string>(RESERVED_AUTHORIZE_PARAMS);
 
 /**
- * The parameters `oauthRefresh.authorizeParams:` may not set: strad's own, and
- * the ones that would change the grant or the answer by another route.
+ * The ONLY parameters `oauthRefresh.authorizeParams:` may set. A closed list
+ * rather than a list of forbidden names, because the forbidden ones are open
+ * ended: `resource`, `request_uri`, `audience`, Slack's `user_scope`, Google's
+ * `include_granted_scopes` and whatever the next provider invents each change
+ * the grant, and `client_secret` would put a credential in a browser's address
+ * bar. Every name here asks for a refresh token or picks an account, and
+ * nothing else:
  *
- *   - `resource` (RFC 8707) binds the tokens, and discovery decided it.
- *   - `request` / `request_uri` (RFC 9101) carry a whole authorization request
- *     that REPLACES the query parameters beside it, PKCE and redirect included.
- *   - `response_mode` moves the code out of the callback's query string.
- *   - `authorization_details` (RFC 9396) and `include_granted_scopes` (Google)
- *     widen the grant past the scopes the page names.
+ *   - `access_type` (Google), `token_access_type` (Dropbox) and `duration`
+ *     (Reddit): issue a refresh token.
+ *   - `prompt` (OpenID Connect): show the consent or account screen. Google
+ *     issues a refresh token again only on a fresh consent.
+ *   - `login_hint` (OpenID Connect) and `hd` (Google): which account the sign-in
+ *     page offers. Hints, not checks: no identity is proved by them.
  *
- * Wider than {@link RESERVED_AUTHORIZE_PARAMS} rather than a replacement for
- * it: `oauth: provider: generic` has no discovered resource, so a config there
- * may legitimately name one.
+ * Exact names: parameter names are case-sensitive, and a near-miss is refused
+ * rather than sent. Extending it is a pull request, which is the right cost.
+ * `oauth: provider: generic` keeps {@link RESERVED_AUTHORIZE_PARAMS}.
  */
-export const RESERVED_UPSTREAM_AUTHORIZE_PARAMS = [
-  ...RESERVED_AUTHORIZE_PARAMS,
-  "resource",
-  "request",
-  "request_uri",
-  "response_mode",
-  "authorization_details",
-  "include_granted_scopes",
+export const UPSTREAM_AUTHORIZE_PARAMS = [
+  "access_type",
+  "token_access_type",
+  "duration",
+  "prompt",
+  "login_hint",
+  "hd",
 ] as const;
 
-const RESERVED_UPSTREAM = new Set<string>(RESERVED_UPSTREAM_AUTHORIZE_PARAMS);
+/** A value's length bound: the block rides in the connect transaction cookie. */
+export const UPSTREAM_AUTHORIZE_PARAM_MAX = 200;
 
-/**
- * May `oauthRefresh.authorizeParams:` NOT set `key`? Case-folded and trimmed:
- * parameter names are case-sensitive on the wire, and a server that reads them
- * otherwise should not be where strad finds out.
- */
-export function isReservedUpstreamAuthorizeParam(key: string): boolean {
-  return RESERVED_UPSTREAM.has(key.trim().toLowerCase());
+/** May `oauthRefresh.authorizeParams:` set `key`? */
+export function isUpstreamAuthorizeParam(key: string): boolean {
+  return (UPSTREAM_AUTHORIZE_PARAMS as readonly string[]).includes(key);
 }
 
 /**

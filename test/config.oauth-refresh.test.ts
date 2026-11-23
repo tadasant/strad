@@ -114,6 +114,7 @@ describe("oauthRefresh.authorizeParams:", () => {
 
   it.each([
     "client_id",
+    "client_secret",
     "redirect_uri",
     "response_type",
     "scope",
@@ -121,23 +122,32 @@ describe("oauthRefresh.authorizeParams:", () => {
     "code_challenge",
     "code_challenge_method",
     "resource",
+    "audience",
     "request",
     "request_uri",
     "response_mode",
     "authorization_details",
     "include_granted_scopes",
+    "user_scope",
     "Redirect_URI",
-  ])("refuses %s", (key) => {
-    expect(refusal(withParams(`{ ${key}: x }`))).toContain(
-      `oauthRefresh.authorizeParams.${key}, which is not a config's to set`,
+    "redirect.uri",
+    "scope[]",
+    " prompt",
+    "ACCESS_TYPE",
+    "constructor",
+    "",
+  ])("refuses %j: the list is closed", (key) => {
+    expect(refusal(withParams(`{ ${JSON.stringify(key)}: x }`))).toContain(
+      `oauthRefresh.authorizeParams.${key}. Connect sends only access_type,`,
     );
   });
 
-  it("refuses a padded or blank key, and a value from a ${NAME}", () => {
-    expect(refusal(withParams(`{ " scope": x }`))).toMatch(/blank or padded/);
-    expect(refusal(withParams(`{ "": x }`))).toMatch(/blank or padded/);
+  it("refuses a value from a ${NAME}, and one too long for the transaction", () => {
     expect(refusal(withParams('{ login_hint: "${G_LOGIN}" }'))).toMatch(
-      /must be a literal and never a secret/,
+      /must be a literal/,
+    );
+    expect(refusal(withParams(`{ login_hint: ${"x".repeat(201)} }`))).toMatch(
+      /longer than 200/,
     );
   });
 });

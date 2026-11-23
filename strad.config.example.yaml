@@ -434,9 +434,9 @@ servers:
   #
   # A server that issues a refresh token only when the sign-in LINK asks for one
   # (Google's: access_type=offline and prompt=consent) takes authorizeParams:,
-  # literals added to Connect's authorization URL and nowhere else. It cannot
-  # set what strad decides (client_id, redirect_uri, scope, state, PKCE,
-  # resource, ...). Google registers no clients, so the id and secret are a Web
+  # literals added to Connect's authorization URL and nowhere else. It takes
+  # access_type, token_access_type, duration, prompt, login_hint and hd, and
+  # refuses every other name. Google registers no clients, so the id and secret are a Web
   # application client you create, seeded under this slug's static/ namespace
   # before Connect. See docs: operate/connectors.
   #

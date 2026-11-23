@@ -1,7 +1,8 @@
 import {
-  isReservedUpstreamAuthorizeParam,
+  isUpstreamAuthorizeParam,
   RESERVED_AUTHORIZE_PARAMS,
-  RESERVED_UPSTREAM_AUTHORIZE_PARAMS,
+  UPSTREAM_AUTHORIZE_PARAM_MAX,
+  UPSTREAM_AUTHORIZE_PARAMS,
 } from "../connectors/oauth-flow.ts";
 import { z } from "zod";
 import { jwksUriProblem } from "../auth/mcp-oauth/cimd.ts";
@@ -815,9 +816,9 @@ const OAuthRefreshSchema = z.object({
    * `no_refresh_token`.
    *
    * Literals: the console does not resolve references, and every value is in a
-   * browser's address bar. The `superRefine` refuses a `${NAME}`, and each
-   * parameter in `RESERVED_UPSTREAM_AUTHORIZE_PARAMS`. The token requests are
-   * untouched.
+   * browser's address bar. The `superRefine` refuses a `${NAME}`, and every
+   * parameter that is not in `UPSTREAM_AUTHORIZE_PARAMS`. The token requests
+   * are untouched.
    *
    * Optional with no default: the parsed block is one of the terms a Connect
    * transaction binds (`upstreamConfigTerms`), and a block that does not
@@ -2919,27 +2920,24 @@ export const StradConfig = z
         );
       }
       for (const [key, value] of Object.entries(o.authorizeParams ?? {})) {
-        if (key.trim() === "" || key !== key.trim()) {
+        if (!isUpstreamAuthorizeParam(key)) {
           issue(
-            `sets an oauthRefresh.authorizeParams key that is blank or padded ` +
-              `with spaces. A key is the parameter's exact name.`,
+            `sets oauthRefresh.authorizeParams.${key}. Connect sends only ` +
+              `${UPSTREAM_AUTHORIZE_PARAMS.join(", ")} from a config: the ` +
+              `parameters that ask for a refresh token or suggest an account. ` +
+              `Any other could change the terms of the grant or where the ` +
+              `code goes. Delete this key.`,
           );
-        } else if (isReservedUpstreamAuthorizeParam(key)) {
-          issue(
-            `sets oauthRefresh.authorizeParams.${key}, which is not a ` +
-              `config's to set ` +
-              `(${RESERVED_UPSTREAM_AUTHORIZE_PARAMS.join(", ")}). They carry ` +
-              `the terms of the grant, the PKCE challenge and where the code ` +
-              `goes. Delete this key.`,
-          );
-        } else if (
-          secretRefsIn(key).length > 0 ||
-          secretRefsIn(value).length > 0
-        ) {
+        } else if (secretRefsIn(value).length > 0) {
           issue(
             `sets oauthRefresh.authorizeParams.${key} from a \${NAME}. The ` +
               `value travels in a browser's address bar, so it must be a ` +
-              `literal and never a secret.`,
+              `literal.`,
+          );
+        } else if (value.length > UPSTREAM_AUTHORIZE_PARAM_MAX) {
+          issue(
+            `sets oauthRefresh.authorizeParams.${key} to a value longer than ` +
+              `${UPSTREAM_AUTHORIZE_PARAM_MAX} characters.`,
           );
         }
       }

@@ -758,8 +758,7 @@ What each part is for, read off Google's public endpoints on 2026-11-23:
   needs `roles/mcp.toolUser`, `roles/bigquery.jobUser` and
   `roles/bigquery.dataViewer` on the projects it queries.
 
-`authorizeParams` cannot set a parameter strad composes itself, or one that would
-change the grant by another route.
+`authorizeParams` takes six parameters and refuses the rest.
 [Interface](/servers/interface/#oauthrefresh--a-bearer-that-expires-minted-by-strad)
 lists them. Other Google MCP servers differ only in `url:`, `tools:` and the scope
 their metadata advertises.

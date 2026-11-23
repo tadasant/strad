@@ -272,12 +272,13 @@ oauthRefresh:
 
 They are added to the authorization URL and to nothing else. The code exchange
 and every refresh are unchanged, and a block without the field sends only
-strad's own parameters. Values are literals: they travel in a browser's
-address bar, so a `${NAME}` is refused. So is any parameter that carries the
-terms of the grant or decides where the code goes: `client_id`, `redirect_uri`,
-`response_type`, `scope`, `state`, `code_challenge`, `code_challenge_method`,
-`resource`, `request`, `request_uri`, `response_mode`, `authorization_details` and
-`include_granted_scopes`, in any case. See
+strad's own parameters. The list is closed: `access_type`, `token_access_type`,
+`duration`, `prompt`, `login_hint` and `hd`, spelled exactly. Those ask for a
+refresh token or suggest an account. Anything else is refused, so a config cannot
+rewrite `client_id`, `redirect_uri`, `scope`, `state`, PKCE or `resource`, or
+widen the grant by a provider's own route (`audience`, `user_scope`,
+`include_granted_scopes`). Values are literals of at most 200 characters: they
+travel in a browser's address bar, so a `${NAME}` is refused. See
 [Connectors](/operate/connectors/#authorizeparams-a-google-mcp-server) for a whole
 Google slug.
 
@@ -978,9 +979,8 @@ strad validates the whole config strictly at boot (a Zod `superRefine` in
   committed to the config, and the write-back needs a name. Also refused: an
   `Authorization` header beside `oauthRefresh:`, a literal `tokenUrl` that is
   neither `https` nor loopback `http`, two enabled servers minting from one
-  refresh-token `${NAME}`, and an `authorizeParams:` key that is reserved (listed
-  under [`oauthRefresh:`](#oauthrefresh--a-bearer-that-expires-minted-by-strad)),
-  blank or padded, or whose value is a `${NAME}`.
+  refresh-token `${NAME}`, and an `authorizeParams:` key outside the six it
+  takes, or a value there that is a `${NAME}` or over 200 characters.
 - **A server references one of its own connector's variables as a `${NAME}`.**
   Those three are injected from the slug's own namespace, and a reference to the
   refresh token would fail every server's deploy until a human had completed a

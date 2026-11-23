@@ -389,7 +389,12 @@ async function handleSave(
           config: runtime.config(),
           // What they typed, not what was stored — a refusal that clears the
           // form is a refusal that costs the work.
-          entry: entryFromForm(body, carry, { accessLocked, editing }),
+          // Minus the lines that do not parse: a malformed one is itself a
+          // reason to be here, and reading it again would throw again.
+          entry: entryFromForm(parseable(body), carry, {
+            accessLocked,
+            editing,
+          }),
           ...(original ? { slug: original } : {}),
           kind,
           copyable: original ? [] : copyable(runtime, kind),
@@ -622,6 +627,23 @@ function map(
   return out;
 }
 
+/**
+ * The posted body without what `map` and `num` would throw on, so a refusal
+ * about a malformed line can still redraw everything else that was typed.
+ */
+function parseable(body: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...body };
+  for (const name of ["headers", "oauthAuthorizeParams"]) {
+    out[name] = list(body, name)
+      .filter((line) => line.includes(":"))
+      .join("\n");
+  }
+  for (const name of ["timeoutMs", "connectTimeoutMs"]) {
+    if (!Number.isFinite(Number(str(body, name)))) out[name] = "";
+  }
+  return out;
+}
+
 function num(body: Record<string, unknown>, name: string): number | undefined {
   const raw = str(body, name);
   if (raw === "") return undefined;
@@ -698,7 +720,11 @@ export function entryFromForm(
     mayBeUnseeded: list(body, "mayBeUnseeded"),
   };
 
-  const specific: Record<string, unknown> = kindFields(kind, body, before);
+  const specific: Record<string, unknown> = kindFields(
+    kind,
+    body,
+    opts.editing ? before : undefined,
+  );
 
   // The form's own fields are authoritative — including when they are now
   // blank. Everything else on the original entry survives untouched.
@@ -751,18 +777,33 @@ function formFieldsFor(kind: string): string[] {
 }
 
 /**
- * What an existing entry's `oauthRefresh:` carries that the form has no input
- * for. The form owns the block, so a save that did not carry these would delete
- * a `discoveryProxy:` or a `registration:` while changing a title.
+ * What the entry being EDITED carries in `oauthRefresh:` that the form has no
+ * input for. The form owns the block, so a save that did not carry these would
+ * delete a `discoveryProxy:` or a `registration:` while changing a title.
+ *
+ * Not on a copy: both are opt-ins for one slug (an identity claim to a third
+ * party, a proxy for its metadata), and a copy pointed at another upstream has
+ * no input to see or drop them with.
  */
+const OAUTH_REFRESH_FORM_FIELDS = [
+  "tokenUrl",
+  "clientId",
+  "clientSecret",
+  "clientAuth",
+  "refreshToken",
+  "scope",
+  "resource",
+  "authorizeParams",
+];
+
 function oauthRefreshUnrendered(
   before: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
   const block = before?.oauthRefresh;
   if (typeof block !== "object" || block === null) return {};
   return Object.fromEntries(
-    Object.entries(block).filter(([key]) =>
-      ["discoveryProxy", "registration"].includes(key),
+    Object.entries(block).filter(
+      ([key]) => !OAUTH_REFRESH_FORM_FIELDS.includes(key),
     ),
   );
 }

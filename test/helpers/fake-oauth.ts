@@ -78,6 +78,8 @@ export interface TokenRequest {
   code?: string;
   codeVerifier?: string;
   redirectUri?: string;
+  /** Every body key sent, so a test can say what was NOT. */
+  keys: string[];
 }
 
 export interface McpAuthOptions {
@@ -326,6 +328,7 @@ export async function startFakeOAuth(
           code: body.code,
           codeVerifier: body.code_verifier,
           redirectUri: body.redirect_uri,
+          keys: Object.keys(body),
         });
         for (const a of arrivals.splice(0)) {
           if (tokenRequests.length >= a.n) a.resolve();

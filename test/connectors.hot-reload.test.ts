@@ -359,6 +359,32 @@ describe("adding a connector through the console", () => {
     expect(runtime.config().servers.map((s) => s.slug)).not.toContain("stale");
   });
 
+  it("a line that does not parse is a 400 naming it, with the rest of the form kept", async () => {
+    const res = await consoleFetch(
+      "/connectors/save",
+      new URLSearchParams({
+        revision: String(runtime.overlay().revision),
+        kind: "remote-http",
+        slug: "malformed",
+        title: "Typed and kept",
+        url: "https://malformed.example.com/mcp",
+        "entitlement:admin": "on",
+        enabled: "on",
+        timeoutMs: "soon",
+        oauthTokenUrl: "https://malformed.example.com/token",
+        oauthAuthorizeParams: "access_type=offline\nprompt: consent",
+      }),
+    );
+    expect(res.status).toBe(400);
+    const html = await res.text();
+    expect(html).toContain("Typed and kept");
+    expect(html).toContain("prompt: consent");
+    expect(html).toMatch(/must be a number|is not a Name: value pair/);
+    expect(runtime.config().servers.map((s) => s.slug)).not.toContain(
+      "malformed",
+    );
+  });
+
   it("refuses a builtin, and says why", async () => {
     const html = await (
       await consoleFetch("/connectors/new?kind=builtin")

@@ -19,7 +19,7 @@ import {
   ConnectorError,
   exchangeAuthorizationCode,
   grantedScopeSet,
-  isReservedUpstreamAuthorizeParam,
+  isUpstreamAuthorizeParam,
   stringField,
   type PendingConnectorAuth,
 } from "./oauth-flow.ts";
@@ -1277,9 +1277,8 @@ export function heldVariables(
 /**
  * Build the consent URL. `scope` is omitted entirely when there is nothing to ask for.
  *
- * `authorizeParams` is the config's, and can set nothing strad decides: the
- * schema refuses a reserved key by name, the filter here drops one anyway, and
- * `resource` is spread last.
+ * `authorizeParams` is the config's. The schema refuses a key outside
+ * `UPSTREAM_AUTHORIZE_PARAMS`, and the filter here drops one anyway.
  */
 export function beginUpstreamAuthorization(input: {
   discovery: UpstreamDiscovery;
@@ -1289,8 +1288,8 @@ export function beginUpstreamAuthorization(input: {
   authorizeParams?: Readonly<Record<string, string>>;
 }): PendingConnectorAuth {
   const params = Object.fromEntries(
-    Object.entries(input.authorizeParams ?? {}).filter(
-      ([key]) => !isReservedUpstreamAuthorizeParam(key),
+    Object.entries(input.authorizeParams ?? {}).filter(([key]) =>
+      isUpstreamAuthorizeParam(key),
     ),
   );
   const pending = buildPkceAuthorizeUrl({
