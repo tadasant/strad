@@ -4127,8 +4127,9 @@ connection has run in CI, and it stays off until `SLACK_APP_TOKEN`,
   [mention that invites the bot](/servers/events/#the-mention-that-invites-the-bot)
   is read back when Slack reports the bot's join. Where the app has no
   `member_joined_channel` subscription and Slack withholds the join notice, it
-  is missed. So is one posted more than 10 minutes before the join, and a thread
-  reply whose parent is more than 48 hours older than that.
+  is missed. So is one posted more than 10 minutes before the join, a thread
+  reply whose parent is more than 48 hours older than that, and one in a
+  conversation or thread that five reads in a row failed on.
 - **The buffer is written every couple of seconds.** A crash loses what was
   buffered since. The next connection's backfill recovers what Slack returns.
 - **One instance is a lease, not a render check.** A second replica stops

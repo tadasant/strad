@@ -190,16 +190,20 @@ the bot joins:
   `message` with subtype `channel_join` or `group_join`) or
   `member_joined_channel`. The `message.*` subscriptions already carry the
   notice. `member_joined_channel` needs its own.
-- **What it reads.** That one conversation, from 10 minutes before the join,
-  threads included. `conversations.info` says what kind of conversation it is.
+- **What it reads.** That one conversation, from 10 minutes before the join up
+  to the join, threads included. `conversations.info` says what kind of conversation it is.
 - **What becomes an event.** Only a message that mentions the bot. The rest of
   what was said before the bot arrived is not replayed, and neither is an older
   mention. The same rule applies when a reconnect's backfill meets a join inside
-  its gap.
+  its gap. A gap that shows the bot leaving first is different: it was a member
+  then, so what it was sent is recovered as usual.
 - **Once.** The event id is the message's own `channel:ts`, so both join events,
   a reconnect and a late `message` all reach one occurrence.
-- **A failed read** is retried once a minute, five reads in all. The status tool
-  shows the last join, what it recovered and whether it is still owed.
+- **A failed read** is retried once a minute, five reads in all. One unreadable
+  thread does not cost the others. `live_through` waits meanwhile, so a process
+  that starts before the retries finish meets the join notice in its own backfill.
+  The status tool shows the last join, how many mentions it found, and how many
+  joins are still owed.
 
 `app_mention` is not ingested, although it would carry this message. For an
 ordinary mention in a joined channel Slack sends it beside the `message`, with
@@ -331,7 +335,7 @@ watermark with no resubscribe. Expired subscriptions are dropped.
 A read-only tool, listed on every Slack slug. It reports the state
 (`not_configured`, `connecting`, `connected`, `reconnecting`, `superseded`, …),
 when the socket opened, the last backfill and how much it recovered, the last
-conversation the bot joined and the mentions recovered from before it, the buffer's
+conversation the bot joined and the mentions found before it, the buffer's
 size and age, the last GCS write, and the lease. On the lease holder it lists
 the webhook subscriptions: id, name, the callback's host (never its path or
 secret), active or suspended, the last delivery and error, and the cursor. It

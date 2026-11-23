@@ -83,6 +83,7 @@ export interface RawSlackMessage {
 
 /** The join notice: `channel_join`, or `group_join` in a private channel. */
 const JOIN_SUBTYPES = new Set(['channel_join', 'group_join']);
+const LEAVE_SUBTYPES = new Set(['channel_leave', 'group_leave']);
 
 /**
  * The bot's own arrival in a conversation, or null.
@@ -106,6 +107,11 @@ export function ownJoin(
   if (!isNotice && raw.type !== 'member_joined_channel') return null;
   const channelId = raw.channel ?? channelHint?.id;
   return channelId ? { channelId, ts: raw.ts ?? raw.event_ts } : null;
+}
+
+/** The notice that the bot left, or was removed. It says the bot WAS a member until then. */
+export function isOwnLeave(raw: RawSlackMessage, bot: BotIdentity): boolean {
+  return raw.user === bot.userId && raw.subtype !== undefined && LEAVE_SUBTYPES.has(raw.subtype);
 }
 
 export function eventIdFor(channelId: string, ts: string): string {

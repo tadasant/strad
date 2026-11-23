@@ -31,6 +31,18 @@ const MAX_RATE_LIMIT_RETRIES = 3;
 const MAX_RETRY_AFTER_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 
+type ConversationType = 'channel' | 'group' | 'im';
+
+/** Null for a group DM, which is out of scope. */
+function conversationType(c: {
+  is_im?: boolean;
+  is_private?: boolean;
+  is_mpim?: boolean;
+}): ConversationType | null {
+  if (c.is_mpim) return null;
+  return c.is_im ? 'im' : c.is_private ? 'group' : 'channel';
+}
+
 export interface SlackApiOptions {
   fetch?: FetchLike;
   baseUrl?: string;
@@ -93,8 +105,8 @@ export class SlackApi {
   }
 
   /** Public and private channels and one-to-one DMs the bot is a member of. Group DMs are out of scope. */
-  async memberConversations(maxPages = 20): Promise<{ id: string; type: 'channel' | 'group' | 'im' }[]> {
-    const out: { id: string; type: 'channel' | 'group' | 'im' }[] = [];
+  async memberConversations(maxPages = 20): Promise<{ id: string; type: ConversationType }[]> {
+    const out: { id: string; type: ConversationType }[] = [];
     let cursor: string | undefined;
     for (let page = 0; page < maxPages; page++) {
       const res = await this.call<{
@@ -107,8 +119,8 @@ export class SlackApi {
         cursor,
       });
       for (const c of res.channels ?? []) {
-        if (c.is_mpim) continue;
-        out.push({ id: c.id, type: c.is_im ? 'im' : c.is_private ? 'group' : 'channel' });
+        const type = conversationType(c);
+        if (type !== null) out.push({ id: c.id, type });
       }
       cursor = res.response_metadata?.next_cursor || undefined;
       if (!cursor) break;
@@ -117,36 +129,39 @@ export class SlackApi {
   }
 
   /** What a conversation is, or null for a group DM, which is out of scope. */
-  async conversationType(channel: string): Promise<'channel' | 'group' | 'im' | null> {
+  async conversationType(channel: string): Promise<ConversationType | null> {
     const res = await this.call<{
       channel?: { is_im?: boolean; is_private?: boolean; is_mpim?: boolean };
     }>('conversations.info', this.botToken, { channel });
-    const c = res.channel ?? {};
-    if (c.is_mpim) return null;
-    return c.is_im ? 'im' : c.is_private ? 'group' : 'channel';
+    return conversationType(res.channel ?? {});
   }
 
-  /** Messages with `ts` after `oldest`, newest first (Slack's order), up to `maxPages` pages of 200. */
+  /**
+   * Messages with `ts` after `oldest` (and before `latest`, when given), newest
+   * first (Slack's order), up to `maxPages` pages of 200.
+   */
   async history(
     channel: string,
     oldest: string,
-    maxPages: number
+    maxPages: number,
+    latest?: string
   ): Promise<{ messages: SlackHistoryMessage[]; complete: boolean }> {
-    return this.paged('conversations.history', { channel, oldest }, maxPages);
+    return this.paged('conversations.history', { channel, oldest, latest }, maxPages);
   }
 
   async replies(
     channel: string,
     ts: string,
     oldest: string,
-    maxPages: number
+    maxPages: number,
+    latest?: string
   ): Promise<{ messages: SlackHistoryMessage[]; complete: boolean }> {
-    return this.paged('conversations.replies', { channel, ts, oldest }, maxPages);
+    return this.paged('conversations.replies', { channel, ts, oldest, latest }, maxPages);
   }
 
   private async paged(
     method: string,
-    params: Record<string, string>,
+    params: Record<string, string | undefined>,
     maxPages: number
   ): Promise<{ messages: SlackHistoryMessage[]; complete: boolean }> {
     const messages: SlackHistoryMessage[] = [];

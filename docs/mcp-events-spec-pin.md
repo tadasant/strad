@@ -18,8 +18,8 @@ breaking changes are expected to be rare. Treat the wire as able to change.
 | Re-checked           | 2026-11-23: no wire change, in the SEP on `main` or in `ext-events` at `c77b843`                         |
 
 Before changing anything under MCP Events, compare this commit with the SEP
-on `main` and the extension repository's copy. If the draft moved, decide what the change means for the wire here, then
-update this file in the same PR.
+on `main` and the extension repository's copy. If the draft moved, decide what
+the change means for the wire here, then update this file in the same PR.
 
 ## What is implemented against this commit
 

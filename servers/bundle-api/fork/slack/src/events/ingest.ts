@@ -48,7 +48,13 @@ import {
   notConfiguredMessage,
   type EventsConfig,
 } from './config.js';
-import { ownJoin, toMessagePosted, type BotIdentity, type RawSlackMessage } from './normalize.js';
+import {
+  isOwnLeave,
+  ownJoin,
+  toMessagePosted,
+  type BotIdentity,
+  type RawSlackMessage,
+} from './normalize.js';
 import { SlackApi, SlackApiError, type FetchLike } from './slack-api.js';
 import { EventsStore, LEASE_CHECK_MS, SupersededError } from './store.js';
 import {
@@ -92,6 +98,10 @@ const BACKFILL_MAX_PAGES = 10;
 export const JOIN_LOOKBACK_MS = 10 * 60_000;
 /** A catch-up that failed is retried on the live tick, this many reads in all. */
 const JOIN_MAX_ATTEMPTS = 5;
+/** Under the live tick's interval, so one tick is one retry. */
+const JOIN_RETRY_MS = 45_000;
+/** The join notice and `member_joined_channel` name one join, this close together. */
+const SAME_JOIN_MS = 5_000;
 const FLUSH_DEBOUNCE_MS = 2_000;
 const LIVE_HEARTBEAT_MS = 60_000;
 /**
@@ -162,6 +172,14 @@ export const WEBHOOK_TICK_MS = 1_000;
 
 export const MESSAGE_POSTED = 'message_posted';
 
+interface OwnJoin {
+  channel: string;
+  ts: string;
+  attempts: number;
+  nextAttemptAt: number;
+  settled: boolean;
+}
+
 export class SlackEventsIngest {
   state: IngestState;
   private readonly config: EventsConfig | null;
@@ -214,13 +232,13 @@ export class SlackEventsIngest {
     error?: string;
   } | null = null;
   private envelopes = 0;
-  /** Conversations the bot joined and has not been caught up on yet. */
-  private pendingJoins = new Map<string, { ts: string; attempts: number }>();
+  /** Joins this process has seen. One not `settled` is still owed its catch-up. */
+  private joins: OwnJoin[] = [];
   private joinsQueued = false;
   private lastJoin: {
     at: number;
     channel: string;
-    added: number;
+    found: number;
     attempts: number;
     incomplete: number;
     error?: string;
@@ -490,7 +508,7 @@ export class SlackEventsIngest {
   }
 
   private ingest(raw: RawSlackMessage, hint?: { id: string; type?: string }): boolean {
-    if (!this.bot || this.store!.superseded) return false;
+    if (!this.bot || this.stopped || this.store!.superseded) return false;
     const join = ownJoin(raw, this.bot, hint);
     if (join) {
       this.noteJoin(join.channelId, join.ts);
@@ -577,13 +595,14 @@ export class SlackEventsIngest {
       if (this.stopped || this.store!.superseded) return false;
       const hint = { id: conv.id, type: conv.type };
       try {
-        const { messages, incomplete } = await this.readSince(conv.id, sinceTs, lookbackTs);
-        record.incomplete += incomplete;
+        const read = await this.readSince(conv.id, sinceTs, lookbackTs);
+        if (read.threadError !== undefined) throw read.threadError;
+        record.incomplete += read.incomplete;
         // Joined inside the gap: what was posted before that is history the bot
-        // was not there for, and only a mention of it is an event.
-        const joinedTs = messages.find((m) => ownJoin(m, this.bot!, hint))?.ts;
-        for (const m of messages) {
-          if (joinedTs !== undefined && m.ts! < joinedTs && !this.isMention(m, hint)) continue;
+        // was not there for. The join's own catch-up has the mention in it.
+        const joinedTs = this.joinedWithin(read.messages, sinceTs, hint);
+        for (const m of read.messages) {
+          if (joinedTs !== undefined && m.ts! < joinedTs) continue;
           if (this.ingest(m, hint)) record.added++;
         }
       } catch (err) {
@@ -605,35 +624,59 @@ export class SlackEventsIngest {
   /**
    * A conversation's messages after `sinceTs`, in message order, so a recovered
    * reply is sequenced after the top-level messages that preceded it. Parents
-   * are looked for from `lookbackTs`.
+   * are looked for from `lookbackTs`. A thread that cannot be read leaves the
+   * rest readable: the first such failure is `threadError`, for the caller.
    */
   private async readSince(
     channel: string,
     sinceTs: string,
-    lookbackTs: string
-  ): Promise<{ messages: RawSlackMessage[]; incomplete: number }> {
+    lookbackTs: string,
+    latestTs?: string
+  ): Promise<{ messages: RawSlackMessage[]; incomplete: number; threadError?: unknown }> {
     const api = this.api!;
     let incomplete = 0;
+    let threadError: unknown;
     const found = new Map<string, RawSlackMessage>();
-    const history = await api.history(channel, lookbackTs, BACKFILL_MAX_PAGES);
+    const history = await api.history(channel, lookbackTs, BACKFILL_MAX_PAGES, latestTs);
     if (!history.complete) incomplete++;
     for (const m of history.messages) {
       if (m.ts && m.ts > sinceTs) found.set(m.ts, m);
       if (m.latest_reply && m.latest_reply > sinceTs && m.ts) {
-        const replies = await api.replies(channel, m.ts, sinceTs, BACKFILL_MAX_PAGES);
-        if (!replies.complete) incomplete++;
-        // `replies` always includes the parent; whether it is new was decided
-        // by the history read above.
-        for (const r of replies.messages) {
-          if (r.ts && r.ts !== m.ts && r.ts > sinceTs) found.set(r.ts, r);
+        try {
+          const replies = await api.replies(channel, m.ts, sinceTs, BACKFILL_MAX_PAGES, latestTs);
+          if (!replies.complete) incomplete++;
+          // `replies` always includes the parent; whether it is new was decided
+          // by the history read above.
+          for (const r of replies.messages) {
+            if (r.ts && r.ts !== m.ts && r.ts > sinceTs) found.set(r.ts, r);
+          }
+        } catch (err) {
+          threadError ??= err;
         }
       }
     }
-    return { messages: [...found.keys()].sort().map((t) => found.get(t)!), incomplete };
+    const messages = [...found.keys()].sort().map((t) => found.get(t)!);
+    return { messages, incomplete, threadError };
   }
 
-  private isMention(raw: RawSlackMessage, hint: { id: string; type?: string }): boolean {
-    return toMessagePosted(raw, this.bot!, hint)?.data.mentions_bot === true;
+  /**
+   * When the bot became a member, if it was not one at `sinceTs`: its first
+   * membership record in the window is a join. Undefined otherwise: a leave
+   * first says it was a member, and what it was sent then is not skipped.
+   */
+  private joinedWithin(
+    messages: RawSlackMessage[],
+    sinceTs: string,
+    hint: { id: string; type?: string }
+  ): string | undefined {
+    const bot = this.bot!;
+    const joined = [
+      ...messages.filter((m) => ownJoin(m, bot, hint)).map((m) => m.ts!),
+      // Seen live; its notice may have been withheld.
+      ...this.joins.filter((j) => j.channel === hint.id && j.ts > sinceTs).map((j) => j.ts),
+    ].sort()[0];
+    const left = messages.find((m) => isOwnLeave(m, bot))?.ts;
+    return joined !== undefined && (left === undefined || joined < left) ? joined : undefined;
   }
 
   // --- the mention that invited the bot ---------------------------------------
@@ -641,14 +684,22 @@ export class SlackEventsIngest {
   /**
    * The bot joined a conversation. Slack delivers no `message` for what was
    * posted before that, and the mention that invited the bot is exactly such a
-   * message. The join notice and `member_joined_channel` may both arrive; the
-   * second finds the first pending, or reads again and adds nothing.
+   * message. The join notice, `member_joined_channel` and a backfill that meets
+   * the notice all report the same join; the first one is the one acted on.
    */
   private noteJoin(channel: string, ts: string | undefined): void {
-    if (this.pendingJoins.has(channel)) return;
     const joinTs = ts !== undefined && /^\d+\.\d+$/.test(ts) ? ts : toSlackTs(this.clock());
-    this.pendingJoins.set(channel, { ts: joinTs, attempts: 0 });
+    const known = this.joins.some(
+      (j) =>
+        j.channel === channel && Math.abs(Number(j.ts) - Number(joinTs)) * 1000 <= SAME_JOIN_MS
+    );
+    if (known) return;
+    this.joins.push({ channel, ts: joinTs, attempts: 0, nextAttemptAt: 0, settled: false });
     void this.runJoinCatchUps();
+  }
+
+  private get joinsOwed(): OwnJoin[] {
+    return this.joins.filter((j) => !j.settled);
   }
 
   /** On the backfill chain: a join and a reconnect never read the same conversation at once. */
@@ -657,29 +708,9 @@ export class SlackEventsIngest {
     this.joinsQueued = true;
     this.backfillChain = this.backfillChain.then(async () => {
       this.joinsQueued = false;
-      for (const [channel, join] of [...this.pendingJoins]) {
+      for (const join of this.joinsOwed) {
         if (this.stopped || this.store!.superseded) return;
-        join.attempts++;
-        const record: NonNullable<SlackEventsIngest['lastJoin']> = {
-          at: Number(join.ts) * 1000,
-          channel,
-          added: 0,
-          attempts: join.attempts,
-          incomplete: 0,
-        };
-        try {
-          await this.joinCatchUp(channel, join.ts, record);
-          this.pendingJoins.delete(channel);
-        } catch (err) {
-          record.error = errText(err);
-          if (join.attempts >= JOIN_MAX_ATTEMPTS) this.pendingJoins.delete(channel);
-          logWarning(
-            'slack-events',
-            `reading what preceded the bot joining ${channel} failed ` +
-              `(attempt ${join.attempts} of ${JOIN_MAX_ATTEMPTS}): ${record.error}`
-          );
-        }
-        this.lastJoin = record;
+        if (this.clock() >= join.nextAttemptAt) await this.joinCatchUp(join);
       }
     });
     return this.backfillChain;
@@ -687,35 +718,64 @@ export class SlackEventsIngest {
 
   /**
    * Buffers the messages that mention the bot, from {@link JOIN_LOOKBACK_MS}
-   * before its join. Top-level and in threads: an invite can come from a reply.
+   * before its join up to the join. Top-level and in threads: an invite can come
+   * from a reply. Never throws; a failure leaves the join owed.
    */
-  private async joinCatchUp(
-    channel: string,
-    joinTs: string,
-    record: NonNullable<SlackEventsIngest['lastJoin']>
-  ): Promise<void> {
-    const type = await this.api!.conversationType(channel);
-    if (type === null) return;
-    const hint = { id: channel, type };
-    const retentionStart = this.clock() - this.config!.retentionDays * 86_400_000;
-    const since = Math.max(Number(joinTs) * 1000 - JOIN_LOOKBACK_MS, retentionStart);
-    const lookback = Math.max(since - THREAD_LOOKBACK_MS, retentionStart);
-    const read = await this.readSince(channel, toSlackTs(since), toSlackTs(lookback));
-    record.incomplete = read.incomplete;
-    for (const m of read.messages) {
-      if (this.isMention(m, hint) && this.ingest(m, hint)) record.added++;
+  private async joinCatchUp(join: OwnJoin): Promise<void> {
+    join.attempts++;
+    const record: NonNullable<SlackEventsIngest['lastJoin']> = {
+      at: Number(join.ts) * 1000,
+      channel: join.channel,
+      found: 0,
+      attempts: join.attempts,
+      incomplete: 0,
+    };
+    try {
+      const type = await this.api!.conversationType(join.channel);
+      if (type !== null) {
+        const hint = { id: join.channel, type };
+        const retentionStart = this.clock() - this.config!.retentionDays * 86_400_000;
+        const since = Math.max(Number(join.ts) * 1000 - JOIN_LOOKBACK_MS, retentionStart);
+        const lookback = Math.max(since - THREAD_LOOKBACK_MS, retentionStart);
+        const read = await this.readSince(
+          join.channel,
+          toSlackTs(since),
+          toSlackTs(lookback),
+          join.ts
+        );
+        record.incomplete = read.incomplete;
+        for (const m of read.messages) {
+          if (!toMessagePosted(m, this.bot!, hint)?.data.mentions_bot) continue;
+          record.found++;
+          this.ingest(m, hint);
+        }
+        if (read.threadError !== undefined) throw read.threadError;
+      }
+      join.settled = true;
+    } catch (err) {
+      record.error = errText(err);
+      join.nextAttemptAt = this.clock() + JOIN_RETRY_MS;
+      join.settled = join.attempts >= JOIN_MAX_ATTEMPTS;
+      logWarning(
+        'slack-events',
+        `reading what preceded the bot joining ${join.channel} failed ` +
+          `(attempt ${join.attempts} of ${JOIN_MAX_ATTEMPTS}): ${record.error}`
+      );
     }
+    this.lastJoin = record;
   }
 
   // --- persistence and the lease -----------------------------------------------
 
   /**
-   * Moves `live_through` to now — never while a backfill is owed. `persist`
+   * Moves `live_through` to now — never while a backfill or a join's catch-up is
+   * owed, so a process that starts before it is paid meets the join. `persist`
    * forces a write; otherwise one is only worth it every LIVE_PERSIST_MS, and
    * the moment rides along with the next event's flush in between.
    */
   private markLive(persist = false): void {
     if (this.state !== 'connected' || this.store!.superseded || this.backfillPending) return;
+    if (this.joinsOwed.length > 0) return;
     const now = this.clock();
     this.buffer!.liveThrough = now;
     if (persist || now - this.livePersistedAt >= LIVE_PERSIST_MS) {
@@ -734,7 +794,7 @@ export class SlackEventsIngest {
     ) {
       void this.runBackfill();
     }
-    if (this.pendingJoins.size > 0 && this.state === 'connected') void this.runJoinCatchUps();
+    if (this.joinsOwed.length > 0 && this.state === 'connected') void this.runJoinCatchUps();
     this.markLive();
     this.buffer?.prune();
     await this.flush();
@@ -773,8 +833,9 @@ export class SlackEventsIngest {
 
   private onSuperseded(): void {
     this.state = 'superseded';
-    // The new owner's backfill meets the join notice itself.
-    this.pendingJoins.clear();
+    // An owed join held `live_through` back, so the new owner's backfill meets
+    // its notice.
+    this.joins = [];
     this.lastError = new SupersededError().message;
     this.ws?.close(1000, 'superseded');
     this.ws = null;
@@ -998,12 +1059,12 @@ export class SlackEventsIngest {
       last_join: this.lastJoin && {
         at: iso(this.lastJoin.at),
         channel_id: this.lastJoin.channel,
-        mentions_added: this.lastJoin.added,
+        mentions_found: this.lastJoin.found,
         attempts: this.lastJoin.attempts,
         reads_cut_short: this.lastJoin.incomplete,
-        still_owed: this.pendingJoins.has(this.lastJoin.channel),
         error: this.lastJoin.error ?? null,
       },
+      joins_still_owed: this.joinsOwed.length,
       buffer: {
         events: b.size,
         retention_days: this.config.retentionDays,
