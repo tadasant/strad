@@ -13,7 +13,13 @@
  *     a delete, a join, a topic change and every `hidden: true` event are not a
  *     message being posted;
  *   - group DMs (`mpim`): out of scope for this event type;
- *   - anything without a channel and a `ts`, which cannot be addressed.
+ *   - anything without a channel and a `ts`, which cannot be addressed;
+ *   - any event whose `type` is not `message`. `app_mention` is one: Slack sends
+ *     it BESIDE the `message` for an ordinary mention, with the same `ts` and no
+ *     `channel_type`, so it cannot tell a group DM or a private channel from a
+ *     public one, and it would be buffered first as often as not. The one
+ *     mention Slack sends only as `app_mention`, the one that invites the bot,
+ *     is read back when the bot joins ({@link ownJoin}).
  */
 
 export const MAX_TEXT_CHARS = 4000;
@@ -67,11 +73,39 @@ export interface RawSlackMessage {
   channel?: string;
   channel_type?: string;
   ts?: string;
+  event_ts?: string;
   thread_ts?: string;
   user?: string;
   bot_id?: string;
   username?: string;
   text?: string;
+}
+
+/** The join notice: `channel_join`, or `group_join` in a private channel. */
+const JOIN_SUBTYPES = new Set(['channel_join', 'group_join']);
+
+/**
+ * The bot's own arrival in a conversation, or null.
+ *
+ * Two events say it, and either is enough. The join NOTICE is an ordinary
+ * `message` in the channel, so the `message.channels` / `message.groups`
+ * subscriptions already carry it and `conversations.history` returns it; a
+ * workspace can turn notices off. `member_joined_channel` is the event proper,
+ * and needs a subscription of its own.
+ */
+export function ownJoin(
+  raw: RawSlackMessage,
+  bot: BotIdentity,
+  channelHint?: { id: string }
+): { channelId: string; ts: string | undefined } | null {
+  if (raw.user === undefined || raw.user !== bot.userId) return null;
+  const isNotice =
+    (raw.type === undefined || raw.type === 'message') &&
+    raw.subtype !== undefined &&
+    JOIN_SUBTYPES.has(raw.subtype);
+  if (!isNotice && raw.type !== 'member_joined_channel') return null;
+  const channelId = raw.channel ?? channelHint?.id;
+  return channelId ? { channelId, ts: raw.ts ?? raw.event_ts } : null;
 }
 
 export function eventIdFor(channelId: string, ts: string): string {

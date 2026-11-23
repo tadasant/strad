@@ -6785,6 +6785,12 @@ public ingress.
 - Backfill sees a thread reply in a gap only if the thread's parent is less than
   48 hours older than the gap, and each read stops at 10 pages of 200. A read cut
   short is counted on `slack_events_status` as `reads_cut_short`.
+- The mention that invites the bot reaches Slack's apps as `app_mention` only,
+  which the ingest does not take. It is read back on the bot's join, for which
+  the only signal without a new subscription is the join notice, a message Slack
+  says it sometimes withholds and a workspace can hide. Subscribing the app to
+  `member_joined_channel` (no new scope) removes that dependence. Not exercised
+  against a live workspace.
 - The buffer is one object, rewritten at most every couple of seconds. Events
   buffered since the last write are lost if the process dies; the next
   connection's backfill recovers what Slack still returns.

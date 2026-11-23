@@ -5,6 +5,7 @@
  *   auth.test               who the bot is (to drop its own posts) and the workspace URL
  *   apps.connections.open   a Socket Mode WebSocket URL, on the APP-level token
  *   users.conversations     the conversations the bot is in, for backfill
+ *   conversations.info      what kind of conversation the bot just joined
  *   conversations.history   a conversation's messages since a point, for backfill
  *   conversations.replies   a thread's replies since a point, for backfill
  *
@@ -113,6 +114,16 @@ export class SlackApi {
       if (!cursor) break;
     }
     return out;
+  }
+
+  /** What a conversation is, or null for a group DM, which is out of scope. */
+  async conversationType(channel: string): Promise<'channel' | 'group' | 'im' | null> {
+    const res = await this.call<{
+      channel?: { is_im?: boolean; is_private?: boolean; is_mpim?: boolean };
+    }>('conversations.info', this.botToken, { channel });
+    const c = res.channel ?? {};
+    if (c.is_mpim) return null;
+    return c.is_im ? 'im' : c.is_private ? 'group' : 'channel';
   }
 
   /** Messages with `ts` after `oldest`, newest first (Slack's order), up to `maxPages` pages of 200. */

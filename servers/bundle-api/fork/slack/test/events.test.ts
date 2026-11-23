@@ -12,7 +12,9 @@
 //      still advances; a cursor below an evicted event says `truncated`.
 //   4. A reconnect BACKFILLS from just before the last moment a socket was live,
 //      and the newest process takes the lease from the old one.
-//   5. Unconfigured is inert and honest: no extension advertised, no event
+//   5. The mention that INVITES the bot is recovered when it joins, as one
+//      occurrence, and nothing else from before the join is.
+//   6. Unconfigured is inert and honest: no extension advertised, no event
 //      types listed, a poll that names the missing variable, and every existing
 //      tool exactly where it was.
 import { describe, expect, it } from 'vitest';
@@ -278,6 +280,8 @@ interface FakeSlack {
   calls: string[];
   history: Record<string, Record<string, unknown>[]>;
   replies: Record<string, Record<string, unknown>[]>;
+  /** `conversations.info` per channel; a public channel unless said otherwise. */
+  info: Record<string, Record<string, unknown>>;
 }
 
 function fakeSlack(): FakeSlack {
@@ -285,6 +289,7 @@ function fakeSlack(): FakeSlack {
     calls: [],
     history: {},
     replies: {},
+    info: {},
     fetch: (async (input: string | URL, init?: RequestInit) => {
       const method = String(input).split('/').pop()!;
       const params = new URLSearchParams(String(init?.body ?? ''));
@@ -300,6 +305,8 @@ function fakeSlack(): FakeSlack {
           return ok({
             channels: Object.keys(s.history).map((id) => ({ id, is_im: id.startsWith('D') })),
           });
+        case 'conversations.info':
+          return ok({ channel: { id: params.get('channel'), ...s.info[params.get('channel')!] } });
         case 'conversations.history': {
           const oldest = params.get('oldest')!;
           const msgs = (s.history[params.get('channel')!] ?? []).filter(
@@ -503,6 +510,260 @@ describe('SlackEventsIngest', () => {
     expect(slack.calls).not.toContain('conversations.history');
     expect(ingest.status().buffer).toMatchObject({ events: 0 });
     await ingest.close();
+  });
+
+  describe('the mention that invites the bot', () => {
+    // Slack sends it as `app_mention` only: the bot was not a member when it was
+    // posted, so there is no `message` for it.
+    const asked = T0 + 60_000;
+    const joined = asked + 30_000;
+    const mention = {
+      type: 'message',
+      ts: ts(asked, 1),
+      user: 'U1',
+      text: 'hey <@UBOT> can you look at this?',
+    };
+    const notice = {
+      type: 'message',
+      subtype: 'channel_join',
+      ts: ts(joined, 2),
+      user: 'UBOT',
+      inviter: 'U1',
+      text: '<@UBOT> has joined the channel',
+    };
+    /** `member_joined_channel`, as Slack documents it: no `ts`, an `event_ts`. */
+    const memberJoined = {
+      type: 'member_joined_channel',
+      user: 'UBOT',
+      channel: 'CNEW',
+      channel_type: 'C',
+      team: 'T1',
+      inviter: 'U1',
+      event_ts: ts(joined, 3),
+    };
+    let env = 0;
+    const deliver = (sock: FakeSocket, event: unknown) =>
+      sock.frame({ envelope_id: `j-${++env}`, type: 'events_api', payload: { event } });
+    const onWire = (m: Record<string, unknown>, channel = 'CNEW', channel_type = 'channel') => ({
+      ...m,
+      channel,
+      channel_type,
+      event_ts: m.ts,
+    });
+
+    async function live(blobs = new MemoryBlobStore()) {
+      const slack = fakeSlack();
+      const t = { now: T0 };
+      const { ingest, sockets } = await bootIngest(blobs, slack, () => t.now);
+      sockets[0]!.frame({ type: 'hello' });
+      await settle();
+      const { cursor } = await ingest.poll({ cursor: null });
+      t.now = joined + 500;
+      const got = async (args: Record<string, unknown> = {}) =>
+        (await ingest.poll({ cursor, arguments: args })).events;
+      return { slack, t, ingest, sock: sockets[0]!, got, blobs };
+    }
+
+    it.each([
+      ['the join notice', onWire(notice)],
+      ['member_joined_channel', memberJoined],
+    ])('becomes one occurrence, on %s', async (_, event) => {
+      const { slack, ingest, sock, got } = await live();
+      slack.history.CNEW = [mention, notice];
+      deliver(sock, event);
+      await settle();
+      const events = await got({ addressed_to_bot: true });
+      expect(events.map((e) => e.eventId)).toEqual([`slack:CNEW:${ts(asked, 1)}`]);
+      expect(events[0]!.timestamp).toBe(new Date(asked).toISOString());
+      // Exactly what a `message` for it would have produced.
+      expect(events[0]!.data).toEqual(toMessagePosted(onWire(mention), BOT)!.data);
+      expect(ingest.status().last_join).toMatchObject({
+        channel_id: 'CNEW',
+        mentions_added: 1,
+        still_owed: false,
+        error: null,
+      });
+      await ingest.close();
+    });
+
+    it('is one occurrence whatever else Slack sends for it', async () => {
+      const { slack, t, ingest, sock, got } = await live();
+      slack.history.CNEW = [mention, notice];
+      deliver(sock, { ...mention, type: 'app_mention', channel: 'CNEW', event_ts: mention.ts });
+      deliver(sock, onWire(notice));
+      await settle();
+      deliver(sock, memberJoined);
+      await settle();
+      // Were Slack ever to send the `message` too, late.
+      deliver(sock, onWire(mention));
+      // And a reconnect re-reads the same minutes, notice included.
+      await ingest.liveTick();
+      t.now += 30_000;
+      sock.frame({ type: 'hello' });
+      await settle();
+      expect((await got()).map((e) => e.eventId)).toEqual([`slack:CNEW:${ts(asked, 1)}`]);
+      await ingest.close();
+    });
+
+    it('an ordinary mention in a joined channel, sent as message and app_mention, is one occurrence', async () => {
+      for (const order of [['message', 'app_mention'], ['app_mention', 'message']]) {
+        const { slack, ingest, sock, got } = await live();
+        for (const type of order) {
+          const { channel_type, ...bare } = onWire(mention, 'C1', 'group');
+          deliver(sock, type === 'message' ? { ...bare, channel_type } : { ...bare, type });
+        }
+        await settle();
+        const events = await got();
+        expect(events.map((e) => e.eventId)).toEqual([`slack:C1:${ts(asked, 1)}`]);
+        // `app_mention` carries no channel_type; the payload is the `message`'s.
+        expect(events[0]!.data.channel_type).toBe('group');
+        expect(slack.calls).not.toContain('conversations.info');
+        await ingest.close();
+      }
+    });
+
+    it('replays nothing else from a busy channel: only mentions, only from the minutes before the join', async () => {
+      const { slack, ingest, sock, got } = await live();
+      const at = (ms: number, n: number, extra: Record<string, unknown> = {}) => ({
+        type: 'message',
+        ts: ts(ms, n),
+        user: 'U2',
+        text: `chatter ${n}`,
+        ...extra,
+      });
+      slack.history.CNEW = [
+        at(joined - 86_400_000, 1, { text: 'yesterday, <@UBOT>' }),
+        at(joined - 11 * 60_000, 2, { text: 'eleven minutes ago, <@UBOT>' }),
+        ...Array.from({ length: 50 }, (_, i) => at(joined - 5 * 60_000, 100 + i)),
+        at(joined - 60_000, 3, { user: 'UBOT', text: 'the bot naming itself <@UBOT>' }),
+        at(joined - 60_000, 4, { subtype: 'channel_join', user: 'U9', text: '<@UBOT> no' }),
+        mention,
+        notice,
+      ];
+      deliver(sock, onWire(notice));
+      await settle();
+      expect((await got()).map((e) => e.data.text)).toEqual([mention.text]);
+      await ingest.close();
+    });
+
+    it('is recovered from a thread whose parent is older', async () => {
+      const { slack, ingest, sock, got } = await live();
+      const parent = ts(joined - 3600_000, 1);
+      slack.history.CNEW = [
+        { type: 'message', ts: parent, user: 'U2', text: 'parent <@UBOT>', latest_reply: mention.ts },
+        notice,
+      ];
+      slack.replies[`CNEW:${parent}`] = [
+        { type: 'message', ts: parent, user: 'U2', text: 'parent <@UBOT>' },
+        { ...mention, thread_ts: parent },
+      ];
+      deliver(sock, onWire(notice));
+      await settle();
+      const events = await got();
+      expect(events.map((e) => e.data.ts)).toEqual([mention.ts]);
+      expect(events[0]!.data.thread_ts).toBe(parent);
+      await ingest.close();
+    });
+
+    it("somebody else's join reads nothing", async () => {
+      const { slack, ingest, sock, got } = await live();
+      slack.history.CNEW = [mention];
+      deliver(sock, onWire({ ...notice, user: 'U7' }));
+      deliver(sock, { ...memberJoined, user: 'U7' });
+      await settle();
+      expect(slack.calls).not.toContain('conversations.history');
+      expect(await got()).toEqual([]);
+      await ingest.close();
+    });
+
+    it('takes the conversation kind from Slack: private is group, a group DM is nothing', async () => {
+      const { slack, ingest, sock, got } = await live();
+      slack.info.CNEW = { is_private: true };
+      slack.info.CMPIM = { is_private: true, is_mpim: true };
+      slack.history.CNEW = [mention];
+      slack.history.CMPIM = [mention];
+      deliver(sock, memberJoined);
+      deliver(sock, { ...memberJoined, channel: 'CMPIM' });
+      await settle();
+      expect((await got()).map((e) => [e.data.channel_id, e.data.channel_type])).toEqual([
+        ['CNEW', 'group'],
+      ]);
+      await ingest.close();
+    });
+
+    it('a read that fails is retried on the live tick, a bounded number of times', async () => {
+      const { slack, ingest, sock, got } = await live();
+      slack.history.CNEW = [mention, notice];
+      const real = slack.fetch;
+      let failures = 0;
+      let failing = true;
+      (ingest as unknown as { api: { fetchImpl: typeof fetch } }).api.fetchImpl = (async (
+        input: string | URL,
+        init?: RequestInit
+      ) => {
+        if (failing && String(input).endsWith('conversations.history')) {
+          failures++;
+          return new Response(JSON.stringify({ ok: false, error: 'internal_error' }));
+        }
+        return real(input, init);
+      }) as typeof fetch;
+
+      deliver(sock, onWire(notice));
+      await settle();
+      expect(await got()).toEqual([]);
+      expect(ingest.status().last_join).toMatchObject({
+        still_owed: true,
+        error: 'Slack conversations.history failed: internal_error',
+      });
+      failing = false;
+      await ingest.liveTick();
+      await settle();
+      expect((await got()).map((e) => e.data.ts)).toEqual([mention.ts]);
+      expect(ingest.status().last_join).toMatchObject({ attempts: 2, still_owed: false });
+
+      failing = true;
+      failures = 0;
+      deliver(sock, onWire(notice));
+      for (let i = 0; i < 10; i++) {
+        await settle();
+        await ingest.liveTick();
+      }
+      await settle();
+      expect(failures).toBe(5);
+      expect(ingest.status().last_join).toMatchObject({ attempts: 5, still_owed: false });
+      await ingest.close();
+    });
+
+    it('a join that happened while nobody was connected is caught up by the backfill, with no replay', async () => {
+      const blobs = new MemoryBlobStore();
+      const slack = fakeSlack();
+      let now = T0;
+      const a = await bootIngest(blobs, slack, () => now);
+      a.sockets[0]!.frame({ type: 'hello' });
+      await settle();
+      await a.ingest.liveTick(); // live_through = T0
+      const { cursor } = await a.ingest.poll({ cursor: null });
+      await a.ingest.close();
+
+      // Asked five minutes before the gap, joined inside it.
+      const early = { ...mention, ts: ts(T0 - 5 * 60_000, 1) };
+      now = T0 + 10 * 60_000;
+      slack.history.CNEW = [
+        early,
+        { type: 'message', ts: ts(T0 + 60_000, 2), user: 'U2', text: 'before the join' },
+        { type: 'message', ts: ts(T0 + 61_000, 3), user: 'U2', text: 'ping <@UBOT>' },
+        { ...notice, ts: ts(T0 + 120_000, 4) },
+        { type: 'message', ts: ts(T0 + 180_000, 5), user: 'U2', text: 'after the join' },
+      ];
+      const b = await bootIngest(blobs, slack, () => now);
+      b.sockets[0]!.frame({ type: 'hello' });
+      await settle();
+      const { events } = await b.ingest.poll({ cursor });
+      expect(events.map((e) => e.data.text).sort()).toEqual(
+        [early.text, 'ping <@UBOT>', 'after the join'].sort()
+      );
+      await b.ingest.close();
+    });
   });
 
   it('reconnects when Slack asks it to refresh', async () => {

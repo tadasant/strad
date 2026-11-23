@@ -177,6 +177,36 @@ so this second backfill picks them up.
 A first-ever boot backfills nothing. "From now" is the only honest start for a
 buffer that has never been live.
 
+### The mention that invites the bot
+
+Someone @mentions the bot in a channel it is not in, and accepts Slack's offer
+to invite it. Slack sends that message as
+[`app_mention`](https://docs.slack.dev/reference/events/app_mention) only. The
+bot was not a member when it was posted, so there is no `message` event for it.
+The ingest drops `app_mention` (see below), so it reads that message back when
+the bot joins:
+
+- **What it waits for.** The bot's own join, as either the join notice (a
+  `message` with subtype `channel_join` or `group_join`) or
+  `member_joined_channel`. The `message.*` subscriptions already carry the
+  notice. `member_joined_channel` needs its own.
+- **What it reads.** That one conversation, from 10 minutes before the join,
+  threads included. `conversations.info` says what kind of conversation it is.
+- **What becomes an event.** Only a message that mentions the bot. The rest of
+  what was said before the bot arrived is not replayed, and neither is an older
+  mention. The same rule applies when a reconnect's backfill meets a join inside
+  its gap.
+- **Once.** The event id is the message's own `channel:ts`, so both join events,
+  a reconnect and a late `message` all reach one occurrence.
+- **A failed read** is retried once a minute, five reads in all. The status tool
+  shows the last join, what it recovered and whether it is still owed.
+
+`app_mention` is not ingested, although it would carry this message. For an
+ordinary mention in a joined channel Slack sends it beside the `message`, with
+the same `ts` and no `channel_type`. Whichever arrived first would be the
+payload, with a private channel reported as public and a group DM let in. It
+also needs a scope (`app_mentions:read`) that nothing else here does.
+
 ### Webhook delivery
 
 `message_posted` lists `delivery: ["poll", "webhook"]`. A client that would
@@ -300,7 +330,8 @@ watermark with no resubscribe. Expired subscriptions are dropped.
 
 A read-only tool, listed on every Slack slug. It reports the state
 (`not_configured`, `connecting`, `connected`, `reconnecting`, `superseded`, …),
-when the socket opened, the last backfill and how much it recovered, the buffer's
+when the socket opened, the last backfill and how much it recovered, the last
+conversation the bot joined and the mentions recovered from before it, the buffer's
 size and age, the last GCS write, and the lease. On the lease holder it lists
 the webhook subscriptions: id, name, the callback's host (never its path or
 secret), active or suspended, the last delivery and error, and the cursor. It
@@ -355,6 +386,11 @@ The other Slack tools are unaffected.
 
 On the Slack side, the app needs Socket Mode turned on, an app-level token, and
 bot event subscriptions for `message.channels`, `message.groups` and `message.im`.
+`member_joined_channel` is a fourth, optional one. It makes
+[the inviting mention](#the-mention-that-invites-the-bot) independent of the join
+notice, which Slack says it
+[sometimes withholds](https://docs.slack.dev/reference/events/message/channel_join).
+It needs `channels:read` and `groups:read`, which backfill already uses.
 Backfill reads with the history scopes the bot already has
 (`channels:history`, `groups:history`, `im:history`) and lists its
 conversations with `channels:read`, `groups:read` and `im:read`.

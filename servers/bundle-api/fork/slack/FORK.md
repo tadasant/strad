@@ -291,19 +291,19 @@ No existing tool changed.
 | File | Change |
 | --- | --- |
 | `src/events/config.ts` | **New.** The six required variables — three of them the shared state store's — the `slack-events/` folder rule, and the error that names whichever are missing. |
-| `src/events/normalize.ts` | **New.** One Slack message to one `message_posted` payload, or nothing: the bot's own posts, non-posting subtypes, hidden events and group DMs are dropped. Event id `slack:<channel_id>:<ts>`. |
+| `src/events/normalize.ts` | **New.** One Slack message to one `message_posted` payload, or nothing: the bot's own posts, non-posting subtypes, hidden events, group DMs and `app_mention` are dropped. Also recognises the bot's own join. Event id `slack:<channel_id>:<ts>`. |
 | `src/events/buffer.ts` | **New.** The ring buffer, the subscription arguments, and the cursor (a clock-based sequence, so it survives a deploy). |
 | `src/events/store.ts` | **New.** The sealed buffer object (magic `SLE1`, this ingest's own key) and its heartbeating lease, in this ingest's folder of the shared bucket. |
 | `src/events/state-store.ts` | **Generated.** strad's state store, vendored from `src/state/store.ts` in strad by `npm run statestore:sync`: the GCS JSON API on Node's `fetch`, the seal, the lease. Edit the source, never this copy. |
-| `src/events/slack-api.ts` | **New.** `auth.test`, `apps.connections.open`, `users.conversations`, `conversations.history`, `conversations.replies`. |
-| `src/events/ingest.ts` | **New.** The Socket Mode client: ack every envelope first, buffer second, backfill on every hello, stand down when the lease is lost. |
+| `src/events/slack-api.ts` | **New.** `auth.test`, `apps.connections.open`, `users.conversations`, `conversations.info`, `conversations.history`, `conversations.replies`. |
+| `src/events/ingest.ts` | **New.** The Socket Mode client: ack every envelope first, buffer second, backfill on every hello, read back the mention that invited the bot when it joins, stand down when the lease is lost. |
 | `src/events/protocol.ts` | **New.** `events/list`, `events/poll`, `events/subscribe`, `events/unsubscribe`, and the extension, advertised only when configured. |
 | `src/events/webhook/` | **New.** Webhook delivery (draft SEP-3415): the Standard Webhooks signature (`signing.ts`), the SSRF-guarded HTTPS transport (`transport.ts`), the persisted subscriptions (`registry.ts`), and verification, retries, suspension and the watermark (`delivery.ts`), and the cursor's wire form (`cursor.ts`). Generic over the event source: it is also Gmail's engine, copied into `images/bundle-google/src/events/webhook/` by `npm run eventswebhook:sync`, so edit it HERE. strad's `docs/servers/events` and `HACKS.md` #140. |
 | `src/tools/events-status.ts` | **New.** `slack_events_status`, read-only. |
 | `src/server.ts`, `src/tools.ts`, `src/index.ts` | One ingest per process, threaded to the status tool and the handlers; `close()` flushes the buffer. |
 
 Fourteen tools, eight of them read-only. `test/events.test.ts` pins the event id,
-what is dropped, the cursor, backfill across a restart, the lease handover, and
+what is dropped, the cursor, backfill across a restart, the inviting mention, the lease handover, and
 the unconfigured mount.
 
 ## Re-vendoring
