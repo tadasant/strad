@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
 import {
   authorizationServerCandidates,
+  beginUpstreamAuthorization,
   bearerChallenge,
   checkTokenEndpoint,
   clientSource,
@@ -657,6 +658,70 @@ describe("bearerChallenge, adversarially", () => {
       resourceMetadata: "https://x.example/prm?scope=admin",
       scope: null,
     });
+  });
+});
+
+describe("beginUpstreamAuthorization", () => {
+  const discovery = {
+    resourceMetadataUrl: null,
+    resource: "https://up.example/mcp",
+    issuer: "https://as.example",
+    authorizationEndpoint: "https://as.example/authorize",
+    tokenEndpoint: "https://as.example/token",
+    registrationEndpoint: null,
+    scopes: ["read"],
+  };
+  const begin = (authorizeParams?: Record<string, string>) =>
+    new URL(
+      beginUpstreamAuthorization({
+        discovery,
+        clientId: "cid",
+        redirectUri: "https://strad.example/ui/oauth/callback",
+        ...(authorizeParams ? { authorizeParams } : {}),
+      }).url,
+    ).searchParams;
+
+  it("without authorizeParams, sends exactly strad's own parameters", () => {
+    expect([...begin().keys()].sort()).toEqual([
+      "client_id",
+      "code_challenge",
+      "code_challenge_method",
+      "redirect_uri",
+      "resource",
+      "response_type",
+      "scope",
+      "state",
+    ]);
+  });
+
+  it("adds the configured parameters", () => {
+    const q = begin({ access_type: "offline", prompt: "consent" });
+    expect(q.get("access_type")).toBe("offline");
+    expect(q.get("prompt")).toBe("consent");
+    expect(q.get("resource")).toBe("https://up.example/mcp");
+  });
+
+  it("drops a reserved key even past the schema, in any spelling", () => {
+    const reserved = [
+      "client_id",
+      "redirect_uri",
+      "response_type",
+      "scope",
+      "state",
+      "code_challenge",
+      "code_challenge_method",
+      "resource",
+      "request",
+      "request_uri",
+      "response_mode",
+      "authorization_details",
+      "include_granted_scopes",
+      "SCOPE",
+      " state ",
+    ];
+    const q = begin(Object.fromEntries(reserved.map((k) => [k, "evil"])));
+    expect([...q.values()]).not.toContain("evil");
+    expect([...q.keys()].sort()).toEqual([...begin().keys()].sort());
   });
 });
 

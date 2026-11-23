@@ -698,7 +698,7 @@ export function entryFromForm(
     mayBeUnseeded: list(body, "mayBeUnseeded"),
   };
 
-  const specific: Record<string, unknown> = kindFields(kind, body);
+  const specific: Record<string, unknown> = kindFields(kind, body, before);
 
   // The form's own fields are authoritative — including when they are now
   // blank. Everything else on the original entry survives untouched.
@@ -750,9 +750,27 @@ function formFieldsFor(kind: string): string[] {
   }
 }
 
+/**
+ * What an existing entry's `oauthRefresh:` carries that the form has no input
+ * for. The form owns the block, so a save that did not carry these would delete
+ * a `discoveryProxy:` or a `registration:` while changing a title.
+ */
+function oauthRefreshUnrendered(
+  before: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const block = before?.oauthRefresh;
+  if (typeof block !== "object" || block === null) return {};
+  return Object.fromEntries(
+    Object.entries(block).filter(([key]) =>
+      ["discoveryProxy", "registration"].includes(key),
+    ),
+  );
+}
+
 function kindFields(
   kind: string,
   body: Record<string, unknown>,
+  before: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
   switch (kind) {
     case "remote-http": {
@@ -764,6 +782,7 @@ function kindFields(
         refreshToken: str(body, "oauthRefreshToken"),
         scope: str(body, "oauthScope"),
         resource: str(body, "oauthResource"),
+        authorizeParams: map(body, "oauthAuthorizeParams"),
       });
       return {
         url: str(body, "url"),
@@ -771,7 +790,9 @@ function kindFields(
         // Only when the token URL is there. A `clientAuth` defaulted by the
         // select, alone, would otherwise turn every remote-http entry into one
         // that declares an OAuth refresh it cannot perform.
-        oauthRefresh: oauthRefresh.tokenUrl ? oauthRefresh : undefined,
+        oauthRefresh: oauthRefresh.tokenUrl
+          ? { ...oauthRefreshUnrendered(before), ...oauthRefresh }
+          : undefined,
       };
     }
     case "local-tunnel":

@@ -217,7 +217,12 @@ describe("escaping", () => {
         headers: { [NASTY]: NASTY },
         tools: { allow: [NASTY] },
         mayBeUnseeded: [NASTY],
-        oauthRefresh: { tokenUrl: NASTY, clientId: NASTY, scope: NASTY },
+        oauthRefresh: {
+          tokenUrl: NASTY,
+          clientId: NASTY,
+          scope: NASTY,
+          authorizeParams: { [NASTY]: NASTY },
+        },
       },
       slug: NASTY,
       kind: "remote-http",
@@ -370,6 +375,39 @@ describe("entryFromForm", () => {
       tokenUrl: "https://o.example.com/token",
       clientAuth: "post",
     });
+  });
+
+  it("parses oauthRefresh.authorizeParams, clears it when blanked, and carries what it has no input for", () => {
+    const before = {
+      kind: "remote-http",
+      oauthRefresh: {
+        tokenUrl: "https://o.example.com/token",
+        authorizeParams: { access_type: "offline" },
+        registration: { clientName: "Client (strad)" },
+        discoveryProxy: { via: "brightdata" },
+      },
+    };
+    const saved = entryFromForm(
+      form({
+        oauthTokenUrl: "https://o.example.com/token",
+        oauthAuthorizeParams: "access_type: offline\nprompt: consent",
+      }),
+      before,
+    );
+    expect(saved.oauthRefresh).toEqual({
+      tokenUrl: "https://o.example.com/token",
+      authorizeParams: { access_type: "offline", prompt: "consent" },
+      registration: { clientName: "Client (strad)" },
+      discoveryProxy: { via: "brightdata" },
+    });
+    const cleared = entryFromForm(
+      form({ oauthTokenUrl: "https://o.example.com/token" }),
+      before,
+    );
+    expect(cleared.oauthRefresh).not.toHaveProperty("authorizeParams");
+    expect(cleared.oauthRefresh).toHaveProperty("registration");
+    // No token URL is no OAuth refresh at all: nothing is carried into one.
+    expect(entryFromForm(form(), before)).not.toHaveProperty("oauthRefresh");
   });
 
   it("refuses a non-numeric timeout rather than coercing it", () => {

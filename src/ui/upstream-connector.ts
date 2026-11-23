@@ -443,6 +443,9 @@ export async function handleUpstreamConnect(
       discovery,
       clientId,
       redirectUri,
+      ...(entry.oauth.authorizeParams
+        ? { authorizeParams: entry.oauth.authorizeParams }
+        : {}),
     });
 
     issueConnectorTx(
@@ -810,6 +813,18 @@ function describeField(
   )}</code> — the config's own, used as written and not stored.</li>`;
 }
 
+/** What `authorizeParams:` adds to the sign-in link, on the page before anyone clicks. */
+function authorizeParamsLine(
+  params: Readonly<Record<string, string>> | undefined,
+): string {
+  const pairs = Object.entries(params ?? {});
+  if (pairs.length === 0) return "";
+  return (
+    `, with the configured ` +
+    pairs.map(([k, v]) => `<code>${esc(`${k}=${v}`)}</code>`).join(", ")
+  );
+}
+
 export async function renderUpstreamConnectorPage(
   res: Response,
   opts: ConnectorUiOptions,
@@ -969,7 +984,7 @@ ${state.kind === "ready" || state.kind === "connected" ? pasteForm(action, entry
           ? `the configured scopes <code>${esc(plan.scopes.join(" "))}</code>`
           : "no scopes"
         : "the scopes the upstream advertises"
-    }.</li>
+    }${authorizeParamsLine(entry.oauth.authorizeParams)}.</li>
     <li>Exchanges the code and stores what it learned under this server's <code>oauth/</code> namespace.</li>
   </ol>
 </section>
@@ -1058,7 +1073,9 @@ export function upstreamFlash(
       `Refused: ${host} completed the consent but issued no refresh token, so ` +
       `there is nothing durable to store. Nothing was written. Some servers ` +
       `issue one only for an offline_access scope — set oauthRefresh.scope to ` +
-      `ask for it.`,
+      `ask for it. Others take a parameter on the sign-in link instead: for ` +
+      `Google, set oauthRefresh.authorizeParams to access_type: offline and ` +
+      `prompt: consent.`,
     client_unreadable:
       `Refused: strad could not read this server's client secret from its own ` +
       `namespace, so nothing was exchanged and nothing was written. strad's ` +

@@ -629,9 +629,14 @@ describe("the OAuth handoff an agent can actually perform", () => {
           clientId: "cid",
           clientSecret: "${UPSTREAM_OAUTH_CLIENT_SECRET}",
           refreshToken: "${UPSTREAM_OAUTH_REFRESH_TOKEN}",
+          authorizeParams: { access_type: "offline", prompt: "consent" },
         },
       },
     });
+    const read = await call(client, "get_connector", {
+      slug: "upstream-oauth",
+    });
+    expect(JSON.stringify(read.body)).toContain('"access_type":"offline"');
 
     const { body } = await call(client, "describe_connector_authorization", {
       slug: "upstream-oauth",

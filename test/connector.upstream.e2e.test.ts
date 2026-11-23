@@ -80,6 +80,8 @@ async function harness(
   more: {
     servers?: string;
     connectorFetch?: typeof fetch;
+    /** An upstream already started, for a config that names its token URL. */
+    oauth?: FakeOAuth;
     /**
      * Run with production's IAM split instead of one all-powerful client: the
      * console writes through `WRITE_ONLY_CONSOLE_PERMISSIONS` and the gateway
@@ -88,11 +90,13 @@ async function harness(
     prodIam?: boolean;
   } = {},
 ): Promise<Harness> {
-  const oauth = await startFakeOAuth({
-    mcpAuth: { scopes: ["mcp:read"] },
-    ...opts,
-  });
-  cleanup.push(() => oauth.close());
+  const oauth =
+    more.oauth ??
+    (await startFakeOAuth({
+      mcpAuth: { scopes: ["mcp:read"] },
+      ...opts,
+    }));
+  if (!more.oauth) cleanup.push(() => oauth.close());
   // The account the human signs in as — and the one the upstream URL serves.
   oauth.consentAs("tadas");
 
@@ -682,6 +686,88 @@ describe("configured clients", () => {
 });
 
 // ---------------------------------------------------------------------------
+
+describe("authorizeParams: — an upstream that takes offline access as a parameter (Google's shape)", () => {
+  // A hand-registered confidential client, a literal tokenUrl, and an upstream
+  // that answers an unauthenticated initialize 200: the BigQuery MCP server.
+  const google = async (authorizeParams: string): Promise<Harness> => {
+    const oauth = await startFakeOAuth({
+      mcpAuth: { scopes: ["https://scope.example/data"], googleOffline: true },
+    });
+    cleanup.push(() => oauth.close());
+    const h = await harness(
+      {},
+      `
+      tokenUrl: ${oauth.tokenUrl}
+      clientId: "\${G_CLIENT_ID}"
+      clientSecret: "\${G_CLIENT_SECRET}"
+      refreshToken: "\${G_REFRESH_TOKEN}"${authorizeParams}
+    mayBeUnseeded: [G_CLIENT_ID, G_CLIENT_SECRET, G_REFRESH_TOKEN]`,
+      { oauth },
+    );
+    for (const [name, secret, value] of [
+      ["G_CLIENT_ID", false, "web-client.example"],
+      ["G_CLIENT_SECRET", true, "web-SECRET-CANARY"],
+    ] as const) {
+      await h.fake.store.create({ path: `${STATIC_NS}${name}`, secret, value });
+    }
+    return h;
+  };
+  const OFFLINE = `
+      authorizeParams: { access_type: offline, prompt: consent }`;
+
+  it("without it: the consent completes, no refresh token comes back, and the page names the setting", async () => {
+    const h = await google("");
+    const { callback, authorizeUrl } = await roundTrip(h);
+    expect(authorizeUrl.searchParams.has("access_type")).toBe(false);
+    expect(callback.headers.get("location")).toBe(
+      `/ui/${SLUG}?error=no_refresh_token`,
+    );
+    expect(await listed(h.fake, OAUTH_NS)).toEqual([]);
+    const page = await (
+      await fetch(`${h.base}/ui/${SLUG}?error=no_refresh_token`, {
+        headers: auth,
+      })
+    ).text();
+    expect(page).toContain("access_type: offline");
+  });
+
+  it("with it: the seeded client consents offline, the refresh token is stored, and /mcp is served", async () => {
+    const h = await google(OFFLINE);
+    const page = await (
+      await fetch(`${h.base}/ui/${SLUG}`, { headers: auth })
+    ).text();
+    expect(page).toContain("access_type=offline");
+    expect(page).toContain("prompt=consent");
+
+    const { authorizeUrl, callback } = await roundTrip(h);
+    const q = authorizeUrl.searchParams;
+    expect(q.get("access_type")).toBe("offline");
+    expect(q.get("prompt")).toBe("consent");
+    expect(q.get("client_id")).toBe("web-client.example");
+    expect(q.get("scope")).toBe("https://scope.example/data");
+    expect(q.get("resource")).toBe(h.oauth.mcpUrl("tadas"));
+    expect(h.oauth.registrations).toHaveLength(0);
+    expect(callback.headers.get("location")).toBe(`/ui/${SLUG}?connected=1`);
+    expect(await listed(h.fake, OAUTH_NS)).toEqual(["G_REFRESH_TOKEN"]);
+
+    expect(await whoami(await h.mcp())).toBe("tadas");
+    // The parameters are the sign-in link's alone, and Google's refresh answer
+    // carries no refresh token: the stored one stays.
+    const refreshed = h.oauth.tokenRequests.filter(
+      (r) => r.grantType === "refresh_token",
+    );
+    expect(refreshed.length).toBeGreaterThan(0);
+    for (const r of refreshed) {
+      expect(r.resource).toBeUndefined();
+      expect(r.scope).toBeUndefined();
+      expect(r.authorization).toMatch(/^Basic /);
+    }
+    const held = await h.fake.store.reveal(`${OAUTH_NS}G_REFRESH_TOKEN`);
+    expect(refreshed.at(-1)!.refreshToken).toBe(held);
+    expect(h.oauth.liveRefreshTokens()).toContain(held);
+  });
+});
 
 describe("metadata a human pasted, for an upstream that blocks strad's egress", () => {
   const prmFor = (h: Harness) =>

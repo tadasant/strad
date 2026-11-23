@@ -5906,6 +5906,10 @@ the process's cached reading.
   seeded, and its secret is read from the store at the callback.
 - Every Connect registers a fresh client and abandons the last one at the
   upstream.
+- A server that issues a refresh token only for a query parameter on the sign-in
+  link (Google's `access_type=offline` and `prompt=consent`) needs
+  `oauthRefresh.authorizeParams:`. Its metadata does not say so, so a slug
+  without it is refused (`no_refresh_token`) after the consent, not before.
 - No identity proof, as with `provider: generic`.
 - Other core replicas see the write within `ttlSeconds`.
 - The token URL, client id and resource are written before the refresh token; a

@@ -111,6 +111,42 @@ export const RESERVED_AUTHORIZE_PARAMS = [
 const RESERVED = new Set<string>(RESERVED_AUTHORIZE_PARAMS);
 
 /**
+ * The parameters `oauthRefresh.authorizeParams:` may not set: strad's own, and
+ * the ones that would change the grant or the answer by another route.
+ *
+ *   - `resource` (RFC 8707) binds the tokens, and discovery decided it.
+ *   - `request` / `request_uri` (RFC 9101) carry a whole authorization request
+ *     that REPLACES the query parameters beside it, PKCE and redirect included.
+ *   - `response_mode` moves the code out of the callback's query string.
+ *   - `authorization_details` (RFC 9396) and `include_granted_scopes` (Google)
+ *     widen the grant past the scopes the page names.
+ *
+ * Wider than {@link RESERVED_AUTHORIZE_PARAMS} rather than a replacement for
+ * it: `oauth: provider: generic` has no discovered resource, so a config there
+ * may legitimately name one.
+ */
+export const RESERVED_UPSTREAM_AUTHORIZE_PARAMS = [
+  ...RESERVED_AUTHORIZE_PARAMS,
+  "resource",
+  "request",
+  "request_uri",
+  "response_mode",
+  "authorization_details",
+  "include_granted_scopes",
+] as const;
+
+const RESERVED_UPSTREAM = new Set<string>(RESERVED_UPSTREAM_AUTHORIZE_PARAMS);
+
+/**
+ * May `oauthRefresh.authorizeParams:` NOT set `key`? Case-folded and trimmed:
+ * parameter names are case-sensitive on the wire, and a server that reads them
+ * otherwise should not be where strad finds out.
+ */
+export function isReservedUpstreamAuthorizeParam(key: string): boolean {
+  return RESERVED_UPSTREAM.has(key.trim().toLowerCase());
+}
+
+/**
  * Build a consent URL with PKCE, and return the two secrets the callback will
  * need back.
  *

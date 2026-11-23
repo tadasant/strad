@@ -435,6 +435,20 @@ ${field(
   "RFC 8707 resource indicator, when the provider wants one.",
   { optional: true, id: "oauthResource" },
 )}
+${field(
+  "Sign-in parameters",
+  area(
+    "oauthAuthorizeParams",
+    pairs(oauthRefresh.authorizeParams),
+    2,
+    "oauthAuthorizeParams",
+  ),
+  `One <code>name: value</code> per line, added to the sign-in link Connect
+   builds. For a provider that takes a parameter to issue a refresh token —
+   Google's are <code>access_type: offline</code> and
+   <code>prompt: consent</code>. Literals, and none that strad sets itself.`,
+  { optional: true, id: "oauthAuthorizeParams" },
+)}
 `
       : opts.kind === "local-tunnel"
         ? `

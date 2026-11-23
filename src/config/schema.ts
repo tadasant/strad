@@ -1,4 +1,8 @@
-import { RESERVED_AUTHORIZE_PARAMS } from "../connectors/oauth-flow.ts";
+import {
+  isReservedUpstreamAuthorizeParam,
+  RESERVED_AUTHORIZE_PARAMS,
+  RESERVED_UPSTREAM_AUTHORIZE_PARAMS,
+} from "../connectors/oauth-flow.ts";
 import { z } from "zod";
 import { jwksUriProblem } from "../auth/mcp-oauth/cimd.ts";
 import {
@@ -803,6 +807,23 @@ const OAuthRefreshSchema = z.object({
   discoveryProxy: DiscoveryProxySchema.optional(),
   /** How Connect registers its client. See {@link RegistrationSchema}. */
   registration: RegistrationSchema.optional(),
+  /**
+   * Extra query parameters for Connect's authorization URL, for a server that
+   * takes "issue a refresh token" as a parameter rather than as the
+   * `offline_access` scope. Google's is `access_type: offline` with
+   * `prompt: consent`; without both, a consent there ends in
+   * `no_refresh_token`.
+   *
+   * Literals: the console does not resolve references, and every value is in a
+   * browser's address bar. The `superRefine` refuses a `${NAME}`, and each
+   * parameter in `RESERVED_UPSTREAM_AUTHORIZE_PARAMS`. The token requests are
+   * untouched.
+   *
+   * Optional with no default: the parsed block is one of the terms a Connect
+   * transaction binds (`upstreamConfigTerms`), and a block that does not
+   * declare this has the terms it would have without it.
+   */
+  authorizeParams: z.record(z.string()).optional(),
 });
 
 /**
@@ -2896,6 +2917,31 @@ export const StradConfig = z
             `URL (plain http is allowed only for a loopback host): the refresh ` +
             `token travels in the request body.`,
         );
+      }
+      for (const [key, value] of Object.entries(o.authorizeParams ?? {})) {
+        if (key.trim() === "" || key !== key.trim()) {
+          issue(
+            `sets an oauthRefresh.authorizeParams key that is blank or padded ` +
+              `with spaces. A key is the parameter's exact name.`,
+          );
+        } else if (isReservedUpstreamAuthorizeParam(key)) {
+          issue(
+            `sets oauthRefresh.authorizeParams.${key}, which is not a ` +
+              `config's to set ` +
+              `(${RESERVED_UPSTREAM_AUTHORIZE_PARAMS.join(", ")}). They carry ` +
+              `the terms of the grant, the PKCE challenge and where the code ` +
+              `goes. Delete this key.`,
+          );
+        } else if (
+          secretRefsIn(key).length > 0 ||
+          secretRefsIn(value).length > 0
+        ) {
+          issue(
+            `sets oauthRefresh.authorizeParams.${key} from a \${NAME}. The ` +
+              `value travels in a browser's address bar, so it must be a ` +
+              `literal and never a secret.`,
+          );
+        }
       }
       const keyFrom = o.discoveryProxy?.apiKeyFrom;
       if (

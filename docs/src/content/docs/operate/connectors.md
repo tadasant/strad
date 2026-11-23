@@ -603,8 +603,8 @@ Nothing derived from a credential is exported — see [Telemetry](/operate/telem
 A [`remote-http`](/servers/interface/#oauthrefresh--a-bearer-that-expires-minted-by-strad)
 server with `oauthRefresh:` already mints its access tokens from a refresh token
 and writes a rotated one back. Its console page, `/ui/<slug>`, is where the
-first refresh token comes from. There is nothing to add to the config: the
-`oauthRefresh:` block's own `${NAME}`s are what Connect writes.
+first refresh token comes from. Most upstreams need nothing added to the config:
+the `oauthRefresh:` block's own `${NAME}`s are what Connect writes.
 
 ```yaml
 - slug: rippling
@@ -663,7 +663,9 @@ What happens behind the button, in order:
 3. **Authorize.** Code + PKCE (S256) with `resource=` (RFC 8707). Scopes are the
    literal `oauthRefresh.scope:`, or else what the `401` asked for, or else the
    resource's `scopes_supported`, plus `offline_access` when the authorization
-   server lists it. With none of those, `scope` is left off.
+   server lists it. With none of those, `scope` is left off. A slug's
+   [`authorizeParams:`](#authorizeparams-a-google-mcp-server) are added to the
+   sign-in link, and the page lists them before anyone clicks.
 4. **Exchange and store.** The callback exchanges the code at the discovered
    token endpoint, with the same client and `resource`, and insists on a refresh
    token. Then it writes, under `/strad/{env}/mcp/{slug}/oauth/`: the token URL,
@@ -690,6 +692,77 @@ another is a slug that never works. `url:` and `scope:` must be literals, and a
 checks the slug's `oauth/` path first, then `static/`, then the gateway's, the
 order the resolver reads in. See
 [Secrets](/operate/secrets/#oauthrefresh--a-rotating-refresh-token-on-a-remote-http-server).
+
+### `authorizeParams:`: a Google MCP server
+
+Google's authorization server has no `offline_access` scope. It issues a refresh
+token when the sign-in link carries `access_type=offline`, and issues one again
+on a repeat consent only with `prompt=consent`. Without both, Connect ends in
+`no_refresh_token`. `oauthRefresh.authorizeParams:` adds them, for this slug only.
+A whole slug for Google's BigQuery MCP server:
+
+```yaml
+- slug: bigquery
+  kind: remote-http
+  url: https://bigquery.googleapis.com/mcp
+  entitlements: [analyst]
+  tools:
+    # Google's read-only tools. Left out: execute_sql and cancel_job.
+    allow:
+      - list_dataset_ids
+      - get_dataset_info
+      - list_table_ids
+      - get_table_info
+      - execute_sql_readonly
+      - get_query_results
+      - get_job
+  oauthRefresh:
+    tokenUrl: https://oauth2.googleapis.com/token
+    clientId: "${BIGQUERY_CLIENT_ID}"
+    clientSecret: "${BIGQUERY_CLIENT_SECRET}"
+    refreshToken: "${BIGQUERY_REFRESH_TOKEN}"
+    authorizeParams:
+      access_type: offline
+      prompt: consent
+  mayBeUnseeded:
+    [BIGQUERY_CLIENT_ID, BIGQUERY_CLIENT_SECRET, BIGQUERY_REFRESH_TOKEN]
+```
+
+What each part is for, read off Google's public endpoints on 2026-11-23:
+
+- **The client is yours, and seeded before Connect.** Google offers no dynamic
+  registration. Create an OAuth client of type **Web application** in the Google
+  Cloud console, with this deployment's `/ui/oauth/callback` as an authorized
+  redirect URI (the slug's page shows the exact string). Seed its id and secret
+  under `/strad/{env}/mcp/<slug>/static/`. The gateway's shared namespace is not
+  read for them. `enabled: false` has no Connect button; `mayBeUnseeded` is what
+  lets the slug deploy before the values exist.
+- **No `scope:`.** Discovery reads the one scope BigQuery's metadata advertises,
+  `https://www.googleapis.com/auth/bigquery`, and asks for that. Google's metadata
+  and all nine of its tools name that scope and no read-only one, so it is the
+  narrowest that serves them. What narrows the slug is `tools:`, and IAM on the
+  account that signs in.
+- **No `resource:`, no `registration:`, and no issuer to set.** Connect sends the
+  discovered `resource` on the sign-in link and the code exchange. Google's
+  authorization endpoint accepts it, and its token endpoint answers a request
+  carrying it the way it answers one without. A refresh sends it only when
+  `resource:` is set.
+- **The unauthenticated probe answers `200`**, not a `401` with a challenge:
+  BigQuery lets anyone `initialize` and list tools. Discovery finds its
+  protected-resource metadata at the well-known path instead.
+- **Google does not rotate.** A refresh answers with an access token and no new
+  refresh token, and strad keeps the stored one.
+- **On Google's side**, the OAuth consent screen should be **Internal**. An
+  External app in _Testing_ gets refresh tokens that expire after seven days. The
+  client's project needs the BigQuery API enabled, and the account that signs in
+  needs `roles/mcp.toolUser`, `roles/bigquery.jobUser` and
+  `roles/bigquery.dataViewer` on the projects it queries.
+
+`authorizeParams` cannot set a parameter strad composes itself, or one that would
+change the grant by another route.
+[Interface](/servers/interface/#oauthrefresh--a-bearer-that-expires-minted-by-strad)
+lists them. Other Google MCP servers differ only in `url:`, `tools:` and the scope
+their metadata advertises.
 
 ### `registration:`: an upstream that registers only clients it knows
 

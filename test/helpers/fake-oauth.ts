@@ -110,6 +110,15 @@ export interface McpAuthOptions {
    * `/token` refuses either grant for that client without the secret.
    */
   issueSecret?: boolean;
+  /**
+   * GOOGLE'S SHAPE. The code exchange answers with a `refresh_token` only when
+   * the consent asked for one as query parameters: `access_type=offline` and
+   * `prompt=consent`. The metadata lists no `offline_access` scope and offers
+   * no registration, names its issuer with a trailing slash in the
+   * protected-resource document and without one in its own, and the upstream
+   * answers an unauthenticated `initialize` 200 rather than with a challenge.
+   */
+  googleOffline?: boolean;
 }
 
 export interface FakeOAuthOptions {
@@ -179,6 +188,7 @@ export async function startFakeOAuth(
       challenge: string;
       resource: string | null;
       principal: string;
+      offline: boolean;
     }
   >();
   /** refresh token -> the client it was issued to, for code-issued tokens. */
@@ -202,7 +212,7 @@ export async function startFakeOAuth(
         }
         res.json({
           resource: `${base}/mcp/${req.params.principal}`,
-          authorization_servers: [base],
+          authorization_servers: [auth.googleOffline ? `${base}/` : base],
           ...(auth.scopes ? { scopes_supported: auth.scopes } : {}),
         });
       },
@@ -216,12 +226,14 @@ export async function startFakeOAuth(
         issuer: base,
         authorization_endpoint: `${base}/authorize`,
         token_endpoint: `${base}/token`,
-        ...(auth.registration === false
+        ...(auth.registration === false || auth.googleOffline
           ? {}
           : { registration_endpoint: `${base}/register` }),
         response_types_supported: ["code"],
         code_challenge_methods_supported: ["S256"],
-        scopes_supported: [...(auth.scopes ?? []), "offline_access"],
+        ...(auth.googleOffline
+          ? {}
+          : { scopes_supported: [...(auth.scopes ?? []), "offline_access"] }),
       });
     });
     if (auth.tokenBlocked) {
@@ -287,6 +299,8 @@ export async function startFakeOAuth(
         challenge: q.get("code_challenge") ?? "",
         resource: q.get("resource"),
         principal: consenter,
+        offline:
+          q.get("access_type") === "offline" && q.get("prompt") === "consent",
       });
       const to = new URL(q.get("redirect_uri") ?? "");
       to.searchParams.set("code", code);
@@ -372,7 +386,9 @@ export async function startFakeOAuth(
             access_token: `at-unused-${counter}`,
             token_type: "Bearer",
             expires_in: 3600,
-            ...(auth.omitRefreshToken ? {} : { refresh_token: refresh }),
+            ...(auth.omitRefreshToken || (auth.googleOffline && !issued.offline)
+              ? {}
+              : { refresh_token: refresh }),
             scope: "mcp:read",
           });
           return;
@@ -382,7 +398,15 @@ export async function startFakeOAuth(
           return;
         }
         const boundTo = refreshClients.get(body.refresh_token ?? "");
-        if (boundTo !== undefined && boundTo !== body.client_id) {
+        // A client that authenticates with Basic names itself there, and need
+        // not repeat its id in the body (RFC 6749 §2.3.1).
+        const basicUser = req.get("authorization")?.replace(/^Basic /, "");
+        const refreshing =
+          body.client_id ??
+          (basicUser
+            ? Buffer.from(basicUser, "base64").toString().split(":")[0]
+            : undefined);
+        if (boundTo !== undefined && boundTo !== refreshing) {
           res.status(401).json({ error: "invalid_client" });
           return;
         }
@@ -474,6 +498,21 @@ export async function startFakeOAuth(
             ? (req.body as { method: string }).method
             : null,
       });
+      if (!live && auth?.googleOffline && bearer === null) {
+        const rpc = req.body as { id?: unknown; method?: unknown };
+        if (rpc.method === "initialize") {
+          res.json({
+            jsonrpc: "2.0",
+            id: rpc.id,
+            result: {
+              protocolVersion: "2025-06-18",
+              capabilities: { tools: {} },
+              serverInfo: { name: "google-shaped", version: "0" },
+            },
+          });
+          return;
+        }
+      }
       if (!live) {
         if (auth) {
           res.set(

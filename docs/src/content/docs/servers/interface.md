@@ -260,8 +260,29 @@ does with it:
 `mayBeUnseeded:`, the slug deploys inactive and starts serving on the request
 after Connect.
 
-One optional field is for Connect alone. `discoveryProxy:` is for an upstream
-whose firewall refuses strad's cloud egress on its metadata documents:
+Three optional fields are for Connect alone. `authorizeParams:` is for a server
+that issues a refresh token only when the sign-in link asks for one with query
+parameters, rather than with the `offline_access` scope. Google's do:
+
+```yaml
+oauthRefresh:
+  # ...
+  authorizeParams: { access_type: offline, prompt: consent }
+```
+
+They are added to the authorization URL and to nothing else. The code exchange
+and every refresh are unchanged, and a block without the field sends only
+strad's own parameters. Values are literals: they travel in a browser's
+address bar, so a `${NAME}` is refused. So is any parameter that carries the
+terms of the grant or decides where the code goes: `client_id`, `redirect_uri`,
+`response_type`, `scope`, `state`, `code_challenge`, `code_challenge_method`,
+`resource`, `request`, `request_uri`, `response_mode`, `authorization_details` and
+`include_granted_scopes`, in any case. See
+[Connectors](/operate/connectors/#authorizeparams-a-google-mcp-server) for a whole
+Google slug.
+
+`discoveryProxy:` is for an upstream whose firewall refuses strad's cloud egress
+on its metadata documents:
 
 ```yaml
 oauthRefresh:
@@ -281,7 +302,7 @@ and sends its metadata URLs to a third party, so opt in deliberately.
 Without it, the page offers to take the document pasted from your own browser. See [Connectors](/operate/connectors/#remote-http-with-oauthrefresh-connect-an-upstream-mcp-server)
 and [Limitations](/limitations/) #111.
 
-The other is `registration:`, for an upstream that registers only clients it
+The third is `registration:`, for an upstream that registers only clients it
 recognises by name. Figma's is one: it refuses any `client_name` that does not
 start with `Claude Code`.
 
@@ -956,8 +977,10 @@ strad validates the whole config strictly at boot (a Zod `superRefine` in
   is anything but exactly one `${NAME}`: a literal would be a credential
   committed to the config, and the write-back needs a name. Also refused: an
   `Authorization` header beside `oauthRefresh:`, a literal `tokenUrl` that is
-  neither `https` nor loopback `http`, and two enabled servers minting from one
-  refresh-token `${NAME}`.
+  neither `https` nor loopback `http`, two enabled servers minting from one
+  refresh-token `${NAME}`, and an `authorizeParams:` key that is reserved (listed
+  under [`oauthRefresh:`](#oauthrefresh--a-bearer-that-expires-minted-by-strad)),
+  blank or padded, or whose value is a `${NAME}`.
 - **A server references one of its own connector's variables as a `${NAME}`.**
   Those three are injected from the slug's own namespace, and a reference to the
   refresh token would fail every server's deploy until a human had completed a
