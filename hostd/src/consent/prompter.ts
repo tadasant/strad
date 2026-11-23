@@ -107,6 +107,11 @@ function run(
  * than show a dialog a key could answer. A throw is a dialog that was not
  * shown, so the request is `unavailable`, which is a denial.
  *
+ * `runModal`'s answer arrives from the bridge as a wrapped value that prints as
+ * its number and is never `===` to one, so the script compares
+ * `Number(String(…))`. Compared raw, every answer — the owner's click
+ * included — was an "unexpected modal response" and the request `no_display`.
+ *
  * The countdown is `abortModal` scheduled on the run loop, the stock NSAlert
  * timeout: `runModal` then returns `NSModalResponseAbort` (-1001) and the
  * script prints `timeout`, so an unanswered dialog reaches `onTimeout` like any
@@ -143,7 +148,9 @@ function run(argv) {
   alert.window.level = 3; // NSFloatingWindowLevel
   app.activateIgnoringOtherApps(true);
   app.performSelectorWithObjectAfterDelayInModes("abortModal", null, parseInt(argv[2], 10), $(["kCFRunLoopCommonModes"]));
-  var r = alert.runModal;
+  // The bridge hands NSModalResponse back as a wrapped value, not a JS
+  // number: it prints as "1000" but is never === 1000, so read it as text.
+  var r = Number(String(alert.runModal));
   if (r === 1000) return "Allow"; // NSAlertFirstButtonReturn
   if (r === 1001) return "Reject"; // NSAlertSecondButtonReturn
   if (r === 1002) return "Cooldown"; // NSAlertThirdButtonReturn

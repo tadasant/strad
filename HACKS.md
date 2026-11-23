@@ -8585,6 +8585,11 @@ fallback instead, and keystrokes kept answering it.
    `runModal`, and by tests against a stand-in bridge. On a Mac, the checks
    were observed passing with no window shown. Nobody has pressed keys at a live
    dialog, and nothing in CI runs AppKit.
+7. `runModal`'s answer comes back from the JXA bridge as a wrapped value, not a
+   JavaScript number, and is read as `Number(String(…))`. Compared with `===`,
+   it matched nothing: on the owner's Mac a click on Allow logged
+   `unexpected modal response 1000` and every request was `no_display`. The
+   stand-in bridge in `hostd/test/prompter.test.ts` returns a wrapped value too.
 
 ## 168. strad-hostd redacts what it writes down by exact match and by heuristic, and cannot unwrite an older daemon's disk
 

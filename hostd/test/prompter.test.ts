@@ -57,7 +57,7 @@ function bridge(
     focusSticks?: boolean;
     keyViewSticks?: boolean;
     defaultSticks?: boolean;
-    modal?: number;
+    modal?: unknown;
   } = {},
 ) {
   const events: string[] = [];
@@ -193,6 +193,23 @@ describe("the macOS consent dialog", () => {
     expect(bridge({ modal: 1000 }).run()).toBe("Allow");
     expect(bridge({ modal: 1002 }).run()).toBe("Cooldown");
     expect(bridge({ modal: -1001 }).run()).toBe("timeout"); // abortModal
+  });
+
+  it("reads each modal code when the bridge hands it back wrapped, as osascript does", () => {
+    // On a real Mac runModal's NSInteger arrives as an object that prints as
+    // "1000" and is not === 1000; compared raw, every click and every
+    // countdown was "unexpected modal response" and the request no_display.
+    const wrap = (n: number) => ({
+      toString: () => String(n),
+      valueOf: () => ({}),
+    });
+    expect(bridge({ modal: wrap(1000) }).run()).toBe("Allow");
+    expect(bridge({ modal: wrap(1001) }).run()).toBe("Reject");
+    expect(bridge({ modal: wrap(1002) }).run()).toBe("Cooldown");
+    expect(bridge({ modal: wrap(-1001) }).run()).toBe("timeout");
+    expect(() => bridge({ modal: wrap(-1000) }).run()).toThrow(
+      /unexpected modal/,
+    );
   });
 
   it("does not read any other end of the modal as the countdown, which onTimeout: allow would grant", () => {

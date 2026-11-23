@@ -5137,6 +5137,9 @@ Only a mouse click answers the consent dialog. See
 - **Nobody has pressed keys at a live dialog.** The script checks its own
   buttons before showing; those checks were observed passing on a Mac with no
   window shown, and the tests run the script against a stand-in bridge.
+- **The bridge wraps the answer.** `runModal` returns a value that prints as
+  its number but is not one, so the script converts it before comparing.
+  Without that, every answer, a click on Allow included, was `no_display`.
 
 See `HACKS.md` #167.
 
