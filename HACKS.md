@@ -8634,3 +8634,31 @@ characters, after redaction.
 
 **Undo.** Nothing to undo; this is the floor. Doing better on free text means
 not recording it: summaries carrying only a tool name and an argument hash.
+
+## 169. gmail's `change_email_conversation` creates a label it does not find, whatever the tool policy says about `create_email_label`
+
+**What.** A label name in `change_email_conversation`'s `labels` that matches
+nothing in the mailbox is created and then applied
+(`images/bundle-google/vendor/gmail-shared`, `FORK.md` delta 8). So a slug
+whose `tools: allow` list has `change_email_conversation` and not
+`create_email_label` can still create user labels.
+
+**Why.** An agent told to label mail with a name should need one call, and the
+write is small: a user label holds no mail and can be deleted in Gmail.
+
+**What it costs.**
+
+- A misspelled name makes a new label and the call succeeds. The answer says
+  `Created label "…"`, which is the only sign.
+- The label is created before the message is changed. If `messages.modify`
+  then fails, the empty label stays. A retry reuses it.
+- `labels` is split on commas, so a name that contains one becomes two names,
+  and both are created. Pass that label's ID instead.
+- Nothing here renames or deletes a label, so clean-up is a person in Gmail.
+- It has met only stubs. That Gmail matches names without regard to case and
+  answers a duplicate with 409 is taken from its documented behavior, not
+  from a live mailbox.
+
+**Undo.** Refuse an unmatched name in `LabelResolver`
+(`src/tools/change-email-conversation.ts` in that tree), naming
+`create_email_label`. The policy then decides on its own.

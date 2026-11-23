@@ -208,8 +208,9 @@ export function splitLabels(value: string | undefined): string[] {
 /**
  * Turns the label tokens a caller wrote into label IDs: an ID passes through,
  * a name is looked up (case-insensitively), and a missing name being ADDED is
- * created as a user label. The mailbox's labels are listed at most once per
- * call, and only when some token is not a system label ID.
+ * created as a user label. Resolving lists the mailbox's labels at most once
+ * per call, and only when some token is not a system label ID. Each label
+ * created lists them again, inside the idempotent create.
  */
 export class LabelResolver {
   private labels: GmailLabel[] | null = null;

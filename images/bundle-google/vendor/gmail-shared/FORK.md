@@ -450,7 +450,7 @@ back as HTTP 400, and there was no tool to find the ID or to create the label.
     sent as given, and a call made only of those lists nothing, so starring,
     archiving and marking read cost what they did;
   - anything else is looked up in one label list per call, by exact ID first,
-    then by name without regard to case;
+    then by name without regard to case (each label created lists once more);
   - a name being ADDED that matches no label is created as a user label
     (through the same idempotent create) and then applied;
   - a name being REMOVED that matches no label is skipped, and the answer
@@ -472,6 +472,8 @@ What it does not do: a label name that itself contains a comma cannot be
 given to `change_email_conversation`, because the list is comma-separated.
 `create_email_label` takes it, and its ID can be passed instead. Nothing here
 renames, recolours or deletes a label.
+
+What it costs is `HACKS.md` #169.
 
 **Files.** `src/gmail-client/lib/labels.ts` (new), `src/tools/list-email-labels.ts`
 (new), `src/tools/create-email-label.ts` (new),

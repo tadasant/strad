@@ -5166,3 +5166,21 @@ length only.
   files. Treat anything an older daemon recorded as exposed on that disk.
 
 See `HACKS.md` #168.
+
+---
+
+### 169. gmail's `change_email_conversation` creates a label it does not find
+
+Adding a label by a name the mailbox does not have creates that label and then
+applies it. Leaving `create_email_label` off a slug's `tools: allow` list does
+not prevent it; leaving `change_email_conversation` off does.
+
+- **A typo makes a label.** The call succeeds, and the answer says
+  `Created label "…"`.
+- **A failed call can leave an empty label.** The label is created before the
+  message is changed. A retry reuses it.
+- **A comma splits a name.** Pass the label's ID when its name contains one.
+- **Nothing here deletes or renames a label.** Remove a stray one in Gmail.
+- **It has met only stubs.** No live mailbox was labelled.
+
+See `HACKS.md` #169.
