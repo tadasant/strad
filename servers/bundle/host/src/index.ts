@@ -1088,7 +1088,7 @@ async function loadGoogleTree(): Promise<GoogleTree> {
  * joins either mode.
  *
  * The READ/WRITE half of a slug's name is NOT decided here. This mount serves
- * all nine tools and strad's gateway withholds from a `-ro` slug
+ * all eleven tools and strad's gateway withholds from a `-ro` slug
  * (src/gateway/toolPolicy.ts) — the same trade every capability variant in this
  * container makes. A deployment that wants Google to enforce it too can consent
  * the `-ro` slug for `gmail.readonly` alone; because the credential is per slug,

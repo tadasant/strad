@@ -921,7 +921,7 @@ servers:
   # under a slug named for a personal account, with every call succeeding. The
   # bundle host drops them and says so in the boot log.
   #
-  # Before consent this slug mounts, lists all nine tools and reports itself
+  # Before consent this slug mounts, lists all eleven tools and reports itself
   # degraded naming GMAIL_OAUTH_REFRESH_TOKEN. That is the state the Connect
   # button on its console page exists to end.
   - slug: gmail-someone-ro
@@ -950,10 +950,12 @@ servers:
         - download_email_attachments
         - list_draft_emails
         # A `-rw` slug for the same account consents `gmail.modify` and adds
-        # the three draft and label writes, none of which sends:
-        #   - change_email_conversation
+        # the draft and label writes, none of which sends:
+        #   - change_email_conversation   (labels by name or ID; creates a missing one)
         #   - upsert_draft_email
         #   - delete_draft_email   (one draft, permanently; HACKS.md #130)
+        #   - list_email_labels   (a read, kept out of `-ro`: it exists to label)
+        #   - create_email_label
         # `send_email` is the `-rw-external` tier's alone.
 
   # google-docs IS gmail's shape again: two auth modes on one container (the

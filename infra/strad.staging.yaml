@@ -80,7 +80,7 @@
 #
 # The allow-lists below are derived from each upstream's own tool-group
 # definitions, so the counts stay honest: slack 8/14 · tailscale 7/15 ·
-# monarch 10/24 · gmail 5/8/9 · google-docs 4/13/14 · google-calendar 4/7 ·
+# monarch 10/24 · gmail 5/10/11 · google-docs 4/13/14 · google-calendar 4/7 ·
 # 1Password 5/9 · telegram 5/6 · bill-spend 4/5 · digitalocean 19/29 ·
 # hetzner 14/28.
 # test/staging-config.test.ts
@@ -996,7 +996,7 @@ servers:
       ZIMMER_SECRETS_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${ZIMMER_SECRETS_ADMIN_KEY_JSON}"
 
   # ---------------------------------------------------------------------------
-  # Gmail — 9 tools full, 8 read-write, 5 read-only. THREE slugs, ONE container.
+  # Gmail — 11 tools full, 10 read-write, 5 read-only. THREE slugs, ONE container.
   #
   # ALL THREE SHARE THE CONVENTIONAL /gmail MOUNT, which authenticates as a
   # SERVICE ACCOUNT impersonating one Workspace user. The only difference between
@@ -1054,6 +1054,8 @@ servers:
         - change_email_conversation
         - upsert_draft_email
         - delete_draft_email
+        - list_email_labels
+        - create_email_label
 
   # readwrite_external: the tier that may act on people OUTSIDE the org (send
   # mail to, share docs with). It is the only tier that gets `send_email`.

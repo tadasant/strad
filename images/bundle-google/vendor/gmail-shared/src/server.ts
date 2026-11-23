@@ -5,6 +5,7 @@ import { logWarning } from './logging.js';
 import type { Email, EmailListItem } from './types.js';
 import { formatFromHeader, type MimeAttachment } from './gmail-client/lib/mime-utils.js';
 import { getSendAsDisplayName } from './gmail-client/lib/send-as.js';
+import type { GmailLabel } from './gmail-client/lib/labels.js';
 
 /** How long a send-as display name is trusted before it is read again. */
 export const SENDER_NAME_TTL_MS = 10 * 60 * 1000;
@@ -88,6 +89,17 @@ export interface IGmailClient {
       removeLabelIds?: string[];
     }
   ): Promise<Email>;
+
+  /**
+   * List every label in the mailbox, system and user (strad FORK.md delta 8)
+   */
+  listLabels(): Promise<GmailLabel[]>;
+
+  /**
+   * Create a user label, or return the existing one with that name
+   * (case-insensitive). `created` says which (strad FORK.md delta 8).
+   */
+  createLabel(name: string): Promise<{ label: GmailLabel; created: boolean }>;
 
   /**
    * Create a draft email
@@ -335,6 +347,18 @@ abstract class BaseGmailClient implements IGmailClient {
     const headers = await this.getHeaders();
     const { modifyMessage } = await import('./gmail-client/lib/modify-message.js');
     return modifyMessage(this.baseUrl, headers, messageId, options);
+  }
+
+  async listLabels(): Promise<GmailLabel[]> {
+    const headers = await this.getHeaders();
+    const { listLabels } = await import('./gmail-client/lib/labels.js');
+    return listLabels(this.baseUrl, headers);
+  }
+
+  async createLabel(name: string): Promise<{ label: GmailLabel; created: boolean }> {
+    const headers = await this.getHeaders();
+    const { createLabel } = await import('./gmail-client/lib/labels.js');
+    return createLabel(this.baseUrl, headers, name);
   }
 
   async createDraft(options: {

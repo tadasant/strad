@@ -5,7 +5,7 @@ and `google-sheets` MCP servers packaged into **one** container and served over
 Streamable HTTP, each on its own path.
 
 ```
-/gmail             -> gmail-workspace-mcp-server        (9 tools)
+/gmail             -> gmail-workspace-mcp-server        (11 tools)
 /google-calendar   -> google-calendar-workspace-mcp-server (7 tools)
 /google-docs       -> google-docs-workspace-mcp-server   (14 tools)
 /google-sheets     -> google-sheets-workspace-mcp-server  (11 tools)
@@ -96,7 +96,8 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
     plain-text reflow and the HTML part sent beside it, the sender-verification headers
     `get_email_conversation` returns, `delete_draft_email`, and attachments
     `download_email_attachments` returns as embedded resources rather than
-    paths on the server's disk, and a Drafts folder link on the draft tools.
+    paths on the server's disk, a Drafts folder link on the draft tools, and
+    labels by name (`list_email_labels`, `create_email_label`).
     `vendor/gmail-shared/FORK.md` lists every delta
     from upstream `0ed34de` and the tests that defend each one;
     `test/gmail-attachments.test.ts` is the main one. Its `README.md` is

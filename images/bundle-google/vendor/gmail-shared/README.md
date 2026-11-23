@@ -24,8 +24,8 @@ entrypoint, which hands that same per-account layer to the shared runner.
 | Group                | Tools                                                                                                                                             |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `readonly`           | `list_email_conversations`, `search_email_conversations`, `get_email_conversation`, `download_email_attachments`, `list_draft_emails`             |
-| `readwrite`          | the five above, plus `change_email_conversation`, `upsert_draft_email` and `delete_draft_email`                                                   |
-| `readwrite_external` | the eight above, plus `send_email`. **Served through strad only.** The standalone entrypoint refuses to start with it                              |
+| `readwrite`          | the five above, plus `change_email_conversation`, `upsert_draft_email`, `delete_draft_email`, `list_email_labels` and `create_email_label`        |
+| `readwrite_external` | the ten above, plus `send_email`. **Served through strad only.** The standalone entrypoint refuses to start with it                              |
 
 - `get_email_conversation` returns a message's headers and body, and a
   `## Sender Verification Headers` section with the headers that say whether
@@ -36,7 +36,12 @@ entrypoint, which hands that same per-account layer to the shared runner.
   `inline=true` it puts everything in one text block instead. It writes
   nothing to the server's disk (`FORK.md` delta 6).
 - `change_email_conversation` marks a conversation read, unread or archived,
-  and adds or removes labels.
+  and adds or removes labels, by name or by ID. A label name that does not
+  exist yet is created when it is added (`FORK.md` delta 8).
+- `list_email_labels` lists the mailbox's labels, name and ID.
+  `create_email_label` creates a user label, or returns the one that already
+  has that name. Both are in `readwrite`, not `readonly`: a read-only server
+  keeps the five reads it had.
 - `upsert_draft_email` creates or updates a draft, with attachments by HTTPS
   URL or as base64 (`FORK.md` delta 1). A draft is saved, not sent. The
   answer names the account and links its Drafts folder (`FORK.md` delta 7),
@@ -46,7 +51,7 @@ entrypoint, which hands that same per-account layer to the shared runner.
   a thread.
 
 **With `GMAIL_ENABLED_TOOLGROUPS` unset, the standalone server serves
-`readonly` and `readwrite`**: all eight tools above. Set
+`readonly` and `readwrite`**: all ten tools above. Set
 `GMAIL_ENABLED_TOOLGROUPS=readonly` for the five reads alone. It refuses to
 start, with exit 2, on a group it does not recognise (`read-only`, say),
 instead of reading the typo as "every group". The vendored parser would read
@@ -282,7 +287,7 @@ From `images/bundle-google`, `npm test` runs:
 - `test/confirm.test.ts` — the confirmation in front of `send_email` that
   strad's mount carries.
 - `test/standalone.test.ts` — both transports against the built entrypoint,
-  with no credentials set: the eight tools by default, `readonly` and
+  with no credentials set: the ten tools by default, `readonly` and
   `readwrite`, comma-separated groups, a tool call that fails naming the
   missing variables in each mode, `send_email` answered as an unknown tool
   even with the gateway's waiver forged into `_meta`, and exit 2 on

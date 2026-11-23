@@ -233,17 +233,19 @@ test("one account is one client, so its access token outlives a single request",
   );
 });
 
-test("a mount lists all nine tools, and lists them with no credential at all", async () => {
+test("a mount lists all eleven tools, and lists them with no credential at all", async () => {
   // Credential-free boot is the property the whole image is built on, and it is
   // what lets an unconnected slug show a console page with a Connect button.
   const all = await toolsOf({});
   assert.deepEqual(all, [
     "change_email_conversation",
+    "create_email_label",
     "delete_draft_email",
     "download_email_attachments",
     "get_email_conversation",
     "list_draft_emails",
     "list_email_conversations",
+    "list_email_labels",
     "search_email_conversations",
     "send_email",
     "upsert_draft_email",
@@ -269,11 +271,13 @@ test("GMAIL_ENABLED_TOOLGROUPS comes from the injected env, per mount", async ()
   // the toggle were read from the global instead of from each mount's own env.
   assert.notDeepEqual(readonlyTools, await toolsOf({}));
 
-  // readwrite adds the three mailbox writes and still withholds send_email, which
+  // readwrite adds the mailbox writes and the label tools and still withholds send_email, which
   // is the tier that can act on someone outside the org.
   const rw = await toolsOf({ GMAIL_ENABLED_TOOLGROUPS: "readwrite" });
   assert.ok(rw.includes("upsert_draft_email"));
   assert.ok(rw.includes("delete_draft_email"));
+  assert.ok(rw.includes("list_email_labels"));
+  assert.ok(rw.includes("create_email_label"));
   assert.ok(!rw.includes("send_email"));
 });
 

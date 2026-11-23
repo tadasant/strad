@@ -294,7 +294,7 @@ describe("staging config", () => {
     "tailscale-readonly": 7,
     "monarch-money-readonly": 10,
     "gmail-ro": 5,
-    "gmail-rw": 8,
+    "gmail-rw": 10,
     "google-docs-ro": 4,
     "google-docs-rw": 13,
     "google-calendar-ro": 4,
@@ -316,7 +316,7 @@ describe("staging config", () => {
 
   it.each([
     // These tiers ARE the full tool set, so they carry no policy at all. Their
-    // counts (gmail 9, docs 11, calendar 7, 1Password 9, slack 14, tailscale 15,
+    // counts (gmail 11, docs 11, calendar 7, 1Password 9, slack 14, tailscale 15,
     // monarch 24) are asserted against the running image by the bundle's smoke test.
     "slack",
     "tailscale-readwrite",

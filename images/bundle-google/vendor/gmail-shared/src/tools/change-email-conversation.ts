@@ -1,6 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { z } from 'zod';
-import type { ClientFactory } from '../server.js';
+import type { ClientFactory, IGmailClient } from '../server.js';
+import { findLabelByName, type GmailLabel } from '../gmail-client/lib/labels.js';
 
 const PARAM_DESCRIPTIONS = {
   email_id:
@@ -8,11 +9,12 @@ const PARAM_DESCRIPTIONS = {
     'Obtain this from list_email_conversations or search_email_conversations.',
   status: 'Mark the email as read, unread, or archived. ' + 'Options: read, unread, archived.',
   labels:
-    'Labels to add to the email. Comma-separated list. ' +
-    'Common labels: STARRED, IMPORTANT. User labels should be the label ID.',
+    'Labels to add to the email. Comma-separated list of label names or IDs, ' +
+    'e.g. "STARRED, Receipts". A user label that does not exist yet is created. ' +
+    'Names match case-insensitively. A name that itself contains a comma cannot be given here.',
   remove_labels:
-    'Labels to remove from the email. Comma-separated list. ' +
-    'Common labels: STARRED, IMPORTANT, UNREAD. User labels should be the label ID.',
+    'Labels to remove from the email. Comma-separated list of label names or IDs, ' +
+    'e.g. "UNREAD, Receipts". A name that matches no label is skipped and reported.',
   is_starred: 'Star or unstar the email. Set to true to star, false to unstar.',
 } as const;
 
@@ -29,14 +31,17 @@ const TOOL_DESCRIPTION = `Modify an email conversation's status, labels, or star
 **Parameters:**
 - email_id: The unique identifier of the email (required)
 - status: Mark as "read", "unread", or "archived" (optional)
-- labels: Comma-separated labels to add (optional)
-- remove_labels: Comma-separated labels to remove (optional)
+- labels: Comma-separated labels to add, by name or ID (optional)
+- remove_labels: Comma-separated labels to remove, by name or ID (optional)
 - is_starred: Set to true to star, false to unstar (optional)
 
 **Label operations:**
 - Adding STARRED marks the email as starred
 - Removing INBOX archives the email
 - Adding/removing UNREAD marks email as unread/read
+- A label may be given by name ("Added details to calendar") or by ID ("Label_12"). A name that matches no label is CREATED as a user label when adding, so labelling with a new name needs no separate step; when removing, it is skipped
+- An unknown ID ("Label_<digits>" or "CATEGORY_<word>") is refused, never created as a name
+- list_email_labels shows every label's name and ID; create_email_label creates one without applying it
 
 **Use cases:**
 - Mark an email as read/unread
@@ -78,6 +83,9 @@ export function changeEmailConversationTool(server: Server, clientFactory: Clien
       required: ['email_id'],
     },
     handler: async (args: unknown) => {
+      // Outside the try: a label created before a later step fails has to be in
+      // the error too, or nothing says it exists.
+      const notes: string[] = [];
       try {
         const parsed = ChangeEmailConversationSchema.parse(args ?? {});
         const client = clientFactory();
@@ -101,17 +109,26 @@ export function changeEmailConversationTool(server: Server, clientFactory: Clien
           removeLabelIds.push('STARRED');
         }
 
-        // Handle labels to add
-        if (parsed.labels) {
-          const labels = parsed.labels.split(',').map((l) => l.trim());
-          addLabelIds.push(...labels);
+        // Labels by name or ID (strad FORK.md delta 8). Every token in both
+        // lists is resolved before any label is created, so an unknown ID, or
+        // a label given in both lists, refuses the call with nothing created.
+        // A label created here stays if a later create or the modify fails;
+        // the create is idempotent, so a retry reuses it.
+        const resolver = new LabelResolver(client);
+        const removed = await resolver.resolve(splitLabels(parsed.remove_labels), 'remove');
+        const added = await resolver.resolve(splitLabels(parsed.labels), 'add');
+        const both = added.ids.filter((id) => removed.ids.includes(id));
+        if (both.length > 0) {
+          throw new Error(
+            `The same label is in both labels and remove_labels: ${both
+              .map((id) => resolver.describe(id))
+              .join(', ')}.`
+          );
         }
-
-        // Handle labels to remove
-        if (parsed.remove_labels) {
-          const labels = parsed.remove_labels.split(',').map((l) => l.trim());
-          removeLabelIds.push(...labels);
-        }
+        removeLabelIds.push(...removed.ids);
+        notes.push(...removed.notes);
+        const createdIds = await resolver.createMissing(added.missing, notes);
+        addLabelIds.push(...added.ids, ...createdIds);
 
         // Only make API call if there are changes to make
         if (addLabelIds.length === 0 && removeLabelIds.length === 0) {
@@ -119,30 +136,38 @@ export function changeEmailConversationTool(server: Server, clientFactory: Clien
             content: [
               {
                 type: 'text',
-                text: 'No changes specified. Provide at least one of: status, labels, remove_labels, or is_starred.',
+                text: [
+                  notes.length > 0
+                    ? 'Nothing to change.'
+                    : 'No changes specified. Provide at least one of: status, labels, remove_labels, or is_starred.',
+                  ...notes,
+                ].join('\n'),
               },
             ],
           };
         }
 
         const updatedEmail = await client.modifyMessage(parsed.email_id, {
-          addLabelIds: addLabelIds.length > 0 ? addLabelIds : undefined,
-          removeLabelIds: removeLabelIds.length > 0 ? removeLabelIds : undefined,
+          addLabelIds: addLabelIds.length > 0 ? [...new Set(addLabelIds)] : undefined,
+          removeLabelIds: removeLabelIds.length > 0 ? [...new Set(removeLabelIds)] : undefined,
         });
 
         const changes: string[] = [];
         if (addLabelIds.length > 0) {
-          changes.push(`Added labels: ${addLabelIds.join(', ')}`);
+          changes.push(`Added labels: ${addLabelIds.map((id) => resolver.describe(id)).join(', ')}`);
         }
         if (removeLabelIds.length > 0) {
-          changes.push(`Removed labels: ${removeLabelIds.join(', ')}`);
+          changes.push(
+            `Removed labels: ${removeLabelIds.map((id) => resolver.describe(id)).join(', ')}`
+          );
         }
+        changes.push(...notes);
 
         return {
           content: [
             {
               type: 'text',
-              text: `Email ${parsed.email_id} updated successfully.\n\n${changes.join('\n')}\n\nCurrent labels: ${updatedEmail.labelIds?.join(', ') || 'None'}`,
+              text: `Email ${parsed.email_id} updated successfully.\n\n${changes.join('\n')}\n\nCurrent labels: ${updatedEmail.labelIds?.map((id) => resolver.describe(id)).join(', ') || 'None'}`,
             },
           ],
         };
@@ -151,7 +176,10 @@ export function changeEmailConversationTool(server: Server, clientFactory: Clien
           content: [
             {
               type: 'text',
-              text: `Error modifying email: ${error instanceof Error ? error.message : 'Unknown error'}`,
+              text: [
+                `Error modifying email: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                ...notes,
+              ].join('\n'),
             },
           ],
           isError: true,
@@ -159,4 +187,110 @@ export function changeEmailConversationTool(server: Server, clientFactory: Clien
       }
     },
   };
+}
+
+/**
+ * Gmail's system label IDs. A token that is one of these goes straight to the
+ * API, so a call that only stars, archives or marks read never lists labels.
+ */
+const SYSTEM_LABEL_IDS = new Set([
+  'INBOX',
+  'SPAM',
+  'TRASH',
+  'UNREAD',
+  'STARRED',
+  'IMPORTANT',
+  'SENT',
+  'DRAFT',
+  'CHAT',
+  'CATEGORY_PERSONAL',
+  'CATEGORY_SOCIAL',
+  'CATEGORY_PROMOTIONS',
+  'CATEGORY_UPDATES',
+  'CATEGORY_FORUMS',
+]);
+
+/** The shapes of Gmail's label IDs. A token of one that is not found is refused, never created as a name. */
+const LABEL_ID_SHAPE = /^(Label_\d+|CATEGORY_[A-Z]+)$/i;
+
+function isSystemLabelId(token: string): boolean {
+  return SYSTEM_LABEL_IDS.has(token);
+}
+
+export function splitLabels(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(',')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+}
+
+/**
+ * Turns the label tokens a caller wrote into label IDs: an ID passes through,
+ * a name is looked up (case-insensitively), and a missing name being ADDED is
+ * created as a user label. Resolving lists the mailbox's labels at most once
+ * per call, and only when some token is not a system label ID. Each label
+ * created lists them again, inside the idempotent create.
+ */
+export class LabelResolver {
+  private labels: GmailLabel[] | null = null;
+
+  constructor(private readonly client: IGmailClient) {}
+
+  private async all(): Promise<GmailLabel[]> {
+    if (!this.labels) this.labels = await this.client.listLabels();
+    return this.labels;
+  }
+
+  /**
+   * Resolves tokens without creating anything. `missing` holds the names being
+   * added that match no label, for {@link createMissing}.
+   */
+  async resolve(tokens: string[], mode: 'add' | 'remove'): Promise<{ ids: string[]; missing: string[]; notes: string[] }> {
+    const ids: string[] = [];
+    const missing: string[] = [];
+    const notes: string[] = [];
+    for (const token of tokens) {
+      if (isSystemLabelId(token)) {
+        ids.push(token);
+        continue;
+      }
+      const labels = await this.all();
+      const match = labels.find((l) => l.id === token) ?? findLabelByName(labels, token);
+      if (match) {
+        ids.push(match.id);
+        continue;
+      }
+      if (LABEL_ID_SHAPE.test(token)) {
+        throw new Error(
+          `No label with ID "${token}" in this mailbox. Call list_email_labels for the names and IDs, ` +
+            'or pass a label name instead.'
+        );
+      }
+      if (mode === 'remove') {
+        notes.push(`Skipped "${token}": no label by that name or ID, so there was nothing to remove.`);
+        continue;
+      }
+      missing.push(token);
+    }
+    return { ids: [...new Set(ids)], missing, notes };
+  }
+
+  /** Creates (or finds, if one appeared meanwhile) each missing label, and returns their IDs. */
+  async createMissing(names: string[], notes: string[]): Promise<string[]> {
+    const ids: string[] = [];
+    for (const name of names) {
+      const { label, created } = await this.client.createLabel(name);
+      (await this.all()).push(label);
+      ids.push(label.id);
+      if (created) notes.push(`Created label "${label.name}" (${label.id}).`);
+    }
+    return ids;
+  }
+
+  /** `Name (id)` for a user label this call looked up, the bare ID otherwise. */
+  describe(id: string): string {
+    const label = this.labels?.find((l) => l.id === id);
+    return label && label.name !== id ? `${label.name} (${id})` : id;
+  }
 }
