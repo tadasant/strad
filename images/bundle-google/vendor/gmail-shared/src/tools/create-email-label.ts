@@ -4,7 +4,8 @@ import type { ClientFactory } from '../server.js';
 
 const PARAM_DESCRIPTIONS = {
   name:
-    'Name of the user label to create, e.g. "Receipts" or "Travel/2026" ("/" nests it). ' +
+    'Name of the user label to create, e.g. "Receipts" or "Travel/2026" ' +
+    '(Gmail shows "/" as nesting under the parent label when that label exists). ' +
     'Matched case-insensitively against existing labels.',
 } as const;
 
@@ -15,7 +16,7 @@ export const CreateEmailLabelSchema = z.object({
 const TOOL_DESCRIPTION = `Create a user label in the mailbox, or return the existing one with that name.
 
 **Parameters:**
-- name: The label's name (required). "/" nests it under a parent, as in Gmail.
+- name: The label's name (required). As in Gmail, "Parent/Child" shows nested under an existing "Parent".
 
 **Idempotent:** if a label with this name already exists (Gmail compares names without regard to case), it is returned unchanged and nothing is created. Calling it twice is safe.
 

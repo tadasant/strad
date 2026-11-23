@@ -996,7 +996,7 @@ servers:
       ZIMMER_SECRETS_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${ZIMMER_SECRETS_ADMIN_KEY_JSON}"
 
   # ---------------------------------------------------------------------------
-  # Gmail — 9 tools full, 8 read-write, 5 read-only. THREE slugs, ONE container.
+  # Gmail — 11 tools full, 10 read-write, 5 read-only. THREE slugs, ONE container.
   #
   # ALL THREE SHARE THE CONVENTIONAL /gmail MOUNT, which authenticates as a
   # SERVICE ACCOUNT impersonating one Workspace user. The only difference between

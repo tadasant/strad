@@ -106,16 +106,19 @@ export function changeEmailConversationTool(server: Server, clientFactory: Clien
           removeLabelIds.push('STARRED');
         }
 
-        // Labels by name or ID (strad FORK.md delta 8). Removals resolve
-        // first, so a label is never created for a call that then fails.
+        // Labels by name or ID (strad FORK.md delta 8). Every token in both
+        // lists is resolved before any label is created, so a bad token
+        // refuses the call with nothing created. A label created here stays
+        // if the modify below then fails; the create is idempotent, so a
+        // retry reuses it.
         const resolver = new LabelResolver(client);
         const notes: string[] = [];
         const removed = await resolver.resolve(splitLabels(parsed.remove_labels), 'remove');
+        const added = await resolver.resolve(splitLabels(parsed.labels), 'add');
         removeLabelIds.push(...removed.ids);
         notes.push(...removed.notes);
-        const added = await resolver.resolve(splitLabels(parsed.labels), 'add');
-        addLabelIds.push(...added.ids);
-        notes.push(...added.notes);
+        const createdIds = await resolver.createMissing(added.missing, notes);
+        addLabelIds.push(...new Set([...added.ids, ...createdIds]));
 
         // Only make API call if there are changes to make
         if (addLabelIds.length === 0 && removeLabelIds.length === 0) {
@@ -218,8 +221,13 @@ export class LabelResolver {
     return this.labels;
   }
 
-  async resolve(tokens: string[], mode: 'add' | 'remove'): Promise<{ ids: string[]; notes: string[] }> {
+  /**
+   * Resolves tokens without creating anything. `missing` holds the names being
+   * added that match no label, for {@link createMissing}.
+   */
+  async resolve(tokens: string[], mode: 'add' | 'remove'): Promise<{ ids: string[]; missing: string[]; notes: string[] }> {
     const ids: string[] = [];
+    const missing: string[] = [];
     const notes: string[] = [];
     for (const token of tokens) {
       if (isSystemLabelId(token)) {
@@ -242,12 +250,21 @@ export class LabelResolver {
         notes.push(`Skipped "${token}": no label by that name or ID, so there was nothing to remove.`);
         continue;
       }
-      const { label, created } = await this.client.createLabel(token);
-      labels.push(label);
+      missing.push(token);
+    }
+    return { ids: [...new Set(ids)], missing, notes };
+  }
+
+  /** Creates (or finds, if one appeared meanwhile) each missing label, and returns their IDs. */
+  async createMissing(names: string[], notes: string[]): Promise<string[]> {
+    const ids: string[] = [];
+    for (const name of names) {
+      const { label, created } = await this.client.createLabel(name);
+      (await this.all()).push(label);
       ids.push(label.id);
       if (created) notes.push(`Created label "${label.name}" (${label.id}).`);
     }
-    return { ids: [...new Set(ids)], notes };
+    return ids;
   }
 
   /** `Name (id)` for a user label this call looked up, the bare ID otherwise. */

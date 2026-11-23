@@ -458,6 +458,9 @@ back as HTTP 400, and there was no tool to find the ID or to create the label.
   - a token shaped like a user label ID (`Label_<digits>`) that matches no
     label is refused, naming `list_email_labels`. It is never created as a
     label of that name.
+  Every token in both lists is resolved before any label is created, so a
+  call refused for a bad token creates nothing. A label created for a call
+  whose `messages.modify` then fails stays; a retry finds and reuses it.
   The answer names each label as `Name (id)`.
 - Both new tools are in the `readwrite` and `readwrite_external` groups. Listing
   is a read, but it exists to label mail, and keeping it out of `readonly`
@@ -477,9 +480,11 @@ renames, recolours or deletes a label.
 **Tests.** `images/bundle-google/test/gmail-labels.test.ts`: the exact
 requests `listLabels` and `createLabel` send, the idempotent create (an
 existing name, a case-folded name, a lost race), both tools' answers, and
-`change_email_conversation` resolving names to IDs, creating a missing label,
-skipping an unknown removal, refusing an unknown `Label_` ID with nothing
-modified, and sending a system-only call with no label list. The tool lists in
+`createLabel`'s 400, 403 and reserved-name 409 answers,
+`change_email_conversation` resolving names to IDs (a lowercase system name
+included), creating a missing label, skipping an unknown removal, refusing an
+unknown `Label_` ID with nothing created or modified, and sending a
+system-only call with no label list. The tool lists in
 `images/bundle-google/test/gmail.test.ts` and
 `images/bundle-google/test/standalone.test.ts` hold the groups. Stubs only; no
 live mailbox was labelled.

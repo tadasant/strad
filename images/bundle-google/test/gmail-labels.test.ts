@@ -93,6 +93,29 @@ describe("labels client", () => {
     expect(result).toEqual({ created: false, label: { id: "Label_50", name: "New", type: "user" } });
   });
 
+  it.each([
+    [400, /refused the label name/],
+    [403, /gmail\.modify/],
+  ])("explains a %i from the create", async (status, message) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) =>
+        init?.method === "POST" ? json({}, status) : json({ labels: LABELS }),
+      ),
+    );
+    await expect(createLabel(BASE, HEADERS, "X")).rejects.toThrow(message);
+  });
+
+  it("explains a 409 whose re-list finds no match (a reserved name)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) =>
+        init?.method === "POST" ? json({}, 409) : json({ labels: LABELS }),
+      ),
+    );
+    await expect(createLabel(BASE, HEADERS, "Chat")).rejects.toThrow(/list_email_labels/);
+  });
+
   it("refuses an empty name before any request", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -129,6 +152,19 @@ describe("list_email_labels", () => {
     expect(text).toContain("- Travel/2026 — id: Label_9");
     expect(text).toContain("## System labels (2)");
     expect(text.indexOf("Receipts")).toBeLessThan(text.indexOf("## System labels"));
+  });
+});
+
+describe("list_email_labels errors", () => {
+  it("reports a failed list as an error result", async () => {
+    const client = mailbox({
+      listLabels: vi.fn(async () => {
+        throw new Error("Gmail API rate limit exceeded.");
+      }),
+    });
+    const result = await listEmailLabelsTool(server, () => client).handler();
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("rate limit");
   });
 });
 
@@ -226,6 +262,37 @@ describe("change_email_conversation labels by name", () => {
     const result = await call(client, { labels: "Brand new", remove_labels: "Label_404" });
     expect(result.isError).toBe(true);
     expect(client.createLabel).not.toHaveBeenCalled();
+  });
+
+  it("refuses a bad add token before creating an earlier missing name", async () => {
+    const client = mailbox();
+    const result = await call(client, { labels: "Brand new, Label_999" });
+    expect(result.isError).toBe(true);
+    expect(client.createLabel).not.toHaveBeenCalled();
+    expect(client.modifyMessage).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed modify as an error after creating the label", async () => {
+    const client = mailbox({
+      modifyMessage: vi.fn(async () => {
+        throw new Error("Resource not found: m1");
+      }),
+    });
+    const result = await call(client, { labels: "Brand new" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Resource not found");
+    expect(client.createLabel).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves a lowercase system label name through the list", async () => {
+    const client = mailbox();
+    await call(client, { labels: "starred" });
+    expect(client.listLabels).toHaveBeenCalledTimes(1);
+    expect(client.createLabel).not.toHaveBeenCalled();
+    expect(client.modifyMessage).toHaveBeenCalledWith("m1", {
+      addLabelIds: ["STARRED"],
+      removeLabelIds: undefined,
+    });
   });
 
   it("names the label tools in its description", () => {

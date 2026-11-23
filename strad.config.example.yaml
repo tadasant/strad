@@ -954,7 +954,7 @@ servers:
         #   - change_email_conversation   (labels by name or ID; creates a missing one)
         #   - upsert_draft_email
         #   - delete_draft_email   (one draft, permanently; HACKS.md #130)
-        #   - list_email_labels
+        #   - list_email_labels   (a read, kept out of `-ro`: it exists to label)
         #   - create_email_label
         # `send_email` is the `-rw-external` tier's alone.
 
