@@ -10,6 +10,8 @@ import { deleteDraftEmailTool } from './tools/delete-draft-email.js';
 import { sendEmailTool } from './tools/send-email.js';
 import { searchEmailConversationsTool } from './tools/search-email-conversations.js';
 import { downloadEmailAttachmentsTool } from './tools/download-email-attachments.js';
+import { listEmailLabelsTool } from './tools/list-email-labels.js';
+import { createEmailLabelTool } from './tools/create-email-label.js';
 
 /**
  * Generic tool interface
@@ -47,7 +49,8 @@ type ToolFactory = (server: Server, clientFactory: ClientFactory) => Tool;
  * Available tool groups for Gmail MCP server
  * - readonly: Read-only Gmail operations (list, get, search, download_attachments)
  *   Note: download_email_attachments returns attachment bytes in the response and does not modify mailbox state
- * - readwrite: Read and write operations (includes readonly + modify, draft, delete draft)
+ * - readwrite: Read and write operations (includes readonly + modify, draft, delete draft,
+ *   list and create labels)
  * - readwrite_external: External communication operations (includes readwrite + send_email)
  */
 export type ToolGroup = 'readonly' | 'readwrite' | 'readwrite_external';
@@ -63,7 +66,8 @@ interface ToolDefinition {
  * All available tools with their group assignments
  *
  * readonly: list_email_conversations, get_email_conversation, search_email_conversations, download_email_attachments, list_draft_emails
- * readwrite: all readonly tools + change_email_conversation, upsert_draft_email, delete_draft_email
+ * readwrite: all readonly tools + change_email_conversation, upsert_draft_email, delete_draft_email,
+ *   list_email_labels, create_email_label
  * readwrite_external: all readwrite tools + send_email (external communication)
  */
 const ALL_TOOLS: ToolDefinition[] = [
@@ -85,6 +89,11 @@ const ALL_TOOLS: ToolDefinition[] = [
   { factory: upsertDraftEmailTool, groups: ['readwrite', 'readwrite_external'] },
   // Deletes a draft only — never a sent or received message, never a thread
   { factory: deleteDraftEmailTool, groups: ['readwrite', 'readwrite_external'] },
+  // Labels (strad FORK.md delta 8). Listing is a read, but it is here rather
+  // than in readonly because its purpose is labelling: a read-only slug keeps
+  // exactly the surface it had.
+  { factory: listEmailLabelsTool, groups: ['readwrite', 'readwrite_external'] },
+  { factory: createEmailLabelTool, groups: ['readwrite', 'readwrite_external'] },
   // External communication tools (only in readwrite_external - most dangerous)
   { factory: sendEmailTool, groups: ['readwrite_external'] },
 ];

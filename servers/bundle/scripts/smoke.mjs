@@ -61,7 +61,7 @@ const EXPECT = {
   // delete_file — the artifact store's whole surface.
   "remote-filesystem-tmp-public": 7,
   "google-flights": 3,
-  gmail: 9,
+  gmail: 11,
   "google-calendar": 7,
   "google-docs": 14,
   // Four read tools, six write tools and share_spreadsheet. A strad

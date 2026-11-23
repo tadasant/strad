@@ -422,3 +422,64 @@ and its encoding (round-tripped through `URL`), both tools on create, update,
 list and a thread filter, a failed save reported as an error with no account
 read, and a failed or stalled account read costing the link and not the
 answer. Stubs only; no live mailbox was opened.
+
+---
+
+## 8. Labels by name: `list_email_labels`, `create_email_label`, and names in `change_email_conversation`
+
+**Upstream.** `change_email_conversation` takes `labels` and `remove_labels`
+as label IDs and sends them to `messages.modify` as given. A user label's ID
+(`Label_12`) is not its name, and nothing in the server lists labels or
+creates one. So an agent asked to put a label named "Added details to
+calendar" on a message could not: the name went to Gmail as an ID and came
+back as HTTP 400, and there was no tool to find the ID or to create the label.
+
+**Here.**
+
+- `list_email_labels` (no arguments) returns every label, user labels first,
+  then system labels, each as name and ID. One `GET users/me/labels`.
+- `create_email_label` takes a `name` and creates a user label
+  (`POST users/me/labels`, shown in the label list and the message list). It
+  is idempotent by name: the labels are listed first, and a label whose name
+  matches, without regard to case, is returned unchanged with "already
+  exists". Gmail itself refuses a second label that differs only in case. A
+  create that loses a race (Gmail's 409) re-lists and returns the winner.
+- `change_email_conversation`'s `labels` and `remove_labels` take names or
+  IDs, comma-separated:
+  - a system label ID (`INBOX`, `STARRED`, `UNREAD`, `CATEGORY_*`, …) is
+    sent as given, and a call made only of those lists nothing, so starring,
+    archiving and marking read cost what they did;
+  - anything else is looked up in one label list per call, by exact ID first,
+    then by name without regard to case;
+  - a name being ADDED that matches no label is created as a user label
+    (through the same idempotent create) and then applied;
+  - a name being REMOVED that matches no label is skipped, and the answer
+    says so;
+  - a token shaped like a user label ID (`Label_<digits>`) that matches no
+    label is refused, naming `list_email_labels`. It is never created as a
+    label of that name.
+  The answer names each label as `Name (id)`.
+- Both new tools are in the `readwrite` and `readwrite_external` groups. Listing
+  is a read, but it exists to label mail, and keeping it out of `readonly`
+  leaves a read-only server's surface exactly as it was. Labels need
+  `gmail.modify` (or `gmail.labels`), which every writing credential already
+  holds, so nothing needs a new scope.
+
+What it does not do: a label name that itself contains a comma cannot be
+given to `change_email_conversation`, because the list is comma-separated.
+`create_email_label` takes it, and its ID can be passed instead. Nothing here
+renames, recolours or deletes a label.
+
+**Files.** `src/gmail-client/lib/labels.ts` (new), `src/tools/list-email-labels.ts`
+(new), `src/tools/create-email-label.ts` (new),
+`src/tools/change-email-conversation.ts`, `src/tools.ts`, `src/server.ts`.
+
+**Tests.** `images/bundle-google/test/gmail-labels.test.ts`: the exact
+requests `listLabels` and `createLabel` send, the idempotent create (an
+existing name, a case-folded name, a lost race), both tools' answers, and
+`change_email_conversation` resolving names to IDs, creating a missing label,
+skipping an unknown removal, refusing an unknown `Label_` ID with nothing
+modified, and sending a system-only call with no label list. The tool lists in
+`images/bundle-google/test/gmail.test.ts` and
+`images/bundle-google/test/standalone.test.ts` hold the groups. Stubs only; no
+live mailbox was labelled.

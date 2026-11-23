@@ -251,7 +251,7 @@ failure:
 - **`bundle_image`** — builds `servers/bundle/Dockerfile`, **boots the container**,
   and runs `scripts/smoke.mjs` against every mount of the running image, asserting
   the full-capability tool count for each (slack 14, tailscale 15, monarch-money 24,
-  gmail 9, google-docs 14, google-calendar 7, 1Password 9, secrets 4, …). Those
+  gmail 11, google-docs 14, google-calendar 7, 1Password 9, secrets 4, …). Those
   counts are the numbers the gateway's read-only allow-lists are carved out of, so
   if an upstream grows or renames a tool, this is where it surfaces. For `secrets`
   the count of 4 is a security assertion: a fifth tool on a server whose contract is
