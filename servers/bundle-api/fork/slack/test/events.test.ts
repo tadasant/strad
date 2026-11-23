@@ -824,7 +824,7 @@ describe('SlackEventsIngest', () => {
       await b.ingest.close();
     });
 
-    it('a read in flight when the process closes or is superseded buffers nothing', async () => {
+    it('a read in flight when the process is superseded buffers nothing, and at a close loses nothing', async () => {
       for (const end of ['close', 'superseded'] as const) {
         const blobs = new MemoryBlobStore();
         const slack = fakeSlack();
@@ -839,6 +839,7 @@ describe('SlackEventsIngest', () => {
         const a = await bootIngest(blobs, slack, () => t.now);
         a.sockets[0]!.frame({ type: 'hello' });
         await settle();
+        await a.ingest.liveTick(); // live_through = T0, persisted
         t.now = joined + 500;
         slack.history.CNEW = [mention, notice];
         deliver(a.sockets[0]!, onWire(notice));
@@ -853,9 +854,18 @@ describe('SlackEventsIngest', () => {
         }
         release();
         await settle();
-        expect(a.ingest.status().buffer).toMatchObject({ events: 0 });
+        if (b) expect(a.ingest.status().buffer).toMatchObject({ events: 0 });
         await a.ingest.close();
-        await b?.ingest.close();
+        b ??= await bootIngest(blobs, slack, () => t.now);
+        const { cursor } = await b.ingest.poll({ cursor: null });
+        b.sockets[0]!.frame({ type: 'hello' });
+        await settle();
+        if (end === 'close') {
+          expect(b.ingest.status().buffer).toMatchObject({ events: 1 });
+        } else {
+          expect((await b.ingest.poll({ cursor })).events.map((e) => e.data.ts)).toEqual([mention.ts]);
+        }
+        await b.ingest.close();
       }
     });
 
@@ -878,6 +888,26 @@ describe('SlackEventsIngest', () => {
       await settle();
       const { events } = await b.ingest.poll({ cursor: a.cursor });
       expect(events.map((e) => e.data.text).sort()).toEqual(['after the join', 'ping <@UBOT>']);
+      await b.ingest.close();
+    });
+
+    it('a thread that cannot be read does not hide a join from the backfill', async () => {
+      const blobs = new MemoryBlobStore();
+      const a = await liveBreakable(blobs);
+      await a.ingest.close();
+      a.t.now = T0 + 10 * 60_000;
+      a.slack.history.CNEW = [
+        { type: 'message', ts: ts(T0 + 50_000, 1), user: 'U2', text: 'busy', latest_reply: ts(T0 + 60_000, 1) },
+        mention,
+        notice,
+      ];
+      Object.assign(a.broken, { on: true, method: 'conversations.replies' });
+      const b = await bootIngest(blobs, a.slack, () => a.t.now);
+      b.sockets[0]!.frame({ type: 'hello' });
+      await settle();
+      const { events } = await b.ingest.poll({ cursor: a.cursor });
+      expect(events.map((e) => e.data.ts)).toEqual([mention.ts]);
+      expect(b.ingest.status().backfill).toMatchObject({ gap_still_owed: true });
       await b.ingest.close();
     });
 
@@ -913,7 +943,7 @@ describe('SlackEventsIngest', () => {
       await ingest.close();
     });
 
-    it('a channel the bot left and rejoined inside the gap keeps what it was sent as a member', async () => {
+    it('a channel left and rejoined inside the gap keeps what it was sent as a member, and no more', async () => {
       const blobs = new MemoryBlobStore();
       const a = await liveBreakable(blobs);
       await a.ingest.close();
@@ -921,13 +951,15 @@ describe('SlackEventsIngest', () => {
       a.slack.history.CNEW = [
         { type: 'message', ts: ts(T0 + 60_000, 1), user: 'U2', text: 'while a member' },
         { type: 'message', subtype: 'channel_leave', ts: ts(T0 + 90_000, 2), user: 'UBOT', text: 'left' },
-        { ...notice, ts: ts(T0 + 120_000, 3) },
+        { type: 'message', ts: ts(T0 + 100_000, 3), user: 'U2', text: 'while out' },
+        { ...notice, ts: ts(T0 + 120_000, 4) },
+        { type: 'message', ts: ts(T0 + 130_000, 5), user: 'U2', text: 'back' },
       ];
       const b = await bootIngest(blobs, a.slack, () => a.t.now);
       b.sockets[0]!.frame({ type: 'hello' });
       await settle();
       const { events } = await b.ingest.poll({ cursor: a.cursor });
-      expect(events.map((e) => e.data.text)).toEqual(['while a member']);
+      expect(events.map((e) => e.data.text)).toEqual(['while a member', 'back']);
       await b.ingest.close();
     });
   });

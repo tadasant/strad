@@ -109,7 +109,7 @@ export function ownJoin(
   return channelId ? { channelId, ts: raw.ts ?? raw.event_ts } : null;
 }
 
-/** The notice that the bot left, or was removed. It says the bot WAS a member until then. */
+/** The notice that the bot left, or was removed: a member until then, and not after. */
 export function isOwnLeave(raw: RawSlackMessage, bot: BotIdentity): boolean {
   return raw.user === bot.userId && raw.subtype !== undefined && LEAVE_SUBTYPES.has(raw.subtype);
 }

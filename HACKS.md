@@ -6787,8 +6787,8 @@ public ingress.
   which the ingest does not take. It is read back on the bot's join, for which
   the only signal without a new subscription is the join notice, a message Slack
   says it sometimes withholds and a workspace can hide. Subscribing the app to
-  `member_joined_channel` (no new scope) removes that dependence, except that a
-  join still owed at a restart is found again only by its notice. Five failed
+  `member_joined_channel` (no new scope) removes that dependence, except for a
+  join during a gap or still owed at a restart, which only its notice reveals. Five failed
   reads give the join up. Not exercised against a live workspace.
 - The buffer is one object, rewritten at most every couple of seconds. Events
   buffered since the last write are lost if the process dies; the next

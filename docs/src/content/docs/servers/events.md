@@ -195,12 +195,12 @@ the bot joins:
 - **What becomes an event.** Only a message that mentions the bot. The rest of
   what was said before the bot arrived is not replayed, and neither is an older
   mention. The same rule applies when a reconnect's backfill meets a join inside
-  its gap. A gap that shows the bot leaving first is different: it was a member
-  then, so what it was sent is recovered as usual.
+  its gap: what was said while the bot was out of the conversation, before a join
+  or between a leave and the next join, is skipped.
 - **Once.** The event id is the message's own `channel:ts`, so both join events,
   a reconnect and a late `message` all reach one occurrence.
-- **A failed read** is retried once a minute, five reads in all. One unreadable
-  thread does not cost the others. `live_through` waits meanwhile, so a process
+- **A failed read** is retried once a minute, five reads in all. An unreadable
+  thread does not cost what was read around it. `live_through` waits meanwhile, so a process
   that starts before the retries finish meets the join notice in its own backfill.
   The status tool shows the last join, how many mentions it found, and how many
   joins are still owed.
@@ -390,10 +390,11 @@ The other Slack tools are unaffected.
 
 On the Slack side, the app needs Socket Mode turned on, an app-level token, and
 bot event subscriptions for `message.channels`, `message.groups` and `message.im`.
-`member_joined_channel` is a fourth, optional one. It makes
+`member_joined_channel` is a fourth, optional one. While the socket is up it makes
 [the inviting mention](#the-mention-that-invites-the-bot) independent of the join
 notice, which Slack says it
 [sometimes withholds](https://docs.slack.dev/reference/events/message/channel_join).
+A join during a gap is found only by its notice.
 It needs `channels:read` and `groups:read`, which backfill already uses.
 Backfill reads with the history scopes the bot already has
 (`channels:history`, `groups:history`, `im:history`) and lists its

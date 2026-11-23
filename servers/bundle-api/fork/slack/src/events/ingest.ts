@@ -508,7 +508,7 @@ export class SlackEventsIngest {
   }
 
   private ingest(raw: RawSlackMessage, hint?: { id: string; type?: string }): boolean {
-    if (!this.bot || this.stopped || this.store!.superseded) return false;
+    if (!this.bot || this.store!.superseded) return false;
     const join = ownJoin(raw, this.bot, hint);
     if (join) {
       this.noteJoin(join.channelId, join.ts);
@@ -596,15 +596,15 @@ export class SlackEventsIngest {
       const hint = { id: conv.id, type: conv.type };
       try {
         const read = await this.readSince(conv.id, sinceTs, lookbackTs);
-        if (read.threadError !== undefined) throw read.threadError;
         record.incomplete += read.incomplete;
-        // Joined inside the gap: what was posted before that is history the bot
-        // was not there for. The join's own catch-up has the mention in it.
-        const joinedTs = this.joinedWithin(read.messages, sinceTs, hint);
+        // What was posted while the bot was not a member is history it was not
+        // there for. A join's own catch-up has the mention that led to it.
+        const absentAt = this.absence(read.messages, sinceTs, hint);
         for (const m of read.messages) {
-          if (joinedTs !== undefined && m.ts! < joinedTs) continue;
+          if (absentAt(m.ts!)) continue;
           if (this.ingest(m, hint)) record.added++;
         }
+        if (read.threadError !== undefined) throw read.threadError;
       } catch (err) {
         record.failed++;
         record.error ??= `${conv.id}: ${errText(err)}`;
@@ -624,8 +624,9 @@ export class SlackEventsIngest {
   /**
    * A conversation's messages after `sinceTs`, in message order, so a recovered
    * reply is sequenced after the top-level messages that preceded it. Parents
-   * are looked for from `lookbackTs`. A thread that cannot be read leaves the
-   * rest readable: the first such failure is `threadError`, for the caller.
+   * are looked for from `lookbackTs`. A thread that fails leaves the rest of the
+   * read standing, as `threadError` beside it; one that is merely gone is stepped
+   * over, and any other failure is the last thread tried.
    */
   private async readSince(
     channel: string,
@@ -641,18 +642,20 @@ export class SlackEventsIngest {
     if (!history.complete) incomplete++;
     for (const m of history.messages) {
       if (m.ts && m.ts > sinceTs) found.set(m.ts, m);
-      if (m.latest_reply && m.latest_reply > sinceTs && m.ts) {
-        try {
-          const replies = await api.replies(channel, m.ts, sinceTs, BACKFILL_MAX_PAGES, latestTs);
-          if (!replies.complete) incomplete++;
-          // `replies` always includes the parent; whether it is new was decided
-          // by the history read above.
-          for (const r of replies.messages) {
-            if (r.ts && r.ts !== m.ts && r.ts > sinceTs) found.set(r.ts, r);
-          }
-        } catch (err) {
-          threadError ??= err;
+    }
+    for (const m of history.messages) {
+      if (!m.ts || !m.latest_reply || m.latest_reply <= sinceTs) continue;
+      try {
+        const replies = await api.replies(channel, m.ts, sinceTs, BACKFILL_MAX_PAGES, latestTs);
+        if (!replies.complete) incomplete++;
+        // `replies` always includes the parent; whether it is new was decided
+        // by the history read above.
+        for (const r of replies.messages) {
+          if (r.ts && r.ts !== m.ts && r.ts > sinceTs) found.set(r.ts, r);
         }
+      } catch (err) {
+        threadError ??= err;
+        if (!(err instanceof SlackApiError && err.code === 'thread_not_found')) break;
       }
     }
     const messages = [...found.keys()].sort().map((t) => found.get(t)!);
@@ -660,23 +663,30 @@ export class SlackEventsIngest {
   }
 
   /**
-   * When the bot became a member, if it was not one at `sinceTs`: its first
-   * membership record in the window is a join. Undefined otherwise: a leave
-   * first says it was a member, and what it was sent then is not skipped.
+   * Whether the bot was out of the conversation at a moment in the window, from
+   * its own joins and leaves there: before a first record that is a join, and
+   * between a leave and the next join.
    */
-  private joinedWithin(
+  private absence(
     messages: RawSlackMessage[],
     sinceTs: string,
     hint: { id: string; type?: string }
-  ): string | undefined {
+  ): (ts: string) => boolean {
     const bot = this.bot!;
-    const joined = [
-      ...messages.filter((m) => ownJoin(m, bot, hint)).map((m) => m.ts!),
+    const records = [
+      ...messages
+        .filter((m) => ownJoin(m, bot, hint))
+        .map((m) => ({ ts: m.ts!, member: true })),
       // Seen live; its notice may have been withheld.
-      ...this.joins.filter((j) => j.channel === hint.id && j.ts > sinceTs).map((j) => j.ts),
-    ].sort()[0];
-    const left = messages.find((m) => isOwnLeave(m, bot))?.ts;
-    return joined !== undefined && (left === undefined || joined < left) ? joined : undefined;
+      ...this.joins
+        .filter((j) => j.channel === hint.id && j.ts > sinceTs)
+        .map((j) => ({ ts: j.ts, member: true })),
+      ...messages.filter((m) => isOwnLeave(m, bot)).map((m) => ({ ts: m.ts!, member: false })),
+    ].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
+    return (ts) => {
+      const last = records.filter((r) => r.ts <= ts).pop();
+      return last ? !last.member : records[0]?.member === true;
+    };
   }
 
   // --- the mention that invited the bot ---------------------------------------
