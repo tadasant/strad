@@ -82,6 +82,76 @@ describe("oauthRefresh: parses", () => {
   });
 });
 
+describe("oauthRefresh.authorizeParams:", () => {
+  const withParams = (params: string): string =>
+    config(`
+  - slug: g
+    kind: remote-http
+    url: https://g.example/mcp
+    oauthRefresh:
+      tokenUrl: https://g.example/token
+      clientId: \${G_CLIENT_ID}
+      refreshToken: \${G_RT}
+      authorizeParams: ${params}`);
+
+  it("parses, is a known key to the deploy gate, and is absent unless declared", () => {
+    const yaml = withParams("{ access_type: offline, prompt: consent }");
+    const parsed = parseConfig(yaml);
+    const server = parsed.servers[0]!;
+    if (server.kind !== "remote-http") throw new Error("kind");
+    expect(server.oauthRefresh?.authorizeParams).toEqual({
+      access_type: "offline",
+      prompt: "consent",
+    });
+    expect(unknownConfigKeys(yaml, parsed)).toEqual([]);
+
+    // No default: the block is one of the terms a Connect transaction binds,
+    // and a slug that does not declare this keeps the terms it had.
+    const bare = parseConfig(config(GRANOLA)).servers[0]!;
+    if (bare.kind !== "remote-http") throw new Error("kind");
+    expect(bare.oauthRefresh).not.toHaveProperty("authorizeParams");
+  });
+
+  it.each([
+    "client_id",
+    "client_secret",
+    "redirect_uri",
+    "response_type",
+    "scope",
+    "state",
+    "code_challenge",
+    "code_challenge_method",
+    "resource",
+    "audience",
+    "request",
+    "request_uri",
+    "response_mode",
+    "authorization_details",
+    "include_granted_scopes",
+    "user_scope",
+    "Redirect_URI",
+    "redirect.uri",
+    "scope[]",
+    " prompt",
+    "ACCESS_TYPE",
+    "constructor",
+    "",
+  ])("refuses %j: the list is closed", (key) => {
+    expect(refusal(withParams(`{ ${JSON.stringify(key)}: x }`))).toContain(
+      `oauthRefresh.authorizeParams.${key}. Connect sends only access_type,`,
+    );
+  });
+
+  it("refuses a value from a ${NAME}, and one too long for the transaction", () => {
+    expect(refusal(withParams('{ login_hint: "${G_LOGIN}" }'))).toMatch(
+      /must be a literal/,
+    );
+    expect(refusal(withParams(`{ login_hint: ${"x".repeat(201)} }`))).toMatch(
+      /longer than 200/,
+    );
+  });
+});
+
 describe("oauthRefresh: refuses", () => {
   const one = (block: string, headers = "") =>
     config(`

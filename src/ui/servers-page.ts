@@ -8,6 +8,7 @@ import { SLUG_PATTERN, type StradConfig } from "../config/schema.ts";
 import type { EntrySource } from "../config/overlay.ts";
 import { immutableFields } from "../config/overlay.ts";
 import { CREDENTIAL_SCHEMES } from "../config/secret-position.ts";
+import { UPSTREAM_AUTHORIZE_PARAMS } from "../connectors/oauth-flow.ts";
 
 /**
  * The connector ENTRY FORM — `/connectors/new` and `/connectors/<slug>`.
@@ -434,6 +435,22 @@ ${field(
   }),
   "RFC 8707 resource indicator, when the provider wants one.",
   { optional: true, id: "oauthResource" },
+)}
+${field(
+  "Sign-in parameters",
+  area(
+    "oauthAuthorizeParams",
+    pairs(oauthRefresh.authorizeParams),
+    2,
+    "oauthAuthorizeParams",
+  ),
+  `One <code>name: value</code> per line, added to the sign-in link Connect
+   builds. For a provider that takes a parameter to issue a refresh token —
+   Google's are <code>access_type: offline</code> and
+   <code>prompt: consent</code>. Only
+   ${UPSTREAM_AUTHORIZE_PARAMS.map((p) => `<code>${esc(p)}</code>`).join(", ")},
+   each a literal.`,
+  { optional: true, id: "oauthAuthorizeParams" },
 )}
 `
       : opts.kind === "local-tunnel"

@@ -111,6 +111,43 @@ export const RESERVED_AUTHORIZE_PARAMS = [
 const RESERVED = new Set<string>(RESERVED_AUTHORIZE_PARAMS);
 
 /**
+ * The ONLY parameters `oauthRefresh.authorizeParams:` may set. A closed list
+ * rather than a list of forbidden names, because the forbidden ones are open
+ * ended: `resource`, `request_uri`, `audience`, Slack's `user_scope`, Google's
+ * `include_granted_scopes` and whatever the next provider invents each change
+ * the grant, and `client_secret` would put a credential in a browser's address
+ * bar. Every name here asks for a refresh token or picks an account, and
+ * nothing else:
+ *
+ *   - `access_type` (Google), `token_access_type` (Dropbox) and `duration`
+ *     (Reddit): issue a refresh token.
+ *   - `prompt` (OpenID Connect): show the consent or account screen. Google
+ *     issues a refresh token again only on a fresh consent.
+ *   - `login_hint` (OpenID Connect) and `hd` (Google): which account the sign-in
+ *     page offers. Hints, not checks: no identity is proved by them.
+ *
+ * Exact names: parameter names are case-sensitive, and a near-miss is refused
+ * rather than sent. Extending it is a pull request, which is the right cost.
+ * `oauth: provider: generic` keeps {@link RESERVED_AUTHORIZE_PARAMS}.
+ */
+export const UPSTREAM_AUTHORIZE_PARAMS = [
+  "access_type",
+  "token_access_type",
+  "duration",
+  "prompt",
+  "login_hint",
+  "hd",
+] as const;
+
+/** A value's length bound: the block rides in the connect transaction cookie. */
+export const UPSTREAM_AUTHORIZE_PARAM_MAX = 200;
+
+/** May `oauthRefresh.authorizeParams:` set `key`? */
+export function isUpstreamAuthorizeParam(key: string): boolean {
+  return (UPSTREAM_AUTHORIZE_PARAMS as readonly string[]).includes(key);
+}
+
+/**
  * Build a consent URL with PKCE, and return the two secrets the callback will
  * need back.
  *

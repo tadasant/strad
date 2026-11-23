@@ -432,6 +432,29 @@ servers:
   #   mayBeUnseeded:
   #     [RIPPLING_TOKEN_URL, RIPPLING_CLIENT_ID, RIPPLING_REFRESH_TOKEN, RIPPLING_RESOURCE]
   #
+  # A server that issues a refresh token only when the sign-in LINK asks for one
+  # (Google's: access_type=offline and prompt=consent) takes authorizeParams:,
+  # literals added to Connect's authorization URL and nowhere else. It takes
+  # access_type, token_access_type, duration, prompt, login_hint and hd, and
+  # refuses every other name. Google registers no clients, so the id and secret are a Web
+  # application client you create, seeded under this slug's static/ namespace
+  # before Connect. See docs: operate/connectors.
+  #
+  # - slug: bigquery
+  #   kind: remote-http
+  #   url: https://bigquery.googleapis.com/mcp
+  #   entitlements: [admin]
+  #   tools: # Google's read-only tools; execute_sql and cancel_job are left out
+  #     allow: [list_dataset_ids, get_dataset_info, list_table_ids, get_table_info, execute_sql_readonly, get_query_results, get_job]
+  #   oauthRefresh:
+  #     tokenUrl: https://oauth2.googleapis.com/token
+  #     clientId: ${BIGQUERY_CLIENT_ID}
+  #     clientSecret: ${BIGQUERY_CLIENT_SECRET}
+  #     refreshToken: ${BIGQUERY_REFRESH_TOKEN}
+  #     authorizeParams: { access_type: offline, prompt: consent }
+  #   mayBeUnseeded:
+  #     [BIGQUERY_CLIENT_ID, BIGQUERY_CLIENT_SECRET, BIGQUERY_REFRESH_TOKEN]
+  #
   # An upstream that registers only MCP clients on its own list (Figma's
   # answers 403 to any client_name not starting "Claude Code") takes
   # registration:. clientName replaces strad's own "strad (<env>) <slug>";

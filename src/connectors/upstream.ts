@@ -19,6 +19,7 @@ import {
   ConnectorError,
   exchangeAuthorizationCode,
   grantedScopeSet,
+  isUpstreamAuthorizeParam,
   stringField,
   type PendingConnectorAuth,
 } from "./oauth-flow.ts";
@@ -1001,6 +1002,8 @@ export async function discoverUpstream(
   // challenge asked for, then what the resource advertises — and
   // `offline_access` when the server knows the word, because a refresh token
   // is the entire point of this flow and some servers issue one only for it.
+  // A server that spells it as a PARAMETER instead — Google's
+  // `access_type=offline` — is what `oauthRefresh.authorizeParams:` is for.
   let scopes: string[];
   if (input.scopes) {
     scopes = [...input.scopes];
@@ -1271,18 +1274,30 @@ export function heldVariables(
   return held;
 }
 
-/** Build the consent URL. `scope` is omitted entirely when there is nothing to ask for. */
+/**
+ * Build the consent URL. `scope` is omitted entirely when there is nothing to ask for.
+ *
+ * `authorizeParams` is the config's. The schema refuses a key outside
+ * `UPSTREAM_AUTHORIZE_PARAMS`, and the filter here drops one anyway.
+ */
 export function beginUpstreamAuthorization(input: {
   discovery: UpstreamDiscovery;
   clientId: string;
   redirectUri: string;
+  /** `oauthRefresh.authorizeParams:` — literals, per the schema. */
+  authorizeParams?: Readonly<Record<string, string>>;
 }): PendingConnectorAuth {
+  const params = Object.fromEntries(
+    Object.entries(input.authorizeParams ?? {}).filter(([key]) =>
+      isUpstreamAuthorizeParam(key),
+    ),
+  );
   const pending = buildPkceAuthorizeUrl({
     endpoint: input.discovery.authorizationEndpoint,
     clientId: input.clientId,
     redirectUri: input.redirectUri,
     scopes: input.discovery.scopes,
-    extra: { resource: input.discovery.resource },
+    extra: { ...params, resource: input.discovery.resource },
   });
   if (input.discovery.scopes.length > 0) return pending;
   const url = new URL(pending.url);
