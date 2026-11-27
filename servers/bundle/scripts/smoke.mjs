@@ -157,7 +157,10 @@ const EXPECT = {
   // Grafana's 65 tools minus the 13 the binary's `-disable-write` removes. Not a
   // gateway allow-list: the child process does not contain them. If this number
   // moves, either the pin moved or a flag stopped being passed — and the second
-  // one is a read-only mount quietly becoming read-write.
+  // one is a read-only mount quietly becoming read-write. This is the
+  // conventional `/grafana`, which is never write-enabled here: CI sets no
+  // `GRAFANA__GRAFANA_ALLOW_WRITE`. A slug that opts into writes serves 65, and
+  // `--json` reports whatever it really lists.
   grafana: 52,
   // mcp-victorialogs v1.9.0 serves thirteen tools, every one annotated
   // read-only: LogsQL's query API is all it wraps. Booted here against an

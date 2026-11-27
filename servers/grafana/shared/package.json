@@ -2,7 +2,7 @@
   "name": "grafana-shared",
   "version": "0.1.0",
   "private": true,
-  "description": "Supervises the pinned mcp-grafana binary over stdio and proxies one MCP surface to it, read-only.",
+  "description": "Supervises the pinned mcp-grafana binary over stdio and proxies one MCP surface to it, read-only unless a slug opts into writes.",
   "main": "build/index.js",
   "type": "module",
   "scripts": {

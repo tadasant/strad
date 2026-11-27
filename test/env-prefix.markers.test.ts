@@ -37,6 +37,18 @@ describe("the marker names the bundle host looks for", () => {
     }
   });
 
+  it("include grafana's write opt-in, read under the slug's own name only", () => {
+    // Not a marker — it creates no instance — but the same two-halves seam: the
+    // tree owns the name and the rule, and the host is what restricts the view to
+    // the slug's own `<SLUG>__GRAFANA_ALLOW_WRITE`. A host that stopped calling
+    // `ownNameOnly` for it would let a bare `true` make every Grafana writable.
+    const config = readFileSync("servers/grafana/shared/src/config.ts", "utf8");
+    expect(config).toContain(
+      'export const GRAFANA_ALLOW_WRITE = "GRAFANA_ALLOW_WRITE"',
+    );
+    expect(host).toContain("ownNameOnly(env, slug, mod.GRAFANA_ALLOW_WRITE)");
+  });
+
   it("are google-sheets' OAuth app pair, and NOT its refresh token", () => {
     // This tree is the one whose credential is completed after the deploy, so
     // the marker set is deliberately a SUBSET of it: the two variables a human

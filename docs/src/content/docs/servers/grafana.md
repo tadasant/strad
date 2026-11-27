@@ -1,6 +1,6 @@
 ---
 title: Grafana
-description: How strad hosts Grafana's own MCP server — a pinned Go binary baked into the bundle image and proxied to — why it is read-only at the binary rather than at the gateway, and how one mount backs more than one Grafana.
+description: How strad hosts Grafana's own MCP server — a pinned Go binary baked into the bundle image and proxied to — why it is read-only at the binary rather than at the gateway, how a separate slug opts into writes, and how one mount backs more than one Grafana.
 ---
 
 Query a Grafana from an agent: dashboards, Prometheus, Loki, alert rules,
@@ -48,7 +48,7 @@ were wrong with that, and neither was the shell script:
 
 ## Read-only at the binary
 
-The child process runs with two flags, and they are not adjustable per slug:
+By default the child process runs with two flags:
 
 - **`-disable-write`** removes the 13 write tools (create/update/delete of
   dashboards, datasources, folders, annotations, incidents and snapshots) and
@@ -71,6 +71,52 @@ worth the inconsistency.
 The consequence is stated rather than hidden: **a read-write Grafana is a second
 mount, never this one with a flag removed.**
 
+## A write-enabled slug
+
+A deployment that needs Grafana's write tools gives them to a **separate slug**,
+on its own `path: /<its own slug>`, and opts that slug in under its own name:
+
+```yaml
+- slug: grafana-pulsemcp-prod-rw
+  kind: supplementary-image
+  image: ghcr.io/tadasant/strad-bundle:latest
+  bundle: bundle
+  path: /grafana-pulsemcp-prod-rw
+  env:
+    GRAFANA_PULSEMCP_PROD_RW__GRAFANA_URL: https://obs.pulsemcp.com
+    GRAFANA_PULSEMCP_PROD_RW__GRAFANA_SERVICE_ACCOUNT_TOKEN: "${GRAFANA_PROD_RW_SERVICE_ACCOUNT_TOKEN}"
+    GRAFANA_PULSEMCP_PROD_RW__GRAFANA_ALLOW_WRITE: "true"
+```
+
+What that does, exactly:
+
+- **`<SLUG>__GRAFANA_ALLOW_WRITE` set to exactly `true`** starts that slug's child
+  without `-disable-write`: the 13 write tools exist and the alerting tools keep
+  their write actions, so the mount serves **65 tools**. Any other value — `1`,
+  `yes`, `TRUE`, an empty string — or no value at all keeps it read-only.
+- **`-disable-proxied` stays on.** Opting into Grafana's own writes is not opting
+  into tools a datasource advertises; those are still authored by the Grafana's
+  administrator and still off on every mount.
+- **It is never inherited.** The bundle host reads the opt-in under the slug's
+  own name and nowhere else. A bare `GRAFANA_ALLOW_WRITE` on the container — which
+  the renderer emits beside the per-slug name when a server's `env:` writes the
+  bare key — and another slug's value are both ignored, so every other Grafana
+  slug, the conventional `/grafana` included, stays read-only.
+- **A store-served instance follows the same rule.** It reads the opt-in from the
+  container's `<SLUG>__GRAFANA_ALLOW_WRITE`, never from a value seeded in its
+  namespace, so writes on an instance are a deploy-time decision that no runtime
+  parameter write can make.
+- **The child never sees it.** It decides the flags strad starts the binary with;
+  it is not on the child's environment allowlist below.
+- **The boot log says so.** The host logs `<slug>: WRITE-ENABLED …` when it loads
+  the mount, and the child's start line reads `mcp-grafana up, WRITE-ENABLED …`
+  rather than `mcp-grafana up, read-only …`.
+
+The binary flag is the capability; the service-account token's Grafana role is
+the authorisation. Give a write-enabled slug a token whose role can write, give
+the read-only slugs Viewer tokens, and narrow the write slug further with
+`tools:` if it should hold only some of the 65.
+
 ## One mount, more than one Grafana
 
 A Grafana service-account token is *one Grafana*, the same way an OAuth refresh
@@ -84,6 +130,7 @@ complete credential for.
 | `GRAFANA_URL` | the Grafana origin, e.g. `https://grafana.prod.registry.modelcontextprotocol.io` |
 | `GRAFANA_SERVICE_ACCOUNT_TOKEN` | a service-account token; both are required for a per-slug instance |
 | `GRAFANA_ORG_ID` | optional, for a Grafana with more than one organisation |
+| `GRAFANA_ALLOW_WRITE` | optional; exactly `true` under the slug's own name makes it [write-enabled](#a-write-enabled-slug) |
 
 A slug on `path: /<its own slug>` is handed its own values under
 `<SLUG>__<NAME>`; that is the general
@@ -114,7 +161,7 @@ of them, and it has a tool that makes arbitrary HTTP requests to a host somebody
 else configures.
 
 So the child is given an explicit list and nothing else: the three Grafana
-variables above, plus `PATH`, `HOME`, `TMPDIR` and the two `SSL_CERT_*` names Go
+credential variables above (never `GRAFANA_ALLOW_WRITE`), plus `PATH`, `HOME`, `TMPDIR` and the two `SSL_CERT_*` names Go
 reads for a private CA. `OTEL_*` is deliberately excluded — `mcp-grafana` can
 export its own traces and logs, and those are records strad did not author
 arriving outside [the telemetry allowlist](/operate/telemetry/).
@@ -163,6 +210,8 @@ Two things are worth knowing before querying it:
 The pin lives in `servers/bundle/Dockerfile` as `MCP_GRAFANA_VERSION` plus a
 SHA-256 digest per architecture. Bumping it means changing all three; a digest
 that does not match fails the build rather than shipping. If the release changes
-the read surface, the bundle smoke test's `grafana: 52` fails CI — which is the
+the read surface, the bundle smoke test's `grafana: 52` fails CI (it counts the
+conventional, read-only `/grafana`; a write-enabled slug's 65 is not asserted
+there) — which is the
 point of asserting a count nobody can predict from reading the diff. See
 [Limitations #68](/limitations/).

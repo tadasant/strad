@@ -12,6 +12,7 @@ import {
   remoteFilesystemDegraded,
   scrubCapabilityEnv,
 } from "../src/mounts.js";
+import { slugEnvView } from "../src/env-prefix.js";
 
 /**
  * The host logs on stderr through `console.error` (see src/log.ts). Several of
@@ -844,6 +845,55 @@ describe("ownNameOnly", () => {
     const view: Record<string, string | undefined> = { ...own };
     ownNameOnly(view, "gmail", NAME, own);
     expect(view[NAME]).toBe("Tadas");
+  });
+});
+
+describe("ownNameOnly, for grafana's write opt-in", () => {
+  // What loadGrafana does to every view before the tree reads it: the opt-in
+  // is the slug's own `<SLUG>__GRAFANA_ALLOW_WRITE` or nothing. The renderer
+  // emits a write-enabled slug's key under its bare name as well as its own, so
+  // the bare value is on the box beside every read-only Grafana.
+  const NAME = "GRAFANA_ALLOW_WRITE";
+  const env = {
+    GRAFANA_ALLOW_WRITE: "true",
+    GRAFANA_PULSEMCP_PROD_RW__GRAFANA_ALLOW_WRITE: "true",
+    GRAFANA_PULSEMCP_PROD_RW__GRAFANA_URL: "https://obs.example",
+    GRAFANA_PULSEMCP_PROD__GRAFANA_URL: "https://obs.example",
+    GRAFANA_PULSEMCP_PROD__GRAFANA_ALLOW_WRITE: "false",
+  } as NodeJS.ProcessEnv;
+
+  function viewFor(slug: string, source: NodeJS.ProcessEnv = env) {
+    const view = slugEnvView(source, slug);
+    ownNameOnly(view, slug, NAME, source);
+    return view;
+  }
+
+  it("gives the opted-in slug its own value", () => {
+    expect(viewFor("grafana-pulsemcp-prod-rw")[NAME]).toBe("true");
+  });
+
+  it("never lets the bare value or a sibling's widen another mount", () => {
+    // `grafana-pulsemcp-prod` declares its own "false"; `grafana` and
+    // `grafana-registry` declare nothing and would otherwise read the bare
+    // "true" through slugEnvView's fallback.
+    expect(viewFor("grafana-pulsemcp-prod")[NAME]).toBe("false");
+    for (const slug of ["grafana", "grafana-registry"]) {
+      expect(viewFor(slug)).not.toHaveProperty(NAME);
+    }
+  });
+
+  it("does not take a store-served instance's opt-in from its namespace", () => {
+    // A runtime parameter write can seed an instance's namespace, so a value
+    // there must not turn writes on: the instance reads the container's own
+    // name for its slug, which only a deploy puts there.
+    const view = instanceEnv({ GRAFANA_URL: "https://g", GRAFANA_ALLOW_WRITE: "true" }, {});
+    ownNameOnly(view, "grafana-elsewhere", NAME, {} as NodeJS.ProcessEnv);
+    expect(view).not.toHaveProperty(NAME);
+
+    const deployed = { GRAFANA_ELSEWHERE__GRAFANA_ALLOW_WRITE: "true" } as NodeJS.ProcessEnv;
+    const optedIn = instanceEnv({ GRAFANA_URL: "https://g" }, deployed);
+    ownNameOnly(optedIn, "grafana-elsewhere", NAME, deployed);
+    expect(optedIn[NAME]).toBe("true");
   });
 });
 

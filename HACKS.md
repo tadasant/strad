@@ -3566,6 +3566,15 @@ have:
   point of asserting a count nobody can predict from the diff.
 - The prose in `docs/servers/grafana.md`, which names the version and the count.
 
+The WRITE surface is not counted at all. A slug whose own
+`<SLUG>__GRAFANA_ALLOW_WRITE` is `true` runs without `-disable-write`, and the 65
+its docs name is the upstream's 52 read tools plus its 13 write tools, not a
+number CI observed: the smoke test boots only the conventional, read-only
+`/grafana`. A release that adds a write tool reaches a write-enabled slug with
+nothing failing. Its `tools:` policy, if it has one, is still checked against
+the names that slug's mount really lists, wherever `smoke.mjs --json` runs
+against a container that mounts it.
+
 **Why.** The alternative to a pinned digest is resolving `latest` at build time,
 which means a rebuild of an old commit produces a different image — the thing
 pinning `op` already exists to prevent. The alternative to baking it at all is

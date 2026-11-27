@@ -8,7 +8,7 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 
-import { type Env, upstreamEnv } from "./config.js";
+import { type Env, upstreamEnv, writeEnabled } from "./config.js";
 
 /**
  * The supervised mcp-grafana process, and the MCP client that speaks to it.
@@ -36,8 +36,7 @@ import { type Env, upstreamEnv } from "./config.js";
  */
 
 /**
- * The flags, and the argument that they are not a policy decision this file gets
- * to revisit.
+ * The flags, and the argument for them.
  *
  * `-disable-write` drops the 13 write tools (create/update/delete of dashboards,
  * datasources, folders, annotations, incidents, snapshots) and narrows the
@@ -52,7 +51,9 @@ import { type Env, upstreamEnv } from "./config.js";
  * for the fleet's observability, where the cost of a wrong write is a dashboard
  * or an alert rule nobody notices is gone. A deployment that genuinely needs
  * writes adds a second mount that does not pass this flag, rather than loosening
- * this one.
+ * this one: a separate slug whose own `<SLUG>__GRAFANA_ALLOW_WRITE` is `true`
+ * gets {@link READ_WRITE_ARGS}, and every other slug keeps these. See
+ * {@link upstreamArgs}.
  *
  * `-disable-proxied` is the less obvious half. "Proxied" tools are tools
  * mcp-grafana DISCOVERS at startup from MCP servers advertised by the Grafana's
@@ -63,7 +64,7 @@ import { type Env, upstreamEnv } from "./config.js";
  * write, and a tool surface that changes when a datasource does — which also
  * makes it unenumerable by `scripts/check-tool-policy.ts`, whose whole job is to
  * compare a config's allow-list against the names a mount really serves. Off, it
- * serves the same 52 names everywhere.
+ * serves the same 52 names everywhere (65 on a write-enabled mount).
  */
 export const READ_ONLY_ARGS = [
   "-t",
@@ -71,6 +72,29 @@ export const READ_ONLY_ARGS = [
   "-disable-write",
   "-disable-proxied",
 ] as const;
+
+/**
+ * A write-enabled mount's flags: {@link READ_ONLY_ARGS} without `-disable-write`
+ * and with nothing else changed. The 13 write tools exist in this child and the
+ * alerting tools keep their write actions — 65 tools, not 52.
+ *
+ * `-disable-proxied` stays, because opting into Grafana's OWN writes is not
+ * opting into whatever tools a datasource advertises: those are still authored
+ * by the Grafana's administrator, still unenumerable, and still off.
+ */
+export const READ_WRITE_ARGS = ["-t", "stdio", "-disable-proxied"] as const;
+
+/**
+ * The flags for ONE slug's child, from that slug's view of the environment.
+ *
+ * Read-only unless the view holds `GRAFANA_ALLOW_WRITE=true` exactly. The view
+ * is the bundle host's to build, and the host fills that name from the slug's
+ * own `<SLUG>__GRAFANA_ALLOW_WRITE` only (servers/bundle/host/src/index.ts,
+ * `loadGrafana`), so the opt-in is never inherited.
+ */
+export function upstreamArgs(env: Env): readonly string[] {
+  return writeEnabled(env) ? READ_WRITE_ARGS : READ_ONLY_ARGS;
+}
 
 /** Where the Dockerfile installs the pinned binary. */
 export const DEFAULT_BINARY = "mcp-grafana";
@@ -110,6 +134,7 @@ export class GrafanaUpstream {
   readonly #slug: string;
   readonly #version: string;
   readonly #env: Env;
+  readonly #args: readonly string[];
   readonly #binary: string;
   readonly #log: (line: string) => void;
   readonly #onDegraded: (reason: string | null) => void;
@@ -133,6 +158,10 @@ export class GrafanaUpstream {
     this.#slug = options.slug;
     this.#version = options.version;
     this.#env = options.env;
+    // Decided once, at construction: the view is a snapshot, and a mount whose
+    // capability changed between two restarts of its child would be a mount
+    // whose surface nobody could state.
+    this.#args = upstreamArgs(options.env);
     this.#binary = options.binary ?? DEFAULT_BINARY;
     this.#log =
       options.log ??
@@ -140,7 +169,12 @@ export class GrafanaUpstream {
     this.#onDegraded = options.onDegraded ?? (() => {});
   }
 
-  /** The 52 read tools the child serves. */
+  /** Whether this mount's child runs without `-disable-write`. */
+  get writeEnabled(): boolean {
+    return !this.#args.includes("-disable-write");
+  }
+
+  /** The tools the child serves: 52 read tools, or 65 on a write-enabled mount. */
   async listTools(): Promise<Tool[]> {
     const client = await this.#client();
     const result = await client.request(
@@ -211,7 +245,7 @@ export class GrafanaUpstream {
   async #connect(generation: number): Promise<Client> {
     const transport = new StdioClientTransport({
       command: this.#binary,
-      args: [...READ_ONLY_ARGS],
+      args: [...this.#args],
       // The whole environment the child gets. See config.ts: this is an
       // allowlist precisely so the bundle's other credentials stay out of it.
       env: upstreamEnv(this.#env),
@@ -252,7 +286,14 @@ export class GrafanaUpstream {
     };
 
     this.#onDegraded(null);
-    this.#log(`mcp-grafana up (${[this.#binary, ...READ_ONLY_ARGS].join(" ")})`);
+    // The mode leads the line so a write-enabled mount cannot be mistaken for
+    // a read-only one by anybody skimming the boot log for its slug.
+    const mode = this.writeEnabled
+      ? "WRITE-ENABLED (GRAFANA_ALLOW_WRITE=true; -disable-write not passed)"
+      : "read-only";
+    this.#log(
+      `mcp-grafana up, ${mode} (${[this.#binary, ...this.#args].join(" ")})`,
+    );
     return client;
   }
 

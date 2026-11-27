@@ -209,7 +209,8 @@ failure:
     binary. Its suite runs against a fake MCP child rather than the real
     executable, and pins the seam: that the child is spawned with
     `-disable-write` and `-disable-proxied` (a read-only mount becoming
-    read-write is silent otherwise), that it receives an allowlisted environment
+    read-write is silent otherwise), that only an exact `GRAFANA_ALLOW_WRITE=true`
+    drops `-disable-write` and nothing ever drops `-disable-proxied`, that it receives an allowlisted environment
     rather than the bundle's twenty other credentials, that tools and results are
     forwarded verbatim, and that a child which dies is replaced on the next call.
     The binary's own tool count is asserted by `bundle_image`, against the real

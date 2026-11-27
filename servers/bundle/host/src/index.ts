@@ -331,7 +331,8 @@ async function buildMounts(): Promise<Mount[]> {
   // grafana: the conventional mount, plus one per slug the environment carries a
   // whole Grafana credential for. The default is always served — degraded until
   // something gives it a URL and a token — so a config that names no Grafana at
-  // all still shows the slug and its 52 read tools.
+  // all still shows the slug and its 52 read tools. Writes are per slug and
+  // own-name only: see loadGrafana.
   const grafana = await loadGrafanaTree();
   mounts.push(loadGrafana(grafana, "grafana"));
   for (const slug of extraSlugs("grafana", grafana.GRAFANA_ENV_NAMES))
@@ -852,6 +853,10 @@ interface SupervisedBinaryModule {
 interface GrafanaModule extends SupervisedBinaryModule {
   /** The variables ONE Grafana's credential is made of. Owned by the tree. */
   GRAFANA_ENV_NAMES: readonly string[];
+  /** The per-slug write opt-in, read under the slug's own name only. Owned by the tree. */
+  GRAFANA_ALLOW_WRITE: string;
+  /** Whether a view opts its mount into writes — the tree's rule, not a copy of it. */
+  writeEnabled: (env: Record<string, string | undefined>) => boolean;
 }
 
 interface VictoriaLogsModule extends SupervisedBinaryModule {
@@ -878,12 +883,24 @@ async function loadGrafanaTree(): Promise<GrafanaModule> {
  * Everything below this line is the same as any other mount — which is the whole
  * point of doing it this way rather than teaching strad's config a `command:`.
  *
- * READ-ONLY AT THE BINARY. The child runs with `-disable-write` and
- * `-disable-proxied`: 52 read tools, and no write to withhold. That is a
- * deliberate exception to this container's rule that every upstream runs at FULL
- * capability and the gateway narrows it — the gateway can only ever withhold a
- * tool, and for a fleet's observability control plane the stronger guarantee is
- * worth the exception. See servers/grafana/shared/src/upstream.ts.
+ * READ-ONLY AT THE BINARY, UNLESS THE SLUG ITSELF OPTS IN. By default the child
+ * runs with `-disable-write` and `-disable-proxied`: 52 read tools, and no write
+ * to withhold. That is a deliberate exception to this container's rule that every
+ * upstream runs at FULL capability and the gateway narrows it — the gateway can
+ * only ever withhold a tool, and for a fleet's observability control plane the
+ * stronger guarantee is worth the exception. See
+ * servers/grafana/shared/src/upstream.ts.
+ *
+ * A deployment that needs writes gives them to a SEPARATE slug, by setting that
+ * slug's own `<SLUG>__GRAFANA_ALLOW_WRITE` to `true`: its child runs without
+ * `-disable-write` (still with `-disable-proxied`), and every other slug's
+ * surface is unchanged. The opt-in is read under the slug's own name and
+ * nowhere else — `ownNameOnly` — so neither a bare `GRAFANA_ALLOW_WRITE` nor a
+ * sibling's value widens another mount, the conventional `/grafana` included.
+ * The same holds for a store-served instance: `ownNameOnly` reads the
+ * CONTAINER's `<SLUG>__GRAFANA_ALLOW_WRITE`, never a value in the served
+ * namespace, so writes on an instance are a deploy-time decision that no
+ * runtime parameter write can make.
  *
  * ONE INSTANCE PER SLUG, and this is the mount that most needs it: a Grafana
  * credential is one Grafana. `grafana-registry` (the MCP Registry's cluster) and
@@ -898,6 +915,17 @@ function loadGrafana(
   // caller reads this slug's view of the container.
   env: Record<string, string | undefined> = slugEnvView(process.env, slug),
 ): Mount {
+  // Silent on drop, like every `ownNameOnly` setting: a bare value on the box
+  // is a write-enabled sibling's own declaration, and not this slug's.
+  ownNameOnly(env, slug, mod.GRAFANA_ALLOW_WRITE);
+  if (mod.writeEnabled(env)) {
+    // At load, not only when the lazily started child comes up: a mount that
+    // can write says so in the boot log even if nobody has called it yet.
+    log(
+      `${slug}: WRITE-ENABLED — ${prefixedEnvName(slug, mod.GRAFANA_ALLOW_WRITE)}=true, ` +
+        `so its mcp-grafana runs without -disable-write (-disable-proxied stays)`,
+    );
+  }
   return supervisedBinaryMount(
     { tree: "grafana", serverName: "strad-grafana", binary: "mcp-grafana" },
     mod,

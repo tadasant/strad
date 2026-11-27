@@ -2688,6 +2688,12 @@ mismatch fails the build, which is the good case), the tool count in the bundle
 smoke test if the release changed the read surface (that one fails CI), and the
 prose on [Grafana](/servers/grafana/), which names both.
 
+**The write surface is not counted.** A
+[write-enabled slug](/servers/grafana/#a-write-enabled-slug) serves Grafana's 13
+write tools beside the 52 reads, and that 65 is not asserted anywhere: CI boots
+only the read-only `/grafana`. A release that adds a write tool reaches a
+write-enabled slug without failing anything.
+
 **This is stronger than what it replaced, not weaker.** The client-side bootstrap
 compared the tarball against a `checksums.txt` fetched from the same server —
 which detects a corrupted download and nothing else. A digest in the repo is
