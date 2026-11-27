@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
  * bundle-api, bundle-google, onepassword, secrets, remote-filesystem, good-eggs,
  * fetchpet, pointsyeah, x-twitter, telegram, whatsapp, messenger, bill-spend,
  * aws-device-farm, liveoak, ssh, airtable, flightaware, digitalocean, hetzner,
- * glitchtip, vendor-billing, postgres, image-tools, nutrition-facts,
+ * glitchtip, vendor-billing, postgres, hatchbox, image-tools, nutrition-facts,
  * pulse-subregistry, strad-fetch, grafana, victorialogs — each of
  * which is copied in, installed and built exactly as its own image builds it,
  * keeping its own `node_modules` and its own lockfile.

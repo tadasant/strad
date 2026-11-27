@@ -1808,6 +1808,8 @@ interface HatchboxModule {
   HATCHBOX_ENV_NAMES: readonly string[];
   /** Every name the tree reads or refuses. */
   HATCHBOX_ALL_ENV_NAMES: readonly string[];
+  /** The upstream names it refuses, keyed to what replaces each. */
+  LEGACY_ENV: Readonly<Record<string, string>>;
 }
 
 /**
@@ -1828,7 +1830,14 @@ function loadHatchbox(
   siblings: readonly string[] = [],
 ): Mount {
   const env = slugEnvView(process.env, slug);
-  hatchboxEnvView(env, slug, perSlug, siblings, mod.HATCHBOX_ALL_ENV_NAMES);
+  hatchboxEnvView(
+    env,
+    slug,
+    perSlug,
+    siblings,
+    mod.HATCHBOX_ALL_ENV_NAMES,
+    Object.keys(mod.LEGACY_ENV),
+  );
   const created = mod.createMCPServer({ version: VERSION, env });
   return {
     slug,
@@ -2950,7 +2959,7 @@ async function main(): Promise<void> {
   });
 
   // One stray rejection from one of thirty-nine servers must not kill the other
-  // thirty-nine. The standalone images exit here (correct, when the process IS the
+  // thirty-eight. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {
     logError("unhandledRejection", reason);

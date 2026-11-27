@@ -3,8 +3,9 @@
 strad's own server for one [Hatchbox](https://hatchbox.io) app: read the
 environment the Rails app is running with (over SSH, from its puma process),
 set and delete its env vars (Hatchbox API), and trigger and check deploys
-(deploy webhook). A tree in the strad bundle image, served at `/hatchbox`
-with one instance per slug.
+(deploy webhook). A tree in the strad bundle image: each slug is its own
+instance on `path: /<its own slug>`, and the conventional `/hatchbox` is a
+degraded placeholder.
 
 A port of the npm `hatchbox-mcp-server` (pulsemcp/mcp-servers,
 `experimental/hatchbox`), keeping its six tool names and arguments. Written,

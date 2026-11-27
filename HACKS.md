@@ -8735,9 +8735,11 @@ npm package call the same ones.
 - **The reads return every production secret**, and they are the tier most
   worth withholding. They are the running state, so a value written with
   `setEnvVar` is not visible until the next deploy.
-- **`HATCHBOX_APP_NAME` is a regex fragment.** Without it, the oldest puma on
-  the server is read, which is another app's on a shared server. With it,
-  `[p]uma.*<name>` can still match a second app whose name contains this one.
+- **The process match is a guess about Hatchbox's puma.** It assumes a master
+  titled `puma <version> (<bind>) [<tag>]`, which is puma's own title, with the
+  app's name somewhere in it. Without `HATCHBOX_APP_NAME`, the oldest master on
+  the server is read, which on a shared server can be another app's. No real
+  Hatchbox `ps` has been seen.
 - **`checkDeploy` holds the deploy key**, which can also deploy, so it is in the
   deploy tier, and the `-ro` tier cannot follow a deploy.
 - **The `-deploy` and `-ro` tiers are credential-fenced; within a tier the

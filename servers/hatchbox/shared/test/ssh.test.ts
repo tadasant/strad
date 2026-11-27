@@ -10,7 +10,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { createMCPServer, parseEnviron, processPattern, remoteCommand } from "../src/index.js";
+import { createMCPServer, parseEnviron, PID_MARKER, processPattern, remoteCommand, splitPidOutput } from "../src/index.js";
 import { keyPair, startFakeHost, startFakePuma, type FakeHost } from "./fake-host.js";
 
 const hostKey = keyPair();
@@ -20,9 +20,17 @@ const strangerKey = keyPair();
 let host: FakeHost;
 const pumas: ChildProcess[] = [];
 
+const passKey = keyPair("ed25519", "correct horse");
+
 beforeAll(async () => {
-  host = await startFakeHost({ hostKey, authorized: [clientKey] });
-  // `shop` first, so it is the OLDEST puma: the one an unnamed read picks.
+  host = await startFakeHost({ hostKey, authorized: [clientKey, passKey] });
+  // Decoys first, so each is OLDER than the real masters: an unanchored
+  // `puma.*blog` would pick one of them.
+  pumas.push(await startFakePuma("x", { APP: "tail" }, "tail -f /home/deploy/blog/shared/log/puma.log"));
+  pumas.push(await startFakePuma("x", { APP: "wrapper" }, "bash -lc cd /home/deploy/blog && bundle exec puma"));
+  pumas.push(await startFakePuma("x", { APP: "worker" }, "puma: cluster worker 0: 1234 [blog]"));
+  pumas.push(await startFakePuma("blog-staging", { APP: "blog-staging" }));
+  // `shop` before `blog`, so it is the oldest MASTER: the one an unnamed read picks.
   pumas.push(await startFakePuma("shop", { RAILS_ENV: "production", APP: "shop", SECRET_KEY_BASE: "shop-skb" }));
   pumas.push(await startFakePuma("blog", { RAILS_ENV: "production", APP: "blog", DATABASE_URL: "postgres://u:p@db/blog=x" }));
 });
@@ -62,12 +70,23 @@ async function call(e: Record<string, string>, name: string, args: Record<string
 }
 
 describe("the remote command", () => {
-  it("is fixed, single-quoted, and cannot match the shell that runs it", () => {
-    expect(processPattern()).toBe("[p]uma");
-    expect(processPattern("my.app")).toBe("[p]uma.*my\\.app");
+  it("is fixed, single-quoted, and anchored on a puma master's title", () => {
+    expect(processPattern()).toBe("^puma [0-9]");
+    expect(processPattern("my.app")).toBe("^puma [0-9].*[^A-Za-z0-9_-]my\\.app([^A-Za-z0-9_-]|$)");
     const cmd = remoteCommand("blog");
-    expect(cmd).toContain("pgrep -o -f '[p]uma.*blog'");
-    expect(cmd).toContain('cat "/proc/$pid/environ"');
+    expect(cmd).toContain(`pgrep -o -f '${processPattern("blog")}'`);
+    expect(cmd).toContain('cat "/proc/$pid/environ" || exit 4');
+  });
+
+  it("finds the pid after its marker, past anything a login shell printed", () => {
+    const raw = Buffer.from(`rbenv: shims loaded\n${PID_MARKER}4242\nA=1\0B=2\0`);
+    const out = splitPidOutput(raw)!;
+    expect(out.pid).toBe(4242);
+    expect(parseEnviron(out.environ)).toEqual([
+      { name: "A", value: "1" },
+      { name: "B", value: "2" },
+    ]);
+    expect(splitPidOutput(Buffer.from("4242\nA=1"))).toBeNull();
   });
 
   it("refuses an app name with shell or regex syntax in it", () => {
@@ -93,12 +112,32 @@ describe("reading the running environment over SSH", () => {
       DATABASE_URL: "postgres://u:p@db/blog=x",
       RAILS_ENV: "production",
     });
-    expect(out.pid).toBe(pumas[1]!.pid);
+    expect(out.pid).toBe(pumas[pumas.length - 1]!.pid);
   });
 
-  it("reads the oldest puma when no app is named", async () => {
+  it("reads the oldest puma MASTER when no app is named — not a log tail, a wrapper or a worker", async () => {
     const r = await call(env(), "getEnvVar", { name: "APP" });
-    expect(JSON.parse(r.text)).toEqual({ name: "APP", found: true, value: "shop" });
+    expect(JSON.parse(r.text)).toEqual({ name: "APP", found: true, value: "blog-staging" });
+  });
+
+  it("does not take blog-staging for blog, nor the reverse", async () => {
+    const blog = await call(env({ HATCHBOX_APP_NAME: "blog" }), "getEnvVar", { name: "APP" });
+    expect(JSON.parse(blog.text).value).toBe("blog");
+    const staging = await call(env({ HATCHBOX_APP_NAME: "blog-staging" }), "getEnvVar", { name: "APP" });
+    expect(JSON.parse(staging.text).value).toBe("blog-staging");
+  });
+
+  it("logs in with an encrypted key and its passphrase, and names the passphrase when it is missing", async () => {
+    const ok = await call(
+      env({ HATCHBOX_SSH_PRIVATE_KEY: passKey.private, HATCHBOX_SSH_PASSPHRASE: "correct horse", HATCHBOX_APP_NAME: "shop" }),
+      "getEnvVar",
+      { name: "APP" },
+    );
+    expect(ok.isError, ok.text).toBe(false);
+    expect(ok.text).not.toContain("correct horse");
+    const missing = await call(env({ HATCHBOX_SSH_PRIVATE_KEY: passKey.private }), "getEnvVars");
+    expect(missing.isError).toBe(true);
+    expect(missing.text).toContain("HATCHBOX_SSH_PASSPHRASE");
   });
 
   it("says so when no puma matches", async () => {

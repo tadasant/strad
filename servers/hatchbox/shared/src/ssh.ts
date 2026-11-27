@@ -18,9 +18,16 @@
  *   - ONE FIXED COMMAND. The only variable part is `HATCHBOX_APP_NAME`, which
  *     config.ts holds to `[A-Za-z0-9._-]`, escaped for the regex and inside
  *     single quotes. Nothing a CALLER sends reaches the command line.
- *   - THE PATTERN CANNOT MATCH ITS OWN SHELL. `pgrep -f "puma.*app"` run via
- *     `sh -c` also matches that `sh`, whose command line contains the pattern;
- *     `[p]uma` matches "puma" and not the text "[p]uma".
+ *   - THE MATCH IS PUMA'S OWN PROCESS TITLE. A puma master retitles itself
+ *     `puma 6.4.2 (<bind>) [<tag>]`; its workers read `puma: cluster worker …`.
+ *     So the pattern is anchored on `^puma <version>`, which no worker, no
+ *     `tail -f …/puma.log`, no `bash -lc 'bundle exec puma'` wrapper and not
+ *     the shell running this command matches — upstream's `puma.*app` matched
+ *     all of them. The app name must stand alone in the title (bounded by
+ *     anything but a letter, digit, `_` or `-`), so `blog` does not match
+ *     `blog-staging`.
+ *   - THE PID IS FOUND BY A MARKER, not by position, so a login banner the
+ *     deploy user's shell prints first does not break the read.
  *   - OUTPUT IS BOUNDED as it arrives.
  */
 import ssh2 from "ssh2";
@@ -38,6 +45,10 @@ export const MAX_ENVIRON_BYTES = 1024 * 1024;
 const MAX_STDERR_BYTES = 8 * 1024;
 /** The exit status the command uses for "no puma process". */
 const NO_PROCESS_EXIT = 3;
+/** The exit status the command uses for "found it, could not read its environ". */
+const UNREADABLE_EXIT = 4;
+/** Printed before the pid, so anything a shell prints first is skipped. */
+export const PID_MARKER = "STRAD-HATCHBOX-PID ";
 
 export interface EnvVar {
   name: string;
@@ -52,13 +63,19 @@ export interface EnvironRead {
 /** Opens a connection and reads the environment. Injected in tests. */
 export type EnvironReader = (config: SshConfig) => Promise<EnvironRead>;
 
-/** The regex `pgrep -f` is given, which cannot match the shell running it. */
+/**
+ * The extended regex `pgrep -f` is given: a puma MASTER's title, and when an
+ * app is named, that name standing alone somewhere in it (its tag, or a bind
+ * path such as `/home/deploy/<app>/shared/tmp/sockets/puma.sock`).
+ */
 export function processPattern(appName?: string): string {
-  if (appName === undefined) return "[p]uma";
+  const master = "^puma [0-9]";
+  if (appName === undefined) return master;
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(appName)) {
     throw new ConfigError("HATCHBOX_APP_NAME holds characters this server will not put in a command.");
   }
-  return `[p]uma.*${appName.replace(/\./g, "\\.")}`;
+  const name = appName.replace(/\./g, "\\.");
+  return `${master}.*[^A-Za-z0-9_-]${name}([^A-Za-z0-9_-]|$)`;
 }
 
 /**
@@ -70,7 +87,7 @@ export function remoteCommand(appName?: string): string {
   return (
     `pid=$(pgrep -o -f '${pattern}'); ` +
     `if [ -z "$pid" ]; then exit ${NO_PROCESS_EXIT}; fi; ` +
-    `printf '%s\\n' "$pid"; cat "/proc/$pid/environ"`
+    `printf '${PID_MARKER}%s\\n' "$pid"; cat "/proc/$pid/environ" || exit ${UNREADABLE_EXIT}`
   );
 }
 
@@ -83,6 +100,17 @@ export function parseEnviron(raw: Buffer): EnvVar[] {
     out.push({ name: record.slice(0, eq), value: record.slice(eq + 1) });
   }
   return out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+/** The pid after the marker, and the environ bytes after its newline. */
+export function splitPidOutput(raw: Buffer): { pid: number; environ: Buffer } | null {
+  const at = raw.indexOf(PID_MARKER);
+  if (at === -1) return null;
+  const nl = raw.indexOf(0x0a, at);
+  if (nl === -1) return null;
+  const pid = Number(raw.subarray(at + PID_MARKER.length, nl).toString("ascii"));
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  return { pid, environ: raw.subarray(nl + 1) };
 }
 
 function target(c: SshConfig): string {
@@ -126,6 +154,7 @@ export const readEnviron: EnvironReader = (config) =>
         let outBytes = 0;
         let errText = "";
         stream.on("data", (chunk: Buffer) => {
+          if (settled) return;
           outBytes += chunk.length;
           if (outBytes > MAX_ENVIRON_BYTES) {
             finish(new SshReadError(`The environment read from ${target(config)} passed ${MAX_ENVIRON_BYTES} bytes; it was dropped.`));
@@ -136,7 +165,7 @@ export const readEnviron: EnvironReader = (config) =>
         stream.stderr.on("data", (chunk: Buffer) => {
           if (errText.length < MAX_STDERR_BYTES) errText += chunk.toString("utf8");
         });
-        stream.on("close", (code: number | null) => {
+        stream.on("close", (code: number | null | undefined) => {
           if (code === NO_PROCESS_EXIT) {
             finish(
               new SshReadError(
@@ -147,28 +176,45 @@ export const readEnviron: EnvironReader = (config) =>
             );
             return;
           }
-          if (code !== 0) {
-            const said = errText.trim().slice(0, 300);
+          const said = errText.trim().slice(0, 300);
+          if (code === UNREADABLE_EXIT) {
             finish(
               new SshReadError(
-                `Reading the environment on ${config.host} failed (exit ${code ?? "by signal"})` +
+                `Found puma on ${config.host} but could not read its environment` +
                   (said ? `: ${said}` : "") +
-                  `. The deploy user must own the puma process to read /proc/<pid>/environ.`,
+                  `. The process may have exited mid-read (a restart), or the ` +
+                  `${config.username} user does not own it.`,
               ),
             );
             return;
           }
-          const raw = Buffer.concat(out);
-          const nl = raw.indexOf(0x0a);
-          const pid = nl === -1 ? NaN : Number(raw.subarray(0, nl).toString("ascii"));
-          if (!Number.isInteger(pid)) {
+          if (code !== 0) {
+            finish(
+              new SshReadError(
+                `Reading the environment on ${config.host} failed (` +
+                  (code === undefined || code === null ? "no exit status" : `exit ${code}`) +
+                  `)` +
+                  (said ? `: ${said}` : "") +
+                  `.`,
+              ),
+            );
+            return;
+          }
+          const parsed = splitPidOutput(Buffer.concat(out));
+          if (!parsed) {
             finish(new SshReadError(`${config.host} answered with output this server does not recognise.`));
             return;
           }
-          finish(null, { pid, vars: parseEnviron(raw.subarray(nl + 1)) });
+          finish(null, { pid: parsed.pid, vars: parseEnviron(parsed.environ) });
         });
       });
     });
+
+    // A server that drops the connection without an error (an early sshd
+    // disconnect) would otherwise hang the call until the wall timeout.
+    client.on("close", () =>
+      finish(new SshReadError(`${target(config)} closed the connection before the environment was read.`)),
+    );
 
     client.on("error", (err: Error & { level?: string; code?: string }) => {
       if (mismatch) {

@@ -5224,8 +5224,10 @@ The [Hatchbox](/servers/hatchbox/) server is a port of the npm
 - **The reads return production secrets.** Every value of the running app's
   environment, and a value set with `setEnvVar` only shows up after the next
   deploy.
-- **Without `HATCHBOX_APP_NAME`, the oldest puma is read**, which on a shared
-  server can be another app's.
+- **The process match assumes puma's own master title**, `puma <version>
+(<bind>) [<tag>]`, with the app's name in it. No real Hatchbox `ps` has been
+  seen. Without `HATCHBOX_APP_NAME`, the oldest master is read, which on a
+  shared server can be another app's.
 - **`checkDeploy` needs the deploy key**, which can also deploy, so a read-only
   tier cannot follow a deploy.
 - **`READONLY` and `ALLOW_DEPLOYS` are refused, not read.** A slug carrying

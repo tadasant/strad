@@ -158,19 +158,25 @@ no env var is read off one. The pin parsing is shared with the ssh server (the
 Each read is one connection and one command, closed after:
 
 ```sh
-pid=$(pgrep -o -f '[p]uma.*myapp'); if [ -z "$pid" ]; then exit 3; fi; printf '%s\n' "$pid"; cat "/proc/$pid/environ"
+pid=$(pgrep -o -f '^puma [0-9].*[^A-Za-z0-9_-]myapp([^A-Za-z0-9_-]|$)'); if [ -z "$pid" ]; then exit 3; fi; printf 'STRAD-HATCHBOX-PID %s\n' "$pid"; cat "/proc/$pid/environ" || exit 4
 ```
 
-- The oldest matching process is the puma master. Its workers fork from it with
-  the same environment.
-- `[p]uma` matches puma and not the shell running the command, whose own
-  command line contains the pattern. Upstream's `puma.*app` could match that
-  shell.
+- The match is a puma MASTER's own process title, `puma 6.4.2 (<bind>) [<tag>]`.
+  Its workers (`puma: cluster worker …`), a `tail -f …/puma.log`, a
+  `bash -lc 'bundle exec puma'` wrapper and the shell running this command do
+  not match. Upstream's `puma.*app` matched all of them. The oldest master
+  wins, and its workers fork from it with the same environment.
+- The app name must stand alone in the title (its tag, or a bind path such as
+  `/home/deploy/myapp/shared/tmp/sockets/puma.sock`), bounded by anything but a
+  letter, digit, `_` or `-`, so `blog` does not match `blog-staging`.
 - `HATCHBOX_APP_NAME` is the only variable part. It is held to letters, digits,
   `.`, `-` and `_`, escaped for the regex, and single-quoted. Nothing a caller
   sends reaches the command.
-- Output is capped at 1 MiB as it arrives. A connection is given 15 seconds and
-  the whole read 45.
+- The pid is found after a marker, so a banner the deploy user's shell prints
+  first does not break the read. Output is capped at 1 MiB as it arrives. A
+  connection is given 15 seconds and the whole read 45.
+- The fake host in the tests runs the command with `sh` (dash on CI). bash, the
+  deploy user's usual shell, runs the same POSIX syntax but is not exercised.
 
 Getting the pin: run `ssh-keyscan <host>` from somewhere you trust, then
 compare it against the fingerprint Hatchbox or the server's console shows.

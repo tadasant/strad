@@ -109,16 +109,20 @@ export async function startFakeHost(options: {
 }
 
 /**
- * A process whose command line reads like a puma master for `app`, holding
- * `env` and nothing else. Hatchbox's puma title is
- * `puma 6.4.2 (tcp://0.0.0.0:3000) [app]`; the argv here carries the same words.
+ * A process whose title reads like a puma master for `app`, holding `env` and
+ * nothing else. A real master retitles itself `puma 6.4.2 (<bind>) [<tag>]`;
+ * this one sets the same title, so `/proc/<pid>/cmdline` — what `pgrep -f`
+ * reads — carries it. `title` overrides it, for decoys.
  */
-export async function startFakePuma(app: string, env: Record<string, string>): Promise<ChildProcess> {
-  const child = spawn(
-    process.execPath,
-    ["-e", "setInterval(() => {}, 1e9)", "puma", "6.4.2", "(tcp://0.0.0.0:3000)", `[${app}]`],
-    { env, stdio: "ignore" },
-  );
-  await new Promise((r) => setTimeout(r, 300));
+export async function startFakePuma(
+  app: string,
+  env: Record<string, string>,
+  title = `puma 6.4.2 (unix:///home/deploy/${app}/shared/tmp/sockets/puma.sock) [${app}]`,
+): Promise<ChildProcess> {
+  // The script is padded so the original argv is longer than any title: Linux
+  // node writes process.title over the argv area and cannot grow it.
+  const script = `process.title = ${JSON.stringify(title)}; setInterval(() => {}, 1e9); /*${" ".repeat(200)}*/`;
+  const child = spawn(process.execPath, ["-e", script], { env, stdio: "ignore" });
+  await new Promise((r) => setTimeout(r, 400));
   return child;
 }

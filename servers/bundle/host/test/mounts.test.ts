@@ -995,46 +995,83 @@ describe("dropUnpairedCredentials", () => {
 });
 
 describe("hatchboxEnvView", () => {
-  const NAMES = ["HATCHBOX_APP_ID", "HATCHBOX_API_KEY", "HATCHBOX_DEPLOY_KEY", "READONLY"];
-  // What the renderer bakes for a `-ro` (SSH only) beside a `-rw` (API key):
-  // each slug's names under its own prefix, AND the bare names, owned by one.
+  // The tree's own list (servers/hatchbox/shared/src/config.ts,
+  // HATCHBOX_ALL_ENV_NAMES), copied because the host cannot import across
+  // the tree boundary in a unit test.
+  const REFUSED = ["READONLY", "ALLOW_DEPLOYS", "WEB_SERVER_IP_ADDRESS", "SSH_KEY_PATH"];
+  const NAMES = [
+    "HATCHBOX_APP_ID",
+    "HATCHBOX_ACCOUNT_ID",
+    "HATCHBOX_API_KEY",
+    "HATCHBOX_DEPLOY_KEY",
+    "HATCHBOX_SSH_HOST",
+    "HATCHBOX_SSH_PORT",
+    "HATCHBOX_SSH_USERNAME",
+    "HATCHBOX_SSH_PRIVATE_KEY",
+    "HATCHBOX_SSH_PASSPHRASE",
+    "HATCHBOX_SSH_HOST_KEY",
+    "HATCHBOX_APP_NAME",
+    ...REFUSED,
+  ];
+  // What the renderer bakes for `-ro` (SSH), `-deploy` (deploy key) and `-rw`
+  // (everything) on one bundle: each slug's names under its own prefix, AND
+  // the bare names, each owned by whichever slug the renderer picked.
   const box = {
     HATCHBOX_PULSE_RO__HATCHBOX_APP_ID: "8540",
+    HATCHBOX_PULSE_RO__HATCHBOX_SSH_PRIVATE_KEY: "ro-ssh-key",
+    HATCHBOX_PULSE_DEPLOY__HATCHBOX_APP_ID: "8540",
+    HATCHBOX_PULSE_DEPLOY__HATCHBOX_DEPLOY_KEY: "deploy-key",
     HATCHBOX_PULSE_RW__HATCHBOX_APP_ID: "8540",
     HATCHBOX_PULSE_RW__HATCHBOX_API_KEY: "rw-api-key",
-    HATCHBOX_PULSE_RW__HATCHBOX_DEPLOY_KEY: "rw-deploy-key",
+    HATCHBOX_PULSE_RW__HATCHBOX_DEPLOY_KEY: "deploy-key",
+    HATCHBOX_PULSE_RW__HATCHBOX_SSH_PRIVATE_KEY: "rw-ssh-key",
+    HATCHBOX_PULSE_RW__HATCHBOX_SSH_PASSPHRASE: "rw-pass",
     HATCHBOX_APP_ID: "8540",
     HATCHBOX_API_KEY: "rw-api-key",
-    HATCHBOX_DEPLOY_KEY: "rw-deploy-key",
+    HATCHBOX_DEPLOY_KEY: "deploy-key",
+    HATCHBOX_SSH_PRIVATE_KEY: "rw-ssh-key",
+    HATCHBOX_SSH_PASSPHRASE: "rw-pass",
+    // Some other server on the bundle declared this under its bare name.
     READONLY: "true",
   };
+  const view = (slug: string, perSlug: boolean, siblings: string[] = [], from: NodeJS.ProcessEnv = box) => {
+    const v: Record<string, string | undefined> = { ...from };
+    hatchboxEnvView(v, slug, perSlug, siblings, NAMES, REFUSED, from);
+    return v;
+  };
 
-  it("never lets a -ro slug inherit a sibling's bare API or deploy key", () => {
-    const view: Record<string, string | undefined> = { ...box };
-    hatchboxEnvView(view, "hatchbox-pulse-ro", true, [], NAMES, box);
-    expect(view.HATCHBOX_APP_ID).toBe("8540");
-    expect(view.HATCHBOX_API_KEY).toBeUndefined();
-    expect(view.HATCHBOX_DEPLOY_KEY).toBeUndefined();
-    // Nor a flag some other server on the box declared under the bare name.
-    expect(view.READONLY).toBeUndefined();
+  it("never lets -ro inherit a sibling's bare API key, deploy key or passphrase", () => {
+    const v = view("hatchbox-pulse-ro", true);
+    expect(v.HATCHBOX_APP_ID).toBe("8540");
+    expect(v.HATCHBOX_SSH_PRIVATE_KEY).toBe("ro-ssh-key");
+    expect(v.HATCHBOX_API_KEY).toBeUndefined();
+    expect(v.HATCHBOX_DEPLOY_KEY).toBeUndefined();
+    expect(v.HATCHBOX_SSH_PASSPHRASE).toBeUndefined();
+    expect(v.READONLY).toBeUndefined();
   });
 
-  it("gives a slug its own names", () => {
-    const view: Record<string, string | undefined> = { ...box };
-    hatchboxEnvView(view, "hatchbox-pulse-rw", true, [], NAMES, box);
-    expect(view.HATCHBOX_API_KEY).toBe("rw-api-key");
-    expect(view.HATCHBOX_DEPLOY_KEY).toBe("rw-deploy-key");
+  it("never lets -deploy inherit the SSH key or the API key", () => {
+    const v = view("hatchbox-pulse-deploy", true);
+    expect(v.HATCHBOX_DEPLOY_KEY).toBe("deploy-key");
+    expect(v.HATCHBOX_SSH_PRIVATE_KEY).toBeUndefined();
+    expect(v.HATCHBOX_API_KEY).toBeUndefined();
   });
 
-  it("leaves the conventional mount with nothing once a per-slug sibling exists", () => {
-    const view: Record<string, string | undefined> = { ...box };
-    hatchboxEnvView(view, "hatchbox", false, ["hatchbox-pulse-ro"], NAMES, box);
-    for (const name of NAMES) expect(view[name]).toBeUndefined();
+  it("gives -rw all of its own names", () => {
+    const v = view("hatchbox-pulse-rw", true);
+    expect(v.HATCHBOX_API_KEY).toBe("rw-api-key");
+    expect(v.HATCHBOX_SSH_PASSPHRASE).toBe("rw-pass");
   });
 
-  it("leaves the conventional mount's bare names alone when it is the only one", () => {
-    const view: Record<string, string | undefined> = { HATCHBOX_APP_ID: "1", HATCHBOX_DEPLOY_KEY: "k" };
-    hatchboxEnvView(view, "hatchbox", false, [], NAMES, {});
-    expect(view).toEqual({ HATCHBOX_APP_ID: "1", HATCHBOX_DEPLOY_KEY: "k" });
+  it("leaves the conventional mount only its own HATCHBOX__ names once a sibling exists", () => {
+    const v = view("hatchbox", false, ["hatchbox-pulse-ro"]);
+    for (const name of NAMES) expect(v[name], name).toBeUndefined();
+    const own = view("hatchbox", false, ["hatchbox-pulse-ro"], { ...box, HATCHBOX__HATCHBOX_APP_ID: "1" });
+    expect(own.HATCHBOX_APP_ID).toBe("1");
+  });
+
+  it("keeps the conventional mount's bare names when it is the only one, but never another server's READONLY", () => {
+    const v = view("hatchbox", false, [], { HATCHBOX_APP_ID: "1", HATCHBOX_DEPLOY_KEY: "k", READONLY: "true" });
+    expect(v).toEqual({ HATCHBOX_APP_ID: "1", HATCHBOX_DEPLOY_KEY: "k" });
   });
 });

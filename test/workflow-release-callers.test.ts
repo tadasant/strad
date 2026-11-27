@@ -64,13 +64,13 @@ interface Caller {
  * The tree a caller's image IS — the directory that identifies it.
  *
  * `context:` is that directory for a one-tree image, and is not for the bundle:
- * its context is the REPO ROOT, because its Dockerfile `COPY`s from twenty-nine
+ * its context is the REPO ROOT, because its Dockerfile `COPY`s from thirty
  * trees, so `${context}/**` would be `.//**` and name nothing. The Dockerfile's
  * own directory is the answer in both shapes, and a caller that names no `file:`
  * is building the context's own.
  *
  * Watching that one tree is the floor, not the whole rule, for a caller that
- * builds from the root: the bundle's twenty-nine are compared against the
+ * builds from the root: the bundle's thirty are compared against the
  * Dockerfile's `COPY` stages by `test/bundle-release-paths.test.ts`, which is
  * the guard that would notice a thirty-first tree added and not watched.
  */
