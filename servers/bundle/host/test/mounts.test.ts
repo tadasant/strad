@@ -897,6 +897,49 @@ describe("ownNameOnly, for grafana's write opt-in", () => {
   });
 });
 
+describe("glitchtip's write switch", () => {
+  const NAME = "GLITCHTIP_ALLOW_WRITE";
+  // What the renderer emits for a write slug beside a read-only sibling, plus a
+  // bare switch some other server's env put on the same container.
+  const env = {
+    GLITCHTIP_BASE_URL: "https://glitchtip.example.com",
+    GLITCHTIP_ALLOW_WRITE: "true",
+    GLITCHTIP_PULSEMCP_PROD_RW__GLITCHTIP_API_TOKEN: "rw-token",
+    GLITCHTIP_PULSEMCP_PROD_RW__GLITCHTIP_ALLOW_WRITE: "true",
+    GLITCHTIP_PULSEMCP_PROD__GLITCHTIP_API_TOKEN: "ro-token",
+  } as NodeJS.ProcessEnv;
+
+  /** The view `loadGlitchTip` hands the tree, as far as the switch goes. */
+  function viewFor(slug: string, from: NodeJS.ProcessEnv = env) {
+    const view = slugEnvView(from, slug);
+    ownNameOnly(view, slug, NAME, from);
+    return view;
+  }
+
+  it("opens the slug that declares it under its own name", () => {
+    expect(viewFor("glitchtip-pulsemcp-prod-rw")[NAME]).toBe("true");
+  });
+
+  it("opens neither a sibling nor the conventional mount on a bare or sibling's value", () => {
+    expect(viewFor("glitchtip-pulsemcp-prod")).not.toHaveProperty(NAME);
+    expect(viewFor("glitchtip")).not.toHaveProperty(NAME);
+  });
+
+  it("reads the conventional mount's own name, GLITCHTIP__…", () => {
+    const own = { ...env, GLITCHTIP__GLITCHTIP_ALLOW_WRITE: "true" } as NodeJS.ProcessEnv;
+    expect(viewFor("glitchtip", own)[NAME]).toBe("true");
+  });
+
+  it("is applied to every glitchtip mount, ahead of the per-slug branch", () => {
+    const host = readFileSync("src/index.ts", "utf8");
+    const loader = host.slice(host.indexOf("function loadGlitchTip("));
+    const body = loader.slice(0, loader.indexOf("\n}\n"));
+    const own = body.indexOf("ownNameOnly(env, slug, mod.ENV.allowWrite);");
+    expect(own).toBeGreaterThan(-1);
+    expect(own).toBeLessThan(body.indexOf("if (perSlug)"));
+  });
+});
+
 describe("dropUnpairedCredentials", () => {
   // The conventional /victorialogs mount reads bare names, and the renderer
   // picks each bare name's owner separately: C declared only an entrypoint, B

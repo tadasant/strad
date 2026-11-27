@@ -136,8 +136,9 @@ const EXPECT = {
   // writes. None turns delete protection off or returns a root password; a
   // twenty-ninth tool is the place to check that it still does not.
   hetzner: 28,
-  // GlitchTip: seven reads and no writes — strad's own server. An eighth tool
-  // is a new capability, not a version bump.
+  // GlitchTip: seven reads — strad's own server. The conventional mount never
+  // sets GLITCHTIP_ALLOW_WRITE, so its two writes are not listed here; an
+  // eighth tool is a new capability, not a version bump.
   glitchtip: 7,
   // vendor-billing: four fixed billing reads and nothing else — strad's own.
   // A fifth tool is a new capability, not a version bump.

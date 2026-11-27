@@ -189,7 +189,9 @@ failure:
     it — plus the cache bounds a shared container needs and a stdio subprocess
     did not.
   - **`glitchtip`** — tests. strad's own GlitchTip server, against a fake
-    GlitchTip: the seven reads, the token sent only to the configured origin
+    GlitchTip: the seven reads, the two writes listed only under
+    `GLITCHTIP_ALLOW_WRITE=true` and `delete_project`'s typed confirmation,
+    the token sent only to the configured origin
     with no redirect followed and over https unless the host is private, slugs
     and issue ids that cannot splice another path, and the token scrubbed from
     every result.

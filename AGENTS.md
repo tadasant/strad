@@ -458,9 +458,11 @@ slop behind when you fix a stale fact.
   `HACKS.md` #153.
 - `servers/glitchtip/` — strad's own GlitchTip server: seven reads (the
   organization, projects, teams, issues, one issue with its latest event,
-  events) over the Sentry-compatible `/api/0/`, and nothing that writes. One
-  slug is one GlitchTip — `GLITCHTIP_BASE_URL` plus a token, both required for
-  a per-slug instance. Written, not vendored: the AGPL-3.0
+  events) over the Sentry-compatible `/api/0/`. Two writes, `update_issue`
+  (an issue's status) and `delete_project` (typed confirmation), are listed
+  only when the slug's OWN `<SLUG>__GLITCHTIP_ALLOW_WRITE` is exactly `true`;
+  a bare or sibling's switch opens nothing. One slug is one GlitchTip —
+  `GLITCHTIP_BASE_URL` plus a token, both required for a per-slug instance. Written, not vendored: the AGPL-3.0
   `@karsten684/glitchtip-mcp-server` is not something strad links.
   `HACKS.md` #155.
 - `servers/vendor-billing/` — strad's own billing reads for a cost-collection

@@ -16,12 +16,19 @@
  *
  * READ AT CALL TIME, NEVER AT BOOT. A missing credential is one failed tool
  * call, not a failed bundle; `tools/list` works with nothing configured.
+ *
+ * WRITES ARE OPT-IN PER INSTANCE. `GLITCHTIP_ALLOW_WRITE` set to exactly
+ * `true` in the environment this instance was given adds the write tools to
+ * the surface; any other value, or none, leaves the seven reads alone. The
+ * bundle host reads it under the slug's own name only, so one slug's switch
+ * never opens another's.
  */
 
 export const ENV = {
   baseUrl: "GLITCHTIP_BASE_URL",
   apiToken: "GLITCHTIP_API_TOKEN",
   organization: "GLITCHTIP_ORGANIZATION_SLUG",
+  allowWrite: "GLITCHTIP_ALLOW_WRITE",
 } as const;
 
 /**
@@ -52,13 +59,23 @@ export const HOW_TO_GET_IT =
   `${ENV.baseUrl} is the GlitchTip's URL, e.g. https://glitchtip.example.com. ` +
   `${ENV.apiToken} is an API token a human creates in GlitchTip under Profile -> ` +
   `Auth Tokens, with the read scopes (org:read, project:read, team:read, ` +
-  `event:read). Both go into this deployment's secrets, not into a tool call.`;
+  `event:read), plus event:write for update_issue and project:admin for ` +
+  `delete_project on a slug that sets ${ENV.allowWrite}=true. Both go into ` +
+  `this deployment's secrets, not into a tool call.`;
 
 type Env = Readonly<Record<string, string | undefined>>;
 
 function value(env: Env, name: string): string | undefined {
   const v = env[name]?.trim();
   return v === undefined || v === "" ? undefined : v;
+}
+
+/**
+ * True only when the switch is exactly `true`. `1`, `yes`, `TRUE` and ` true`
+ * are all off: a write tier is opened deliberately or not at all.
+ */
+export function writeAllowed(env: Env = process.env): boolean {
+  return env[ENV.allowWrite] === "true";
 }
 
 /** The required variables this deployment is missing, in declaration order. */

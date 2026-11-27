@@ -4852,6 +4852,13 @@ is AGPL-3.0.
 - **The URL must be https** unless the host is loopback, private, `.internal`
   or `.local`.
 - **A result is cut at 60,000 characters**, and says so.
+- **The two writes have met only the fake.** `update_issue` and
+  `delete_project` are listed only on a slug whose own
+  `GLITCHTIP_ALLOW_WRITE` is `true`. Their scopes (`event:write`,
+  `project:admin`) come from GlitchTip's source, because its OpenAPI declares
+  none.
+- **`delete_project` is irreversible.** Its typed confirmation catches a wrong
+  argument, not a wrong intent.
 
 See `HACKS.md` #155.
 

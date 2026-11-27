@@ -1730,13 +1730,14 @@ interface GlitchTipModule {
   };
   /** The origin and token that make one instance. Owned by the tree. */
   GLITCHTIP_ENV_NAMES: readonly string[];
-  ENV: { baseUrl: string; apiToken: string; organization: string };
+  ENV: { baseUrl: string; apiToken: string; organization: string; allowWrite: string };
 }
 
 /**
  * glitchtip — strad's own GlitchTip server: seven reads (the organization, its
  * projects and teams, issues, one issue with its latest event, events) over
- * GlitchTip's Sentry-compatible API. Nothing on it writes.
+ * GlitchTip's Sentry-compatible API, and two writes (`update_issue`,
+ * `delete_project`) on an instance whose `GLITCHTIP_ALLOW_WRITE` is `true`.
  *
  * ONE INSTANCE PER SLUG. GlitchTip is self-hosted as often as not, so one slug
  * is one origin and one token, and two organizations or two GlitchTips are two
@@ -1746,6 +1747,10 @@ interface GlitchTipModule {
  * on another GlitchTip. The conventional mount gets victorialogs' guard: a bare
  * token or organization that a slug carries under its own name, beside a
  * different origin, is that slug's, and is not sent to the bare origin.
+ *
+ * THE WRITE SWITCH IS OWN-NAME ONLY, on every mount the conventional one
+ * included: `<SLUG>__GLITCHTIP_ALLOW_WRITE` opens that slug's writes, and a bare
+ * or sibling's value opens nobody's.
  */
 function loadGlitchTip(
   mod: GlitchTipModule,
@@ -1754,6 +1759,7 @@ function loadGlitchTip(
   siblings: readonly string[] = [],
 ): Mount {
   const env = slugEnvView(process.env, slug);
+  ownNameOnly(env, slug, mod.ENV.allowWrite);
   if (perSlug) {
     ownNameOnly(env, slug, mod.ENV.organization);
   } else {

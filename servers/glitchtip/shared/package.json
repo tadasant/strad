@@ -2,7 +2,7 @@
   "name": "glitchtip-shared",
   "version": "0.1.0",
   "private": true,
-  "description": "GlitchTip issues, events, projects, teams and the organization as read-only MCP tools, over the Sentry-compatible /api/0/ API.",
+  "description": "GlitchTip issues, events, projects, teams and the organization as read-only MCP tools, plus two opt-in writes, over the Sentry-compatible /api/0/ API.",
   "main": "build/index.js",
   "type": "module",
   "scripts": {

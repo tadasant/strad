@@ -2,13 +2,18 @@ import type { GlitchTipConfig } from "./config.js";
 import { GlitchTipApiError, type GlitchTipClient, type Page } from "./client.js";
 
 /**
- * Seven reads, and nothing that writes.
+ * Seven reads, and two writes behind a switch.
  *
- * The set is what triaging an error needs: the organization, its projects and
- * teams, one project, issues (organization- or project-wide), one issue with
- * its latest event and comments, and the events of an issue or a project. GlitchTip's API can also resolve, assign,
- * merge and delete issues, rotate DSNs and manage members; none of that is
- * here, so a slug is read-only whatever its token may do.
+ * The reads are what triaging an error needs: the organization, its projects
+ * and teams, one project, issues (organization- or project-wide), one issue
+ * with its latest event and comments, and the events of an issue or a project.
+ *
+ * The writes are `update_issue` (one issue's status) and `delete_project` (one
+ * project, irreversibly, behind a typed confirmation). They are served only
+ * when the instance's `GLITCHTIP_ALLOW_WRITE` is exactly `true`; otherwise they
+ * are neither listed nor callable. GlitchTip's API can also assign, merge and
+ * delete issues, rotate DSNs and manage members; none of that is here, so even
+ * a write slug can do exactly these two things whatever its token may do.
  *
  * Every tool reads ONE page. Lists take `limit` (default 25; a larger value is
  * clamped to 100, GlitchTip's own page ceiling here) and `cursor`, and return `next_cursor` — null on the last page. Nothing walks.
@@ -28,8 +33,16 @@ export interface ToolDefinition {
     required?: string[];
     additionalProperties?: boolean;
   };
+  annotations: {
+    readOnlyHint: boolean;
+    destructiveHint: boolean;
+    idempotentHint?: boolean;
+    openWorldHint: boolean;
+  };
   handler: (args: Record<string, unknown>, ctx: ToolContext) => Promise<unknown>;
 }
+
+const READ = { readOnlyHint: true, destructiveHint: false, openWorldHint: true };
 
 export class InputError extends Error {
   constructor(message: string) {
@@ -148,6 +161,7 @@ const getOrganization: ToolDefinition = {
   description:
     "One GlitchTip organization: its name, slug, its projects (slug, name, platform) " +
     "and its teams. Start here to learn which project slugs exist.",
+  annotations: READ,
   inputSchema: { type: "object", properties: { ...ORG_PROP }, additionalProperties: false },
   async handler(args, ctx) {
     const org = organization(args, ctx);
@@ -166,6 +180,7 @@ const listProjects: ToolDefinition = {
   description:
     "The organization's projects, one page at a time: id, slug, name, platform and " +
     "when each first received an event. `query` filters by name.",
+  annotations: READ,
   inputSchema: {
     type: "object",
     properties: {
@@ -195,6 +210,7 @@ const listProjects: ToolDefinition = {
 const getProject: ToolDefinition = {
   name: "get_project",
   description: "One project in full, by its slug (from list_projects or get_organization).",
+  annotations: READ,
   inputSchema: {
     type: "object",
     properties: { project: { type: "string", description: "The project slug." }, ...ORG_PROP },
@@ -215,6 +231,7 @@ const getProject: ToolDefinition = {
 const listTeams: ToolDefinition = {
   name: "list_teams",
   description: "The organization's teams, one page at a time: id, slug and member count.",
+  annotations: READ,
   inputSchema: { type: "object", properties: { ...ORG_PROP, ...PAGE_PROPS }, additionalProperties: false },
   async handler(args, ctx) {
     const org = organization(args, ctx);
@@ -236,6 +253,7 @@ const listIssues: ToolDefinition = {
     "it to get_issue / list_events), shortId, title, culprit, level, status, event and " +
     "user counts, first/last seen. `query` is GlitchTip's search syntax and defaults to " +
     '"is:unresolved"; pass "" for every status, or e.g. "is:resolved", "TypeError".',
+  annotations: READ,
   inputSchema: {
     type: "object",
     properties: {
@@ -286,6 +304,7 @@ const getIssue: ToolDefinition = {
     "One issue in full, with its LATEST event (exception and stack trace, request, " +
     "tags, contexts, breadcrumbs) and the first page of its comments. `issue_id` is " +
     "the numeric id from list_issues or the issue's URL. Use list_events for older events.",
+  annotations: READ,
   inputSchema: {
     type: "object",
     properties: { issue_id: { type: ["integer", "string"], description: "The numeric issue id." } },
@@ -322,6 +341,7 @@ const listEvents: ToolDefinition = {
     "Events, newest first, one page at a time: one issue's (`issue_id`) or one " +
     "project's (`project`). Each is summarised (eventID, date, title, message, " +
     "culprit, tags); get_issue carries the latest event in full.",
+  annotations: READ,
   inputSchema: {
     type: "object",
     properties: {
@@ -346,6 +366,72 @@ const listEvents: ToolDefinition = {
   },
 };
 
+const STATUSES = ["resolved", "unresolved", "ignored"];
+
+const updateIssue: ToolDefinition = {
+  name: "update_issue",
+  description:
+    "WRITE. Set one issue's status to resolved, unresolved or ignored, by its numeric " +
+    "`issue_id` (from list_issues). Changes nothing else on the issue. Returns the " +
+    "issue's summary as GlitchTip answers it. Needs a token with event:write.",
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  inputSchema: {
+    type: "object",
+    properties: {
+      issue_id: { type: ["integer", "string"], description: "The numeric issue id." },
+      status: { type: "string", enum: STATUSES, description: "The status to set." },
+    },
+    required: ["issue_id", "status"],
+    additionalProperties: false,
+  },
+  async handler(args, ctx) {
+    const id = issueId(args);
+    const status = optionalString(args, "status");
+    if (status === undefined || !STATUSES.includes(status)) {
+      throw new InputError(`\`status\` must be one of ${STATUSES.join(", ")}.`);
+    }
+    const body = await ctx.client.write<Json>("PUT", `/api/0/issues/${id}/`, { status });
+    return { updated: true, issue: body ? issueSummary(body) : { id, status } };
+  },
+};
+
+const deleteProject: ToolDefinition = {
+  name: "delete_project",
+  description:
+    "WRITE, IRREVERSIBLE. Delete one GlitchTip project by slug, with every issue and " +
+    "event in it; GlitchTip offers no undo. `confirm_project_slug` must repeat " +
+    "`project` exactly, or nothing is sent. Needs a token with project:admin, whose " +
+    "user is an Admin, Manager or Owner of the organization.",
+  annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  inputSchema: {
+    type: "object",
+    properties: {
+      project: { type: "string", description: "The slug of the project to delete." },
+      confirm_project_slug: {
+        type: "string",
+        description: "The same slug again. Must equal `project` exactly.",
+      },
+      ...ORG_PROP,
+    },
+    required: ["project", "confirm_project_slug"],
+    additionalProperties: false,
+  },
+  async handler(args, ctx) {
+    const project = optionalString(args, "project");
+    if (!project) throw new InputError("`project` is required: a project slug.");
+    const confirm = optionalString(args, "confirm_project_slug");
+    if (confirm !== project) {
+      throw new InputError(
+        "Refused: `confirm_project_slug` must equal `project` exactly. Deleting a " +
+          "project is irreversible; nothing was sent.",
+      );
+    }
+    const org = organization(args, ctx);
+    await ctx.client.write("DELETE", `/api/0/projects/${org}/${slug(project, "project")}/`);
+    return { deleted: true, organization: decodeURIComponent(org), project };
+  },
+};
+
 export const TOOLS: readonly ToolDefinition[] = [
   getOrganization,
   listProjects,
@@ -356,4 +442,8 @@ export const TOOLS: readonly ToolDefinition[] = [
   listEvents,
 ];
 
+/** Served only by an instance whose `GLITCHTIP_ALLOW_WRITE` is exactly `true`. */
+export const WRITE_TOOLS: readonly ToolDefinition[] = [updateIssue, deleteProject];
+
 export const TOOL_NAMES: readonly string[] = TOOLS.map((t) => t.name);
+export const WRITE_TOOL_NAMES: readonly string[] = WRITE_TOOLS.map((t) => t.name);
