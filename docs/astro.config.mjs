@@ -128,6 +128,7 @@ export default defineConfig({
             { label: "GlitchTip", slug: "servers/glitchtip" },
             { label: "Vendor billing", slug: "servers/vendor-billing" },
             { label: "Postgres", slug: "servers/postgres" },
+            { label: "Hatchbox", slug: "servers/hatchbox" },
             { label: "AWS Device Farm", slug: "servers/aws-device-farm" },
             {
               label: "AWS Device Farm: first-time setup",

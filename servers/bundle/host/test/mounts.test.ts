@@ -5,6 +5,7 @@ import {
   dropInheritedNames,
   dropUnpairedCredentials,
   extraSlugs,
+  hatchboxEnvView,
   instanceEnv,
   missingCredentialsDegraded,
   onePasswordConfirmsWrites,
@@ -990,5 +991,50 @@ describe("dropUnpairedCredentials", () => {
     ).toEqual([]);
     expect(dropUnpairedCredentials(view, "VL_INSTANCE_ENTRYPOINT", NAMES, [], ENV)).toEqual([]);
     expect(view.VL_INSTANCE_BEARER_TOKEN).toBe("c-token");
+  });
+});
+
+describe("hatchboxEnvView", () => {
+  const NAMES = ["HATCHBOX_APP_ID", "HATCHBOX_API_KEY", "HATCHBOX_DEPLOY_KEY", "READONLY"];
+  // What the renderer bakes for a `-ro` (SSH only) beside a `-rw` (API key):
+  // each slug's names under its own prefix, AND the bare names, owned by one.
+  const box = {
+    HATCHBOX_PULSE_RO__HATCHBOX_APP_ID: "8540",
+    HATCHBOX_PULSE_RW__HATCHBOX_APP_ID: "8540",
+    HATCHBOX_PULSE_RW__HATCHBOX_API_KEY: "rw-api-key",
+    HATCHBOX_PULSE_RW__HATCHBOX_DEPLOY_KEY: "rw-deploy-key",
+    HATCHBOX_APP_ID: "8540",
+    HATCHBOX_API_KEY: "rw-api-key",
+    HATCHBOX_DEPLOY_KEY: "rw-deploy-key",
+    READONLY: "true",
+  };
+
+  it("never lets a -ro slug inherit a sibling's bare API or deploy key", () => {
+    const view: Record<string, string | undefined> = { ...box };
+    hatchboxEnvView(view, "hatchbox-pulse-ro", true, [], NAMES, box);
+    expect(view.HATCHBOX_APP_ID).toBe("8540");
+    expect(view.HATCHBOX_API_KEY).toBeUndefined();
+    expect(view.HATCHBOX_DEPLOY_KEY).toBeUndefined();
+    // Nor a flag some other server on the box declared under the bare name.
+    expect(view.READONLY).toBeUndefined();
+  });
+
+  it("gives a slug its own names", () => {
+    const view: Record<string, string | undefined> = { ...box };
+    hatchboxEnvView(view, "hatchbox-pulse-rw", true, [], NAMES, box);
+    expect(view.HATCHBOX_API_KEY).toBe("rw-api-key");
+    expect(view.HATCHBOX_DEPLOY_KEY).toBe("rw-deploy-key");
+  });
+
+  it("leaves the conventional mount with nothing once a per-slug sibling exists", () => {
+    const view: Record<string, string | undefined> = { ...box };
+    hatchboxEnvView(view, "hatchbox", false, ["hatchbox-pulse-ro"], NAMES, box);
+    for (const name of NAMES) expect(view[name]).toBeUndefined();
+  });
+
+  it("leaves the conventional mount's bare names alone when it is the only one", () => {
+    const view: Record<string, string | undefined> = { HATCHBOX_APP_ID: "1", HATCHBOX_DEPLOY_KEY: "k" };
+    hatchboxEnvView(view, "hatchbox", false, [], NAMES, {});
+    expect(view).toEqual({ HATCHBOX_APP_ID: "1", HATCHBOX_DEPLOY_KEY: "k" });
   });
 });

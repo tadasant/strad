@@ -203,6 +203,16 @@ jobs:
   #               never in a result or error, and no credential ever sent to a
   #               server that will not speak TLS.
   #
+  #   hatchbox    test. strad's own Hatchbox server. The env-var reads run over
+  #               a REAL SSH server on loopback that executes the command this
+  #               server sends — pgrep, the `[p]uma` pattern and
+  #               /proc/<pid>/environ against fake puma processes — so what it
+  #               holds is the host-key pin refused before the key is offered,
+  #               the right app's puma read, and the private key in no result.
+  #               The API and deploy webhook run against a fake Hatchbox: the
+  #               six tools always listed, a redirect never followed, and every
+  #               credential scrubbed.
+  #
   #   image-tools test. Two servers that fetch a URL a CALLER chose, from inside
   #               the bundle — so the suites that matter are the SSRF guard
   #               (private, loopback, link-local and metadata addresses refused,
@@ -336,7 +346,7 @@ jobs:
   #               repo would say so.
   #
   #   bundle/host test. THE host: the process every bundle container runs. It
-  #               mounts every tree in the image — 38 mounts, which staging's 45
+  #               mounts every tree in the image — 39 mounts, which staging's 45
   #               supplementary-image slugs resolve to, since a capability
   #               variant is another slug on the same mount. Its `tree:` carries
   #               a slash because it is a tree one level deeper than the rest —
@@ -451,6 +461,10 @@ jobs:
             test: true
             skip-browser: false
           - tree: postgres
+            build: false
+            test: true
+            skip-browser: true
+          - tree: hatchbox
             build: false
             test: true
             skip-browser: true
@@ -582,7 +596,7 @@ jobs:
           node "$STRAD_HOSTD_HOME/app/build/cli.js" keys | awk '{ if (length($2) < 32) exit 1 }'
           ./install/uninstall.sh --purge
 
-  # THE bundle: thirty-eight MCP servers, twenty-nine dependency trees, one Chromium and the
+  # THE bundle: thirty-nine MCP servers, thirty dependency trees, one Chromium and the
   # `op` CLI in one container. It is now the only supplementary component strad
   # deploys, so a PR that cannot build it — or that builds one where a server
   # silently lost half its tools — is a failing PR.

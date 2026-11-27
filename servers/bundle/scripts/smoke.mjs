@@ -15,7 +15,7 @@
  * credential-dependent. CI has no credential, the probe fails closed, and the
  * count is the read-only 4 below.
  *
- * What it is really checking is that thirty-eight servers, twenty-nine dependency trees and
+ * What it is really checking is that thirty-nine servers, thirty dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  *
@@ -147,6 +147,9 @@ const EXPECT = {
   // and no writes — strad's own server. A fifth tool is a new capability, and
   // the place to check that nothing on this mount can write.
   postgres: 4,
+  // Hatchbox: six tools, always all six — whatever credentials a slug holds,
+  // so an empty tools/list (pulsemcp/pulsemcp#3492) is a failure here.
+  hatchbox: 6,
   // One tool each, and the count is the claim that neither grew a tool that
   // writes a file: these replace npx packages that wrote to the agent's disk,
   // and here they write nothing anywhere.
@@ -326,7 +329,7 @@ if (unchecked.length || absent.length) {
 
 // Two trees registering the SAME slug is the collision a twelve-tree single process
 // invites, and it collapses to one route — the set above cannot see it, because a
-// Set of 38 mounts' slugs is 37 entries wide and matches EXPECT exactly.
+// Set of 39 mounts' slugs is 37 entries wide and matches EXPECT exactly.
 if (health.servers.length !== mounted.size) {
   failed += 1;
   console.log(

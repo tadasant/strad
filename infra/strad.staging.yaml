@@ -18,7 +18,7 @@
 # Forty-one of the forty-five land on twenty-eight upstream mounts inside the
 # one bundle image, because capability variants share a mount; the other four
 # (`zimmer-secrets`, `whatsapp-zimmer`, and the two Messenger slugs) run that
-# same image on three bundles of their own. The image serves thirty-eight mounts: `/x-twitter`,
+# same image on three bundles of their own. The image serves thirty-nine mounts: `/x-twitter`,
 # `/google-sheets`, `/grafana`, `/victorialogs`, `/glitchtip`, `/vendor-billing`, `/postgres`,
 # `/aws-device-farm` and `/ssh` are in it with no staging slug pointing at any of them — every SSH host is a store-served
 # instance at `/_instance/ssh/{slug}` rather than the conventional `/ssh`, and
@@ -221,7 +221,7 @@ roles:
 
 bundles:
   # THE bundle. One image, one component, and twenty-seven of the image's
-  # thirty-eight upstream MCP servers — the bundle-api fleet, the Google
+  # thirty-nine upstream MCP servers — the bundle-api fleet, the Google
   # servers, 1Password (with the `op` CLI baked in), telegram, liveoak,
   # airtable, flightaware, digitalocean, hetzner, image-diff, svg-tracer and the
   # three browser servers, which share ONE Chromium (never one per server: see
@@ -234,7 +234,7 @@ bundles:
   # staging slug uses yet, `/aws-device-farm`, whose AWS credential does
   # not exist yet, `/whatsapp`, whose one slug is served from
   # `bundle-whatsapp`, and `/ssh`, whose hosts are store-served instances.
-  # The PROCESS registers all thirty-eight either way — including `/telegram`,
+  # The PROCESS registers all thirty-nine either way — including `/telegram`,
   # `/liveoak`, `/airtable`, `/flightaware`, `/digitalocean` and `/hetzner`,
   # whose slugs are disabled until their secrets are seeded — which is what the
   # sizing below is about.
@@ -244,7 +244,7 @@ bundles:
   # single Chromium's process tree accounts for ~940MB RSS, most of it shared),
   # and Node with twenty-three servers registered added ~200MB when measured.
   # 0.5GB is absurd here; 1GB would be one bad page render from an OOM that
-  # takes all 38 of this bundle's slugs down with it. image-diff and svg-tracer
+  # takes all 39 of this bundle's slugs down with it. image-diff and svg-tracer
   # add a bounded peak on top: one job at a time across both, in a worker
   # thread, at most ~400MB for a diff at their 10-megapixel limit
   # (servers/image-tools/shared/src/limits.ts). The real constraint is CPU — 1
