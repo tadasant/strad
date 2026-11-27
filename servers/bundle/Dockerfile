@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# bundle — THE strad supplementary image. Thirty-eight MCP servers, one container.
+# bundle — THE strad supplementary image. Thirty-nine MCP servers, one container.
 #
 # BUILD CONTEXT IS THE REPO ROOT (not servers/bundle/), because this image is
-# assembled from twenty-nine existing projects that live in different places:
+# assembled from thirty existing projects that live in different places:
 #
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
 #                           gcs, google-flights
@@ -37,6 +37,8 @@
 #                                                  OpenAI, a GCP billing export)
 #   servers/postgres        postgres               (one Postgres database,
 #                                                  read-only; strad's own)
+#   servers/hatchbox        hatchbox               (one Hatchbox app: env vars
+#                                                  and deploys; strad's own)
 #   servers/image-tools     image-diff, svg-tracer (compare two images; trace a
 #                                                  bitmap to SVG. Inputs are URLs)
 #   servers/nutrition-facts nutrition-facts        (USDA + MenuStat data baked in
@@ -50,7 +52,7 @@
 #
 # Each is built in its OWN stage with its OWN lockfile and its OWN node_modules,
 # exactly as its standalone image builds it, and copied into /app/trees/<name>.
-# Nothing is merged. That is on purpose: merging twenty-nine dependency trees is how you
+# Nothing is merged. That is on purpose: merging thirty dependency trees is how you
 # discover in production that two of them wanted different Playwright versions.
 # The host (servers/bundle/host) imports across them by path — Node resolves each
 # package's own imports from its own tree — and owns the one thing that MUST be
@@ -305,6 +307,16 @@ RUN npm ci --no-audit --no-fund
 COPY servers/postgres/shared ./shared
 RUN npm run build && npm prune --omit=dev
 
+# hatchbox: strad's own. Its dependencies are the MCP SDK and ssh2 (the env-var
+# reads are one SSH exec against a pinned host key), both pure JavaScript.
+FROM ${PW} AS build-hatchbox
+WORKDIR /src
+COPY servers/hatchbox/package.json servers/hatchbox/package-lock.json ./
+COPY servers/hatchbox/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/hatchbox/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
 # ---- good-eggs / fetchpet / pointsyeah (browser servers) ---------------------
 FROM ${PW} AS build-x-twitter
 WORKDIR /src
@@ -544,7 +556,7 @@ RUN npm run build && npm prune --omit=dev
 FROM ${PW}
 
 LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
-LABEL org.opencontainers.image.description="strad's single supplementary image — 38 MCP servers (API, Google, X.com, Telegram, WhatsApp, Messenger, web fetching, Grafana, VictoriaLogs, banking, Airtable, FlightAware, DigitalOcean, Hetzner Cloud, GlitchTip, Postgres, vendor billing, image diff/tracing, nutrition facts, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
+LABEL org.opencontainers.image.description="strad's single supplementary image — 39 MCP servers (API, Google, X.com, Telegram, WhatsApp, Messenger, web fetching, Grafana, VictoriaLogs, banking, Airtable, FlightAware, DigitalOcean, Hetzner Cloud, GlitchTip, Postgres, Hatchbox, vendor billing, image diff/tracing, nutrition facts, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
 LABEL org.opencontainers.image.licenses="MIT"
 
 # --- 1Password CLI (op), pinned ----------------------------------------------
@@ -576,7 +588,7 @@ RUN set -eux; \
 ENV NODE_ENV=production
 WORKDIR /app
 
-# The twenty-nine trees, each with the node_modules it was built against.
+# The thirty trees, each with the node_modules it was built against.
 COPY --from=build-api /src /app/trees/bundle-api
 COPY --from=build-google /src /app/trees/bundle-google
 COPY --from=build-op /src /app/trees/onepassword
@@ -603,6 +615,7 @@ COPY --from=build-hetzner /src /app/trees/hetzner
 COPY --from=build-glitchtip /src /app/trees/glitchtip
 COPY --from=build-vendor-billing /src /app/trees/vendor-billing
 COPY --from=build-postgres /src /app/trees/postgres
+COPY --from=build-hatchbox /src /app/trees/hatchbox
 COPY --from=build-image-tools /src /app/trees/image-tools
 COPY --from=build-nutrition-facts /src /app/trees/nutrition-facts
 COPY --from=build-pulse-subregistry /src /app/trees/pulse-subregistry

@@ -615,12 +615,12 @@ nothing warns beforehand. Publishing the OAuth app removes the expiry.
 
 ## The deployment
 
-### 24. Thirty-eight servers share one process and one CPU
+### 24. Thirty-nine servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts thirty-eight MCP servers,
+The `bundle` component runs one Node process that mounts thirty-nine MCP servers,
 launches one shared Chromium and supervises an `mcp-grafana` and an
 `mcp-victorialogs` child process per mount that uses one, on
-`apps-s-1vcpu-2gb`. A crash in the host takes all thirty-eight down together, and
+`apps-s-1vcpu-2gb`. A crash in the host takes all thirty-nine down together, and
 Chromium contends with every other server for the single vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -1011,7 +1011,7 @@ a store-wide read.
 keeps a listed parameter current in a supplementary container's environment
 without a redeploy. It cannot make the MCP server inside that container **look**
 at the new value — that is a property of the upstream, and the bundle image runs
-thirty-eight of them, most written by other people.
+thirty-nine of them, most written by other people.
 
 `strad-fetch` builds its scraping clients inside a factory the host invokes per
 request, so a rotated key is used by the next tool call; that is the case the
@@ -2206,7 +2206,7 @@ ever rebuilt with a rootless or hand-installed docker, where buildx lives in
 
 **Serialising the workflows was the alternative.** A `concurrency:` group would
 have ended it too, at the cost of every push taking the sum of its builds rather
-than the longest — the bundle alone is twenty-nine dependency trees. Isolation costs a
+than the longest — the bundle alone is thirty dependency trees. Isolation costs a
 `mkdir`.
 
 ### 49. The Telegram MTProto library is archived upstream
@@ -2306,7 +2306,7 @@ for the telegram pair, `BILL_SPEND_API_TOKEN` for the bill-spend pair,
 then delete that entry's `enabled:` line and add each seeded name to
 `PROVISIONED_STATICS` in `test/staging-config.test.ts`.
 
-### 56. Per-slug variable names are emitted for every server; only seventeen of the twenty-nine trees can read one
+### 56. Per-slug variable names are emitted for every server; only eighteen of the thirty trees can read one
 
 Every supplementary server's `env:` lands on its bundle twice — under the bare
 name and under `<SLUG>__<NAME>` — with no condition attached, so what a server's
@@ -2324,7 +2324,7 @@ whatever the variables are called.
 **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
 `grafana`, `victorialogs`, `bill-spend`, `aws-device-farm`,
 `whatsapp`, `liveoak`, `airtable`, `flightaware`, `digitalocean`, `hetzner`,
-`glitchtip`, `vendor-billing`, `postgres` and `ssh` read an injected environment.** The other twelve
+`glitchtip`, `vendor-billing`, `postgres`, `hatchbox` and `ssh` read an injected environment.** The other twelve
 trees in the bundle image are vendored upstream code that reads `process.env` directly,
 often lazily at call time, so they see the bare names only. `bill-spend` reads
 the injected view for one mount rather than one per slug: one BILL token is one
@@ -2604,7 +2604,7 @@ leak. Nothing in the cache is a credential; it is public pages someone fetched.
 
 **What the fork DID bound is the memory.** Upstream's store grows for the life of
 the process, which is fine for a subprocess the OS reclaims and an out-of-memory
-kill in a container that hosts thirty-eight mounts. The cache is LRU-bounded on both
+kill in a container that hosts thirty-nine mounts. The cache is LRU-bounded on both
 entry count and bytes, and the filesystem backend is gone (App Platform gives the
 container no persistent volume, so it was memory with extra steps).
 
@@ -5207,3 +5207,30 @@ not prevent it; leaving `change_email_conversation` off does.
 - **It has met only stubs.** No live mailbox was labelled.
 
 See `HACKS.md` #169.
+
+---
+
+### 170. Hatchbox is strad's own server, and has met Hatchbox only at its errors
+
+The [Hatchbox](/servers/hatchbox/) server is a port of the npm
+`hatchbox-mcp-server`, written rather than vendored, with the same six tool names.
+
+- **Only error answers have been seen.** All four routes answered invalid
+  credentials as routes that exist (`401`, or `404` "App not found"). No success
+  body has been observed; the shapes parsed are upstream's.
+- **The routes are upstream's, not Hatchbox's documented `/api/v1/apps/{id}`
+  ones**, so the deploy tier can run on the deploy key alone. If Hatchbox
+  retires them, the documented routes need the API key for deploys too.
+- **The reads return production secrets.** Every value of the running app's
+  environment, and a value set with `setEnvVar` only shows up after the next
+  deploy.
+- **The process match assumes puma's own master title**, `puma <version>
+(<bind>) [<tag>]`, with the app's name in it. No real Hatchbox `ps` has been
+  seen. Without `HATCHBOX_APP_NAME`, the oldest master is read, which on a
+  shared server can be another app's.
+- **`checkDeploy` needs the deploy key**, which can also deploy, so a read-only
+  tier cannot follow a deploy.
+- **`READONLY` and `ALLOW_DEPLOYS` are refused, not read.** A slug carrying
+  either fails every call until it is removed.
+
+See `HACKS.md` #170.

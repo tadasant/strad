@@ -285,6 +285,25 @@ export const VENDORED = [
 `,
     targets: ["hostd/src/custody/deposit-wire.ts"],
   },
+  {
+    // SSH host-key PINNING — the parse of a pasted keyscan line, bare key or
+    // `SHA256:` fingerprint, the match, and the narrowing of negotiation to the
+    // pinned key types — from strad's ssh server into the hatchbox server, whose
+    // env-var reads are one SSH exec against a Hatchbox web server. Both trees
+    // refuse a host presenting any other key before the private key signs
+    // anything. A drift is two meanings of one pasted pin in one bundle: a line
+    // the ssh slug accepts and the hatchbox slug refuses, or worse, the other
+    // way round. It imports `ssh2`, `node:crypto` and `./errors.js`'s
+    // `ConfigError`, which each tree defines for itself.
+    id: "sshpin",
+    source: "servers/ssh/shared/src/host-key.ts",
+    label: "SSH host-key pinning",
+    banner: `// GENERATED — DO NOT EDIT.
+// Vendored from servers/ssh/shared/src/host-key.ts by \`npm run sshpin:sync\`.
+// Edit the source, run the sync, and commit both. CI fails if these drift.
+`,
+    targets: ["servers/hatchbox/shared/src/host-key.ts"],
+  },
 ];
 
 /**

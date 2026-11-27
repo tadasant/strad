@@ -392,7 +392,7 @@ one (hack #4).
 **✅ RESOLVED.** Core presents the internal token to every `supplementary-image`
 component, and the `strad-bundle` host refuses a mount request without it.
 
-**What.** The `strad-bundle` container — thirty-eight mounts, and every upstream
+**What.** The `strad-bundle` container — thirty-nine mounts, and every upstream
 credential behind them — serves every mount unauthenticated. Its only protection
 is the network boundary: an internal-only App Platform component
 (`internal_ports: [8080]`, no public route), reachable by core over the private
@@ -789,10 +789,10 @@ still what makes prod's read-only variants read-only.
 policies) → confirm → _then_ delete the per-server images, their workflows and the
 toggle plumbing.
 
-## 24. Thirty-eight servers share one process, and one Chromium
+## 24. Thirty-nine servers share one process, and one Chromium
 
-The collapsed bundle is one container running thirty-eight MCP servers and one
-headless Chromium. An OOM there is a thirty-eight-server outage; it used to be a
+The collapsed bundle is one container running thirty-nine MCP servers and one
+headless Chromium. An OOM there is a thirty-nine-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -2650,7 +2650,7 @@ both `infra/strad.staging.yaml` and `strad.config.example.yaml` — plus the cou
 in `servers/bundle/scripts/smoke.mjs`, `test/staging-config.test.ts` and
 `.github/workflows/ci.yml`.
 
-## 56. Per-slug box names are emitted for every server; seventeen of twenty-nine trees can read one
+## 56. Per-slug box names are emitted for every server; eighteen of thirty trees can read one
 
 **What.** Every enabled `supplementary-image` server's resolved `env:` is emitted
 onto its bundle TWICE: under the bare name it always had, and under
@@ -2707,7 +2707,7 @@ DigitalOcean both times.
 - **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
   `grafana`, `victorialogs`, `bill-spend`, `aws-device-farm`,
   `whatsapp`, `liveoak`, `airtable`, `flightaware`, `digitalocean`, `hetzner`,
-  `glitchtip`, `vendor-billing`, `postgres` and `ssh` read an injected env.** The other twelve trees
+  `glitchtip`, `vendor-billing`, `postgres`, `hatchbox` and `ssh` read an injected env.** The other twelve trees
   are vendored upstream code reading `process.env`, often lazily at call time
   (`onepassword` builds its client per call off `OP_SERVICE_ACCOUNT_TOKEN`). A single process cannot overlay `process.env`
   per-request without a race, so each tree needs its own seam and gets it when it
@@ -3760,7 +3760,7 @@ behaviour, which is the pre-change one.
 a listed parameter current in a supplementary container's `process.env` without a
 redeploy. What it cannot do is make the MCP server inside that container LOOK at
 the new value. That is a property of the upstream, and this image runs
-thirty-eight of them, most written by other people.
+thirty-nine of them, most written by other people.
 
 The split is real and it is not subtle:
 
@@ -8696,3 +8696,55 @@ write is small: a user label holds no mail and can be deleted in Gmail.
 **Undo.** Refuse an unmatched name in `LabelResolver`
 (`src/tools/change-email-conversation.ts` in that tree), naming
 `create_email_label`. The policy then decides on its own.
+
+## 170. Hatchbox is strad's own server, and has met Hatchbox only at its errors
+
+**What.** `servers/hatchbox` is a port of the npm `hatchbox-mcp-server`
+(pulsemcp/mcp-servers `experimental/hatchbox`), written rather than vendored. It
+keeps the six tool names. Everything else changed: env vars are read over ssh2
+against a pinned host key with the key as a value, one fixed remote command,
+every tool always listed, upstream's `READONLY` / `ALLOW_DEPLOYS` /
+`WEB_SERVER_IP_ADDRESS` / `SSH_KEY_PATH` refused, and `https://hatchbox.io` as
+the only origin, with redirects not followed.
+
+**Why.** PulseMCP's Hans is moving its MCP tooling onto strad and needs
+Hatchbox there. The upstream's SSH path (`StrictHostKeyChecking=no`, a key file
+path, the app name spliced into a shell string) would have been rewritten
+anyway, and its flags were how a slug came up with an empty `tools/list`
+(pulsemcp/pulsemcp#3492). The tool names stayed so skills written against the
+npm package call the same ones.
+
+**What it costs.**
+
+- **No success shape has been observed.** The four routes were probed with
+  invalid credentials only. `PUT`/`DELETE …/accounts/{a}/apps/{b}/env_vars`
+  answer `401`, the deploy webhook answers `404 {"message":"App not found"}`,
+  and `GET /apps/{key}/activities/{id}` answers `404 {"error":"App not found"}`.
+  An unknown route answers a `404` page or a 301, so all four exist. The
+  success bodies parsed here (`env_vars`, `id`/`activity_id`,
+  `status`/`state`/`result`, `output`/`logs`/`log`) are upstream's assumptions,
+  not observations. A deploy whose webhook returns no id says so and cannot be
+  followed with `checkDeploy`.
+- **Hatchbox's documented API is a different one.** `hatchbox.io/docs` documents
+  `/api/v1/apps/{id}/env_vars`, `POST /api/v1/apps/{id}/deploy` and
+  `GET /api/v1/logs/{id}`, all on the API key. This server keeps upstream's
+  routes because they let the deploy tier run on the deploy key alone. If
+  Hatchbox retires the account-scoped env-var route or the activity route, the
+  documented ones are the move. The deploy webhook is the one Hatchbox's own
+  GitHub Action calls.
+- **The reads return every production secret**, and they are the tier most
+  worth withholding. They are the running state, so a value written with
+  `setEnvVar` is not visible until the next deploy.
+- **The process match is a guess about Hatchbox's puma.** It assumes a master
+  titled `puma <version> (<bind>) [<tag>]`, which is puma's own title, with the
+  app's name somewhere in it. Without `HATCHBOX_APP_NAME`, the oldest master on
+  the server is read, which on a shared server can be another app's. No real
+  Hatchbox `ps` has been seen.
+- **`checkDeploy` holds the deploy key**, which can also deploy, so it is in the
+  deploy tier, and the `-ro` tier cannot follow a deploy.
+- **The `-deploy` and `-ro` tiers are credential-fenced; within a tier the
+  `tools:` policy is the fence.** `-rw` holds all three credentials in one
+  slug's environment.
+
+**Undo.** Move to the documented `/api/v1/apps/{id}` routes if Hatchbox retires
+the old ones, accepting that the deploy tier then needs the API key.

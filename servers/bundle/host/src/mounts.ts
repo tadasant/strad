@@ -343,3 +343,37 @@ export function onePasswordConfirmsWrites(
   if (own === null) return true;
   return env[own]?.trim().toLowerCase() !== "false";
 }
+
+/**
+ * The environment one hatchbox mount reads, cut down so no slug runs on a
+ * sibling's key.
+ *
+ * A Hatchbox slug is a TIER of one app — `-ro` holds the SSH key, `-deploy` the
+ * deploy key, `-rw` all of them — and the slug's credentials ARE the tier: a
+ * read-only slug cannot write because the API key is not in its environment.
+ * The renderer also bakes every slug's `env:` under its bare name, and
+ * `slugEnvView` falls back to the bare name, so on a bundle holding `-ro`
+ * beside `-rw`, the `-ro` view would inherit `-rw`'s bare `HATCHBOX_API_KEY`
+ * and quietly become `-rw`. So a per-slug view reads EVERY hatchbox name under
+ * its own slug's name or not at all.
+ *
+ * The conventional `/hatchbox` mount gets the same rule once any per-slug
+ * sibling exists — every bare hatchbox name on the box is then some sibling's,
+ * so it reads only `HATCHBOX__*`, its own, and is otherwise the degraded
+ * placeholder: a hatchbox slug is served on `path: /<its own slug>`. The
+ * upstream names it REFUSES (`READONLY`, `ALLOW_DEPLOYS`, …) are generic
+ * enough that another server may declare them, so those are read under the
+ * mount's own name only, always.
+ */
+export function hatchboxEnvView(
+  view: Record<string, string | undefined>,
+  slug: string,
+  perSlug: boolean,
+  siblings: readonly string[],
+  names: readonly string[],
+  refused: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const own = perSlug || siblings.length > 0 ? names : refused;
+  for (const name of own) ownNameOnly(view, slug, name, env);
+}
