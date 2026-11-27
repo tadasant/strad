@@ -71,6 +71,13 @@ describe("what the mount needs before it can serve", () => {
     // author, arriving outside the allowlist in src/telemetry/events.ts.
     assert.equal(env.OTEL_EXPORTER_OTLP_ENDPOINT, undefined);
   });
+
+  it("does not hand the child the write opt-in", () => {
+    // It decides the flags the child is started with; mcp-grafana itself has
+    // no use for it, and the allowlist stays an allowlist.
+    const env = upstreamEnv({ ...CONFIGURED, GRAFANA_ALLOW_WRITE: "true" });
+    assert.equal(env.GRAFANA_ALLOW_WRITE, undefined);
+  });
 });
 
 describe("the handlers the host registers", () => {

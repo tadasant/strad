@@ -136,8 +136,9 @@ const EXPECT = {
   // writes. None turns delete protection off or returns a root password; a
   // twenty-ninth tool is the place to check that it still does not.
   hetzner: 28,
-  // GlitchTip: seven reads and no writes — strad's own server. An eighth tool
-  // is a new capability, not a version bump.
+  // GlitchTip: seven reads — strad's own server. The conventional mount never
+  // sets GLITCHTIP_ALLOW_WRITE, so its two writes are not listed here; an
+  // eighth tool is a new capability, not a version bump.
   glitchtip: 7,
   // vendor-billing: four fixed billing reads and nothing else — strad's own.
   // A fifth tool is a new capability, not a version bump.
@@ -157,7 +158,10 @@ const EXPECT = {
   // Grafana's 65 tools minus the 13 the binary's `-disable-write` removes. Not a
   // gateway allow-list: the child process does not contain them. If this number
   // moves, either the pin moved or a flag stopped being passed — and the second
-  // one is a read-only mount quietly becoming read-write.
+  // one is a read-only mount quietly becoming read-write. This is the
+  // conventional `/grafana`, which is never write-enabled here: CI sets no
+  // `GRAFANA__GRAFANA_ALLOW_WRITE`. A slug that opts into writes serves 65, and
+  // `--json` reports whatever it really lists.
   grafana: 52,
   // mcp-victorialogs v1.9.0 serves thirteen tools, every one annotated
   // read-only: LogsQL's query API is all it wraps. Booted here against an

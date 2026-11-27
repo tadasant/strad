@@ -3566,6 +3566,15 @@ have:
   point of asserting a count nobody can predict from the diff.
 - The prose in `docs/servers/grafana.md`, which names the version and the count.
 
+The WRITE surface is not counted at all. A slug whose own
+`<SLUG>__GRAFANA_ALLOW_WRITE` is `true` runs without `-disable-write`, and the 65
+its docs name is the upstream's 52 read tools plus its 13 write tools, not a
+number CI observed: the smoke test boots only the conventional, read-only
+`/grafana`. A release that adds a write tool reaches a write-enabled slug with
+nothing failing. Its `tools:` policy, if it has one, is still checked against
+the names that slug's mount really lists, wherever `smoke.mjs --json` runs
+against a container that mounts it.
+
 **Why.** The alternative to a pinned digest is resolving `latest` at build time,
 which means a rebuild of an old commit produces a different image — the thing
 pinning `op` already exists to prevent. The alternative to baking it at all is
@@ -7992,7 +8001,11 @@ API (`/api/0/`), taking its paths, parameters and response shapes from
 GlitchTip's published OpenAPI (`https://app.glitchtip.com/api/openapi.json`).
 It serves seven reads: `get_organization`, `list_projects`, `get_project`,
 `list_teams`, `list_issues`, `get_issue` (with the latest event and comments)
-and `list_events`.
+and `list_events`. An instance whose own `GLITCHTIP_ALLOW_WRITE` is exactly
+`true` also serves two writes: `update_issue` (`PUT /api/0/issues/{id}/` with
+`{"status": …}`) and `delete_project` (`DELETE
+/api/0/projects/{org}/{project}/`, refused unless `confirm_project_slug`
+repeats `project`).
 
 **Why.** The GlitchTip MCP package on npm, `@karsten684/glitchtip-mcp-server`,
 is AGPL-3.0, and strad does not vendor or link AGPL code (the Messenger bridge
@@ -8016,9 +8029,19 @@ package is to vet.
   cross the internet in cleartext.
 - A result is cut at 60,000 characters. A large latest event in `get_issue` can
   hit that; the cut says so and points at `list_events`.
+- The writes have met only the fake. Their paths, methods and bodies are the
+  OpenAPI's, and their scopes are read from GlitchTip's source rather than the
+  OpenAPI, which declares none: `update_issue` is `event:write` (or
+  `event:admin`) and `delete_project` is `project:admin`, which only an Admin,
+  Manager or Owner of the organization holds. A token's scopes are GlitchTip's
+  to enforce; the switch decides only what this server lists.
+- `delete_project` cannot be undone, and the typed confirmation guards against
+  a wrong argument, not a wrong intent. A slug that must never delete a project
+  leaves the switch off, or denies `delete_project` in its `tools:` policy.
 
 **Undo.** A live run against a real GlitchTip with a read token retires the
-first item. The rest are what the API offers.
+first item, and one with a write token the writes item. The rest are what the
+API offers.
 
 ## 156. WhatsApp `message_received` is cut from the bridge's live feed, and has met only the fake socket
 

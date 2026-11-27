@@ -12,6 +12,11 @@
  *   and in its URL) when
  *   there is another page. This layer fetches exactly the page asked for.
  *
+ *   METHODS are GET for every read, and PUT and DELETE for the two writes a
+ *   slug with `GLITCHTIP_ALLOW_WRITE=true` serves. A write carries a JSON body
+ *   only when it has one, and is never retried here: a timed-out write may
+ *   have landed, so its error says to read before trying again.
+ *
  *   EVERY REQUEST is bounded at 30 s.
  *
  * @see https://app.glitchtip.com/api/openapi.json (GlitchTip's OpenAPI)
@@ -29,8 +34,12 @@ export interface Page<T> {
   nextCursor: string | null;
 }
 
+export type WriteMethod = "PUT" | "DELETE";
+
 export interface GlitchTipClient {
   get<T>(path: string, query?: Record<string, QueryValue>): Promise<Page<T>>;
+  /** A write. `body` is sent as JSON when given; a 204 resolves to `undefined`. */
+  write<T>(method: WriteMethod, path: string, body?: unknown): Promise<T | undefined>;
 }
 
 export class GlitchTipApiError extends Error {
@@ -77,7 +86,7 @@ export function nextCursor(link: string | null): string | null {
   return null;
 }
 
-function advice(status: number): string {
+function advice(status: number, write: boolean): string {
   switch (status) {
     case 401:
       return (
@@ -85,11 +94,14 @@ function advice(status: number): string {
         "creates a new one under Profile -> Auth Tokens. Retrying will not help."
       );
     case 403:
-      return (
-        " The token may not read this. It needs the read scopes (org:read, " +
-        "project:read, team:read, event:read), and its user needs access to " +
-        "the organization or project."
-      );
+      return write
+        ? " The token may not change this. update_issue needs event:write and " +
+            "delete_project needs project:admin, and the token's user needs an " +
+            "organization role that holds that scope (project:admin is Admin " +
+            "and above)."
+        : " The token may not read this. It needs the read scopes (org:read, " +
+            "project:read, team:read, event:read), and its user needs access to " +
+            "the organization or project.";
     case 404:
       return (
         " Nothing with that slug or id exists, or this token's user cannot " +
@@ -98,9 +110,11 @@ function advice(status: number): string {
     case 429:
       return " Rate limited. Wait before calling again.";
     default:
-      return status >= 500
-        ? " GlitchTip is failing on its side; a read is safe to retry shortly."
-        : "";
+      if (status < 500) return "";
+      return write
+        ? " GlitchTip is failing on its side. The write may or may not have " +
+            "landed: read the issue or project before trying again."
+        : " GlitchTip is failing on its side; a read is safe to retry shortly.";
   }
 }
 
@@ -130,72 +144,92 @@ export function createClient(options: CreateClientOptions): GlitchTipClient {
   const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
   const scrub = scrubber(config.apiToken);
 
-  return {
-    async get<T>(path: string, query: Record<string, QueryValue> = {}) {
-      const url = new URL(`${config.baseUrl}${path}`);
-      for (const [key, v] of Object.entries(query)) {
-        if (v === undefined) continue;
-        if (Array.isArray(v)) for (const item of v) url.searchParams.append(key, item);
-        else url.searchParams.set(key, String(v));
-      }
-      const what = `GlitchTip (GET ${path})`;
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      let response: Response;
-      let text: string;
-      try {
-        response = await doFetch(url.toString(), {
-          method: "GET",
-          signal: controller.signal,
-          redirect: "error",
-          headers: {
-            Authorization: `Bearer ${config.apiToken}`,
-            Accept: "application/json",
-          },
-        });
-        text = await response.text();
-      } catch (err) {
-        if (controller.signal.aborted) {
-          throw new GlitchTipApiError(`${what} timed out after ${timeoutMs} ms.`, 0);
-        }
-        // undici reports every transport failure as "fetch failed" and keeps
-        // the reason (DNS, TLS, a refused redirect) on `cause`.
-        const inner = err instanceof Error ? (err as Error & { cause?: unknown }).cause : undefined;
-        const cause =
-          (err instanceof Error ? err.message : String(err)) +
-          (inner instanceof Error ? ` (${inner.message})` : "");
+  async function send(
+    method: "GET" | WriteMethod,
+    path: string,
+    query: Record<string, QueryValue>,
+    body: unknown,
+  ): Promise<{ body: unknown; response: Response }> {
+    const url = new URL(`${config.baseUrl}${path}`);
+    for (const [key, v] of Object.entries(query)) {
+      if (v === undefined) continue;
+      if (Array.isArray(v)) for (const item of v) url.searchParams.append(key, item);
+      else url.searchParams.set(key, String(v));
+    }
+    const write = method !== "GET";
+    const what = `GlitchTip (${method} ${path})`;
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${config.apiToken}`,
+      Accept: "application/json",
+    };
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let response: Response;
+    let text: string;
+    try {
+      response = await doFetch(url.toString(), {
+        method,
+        signal: controller.signal,
+        redirect: "error",
+        headers,
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      });
+      text = await response.text();
+    } catch (err) {
+      if (controller.signal.aborted) {
         throw new GlitchTipApiError(
-          scrub(
-            `${what} failed before any answer: ${cause}. Check that ` +
-              `GLITCHTIP_BASE_URL is the GlitchTip's own URL (a redirect is ` +
-              `refused, so an http:// URL that redirects to https:// fails here).`,
-          ),
+          `${what} timed out after ${timeoutMs} ms.` +
+            (write ? " The write may have landed: read before trying again." : ""),
           0,
         );
-      } finally {
-        clearTimeout(timer);
       }
-
-      if (response.status >= 200 && response.status < 300) {
-        let body: unknown;
-        try {
-          body = text === "" ? undefined : JSON.parse(text);
-        } catch {
-          throw new GlitchTipApiError(
-            `${what} answered ${response.status} with a body that is not JSON; ` +
-              `GLITCHTIP_BASE_URL may point at something other than GlitchTip.`,
-            response.status,
-          );
-        }
-        return { body: body as T, nextCursor: nextCursor(response.headers.get("link")) };
-      }
+      // undici reports every transport failure as "fetch failed" and keeps
+      // the reason (DNS, TLS, a refused redirect) on `cause`.
+      const inner = err instanceof Error ? (err as Error & { cause?: unknown }).cause : undefined;
+      const cause =
+        (err instanceof Error ? err.message : String(err)) +
+        (inner instanceof Error ? ` (${inner.message})` : "");
       throw new GlitchTipApiError(
         scrub(
-          `${what} answered HTTP ${response.status}: ${detail(text) || "no detail"}.` +
-            advice(response.status),
+          `${what} failed before any answer: ${cause}. Check that ` +
+            `GLITCHTIP_BASE_URL is the GlitchTip's own URL (a redirect is ` +
+            `refused, so an http:// URL that redirects to https:// fails here).`,
         ),
-        response.status,
+        0,
       );
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (response.status >= 200 && response.status < 300) {
+      try {
+        return { body: text === "" ? undefined : JSON.parse(text), response };
+      } catch {
+        throw new GlitchTipApiError(
+          `${what} answered ${response.status} with a body that is not JSON; ` +
+            `GLITCHTIP_BASE_URL may point at something other than GlitchTip.`,
+          response.status,
+        );
+      }
+    }
+    throw new GlitchTipApiError(
+      scrub(
+        `${what} answered HTTP ${response.status}: ${detail(text) || "no detail"}.` +
+          advice(response.status, write),
+      ),
+      response.status,
+    );
+  }
+
+  return {
+    async get<T>(path: string, query: Record<string, QueryValue> = {}) {
+      const { body, response } = await send("GET", path, query, undefined);
+      return { body: body as T, nextCursor: nextCursor(response.headers.get("link")) };
+    },
+    async write<T>(method: WriteMethod, path: string, body?: unknown) {
+      const answer = await send(method, path, {}, body);
+      return answer.body as T | undefined;
     },
   };
 }

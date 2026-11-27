@@ -4,11 +4,16 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { createClient, GlitchTipApiError, scrubber } from "./client.js";
-import { ConfigError, loadConfig, missingCredentials } from "./config.js";
-import { InputError, TOOLS } from "./tools.js";
+import { ConfigError, loadConfig, missingCredentials, writeAllowed } from "./config.js";
+import { InputError, TOOLS, WRITE_TOOLS } from "./tools.js";
 
 /**
- * The mount: seven read-only tools over one GlitchTip.
+ * The mount: seven read-only tools over one GlitchTip, and two writes when the
+ * environment it was given sets `GLITCHTIP_ALLOW_WRITE` to exactly `true`.
+ *
+ * THE SWITCH DECIDES THE SURFACE, not just the call. With it off, the write
+ * tools are not listed and a call to one is an unknown tool, so a read-only
+ * slug is the same seven tools it would be without this code.
  *
  * CREDENTIALS ARE READ PER CALL from the environment this server was GIVEN —
  * one slug's view in the strad bundle — never from a global. `tools/list` needs
@@ -51,9 +56,10 @@ function render(value: unknown, scrub: (text: string) => string): string {
 
 export function createMCPServer(options: CreateMCPServerOptions) {
   const env = options.env ?? process.env;
+  const tools = writeAllowed(env) ? [...TOOLS, ...WRITE_TOOLS] : TOOLS;
 
   const call = async (name: string, args: Record<string, unknown>) => {
-    const tool = TOOLS.find((t) => t.name === name);
+    const tool = tools.find((t) => t.name === name);
     if (!tool) {
       return { content: [{ type: "text" as const, text: `Unknown tool: ${name}` }], isError: true };
     }
@@ -87,11 +93,11 @@ export function createMCPServer(options: CreateMCPServerOptions) {
     registerHandlers: async (server: unknown): Promise<void> => {
       const s = server as ServerLike;
       s.setRequestHandler(ListToolsRequestSchema, async () => ({
-        tools: TOOLS.map((t) => ({
+        tools: tools.map((t) => ({
           name: t.name,
           description: t.description,
           inputSchema: t.inputSchema,
-          annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+          annotations: t.annotations,
         })),
       }));
       s.setRequestHandler(

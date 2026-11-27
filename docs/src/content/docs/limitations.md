@@ -2688,6 +2688,12 @@ mismatch fails the build, which is the good case), the tool count in the bundle
 smoke test if the release changed the read surface (that one fails CI), and the
 prose on [Grafana](/servers/grafana/), which names both.
 
+**The write surface is not counted.** A
+[write-enabled slug](/servers/grafana/#a-write-enabled-slug) serves Grafana's 13
+write tools beside the 52 reads, and that 65 is not asserted anywhere: CI boots
+only the read-only `/grafana`. A release that adds a write tool reaches a
+write-enabled slug without failing anything.
+
 **This is stronger than what it replaced, not weaker.** The client-side bootstrap
 compared the tarball against a `checksums.txt` fetched from the same server —
 which detects a corrupted download and nothing else. A digest in the repo is
@@ -4846,6 +4852,13 @@ is AGPL-3.0.
 - **The URL must be https** unless the host is loopback, private, `.internal`
   or `.local`.
 - **A result is cut at 60,000 characters**, and says so.
+- **The two writes have met only the fake.** `update_issue` and
+  `delete_project` are listed only on a slug whose own
+  `GLITCHTIP_ALLOW_WRITE` is `true`. Their scopes (`event:write`,
+  `project:admin`) come from GlitchTip's source, because its OpenAPI declares
+  none.
+- **`delete_project` is irreversible.** Its typed confirmation catches a wrong
+  argument, not a wrong intent.
 
 See `HACKS.md` #155.
 

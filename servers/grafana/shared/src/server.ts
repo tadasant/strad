@@ -15,7 +15,7 @@ import { GrafanaUpstream, type UpstreamOptions } from "./upstream.js";
  * deliberately, which is the right default for a surface strad does not author.
  *
  * THE TOOL LIST IS THE CHILD'S, NOT A COPY OF IT. Nothing in this repo restates
- * Grafana's 52 tool definitions: they are read from the running binary on every
+ * Grafana's tool definitions: they are read from the running binary on every
  * `tools/list`. A pinned copy would be a second source of truth that goes stale
  * silently at the next version bump, and the version bump is the one moment
  * anybody would have believed the copy.

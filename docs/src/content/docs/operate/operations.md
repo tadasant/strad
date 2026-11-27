@@ -189,7 +189,9 @@ failure:
     it — plus the cache bounds a shared container needs and a stdio subprocess
     did not.
   - **`glitchtip`** — tests. strad's own GlitchTip server, against a fake
-    GlitchTip: the seven reads, the token sent only to the configured origin
+    GlitchTip: the seven reads, the two writes listed only under
+    `GLITCHTIP_ALLOW_WRITE=true` and `delete_project`'s typed confirmation,
+    the token sent only to the configured origin
     with no redirect followed and over https unless the host is private, slugs
     and issue ids that cannot splice another path, and the token scrubbed from
     every result.
@@ -209,7 +211,8 @@ failure:
     binary. Its suite runs against a fake MCP child rather than the real
     executable, and pins the seam: that the child is spawned with
     `-disable-write` and `-disable-proxied` (a read-only mount becoming
-    read-write is silent otherwise), that it receives an allowlisted environment
+    read-write is silent otherwise), that only an exact `GRAFANA_ALLOW_WRITE=true`
+    drops `-disable-write` and nothing ever drops `-disable-proxied`, that it receives an allowlisted environment
     rather than the bundle's twenty other credentials, that tools and results are
     forwarded verbatim, and that a child which dies is replaced on the next call.
     The binary's own tool count is asserted by `bundle_image`, against the real

@@ -265,7 +265,7 @@ not a confession.
 | `servers/glitchtip/**` — a tool, the path guard, the https rule, the result cap                                                      | `servers/glitchtip.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                       |
 | `servers/vendor-billing/**` — a tool, a vendor request, the scrubber, the table-identifier patterns                                  | `servers/vendor-billing.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                  |
 | `servers/postgres/**` — a tool, the statement guard, the read-only transaction, the TLS rule, a cap                                  | `servers/postgres.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                        |
-| `servers/grafana/**` — the pinned version, the read-only flags, the env allowlist                                                    | `servers/grafana.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                         |
+| `servers/grafana/**` — the pinned version, the read-only flags and write opt-in, the env allowlist                                   | `servers/grafana.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                         |
 | `servers/victorialogs/**` — the pinned version, the env allowlist, the unconfigured placeholder                                      | `servers/victorialogs.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                                                                                    |
 | `servers/good-eggs/**` — the basket read, a cart tool, what a result may claim                                                       | `limitations.md`, and `servers/good-eggs/FORK.md`                                                                                                                                    |
 | `servers/strad-fetch/**` — a strategy, the cache bounds, an env name, the tool                                                       | `servers/strad-fetch.md`, `limitations.md`, and `servers/strad-fetch/FORK.md`                                                                                                        |
@@ -458,9 +458,11 @@ slop behind when you fix a stale fact.
   `HACKS.md` #153.
 - `servers/glitchtip/` — strad's own GlitchTip server: seven reads (the
   organization, projects, teams, issues, one issue with its latest event,
-  events) over the Sentry-compatible `/api/0/`, and nothing that writes. One
-  slug is one GlitchTip — `GLITCHTIP_BASE_URL` plus a token, both required for
-  a per-slug instance. Written, not vendored: the AGPL-3.0
+  events) over the Sentry-compatible `/api/0/`. Two writes, `update_issue`
+  (an issue's status) and `delete_project` (typed confirmation), are listed
+  only when the slug's OWN `<SLUG>__GLITCHTIP_ALLOW_WRITE` is exactly `true`;
+  a bare or sibling's switch opens nothing. One slug is one GlitchTip —
+  `GLITCHTIP_BASE_URL` plus a token, both required for a per-slug instance. Written, not vendored: the AGPL-3.0
   `@karsten684/glitchtip-mcp-server` is not something strad links.
   `HACKS.md` #155.
 - `servers/vendor-billing/` — strad's own billing reads for a cost-collection

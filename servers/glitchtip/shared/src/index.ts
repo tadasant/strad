@@ -6,6 +6,7 @@ export {
   isPrivateHost,
   loadConfig,
   missingCredentials,
+  writeAllowed,
   type GlitchTipConfig,
 } from "./config.js";
 export {
@@ -16,6 +17,14 @@ export {
   scrubber,
   type GlitchTipClient,
   type Page,
+  type WriteMethod,
 } from "./client.js";
-export { InputError, TOOL_NAMES, TOOLS, type ToolDefinition } from "./tools.js";
+export {
+  InputError,
+  TOOL_NAMES,
+  TOOLS,
+  WRITE_TOOL_NAMES,
+  WRITE_TOOLS,
+  type ToolDefinition,
+} from "./tools.js";
 export { createMCPServer, MAX_RESULT_CHARS, type CreateMCPServerOptions } from "./server.js";

@@ -50,7 +50,8 @@ server config carries a `tools:` allow/deny policy that strad enforces on
 the same path in this one container.
 
 `grafana` is the one exception, and it is deliberate: its child process runs with
-`-disable-write`, so the 13 write tools are not in it to withhold. See below.
+`-disable-write` by default, so the 13 write tools are not in it to withhold. A
+slug that needs them opts in under its own name. See below.
 `victorialogs` is read-only for a plainer reason: it has no write tool.
 mcp-victorialogs wraps LogsQL's query API and nothing else.
 
@@ -101,7 +102,7 @@ twenty-nine different places:
 | `flightaware` | `servers/flightaware` | flightaware (FlightAware AeroAPI v4 flight and airport data, read-only) |
 | `digitalocean` | `servers/digitalocean` | digitalocean (droplets, App Platform apps, managed databases) |
 | `hetzner` | `servers/hetzner` | hetzner (Hetzner Cloud servers, power, metrics, firewalls, volumes; strad's own — Hetzner publishes no MCP server) |
-| `glitchtip` | `servers/glitchtip` | glitchtip (GlitchTip issues, events, projects and teams, read-only; strad's own, over the Sentry-compatible API) |
+| `glitchtip` | `servers/glitchtip` | glitchtip (GlitchTip issues, events, projects and teams, read-only unless a slug sets `<SLUG>__GLITCHTIP_ALLOW_WRITE=true`; strad's own, over the Sentry-compatible API) |
 | `vendor-billing` | `servers/vendor-billing` | vendor-billing (fixed billing reads: OpenRouter credits and key usage, OpenAI costs, a GCP billing export's month to date; strad's own) |
 | `postgres` | `servers/postgres` | postgres (one Postgres database: schemas, tables, one read-only statement; strad's own, over node-postgres) |
 | `image-tools` | `servers/image-tools` | image-diff, svg-tracer (compare two images; trace a bitmap to SVG — inputs are URLs) |
@@ -156,7 +157,13 @@ external MCP servers whose tools `-disable-write` does not constrain, and whose
 names change under a mount that is supposed to enumerate 52). A gateway policy
 can only ever *withhold* a tool; this is the stronger claim, and for a fleet's
 observability control plane it is worth the exception. Writes are added by
-adding a second mount, never by loosening this one.
+adding a second mount, never by loosening this one: a separate slug whose own
+`<SLUG>__GRAFANA_ALLOW_WRITE` is exactly `true` runs its child without
+`-disable-write` (65 tools) and still with `-disable-proxied`. The opt-in is read
+under that slug's own name only, so a bare `GRAFANA_ALLOW_WRITE` or a sibling's
+value never makes another mount writable, and it is not passed to the child. A
+store-served instance reads it from the container, not from its namespace, so
+writes there are a deploy-time decision too.
 
 **One child per slug.** A Grafana service-account token is one Grafana, so
 `grafana-registry` (the MCP Registry's cluster) and a future `grafana`

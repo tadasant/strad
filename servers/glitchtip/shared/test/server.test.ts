@@ -15,6 +15,7 @@ import {
   missingCredentials,
   nextCursor,
   TOOL_NAMES,
+  WRITE_TOOL_NAMES,
 } from "../src/index.js";
 
 const BASE = "https://glitchtip.example.com";
@@ -30,7 +31,7 @@ interface Seen {
   init: RequestInit;
 }
 
-type Route = (url: URL) => { status?: number; body: unknown; link?: string };
+type Route = (url: URL, init: RequestInit) => { status?: number; body: unknown; link?: string };
 
 function fakeGlitchTip(routes: Record<string, Route>) {
   const seen: Seen[] = [];
@@ -39,7 +40,8 @@ function fakeGlitchTip(routes: Record<string, Route>) {
     seen.push({ url, init: init ?? {} });
     const route = routes[url.pathname];
     if (!route) return new Response(JSON.stringify({ detail: "Not Found" }), { status: 404 });
-    const r = route(url);
+    const r = route(url, init ?? {});
+    if (r.status === 204) return new Response(null, { status: 204 });
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (r.link) headers.link = r.link;
     return new Response(typeof r.body === "string" ? r.body : JSON.stringify(r.body), {
@@ -444,5 +446,133 @@ describe("nextCursor", () => {
     expect(nextCursor(`<${BASE}/api/0/x/?cursor=0:50:0>; rel="next"; results="true"`)).toBe("0:50:0");
     // Attribute order and spacing do not matter.
     expect(nextCursor(`<${BASE}/x/>;results="true";  rel="next";cursor="c1"`)).toBe("c1");
+  });
+});
+
+describe("the write tier", () => {
+  const RW = { ...ENV, GLITCHTIP_ALLOW_WRITE: "true" };
+  const WRITE_ROUTES: Record<string, Route> = {
+    ...ROUTES,
+    "/api/0/issues/42/": (_url, init) =>
+      init.method === "PUT"
+        ? { body: { ...ISSUE, status: JSON.parse(String(init.body)).status } }
+        : { body: ISSUE },
+    "/api/0/projects/acme/web/": (_url, init) =>
+      init.method === "DELETE" ? { status: 204, body: null } : { body: { id: "5", slug: "web" } },
+  };
+
+  it.each([undefined, "false", "TRUE", "1", "yes", " true", ""])(
+    "GLITCHTIP_ALLOW_WRITE=%j lists the seven reads, and a write is an unknown tool",
+    async (value) => {
+      const { client, seen } = await connect({ ...ENV, GLITCHTIP_ALLOW_WRITE: value }, WRITE_ROUTES);
+      const { tools } = await client.listTools();
+      expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES]);
+      for (const name of WRITE_TOOL_NAMES) {
+        const { result, text } = await call(client, name, {
+          issue_id: 42,
+          status: "resolved",
+          project: "web",
+          confirm_project_slug: "web",
+        });
+        expect(result.isError).toBe(true);
+        expect(text).toContain("Unknown tool");
+      }
+      expect(seen).toHaveLength(0);
+    },
+  );
+
+  it("GLITCHTIP_ALLOW_WRITE=true adds update_issue and delete_project, annotated as writes", async () => {
+    const { client } = await connect(RW, WRITE_ROUTES);
+    const { tools } = await client.listTools();
+    expect(tools).toHaveLength(9);
+    expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES, "update_issue", "delete_project"]);
+    const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
+    expect(byName.update_issue.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false });
+    expect(byName.delete_project.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    expect(byName.delete_project.description).toContain("IRREVERSIBLE");
+    for (const name of TOOL_NAMES) expect(byName[name].annotations?.readOnlyHint).toBe(true);
+  });
+
+  it("update_issue PUTs only the status to /api/0/issues/{id}/", async () => {
+    const { client, seen } = await connect(RW, WRITE_ROUTES);
+    const { result, json } = await call(client, "update_issue", { issue_id: 42, status: "resolved" });
+    expect(result.isError).toBeFalsy();
+    expect(seen).toHaveLength(1);
+    expect(seen[0].url.href).toBe(`${BASE}/api/0/issues/42/`);
+    expect(seen[0].init.method).toBe("PUT");
+    expect(seen[0].init.redirect).toBe("error");
+    expect(JSON.parse(String(seen[0].init.body))).toEqual({ status: "resolved" });
+    const headers = seen[0].init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(headers["Content-Type"]).toBe("application/json");
+    expect(json).toMatchObject({ updated: true, issue: { id: "42", status: "resolved", project: "web" } });
+  });
+
+  it.each([
+    [{ issue_id: 42, status: "muted" }],
+    [{ issue_id: 42 }],
+    [{ issue_id: "WEB-7", status: "resolved" }],
+    [{ issue_id: "42/../43", status: "resolved" }],
+  ])("update_issue %j is refused before anything is sent", async (args) => {
+    const { client, seen } = await connect(RW, WRITE_ROUTES);
+    const { result } = await call(client, "update_issue", args);
+    expect(result.isError).toBe(true);
+    expect(seen).toHaveLength(0);
+  });
+
+  it("delete_project DELETEs /api/0/projects/{org}/{project}/ with no body", async () => {
+    const { client, seen } = await connect(RW, WRITE_ROUTES);
+    const { result, json } = await call(client, "delete_project", {
+      project: "web",
+      confirm_project_slug: "web",
+    });
+    expect(result.isError).toBeFalsy();
+    expect(seen).toHaveLength(1);
+    expect(seen[0].url.href).toBe(`${BASE}/api/0/projects/acme/web/`);
+    expect(seen[0].init.method).toBe("DELETE");
+    expect(seen[0].init.redirect).toBe("error");
+    expect(seen[0].init.body).toBeUndefined();
+    expect(json).toEqual({ deleted: true, organization: "acme", project: "web" });
+  });
+
+  it.each([
+    [{ project: "web", confirm_project_slug: "Web" }],
+    [{ project: "web", confirm_project_slug: "web " }],
+    [{ project: "web", confirm_project_slug: "" }],
+    [{ project: "web" }],
+    [{ project: "../x", confirm_project_slug: "../x" }],
+  ])("delete_project %j is refused, and nothing is sent", async (args) => {
+    const { client, seen } = await connect(RW, WRITE_ROUTES);
+    const { result } = await call(client, "delete_project", args);
+    expect(result.isError).toBe(true);
+    expect(seen).toHaveLength(0);
+  });
+
+  it("a mismatched confirmation says the delete was refused", async () => {
+    const { client } = await connect(RW, WRITE_ROUTES);
+    const { text } = await call(client, "delete_project", { project: "web", confirm_project_slug: "api" });
+    expect(text).toContain("Refused");
+    expect(text).toContain("irreversible");
+  });
+
+  it("a 403 on a write names the write scope, and the token is scrubbed", async () => {
+    const { client } = await connect(RW, {
+      "/api/0/issues/42/": () => ({ status: 403, body: { detail: `no scope for ${TOKEN}` } }),
+    });
+    const { result, text } = await call(client, "update_issue", { issue_id: 42, status: "ignored" });
+    expect(result.isError).toBe(true);
+    expect(text).toContain("PUT /api/0/issues/42/");
+    expect(text).toContain("event:write");
+    expect(text).not.toContain(TOKEN);
+  });
+
+  it("a 5xx on a write does not call it safe to retry", async () => {
+    const { client } = await connect(RW, {
+      "/api/0/projects/acme/web/": () => ({ status: 502, body: "bad gateway" }),
+    });
+    const { text } = await call(client, "delete_project", { project: "web", confirm_project_slug: "web" });
+    expect(text).toContain("HTTP 502");
+    expect(text).toContain("may or may not have landed");
+    expect(text).not.toContain("safe to retry");
   });
 });

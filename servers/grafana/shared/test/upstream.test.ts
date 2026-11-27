@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, it } from "vitest";
 
-import { GrafanaUpstream, READ_ONLY_ARGS } from "../src/index.js";
+import {
+  GrafanaUpstream,
+  READ_ONLY_ARGS,
+  READ_WRITE_ARGS,
+  upstreamArgs,
+} from "../src/index.js";
 
 const FAKE = fileURLToPath(new URL("./fake-mcp-grafana.mjs", import.meta.url));
 
@@ -55,6 +60,35 @@ describe("the mcp-grafana child", () => {
     assert.deepEqual(flags, [...READ_ONLY_ARGS]);
     assert.ok(flags.includes("-disable-write"));
     assert.ok(flags.includes("-disable-proxied"));
+  });
+
+  it("is started without -disable-write, and still with -disable-proxied, when the view opts in", async () => {
+    const logged = [];
+    const instance = upstream({
+      env: { ...CONTAINER_ENV, GRAFANA_ALLOW_WRITE: "true" },
+      log: (line) => logged.push(line),
+    });
+    const { flags, env } = await callJson(instance, "echo_process");
+
+    assert.deepEqual(flags, [...READ_WRITE_ARGS]);
+    assert.ok(!flags.includes("-disable-write"));
+    // Opting into Grafana's own writes is not opting into tools a datasource
+    // advertises: those stay off on every mount.
+    assert.ok(flags.includes("-disable-proxied"));
+    assert.equal(instance.writeEnabled, true);
+    // A switch on how strad starts the binary, not something the binary reads.
+    assert.equal(env.GRAFANA_ALLOW_WRITE, undefined);
+    // The boot line says so, rather than leaving it to a reading of the flags.
+    assert.ok(logged.some((line) => /mcp-grafana up, WRITE-ENABLED/.test(line)));
+  });
+
+  it("logs a read-only mount as read-only", async () => {
+    const logged = [];
+    const instance = upstream({ log: (line) => logged.push(line) });
+    await instance.listTools();
+
+    assert.equal(instance.writeEnabled, false);
+    assert.ok(logged.some((line) => /mcp-grafana up, read-only \(.*-disable-write/.test(line)));
   });
 
   it("gets the Grafana credential and NOT the rest of the container's", async () => {
@@ -150,5 +184,43 @@ describe("the mcp-grafana child", () => {
     await instance.close();
 
     await assert.rejects(() => instance.listTools(), /closed/);
+  });
+});
+
+describe("upstreamArgs", () => {
+  it("is read-only by default", () => {
+    assert.deepEqual(upstreamArgs(CONTAINER_ENV), [...READ_ONLY_ARGS]);
+    assert.deepEqual(upstreamArgs({}), [...READ_ONLY_ARGS]);
+  });
+
+  it("drops -disable-write and nothing else for exactly `true`", () => {
+    const args = upstreamArgs({ GRAFANA_ALLOW_WRITE: "true" });
+    assert.deepEqual(
+      args,
+      READ_ONLY_ARGS.filter((flag) => flag !== "-disable-write"),
+    );
+  });
+
+  it("keeps -disable-proxied in every mode", () => {
+    for (const value of [undefined, "", "true", "false", "1"]) {
+      assert.ok(upstreamArgs({ GRAFANA_ALLOW_WRITE: value }).includes("-disable-proxied"));
+    }
+  });
+
+  it("stays read-only for anything that is not exactly `true`", () => {
+    // A looser parse is a read-only mount one typo away from writing.
+    for (const value of ["", "false", "1", "yes", "TRUE", "True", " true", "true "]) {
+      assert.deepEqual(upstreamArgs({ GRAFANA_ALLOW_WRITE: value }), [...READ_ONLY_ARGS]);
+    }
+  });
+
+  it("does not read a slug-prefixed name itself — resolving that is the host's job", () => {
+    // The host lays a slug's own `<SLUG>__GRAFANA_ALLOW_WRITE` onto the bare
+    // name in the view it hands this tree. A prefixed name that reached the view
+    // unresolved — a sibling's, say — must not count.
+    assert.deepEqual(
+      upstreamArgs({ GRAFANA_OTHER_RW__GRAFANA_ALLOW_WRITE: "true" }),
+      [...READ_ONLY_ARGS],
+    );
   });
 });

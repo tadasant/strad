@@ -35,6 +35,20 @@ export const GRAFANA_SERVICE_ACCOUNT_TOKEN = "GRAFANA_SERVICE_ACCOUNT_TOKEN";
 export const GRAFANA_ORG_ID = "GRAFANA_ORG_ID";
 
 /**
+ * The write opt-in. Exactly `true` starts the child without `-disable-write`;
+ * any other value, and absence, keeps it read-only. See `upstreamArgs` in
+ * upstream.ts.
+ *
+ * NEVER PASSED TO THE CHILD: it is a switch on how strad starts the binary,
+ * not something mcp-grafana reads, so it is not in the allowlist below. And it
+ * is per slug with no fallback — the bundle host resolves it from the slug's
+ * own `<SLUG>__GRAFANA_ALLOW_WRITE` and nothing else, so a bare value or a
+ * sibling's never widens another mount. This tree reads whatever the view it is
+ * handed holds; keeping that view honest is the host's half.
+ */
+export const GRAFANA_ALLOW_WRITE = "GRAFANA_ALLOW_WRITE";
+
+/**
  * The variables that MAKE an instance of this server.
  *
  * The bundle host hands this list to `slugsWithPrefixedNames`, which mounts a
@@ -68,6 +82,11 @@ const GRAFANA_PASSTHROUGH = [
 ] as const;
 
 export type Env = Readonly<Record<string, string | undefined>>;
+
+/** Whether this view opts the mount into writes: exactly `"true"`, nothing looser. */
+export function writeEnabled(env: Env): boolean {
+  return env[GRAFANA_ALLOW_WRITE] === "true";
+}
 
 /**
  * Which of this server's required variables are absent.
