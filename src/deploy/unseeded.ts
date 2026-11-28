@@ -145,7 +145,7 @@ export function waivedNames(config: StradConfig): Map<string, string[]> {
  *
  * The batch form of `waivedBy`. Both the registry and the console ask this per
  * server over the whole config, and `waivedBy` recomputes the reference map each
- * time — cheap at 39 servers and quadratic in principle, which is not a shape to
+ * time — cheap at 40 servers and quadratic in principle, which is not a shape to
  * leave on a page render.
  */
 export function waiversBySlug(config: StradConfig): Map<string, Set<string>> {

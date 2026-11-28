@@ -615,12 +615,12 @@ nothing warns beforehand. Publishing the OAuth app removes the expiry.
 
 ## The deployment
 
-### 24. Thirty-nine servers share one process and one CPU
+### 24. Forty servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts thirty-nine MCP servers,
+The `bundle` component runs one Node process that mounts forty MCP servers,
 launches one shared Chromium and supervises an `mcp-grafana` and an
 `mcp-victorialogs` child process per mount that uses one, on
-`apps-s-1vcpu-2gb`. A crash in the host takes all thirty-nine down together, and
+`apps-s-1vcpu-2gb`. A crash in the host takes all forty down together, and
 Chromium contends with every other server for the single vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -1011,7 +1011,7 @@ a store-wide read.
 keeps a listed parameter current in a supplementary container's environment
 without a redeploy. It cannot make the MCP server inside that container **look**
 at the new value — that is a property of the upstream, and the bundle image runs
-thirty-nine of them, most written by other people.
+forty of them, most written by other people.
 
 `strad-fetch` builds its scraping clients inside a factory the host invokes per
 request, so a rotated key is used by the next tool call; that is the case the
@@ -2618,7 +2618,7 @@ leak. Nothing in the cache is a credential; it is public pages someone fetched.
 
 **What the fork DID bound is the memory.** Upstream's store grows for the life of
 the process, which is fine for a subprocess the OS reclaims and an out-of-memory
-kill in a container that hosts thirty-nine mounts. The cache is LRU-bounded on both
+kill in a container that hosts forty mounts. The cache is LRU-bounded on both
 entry count and bytes, and the filesystem backend is gone (App Platform gives the
 container no persistent volume, so it was memory with extra steps).
 
@@ -3930,14 +3930,15 @@ See `HACKS.md` #123.
 
 ---
 
-### 124. google-drive runs only on its own, and has met only fakes
+### 124. google-drive has met only fakes
 
 `images/bundle-google/vendor/google-drive-shared` is a Google Drive MCP server
 in three tiers: three read tools on `drive.readonly`, `create_folder` and
 `create_file` on `drive.file`, and five tools that rename, move, copy, trash
-and restore existing files on the full `drive` scope. No strad slug mounts
-it. You run it [on its own](/servers/standalone/), over stdio or on a localhost
-port, with one Google account's OAuth refresh token.
+and restore existing files on the full `drive` scope. The bundle mounts one
+instance per slug with an `oauth:` connector
+([connectors](/operate/connectors/)), and it also runs
+[on its own](/servers/standalone/), over stdio or on a localhost port.
 
 - **No request has reached Google.** Its tests fake the network. Three things
   are still unverified: the Markdown a Doc exports as, how Drive refuses a
@@ -3984,11 +3985,12 @@ personal `@gmail.com` calendar. The setup is in
   their opening words. If upstream rewords them, the OAuth mode shows the
   service-account advice, and a token Google rejected early is reused until it
   expires.
-- **The refresh token is yours to mint and replace.** gmail and google-docs
-  get theirs from the console's Connect Google button. Calendar has no such
-  flow, so you run the consent yourself and set the token as a secret, and
-  again whenever Google revokes it. A consent screen still in Testing mode
-  revokes it every 7 days.
+- **Only a per-slug slug gets the Connect Google button.** A slug on its own
+  path with an `oauth:` connector gets its token from the console, as gmail
+  and google-docs do. The conventional `/google-calendar` mount switched to
+  `oauth` by a bare variable does not: you run the consent yourself, set the
+  token as a secret, and do it again whenever Google revokes it. A consent
+  screen still in Testing mode revokes it every 7 days.
 - **A mistyped mode boots inside strad.** The standalone server refuses to
   start on one. In a bundle the server starts, and every call fails naming the
   variable.

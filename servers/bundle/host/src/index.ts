@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * bundle — THE strad supplementary image. All 39 MCP servers (39
+ * bundle — THE strad supplementary image. All 40 MCP servers (40
  * mounts, see `buildMounts`), one container, one process, one Chromium, and one
  * mcp-grafana and one mcp-victorialogs child per mount that uses them. The
  * gateway's config names more SLUGS than that — 45 supplementary-image entries
@@ -11,19 +11,20 @@
  * is named by none BY DESIGN: every SSH host is its own store-served instance
  * at `/_instance/ssh/{slug}`, and the conventional mount is the degraded one.
  *
- * THIRTY-NINE IS THE FLOOR, not a constant. Eleven trees (telegram,
- * remote-filesystem, google-sheets, gmail, google-docs, grafana, victorialogs,
- * glitchtip, postgres, hatchbox, onepassword) mount ONE INSTANCE PER SLUG the environment carries
+ * FORTY IS THE FLOOR, not a constant. Thirteen trees (telegram,
+ * remote-filesystem, google-sheets, google-drive, google-calendar, gmail,
+ * google-docs, grafana, victorialogs, glitchtip, postgres, hatchbox,
+ * onepassword) mount ONE INSTANCE PER SLUG the environment carries
  * per-slug values for — see
  * `extraSlugs` — so a container told about `telegram-ro` and `telegram-rw`
  * separately serves /telegram, /telegram-ro and /telegram-rw. google-sheets,
- * gmail, google-docs, grafana, victorialogs, glitchtip, postgres, hatchbox and onepassword are
+ * google-drive, google-calendar, gmail, google-docs, grafana, victorialogs, glitchtip, postgres, hatchbox and onepassword are
  * the cases a real deployment uses: an OAuth refresh token IS one Google account,
  * a service-account token IS one Grafana, an entrypoint IS one VictoriaLogs,
  * a URL and token IS one GlitchTip, a database URI IS one Postgres database, an app id IS one Hatchbox app (one slug per tier), and a 1Password service-account token
  * IS one 1Password account at one vault scope, so each extra account is another
  * mount here. The conventional path is always mounted, so a config that asks for
- * none of this sees exactly the thirty-nine it saw before.
+ * none of this sees exactly the forty it saw before.
  *
  * STORE-SERVED INSTANCES are the other way in, and the one that needs no deploy.
  * A strad server on `path: /_instance/{tree}/{slug}` puts nothing on this
@@ -67,8 +68,8 @@
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
  *
- * BLAST RADIUS, honestly. Thirty-nine servers share a process. A crash is
- * a 39-server outage, not a 1-server outage. Everything below that CAN be made
+ * BLAST RADIUS, honestly. Forty servers share a process. A crash is
+ * a 40-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
  * catastrophic here); a dead Chromium is relaunched on next use; an unhandled
@@ -437,7 +438,7 @@ async function buildMounts(): Promise<Mount[]> {
   mounts.push(...(await loadImageTools()));
   mounts.push(await loadNutritionFacts());
 
-  // --- bundle-google: gmail / calendar / docs / sheets ------------------------
+  // --- bundle-google: gmail / calendar / docs / sheets / drive ----------------
   // calendar builds its server per request. Its service-account client is built
   // per call; its `GOOGLE_CALENDAR_AUTH_MODE=oauth` client is cached per
   // credential inside the tree, which reads `process.env`, so this host passes
@@ -465,6 +466,13 @@ async function buildMounts(): Promise<Mount[]> {
   ))
     deferred.push({ slug, load: async () => loadGmail(google.gmail, slug, true) });
 
+  // google-calendar: the conventional mount, exactly as it always was — the
+  // vendored factory, reading `process.env`, in whichever mode the bare
+  // `GOOGLE_CALENDAR_AUTH_MODE` names — plus one mount per Google account an
+  // `oauth:` connector seeds an OAuth client for. Discovered on the app pair,
+  // for the reason spelled out over google-sheets below. A connector's
+  // variables are baked under per-slug names only (src/deploy/appspec.ts), so
+  // a discovered slug adds nothing the conventional mount reads.
   mounts.push({
     slug: "google-calendar",
     tree: "bundle-google",
@@ -474,6 +482,14 @@ async function buildMounts(): Promise<Mount[]> {
       await google.calendar({ version: VERSION }).registerHandlers(s);
     },
   });
+  for (const slug of extraSlugs(
+    "google-calendar",
+    google.calendarLayer.GOOGLE_CALENDAR_OAUTH_APP_ENV_NAMES,
+  ))
+    deferred.push({
+      slug,
+      load: async () => loadGoogleCalendar(google.calendarLayer, slug),
+    });
 
   // google-docs has gmail's shape exactly: two auth modes, a conventional
   // service-account mount the `google-docs-ro` / `-rw` / `-rw-external` slugs
@@ -509,6 +525,19 @@ async function buildMounts(): Promise<Mount[]> {
     deferred.push({
       slug,
       load: async () => loadGoogleSheets(google.sheets, slug, true),
+    });
+
+  // google-drive is google-sheets' shape exactly: OAuth only, one account per
+  // mount, a conventional path that is degraded until something gives it a
+  // credential, and one mount per slug that carries an OAuth client.
+  mounts.push(loadGoogleDrive(google.drive, "google-drive", false));
+  for (const slug of extraSlugs(
+    "google-drive",
+    google.drive.GOOGLE_DRIVE_OAUTH_APP_ENV_NAMES,
+  ))
+    deferred.push({
+      slug,
+      load: async () => loadGoogleDrive(google.drive, slug, true),
     });
 
   // --- secrets --------------------------------------------------------------
@@ -805,6 +834,35 @@ interface GoogleDocsModule {
   GOOGLE_DOCS_OAUTH_APP_ENV_NAMES: readonly string[];
 }
 
+/**
+ * strad's own layer over the vendored google-calendar tree
+ * (`images/bundle-google/src/calendar.ts`): the injected env, the forced
+ * `oauth` mode, and the name lists per-slug discovery keys on. Only the
+ * DISCOVERED mounts go through it; the conventional mount keeps the vendored
+ * factory it has always had.
+ */
+interface GoogleCalendarModule {
+  createMCPServer: Factory;
+  missingCredentials: (env: Record<string, string | undefined>) => string[];
+  perSlugEnv: (
+    env: Record<string, string | undefined>,
+  ) => Record<string, string | undefined>;
+  /** Both modes' variables and the mode selector — what the marker pair is subtracted from. */
+  GOOGLE_CALENDAR_ENV_NAMES: readonly string[];
+  /** The OAuth app pair, and the marker set per-slug discovery keys on. */
+  GOOGLE_CALENDAR_OAUTH_APP_ENV_NAMES: readonly string[];
+}
+
+/** The google-drive tree, which is strad's own and already takes an injected env. */
+interface GoogleDriveModule {
+  createMCPServer: Factory;
+  missingCredentials: (env: Record<string, string | undefined>) => string[];
+  /** The variables ONE account's credential is made of. */
+  GOOGLE_DRIVE_ENV_NAMES: readonly string[];
+  /** The OAuth app pair, and the marker set per-slug discovery keys on. */
+  GOOGLE_DRIVE_OAUTH_APP_ENV_NAMES: readonly string[];
+}
+
 interface GoogleSheetsModule {
   createMCPServer: Factory;
   missingCredentials: (env: Record<string, string | undefined>) => string[];
@@ -1063,8 +1121,10 @@ function supervisedBinaryMount(
 interface GoogleTree {
   gmail: GmailModule;
   calendar: Factory;
+  calendarLayer: GoogleCalendarModule;
   docs: GoogleDocsModule;
   sheets: GoogleSheetsModule;
+  drive: GoogleDriveModule;
 }
 
 async function loadGoogleTree(): Promise<GoogleTree> {
@@ -1093,11 +1153,24 @@ async function loadGoogleTree(): Promise<GoogleTree> {
     "bundle-google",
     "vendor/google-sheets-shared/build/index.js",
   );
+  // `dist/calendar.js` for the per-slug mounts, beside the vendored tree the
+  // conventional mount keeps loading: the tree builds its client from
+  // `process.env`, and several calendar mounts in one process need an injected env.
+  const calendarLayer = await loadFromTree<GoogleCalendarModule>(
+    "bundle-google",
+    "dist/calendar.js",
+  );
+  const drive = await loadFromTree<GoogleDriveModule>(
+    "bundle-google",
+    "vendor/google-drive-shared/build/index.js",
+  );
   return {
     gmail,
     calendar: calendar.createMCPServer,
+    calendarLayer,
     docs,
     sheets,
+    drive,
   };
 }
 
@@ -1249,6 +1322,103 @@ function loadGoogleDocs(
     degraded: missingCredentialsDegraded(missing),
     register: async (s) => {
       await docs.createMCPServer({ version: VERSION, env }).registerHandlers(s);
+    },
+  };
+}
+
+/**
+ * google-calendar, per slug: one mount per Google ACCOUNT an `oauth:`
+ * connector holds a consent for.
+ *
+ * {@link loadGoogleDocs} again, for the same reason: the conventional
+ * `/google-calendar` mount is a service account impersonating a Workspace user
+ * under bare `GCAL_*` names, so an unconnected per-slug slug that inherited
+ * them would serve that user's calendar under its own name, with every call
+ * succeeding. A discovered slug reads every per-account name from its own
+ * prefix or not at all, and the mode selector too: `perSlugEnv` sets it to
+ * `oauth` whatever a bare one says.
+ *
+ * The `-ro` / `-rw` half of a slug's name is the gateway's `tools:` policy and
+ * the scopes the slug consented, not this mount: it serves all seven tools.
+ * The write tools can email invitations (`send_updates`), which is why a
+ * deployment adds a `-rw` slug only when it means to.
+ */
+function loadGoogleCalendar(calendar: GoogleCalendarModule, slug: string): Mount {
+  const view = slugEnvView(process.env, slug);
+  const app = new Set<string>(calendar.GOOGLE_CALENDAR_OAUTH_APP_ENV_NAMES);
+  dropInheritedNames(
+    view,
+    slug,
+    calendar.GOOGLE_CALENDAR_ENV_NAMES.filter((name) => !app.has(name)),
+  );
+  const env = calendar.perSlugEnv({
+    ...view,
+    // WHERE TO GO WHEN THE TOKEN DIES — same as gmail, google-docs and google-sheets.
+    ...(process.env.STRAD_PUBLIC_URL
+      ? {
+          GOOGLE_CALENDAR_RECONNECT_URL: `${process.env.STRAD_PUBLIC_URL.replace(/\/$/, "")}/ui/${slug}`,
+        }
+      : {}),
+  });
+  const missing = calendar.missingCredentials(env);
+
+  return {
+    slug,
+    tree: "bundle-google",
+    serverName: "google-calendar-workspace-mcp-server",
+    capabilities: { tools: {} },
+    degraded: missingCredentialsDegraded(missing),
+    register: async (s) => {
+      await calendar.createMCPServer({ version: VERSION, env }).registerHandlers(s);
+    },
+  };
+}
+
+/**
+ * google-drive: one mount per Google ACCOUNT, {@link loadGoogleSheets}' shape.
+ *
+ * OAuth only — no service account, no impersonation — so the only per-account
+ * name is the refresh token, and a discovered slug must not inherit a bare one
+ * from whichever server put it on the box. The conventional `/google-drive`
+ * mount reads the bare names and is degraded until something seeds them.
+ *
+ * The three tiers (`readonly`, `readwrite`, `full`) are the gateway's `tools:`
+ * policy and the scopes the slug consented; this mount serves all ten tools.
+ * `GOOGLE_DRIVE_ENABLED_TOOLGROUPS` is a capability toggle and is scrubbed
+ * from the process at boot like every other (`scrubCapabilityEnv`).
+ */
+function loadGoogleDrive(
+  drive: GoogleDriveModule,
+  slug: string,
+  perSlug: boolean,
+): Mount {
+  const view = slugEnvView(process.env, slug);
+  if (perSlug) {
+    const app = new Set<string>(drive.GOOGLE_DRIVE_OAUTH_APP_ENV_NAMES);
+    dropInheritedNames(
+      view,
+      slug,
+      drive.GOOGLE_DRIVE_ENV_NAMES.filter((name) => !app.has(name)),
+    );
+  }
+  const env = {
+    ...view,
+    ...(process.env.STRAD_PUBLIC_URL
+      ? {
+          GOOGLE_DRIVE_RECONNECT_URL: `${process.env.STRAD_PUBLIC_URL.replace(/\/$/, "")}/ui/${slug}`,
+        }
+      : {}),
+  };
+  const missing = drive.missingCredentials(env);
+
+  return {
+    slug,
+    tree: "bundle-google",
+    serverName: "google-drive-workspace-mcp-server",
+    capabilities: { tools: {} },
+    degraded: missingCredentialsDegraded(missing),
+    register: async (s) => {
+      await drive.createMCPServer({ version: VERSION, env }).registerHandlers(s);
     },
   };
 }
@@ -1470,7 +1640,7 @@ async function loadXTwitter(): Promise<Mount> {
     // The client caches its OAuth provider for the host process, so the factory
     // is built once here and memoised inside registerHandlers. Building it
     // LAZILY matters: `createXClientFromEnv` throws when no X credential is
-    // configured at all, and a throw at boot would take all thirty-nine mounts down
+    // configured at all, and a throw at boot would take all forty mounts down
     // over one unconfigured server.
     register: (s) =>
       created.registerHandlers(s, () =>
@@ -2668,7 +2838,7 @@ async function main(): Promise<void> {
   //
   // NOT AWAITED, and that is deliberate. A pass is one sequential read per
   // listed variable, each with its own timeout, so awaiting it would put a slow
-  // or unreachable core directly in front of `listen()` below — thirty-nine
+  // or unreachable core directly in front of `listen()` below — forty
   // mounts held off serving because one credential could not be re-read. The
   // container starting with the value the deploy baked is exactly the behaviour
   // every deployment has today, so falling back to it costs nothing; blocking
@@ -2681,7 +2851,7 @@ async function main(): Promise<void> {
   // STORE-SERVED INSTANCES — the mounts no deploy named. See the header.
   //
   // The first sync is NOT awaited, for the reason the refresh pass above is
-  // not: a slow core must not stand in front of `listen()` for thirty-nine
+  // not: a slow core must not stand in front of `listen()` for forty
   // mounts that need nothing from it. A request that arrives before the sync
   // lands takes the miss path in the route below, which syncs then.
   const instances = createInstanceReconciler<Mount>({
@@ -2734,7 +2904,7 @@ async function main(): Promise<void> {
   const internalOnly = requireInternalToken(process.env, timingSafeEqual);
 
   // Liveness for App Platform. Reports every mount and whether it is degraded —
-  // with 39 servers behind one health check, "ok: true" alone is not information.
+  // with 40 servers behind one health check, "ok: true" alone is not information.
   //
   // Deliberately OUTSIDE `internalOnly`. The platform's health prober holds no
   // token, and a 401 here is a component App Platform takes out of service — an
@@ -2958,7 +3128,7 @@ async function main(): Promise<void> {
     });
   });
 
-  // One stray rejection from one of thirty-nine servers must not kill the other
+  // One stray rejection from one of forty servers must not kill the other
   // thirty-eight. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {

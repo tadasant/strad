@@ -332,6 +332,64 @@ describe("extraSlugs", () => {
     ]);
   });
 
+  /**
+   * google-calendar: the names come from `images/bundle-google/src/calendar.ts`.
+   * The case that matters is the one prod runs today: the conventional
+   * service-account slugs on `/google-calendar`, whose variables are baked
+   * under their own prefixes too, must ask for no mount of their own.
+   */
+  const CALENDAR_MARKERS = [
+    "GOOGLE_CALENDAR_OAUTH_CLIENT_ID",
+    "GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET",
+  ];
+
+  it("finds an UNCONNECTED google-calendar slug and leaves the service-account slugs alone", () => {
+    const found = extraSlugs("google-calendar", CALENDAR_MARKERS, {
+      GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL: "dwd@example.iam.gserviceaccount.com",
+      GCAL_SERVICE_ACCOUNT_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----",
+      GCAL_IMPERSONATE_EMAIL: "user@example.com",
+      GOOGLE_CALENDAR_RO__GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL: "dwd@example.iam.gserviceaccount.com",
+      GOOGLE_CALENDAR_RO__GCAL_IMPERSONATE_EMAIL: "user@example.com",
+      GOOGLE_CALENDAR_RW__GCAL_IMPERSONATE_EMAIL: "user@example.com",
+      GOOGLE_CALENDAR_SOMEONE_RO__GOOGLE_CALENDAR_OAUTH_CLIENT_ID: "id",
+      GOOGLE_CALENDAR_SOMEONE_RO__GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET: "secret",
+    } as NodeJS.ProcessEnv);
+    expect(found).toEqual(["google-calendar-someone-ro"]);
+  });
+
+  it("finds nothing for a deployment with only the conventional calendar slugs", () => {
+    expect(
+      extraSlugs("google-calendar", CALENDAR_MARKERS, {
+        GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL: "dwd@example.iam.gserviceaccount.com",
+        GOOGLE_CALENDAR_RO__GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL: "dwd@example.iam.gserviceaccount.com",
+        GOOGLE_CALENDAR_RW__GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL: "dwd@example.iam.gserviceaccount.com",
+      } as NodeJS.ProcessEnv),
+    ).toEqual([]);
+  });
+
+  it("finds google-drive slugs on their own pair, not on a sibling Google tree's", () => {
+    const DRIVE_MARKERS = [
+      "GOOGLE_DRIVE_OAUTH_CLIENT_ID",
+      "GOOGLE_DRIVE_OAUTH_CLIENT_SECRET",
+    ];
+    const env = {
+      GOOGLE_DRIVE_SOMEONE_RO__GOOGLE_DRIVE_OAUTH_CLIENT_ID: "id",
+      GOOGLE_DRIVE_SOMEONE_RO__GOOGLE_DRIVE_OAUTH_CLIENT_SECRET: "secret",
+      GOOGLE_DRIVE_SOMEONE_RW__GOOGLE_DRIVE_OAUTH_CLIENT_ID: "id",
+      GOOGLE_DRIVE_SOMEONE_RW__GOOGLE_DRIVE_OAUTH_CLIENT_SECRET: "secret",
+      GOOGLE_DRIVE_SOMEONE_RW__GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN: "token",
+      GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_CLIENT_ID: "id",
+      GOOGLE_SHEETS_PERSONAL_RO__GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "secret",
+    } as NodeJS.ProcessEnv;
+    expect(extraSlugs("google-drive", DRIVE_MARKERS, env).sort()).toEqual([
+      "google-drive-someone-ro",
+      "google-drive-someone-rw",
+    ]);
+    expect(extraSlugs("google-sheets", SHEETS_MARKERS, env)).toEqual([
+      "google-sheets-personal-ro",
+    ]);
+  });
+
   it("does not hand a google-sheets OAuth pair to google-docs, or the reverse", () => {
     // Both trees are Google OAuth on one container. A docs slug left on the
     // google-sheets default variable names is discovered by SHEETS, which is

@@ -22,8 +22,9 @@ client config and a curl check.
 | `google-docs`     | [`images/bundle-google/vendor/google-docs-shared/README.md`](https://github.com/tadasant/strad/blob/main/images/bundle-google/vendor/google-docs-shared/README.md)         |
 | `google-drive`    | [`images/bundle-google/vendor/google-drive-shared/README.md`](https://github.com/tadasant/strad/blob/main/images/bundle-google/vendor/google-drive-shared/README.md)       |
 
-strad does not mount google-drive, so running it on its own is the only way to
-use it ([limitation #124](/limitations/#124-google-drive-runs-only-on-its-own-and-has-met-only-fakes)).
+Inside strad, google-drive is mounted per slug under an `oauth:` connector
+([connectors](/operate/connectors/)). It has met only fakes
+([limitation #124](/limitations/#124-google-drive-has-met-only-fakes)).
 
 gmail on its own does not send mail. In strad, `send_email` waits for a human
 to approve each send, through a channel only the gateway can hand the server

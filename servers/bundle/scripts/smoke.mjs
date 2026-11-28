@@ -15,7 +15,7 @@
  * credential-dependent. CI has no credential, the probe fails closed, and the
  * count is the read-only 4 below.
  *
- * What it is really checking is that thirty-nine servers, thirty dependency trees and
+ * What it is really checking is that forty servers, thirty dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  *
@@ -68,6 +68,11 @@ const EXPECT = {
   // `google-sheets-*-ro` slug is this same mount with the write six and the
   // share withheld by the gateway; a `-rw` slug withholds the share alone.
   "google-sheets": 11,
+  // Three reads, two creates (`readwrite`) and five that organise files that
+  // already exist (`full`): rename, move, copy, trash, restore. No permanent
+  // delete, no share, no content rewrite. A `-ro` slug is this mount with the
+  // seven withheld by the gateway.
+  "google-drive": 10,
   onepassword: 9,
   // Four tools, and not one of them can return a SECRET value. This is the
   // CREDENTIAL-FREE, CORE-LESS count: the probe fails closed here, so it is the
@@ -329,7 +334,7 @@ if (unchecked.length || absent.length) {
 
 // Two trees registering the SAME slug is the collision a twelve-tree single process
 // invites, and it collapses to one route — the set above cannot see it, because a
-// Set of 39 mounts' slugs is 38 entries wide and matches EXPECT exactly.
+// Set of 40 mounts' slugs is 38 entries wide and matches EXPECT exactly.
 if (health.servers.length !== mounted.size) {
   failed += 1;
   console.log(

@@ -28,7 +28,7 @@ flowchart TB
             BI["core builtins<br/>(in-process)"]
         end
         subgraph priv["Private network (VPC)"]
-            BU["bundle (internal-only)<br/>ghcr.io/tadasant/strad-bundle<br/>39 MCP servers · 1 shared Chromium<br/>apps-s-1vcpu-2gb"]
+            BU["bundle (internal-only)<br/>ghcr.io/tadasant/strad-bundle<br/>40 MCP servers · 1 shared Chromium<br/>apps-s-1vcpu-2gb"]
         end
     end
 
@@ -70,26 +70,26 @@ for servers on it. Every non-core component gets `STRAD_CORE_URL` for it.
 
 A bundle runs **one image**, and any number of servers may share it, each on its
 own `path`. strad's own deployment has one main bundle: a
-`ghcr.io/tadasant/strad-bundle` container that mounts thirty-nine MCP servers in
+`ghcr.io/tadasant/strad-bundle` container that mounts forty MCP servers in
 one Node process, assembled from thirty independently-built dependency trees.
 The staging config maps forty-one of its forty-five `supplementary-image`
 entries onto twenty-eight paths, because capability variants of one upstream are two
 entries pointing at the same path. Twenty-seven of those are baked mounts;
 `/x-twitter`, `/google-sheets`, `/grafana`, `/victorialogs`,
-`/glitchtip`, `/vendor-billing`, `/postgres`, `/hatchbox` and `/aws-device-farm` are baked with no staging slug pointing at them. The twenty-eighth, `/grafana-registry`, is a **per-slug
+`/glitchtip`, `/vendor-billing`, `/postgres`, `/hatchbox`, `/google-drive` and `/aws-device-farm` are baked with no staging slug pointing at them. The twenty-eighth, `/grafana-registry`, is a **per-slug
 instance** — a mount the host stands up only when the container carries that
 slug's own credential (see below). The other two entries run on bundles of
 their own, below.
 
-Eleven of those mounts are also mounted again, once per slug, when a deployment
+Thirteen of those mounts are also mounted again, once per slug, when a deployment
 gives a slug its own credential rather than sharing the container's: `/telegram`,
 `/remote-filesystem-tmp-public`, `/grafana`, `/victorialogs`,
-`/glitchtip`, `/postgres`, `/hatchbox`, `/google-sheets`, `/gmail`, `/google-docs` and `/onepassword`. What counts as
+`/glitchtip`, `/postgres`, `/hatchbox`, `/google-sheets`, `/google-drive`, `/gmail`, `/google-docs`, `/google-calendar` and `/onepassword`. What counts as
 "its own" is per tree: telegram wants the whole credential, the artifact store
 wants a bucket, grafana and glitchtip want an origin and a token, postgres a database URI, hatchbox an app id (each tier of one app holding only its own keys), victorialogs an
 entrypoint, 1Password wants a service-account
 token, and
-google-sheets, gmail and google-docs want the OAuth client id and secret — never
+google-sheets, google-drive, gmail, google-docs and google-calendar want the OAuth client id and secret — never
 the refresh token, which a human mints later on the mount's own console page.
 That is what makes six `google-sheets-*` slugs over three Google accounts one
 server rather than three — see [Google Sheets](/servers/google-sheets/) — and
@@ -97,7 +97,7 @@ what lets one bundle hold several 1Password accounts, each at its own
 `/onepassword-<name>`, without one token answering for another's vaults
 ([how](/servers/confirmations/#1password-every-reveal-and-every-write)).
 
-gmail and google-docs are the two with **two** auth modes, and the collapsed
+gmail, google-docs and google-calendar are the three with **two** auth modes, and the collapsed
 bundle carries both.
 The conventional `/gmail` mount authenticates as a service account impersonating
 a Workspace user — `gmail-ro`, `gmail-rw` and `gmail-rw-external` are three slugs
@@ -109,7 +109,10 @@ service-account trio would serve a Workspace mailbox under a slug named for a
 personal account, and nothing about that would read as broken. google-docs is
 the same shape: `/google-docs` impersonates a Workspace user for the
 `google-docs-ro` / `-rw` / `-rw-external` slugs, and a per-slug
-`/google-docs-<account>` mount drops that service account the same way.
+`/google-docs-<account>` mount drops that service account the same way. So is
+google-calendar: `/google-calendar` keeps its service account, and a per-slug
+`/google-calendar-<account>` mount drops the bare `GCAL_*` names and the mode
+selector, and always runs in `oauth` mode.
 
 A hosted server can also be a CLIENT of core. With a [flow-through](/servers/flow-through/)
 grant (`reaches:` on it, `reachableFrom:` on the target), it opens an MCP
@@ -149,7 +152,7 @@ Three numbers, three different things:
 | Number | What it counts                                                                               |
 | ------ | -------------------------------------------------------------------------------------------- |
 | **3**  | App Platform components (`core`, `bundle`, `bundle-zimmer-secrets`)                          |
-| **39** | MCP servers mounted inside the bundle image                                                  |
+| **40** | MCP servers mounted inside the bundle image                                                  |
 | **48** | server slugs in `infra/strad.staging.yaml` (45 supplementary + `echo` + `deepwiki` + `anki`) |
 
 ### The two modes
@@ -688,7 +691,7 @@ The server list drives how containers are grouped:
   per slug from [its own variables](/operate/secrets/#what-a-servers-variables-are-called-on-the-box).
 - **A browser bundle needs real headroom.** Chromium costs ~1.06s per launch and
   peaks ~545MB RSS, and CPU rather than RAM is what binds it, because 1 vCPU
-  serialises rendering. strad's own deployment puts everything (39 mounted servers,
+  serialises rendering. strad's own deployment puts everything (40 mounted servers,
   one shared Chromium, the `op` CLI) in one `apps-s-1vcpu-2gb` component: the
   measured working set is ~760MB with two browser servers logging in at once.
   Several Chromiums in one component is the thing to avoid — share one browser and
@@ -704,8 +707,8 @@ The server list drives how containers are grouped:
 
 <aside class="starlight-aside starlight-aside--caution">
 
-**One process, one core, thirty-nine servers is an accepted risk, not a proven
-design.** A crash in the bundle host takes all thirty-nine down together, and the
+**One process, one core, forty servers is an accepted risk, not a proven
+design.** A crash in the bundle host takes all forty down together, and the
 single vCPU is shared with Chromium. If it turns out to be starved, the next move
 is a dedicated CPU (`apps-d-1vcpu-2gb`), not more RAM — the binding constraint is
 compute. This is what the [telemetry](/operate/telemetry/) exists to answer. See

@@ -236,7 +236,7 @@ failure:
   - **`bundle/host`** — tests, and no separate build leg, because `npm test` is
     `npm run build && vitest run` — `tsc` over `src/`, so a type error there
     still fails the PR. The host is the process every bundle container runs: it
-    mounts every tree in the image, 39 mounts, which staging's 45
+    mounts every tree in the image, 40 mounts, which staging's 45
     supplementary-image slugs resolve to. Its suite runs over its TypeScript
     sources with no `/app/trees` to mount: the per-slug environment
     discovery, the two `degraded` verdicts, the presence route's wiring and the
@@ -1495,7 +1495,7 @@ declares forty-eight server slugs:
 - forty-one `supplementary-image` entries on the one `bundle` component running
   `ghcr.io/tadasant/strad-bundle`. They land on twenty-eight paths, because a
   read-only and a read-write variant of one upstream are two entries sharing one
-  `path`: twenty-seven of the bundle image's thirty-nine baked mounts, plus
+  `path`: twenty-seven of the bundle image's forty baked mounts, plus
   `/grafana-registry`, a per-slug instance the host stands up for that slug's own
   Grafana credential. Eleven of them — `telegram-ro`, `telegram-rw`,
   `pulse-subregistry`, `grafana-registry`, `liveoak`, `airtable`, `flightaware`,
