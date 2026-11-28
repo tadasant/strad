@@ -4913,7 +4913,7 @@ See `HACKS.md` #157.
 
 ### 158. vendor-billing is strad's own server, and has met only fakes
 
-The [vendor billing](/servers/vendor-billing/) server makes four fixed reads
+The [vendor billing](/servers/vendor-billing/) server makes five fixed reads
 against OpenRouter, OpenAI and a Cloud Billing BigQuery export.
 
 - **Its tests run against fakes** built from each vendor's documentation. No
@@ -4921,8 +4921,11 @@ against OpenRouter, OpenAI and a Cloud Billing BigQuery export.
 - **The export table is spliced into the SQL**, after strict validation. A
   domain-scoped project, or a table with a hyphen or a space in its name, is
   refused.
-- **The query has no partition filter.** It scans five columns of the export
-  on every call, under a 10 GiB `maximumBytesBilled` ceiling it cannot exceed.
+- **Neither BigQuery query has a partition filter.** Each scans its columns
+  of the whole export on every call, whatever the breakdown's date range,
+  under a 10 GiB `maximumBytesBilled` ceiling it cannot exceed. The breakdown
+  reports `bytes_processed`. Its grouped SQL has not run against a real
+  export.
 - **OpenRouter's `/credits` needs a management key**, which can also manage
   keys. The server never calls those endpoints. The container still holds the
   key.

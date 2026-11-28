@@ -8121,11 +8121,12 @@ stamp retires the first.
 
 ## 158. vendor-billing is strad's own server, and has met only fakes
 
-**What.** `servers/vendor-billing` serves four fixed billing reads:
+**What.** `servers/vendor-billing` serves five fixed billing reads:
 `get_openrouter_credits` (`GET /api/v1/credits`), `get_openrouter_key_usage`
 (`GET /api/v1/key`), `get_openai_costs` (`GET /v1/organization/costs`, daily,
-by project) and `get_gcp_month_to_date` (one BigQuery query over a Cloud
-Billing standard usage cost export). Paths, parameters and response shapes come
+by project), `get_gcp_month_to_date` (one BigQuery query over a Cloud
+Billing standard usage cost export) and `get_gcp_cost_breakdown` (one grouped
+query over the same export, by project, service, SKU and/or day). Paths, parameters and response shapes come
 from each vendor's published API documentation.
 
 **Why.** A cost-collection agent needs balances and in-month spend, and the
@@ -8137,17 +8138,23 @@ general-purpose client.
 **What it costs.**
 
 - Every test runs against a fake vendor. No real account has answered any of
-  the four, so every success shape is documented, not observed.
+  the five, so every success shape is documented, not observed. The
+  breakdown's SQL in particular — window functions, ordinal `GROUP BY`, named
+  `DATE` and `INT64` parameters — has been read against the GoogleSQL
+  reference, not run.
 - The BigQuery table is spliced into the SQL, because a table name cannot be
   bound as a parameter. The project, dataset and table are held to strict
   patterns first (`config.ts`), which are narrower than what BigQuery accepts.
   A domain-scoped project (`example.com:project`) or a table name with a hyphen
   or a space is refused.
-- The query has no partition filter, because a standard export's partitioning
-  is not documented as stable. It scans the export's `invoice`, `currency`,
-  `cost`, `credits` and `usage_end_time` columns every call, under a 10 GiB
-  `maximumBytesBilled` ceiling. An export past that ceiling makes the tool fail
-  until the ceiling moves.
+- Neither query has a partition filter, because a standard export's
+  partitioning is not documented as stable. The month-to-date query scans the
+  export's `invoice`, `currency`, `cost`, `credits` and `usage_end_time`
+  columns every call; the breakdown also scans `usage_start_time` and whichever
+  of `project`, `service`, `sku` and `usage` its `group_by` and filters name,
+  over the whole table whatever the date range. Both run under a 10 GiB
+  `maximumBytesBilled` ceiling, and the breakdown reports `bytes_processed`.
+  An export past that ceiling makes the tools fail until the ceiling moves.
 - OpenRouter's `/credits` takes only a management key, and a management key can
   also manage keys. Nothing here calls those endpoints, but the credential the
   container holds can.

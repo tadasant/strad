@@ -388,8 +388,8 @@ async function buildMounts(): Promise<Mount[]> {
   mounts.push(await loadKeyedApiServer("flightaware", "strad-flightaware"));
   mounts.push(await loadKeyedApiServer("digitalocean", "strad-digitalocean"));
   mounts.push(await loadKeyedApiServer("hetzner", "strad-hetzner"));
-  // vendor-billing: four fixed billing reads, each tool configured on its own,
-  // so the mount is degraded only while ALL four are unconfigured.
+  // vendor-billing: five fixed billing reads, each tool configured on its own,
+  // so the mount is degraded only while ALL five are unconfigured.
   mounts.push(await loadKeyedApiServer("vendor-billing", "strad-vendor-billing"));
 
   // glitchtip: the conventional mount (degraded until configured) plus one per

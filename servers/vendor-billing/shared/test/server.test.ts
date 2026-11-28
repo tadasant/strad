@@ -14,6 +14,8 @@ import {
   MAX_POLLS,
   missingCredentials,
   monthToDateQuery,
+  breakdownQuery,
+  MAX_BREAKDOWN_DAYS,
   OPENAI_API,
   OPENROUTER_API,
   TOOL_NAMES,
@@ -122,7 +124,7 @@ function expectNoSecret(text: string) {
 // ---- the surface ------------------------------------------------------------
 
 describe("the surface", () => {
-  it("lists four read-only tools with nothing configured", async () => {
+  it("lists five read-only tools with nothing configured", async () => {
     const h = await harness({}, () => undefined);
     const { tools } = await h.list();
     expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES]);
@@ -134,7 +136,7 @@ describe("the surface", () => {
     expect(h.seen).toHaveLength(0);
   });
 
-  it("takes no free-form input: only get_openai_costs has properties, and they are dates", async () => {
+  it("takes no free-form input: only the two dated tools have properties", async () => {
     const h = await harness({}, () => undefined);
     const { tools } = await h.list();
     const props = Object.fromEntries(
@@ -145,7 +147,19 @@ describe("the surface", () => {
       get_openrouter_key_usage: [],
       get_openai_costs: ["start_date", "end_date"],
       get_gcp_month_to_date: [],
+      get_gcp_cost_breakdown: ["start_date", "end_date", "group_by", "project_id", "service", "sku_id", "sku", "max_rows"],
     });
+  });
+
+  it("gives get_gcp_cost_breakdown's group_by a closed enum and no string that is SQL", async () => {
+    const h = await harness({}, () => undefined);
+    const { tools } = await h.list();
+    const schema = tools.find((t) => t.name === "get_gcp_cost_breakdown")!.inputSchema as {
+      properties: Record<string, { type: string; enum?: string[]; items?: { enum: string[] }; maxLength?: number }>;
+    };
+    expect(schema.properties.group_by!.items!.enum).toEqual(["project", "service", "sku", "day"]);
+    for (const f of ["project_id", "service", "sku_id", "sku"]) expect(schema.properties[f]!.maxLength).toBe(256);
+    expect(schema.properties.max_rows!.type).toBe("integer");
   });
 
   it("refuses an argument a tool does not declare, before any request", async () => {
@@ -155,6 +169,9 @@ describe("the surface", () => {
     expect(r.content[0]!.text).toMatch(/Unexpected argument: url/);
     const q = await h.call("get_gcp_month_to_date", { query: "DROP TABLE x" });
     expect(q.isError).toBe(true);
+    const b = await h.call("get_gcp_cost_breakdown", { start_date: "2026-11-01", where: "1=1" });
+    expect(b.isError).toBe(true);
+    expect(b.content[0]!.text).toMatch(/Unexpected argument: where/);
     expect(h.seen).toHaveLength(0);
   });
 
@@ -186,6 +203,11 @@ describe("not configured", () => {
       {},
       ["GCP_BILLING_SA_KEY_JSON", "GCP_BILLING_EXPORT_PROJECT", "GCP_BILLING_EXPORT_DATASET", "GCP_BILLING_EXPORT_TABLE"],
     ],
+    [
+      "get_gcp_cost_breakdown",
+      { start_date: "2026-11-01" },
+      ["GCP_BILLING_SA_KEY_JSON", "GCP_BILLING_EXPORT_PROJECT", "GCP_BILLING_EXPORT_DATASET", "GCP_BILLING_EXPORT_TABLE"],
+    ],
   ];
 
   for (const [tool, args, names] of cases) {
@@ -209,7 +231,9 @@ describe("not configured", () => {
       expectNoSecret(text);
       expect(h.seen).toHaveLength(0);
 
-      for (const [other, otherArgs] of cases.filter(([t]) => t !== tool)) {
+      // The two Google Cloud tools share their variables, so neither works
+      // without the other's; every tool that shares none still does.
+      for (const [other, otherArgs] of cases.filter(([, , n]) => !n.some((x) => names.includes(x)))) {
         const ok = await h.call(other, otherArgs);
         expect(ok.isError, `${other} after ${tool} unconfigured`).toBeFalsy();
       }
@@ -661,6 +685,328 @@ describe("get_gcp_month_to_date, the edges", () => {
     expect(assertion.length).toBeGreaterThan(100);
     expect(r.content[0]!.text).not.toContain(assertion);
     expect(r.content[0]!.text).not.toContain(assertion.split(".")[1]!);
+  });
+});
+
+// ---- Google Cloud, line by line -------------------------------------------
+
+const TABLE = { project: "example-project", dataset: "billing_export", table: "gcp_billing_export_v1_EXAMPLE" };
+
+const BREAKDOWN_FIELDS = [
+  "service",
+  "sku_id",
+  "sku",
+  "usage_unit",
+  "currency",
+  "cost",
+  "credits",
+  "usage_amount",
+  "row_rank",
+  "group_count",
+  "currency_cost",
+  "currency_credits",
+  "range_latest_usage_end_time",
+];
+
+function breakdownAnswer(rows: unknown[][], fields = BREAKDOWN_FIELDS, bytes = "10485760") {
+  return {
+    body: {
+      jobComplete: true,
+      totalBytesProcessed: bytes,
+      schema: { fields: fields.map((name) => ({ name })) },
+      rows: rows.map((r) => ({ f: r.map((v) => ({ v })) })),
+    },
+  };
+}
+
+const SERVICE_SKU_ROWS = [
+  ["Secret Manager", "6D5B-0001", "Secret access operations", "requests", "USD", "7.2", "0", "2400000", "1", "3", "12.5", "-1", "2026-11-27T18:00:00Z"],
+  ["Cloud SQL", "9A1C-0002", "vCPU time", "seconds", "USD", "4.3", "-1", "86400", "2", "3", "12.5", "-1", "2026-11-27T18:00:00Z"],
+  ["Cloud Storage", "E5F3-0003", "Standard storage", "byte-seconds", "USD", "1", "0", "1e15", "3", "3", "12.5", "-1", "2026-11-27T18:00:00Z"],
+];
+
+function breakdownQueryOf(seen: Seen[]): { query: string; parameterMode?: string; queryParameters?: Array<{ name: string; parameterType: { type: string }; parameterValue: { value: string } }>; maximumBytesBilled: string; useLegacySql: boolean } {
+  const post = seen.find((s) => s.url === `${BIGQUERY_API}/projects/example-project/queries` && s.method === "POST");
+  return JSON.parse(post!.body!);
+}
+
+function params(q: ReturnType<typeof breakdownQueryOf>): Record<string, [string, string]> {
+  return Object.fromEntries((q.queryParameters ?? []).map((p) => [p.name, [p.parameterType.type, p.parameterValue.value]]));
+}
+
+describe("get_gcp_cost_breakdown", () => {
+  it("runs one grouped query with every caller value bound, and maps the rows", async () => {
+    const h = await harness(FULL_ENV, gcpRoute({ query: () => breakdownAnswer(SERVICE_SKU_ROWS) }));
+    const out = json(
+      await h.call("get_gcp_cost_breakdown", {
+        start_date: "2026-11-01",
+        end_date: "2026-11-20",
+        group_by: ["sku", "service"],
+      }),
+    );
+    expect(out).toEqual({
+      start_date: "2026-11-01",
+      end_date: "2026-11-20",
+      timezone: "America/Los_Angeles",
+      group_by: ["service", "sku"],
+      groups: 3,
+      returned: 3,
+      truncated: false,
+      totals: [{ currency: "USD", cost: 12.5, credits: -1, net: 11.5 }],
+      latest_usage_end_time: "2026-11-27T18:00:00Z",
+      bytes_processed: 10485760,
+      rows: [
+        {
+          service: "Secret Manager",
+          sku_id: "6D5B-0001",
+          sku: "Secret access operations",
+          usage_amount: 2400000,
+          usage_unit: "requests",
+          currency: "USD",
+          cost: 7.2,
+          credits: 0,
+          net: 7.2,
+        },
+        {
+          service: "Cloud SQL",
+          sku_id: "9A1C-0002",
+          sku: "vCPU time",
+          usage_amount: 86400,
+          usage_unit: "seconds",
+          currency: "USD",
+          cost: 4.3,
+          credits: -1,
+          net: 3.3,
+        },
+        {
+          service: "Cloud Storage",
+          sku_id: "E5F3-0003",
+          sku: "Standard storage",
+          usage_amount: 1e15,
+          usage_unit: "byte-seconds",
+          currency: "USD",
+          cost: 1,
+          credits: 0,
+          net: 1,
+        },
+      ],
+    });
+
+    // Same token exchange, same export project, same ceiling as month-to-date.
+    expect(h.seen.map((s) => s.url)).toEqual([GOOGLE_TOKEN_URL, `${BIGQUERY_API}/projects/example-project/queries`]);
+    const q = breakdownQueryOf(h.seen);
+    expect(h.seen[1]!.headers.Authorization).toBe(`Bearer ${ACCESS_TOKEN}`);
+    expect(q.useLegacySql).toBe(false);
+    expect(q.maximumBytesBilled).toBe(String(10 * 1024 ** 3));
+    expect(q.parameterMode).toBe("NAMED");
+    expect(params(q)).toEqual({
+      start_date: ["DATE", "2026-11-01"],
+      end_date: ["DATE", "2026-11-20"],
+      max_rows: ["INT64", "100"],
+    });
+    expect(q.query).toBe(breakdownQuery(TABLE, ["service", "sku"], []));
+    expect(q.query).toContain("FROM `example-project.billing_export.gcp_billing_export_v1_EXAMPLE`");
+    expect(q.query).toContain("usage_start_time >= TIMESTAMP(@start_date, 'America/Los_Angeles')");
+    expect(q.query).toContain("TIMESTAMP(DATE_ADD(@end_date, INTERVAL 1 DAY), 'America/Los_Angeles')");
+    expect(q.query).toContain("SUM(usage.amount) AS usage_amount");
+    expect(q.query).toContain("WHERE row_rank <= @max_rows OR currency_rank = 1");
+    // Ordinals, not aliases that shadow the export's own STRUCT columns.
+    expect(q.query).toContain("GROUP BY 1, 2, 3, 4, 5\n");
+    expect(q.query).not.toMatch(/2026-11-/);
+  });
+
+  it("binds a filter value as a parameter: hostile text never reaches the SQL", async () => {
+    const hostile = "x' OR 1=1; DROP TABLE t; --";
+    const h = await harness(FULL_ENV, gcpRoute({ query: () => breakdownAnswer([]) }));
+    const out = json(
+      await h.call("get_gcp_cost_breakdown", {
+        start_date: "2026-11-01",
+        end_date: "2026-11-01",
+        group_by: ["day"],
+        service: hostile,
+        project_id: "example-staging",
+        sku_id: "6D5B-0001",
+        sku: "`; SELECT 1",
+        max_rows: 5,
+      }),
+    );
+    const q = breakdownQueryOf(h.seen);
+    expect(q.query).toBe(breakdownQuery(TABLE, ["day"], ["project_id", "service", "sku_id", "sku"]));
+    expect(q.query).not.toContain(hostile);
+    expect(q.query).not.toContain("example-staging");
+    expect(q.query).not.toContain("6D5B");
+    expect(q.query).not.toContain("SELECT 1");
+    // The filter compares what a row shows, so `(none)` read off a row works.
+    expect(q.query).toContain("AND IFNULL(project.id, '(none)') = @project_id");
+    expect(q.query).toContain("AND IFNULL(service.description, '(none)') = @service");
+    expect(q.query).toContain("AND sku.id = @sku_id");
+    expect(q.query).toContain("AND IFNULL(sku.description, '(none)') = @sku");
+    expect(params(q)).toMatchObject({
+      project_id: ["STRING", "example-staging"],
+      sku_id: ["STRING", "6D5B-0001"],
+      service: ["STRING", hostile],
+      sku: ["STRING", "`; SELECT 1"],
+      max_rows: ["INT64", "5"],
+    });
+    expect(out.filters).toEqual({ project_id: "example-staging", service: hostile, sku_id: "6D5B-0001", sku: "`; SELECT 1" });
+    expect(out.rows).toEqual([]);
+    expect(out.groups).toBe(0);
+    expect(out.note).toMatch(/no rows/);
+  });
+
+  it("builds every group_by and filter combination from fixed fragments only", () => {
+    const keys = ["project", "service", "sku", "day"] as const;
+    const filters = ["project_id", "service", "sku_id", "sku"] as const;
+    for (let mask = 1; mask < 16; mask++) {
+      const groupBy = keys.filter((_, i) => mask & (1 << i));
+      for (let fmask = 0; fmask < 16; fmask++) {
+        const on = filters.filter((_, i) => fmask & (1 << i));
+        const fq = breakdownQuery(TABLE, [...groupBy], [...on]);
+        expect([...new Set(fq.match(/@\w+/g))].sort()).toEqual(
+          ["@end_date", "@max_rows", "@start_date", ...on.map((f) => `@${f}`)].sort(),
+        );
+      }
+      const q = breakdownQuery(TABLE, [...groupBy], []);
+      expect([...new Set(q.match(/@\w+/g))].sort()).toEqual(["@end_date", "@max_rows", "@start_date"]);
+      expect(q.includes("usage.amount")).toBe(groupBy.includes("sku"));
+      expect(q.includes("usage_date")).toBe(groupBy.includes("day"));
+      expect(q.includes("project_id")).toBe(groupBy.includes("project"));
+    }
+  });
+
+  it("maps a day trend, defaults end_date to today in Pacific Time, and groups by service by default", async () => {
+    // 05:00 UTC on the 21st is still the 20th in Pacific Time.
+    const now = new Date("2026-11-21T05:00:00Z");
+    const fields = ["usage_date", "currency", "cost", "credits", "row_rank", "group_count", "currency_cost", "currency_credits", "range_latest_usage_end_time"];
+    const h = await harness(
+      FULL_ENV,
+      gcpRoute({
+        query: (req) =>
+          JSON.parse(req.body!).query.includes("usage_date")
+            ? breakdownAnswer([["2026-11-20", "USD", "4", "0", "1", "2", "5.3", "0", "2026-11-20T18:00:00Z"], ["2026-11-01", "USD", "1.3", "0", "2", "2", "5.3", "0", "2026-11-20T18:00:00Z"]], fields)
+            : breakdownAnswer([]),
+      }),
+      now,
+    );
+    const out = json(await h.call("get_gcp_cost_breakdown", { start_date: "2026-11-01", group_by: "day" }));
+    expect(out.end_date).toBe("2026-11-20");
+    expect(out.rows).toEqual([
+      { usage_date: "2026-11-20", currency: "USD", cost: 4, credits: 0, net: 4 },
+      { usage_date: "2026-11-01", currency: "USD", cost: 1.3, credits: 0, net: 1.3 },
+    ]);
+    expect(params(breakdownQueryOf(h.seen)).end_date).toEqual(["DATE", "2026-11-20"]);
+
+    const d = await harness(FULL_ENV, gcpRoute({ query: () => breakdownAnswer([]) }), now);
+    expect(json(await d.call("get_gcp_cost_breakdown", { start_date: "2026-11-01" })).group_by).toEqual(["service"]);
+    expect(breakdownQueryOf(d.seen).query).toBe(breakdownQuery(TABLE, ["service"], []));
+  });
+
+  it("says when the cap cut the answer, with totals over every group", async () => {
+    const rows = SERVICE_SKU_ROWS.slice(0, 2).map((r) => {
+      const c = [...r];
+      c[9] = "250";
+      return c;
+    });
+    const h = await harness(FULL_ENV, gcpRoute({ query: () => breakdownAnswer(rows) }));
+    const out = json(await h.call("get_gcp_cost_breakdown", { start_date: "2026-10-01", group_by: ["service", "sku"], max_rows: 2 }));
+    expect(out.groups).toBe(250);
+    expect(out.returned).toBe(2);
+    expect(out.truncated).toBe(true);
+    expect(out.totals).toEqual([{ currency: "USD", cost: 12.5, credits: -1, net: 11.5 }]);
+    expect(out.note).toMatch(/top 2 of 250 groups/);
+  });
+
+  const refusals: Array<[string, Record<string, unknown>, RegExp]> = [
+    ["a missing start_date", {}, /start_date. is required/],
+    ["a malformed date", { start_date: "2026-11-1" }, /YYYY-MM-DD/],
+    ["an impossible date", { start_date: "2026-02-30" }, /not a real date/],
+    ["an end before the start", { start_date: "2026-11-10", end_date: "2026-11-01" }, /before/],
+    ["a range past the bound", { start_date: "2026-08-01", end_date: "2026-11-20" }, /at most 92/],
+    ["a start in the future", { start_date: "2026-11-22" }, /future/],
+    ["an unknown group key", { start_date: "2026-11-01", group_by: ["service", "region"] }, /takes only project, service, sku, day; got "region"/],
+    ["a column-shaped group key", { start_date: "2026-11-01", group_by: ["service.description; --"] }, /takes only/],
+    ["an empty group_by", { start_date: "2026-11-01", group_by: [] }, /non-empty/],
+    ["a non-list group_by", { start_date: "2026-11-01", group_by: { a: 1 } }, /non-empty list/],
+    ["a non-string filter", { start_date: "2026-11-01", service: ["a"] }, /service. must be a non-empty string/],
+    ["an empty filter", { start_date: "2026-11-01", service: "" }, /service. must be a non-empty string/],
+    ["an overlong filter", { start_date: "2026-11-01", sku: "x".repeat(257) }, /longer than 256/],
+    ["a zero row cap", { start_date: "2026-11-01", max_rows: 0 }, /1 to 200/],
+    ["a row cap past the bound", { start_date: "2026-11-01", max_rows: 201 }, /1 to 200/],
+    ["a fractional row cap", { start_date: "2026-11-01", max_rows: 2.5 }, /whole number/],
+    ["a string row cap", { start_date: "2026-11-01", max_rows: "10; --" }, /whole number/],
+  ];
+  for (const [what, args, message] of refusals) {
+    it(`refuses ${what} before any request`, async () => {
+      const h = await harness(FULL_ENV, gcpRoute());
+      const r = await h.call("get_gcp_cost_breakdown", args);
+      expect(r.isError).toBe(true);
+      expect(r.content[0]!.text).toMatch(message);
+      expect(h.seen).toHaveLength(0);
+    });
+  }
+
+  it("keeps a currency's totals when its every group ranks past the cap, without returning that row", async () => {
+    const rows = [
+      [...SERVICE_SKU_ROWS[0]!.slice(0, 8), "1", "4", "12.5", "-1", "2026-11-27T18:00:00Z"],
+      // EUR's top group is fourth overall: back only for EUR's totals.
+      ["Cloud Run", "AAAA-0004", "CPU", "seconds", "EUR", "0.5", "0", "10", "4", "4", "0.75", "-0.05", "2026-11-27T18:00:00Z"],
+    ];
+    const h = await harness(FULL_ENV, gcpRoute({ query: () => breakdownAnswer(rows) }));
+    const out = json(await h.call("get_gcp_cost_breakdown", { start_date: "2026-11-01", group_by: ["service", "sku"], max_rows: 1 }));
+    expect(out.returned).toBe(1);
+    expect((out.rows as Array<{ currency: string }>).map((r) => r.currency)).toEqual(["USD"]);
+    expect(out.totals).toEqual([
+      { currency: "EUR", cost: 0.75, credits: -0.05, net: 0.7 },
+      { currency: "USD", cost: 12.5, credits: -1, net: 11.5 },
+    ]);
+    expect(out.truncated).toBe(true);
+  });
+
+  it("maps rows that arrive on a poll, with the bytes the finished job reports", async () => {
+    const h = await harness(
+      FULL_ENV,
+      gcpRoute({
+        query: () => ({ body: { jobComplete: false, jobReference: { projectId: "example-project", jobId: "job_ok", location: "US" } } }),
+        poll: () => breakdownAnswer(SERVICE_SKU_ROWS, BREAKDOWN_FIELDS, "4096"),
+      }),
+    );
+    const out = json(await h.call("get_gcp_cost_breakdown", { start_date: "2026-11-01", group_by: ["service", "sku"] }));
+    expect(out.returned).toBe(3);
+    expect(out.bytes_processed).toBe(4096);
+  });
+
+  it(`allows exactly ${MAX_BREAKDOWN_DAYS} days`, async () => {
+    const h = await harness(FULL_ENV, gcpRoute({ query: () => breakdownAnswer([]) }));
+    const r = await h.call("get_gcp_cost_breakdown", { start_date: "2026-08-21", end_date: "2026-11-20" });
+    expect(r.isError).toBeFalsy();
+  });
+
+  it("names itself when the export address is misconfigured", async () => {
+    const h = await harness({ ...FULL_ENV, GCP_BILLING_EXPORT_TABLE: "t` UNION ALL SELECT 1 --" }, gcpRoute());
+    const r = await h.call("get_gcp_cost_breakdown", { start_date: "2026-11-01" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/^get_gcp_cost_breakdown is misconfigured: GCP_BILLING_EXPORT_TABLE/);
+    expect(h.seen).toHaveLength(0);
+  });
+
+  it("polls an unfinished job like month-to-date, and says which query gave up", async () => {
+    const incomplete = { body: { jobComplete: false, jobReference: { projectId: "example-project", jobId: "job_b", location: "US" } } };
+    const h = await harness(FULL_ENV, gcpRoute({ query: () => incomplete, poll: () => incomplete }));
+    const r = await h.call("get_gcp_cost_breakdown", { start_date: "2026-11-01" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/did not finish the cost breakdown query in time/);
+    expect(h.seen.filter((s) => s.url.includes("/queries/job_b"))).toHaveLength(MAX_POLLS);
+  });
+
+  it("scrubs the access token and the key from a BigQuery error", async () => {
+    const h = await harness(
+      FULL_ENV,
+      gcpRoute({ query: () => ({ status: 403, body: { error: { code: 403, message: `Access Denied for ${ACCESS_TOKEN} ${PEM.split("\n")[2]}` } } }) }),
+    );
+    const r = await h.call("get_gcp_cost_breakdown", { start_date: "2026-11-01" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/BigQuery Data Viewer/);
+    expectNoSecret(r.content[0]!.text);
   });
 });
 

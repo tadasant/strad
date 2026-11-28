@@ -140,9 +140,9 @@ const EXPECT = {
   // sets GLITCHTIP_ALLOW_WRITE, so its two writes are not listed here; an
   // eighth tool is a new capability, not a version bump.
   glitchtip: 7,
-  // vendor-billing: four fixed billing reads and nothing else — strad's own.
-  // A fifth tool is a new capability, not a version bump.
-  "vendor-billing": 4,
+  // vendor-billing: five fixed billing reads and nothing else — strad's own.
+  // A sixth tool is a new capability, not a version bump.
+  "vendor-billing": 5,
   // Postgres: four reads (schemas, tables, one table, one read-only statement)
   // and no writes — strad's own server. A fifth tool is a new capability, and
   // the place to check that nothing on this mount can write.

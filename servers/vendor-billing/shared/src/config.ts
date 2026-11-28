@@ -1,9 +1,10 @@
 /**
  * What each tool runs on, and the answer a caller gets when it is missing.
  *
- * EACH TOOL IS CONFIGURED ON ITS OWN. Four tools, three vendors, four
- * credentials, and no tool needs another's. A deployment that holds only an
- * OpenAI admin key gets a working `get_openai_costs` and three tools that
+ * EACH TOOL IS CONFIGURED ON ITS OWN. Five tools, three vendors, four
+ * credentials, and no tool needs another's (the two Google Cloud tools share
+ * one). A deployment that holds only an
+ * OpenAI admin key gets a working `get_openai_costs` and four tools that
  * answer `not configured` naming what they lack — by NAME, never by value.
  * Nothing here fails a boot: `tools/list` needs no variable at all.
  *
@@ -47,6 +48,7 @@ export const TOOL_NAMES = [
   "get_openrouter_key_usage",
   "get_openai_costs",
   "get_gcp_month_to_date",
+  "get_gcp_cost_breakdown",
 ] as const;
 
 export type ToolName = (typeof TOOL_NAMES)[number];
@@ -57,6 +59,7 @@ export const TOOL_ENV: Readonly<Record<ToolName, readonly string[]>> = {
   get_openrouter_key_usage: [ENV.openrouterApiKey],
   get_openai_costs: [ENV.openaiAdminKey],
   get_gcp_month_to_date: [ENV.gcpServiceAccountKey, ENV.gcpProject, ENV.gcpDataset, ENV.gcpTable],
+  get_gcp_cost_breakdown: [ENV.gcpServiceAccountKey, ENV.gcpProject, ENV.gcpDataset, ENV.gcpTable],
 };
 
 /** Every variable any tool reads, secret first. */
@@ -101,7 +104,7 @@ export function missingFor(tool: ToolName, env: Env = process.env): string[] {
 /**
  * The variables this mount lacks when NO tool is configured, and nothing once
  * any one is. The bundle host reports a non-empty answer as "every tool will
- * fail", which is only true when all four are unconfigured; a partly
+ * fail", which is only true when all five are unconfigured; a partly
  * configured mount is a working one.
  */
 export function missingCredentials(env: Env = process.env): string[] {
@@ -149,7 +152,7 @@ export interface BillingExportTable {
 }
 
 /** Validate the three parts of the export's address before any SQL sees them. */
-export function billingExportTable(vars: Record<string, string>): BillingExportTable {
+export function billingExportTable(vars: Record<string, string>, tool: ToolName = "get_gcp_month_to_date"): BillingExportTable {
   const project = vars[ENV.gcpProject]!;
   const dataset = vars[ENV.gcpDataset]!;
   const table = vars[ENV.gcpTable]!;
@@ -160,7 +163,7 @@ export function billingExportTable(vars: Record<string, string>): BillingExportT
   if (bad.length > 0) {
     // The values are configuration, not credentials, but they are not echoed
     // either: the variable name is enough to find the mistake.
-    throw new ConfigError(`get_gcp_month_to_date is misconfigured: ${bad.join("; ")}.`);
+    throw new ConfigError(`${tool} is misconfigured: ${bad.join("; ")}.`);
   }
   return { project, dataset, table };
 }

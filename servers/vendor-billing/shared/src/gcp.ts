@@ -1,6 +1,7 @@
 /**
- * Google Cloud: ONE fixed BigQuery query over a Cloud Billing standard usage
- * cost export table, for the current invoice month.
+ * Google Cloud: fixed BigQuery queries over a Cloud Billing standard usage
+ * cost export table. This file runs them and holds the month-to-date one;
+ * `gcp-breakdown.ts` builds the grouped one.
  *
  * AUTH is a service-account key, exchanged for an access token by the JWT
  * bearer grant (RFC 7523) with node's own `crypto` and `fetch`, and no client
@@ -10,10 +11,12 @@
  * query runs in, and nothing else. The assertion only ever goes to Google's
  * own token endpoint: the key file's `token_uri` is not read.
  *
- * THE QUERY IS A CONSTANT apart from the table, which BigQuery cannot bind as a
- * parameter. The table's three parts are validated against strict identifier
- * patterns in `config.ts` before {@link monthToDateQuery} sees them, and the
- * query runs as GoogleSQL with a ceiling on the bytes it may bill.
+ * EACH QUERY IS A CONSTANT apart from the table, which BigQuery cannot bind as
+ * a parameter (the breakdown also picks among fixed fragments by enum). The
+ * table's three parts are validated against strict identifier patterns in
+ * `config.ts` before any query sees them, every value a caller supplies is a
+ * bound query parameter, and each query runs as GoogleSQL with a ceiling on
+ * the bytes it may bill.
  *
  * THE MONTH is the current `invoice.month` in Pacific Time, the zone Cloud
  * Billing invoices in, computed by BigQuery itself so the server's clock is
@@ -26,7 +29,7 @@
 import { createSign } from "node:crypto";
 
 import type { BillingExportTable, ServiceAccountKey } from "./config.js";
-import { deadlineIn, requestJson, UpstreamError, type HttpOptions } from "./http.js";
+import { requestJson, UpstreamError, type HttpOptions } from "./http.js";
 import type { Scrubber } from "./scrub.js";
 
 export const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -126,6 +129,7 @@ interface QueryResponse {
   jobReference?: { projectId?: string; jobId?: string; location?: string };
   schema?: { fields?: Array<{ name?: string }> };
   rows?: Array<{ f?: Array<{ v?: unknown }> }>;
+  totalBytesProcessed?: unknown;
 }
 
 function bigQueryAdvice(status: number): string {
@@ -152,7 +156,7 @@ function bigQueryAdvice(status: number): string {
   }
 }
 
-function number(v: unknown): number | null {
+export function number(v: unknown): number | null {
   if (v === null || v === undefined) return null;
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? Math.round(n * 1e8) / 1e8 : null;
@@ -167,13 +171,28 @@ export interface MonthToDateRow {
   latest_usage_end_time: string | null;
 }
 
-function rows(response: QueryResponse): MonthToDateRow[] {
+/** Each row as a record keyed by the schema's column names. */
+export function cells(response: QueryResponse): Array<Record<string, unknown>> {
   const names = (response.schema?.fields ?? []).map((f) => f.name ?? "");
   return (response.rows ?? []).map((row) => {
     const cell: Record<string, unknown> = {};
     (row.f ?? []).forEach((c, i) => {
       cell[names[i] ?? String(i)] = c?.v ?? null;
     });
+    return cell;
+  });
+}
+
+export function text(v: unknown): string | null {
+  return typeof v === "string" ? v : null;
+}
+
+export function net(cost: number | null, credits: number | null): number | null {
+  return cost !== null && credits !== null ? Math.round((cost + credits) * 1e8) / 1e8 : null;
+}
+
+function rows(response: QueryResponse): MonthToDateRow[] {
+  return cells(response).map((cell) => {
     const cost = number(cell.cost);
     const credits = number(cell.credits);
     return {
@@ -181,18 +200,40 @@ function rows(response: QueryResponse): MonthToDateRow[] {
       currency: typeof cell.currency === "string" ? cell.currency : null,
       cost,
       credits,
-      net: cost !== null && credits !== null ? Math.round((cost + credits) * 1e8) / 1e8 : null,
+      net: net(cost, credits),
       latest_usage_end_time: typeof cell.latest_usage_end_time === "string" ? cell.latest_usage_end_time : null,
     };
   });
 }
 
-export interface MonthToDateOptions extends HttpOptions {
+export interface QueryOptions extends HttpOptions {
   /** A token already minted, so a caller can scrub it. */
   token: string;
 }
 
-export async function monthToDate(table: BillingExportTable, options: MonthToDateOptions) {
+/** One named, typed GoogleSQL query parameter, as `jobs.query` takes it. */
+export interface QueryParameter {
+  name: string;
+  parameterType: { type: "STRING" | "DATE" | "INT64" };
+  parameterValue: { value: string };
+}
+
+export function queryParameter(name: string, type: QueryParameter["parameterType"]["type"], value: string): QueryParameter {
+  return { name, parameterType: { type }, parameterValue: { value } };
+}
+
+/**
+ * Run one query against the export's project and wait for it: the first
+ * `jobs.query` answer, then at most {@link MAX_POLLS} `getQueryResults` polls.
+ * `what` names the query in the "call again" error.
+ */
+export async function runQuery(
+  table: BillingExportTable,
+  query: string,
+  parameters: readonly QueryParameter[],
+  what: string,
+  options: QueryOptions,
+): Promise<QueryResponse> {
   const auth = { Authorization: `Bearer ${options.token}` };
   const project = encodeURIComponent(table.project);
   let response = await requestJson<QueryResponse>(
@@ -202,10 +243,11 @@ export async function monthToDate(table: BillingExportTable, options: MonthToDat
       method: "POST",
       headers: { ...auth, "Content-Type": "application/json" },
       body: JSON.stringify({
-        query: monthToDateQuery(table),
+        query,
         useLegacySql: false,
         timeoutMs: QUERY_WAIT_MS,
         maximumBytesBilled: MAXIMUM_BYTES_BILLED,
+        ...(parameters.length > 0 ? { parameterMode: "NAMED", queryParameters: parameters } : {}),
       }),
       advice: bigQueryAdvice,
     },
@@ -215,10 +257,7 @@ export async function monthToDate(table: BillingExportTable, options: MonthToDat
   for (let polls = 0; response.jobComplete !== true; polls++) {
     const job = response.jobReference;
     if (polls >= MAX_POLLS || !job?.jobId) {
-      throw new UpstreamError(
-        "BigQuery did not finish the month-to-date query in time. It is safe to call again.",
-        0,
-      );
+      throw new UpstreamError(`BigQuery did not finish the ${what} query in time. It is safe to call again.`, 0);
     }
     // The job runs in the export's project, so that is where it is asked
     // about. Only the job id and location come from the answer, encoded.
@@ -236,7 +275,11 @@ export async function monthToDate(table: BillingExportTable, options: MonthToDat
       options,
     );
   }
+  return response;
+}
 
+export async function monthToDate(table: BillingExportTable, options: QueryOptions) {
+  const response = await runQuery(table, monthToDateQuery(table), [], "month-to-date", options);
   const result = rows(response);
   return {
     invoice_month_timezone: "America/Los_Angeles",
