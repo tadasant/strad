@@ -1702,9 +1702,9 @@ immediately; the bare URL keeps serving the cached bytes. The artifact store nev
 creates a public object, so this is bounded to objects made public before it
 existed — but restricting one of those means "no new readers", not "no readers".
 
-### A uniform-access store has no sensitive artifacts, and trusts its operator
+### 171. A uniform-access artifact store has no sensitive artifacts, and trusts its operator
 
-`_UNIFORM_ACCESS=true` is for buckets in an organization that enforces uniform
+`<prefix>_UNIFORM_ACCESS=true` is for buckets in an organization that enforces uniform
 bucket-level access. On one of those there is no per-object ACL to grant a domain,
 so `is_sensitive: true` and `set_sensitivity(true)` are refused outright. Every
 artifact is a signed link, and anyone holding the link can open it until it

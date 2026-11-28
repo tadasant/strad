@@ -241,10 +241,11 @@ export function ownNameOnly(
  * reported first, because a deployment missing both is missing the bucket.
  *
  * A uniform bucket-level access deployment (`_UNIFORM_ACCESS=true`) refuses
- * sensitive uploads BY DESIGN — its bucket can hold no per-object grant — and
- * the tree rejects a viewer domain alongside it, so a missing domain there is
- * the correct configuration, not a degraded one. Only exactly `true` counts,
- * matching the tree's own parse; anything else the tree refuses on first call.
+ * sensitive uploads BY DESIGN — its bucket can hold no per-object grant — so a
+ * missing domain there is the correct configuration, not a degraded one. The
+ * tree's `loadConfig` refuses a viewer domain alongside it, and any value that
+ * is not exactly `true` or `false`, and either refusal fails every tool, so
+ * both are reported here as that.
  *
  * `envPrefix` is passed rather than imported: `index.ts` owns
  * `REMOTE_FS_ENV_PREFIX` (it is half of the marker name
@@ -258,7 +259,15 @@ export function remoteFilesystemDegraded(
   if (!env[`${envPrefix}_GCS_BUCKET`]) {
     return `${envPrefix}_GCS_BUCKET is not set; every tool will fail`;
   }
-  if (env[`${envPrefix}_UNIFORM_ACCESS`]?.trim() === "true") return null;
+  const uniform = env[`${envPrefix}_UNIFORM_ACCESS`]?.trim();
+  if (uniform && uniform !== "true" && uniform !== "false") {
+    return `${envPrefix}_UNIFORM_ACCESS="${uniform}" is not "true" or "false"; every tool will fail`;
+  }
+  if (uniform === "true") {
+    return env[`${envPrefix}_SENSITIVE_VIEWER_DOMAIN`]?.trim()
+      ? `${envPrefix}_SENSITIVE_VIEWER_DOMAIN is set alongside ${envPrefix}_UNIFORM_ACCESS=true; every tool will fail`
+      : null;
+  }
   if (!env[`${envPrefix}_SENSITIVE_VIEWER_DOMAIN`]) {
     return `${envPrefix}_SENSITIVE_VIEWER_DOMAIN is not set; is_sensitive=true uploads will be refused`;
   }

@@ -262,6 +262,19 @@ test("get_upload_url returns a short-lived curlable POST target", async () => {
   await close();
 });
 
+test("get_upload_url refuses a sensitive lease up front on a uniform-access store", async () => {
+  const store = new FakeStore();
+  store.uniformAccess = () => true;
+  const leases = new UploadLeaseStore({ slug: "remote-filesystem-tmp-public", now: () => store.now });
+  const { client, close } = await connect(store, { uploadLeases: leases });
+  const refused = await call(client, "get_upload_url", { path: "a.png", is_sensitive: true });
+  assert.equal(refused.isError, true);
+  assert.match(refused.text, /sign-in-gated links need per-object ACLs/);
+  const granted = await call(client, "get_upload_url", { path: "a.png" });
+  assert.equal(granted.isError, false);
+  await close();
+});
+
 test("a temporary upload URL stores bytes once and returns the artifact link", async () => {
   const store = new FakeStore();
   const created = createMCPServer({

@@ -108,6 +108,11 @@ export interface ArtifactStore {
   viewerAccount(): string | undefined;
   /** Link life, in days, when the caller does not ask for one. */
   defaultLinkDays(): number;
+  /**
+   * True when the bucket uses uniform bucket-level access, so a sensitive
+   * artifact can never be made. Optional: a store that omits it has object ACLs.
+   */
+  uniformAccess?(): boolean;
 }
 
 /**
@@ -191,6 +196,10 @@ export class GcsArtifactStore implements ArtifactStore {
 
   defaultLinkDays(): number {
     return this.config.defaultLinkDays;
+  }
+
+  uniformAccess(): boolean {
+    return this.config.uniformAccess === true;
   }
 
   async put(

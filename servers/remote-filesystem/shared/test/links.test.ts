@@ -317,6 +317,8 @@ test("UNIFORM_ACCESS is off by default, on only for exactly \"true\"", () => {
   assert.equal(loadConfig("RF", { ...base, RF_UNIFORM_ACCESS: "false" }).uniformAccess, false);
   assert.equal(loadConfig("RF", { ...base, RF_UNIFORM_ACCESS: "true" }).uniformAccess, true);
   assert.equal(loadConfig("RF", { ...base, RF_UNIFORM_ACCESS: " true " }).uniformAccess, true);
+  assert.equal(loadConfig("RF", { ...base, RF_UNIFORM_ACCESS: "" }).uniformAccess, false);
+  assert.throws(() => loadConfig("RF", { ...base, RF_UNIFORM_ACCESS: "TRUE" }), /must be "true" or "false"/);
   assert.throws(
     () => loadConfig("RF", { ...base, RF_UNIFORM_ACCESS: "yes" }),
     /RF_UNIFORM_ACCESS="yes" must be "true" or "false"/,

@@ -4,6 +4,7 @@ import {
   MAX_UPLOAD_BYTES,
   MAX_UPLOAD_URL_MINUTES,
 } from "../config.js";
+import { StoreError, UNIFORM_ACCESS_SENSITIVE_REFUSAL } from "../store.js";
 import {
   UploadLeaseSchema,
   type UploadLeaseStore,
@@ -92,6 +93,11 @@ export function getUploadUrlTool(
       try {
         const input = UploadLeaseSchema.parse(args);
         const store = storeFactory();
+        // Refused HERE, not when the POST arrives: the put would refuse it too,
+        // but only after the caller had already shipped the bytes with curl.
+        if (input.is_sensitive && store.uniformAccess?.()) {
+          throw new StoreError(UNIFORM_ACCESS_SENSITIVE_REFUSAL);
+        }
         return ok(leases.create(input, store.defaultLinkDays()));
       } catch (err) {
         return fail(err);
