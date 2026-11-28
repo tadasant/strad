@@ -129,6 +129,7 @@ different bucket, and one process cannot hold two values of `GCS_BUCKET`.
 | `_SENSITIVE_VIEWER_ACCOUNT` | no | address a restricted link names via `?authuser=`, e.g. `dana@tadasant.com`. Must be a full address inside `_SENSITIVE_VIEWER_DOMAIN`; a bad one is rejected when the store is first built, which is the first tool call after a deploy |
 | `_LINK_DEFAULT_DAYS` | no | default link life. Defaults to 14 |
 | `_UPLOAD_BASE_URL` | no | public origin for absolute upload URLs. Falls back to `STRAD_PUBLIC_URL`; if neither is set, `get_upload_url` returns a root-relative path |
+| `_UNIFORM_ACCESS` | no | `true` for a bucket that enforces uniform bucket-level access; see below. Exactly `true` or `false`; anything else is rejected. Defaults to off |
 
 Without `_SENSITIVE_VIEWER_DOMAIN`, an `is_sensitive: true` upload is **refused**
 rather than stored. Storing a sensitive artifact that nobody can open is a worse
@@ -136,14 +137,46 @@ outcome than a loud failure.
 
 ## Bucket requirements
 
-- **Uniform bucket-level access must be OFF.** The restricted path is a per-object
+The default mode needs:
+
+- **Uniform bucket-level access OFF.** The restricted path is a per-object
   ACL, and UBLA disables object ACLs. IAM Conditions are not an alternative — they
-  require UBLA *on*. With UBLA on, every artifact reads as `access: "unknown"` and
-  no link is issued at all, which is the intended failure: losing the sign-in gate
-  quietly would be worse.
-- The service account needs object read/write on the bucket, plus
+  require UBLA *on*. With UBLA on and `_UNIFORM_ACCESS` unset, every artifact reads
+  as `access: "unknown"` and no link is issued at all, which is the intended
+  failure: losing the sign-in gate quietly would be worse.
+- A service account with object read/write on the bucket, plus
   `storage.objects.update` to set ACLs, and a private key so URLs can be signed
   locally.
+
+### Uniform-access mode
+
+Some GCP organizations enforce `constraints/storage.uniformBucketLevelAccess`, so
+a bucket with object ACLs cannot be created at all. For those, set
+`<prefix>_UNIFORM_ACCESS=true` — on the standard slug,
+`REMOTE_FILESYSTEM_TMP_PUBLIC_UNIFORM_ACCESS=true`. Then:
+
+- No object ACL is ever read or written.
+- Every artifact is `access: "link"`: private, opened with a signed URL that
+  expires. Uploads, `get_upload_url`, `refresh_link`, `list_files`,
+  `download_file`, `delete_file` and `set_sensitivity(false)` all work.
+- `is_sensitive: true` and `set_sensitivity(true)` are **refused**, and nothing is
+  stored or changed: a sign-in-gated link needs a per-object ACL, which the bucket
+  does not allow. Setting `_SENSITIVE_VIEWER_DOMAIN` alongside it is a config error,
+  and the mount is not reported `degraded` for leaving it unset.
+
+Reporting `link` without reading an ACL is honest only because of what the bucket
+guarantees, so the mode carries two requirements of its own:
+
+- **Uniform bucket-level access ON.** No object ACL exists, so there is no
+  per-object `allUsers` grant this server could fail to see.
+- **Public access prevention enforced.** Bucket IAM then cannot grant `allUsers`
+  or `allAuthenticatedUsers`, so nothing makes an object public behind the
+  server's back.
+
+The server does not check either; it takes the setting as the operator's
+statement about the bucket. Set it on a bucket with ACLs and a world-readable
+object is reported as a private link. The service account needs object
+read/write (no ACL permission) and a private key for signing.
 
 ## Build and test
 

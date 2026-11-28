@@ -580,6 +580,52 @@ describe("remoteFilesystemDegraded", () => {
     );
   });
 
+  it("is not degraded without a viewer domain on a uniform-access bucket", () => {
+    expect(
+      remoteFilesystemDegraded(
+        {
+          [`${PREFIX}_GCS_BUCKET`]: "strad-artifacts",
+          [`${PREFIX}_UNIFORM_ACCESS`]: "true",
+        },
+        PREFIX,
+      ),
+    ).toBeNull();
+  });
+
+  it("still degrades sensitive uploads when UNIFORM_ACCESS is anything but true", () => {
+    expect(
+      remoteFilesystemDegraded(
+        {
+          [`${PREFIX}_GCS_BUCKET`]: "strad-artifacts",
+          [`${PREFIX}_UNIFORM_ACCESS`]: "false",
+        },
+        PREFIX,
+      ),
+    ).toContain("_SENSITIVE_VIEWER_DOMAIN is not set");
+  });
+
+  it("reports a viewer domain beside UNIFORM_ACCESS=true, which fails every call", () => {
+    expect(
+      remoteFilesystemDegraded(
+        {
+          [`${PREFIX}_GCS_BUCKET`]: "strad-artifacts",
+          [`${PREFIX}_UNIFORM_ACCESS`]: "true",
+          [`${PREFIX}_SENSITIVE_VIEWER_DOMAIN`]: "example.com",
+        },
+        PREFIX,
+      ),
+    ).toContain("is set alongside REMOTE_FILESYSTEM_TMP_PUBLIC_UNIFORM_ACCESS=true; every tool will fail");
+  });
+
+  it("reports a malformed UNIFORM_ACCESS rather than the viewer domain", () => {
+    expect(
+      remoteFilesystemDegraded(
+        { [`${PREFIX}_GCS_BUCKET`]: "strad-artifacts", [`${PREFIX}_UNIFORM_ACCESS`]: "TRUE" },
+        PREFIX,
+      ),
+    ).toBe(`${PREFIX}_UNIFORM_ACCESS="TRUE" is not "true" or "false"; every tool will fail`);
+  });
+
   it("reports the bucket first when both are missing", () => {
     expect(remoteFilesystemDegraded({}, PREFIX)).toContain("_GCS_BUCKET");
   });

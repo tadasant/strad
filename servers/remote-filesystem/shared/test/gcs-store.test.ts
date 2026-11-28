@@ -30,10 +30,29 @@ class NotFound extends Error {
 }
 
 /** A fake GCS object: bytes, metadata and an ACL we can inspect and break. */
-function fakeStorage({ objects = new Map(), aclReadFails = false, aclDeleteFails = false } = {}) {
+function fakeStorage({
+  objects = new Map(),
+  aclReadFails = false,
+  aclDeleteFails = false,
+  uniform = false,
+} = {}) {
   const signed = [];
+  // Every ACL call made, so a uniform-access test can assert there were none.
+  const aclCalls = [];
+  // What GCS answers an object-ACL call on a uniform bucket-level access bucket.
+  const ubla = (op) => {
+    aclCalls.push(op);
+    if (uniform) {
+      const err = new Error(
+        "Cannot use ACL API to " + op + " object policy when object policy is controlled by uniform bucket-level access",
+      );
+      err.code = 400;
+      throw err;
+    }
+  };
   const storage = {
     signed,
+    aclCalls,
     objects,
     bucket() {
       return {
@@ -65,14 +84,17 @@ function fakeStorage({ objects = new Map(), aclReadFails = false, aclDeleteFails
             },
             acl: {
               async get() {
+                ubla("get");
                 if (aclReadFails) throw new Error("uniform bucket-level access is enabled");
                 return [get().acl.map((e) => ({ ...e }))];
               },
               async add({ entity, role }) {
+                ubla("add");
                 get().acl.push({ entity, role });
                 return [{ entity, role }];
               },
               async delete({ entity }) {
+                ubla("delete");
                 if (aclDeleteFails) {
                   const err = new Error("does not have storage.objects.update access");
                   err.code = 403;
@@ -269,4 +291,75 @@ test("a sensitive upload is refused outright when no viewer domain is configured
     /no viewer domain is configured/,
   );
   assert.equal(fake.objects.size, 0, "nothing is stored when the grant cannot be made");
+});
+
+// -- uniform bucket-level access ----------------------------------------------
+
+const uniformStore = (config = {}) => {
+  const fake = fakeStorage({ uniform: true });
+  return store({ viewerDomain: undefined, uniformAccess: true, ...config }, fake);
+};
+
+test("default mode on a UBLA bucket still refuses to link, and points at the setting", async () => {
+  // The rule the uniform mode must not weaken: without the operator's say-so, an
+  // unreadable ACL is `unknown`, and `unknown` gets no anonymous URL.
+  const { store: s, fake } = store({}, fakeStorage({ uniform: true }));
+  await assert.rejects(
+    s.put(bytes(), { path: "a.png", sensitive: false, expires_in_days: 14 }),
+    /cannot read the object's ACL.*_UNIFORM_ACCESS=true/s,
+  );
+  assert.equal(fake.signed.length, 0, "nothing is signed for an unknown object");
+});
+
+test("uniform mode: an upload is stored and gets a signed link, with no ACL call", async () => {
+  const { store: s, fake } = uniformStore();
+  const { artifact, link } = await s.put(bytes(), { path: "a.png", sensitive: false, expires_in_days: 14 });
+  assert.equal(artifact.access, "link");
+  assert.equal(link.signing_version, "v2");
+  assert.equal(link.requires_sign_in, false);
+  assert.ok(link.expires_at);
+  assert.ok(fake.objects.has("a.png"));
+  assert.deepEqual(fake.aclCalls, []);
+});
+
+test("uniform mode: refresh_link, download and listing work with no ACL call", async () => {
+  const { store: s, fake } = uniformStore();
+  await s.put(bytes(), { path: "screenshots/a.png", sensitive: false, expires_in_days: 7 });
+
+  const refreshed = await s.link("screenshots/a.png", 3);
+  assert.equal(refreshed.artifact.access, "link");
+  assert.equal(refreshed.link.signing_version, "v4");
+
+  const { buffer, artifact } = await s.read("screenshots/a.png");
+  assert.equal(buffer.toString(), "artifact");
+  assert.equal(artifact.access, "link");
+
+  const page = await s.list({ prefix: "screenshots" });
+  assert.deepEqual(page.files.map((f) => f.path), ["screenshots/a.png"]);
+
+  await s.remove("screenshots/a.png");
+  assert.equal(fake.objects.size, 0);
+  assert.deepEqual(fake.aclCalls, []);
+});
+
+test("uniform mode: a sensitive upload is refused and nothing is stored", async () => {
+  const { store: s, fake } = uniformStore();
+  await assert.rejects(
+    s.put(bytes(), { path: "a.png", sensitive: true, expires_in_days: 14 }),
+    /uniform bucket-level access.*per-object ACLs/s,
+  );
+  assert.equal(fake.objects.size, 0);
+  assert.deepEqual(fake.aclCalls, []);
+});
+
+test("uniform mode: set_sensitivity(true) is refused; (false) answers with a link", async () => {
+  const { store: s, fake } = uniformStore();
+  await s.put(bytes(), { path: "a.png", sensitive: false, expires_in_days: 14 });
+
+  await assert.rejects(s.setSensitive("a.png", true, 14), /sign-in-gated links need per-object ACLs/);
+  const { artifact, link } = await s.setSensitive("a.png", false, 14);
+  assert.equal(artifact.access, "link");
+  assert.equal(link.requires_sign_in, false);
+  await assert.rejects(s.setSensitive("nope.png", false, 14), /Use list_files/);
+  assert.deepEqual(fake.aclCalls, []);
 });

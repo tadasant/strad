@@ -8755,3 +8755,36 @@ npm package call the same ones.
 
 **Undo.** Move to the documented `/api/v1/apps/{id}` routes if Hatchbox retires
 the old ones, accepting that the deploy tier then needs the API key.
+
+---
+
+## 171. A uniform-access artifact store has no sensitive artifacts, and trusts its operator
+
+**What.** `servers/remote-filesystem` reads `<prefix>_UNIFORM_ACCESS`
+(`REMOTE_FILESYSTEM_TMP_PUBLIC_UNIFORM_ACCESS` on the standard slug). Set to
+`true`, the store never reads or writes an object ACL, reports every object as
+`access: "link"`, and refuses `is_sensitive: true` and `set_sensitivity(true)`.
+Default off.
+
+**Why.** Some GCP organizations enforce
+`constraints/storage.uniformBucketLevelAccess`, so a bucket with object ACLs
+cannot be created there. The default mode reads an ACL after every save, the read
+fails under UBLA, the object is `unknown`, and no link is issued, so the store
+cannot work on such a bucket at all. A sensitive artifact is a per-object
+`domain-` READER ACL, and UBLA has nowhere to put one, so the mode refuses it
+rather than storing a weaker artifact than was asked for.
+
+**The debt.**
+
+- **`link` is reported without a read.** That is true only on a bucket with UBLA
+  on and public access prevention enforced, and the server checks neither. It
+  takes the flag as the operator's statement about the bucket. The flag set on a
+  bucket that still has ACLs reports a world-readable object as a private link.
+  A bucket-metadata check (`iamConfiguration`) would need `storage.buckets.get`,
+  which object-admin roles do not hold.
+- **No sign-in-gated artifacts.** Everything in a uniform-access store opens for
+  anyone holding the link until it expires.
+
+**Undo.** Use a bucket in a project where object ACLs are allowed and unset the
+flag, or build sensitivity on something UBLA permits, such as a second bucket
+whose IAM grants the viewer domain.

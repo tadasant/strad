@@ -20,6 +20,7 @@ export {
 export {
   GcsArtifactStore,
   StoreError,
+  UNIFORM_ACCESS_SENSITIVE_REFUSAL,
   generatePath,
   inferContentType,
   type Access,
