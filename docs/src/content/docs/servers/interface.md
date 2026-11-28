@@ -103,7 +103,7 @@ parameter. The credential lands under the slug's
 | `provider`             | _(required)_                         | `google` or `generic`. A discriminated union, not an open enum: it decides which other fields the block carries, and a config cannot name a provider strad has no implementation for. |
 | `account`              | _(required)_                         | The Google account this slug is pinned to. Checked against the verified `email` claim on the ID token, and a mismatch is refused with nothing written. |
 | `scopes`               | _(required)_                         | The exact capability scopes to request, at least one. strad adds `openid` and `email` itself, and the config gate refuses an identity scope written by hand. |
-| `clientIdVariable`     | `GOOGLE_SHEETS_OAUTH_CLIENT_ID`      | Names a variable in **this slug's own** namespace, read `oauth/` first then `static/`. Set it to the name **this server's own tree reads** — the default is google-sheets' because google-sheets was first, not because it is right for every server. A gmail connector sets `GMAIL_OAUTH_CLIENT_ID`, a google-docs one `GOOGLE_DOCS_OAUTH_CLIENT_ID`. Required, with no default, on `provider: generic`. |
+| `clientIdVariable`     | `GOOGLE_SHEETS_OAUTH_CLIENT_ID`      | Names a variable in **this slug's own** namespace, read `oauth/` first then `static/`. Set it to the name **this server's own tree reads** — the default is google-sheets' because google-sheets was first, not because it is right for every server. A gmail connector sets `GMAIL_OAUTH_CLIENT_ID`, a google-docs one `GOOGLE_DOCS_OAUTH_CLIENT_ID`, a google-search-console one `GOOGLE_SEARCH_CONSOLE_OAUTH_CLIENT_ID`. Required, with no default, on `provider: generic`. |
 | `clientSecretVariable` | `GOOGLE_SHEETS_OAUTH_CLIENT_SECRET`  | Same rule; gmail reads `GMAIL_OAUTH_CLIENT_SECRET`, google-docs `GOOGLE_DOCS_OAUTH_CLIENT_SECRET`.                              |
 | `refreshTokenVariable` | `GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`  | The one the console flow **writes**, on connect and on reconnect — always under the `oauth` kind. Same rule; gmail reads `GMAIL_OAUTH_REFRESH_TOKEN`, google-docs `GOOGLE_DOCS_OAUTH_REFRESH_TOKEN`. |
 
@@ -548,7 +548,7 @@ A server **served by a container image**. strad deploys the image as an
 internal-only component and proxies to it over the private network.
 
 One bundle runs one image, but that image may host **many** servers — each on its
-own `path`. strad's own bundle image mounts forty MCP servers in one process,
+own `path`. strad's own bundle image mounts forty-one MCP servers in one process,
 and staging's slugs land on twenty `path`s of one container.
 
 Two servers may also share a `path` in one bundle — that is the capability-variant
@@ -1028,7 +1028,7 @@ strad validates the whole config strictly at boot (a Zod `superRefine` in
 
 Note what is deliberately **not** an error: many servers in one bundle, and two
 servers on the same `path` of one bundle. Both are load-bearing — the first is how
-forty MCP servers fit in one container, the second is how a read-only and a
+forty-one MCP servers fit in one container, the second is how a read-only and a
 read-write variant share it.
 
 Nor is repeating one env key across servers with the **same value**. That is the

@@ -323,7 +323,7 @@ numbers describe "how many servers," and they count different things:
 | ---------- | -------------------------------------------------------------------------------------------------- |
 | **3**      | App Platform components: `core`, `bundle`, `bundle-zimmer-secrets`                                 |
 | **30**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
-| **40**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
+| **41**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
 | **45**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included)         |
 | **48**     | total server slugs in staging (45 + `echo` builtin + `deepwiki` remote-http + `anki` local-tunnel) |
 
@@ -392,7 +392,7 @@ slop behind when you fix a stale fact.
   "did I typo a key" is answered here, by `scripts/check-config.ts`.
 - `src/deploy/appspec.ts` — turns the config into a DigitalOcean App Platform spec.
   The server list decides the container topology.
-- `servers/bundle/` — one image, 40 mounted MCP servers, one shared Chromium,
+- `servers/bundle/` — one image, 41 mounted MCP servers, one shared Chromium,
   assembled from THIRTY independently-built dependency trees.
 - `servers/remote-filesystem/` — strad's own artifact store, behind the
   `remote-filesystem-tmp-public` slug. `is_sensitive` picks the KIND of link;

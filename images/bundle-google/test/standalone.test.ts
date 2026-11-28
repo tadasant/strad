@@ -17,6 +17,7 @@ import { parseOptions } from "../src/standalone/serve.js";
 
 const CALENDAR = fileURLToPath(new URL("../dist/standalone/google-calendar.js", import.meta.url));
 const DRIVE = fileURLToPath(new URL("../dist/standalone/google-drive.js", import.meta.url));
+const SEARCH_CONSOLE = fileURLToPath(new URL("../dist/standalone/google-search-console.js", import.meta.url));
 const DOCS = fileURLToPath(new URL("../dist/standalone/google-docs.js", import.meta.url));
 const GMAIL = fileURLToPath(new URL("../dist/standalone/gmail.js", import.meta.url));
 const GMAIL_READ_TOOLS = [
@@ -59,6 +60,14 @@ const DRIVE_TOOLS = [
   "trash_file",
   "update_file_metadata",
 ];
+const SEARCH_CONSOLE_TOOLS = [
+  "get_site",
+  "get_sitemap",
+  "inspect_url",
+  "list_sitemaps",
+  "list_sites",
+  "query_search_analytics",
+];
 const CALENDAR_TOOLS = [
   "create_calendar_event",
   "delete_calendar_event",
@@ -73,7 +82,7 @@ const CALENDAR_TOOLS = [
 function cleanEnv(extra: Record<string, string> = {}): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (v === undefined || k.startsWith("GCAL_") || k.startsWith("GOOGLE_CALENDAR_") || k.startsWith("GOOGLE_DRIVE_") || k.startsWith("GOOGLE_DOCS_") || k.startsWith("GMAIL_") || k.startsWith("ELICITATION_") || k.endsWith("ENABLED_TOOLGROUPS") || k === "PORT") continue;
+    if (v === undefined || k.startsWith("GCAL_") || k.startsWith("GOOGLE_CALENDAR_") || k.startsWith("GOOGLE_DRIVE_") || k.startsWith("GOOGLE_SEARCH_CONSOLE_") || k.startsWith("GOOGLE_DOCS_") || k.startsWith("GMAIL_") || k.startsWith("ELICITATION_") || k.endsWith("ENABLED_TOOLGROUPS") || k === "PORT") continue;
     env[k] = v;
   }
   return { ...env, ...extra };
@@ -377,6 +386,47 @@ describe("google-drive standalone", () => {
     expect(stderr).toContain('unknown tool group(s) "read-only"');
   });
 });
+describe("google-search-console standalone", () => {
+  it("serves all six tools over stdio with no credentials set", async () => {
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [SEARCH_CONSOLE],
+      env: cleanEnv(),
+      stderr: "pipe",
+    });
+    let stderr = "";
+    transport.stderr!.on("data", (d) => (stderr += d));
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(transport);
+    try {
+      expect(client.getServerVersion()?.name).toBe("google-search-console-workspace-mcp-server");
+      expect(await toolNames(client)).toEqual(SEARCH_CONSOLE_TOOLS);
+      expect(stderr).toContain("GOOGLE_SEARCH_CONSOLE_OAUTH_REFRESH_TOKEN");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("serves all six tools over Streamable HTTP, and a call without a credential names it", async () => {
+    const { url } = await startHttp([], cleanEnv(), SEARCH_CONSOLE);
+    const client = new Client({ name: "standalone-test", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(url));
+    try {
+      expect(await toolNames(client)).toEqual(SEARCH_CONSOLE_TOOLS);
+      const result = (await client.callTool({ name: "list_sites", arguments: {} })) as {
+        content: Array<{ text: string }>;
+        isError?: boolean;
+      };
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("GOOGLE_SEARCH_CONSOLE_OAUTH_CLIENT_ID");
+    } finally {
+      await client.close();
+    }
+    const health = await fetch(new URL("/healthz", url));
+    expect(await health.json()).toEqual({ ok: true, server: "google-search-console" });
+  });
+});
+
 describe("google-docs standalone", () => {
   it("serves all eleven tools over stdio with no credentials set", async () => {
     const transport = new StdioClientTransport({

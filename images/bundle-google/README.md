@@ -78,11 +78,11 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   port (`--transport`, `--port`/`PORT`, `--host`), and each file beside it is
   one server's entrypoint, built to `dist/standalone/<server>.js`. It reuses
   the factory this image mounts, so a standalone server is the bundled one.
-  `gmail.ts`, `google-calendar.ts`, `google-docs.ts` and `google-drive.ts`
-  are the four. Their how-tos are `vendor/gmail-shared/README.md`,
-  `vendor/google-calendar-shared/README.md`,
-  `vendor/google-docs-shared/README.md` and
-  `vendor/google-drive-shared/README.md`, and `test/standalone.test.ts`
+  `gmail.ts`, `google-calendar.ts`, `google-docs.ts`, `google-drive.ts` and
+  `google-search-console.ts` are the five. Their how-tos are
+  `vendor/gmail-shared/README.md`, `vendor/google-calendar-shared/README.md`,
+  `vendor/google-docs-shared/README.md`, `vendor/google-drive-shared/README.md`
+  and `vendor/google-search-console-shared/README.md`, and `test/standalone.test.ts`
   runs both transports for each. `gmail.ts` and `google-docs.ts` go through
   `src/gmail.ts` and `src/docs.ts`, the layers `/gmail` and `/google-docs`
   mount, not the vendored factories. `gmail.ts` serves `readonly` and
@@ -139,6 +139,14 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   does not mount it. On its own it runs through
   `src/standalone/google-drive.ts`, and its README is the how-to.
   `vendor/google-drive-shared/test/` is its suite. See `HACKS.md` #124.
+- `vendor/google-search-console-shared/` — strad's own Google Search Console
+  server, written here in google-sheets' shape: six read tools on
+  `webmasters.readonly`, one Google account per OAuth refresh token, read out
+  of an injected env. **This image's `src/index.ts` does not mount it; the
+  collapsed bundle does**, at `/google-search-console` and once per slug whose
+  `oauth:` connector names its variables. `src/standalone/google-search-console.ts`
+  runs it alone, and its README is the how-to.
+  `vendor/google-search-console-shared/test/` is its suite. See `HACKS.md` #173.
 - `scripts/smoke.mjs` — connects a real MCP client to all four paths and lists
   tools; the credential-free boot test used by CI and `npm run smoke`.
 
@@ -147,7 +155,7 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
 ```bash
 npm install
 npm run build          # builds vendored shared packages, then the entrypoint
-npm test               # the google-sheets, gmail fork and src/ (gmail, docs) suites (builds first)
+npm test               # the google-sheets, google-drive, google-search-console, gmail fork and src/ suites (builds first)
 node dist/index.js &   # serves on :8080
 npm run smoke          # asserts all four servers list their tools
 ```
@@ -272,6 +280,16 @@ A refresh token is ONE Google account, which is why this server reads an injecte
 env rather than `process.env`: the collapsed bundle mounts it once per strad slug,
 each with its own account. This image keeps the single conventional mount. See
 `docs/src/content/docs/servers/google-sheets.md`.
+
+### google-search-console (collapsed bundle and standalone only)
+
+| Purpose | Variables |
+| --- | --- |
+| **OAuth2 (refresh token)** — the ONLY mode | `GOOGLE_SEARCH_CONSOLE_OAUTH_CLIENT_ID`, `GOOGLE_SEARCH_CONSOLE_OAUTH_CLIENT_SECRET`, `GOOGLE_SEARCH_CONSOLE_OAUTH_REFRESH_TOKEN` |
+| **Console reconnect hint** (not a credential) | `GOOGLE_SEARCH_CONSOLE_RECONNECT_URL` — the page named in an `invalid_grant` error |
+
+Scope: `https://www.googleapis.com/auth/webmasters.readonly`, for every tool.
+See `docs/src/content/docs/servers/google-search-console.md`.
 
 ## ⚠️ Domain-wide delegation is a human/admin dependency
 

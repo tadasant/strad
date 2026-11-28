@@ -392,7 +392,7 @@ one (hack #4).
 **✅ RESOLVED.** Core presents the internal token to every `supplementary-image`
 component, and the `strad-bundle` host refuses a mount request without it.
 
-**What.** The `strad-bundle` container — forty mounts, and every upstream
+**What.** The `strad-bundle` container — forty-one mounts, and every upstream
 credential behind them — serves every mount unauthenticated. Its only protection
 is the network boundary: an internal-only App Platform component
 (`internal_ports: [8080]`, no public route), reachable by core over the private
@@ -789,10 +789,10 @@ still what makes prod's read-only variants read-only.
 policies) → confirm → _then_ delete the per-server images, their workflows and the
 toggle plumbing.
 
-## 24. Forty servers share one process, and one Chromium
+## 24. Forty-one servers share one process, and one Chromium
 
-The collapsed bundle is one container running forty MCP servers and one
-headless Chromium. An OOM there is a forty-server outage; it used to be a
+The collapsed bundle is one container running forty-one MCP servers and one
+headless Chromium. An OOM there is a forty-one-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -3761,7 +3761,7 @@ behaviour, which is the pre-change one.
 a listed parameter current in a supplementary container's `process.env` without a
 redeploy. What it cannot do is make the MCP server inside that container LOOK at
 the new value. That is a property of the upstream, and this image runs
-forty of them, most written by other people.
+forty-one of them, most written by other people.
 
 The split is real and it is not subtle:
 
@@ -8830,3 +8830,45 @@ Mac or pasted by hand. That is the route custody exists to replace.
 
 **Undo.** Delete the `depositStores:` entry or the caller's `deposit.stores:`
 name. Either one closes the store at the next deploy.
+
+---
+
+## 173. Google Search Console is strad's own server, and has met only fakes
+
+**What.** `images/bundle-google/vendor/google-search-console-shared` is a
+read-only Search Console MCP server written in this repo: `list_sites`,
+`get_site`, `query_search_analytics`, `list_sitemaps`, `get_sitemap` and
+`inspect_url`, over plain `fetch` against `webmasters/v3` and
+`searchconsole/v1`. The bundle host mounts it at `/google-search-console` and
+once per slug whose `oauth:` connector names `GOOGLE_SEARCH_CONSOLE_OAUTH_*`,
+the google-sheets shape.
+
+**Why.** Google publishes no Search Console MCP server, and a deployment wanted
+one domain property's performance and index status in reach of an agent,
+through the same console Connect flow as the other Google slugs.
+
+**What it costs.**
+
+- **No request has reached Google.** The suite fakes `fetch`. The request paths
+  and bodies follow Google's reference; the response shapes the renderers read
+  are the reference's too, not observations.
+- **One scope, no tiers.** Every tool reads and the token is
+  `webmasters.readonly`, so there is no `-rw` slug to make. Sitemap submit and
+  delete, and adding a site, have no tool.
+- **The slug sees every property its account sees.** Search Console grants
+  properties to accounts, not to OAuth clients, and the token cannot be narrowed
+  to one property. A slug that should see one domain needs an account that has
+  only that one.
+- **`inspect_url` reads Google's indexed copy.** The API has no live test and
+  no request-indexing call. Google caps inspection at 2,000 calls a day per
+  property.
+- **The default window runs two to three days ahead of the data.** It ends
+  today in Pacific time, Search Console's day, and Search Console runs two to
+  three days behind, so the last days of a default query are empty under
+  `data_state: final`.
+- **Slugs arrive by deploy only.** This is not a store-served instance tree:
+  there is no `/_instance/google-search-console/{slug}` loader, so a slug
+  created at runtime is not served until a deploy bakes its variables onto the
+  bundle. google-sheets has that loader; this server does not yet.
+
+**Undo.** Delete the tree and its loader if Google ships a server of its own.

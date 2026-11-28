@@ -28,7 +28,7 @@ flowchart TB
             BI["core builtins<br/>(in-process)"]
         end
         subgraph priv["Private network (VPC)"]
-            BU["bundle (internal-only)<br/>ghcr.io/tadasant/strad-bundle<br/>40 MCP servers · 1 shared Chromium<br/>apps-s-1vcpu-2gb"]
+            BU["bundle (internal-only)<br/>ghcr.io/tadasant/strad-bundle<br/>41 MCP servers · 1 shared Chromium<br/>apps-s-1vcpu-2gb"]
         end
     end
 
@@ -70,26 +70,26 @@ for servers on it. Every non-core component gets `STRAD_CORE_URL` for it.
 
 A bundle runs **one image**, and any number of servers may share it, each on its
 own `path`. strad's own deployment has one main bundle: a
-`ghcr.io/tadasant/strad-bundle` container that mounts forty MCP servers in
+`ghcr.io/tadasant/strad-bundle` container that mounts forty-one MCP servers in
 one Node process, assembled from thirty independently-built dependency trees.
 The staging config maps forty-one of its forty-five `supplementary-image`
 entries onto twenty-eight paths, because capability variants of one upstream are two
 entries pointing at the same path. Twenty-seven of those are baked mounts;
-`/x-twitter`, `/google-sheets`, `/grafana`, `/victorialogs`,
+`/x-twitter`, `/google-sheets`, `/google-search-console`, `/grafana`, `/victorialogs`,
 `/glitchtip`, `/vendor-billing`, `/postgres`, `/hatchbox`, `/google-drive` and `/aws-device-farm` are baked with no staging slug pointing at them. The twenty-eighth, `/grafana-registry`, is a **per-slug
 instance** — a mount the host stands up only when the container carries that
 slug's own credential (see below). The other two entries run on bundles of
 their own, below.
 
-Thirteen of those mounts are also mounted again, once per slug, when a deployment
+Fourteen of those mounts are also mounted again, once per slug, when a deployment
 gives a slug its own credential rather than sharing the container's: `/telegram`,
 `/remote-filesystem-tmp-public`, `/grafana`, `/victorialogs`,
-`/glitchtip`, `/postgres`, `/hatchbox`, `/google-sheets`, `/google-drive`, `/gmail`, `/google-docs`, `/google-calendar` and `/onepassword`. What counts as
+`/glitchtip`, `/postgres`, `/hatchbox`, `/google-sheets`, `/google-search-console`, `/google-drive`, `/gmail`, `/google-docs`, `/google-calendar` and `/onepassword`. What counts as
 "its own" is per tree: telegram wants the whole credential, the artifact store
 wants a bucket, grafana and glitchtip want an origin and a token, postgres a database URI, hatchbox an app id (each tier of one app holding only its own keys), victorialogs an
 entrypoint, 1Password wants a service-account
 token, and
-google-sheets, google-drive, gmail, google-docs and google-calendar want the OAuth client id and secret — never
+google-sheets, google-search-console, google-drive, gmail, google-docs and google-calendar want the OAuth client id and secret — never
 the refresh token, which a human mints later on the mount's own console page.
 That is what makes six `google-sheets-*` slugs over three Google accounts one
 server rather than three — see [Google Sheets](/servers/google-sheets/) — and
@@ -152,7 +152,7 @@ Three numbers, three different things:
 | Number | What it counts                                                                               |
 | ------ | -------------------------------------------------------------------------------------------- |
 | **3**  | App Platform components (`core`, `bundle`, `bundle-zimmer-secrets`)                          |
-| **40** | MCP servers mounted inside the bundle image                                                  |
+| **41** | MCP servers mounted inside the bundle image                                                  |
 | **48** | server slugs in `infra/strad.staging.yaml` (45 supplementary + `echo` + `deepwiki` + `anki`) |
 
 ### The two modes
@@ -691,7 +691,7 @@ The server list drives how containers are grouped:
   per slug from [its own variables](/operate/secrets/#what-a-servers-variables-are-called-on-the-box).
 - **A browser bundle needs real headroom.** Chromium costs ~1.06s per launch and
   peaks ~545MB RSS, and CPU rather than RAM is what binds it, because 1 vCPU
-  serialises rendering. strad's own deployment puts everything (40 mounted servers,
+  serialises rendering. strad's own deployment puts everything (41 mounted servers,
   one shared Chromium, the `op` CLI) in one `apps-s-1vcpu-2gb` component: the
   measured working set is ~760MB with two browser servers logging in at once.
   Several Chromiums in one component is the thing to avoid — share one browser and
@@ -707,8 +707,8 @@ The server list drives how containers are grouped:
 
 <aside class="starlight-aside starlight-aside--caution">
 
-**One process, one core, forty servers is an accepted risk, not a proven
-design.** A crash in the bundle host takes all forty down together, and the
+**One process, one core, forty-one servers is an accepted risk, not a proven
+design.** A crash in the bundle host takes all forty-one down together, and the
 single vCPU is shared with Chromium. If it turns out to be starved, the next move
 is a dedicated CPU (`apps-d-1vcpu-2gb`), not more RAM — the binding constraint is
 compute. This is what the [telemetry](/operate/telemetry/) exists to answer. See

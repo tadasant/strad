@@ -1,6 +1,6 @@
 name: Release bundle image
 
-# Build THE strad bundle image — all forty MCP servers in one container — and
+# Build THE strad bundle image — all forty-one MCP servers in one container — and
 # push it to ghcr.
 #
 # The build itself is `release-supplementary-image.yml`, which every

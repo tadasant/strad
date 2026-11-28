@@ -1084,6 +1084,31 @@ servers:
         - get_file
         - read_file
 
+  # --- google-search-console, one property owner's account per slug -----------
+  # google-sheets' shape: OAuth only, one Google account per refresh token, a
+  # path of its own. The three variable names MUST be named. Left at the
+  # google-sheets defaults, the slug is discovered by the google-sheets tree and
+  # serves spreadsheets, not Search Console.
+  #
+  # One scope, read-only, and every tool reads, so there is no -rw tier to make
+  # and no `tools:` list to keep: Google refuses this token every write the
+  # Search Console API has. The account is whoever owns or was granted the
+  # property in Search Console; the slug sees every property that account sees.
+  - slug: google-search-console-someone
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /google-search-console-someone
+    entitlements: [admin, readonly]
+    oauth:
+      provider: google
+      account: someone@example.com
+      scopes:
+        - https://www.googleapis.com/auth/webmasters.readonly
+      clientIdVariable: GOOGLE_SEARCH_CONSOLE_OAUTH_CLIENT_ID
+      clientSecretVariable: GOOGLE_SEARCH_CONSOLE_OAUTH_CLIENT_SECRET
+      refreshTokenVariable: GOOGLE_SEARCH_CONSOLE_OAUTH_REFRESH_TOKEN
+
   # --- oauth: provider generic ------------------------------------------------
   # `google` is an IMPLEMENTATION — strad knows the endpoints, asks for an ID
   # token, and refuses a consent from the wrong account. `generic` is a

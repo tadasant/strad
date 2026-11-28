@@ -28,15 +28,17 @@ concurrency:
 
 jobs:
   # THE CODE IN THIS IMAGE THAT STRAD WROTE, which is the code whose bugs would be
-  # silent. Three suites, and none is in a vendored tree:
+  # silent. Four suites, and none is in a vendored tree:
   #
   #   - `vendor/google-sheets-shared/test/` — a server strad authored rather
   #     than vendored. Its A1 arithmetic decides which cell a write lands in,
   #     and a credential-free smoke test never addresses a cell. Plus the tier
   #     lists a read-only slug's `tools: allow:` is copied from in another
   #     repository.
-  #   - `vendor/google-drive-shared/test/` — the other one. What each Drive
+  #   - `vendor/google-drive-shared/test/` — another. What each Drive
   #     request sends, including the multipart upload a create is.
+  #   - `vendor/google-search-console-shared/test/` — the third. How a
+  #     property is spelled into a request path, and the search analytics body.
   #   - `test/` — `src/gmail.ts` and `src/docs.ts`, strad's per-account layers
   #     over the gmail and google-docs trees. They decide which account a mount
   #     reads, and getting that wrong is a mount that serves the wrong account

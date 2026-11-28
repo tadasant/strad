@@ -135,6 +135,10 @@ export default defineConfig({
               slug: "servers/aws-device-farm-setup",
             },
             { label: "Google Sheets", slug: "servers/google-sheets" },
+            {
+              label: "Google Search Console",
+              slug: "servers/google-search-console",
+            },
             { label: "strad fetch", slug: "servers/strad-fetch" },
             { label: "Image diff and SVG tracer", slug: "servers/image-tools" },
             { label: "Nutrition facts", slug: "servers/nutrition-facts" },

@@ -615,12 +615,12 @@ nothing warns beforehand. Publishing the OAuth app removes the expiry.
 
 ## The deployment
 
-### 24. Forty servers share one process and one CPU
+### 24. Forty-one servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts forty MCP servers,
+The `bundle` component runs one Node process that mounts forty-one MCP servers,
 launches one shared Chromium and supervises an `mcp-grafana` and an
 `mcp-victorialogs` child process per mount that uses one, on
-`apps-s-1vcpu-2gb`. A crash in the host takes all forty down together, and
+`apps-s-1vcpu-2gb`. A crash in the host takes all forty-one down together, and
 Chromium contends with every other server for the single vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -1011,7 +1011,7 @@ a store-wide read.
 keeps a listed parameter current in a supplementary container's environment
 without a redeploy. It cannot make the MCP server inside that container **look**
 at the new value — that is a property of the upstream, and the bundle image runs
-forty of them, most written by other people.
+forty-one of them, most written by other people.
 
 `strad-fetch` builds its scraping clients inside a factory the host invokes per
 request, so a rotated key is used by the next tool call; that is the case the
@@ -2618,7 +2618,7 @@ leak. Nothing in the cache is a credential; it is public pages someone fetched.
 
 **What the fork DID bound is the memory.** Upstream's store grows for the life of
 the process, which is fine for a subprocess the OS reclaims and an out-of-memory
-kill in a container that hosts forty mounts. The cache is LRU-bounded on both
+kill in a container that hosts forty-one mounts. The cache is LRU-bounded on both
 entry count and bytes, and the filesystem backend is gone (App Platform gives the
 container no persistent volume, so it was memory with extra steps).
 
@@ -5278,3 +5278,26 @@ Zimmer's parameter store or a deploy workflow's Secret Manager project.
 - **Google stores only.** Anything else is still the local form-POST hand-off.
 
 See `HACKS.md` #172.
+
+---
+
+### 173. Google Search Console is strad's own server, and has met only fakes
+
+The [Google Search Console](/servers/google-search-console/) server is written
+in this repo, read-only, against Google's API reference.
+
+- **No request has reached Google.** Its tests fake the network. The response
+  shapes it renders are the reference's, not observed ones.
+- **A slug sees every property its Google account sees.** A token cannot be
+  narrowed to one property. To expose one domain, connect an account that has
+  only that one.
+- **`inspect_url` reads the indexed copy.** No live test, no request-indexing,
+  and Google allows 2,000 inspections a day per property.
+- **The default date window ends today in Pacific time**, and Search Console
+  runs two to three days behind. The newest days of a default query are empty
+  unless `data_state` is `all`.
+- **A slug arrives by deploy only.** It is not a
+  [store-served instance](/operate/runtime-config/) tree, so a slug created at
+  runtime is not served until a deploy puts its variables on the bundle.
+
+See `HACKS.md` #173.

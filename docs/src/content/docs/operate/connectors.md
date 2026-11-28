@@ -246,12 +246,13 @@ renders, deploys, and is never mounted — with nothing in any log to say why.
 The defaults are `google-sheets`' set, because google-sheets was the first server
 to consume them. That is history, not a recommendation:
 
-| Server          | Set the three to                                                                                |
-| --------------- | ----------------------------------------------------------------------------------------------- |
-| `google-sheets` | `GOOGLE_SHEETS_OAUTH_CLIENT_ID` / `..._CLIENT_SECRET` / `..._REFRESH_TOKEN` — i.e. the defaults |
-| `gmail`         | `GMAIL_OAUTH_CLIENT_ID` / `GMAIL_OAUTH_CLIENT_SECRET` / `GMAIL_OAUTH_REFRESH_TOKEN`             |
-| `google-docs`   | `GOOGLE_DOCS_OAUTH_CLIENT_ID` / `..._CLIENT_SECRET` / `..._REFRESH_TOKEN`                       |
-| anything else   | Whatever that tree reads. Check its README before writing the block                             |
+| Server                  | Set the three to                                                                                |
+| ----------------------- | ----------------------------------------------------------------------------------------------- |
+| `google-sheets`         | `GOOGLE_SHEETS_OAUTH_CLIENT_ID` / `..._CLIENT_SECRET` / `..._REFRESH_TOKEN` — i.e. the defaults |
+| `gmail`                 | `GMAIL_OAUTH_CLIENT_ID` / `GMAIL_OAUTH_CLIENT_SECRET` / `GMAIL_OAUTH_REFRESH_TOKEN`             |
+| `google-docs`           | `GOOGLE_DOCS_OAUTH_CLIENT_ID` / `..._CLIENT_SECRET` / `..._REFRESH_TOKEN`                       |
+| `google-search-console` | `GOOGLE_SEARCH_CONSOLE_OAUTH_CLIENT_ID` / `..._CLIENT_SECRET` / `..._REFRESH_TOKEN`             |
+| anything else           | Whatever that tree reads. Check its README before writing the block                             |
 
 ```yaml
 - slug: gmail-personal-ro

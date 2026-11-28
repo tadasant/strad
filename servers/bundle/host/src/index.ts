@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * bundle — THE strad supplementary image. All 40 MCP servers (40
+ * bundle — THE strad supplementary image. All 41 MCP servers (41
  * mounts, see `buildMounts`), one container, one process, one Chromium, and one
  * mcp-grafana and one mcp-victorialogs child per mount that uses them. The
  * gateway's config names more SLUGS than that — 45 supplementary-image entries
@@ -11,20 +11,20 @@
  * is named by none BY DESIGN: every SSH host is its own store-served instance
  * at `/_instance/ssh/{slug}`, and the conventional mount is the degraded one.
  *
- * FORTY IS THE FLOOR, not a constant. Thirteen trees (telegram,
- * remote-filesystem, google-sheets, google-drive, google-calendar, gmail,
+ * FORTY-ONE IS THE FLOOR, not a constant. Fourteen trees (telegram,
+ * remote-filesystem, google-sheets, google-search-console, google-drive, google-calendar, gmail,
  * google-docs, grafana, victorialogs, glitchtip, postgres, hatchbox,
  * onepassword) mount ONE INSTANCE PER SLUG the environment carries
  * per-slug values for — see
  * `extraSlugs` — so a container told about `telegram-ro` and `telegram-rw`
  * separately serves /telegram, /telegram-ro and /telegram-rw. google-sheets,
- * google-drive, google-calendar, gmail, google-docs, grafana, victorialogs, glitchtip, postgres, hatchbox and onepassword are
+ * google-search-console, google-drive, google-calendar, gmail, google-docs, grafana, victorialogs, glitchtip, postgres, hatchbox and onepassword are
  * the cases a real deployment uses: an OAuth refresh token IS one Google account,
  * a service-account token IS one Grafana, an entrypoint IS one VictoriaLogs,
  * a URL and token IS one GlitchTip, a database URI IS one Postgres database, an app id IS one Hatchbox app (one slug per tier), and a 1Password service-account token
  * IS one 1Password account at one vault scope, so each extra account is another
  * mount here. The conventional path is always mounted, so a config that asks for
- * none of this sees exactly the forty it saw before.
+ * none of this sees exactly the forty-one it saw before.
  *
  * STORE-SERVED INSTANCES are the other way in, and the one that needs no deploy.
  * A strad server on `path: /_instance/{tree}/{slug}` puts nothing on this
@@ -68,8 +68,8 @@
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
  *
- * BLAST RADIUS, honestly. Forty servers share a process. A crash is
- * a 40-server outage, not a 1-server outage. Everything below that CAN be made
+ * BLAST RADIUS, honestly. Forty-one servers share a process. A crash is
+ * a 41-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
  * catastrophic here); a dead Chromium is relaunched on next use; an unhandled
@@ -438,7 +438,7 @@ async function buildMounts(): Promise<Mount[]> {
   mounts.push(...(await loadImageTools()));
   mounts.push(await loadNutritionFacts());
 
-  // --- bundle-google: gmail / calendar / docs / sheets / drive ----------------
+  // --- bundle-google: gmail / calendar / docs / sheets / drive / search console
   // calendar builds its server per request. Its service-account client is built
   // per call; its `GOOGLE_CALENDAR_AUTH_MODE=oauth` client is cached per
   // credential inside the tree, which reads `process.env`, so this host passes
@@ -538,6 +538,24 @@ async function buildMounts(): Promise<Mount[]> {
     deferred.push({
       slug,
       load: async () => loadGoogleDrive(google.drive, slug, true),
+    });
+
+  // google-search-console has google-sheets' shape exactly: OAuth only, one
+  // Google account per refresh token, a conventional mount that is degraded
+  // until something gives it a credential, and one mount per slug an `oauth:`
+  // connector seeds an OAuth client for. Discovered on the app pair for the same
+  // reason: the token is minted on the slug's console page, after the deploy.
+  mounts.push(
+    loadGoogleSearchConsole(google.searchConsole, "google-search-console", false),
+  );
+  for (const slug of extraSlugs(
+    "google-search-console",
+    google.searchConsole.GOOGLE_SEARCH_CONSOLE_OAUTH_APP_ENV_NAMES,
+  ))
+    deferred.push({
+      slug,
+      load: async () =>
+        loadGoogleSearchConsole(google.searchConsole, slug, true),
     });
 
   // --- secrets --------------------------------------------------------------
@@ -877,6 +895,16 @@ interface GoogleSheetsModule {
   GOOGLE_SHEETS_OAUTH_APP_ENV_NAMES: readonly string[];
 }
 
+/** google-sheets' shape: OAuth only, one account per credential, names owned by the tree. */
+interface GoogleSearchConsoleModule {
+  createMCPServer: Factory;
+  missingCredentials: (env: Record<string, string | undefined>) => string[];
+  /** The variables ONE account's credential is made of. */
+  GOOGLE_SEARCH_CONSOLE_ENV_NAMES: readonly string[];
+  /** The OAuth app pair, and the marker set per-slug discovery keys on. */
+  GOOGLE_SEARCH_CONSOLE_OAUTH_APP_ENV_NAMES: readonly string[];
+}
+
 /**
  * strad-fetch — web page retrieval, strad's fork of @pulsemcp/pulse-fetch.
  *
@@ -1125,6 +1153,7 @@ interface GoogleTree {
   docs: GoogleDocsModule;
   sheets: GoogleSheetsModule;
   drive: GoogleDriveModule;
+  searchConsole: GoogleSearchConsoleModule;
 }
 
 async function loadGoogleTree(): Promise<GoogleTree> {
@@ -1164,6 +1193,10 @@ async function loadGoogleTree(): Promise<GoogleTree> {
     "bundle-google",
     "vendor/google-drive-shared/build/index.js",
   );
+  const searchConsole = await loadFromTree<GoogleSearchConsoleModule>(
+    "bundle-google",
+    "vendor/google-search-console-shared/build/index.js",
+  );
   return {
     gmail,
     calendar: calendar.createMCPServer,
@@ -1171,6 +1204,7 @@ async function loadGoogleTree(): Promise<GoogleTree> {
     docs,
     sheets,
     drive,
+    searchConsole,
   };
 }
 
@@ -1510,6 +1544,58 @@ function loadGoogleSheets(
 }
 
 /**
+ * google-search-console: one mount per Google ACCOUNT, for google-sheets'
+ * reason — a refresh token is one person's consent — and built the same way.
+ * Every tool reads, and the token is consented for `webmasters.readonly` alone,
+ * so there is no read/write split for the gateway to make here: Google refuses
+ * the token every write the API has.
+ */
+function loadGoogleSearchConsole(
+  searchConsole: GoogleSearchConsoleModule,
+  slug: string,
+  perSlug: boolean,
+): Mount {
+  const view = slugEnvView(process.env, slug);
+  // A discovered slug's account is its own or it has none: drop the refresh
+  // token it would otherwise inherit under the bare name. See loadGoogleSheets.
+  if (perSlug) {
+    const app = new Set<string>(
+      searchConsole.GOOGLE_SEARCH_CONSOLE_OAUTH_APP_ENV_NAMES,
+    );
+    dropInheritedNames(
+      view,
+      slug,
+      searchConsole.GOOGLE_SEARCH_CONSOLE_ENV_NAMES.filter(
+        (name) => !app.has(name),
+      ),
+    );
+  }
+  const env = {
+    ...view,
+    // Where to go when the token dies — same as google-sheets, same reason.
+    ...(process.env.STRAD_PUBLIC_URL
+      ? {
+          GOOGLE_SEARCH_CONSOLE_RECONNECT_URL: `${process.env.STRAD_PUBLIC_URL.replace(/\/$/, "")}/ui/${slug}`,
+        }
+      : {}),
+  };
+  const missing = searchConsole.missingCredentials(env);
+
+  return {
+    slug,
+    tree: "bundle-google",
+    serverName: "google-search-console-workspace-mcp-server",
+    capabilities: { tools: {} },
+    degraded: missingCredentialsDegraded(missing),
+    register: async (s) => {
+      await searchConsole
+        .createMCPServer({ version: VERSION, env })
+        .registerHandlers(s);
+    },
+  };
+}
+
+/**
  * remote-filesystem-tmp-public — strad's own artifact store.
  *
  * THE COLLISION THIS SOLVES. `gcs` and this server both want `GCS_BUCKET`, and
@@ -1640,7 +1726,7 @@ async function loadXTwitter(): Promise<Mount> {
     // The client caches its OAuth provider for the host process, so the factory
     // is built once here and memoised inside registerHandlers. Building it
     // LAZILY matters: `createXClientFromEnv` throws when no X credential is
-    // configured at all, and a throw at boot would take all forty mounts down
+    // configured at all, and a throw at boot would take all forty-one mounts down
     // over one unconfigured server.
     register: (s) =>
       created.registerHandlers(s, () =>
@@ -2838,7 +2924,7 @@ async function main(): Promise<void> {
   //
   // NOT AWAITED, and that is deliberate. A pass is one sequential read per
   // listed variable, each with its own timeout, so awaiting it would put a slow
-  // or unreachable core directly in front of `listen()` below — forty
+  // or unreachable core directly in front of `listen()` below — forty-one
   // mounts held off serving because one credential could not be re-read. The
   // container starting with the value the deploy baked is exactly the behaviour
   // every deployment has today, so falling back to it costs nothing; blocking
@@ -2851,7 +2937,7 @@ async function main(): Promise<void> {
   // STORE-SERVED INSTANCES — the mounts no deploy named. See the header.
   //
   // The first sync is NOT awaited, for the reason the refresh pass above is
-  // not: a slow core must not stand in front of `listen()` for forty
+  // not: a slow core must not stand in front of `listen()` for forty-one
   // mounts that need nothing from it. A request that arrives before the sync
   // lands takes the miss path in the route below, which syncs then.
   const instances = createInstanceReconciler<Mount>({
@@ -2904,7 +2990,7 @@ async function main(): Promise<void> {
   const internalOnly = requireInternalToken(process.env, timingSafeEqual);
 
   // Liveness for App Platform. Reports every mount and whether it is degraded —
-  // with 40 servers behind one health check, "ok: true" alone is not information.
+  // with 41 servers behind one health check, "ok: true" alone is not information.
   //
   // Deliberately OUTSIDE `internalOnly`. The platform's health prober holds no
   // token, and a 401 here is a component App Platform takes out of service — an
@@ -3128,8 +3214,8 @@ async function main(): Promise<void> {
     });
   });
 
-  // One stray rejection from one of forty servers must not kill the other
-  // thirty-nine. The standalone images exit here (correct, when the process IS the
+  // One stray rejection from one of forty-one servers must not kill the other
+  // forty. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {
     logError("unhandledRejection", reason);
