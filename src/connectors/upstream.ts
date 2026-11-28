@@ -13,7 +13,7 @@ import {
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
 import { withRequestDeadline } from "../util/deadline.ts";
-import { rotateOrCreate } from "./index.ts";
+import { connectorRedirectUri, rotateOrCreate } from "./index.ts";
 import {
   buildPkceAuthorizeUrl,
   ConnectorError,
@@ -40,8 +40,11 @@ import {
  *   2. READ the protected-resource metadata for its authorization server, then
  *      that server's own metadata (RFC 8414, with the OpenID Connect paths as
  *      the fallback the MCP spec names).
- *   3. REGISTER a public client (RFC 7591) whose one redirect URI is strad's
- *      console callback — or use the client id the config already names.
+ *   3. NAME A CLIENT: the client id the config already names; or, when the
+ *      authorization server takes one, strad's own client ID metadata
+ *      document (draft-ietf-oauth-client-id-metadata-document), whose URL IS
+ *      the client id; or a public client registered by RFC 7591. Each has one
+ *      redirect URI, strad's console callback. `clientSource` has the order.
  *   4. AUTHORIZE with code + PKCE and `resource=` (RFC 8707), and exchange the
  *      code at the token endpoint discovery returned.
  *
@@ -341,6 +344,13 @@ export interface UpstreamDiscovery {
   authorizationEndpoint: string;
   tokenEndpoint: string;
   registrationEndpoint: string | null;
+  /**
+   * The metadata's `client_id_metadata_document_supported` is exactly `true`:
+   * this server fetches a client's metadata document from the `https` URL it
+   * is given as `client_id`, so strad's own (`clientMetadataUrl`) is a client
+   * id that needs no registration.
+   */
+  clientIdMetadataDocumentSupported: boolean;
   /** The scopes to request. Empty means the `scope` parameter is omitted. */
   scopes: string[];
 }
@@ -1028,6 +1038,8 @@ export async function discoverUpstream(
     authorizationEndpoint,
     tokenEndpoint,
     registrationEndpoint,
+    clientIdMetadataDocumentSupported:
+      asMeta.client_id_metadata_document_supported === true,
     scopes,
   };
 }
@@ -1183,6 +1195,125 @@ export async function registerClient(
 }
 
 // ---------------------------------------------------------------------------
+// Client ID Metadata Documents
+// ---------------------------------------------------------------------------
+
+/**
+ * Where strad serves each slug's client ID metadata document, under the
+ * gateway's public URL: `{publicUrl}/_strad/oauth/client/{slug}.json`.
+ *
+ * The client id IS this URL (draft-ietf-oauth-client-id-metadata-document §3),
+ * so an authorization server that supports the draft takes it at `/authorize`
+ * with no registration, fetches the document, and checks the redirect URI
+ * against the one it lists. One document per slug rather than one per
+ * deployment, for the reason a registered client is per slug: two slugs on
+ * one upstream are two clients, and a grant issued to one is never presented
+ * by the other.
+ */
+export const CLIENT_METADATA_ROUTE_PREFIX = "/_strad/oauth/client";
+
+/**
+ * This slug's client id — the document's own address — or null when the
+ * deployment cannot have one.
+ *
+ * The draft requires an `https` URL with a path. A deployment without
+ * `gateway.publicUrl`, or with a plain-http one (a local rig), has no URL an
+ * authorization server would accept, so the document is unavailable there and
+ * Connect falls back to registration. No loopback exception: an authorization
+ * server on the internet cannot fetch a document from this machine's
+ * loopback, so allowing one would buy nothing.
+ */
+export function clientMetadataUrl(
+  config: StradConfig,
+  slug: string,
+): string | null {
+  const publicUrl = config.gateway.publicUrl;
+  if (!publicUrl) return null;
+  let u: URL;
+  try {
+    u = new URL(publicUrl);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "https:" || u.username || u.password) return null;
+  if (u.search || u.hash) return null;
+  return `${publicUrl.replace(/\/$/, "")}${CLIENT_METADATA_ROUTE_PREFIX}/${slug}.json`;
+}
+
+/**
+ * May this plan sign in as strad's metadata-document client at all?
+ *
+ * The document declares a PUBLIC client (`token_endpoint_auth_method: none`),
+ * so a block that declares `clientSecret:` — a client a human registered, or
+ * Figma's confidential registration — never uses one. A literal `clientId:` is
+ * a client the config already names. What is left is a `${NAME}` the flow
+ * writes, the same case a public registered client covers.
+ */
+export function metadataDocumentEligible(plan: UpstreamPlan): boolean {
+  return (
+    plan.problems.length === 0 &&
+    plan.clientId?.mode === "write" &&
+    plan.clientSecretVariable === null
+  );
+}
+
+/** The document, as an authorization server reads it. */
+export interface ClientMetadataDocument {
+  client_id: string;
+  client_name: string;
+  redirect_uris: string[];
+  grant_types: string[];
+  response_types: string[];
+  token_endpoint_auth_method: "none";
+}
+
+/**
+ * This slug's client ID metadata document, or null — and null is a `404`.
+ *
+ * Null unless the slug is an enabled `remote-http` with `oauthRefresh:` whose
+ * plan could sign in with it (`metadataDocumentEligible`), on a deployment
+ * with an `https` public URL. A slug that is not a Connect, or whose Connect
+ * never signs in this way, publishes nothing.
+ *
+ * Everything in it is config, and none of it is a secret: a name, strad's
+ * callback, and the grant shape every public client strad registers already
+ * sends to a registration endpoint. `client_name` is `registration.clientName`
+ * when the block declares one and otherwise the name strad registers under,
+ * so a consent screen reads the same whichever way the client was named.
+ */
+export function clientMetadataDocument(
+  config: StradConfig,
+  slug: string,
+): ClientMetadataDocument | null {
+  const entry = upstreamConnectorFor(config, slug);
+  if (!entry) return null;
+  const plan = upstreamPlan(entry);
+  if (!metadataDocumentEligible(plan)) return null;
+  const clientId = clientMetadataUrl(config, slug);
+  const redirectUri = connectorRedirectUri(config);
+  if (!clientId || !redirectUri) return null;
+  return {
+    client_id: clientId,
+    client_name: upstreamClientName(config, slug, plan),
+    redirect_uris: [redirectUri],
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+    token_endpoint_auth_method: "none",
+  };
+}
+
+/** The name strad's client goes by at the upstream, however it was named. */
+export function upstreamClientName(
+  config: StradConfig,
+  slug: string,
+  plan: UpstreamPlan,
+): string {
+  return (
+    plan.registration?.clientName ?? `strad (${config.gateway.env}) ${slug}`
+  );
+}
+
+// ---------------------------------------------------------------------------
 // The flow
 // ---------------------------------------------------------------------------
 
@@ -1192,8 +1323,14 @@ export async function registerClient(
  */
 export interface UpstreamTerms {
   clientId: string;
-  /** Did strad register `clientId` on this Connect? Then the callback writes it. */
+  /**
+   * Did strad NAME `clientId` on this Connect — register it, or present its
+   * own metadata document? Then the callback writes it beside the refresh
+   * token it was issued with, so every refresh sends the same id.
+   */
   registered: boolean;
+  /** `clientId` is strad's own client ID metadata document URL. */
+  metadataDocument?: true;
   /**
    * The secret issued with a confidential client strad registered, ENCRYPTED
    * under `ConsoleSessions.connectorSecret`. The transaction itself is only
@@ -1218,21 +1355,52 @@ export function upstreamConfigTerms(entry: UpstreamConnector): string {
 export type ClientSource =
   | { kind: "literal"; clientId: string }
   | { kind: "seeded"; variable: string; path: string }
+  | { kind: "metadata_document"; clientId: string }
   | { kind: "register" };
 
+/** What the discovered authorization server offers, for `clientSource`. */
+export interface ClientOffers {
+  /**
+   * strad's own metadata-document URL for this slug, when the server
+   * advertises `client_id_metadata_document_supported` AND this deployment
+   * has one to give (`clientMetadataUrl`). Null otherwise.
+   */
+  metadataDocument: string | null;
+  /** The server has a `registration_endpoint`. */
+  registration: boolean;
+}
+
 /**
- * Which client a Connect will use, BEFORE anything is fetched where possible.
+ * Which client a Connect will use, decided once discovery has answered.
  *
- * A literal is a client the config already names. A `${NAME}` is registered
- * fresh when the upstream offers registration and the block declares no client
- * secret — or declares one AND `registration:`, which is what lets strad keep
- * the secret it is issued. Otherwise it must already be seeded in this slug's
- * own namespace, and that value is used. `held` is the slug's namespace
- * listing.
+ * THE ORDER, and why:
+ *
+ *   1. A LITERAL `clientId:`, a client the config names. Supplied beats
+ *      everything: someone registered it on purpose, and on an upstream that
+ *      allowlists its clients it is the only one that works.
+ *   2. strad's CLIENT ID METADATA DOCUMENT, when the server says it takes one
+ *      and the block declares no client secret. The MCP authorization spec
+ *      says a client SHOULD prefer it to registration, and it is the better
+ *      client: nothing is minted at the upstream on each Connect, the id is
+ *      the same on every Reconnect, and the redirect URI is vouched for by
+ *      this deployment's own host. A server that offers both is signed into
+ *      this way. Some offer only this.
+ *   3. DYNAMIC REGISTRATION (RFC 7591), when the server offers it and the
+ *      block declares no client secret — or declares one AND `registration:`,
+ *      which is what lets strad keep the secret it is issued.
+ *   4. A client SEEDED under the `${NAME}` in this slug's own namespace. Last,
+ *      not first, because that name is also where 2 and 3 WRITE their client
+ *      id: a held value is usually what an earlier Connect chose rather than
+ *      something a human supplied, and preferring it would keep signing in as
+ *      a client strad no longer stands behind. It is the answer when nothing
+ *      above applies, and what a refused registration falls back to.
+ *   5. Otherwise null, and the Connect refuses with what to seed where.
+ *
+ * `held` is the slug's namespace listing.
  */
 export function clientSource(
   plan: UpstreamPlan,
-  canRegister: boolean,
+  offers: ClientOffers,
   held: ReadonlyMap<string, ParameterMeta>,
 ): ClientSource | null {
   const field = plan.clientId;
@@ -1240,8 +1408,11 @@ export function clientSource(
   if (field.mode === "literal") {
     return { kind: "literal", clientId: field.value };
   }
+  if (offers.metadataDocument !== null && metadataDocumentEligible(plan)) {
+    return { kind: "metadata_document", clientId: offers.metadataDocument };
+  }
   if (
-    canRegister &&
+    offers.registration &&
     (plan.clientSecretVariable === null || plan.registration !== null)
   ) {
     return { kind: "register" };
@@ -1473,9 +1644,11 @@ export function upstreamNote(
 ): string {
   const client = !terms.registered
     ? "the configured client"
-    : terms.sealedClientSecret
-      ? "a confidential client strad registered"
-      : "a client strad registered";
+    : terms.metadataDocument
+      ? "strad's client metadata document"
+      : terms.sealedClientSecret
+        ? "a confidential client strad registered"
+        : "a client strad registered";
   const granted =
     grantedScopes.length > 0
       ? `; granted: ${grantedScopes.join(" ")}`

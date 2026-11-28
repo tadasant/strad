@@ -48,6 +48,10 @@ const ALL_REFS = `
       clientId: "\${RIPPLING_CLIENT_ID}"
       refreshToken: "\${RIPPLING_REFRESH_TOKEN}"`;
 
+/** `clientSource` offers: registration only, and nothing at all. */
+const REG = { metadataDocument: null, registration: true };
+const NONE = { metadataDocument: null, registration: false };
+
 /** A scripted fetch: url -> answer. Anything unlisted is a 404. */
 function scripted(
   answers: Record<
@@ -193,7 +197,7 @@ describe("upstreamPlan: what the flow may write", () => {
       upstreamConnectorFor(configOf(secret), "rippling")!,
     );
     expect(without.registration).toBeNull();
-    expect(clientSource(without, true, new Map())).toBeNull();
+    expect(clientSource(without, REG, new Map())).toBeNull();
     expect(
       upstreamPlan(upstreamConnectorFor(configOf(ALL_REFS), "rippling")!)
         .registration,
@@ -209,9 +213,9 @@ describe("upstreamPlan: what the flow may write", () => {
     );
     expect(withIt.problems).toEqual([]);
     expect(withIt.registration).toEqual({ clientName: "Claude Code (strad)" });
-    expect(clientSource(withIt, true, new Map())).toEqual({ kind: "register" });
+    expect(clientSource(withIt, REG, new Map())).toEqual({ kind: "register" });
     // No registration endpoint: still the seeded client, as without it.
-    expect(clientSource(withIt, false, new Map())).toBeNull();
+    expect(clientSource(withIt, NONE, new Map())).toBeNull();
   });
 
   it("registration: with a literal clientId is a problem, and a ${NAME} clientName does not parse", () => {
@@ -289,6 +293,7 @@ describe("discoverUpstream", () => {
       authorizationEndpoint: `${AS}/authorize`,
       tokenEndpoint: `${AS}/token`,
       registrationEndpoint: `${AS}/register`,
+      clientIdMetadataDocumentSupported: false,
       scopes: ["read", "offline_access"],
     });
   });
@@ -669,6 +674,7 @@ describe("beginUpstreamAuthorization", () => {
     authorizationEndpoint: "https://as.example/authorize",
     tokenEndpoint: "https://as.example/token",
     registrationEndpoint: null,
+    clientIdMetadataDocumentSupported: false,
     scopes: ["read"],
   };
   const begin = (authorizeParams?: Record<string, string>) =>

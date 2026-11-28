@@ -3482,7 +3482,7 @@ A `remote-http` server with `oauthRefresh:` has a **Connect** button that runs t
   Registration, the code exchange and every refresh still leave from strad. Before it registers anything or sends anyone to sign in, Connect GETs the token endpoint and refuses (`token_endpoint_blocked`) on a `403` page a firewall signed (`cf-ray`, `server: cloudflare`, `AkamaiGHost`). An unsigned `403` page passes, so a firewall that signs nothing is found at the code exchange instead, after the sign-in. A firewall there means no refresh would ever work, and neither workaround helps.
 
 - **Public clients only, when strad registers one — unless the slug declares `registration:`.** The transaction that carries a registered client from the button to the callback is a signed cookie, not an encrypted one, so strad registers with `token_endpoint_auth_method: none` and refuses a confidential answer. A server that needs a client secret gets a client a human registered at the upstream, seeded under the `clientId` and `clientSecret` `${NAME}`s. A slug with `registration:` and `clientSecret:` instead registers a confidential client and carries its secret encrypted (#159).
-- **A fresh client on every Connect.** Each Connect registers a new client and stops using the old one; nothing deletes the old registration at the upstream.
+- **A fresh client on every Connect.** Each Connect registers a new client and stops using the old one; nothing deletes the old registration at the upstream. A server that takes a client ID metadata document registers nothing: strad signs in with its own document's URL, the same on every Connect (#173).
 - **A refresh token nobody asked for the right way is found after the consent.** strad asks for `offline_access` where the server lists it. A server that wants a query parameter instead (Google's `access_type=offline` and `prompt=consent`) needs `oauthRefresh.authorizeParams:`, and nothing in its metadata says so. Without it the human signs in, and the callback refuses with `no_refresh_token` and writes nothing; the page names the setting.
 - **No identity is proved.** As with `provider: generic`, strad stores whichever account signed in. The page says `account: not checked`.
 - **Other replicas catch up on their TTL.** Connect drops the cached reading of the process that served it. Another core replica sees the new values within `ttlSeconds`; core runs one instance today.
@@ -5276,3 +5276,26 @@ Zimmer's parameter store or a deploy workflow's Secret Manager project.
 - **Google stores only.** Anything else is still the local form-POST hand-off.
 
 See `HACKS.md` #172.
+
+---
+
+### 173. Connect's client ID metadata document must be fetchable, and has met no real authorization server
+
+A `remote-http` Connect signs in with strad's own
+[client ID metadata document](/operate/connectors/#client-id-metadata-documents)
+when the upstream's authorization server takes one, and prefers it to
+registration. Loops' official server takes nothing else.
+
+- **The authorization server fetches the document from the internet.** The
+  client id is `{gateway.publicUrl}/_strad/oauth/client/{slug}.json`, so
+  `gateway.publicUrl` must be the `https` origin core really serves, and nothing
+  in front of core may gate that path. Without an `https` public URL, Connect
+  falls back to registration, or refuses with `no_client` and names
+  `gateway.publicUrl` on a server that only takes a document.
+- **A refusal happens in the browser.** A server that cannot fetch the document,
+  or will not accept it, says so on its own sign-in page. strad cannot see that,
+  so it does not fall back to registration and logs nothing for it.
+- **Fakes only.** It is tested end to end against a fake authorization server
+  that advertises `client_id_metadata_document_supported`, not against Loops.
+
+See `HACKS.md` #173.
