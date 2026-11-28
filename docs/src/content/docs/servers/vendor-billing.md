@@ -1,17 +1,17 @@
 ---
 title: Vendor billing
-description: strad's own read-only billing server — OpenRouter credits and key usage, OpenAI organization costs, and Google Cloud month-to-date spend from a Cloud Billing BigQuery export. Fixed reads, one credential per tool.
+description: strad's own read-only billing server — OpenRouter credits and key usage, OpenAI organization costs, and Google Cloud month-to-date spend and its line-item breakdown from a Cloud Billing BigQuery export. Fixed reads, one credential per vendor.
 ---
 
 Read prepaid balances and in-month spend from three vendors without handing an
 agent a general-purpose vendor credential. The server is strad's own,
 `servers/vendor-billing`, served at `/vendor-billing` in strad's bundle image.
-It exists for a cost-collection agent: four reads, each a fixed request, and
+It exists for a cost-collection agent: five reads, each a fixed request, and
 nothing an agent can aim somewhere else.
 
 ## Tools
 
-Four, all `readOnlyHint: true`. No tool takes a URL, a path, a query, a request
+Five, all `readOnlyHint: true`. No tool takes a URL, a path, a query, a request
 body or a key. Three take no input at all, and an argument a tool does not
 declare is refused rather than ignored.
 
@@ -21,6 +21,7 @@ declare is refused rather than ignored.
 | `get_openrouter_key_usage` | `GET https://openrouter.ai/api/v1/key`                                                    | the key's `usage` (all-time, daily, weekly, monthly), BYOK usage, `limit`, `limit_remaining`, `limit_reset` |
 | `get_openai_costs`         | `GET https://api.openai.com/v1/organization/costs`, `bucket_width=1d`, `group_by=project_id` | per-day, per-project cost, and totals per currency, over every page                    |
 | `get_gcp_month_to_date`    | one fixed BigQuery query over a standard usage cost export                                | for the current `invoice.month`: summed cost, summed credits, net, currency, and `MAX(usage_end_time)` |
+| `get_gcp_cost_breakdown`   | one grouped BigQuery query over the same export                                           | cost, credits and net per project, service, SKU and/or day over a date range, highest net first, with totals over every group |
 
 - **`get_openai_costs`** takes `start_date` and an optional `end_date`
   (`YYYY-MM-DD`, UTC, both inclusive; `end_date` defaults to `start_date`). The
@@ -53,6 +54,96 @@ ORDER BY currency
 It runs as GoogleSQL with `maximumBytesBilled` at 10 GiB, so a much larger
 scan is refused by BigQuery rather than billed.
 
+### `get_gcp_cost_breakdown`
+
+The line-item view of the same export, for "which project, service or SKU is
+growing, and since when". Same credential, same table, same 10 GiB ceiling.
+
+| Argument     | What it is                                                                                                      |
+| ------------ | --------------------------------------------------------------------------------------------------------------- |
+| `start_date` | First day, `YYYY-MM-DD`, Pacific Time. Required. May not be after today (Pacific).                              |
+| `end_date`   | Last day, inclusive. Defaults to today (Pacific). The range is at most 92 days.                                 |
+| `group_by`   | Any combination of `project`, `service`, `sku`, `day`. Defaults to `[service]`. Column order is fixed whatever order is given. |
+| `project_id` | Optional. Exact match on `project.id`.                                                                          |
+| `service`    | Optional. Exact match on `service.description`, e.g. `Secret Manager`.                                          |
+| `sku`        | Optional. Exact match on `sku.description`, as a row's `sku` shows it.                                          |
+| `max_rows`   | How many groups come back, highest net first. Default 100, at most 200.                                         |
+
+Each group key adds fixed columns to a row:
+
+| Key       | Columns                                                                                                   |
+| --------- | --------------------------------------------------------------------------------------------------------- |
+| `project` | `project_id`. `(none)` is cost the export attributes to no project, such as support or tax.               |
+| `service` | `service`, the service's description.                                                                     |
+| `sku`     | `sku_id`, `sku`, and `usage_amount` summed in `usage_unit`. The unit is constant per SKU, so it adds no rows. |
+| `day`     | `usage_date`, the Pacific-Time day of `usage_start_time`.                                                 |
+
+Every row also carries `currency`, `cost`, `credits` (negative) and `net`. The
+answer says how many `groups` there were, how many were `returned`, whether
+the cap `truncated` them, and `totals` per currency over every group, not just
+the returned ones. `latest_usage_end_time` is the freshness of the range, and
+`bytes_processed` is what BigQuery scanned for the call.
+
+To find what grew, group by `[service, sku]` over two equal periods and compare,
+then group by `[day]` with `sku` set to the line that moved, to see when it
+started.
+
+**Nothing a caller sends becomes SQL.** `group_by` is an enum, and each value
+picks a constant fragment of SELECT columns; a filter only switches on a
+constant `AND service.description = @service` clause. The dates, the filter
+values and `max_rows` reach BigQuery as typed, named query parameters
+(`parameterMode: NAMED`). The groups are ranked, counted and totalled by window
+functions in the same query, so one job answers the whole call. A
+`[service, sku]` call renders as:
+
+```sql
+WITH grouped AS (
+SELECT
+  IFNULL(service.description, '(none)') AS service,
+  sku.id AS sku_id,
+  IFNULL(sku.description, '(none)') AS sku,
+  usage.unit AS usage_unit,
+  currency,
+  SUM(cost) AS cost,
+  SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) AS c), 0)) AS credits,
+  SUM(usage.amount) AS usage_amount,
+  MAX(usage_end_time) AS latest_usage_end_time
+FROM `<project>.<dataset>.<table>`
+WHERE usage_start_time >= TIMESTAMP(@start_date, 'America/Los_Angeles')
+  AND usage_start_time < TIMESTAMP(DATE_ADD(@end_date, INTERVAL 1 DAY), 'America/Los_Angeles')
+GROUP BY 1, 2, 3, 4, 5
+), ranked AS (
+SELECT
+  *,
+  cost + credits AS net,
+  ROW_NUMBER() OVER (ORDER BY cost + credits DESC, service, sku_id, sku, usage_unit, currency) AS row_rank,
+  COUNT(*) OVER () AS group_count,
+  SUM(cost) OVER (PARTITION BY currency) AS currency_cost,
+  SUM(credits) OVER (PARTITION BY currency) AS currency_credits,
+  MAX(latest_usage_end_time) OVER () AS export_latest_usage_end_time
+FROM grouped
+)
+SELECT
+  service,
+  sku_id,
+  sku,
+  usage_unit,
+  currency, cost, credits,
+  usage_amount,
+  group_count, currency_cost, currency_credits,
+  FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', export_latest_usage_end_time, 'UTC') AS export_latest_usage_end_time
+FROM ranked
+WHERE row_rank <= @max_rows
+ORDER BY row_rank
+```
+
+It groups by ordinal because `service` and `sku` are also STRUCT columns of the
+export. Like the month-to-date query it has no partition filter (see
+[Limitations #158](/limitations/)): the range bounds the rows it sums, not the
+bytes it scans, which are the columns named here over the whole table. A
+currency whose every group falls outside the top `max_rows` is missing from
+`totals`.
+
 ## Configuring the slug
 
 Each tool is configured on its own. A tool whose variables are absent answers
@@ -60,7 +151,7 @@ Each tool is configured on its own. A tool whose variables are absent answers
 tools keep working. Nothing here fails a boot, and `tools/list` needs no
 variable. The variables are read on each call from the mount's view of the
 container environment, which the bundle host copies when the mount loads, so a
-rotated value arrives with the next restart. The mount reports itself `degraded` only while none of the four
+rotated value arrives with the next restart. The mount reports itself `degraded` only while none of the five
 tools is configured.
 
 | Variable                     | Secret | Tool                       | What it is                                                                 |
@@ -68,12 +159,13 @@ tools is configured.
 | `OPENROUTER_MANAGEMENT_KEY`  | yes    | `get_openrouter_credits`   | An OpenRouter management (provisioning) key                                |
 | `OPENROUTER_PI_API_KEY`      | yes    | `get_openrouter_key_usage` | The ordinary OpenRouter API key whose own usage is read                    |
 | `OPENAI_ADMIN_KEY`           | yes    | `get_openai_costs`         | An OpenAI organization admin key                                           |
-| `GCP_BILLING_SA_KEY_JSON`    | yes    | `get_gcp_month_to_date`    | A service-account key file's JSON contents                                 |
-| `GCP_BILLING_EXPORT_PROJECT` | no     | `get_gcp_month_to_date`    | The project holding the export dataset. The query job runs here too        |
-| `GCP_BILLING_EXPORT_DATASET` | no     | `get_gcp_month_to_date`    | The export's BigQuery dataset                                              |
-| `GCP_BILLING_EXPORT_TABLE`   | no     | `get_gcp_month_to_date`    | The standard usage cost export table, `gcp_billing_export_v1_…`            |
+| `GCP_BILLING_SA_KEY_JSON`    | yes    | both `get_gcp_*` tools     | A service-account key file's JSON contents                                 |
+| `GCP_BILLING_EXPORT_PROJECT` | no     | both `get_gcp_*` tools     | The project holding the export dataset. The query job runs here too        |
+| `GCP_BILLING_EXPORT_DATASET` | no     | both `get_gcp_*` tools     | The export's BigQuery dataset                                              |
+| `GCP_BILLING_EXPORT_TABLE`   | no     | both `get_gcp_*` tools     | The standard usage cost export table, `gcp_billing_export_v1_…`            |
 
-`get_gcp_month_to_date` needs all four of its variables. The three export
+`get_gcp_month_to_date` and `get_gcp_cost_breakdown` each need all four of
+these, and share them: one is configured exactly when the other is. The three export
 variables are configuration, not credentials, but BigQuery cannot bind a table
 name as a query parameter, so each is checked before the query is built:
 
@@ -102,7 +194,7 @@ any request is made.
     GCP_BILLING_EXPORT_PROJECT: example-billing-project
     GCP_BILLING_EXPORT_DATASET: billing_export
     GCP_BILLING_EXPORT_TABLE: gcp_billing_export_v1_XXXXXX_XXXXXX_XXXXXX
-  # No `tools:` — all four read.
+  # No `tools:` — all five read.
 ```
 
 The mount is `/vendor-billing`, one per bundle. It reads the
@@ -118,7 +210,7 @@ its tool unconfigured.
 | `OPENROUTER_MANAGEMENT_KEY` | A management key. OpenRouter has no narrower key that can read `/credits`, and an ordinary key gets `403`. A management key can also create and delete keys; this server never calls those endpoints. |
 | `OPENROUTER_PI_API_KEY`     | Any API key. `/key` describes the key that calls it, so it reads its own usage and nothing else.                     |
 | `OPENAI_ADMIN_KEY`          | An admin key restricted to read access on the Usage API. The costs endpoint takes only admin keys.                   |
-| `GCP_BILLING_SA_KEY_JSON`   | `roles/bigquery.dataViewer` on the export dataset, and `roles/bigquery.jobUser` on `GCP_BILLING_EXPORT_PROJECT`. The token is requested with the `bigquery.readonly` scope. |
+| `GCP_BILLING_SA_KEY_JSON`   | `roles/bigquery.dataViewer` on the export dataset, and `roles/bigquery.jobUser` on `GCP_BILLING_EXPORT_PROJECT`. The token is requested with the `bigquery.readonly` scope. Both Google Cloud tools need exactly this: the breakdown is another query job over the same table. |
 
 ## What reaches each vendor
 
@@ -126,8 +218,8 @@ Every URL is built from constants and the validated export address. A
 BigQuery poll carries the job id the query answered with, encoded, to the same
 fixed host; nothing fetches a URL a caller or a response supplied. A redirect
 is refused rather than followed with a credential attached. Each request times
-out at 30 seconds, and the two tools that make more than one request,
-`get_openai_costs` and `get_gcp_month_to_date`, stop after 90 seconds in all,
+out at 30 seconds, and the three tools that make more than one request,
+`get_openai_costs` and the two Google Cloud tools, stop after 90 seconds in all,
 so a slow vendor ends in this server's own error rather than the gateway's
 tool-call timeout. Each key goes to its own vendor only. The service-account
 assertion goes to Google's own token endpoint; the key file's `token_uri` is

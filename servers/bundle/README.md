@@ -103,7 +103,7 @@ thirty different places:
 | `digitalocean` | `servers/digitalocean` | digitalocean (droplets, App Platform apps, managed databases) |
 | `hetzner` | `servers/hetzner` | hetzner (Hetzner Cloud servers, power, metrics, firewalls, volumes; strad's own — Hetzner publishes no MCP server) |
 | `glitchtip` | `servers/glitchtip` | glitchtip (GlitchTip issues, events, projects and teams, read-only unless a slug sets `<SLUG>__GLITCHTIP_ALLOW_WRITE=true`; strad's own, over the Sentry-compatible API) |
-| `vendor-billing` | `servers/vendor-billing` | vendor-billing (fixed billing reads: OpenRouter credits and key usage, OpenAI costs, a GCP billing export's month to date; strad's own) |
+| `vendor-billing` | `servers/vendor-billing` | vendor-billing (fixed billing reads: OpenRouter credits and key usage, OpenAI costs, a GCP billing export's month to date and its breakdown by project, service, SKU and day; strad's own) |
 | `postgres` | `servers/postgres` | postgres (one Postgres database: schemas, tables, one read-only statement; strad's own, over node-postgres) |
 | `hatchbox` | `servers/hatchbox` | hatchbox (one Hatchbox app: running env vars over pinned SSH, env-var writes, deploys; strad's own) |
 | `image-tools` | `servers/image-tools` | image-diff, svg-tracer (compare two images; trace a bitmap to SVG — inputs are URLs) |

@@ -198,8 +198,10 @@ failure:
   - **`vendor-billing`** — tests. strad's own billing reads, against fake
     vendors: no tool taking free-form input, each tool reporting
     `not configured` on its own, every credential scrubbed from results and
-    upstream errors, the OpenAI pagination walk and its bound, and the BigQuery
-    table's identifiers validated before the query is built.
+    upstream errors, the OpenAI pagination walk and its bound, the BigQuery
+    table's identifiers validated before the query is built, and every
+    breakdown argument reaching BigQuery as an enum-picked fragment or a bound
+    parameter, never as SQL text.
   - **`postgres`** — tests. strad's own read-only Postgres server, against a
     REAL Postgres with TLS on that the suite starts in Docker itself
     (`postgres:17`). It holds the read-only boundary under a superuser — a

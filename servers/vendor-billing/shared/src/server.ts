@@ -9,7 +9,7 @@ import { createScrubber } from "./scrub.js";
 import { InputError, TOOLS } from "./tools.js";
 
 /**
- * The mount: four fixed, read-only billing reads.
+ * The mount: five fixed, read-only billing reads.
  *
  * CREDENTIALS ARE READ PER CALL from the environment this server was GIVEN
  * (in the bundle, the host's per-mount view, copied at mount time), never from

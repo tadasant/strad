@@ -476,7 +476,8 @@ slop behind when you fix a stale fact.
   `HACKS.md` #155.
 - `servers/vendor-billing/` — strad's own billing reads for a cost-collection
   agent: OpenRouter credits and key usage, OpenAI organization costs by day and
-  project, and Google Cloud month-to-date from a Cloud Billing BigQuery export.
+  project, and Google Cloud month-to-date and a cost breakdown (by project,
+  service, SKU and day) from a Cloud Billing BigQuery export.
   Every request is fixed: no tool takes a URL, a path, a query or a body. Each
   tool is configured on its own and answers `not configured` by variable name
   while the others work, and every credential is scrubbed from results and
