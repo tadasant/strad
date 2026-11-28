@@ -21,6 +21,7 @@ client config and a curl check.
 | `google-calendar` | [`images/bundle-google/vendor/google-calendar-shared/README.md`](https://github.com/tadasant/strad/blob/main/images/bundle-google/vendor/google-calendar-shared/README.md) |
 | `google-docs`     | [`images/bundle-google/vendor/google-docs-shared/README.md`](https://github.com/tadasant/strad/blob/main/images/bundle-google/vendor/google-docs-shared/README.md)         |
 | `google-drive`    | [`images/bundle-google/vendor/google-drive-shared/README.md`](https://github.com/tadasant/strad/blob/main/images/bundle-google/vendor/google-drive-shared/README.md)       |
+| `google-search-console` | [`images/bundle-google/vendor/google-search-console-shared/README.md`](https://github.com/tadasant/strad/blob/main/images/bundle-google/vendor/google-search-console-shared/README.md) |
 
 Inside strad, google-drive is mounted per slug under an `oauth:` connector
 ([connectors](/operate/connectors/)). It has met only fakes

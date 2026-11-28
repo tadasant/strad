@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 #
-# bundle — THE strad supplementary image. Forty MCP servers, one container.
+# bundle — THE strad supplementary image. Forty-one MCP servers, one container.
 #
 # BUILD CONTEXT IS THE REPO ROOT (not servers/bundle/), because this image is
 # assembled from thirty existing projects that live in different places:
@@ -8,7 +8,8 @@
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
 #                           gcs, google-flights
 #   servers/remote-filesystem  remote-filesystem-tmp-public (strad's artifact store)
-#   images/bundle-google    gmail, google-calendar, google-docs, google-sheets, google-drive
+#   images/bundle-google    gmail, google-calendar, google-docs, google-sheets, google-drive,
+#                           google-search-console
 #   servers/onepassword     onepassword            (+ the `op` CLI, baked below)
 #   servers/secrets         secrets                (Parameter + Secret Manager viewer)
 #   servers/good-eggs       good-eggs              ┐
@@ -83,7 +84,7 @@ COPY servers/bundle-api/upstream ./upstream
 COPY servers/bundle-api/remote ./remote
 RUN npm run build && npm prune --omit=dev
 
-# ---- bundle-google: gmail / calendar / docs / sheets / drive
+# ---- bundle-google: gmail / calendar / docs / sheets / drive / search console
 FROM ${PW} AS build-google
 WORKDIR /src
 COPY images/bundle-google/package.json images/bundle-google/package-lock.json ./
@@ -93,6 +94,7 @@ COPY images/bundle-google/vendor/google-calendar-shared/package.json ./vendor/go
 COPY images/bundle-google/vendor/google-docs-shared/package.json ./vendor/google-docs-shared/
 COPY images/bundle-google/vendor/google-sheets-shared/package.json ./vendor/google-sheets-shared/
 COPY images/bundle-google/vendor/google-drive-shared/package.json ./vendor/google-drive-shared/
+COPY images/bundle-google/vendor/google-search-console-shared/package.json ./vendor/google-search-console-shared/
 RUN npm ci --no-audit --no-fund
 COPY images/bundle-google/tsconfig.json ./
 COPY images/bundle-google/vendor ./vendor
@@ -556,7 +558,7 @@ RUN npm run build && npm prune --omit=dev
 FROM ${PW}
 
 LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
-LABEL org.opencontainers.image.description="strad's single supplementary image — 40 MCP servers (API, Google, X.com, Telegram, WhatsApp, Messenger, web fetching, Grafana, VictoriaLogs, banking, Airtable, FlightAware, DigitalOcean, Hetzner Cloud, GlitchTip, Postgres, Hatchbox, vendor billing, image diff/tracing, nutrition facts, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
+LABEL org.opencontainers.image.description="strad's single supplementary image — 41 MCP servers (API, Google, X.com, Telegram, WhatsApp, Messenger, web fetching, Grafana, VictoriaLogs, banking, Airtable, FlightAware, DigitalOcean, Hetzner Cloud, GlitchTip, Postgres, Hatchbox, vendor billing, image diff/tracing, nutrition facts, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
 LABEL org.opencontainers.image.licenses="MIT"
 
 # --- 1Password CLI (op), pinned ----------------------------------------------

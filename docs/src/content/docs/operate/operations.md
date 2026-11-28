@@ -236,7 +236,7 @@ failure:
   - **`bundle/host`** — tests, and no separate build leg, because `npm test` is
     `npm run build && vitest run` — `tsc` over `src/`, so a type error there
     still fails the PR. The host is the process every bundle container runs: it
-    mounts every tree in the image, 40 mounts, which staging's 45
+    mounts every tree in the image, 41 mounts, which staging's 45
     supplementary-image slugs resolve to. Its suite runs over its TypeScript
     sources with no `/app/trees` to mount: the per-slug environment
     discovery, the two `degraded` verdicts, the presence route's wiring and the
@@ -1355,11 +1355,13 @@ suite itself runs under Vitest against the TypeScript sources, like every other
 tree's.
 
 It covers the code in that image strad WROTE, which is the code whose bugs would
-be silent. `vendor/google-sheets-shared` and `vendor/google-drive-shared` are the
-two servers here strad authored rather than vendored. Sheets' A1 arithmetic
-decides which cell a write lands in, and a credential-free smoke test never
-addresses a cell. Drive's suite covers what each request sends, including the
-multipart upload a create is. `src/gmail.ts` is the
+be silent. `vendor/google-sheets-shared`, `vendor/google-drive-shared` and
+`vendor/google-search-console-shared` are the three servers here strad authored
+rather than vendored. Sheets' A1 arithmetic decides which cell a write lands in,
+and a credential-free smoke test never addresses a cell. Drive's suite covers
+what each request sends, including the multipart upload a create is. Search
+Console's covers how a property is encoded into a request path, which decides
+which property a call reads. `src/gmail.ts` is the
 per-account layer over the gmail tree; it decides which MAILBOX a mount reads,
 and a smoke test that counts tools would never see it read the wrong one.
 `src/docs.ts` is the same layer over the google-docs tree, deciding whose Drive.
@@ -1495,7 +1497,7 @@ declares forty-eight server slugs:
 - forty-one `supplementary-image` entries on the one `bundle` component running
   `ghcr.io/tadasant/strad-bundle`. They land on twenty-eight paths, because a
   read-only and a read-write variant of one upstream are two entries sharing one
-  `path`: twenty-seven of the bundle image's forty baked mounts, plus
+  `path`: twenty-seven of the bundle image's forty-one baked mounts, plus
   `/grafana-registry`, a per-slug instance the host stands up for that slug's own
   Grafana credential. Eleven of them — `telegram-ro`, `telegram-rw`,
   `pulse-subregistry`, `grafana-registry`, `liveoak`, `airtable`, `flightaware`,

@@ -15,6 +15,7 @@ COPY vendor/google-calendar-shared/package.json ./vendor/google-calendar-shared/
 COPY vendor/google-docs-shared/package.json ./vendor/google-docs-shared/
 COPY vendor/google-sheets-shared/package.json ./vendor/google-sheets-shared/
 COPY vendor/google-drive-shared/package.json ./vendor/google-drive-shared/
+COPY vendor/google-search-console-shared/package.json ./vendor/google-search-console-shared/
 RUN npm ci
 
 # Sources: compile the vendored shared packages (in dependency order) and then

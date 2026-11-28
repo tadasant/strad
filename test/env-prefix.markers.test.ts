@@ -73,6 +73,32 @@ describe("the marker names the bundle host looks for", () => {
     expect(tree).toContain("export const GOOGLE_SHEETS_OAUTH_APP_ENV_NAMES");
   });
 
+  it("are google-search-console's OAuth app pair, and NOT its refresh token", () => {
+    // google-sheets' shape under its own names, for google-sheets' reason: the
+    // token is minted on the slug's console page, after the deploy.
+    const tree = readFileSync(
+      "images/bundle-google/vendor/google-search-console-shared/src/server.ts",
+      "utf8",
+    );
+    const markers = tree.match(
+      /GOOGLE_SEARCH_CONSOLE_OAUTH_APP_ENV_NAMES = \[([^\]]*)\]/,
+    );
+    expect(markers).not.toBeNull();
+    expect(markers![1]).toContain("GOOGLE_SEARCH_CONSOLE_OAUTH_CLIENT_ID");
+    expect(markers![1]).toContain("GOOGLE_SEARCH_CONSOLE_OAUTH_CLIENT_SECRET");
+    expect(markers![1]).not.toContain(
+      "GOOGLE_SEARCH_CONSOLE_OAUTH_REFRESH_TOKEN",
+    );
+    expect(host).toContain(
+      "google.searchConsole.GOOGLE_SEARCH_CONSOLE_OAUTH_APP_ENV_NAMES",
+    );
+    expect(host).toContain("searchConsole.GOOGLE_SEARCH_CONSOLE_ENV_NAMES");
+    expect(tree).toContain(
+      "export const GOOGLE_SEARCH_CONSOLE_OAUTH_APP_ENV_NAMES",
+    );
+    expect(tree).toContain("export const GOOGLE_SEARCH_CONSOLE_ENV_NAMES");
+  });
+
   it("are gmail's OAuth app pair, and its drop set spans BOTH auth modes", () => {
     // gmail's lists live in strad's OWN source rather than in the tree beside
     // them: `vendor/gmail-shared` is vendored verbatim from pulsemcp/mcp-servers

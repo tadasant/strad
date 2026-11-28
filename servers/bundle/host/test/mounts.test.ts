@@ -407,6 +407,41 @@ describe("extraSlugs", () => {
     ).toEqual([]);
   });
 
+  /**
+   * google-search-console has google-sheets' shape, under its own names. The
+   * names come from
+   * `images/bundle-google/vendor/google-search-console-shared/src/server.ts`;
+   * `test/env-prefix.markers.test.ts` in the core suite holds this copy to it.
+   */
+  const SEARCH_CONSOLE_MARKERS = [
+    "GOOGLE_SEARCH_CONSOLE_OAUTH_CLIENT_ID",
+    "GOOGLE_SEARCH_CONSOLE_OAUTH_CLIENT_SECRET",
+  ];
+
+  it("finds an UNCONNECTED google-search-console slug on its own OAuth pair", () => {
+    const found = extraSlugs("google-search-console", SEARCH_CONSOLE_MARKERS, {
+      SEARCH_CONSOLE_SITE__GOOGLE_SEARCH_CONSOLE_OAUTH_CLIENT_ID: "id",
+      SEARCH_CONSOLE_SITE__GOOGLE_SEARCH_CONSOLE_OAUTH_CLIENT_SECRET: "secret",
+    } as NodeJS.ProcessEnv);
+
+    expect(found).toEqual(["search-console-site"]);
+  });
+
+  it("does not find a search console slug left on the google-sheets default names", () => {
+    // An `oauth:` connector's variable names default to google-sheets'. A
+    // search console slug that keeps the defaults is discovered by SHEETS and
+    // mounted as a spreadsheets server, which is why its connector has to name
+    // GOOGLE_SEARCH_CONSOLE_OAUTH_* explicitly.
+    const env = {
+      SEARCH_CONSOLE_SITE__GOOGLE_SHEETS_OAUTH_CLIENT_ID: "id",
+      SEARCH_CONSOLE_SITE__GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "secret",
+    } as NodeJS.ProcessEnv;
+    expect(extraSlugs("google-search-console", SEARCH_CONSOLE_MARKERS, env)).toEqual([]);
+    expect(extraSlugs("google-sheets", SHEETS_MARKERS, env)).toEqual([
+      "search-console-site",
+    ]);
+  });
+
   it("does not invent a slug from a head that is not a mangled slug", () => {
     // `FOO__BAR__TELEGRAM_API_ID` would fold to a slug of `foo--bar`, which the
     // config schema forbids precisely because it destroys the name's injectivity.
@@ -770,6 +805,13 @@ describe("the mounts that use these verdicts", () => {
     // naming the whole credential elsewhere — as it does, to subtract the pair.
     const call = host.match(/extraSlugs\(\s*"google-sheets",\s*([\w.]+)/);
     expect(call?.[1]).toBe("google.sheets.GOOGLE_SHEETS_OAUTH_APP_ENV_NAMES");
+  });
+
+  it("discovers google-search-console slugs on the OAuth app pair, not the token", () => {
+    const call = host.match(/extraSlugs\(\s*"google-search-console",\s*([\w.]+)/);
+    expect(call?.[1]).toBe(
+      "google.searchConsole.GOOGLE_SEARCH_CONSOLE_OAUTH_APP_ENV_NAMES",
+    );
   });
 
   it("keeps a discovered google-sheets mount off the inherited names", () => {
