@@ -1702,6 +1702,20 @@ immediately; the bare URL keeps serving the cached bytes. The artifact store nev
 creates a public object, so this is bounded to objects made public before it
 existed — but restricting one of those means "no new readers", not "no readers".
 
+### A uniform-access store has no sensitive artifacts, and trusts its operator
+
+`_UNIFORM_ACCESS=true` is for buckets in an organization that enforces uniform
+bucket-level access. On one of those there is no per-object ACL to grant a domain,
+so `is_sensitive: true` and `set_sensitivity(true)` are refused outright. Every
+artifact is a signed link, and anyone holding the link can open it until it
+expires.
+
+The mode also reports every object as `link` without reading anything, because on
+a UBLA bucket with public access prevention enforced nothing else is possible. The
+server does not verify either setting on the bucket. Turn the flag on for a bucket
+that still has object ACLs and a world-readable object is reported as a private
+link.
+
 ### `upload_file` reads from the bundle container's filesystem
 
 The artifact store takes a `file://` URI, and it runs in the bundle — a container

@@ -37,6 +37,10 @@ import { logWarning } from "./logging.js";
  *                object is not mistaken for a private one.
  * - `unknown`    the ACL could not be read, so nothing can be said about who can
  *                reach it. No link is issued for one; see `accessOf`.
+ *
+ * On a store configured for uniform bucket-level access there are no object
+ * ACLs to read, and every object is `link` — see {@link UNIFORM_ACCESS_SENSITIVE_REFUSAL}
+ * and `GcsArtifactStore.accessOf` for why that is honest there.
  */
 export type Access = "link" | "restricted" | "public" | "unknown";
 
@@ -105,6 +109,23 @@ export interface ArtifactStore {
   /** Link life, in days, when the caller does not ask for one. */
   defaultLinkDays(): number;
 }
+
+/**
+ * What `is_sensitive: true` answers on a uniform-access store.
+ *
+ * A sensitive artifact is a per-object `domain-<viewer>` READER ACL behind
+ * GCS's sign-in front door. Uniform bucket-level access disables object ACLs,
+ * so there is nothing to put the grant ON, and IAM Conditions cannot stand in
+ * for it per object. Refusing is the only honest answer: storing the bytes and
+ * reporting `restricted` would be a lie, and storing them as a plain signed
+ * link would quietly drop the sign-in gate the caller asked for.
+ */
+export const UNIFORM_ACCESS_SENSITIVE_REFUSAL =
+  "This deployment cannot store or restrict a sensitive artifact: its bucket uses " +
+  "uniform bucket-level access, and sign-in-gated links need per-object ACLs, which " +
+  "that bucket does not allow. Nothing was stored or changed. If the artifact is not " +
+  "actually sensitive, use is_sensitive=false and it gets an expiring signed link; " +
+  "if it is, do not put it in this store.";
 
 /** A failure an agent can act on: the message says what to do next. */
 export class StoreError extends Error {
@@ -176,6 +197,10 @@ export class GcsArtifactStore implements ArtifactStore {
     data: Buffer,
     options: PutOptions,
   ): Promise<{ artifact: Artifact; link: Link }> {
+    // Before anything is written: a refused sensitive upload stores nothing.
+    if (options.sensitive && this.config.uniformAccess) {
+      throw new StoreError(UNIFORM_ACCESS_SENSITIVE_REFUSAL);
+    }
     if (options.sensitive && !this.config.viewerDomain) {
       throw new StoreError(
         "This deployment cannot store a sensitive artifact: no viewer domain is " +
@@ -200,6 +225,9 @@ export class GcsArtifactStore implements ArtifactStore {
         metadata: { contentType, metadata: options.metadata },
         resumable: false,
       });
+      // Uniform access: no ACL exists to normalise, and reading one throws.
+      // `options.sensitive` is false here — the refusal above saw to that.
+      if (this.config.uniformAccess) return "link" as const;
       return this.normalizeAcl(file, options.sensitive);
     });
 
@@ -289,6 +317,9 @@ export class GcsArtifactStore implements ArtifactStore {
   ): Promise<{ artifact: Artifact; link: Link }> {
     const full = this.fullPath(path);
     this.assertInRoot(full);
+    if (sensitive && this.config.uniformAccess) {
+      throw new StoreError(UNIFORM_ACCESS_SENSITIVE_REFUSAL);
+    }
     if (sensitive && !this.config.viewerDomain) {
       throw new StoreError(
         "Cannot restrict this artifact: no viewer domain is configured for this " +
@@ -306,6 +337,10 @@ export class GcsArtifactStore implements ArtifactStore {
       const file = this.file(full);
       const [exists] = await file.exists();
       if (!exists) throw notFound(path);
+      // Un-restricting on a uniform-access store is a no-op that still answers:
+      // nothing there can be restricted, so the artifact already is what was
+      // asked for, and the caller gets its signed link.
+      if (this.config.uniformAccess) return "link" as const;
       return this.normalizeAcl(file, sensitive);
     });
 
@@ -447,9 +482,21 @@ export class GcsArtifactStore implements ArtifactStore {
    * uniform bucket-level access — or a credential that lost `storage.objects.get`
    * on ACLs — would turn every restricted artifact into an anonymous signed URL,
    * mintable by a read-only tool, with nothing reporting that the sign-in gate had
-   * disappeared.
+   * disappeared. That rule holds in the default mode without exception.
+   *
+   * UNIFORM ACCESS IS THE ONE PLACE `link` IS ANSWERED WITHOUT A READ, and it is
+   * an operator's statement about the bucket, not a guess about one object.
+   * Under uniform bucket-level access, object ACLs do not exist — there is no
+   * per-object `domain-` grant to lose and no per-object `allUsers` grant to
+   * miss — so who can read an object is decided by bucket IAM alone, and public
+   * access prevention is what stops that IAM from granting `allUsers` or
+   * `allAuthenticatedUsers`. On such a bucket every object is private and
+   * reachable by signature, which is exactly what `link` claims. The claim is
+   * only as true as that bucket configuration, which is why the setting is
+   * opt-in and the README states both requirements next to it.
    */
   private async accessOf(file: File): Promise<Access> {
+    if (this.config.uniformAccess) return "link";
     let entries: Array<{ entity?: string; role?: string }>;
     try {
       const [acl] = await file.acl.get();
@@ -500,8 +547,10 @@ export class GcsArtifactStore implements ArtifactStore {
           `object's ACL, so it cannot tell whether the artifact is sensitive, and ` +
           `signing one would hand out an anonymous URL for something that may be ` +
           `sign-in gated. The usual cause is uniform bucket-level access being ` +
-          `enabled on ${this.config.bucket} — this server needs it off — or a ` +
-          `credential that has lost permission to read object ACLs.`,
+          `enabled on ${this.config.bucket} — this server's default mode needs it ` +
+          `off, and an operator can instead set its slug-prefixed _UNIFORM_ACCESS=true ` +
+          `for a bucket that enforces it — or a credential that has lost permission ` +
+          `to read object ACLs.`,
       );
     }
     return this.sign(fullPath, expiresInDays);

@@ -580,6 +580,30 @@ describe("remoteFilesystemDegraded", () => {
     );
   });
 
+  it("is not degraded without a viewer domain on a uniform-access bucket", () => {
+    expect(
+      remoteFilesystemDegraded(
+        {
+          [`${PREFIX}_GCS_BUCKET`]: "strad-artifacts",
+          [`${PREFIX}_UNIFORM_ACCESS`]: "true",
+        },
+        PREFIX,
+      ),
+    ).toBeNull();
+  });
+
+  it("still degrades sensitive uploads when UNIFORM_ACCESS is anything but true", () => {
+    expect(
+      remoteFilesystemDegraded(
+        {
+          [`${PREFIX}_GCS_BUCKET`]: "strad-artifacts",
+          [`${PREFIX}_UNIFORM_ACCESS`]: "false",
+        },
+        PREFIX,
+      ),
+    ).toContain("_SENSITIVE_VIEWER_DOMAIN is not set");
+  });
+
   it("reports the bucket first when both are missing", () => {
     expect(remoteFilesystemDegraded({}, PREFIX)).toContain("_GCS_BUCKET");
   });

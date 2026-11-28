@@ -310,3 +310,27 @@ test("a file:// source cannot reach process state or container internals", async
     assert.match(res.content[0].text, /Refusing to read/);
   }
 });
+
+test("UNIFORM_ACCESS is off by default, on only for exactly \"true\"", () => {
+  const base = { RF_GCS_BUCKET: "b" };
+  assert.equal(loadConfig("RF", base).uniformAccess, false);
+  assert.equal(loadConfig("RF", { ...base, RF_UNIFORM_ACCESS: "false" }).uniformAccess, false);
+  assert.equal(loadConfig("RF", { ...base, RF_UNIFORM_ACCESS: "true" }).uniformAccess, true);
+  assert.equal(loadConfig("RF", { ...base, RF_UNIFORM_ACCESS: " true " }).uniformAccess, true);
+  assert.throws(
+    () => loadConfig("RF", { ...base, RF_UNIFORM_ACCESS: "yes" }),
+    /RF_UNIFORM_ACCESS="yes" must be "true" or "false"/,
+  );
+});
+
+test("UNIFORM_ACCESS=true with a viewer domain is a contradiction, refused", () => {
+  assert.throws(
+    () =>
+      loadConfig("RF", {
+        RF_GCS_BUCKET: "b",
+        RF_UNIFORM_ACCESS: "true",
+        RF_SENSITIVE_VIEWER_DOMAIN: "example.com",
+      }),
+    /RF_SENSITIVE_VIEWER_DOMAIN is set but so is RF_UNIFORM_ACCESS=true/,
+  );
+});

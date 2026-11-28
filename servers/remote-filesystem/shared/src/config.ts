@@ -21,6 +21,7 @@ export const ENV_SUFFIXES = {
   viewerAccount: "SENSITIVE_VIEWER_ACCOUNT",
   defaultLinkDays: "LINK_DEFAULT_DAYS",
   uploadBaseUrl: "UPLOAD_BASE_URL",
+  uniformAccess: "UNIFORM_ACCESS",
 } as const;
 
 /**
@@ -77,6 +78,14 @@ export interface StoreConfig {
    * tool returns a root-relative URL; the core gateway serves the same path.
    */
   uploadBaseUrl?: string;
+  /**
+   * The bucket enforces UNIFORM BUCKET-LEVEL ACCESS, so object ACLs do not
+   * exist and access is decided by bucket IAM alone. Off by default; on, the
+   * store never reads or writes an ACL, reports every object as `link`, and
+   * refuses `is_sensitive: true` — see `GcsArtifactStore` for why that is honest
+   * on such a bucket and only on such a bucket.
+   */
+  uniformAccess?: boolean;
 }
 
 export class ConfigError extends Error {
@@ -138,7 +147,29 @@ export function loadConfig(
     }
   }
 
+  // Exactly "true" or "false". Anything else fails loudly rather than
+  // defaulting: a typo'd "yes" read as off would break every upload on a UBLA
+  // bucket, and read as on would report ACL-bearing objects as private links.
+  const rawUniform = read("uniformAccess")?.trim();
+  if (rawUniform !== undefined && rawUniform !== "true" && rawUniform !== "false") {
+    throw new ConfigError(
+      `${envName(prefix, "uniformAccess")}="${rawUniform}" must be "true" or "false".`,
+    );
+  }
+  const uniformAccess = rawUniform === "true";
+
   const viewerDomain = read("viewerDomain")?.trim();
+  if (uniformAccess && viewerDomain !== undefined) {
+    // A viewer domain is a per-object ACL grant, which a uniform-access bucket
+    // cannot hold. Accepting both would advertise a sign-in gate that every
+    // sensitive upload then refuses to build.
+    throw new ConfigError(
+      `${envName(prefix, "viewerDomain")} is set but so is ` +
+        `${envName(prefix, "uniformAccess")}=true. A sensitive artifact is gated by a ` +
+        `per-object domain ACL, and a uniform bucket-level access bucket allows none, ` +
+        `so the two cannot both hold. Unset one of them.`,
+    );
+  }
   const viewerAccount = read("viewerAccount")?.trim();
   if (viewerAccount !== undefined) {
     // Checked here rather than at link time. This value's only job is to be
@@ -195,5 +226,6 @@ export function loadConfig(
     viewerAccount,
     defaultLinkDays,
     uploadBaseUrl: uploadBaseUrl?.replace(/\/$/, ""),
+    uniformAccess,
   };
 }

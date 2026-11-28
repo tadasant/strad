@@ -321,6 +321,7 @@ stack — that slug reads `REMOTE_FS_ARCHIVE__REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_B
 | `_SENSITIVE_VIEWER_DOMAIN`  | for sensitive uploads | Workspace domain that may open a restricted artifact |
 | `_SENSITIVE_VIEWER_ACCOUNT` | no                    | address a restricted link names via `?authuser=`     |
 | `_LINK_DEFAULT_DAYS`        | no                    | default link life. Defaults to 14                    |
+| `_UNIFORM_ACCESS`           | no                    | `true` for a uniform bucket-level access bucket      |
 
 Without `_SENSITIVE_VIEWER_DOMAIN`, an `is_sensitive: true` upload is **refused**
 rather than stored, and the mount reports itself `degraded` on `/healthz`. Storing
@@ -338,12 +339,39 @@ The two credentials come from the parameters system, not from hand-written
 
 ## Bucket requirements
 
-- **Uniform bucket-level access must be OFF.** The restricted path is a per-object
-  ACL, and UBLA disables object ACLs. IAM Conditions are not an alternative: they
-  require UBLA _on_. With UBLA on, every artifact reads as `access: "unknown"` and
-  no link is issued — a loud failure rather than a quiet loss of the sign-in gate.
-- The service account needs object read/write, `storage.objects.update` to set
-  ACLs, and a private key so URLs can be signed locally.
+The default mode needs:
+
+- **Uniform bucket-level access OFF.** The restricted path is a per-object ACL,
+  and UBLA disables object ACLs. IAM Conditions are not an alternative: they
+  require UBLA _on_. With UBLA on and `_UNIFORM_ACCESS` unset, every artifact
+  reads as `access: "unknown"` and no link is issued — a loud failure rather than
+  a quiet loss of the sign-in gate.
+- A service account with object read/write, `storage.objects.update` to set ACLs,
+  and a private key so URLs can be signed locally.
+
+### Uniform-access mode
+
+An organization that enforces `constraints/storage.uniformBucketLevelAccess`
+cannot create a bucket with object ACLs. For one of those, set
+`_UNIFORM_ACCESS=true` (on the standard slug,
+`REMOTE_FILESYSTEM_TMP_PUBLIC_UNIFORM_ACCESS`). It is exactly `true` or `false`,
+anything else is rejected, and it defaults to off.
+
+- No object ACL is read or written, ever.
+- Every artifact is `access: "link"` — private, with an expiring signed URL.
+  Uploads, `get_upload_url`, `refresh_link`, `list_files`, `download_file`,
+  `delete_file` and `set_sensitivity(false)` work as usual.
+- `is_sensitive: true` and `set_sensitivity(true)` are refused before anything is
+  stored or changed. A sign-in-gated link needs a per-object ACL and the bucket
+  allows none. `_SENSITIVE_VIEWER_DOMAIN` alongside it is a config error, and the
+  mount is not `degraded` for lacking one.
+
+`link` is answered without reading an ACL, which is only honest because of what
+the bucket guarantees. So the mode has requirements of its own: **UBLA on**, so no
+per-object `allUsers` grant can exist, and **public access prevention enforced**,
+so bucket IAM cannot grant `allUsers` or `allAuthenticatedUsers` either. The
+server checks neither — the setting is the operator's statement about the bucket.
+The service account needs object read/write (no ACL permission) and a private key.
 
 ## Descriptions are written to a budget
 
