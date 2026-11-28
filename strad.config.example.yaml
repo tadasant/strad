@@ -1023,6 +1023,67 @@ servers:
         - export_document
         - list_comments
 
+  # google-calendar IS google-docs' shape: the conventional /google-calendar
+  # mount is a service account under bare GCAL_* names, so a per-slug mount
+  # reads every per-account name from its own prefix, and the three variables
+  # MUST be named. A per-slug calendar mount is always in `oauth` mode; do not
+  # set GOOGLE_CALENDAR_AUTH_MODE on it.
+  #
+  # The read tier consents `calendar.readonly`, so Google refuses a write even
+  # if the gateway did not. A `-rw` slug for the same account is its own entry,
+  # path and consent, on the full `calendar` scope with no `tools:` list. Add it
+  # only when the account should send invitations: create_calendar_event and
+  # update_calendar_event take attendees, and `send_updates: "all"` emails them.
+  - slug: google-calendar-someone-ro
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /google-calendar-someone-ro
+    entitlements: [admin, readonly]
+    oauth:
+      provider: google
+      account: someone@example.com
+      scopes:
+        - https://www.googleapis.com/auth/calendar.readonly
+      clientIdVariable: GOOGLE_CALENDAR_OAUTH_CLIENT_ID
+      clientSecretVariable: GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET
+      refreshTokenVariable: GOOGLE_CALENDAR_OAUTH_REFRESH_TOKEN
+    tools:
+      allow:
+        - list_calendar_events
+        - get_calendar_event
+        - list_calendars
+        - query_calendar_freebusy
+
+  # google-drive IS google-sheets' shape: OAuth only, one account per slug, its
+  # own path. Name the three variables. Its tiers are its own tool groups:
+  #   -ro    drive.readonly               search_files, get_file, read_file
+  #   -rw    drive.readonly + drive.file  + create_folder, create_file
+  #   full   drive                        + update_file_metadata, move_file,
+  #                                         copy_file, trash_file, restore_file
+  # `drive.file` writes only files this app created, which is all the two create
+  # tools touch, so Google holds `-rw` to creating as well as the gateway. No
+  # tier shares a file or deletes one permanently.
+  - slug: google-drive-someone-ro
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /google-drive-someone-ro
+    entitlements: [admin, readonly]
+    oauth:
+      provider: google
+      account: someone@example.com
+      scopes:
+        - https://www.googleapis.com/auth/drive.readonly
+      clientIdVariable: GOOGLE_DRIVE_OAUTH_CLIENT_ID
+      clientSecretVariable: GOOGLE_DRIVE_OAUTH_CLIENT_SECRET
+      refreshTokenVariable: GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN
+    tools:
+      allow:
+        - search_files
+        - get_file
+        - read_file
+
   # --- oauth: provider generic ------------------------------------------------
   # `google` is an IMPLEMENTATION — strad knows the endpoints, asks for an ID
   # token, and refuses a consent from the wrong account. `generic` is a

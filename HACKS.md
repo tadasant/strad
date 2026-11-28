@@ -392,7 +392,7 @@ one (hack #4).
 **✅ RESOLVED.** Core presents the internal token to every `supplementary-image`
 component, and the `strad-bundle` host refuses a mount request without it.
 
-**What.** The `strad-bundle` container — thirty-nine mounts, and every upstream
+**What.** The `strad-bundle` container — forty mounts, and every upstream
 credential behind them — serves every mount unauthenticated. Its only protection
 is the network boundary: an internal-only App Platform component
 (`internal_ports: [8080]`, no public route), reachable by core over the private
@@ -789,10 +789,10 @@ still what makes prod's read-only variants read-only.
 policies) → confirm → _then_ delete the per-server images, their workflows and the
 toggle plumbing.
 
-## 24. Thirty-nine servers share one process, and one Chromium
+## 24. Forty servers share one process, and one Chromium
 
-The collapsed bundle is one container running thirty-nine MCP servers and one
-headless Chromium. An OOM there is a thirty-nine-server outage; it used to be a
+The collapsed bundle is one container running forty MCP servers and one
+headless Chromium. An OOM there is a forty-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -2704,7 +2704,8 @@ DigitalOcean both times.
 
 **The edges.**
 
-- **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
+- **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`,
+  `google-drive`, and the per-slug gmail, google-docs and google-calendar mounts),
   `grafana`, `victorialogs`, `bill-spend`, `aws-device-farm`,
   `whatsapp`, `liveoak`, `airtable`, `flightaware`, `digitalocean`, `hetzner`,
   `glitchtip`, `vendor-billing`, `postgres`, `hatchbox` and `ssh` read an injected env.** The other twelve trees
@@ -3760,7 +3761,7 @@ behaviour, which is the pre-change one.
 a listed parameter current in a supplementary container's `process.env` without a
 redeploy. What it cannot do is make the MCP server inside that container LOOK at
 the new value. That is a property of the upstream, and this image runs
-thirty-nine of them, most written by other people.
+forty of them, most written by other people.
 
 The split is real and it is not subtle:
 
@@ -6500,17 +6501,18 @@ the only evidence of who sent a message. What they cannot do on their own:
 mailbox. If they lack Google's header, internal mail needs another signal, and
 that belongs in the reader, not here.
 
-## 124. google-drive runs only on its own, and has met only fakes
+## 124. google-drive has met only fakes
 
 **What.** `images/bundle-google/vendor/google-drive-shared` is strad's own Google
 Drive MCP server, in three tiers. `readonly` is `search_files`, `get_file` and
 `read_file` on `drive.readonly`. `readwrite` adds `create_folder` and
 `create_file` on `drive.file`. `full` adds `update_file_metadata`,
 `move_file`, `copy_file`, `trash_file` and `restore_file` on the full `drive`
-scope. It is built into both the bundle-google image and the bundle image, and
-**neither one mounts it**. No environment declares a slug for it, so the only
-way to run it is the standalone entrypoint, `dist/standalone/google-drive.js`,
-described in that tree's README.
+scope. The bundle host mounts it the way it mounts google-sheets: a
+conventional `/google-drive`, degraded until something gives it a credential,
+and one mount per slug whose `oauth:` connector seeds `GOOGLE_DRIVE_OAUTH_*`.
+It also runs on its own, from `dist/standalone/google-drive.js`, described in
+that tree's README. No environment in this repository declares a slug for it.
 Its suite runs against a faked `fetch` and a fake client. No request has reached
 Google.
 
@@ -6536,10 +6538,8 @@ Three claims the first live call settles:
    Other pairings are refused before the call. Slides are not offered, since
    Drive builds a deck only from a .pptx or .odp.
 
-**Undo.** Mount it in the bundle host, which means a per-slug OAuth mount like
-google-sheets, a `google-drive-*` slug, the console's Connect flow for its
-scopes, and the counts in `servers/bundle/scripts/smoke.mjs`. The first real
-calls through that slug settle 1 to 3.
+**Undo.** The first real calls through a `google-drive-*` slug settle 1 to 3.
+Then this entry goes.
 
 ## 125. google-calendar has a personal OAuth mode that strad added to a vendored tree
 
@@ -6578,23 +6578,23 @@ Five things about it are not obvious:
    entrypoint exits 2 on one. Inside a strad bundle the server still boots and
    lists its tools, and every call fails naming `GOOGLE_CALENDAR_AUTH_MODE`.
    Neither bundle host checks the variable at boot.
-5. **The refresh token is minted and rotated by hand.** gmail and google-docs
-   OAuth mounts get theirs from the console's Connect Google flow
-   (`src/connectors/`). Calendar has no connector, so an `oauth` deployment's
-   token comes from a consent flow run outside strad (the tree's README uses
-   the OAuth Playground), and is replaced by hand when it dies. A consent
-   screen in Testing mode kills it every 7 days. That is a routine step outside
-   any deploy, which the operability rule in `AGENTS.md` names a defect, and it
-   is why no deployment sets the mode yet.
+5. **The CONVENTIONAL mount's refresh token is minted and rotated by hand.**
+   A per-slug calendar mount, like gmail's and google-docs', gets its token
+   from the console's Connect Google flow (`src/connectors/`): a slug on its
+   own path with an `oauth:` connector naming `GOOGLE_CALENDAR_OAUTH_*`, which
+   the bundle host discovers and always runs in `oauth` mode through
+   `images/bundle-google/src/calendar.ts`. Only the conventional
+   `/google-calendar` mount set to `oauth` by a bare variable has no connector:
+   its token comes from a consent flow run outside strad (the tree's README
+   uses the OAuth Playground), and is replaced by hand when it dies. Use a
+   per-slug slug instead.
 
-Both hosts, this image's `src/index.ts` and the collapsed bundle's host, mount
-the server with no client factory, so they read the mode from `process.env`
-with no change of their own. No deployment sets the mode yet, and no request in
-either mode has reached Google from CI.
+The conventional mount in both hosts, this image's `src/index.ts` and the
+collapsed bundle's host, is built with no client factory, so it reads the mode
+from `process.env`. The per-slug mounts hand the tree a factory over an
+injected env. No request in either mode has reached Google from CI.
 
-**Undo.** Point 5 is undone by giving calendar a connector, the way gmail and
-google-docs have one: a per-slug OAuth mount the console's Connect flow seeds.
-If upstream gains an OAuth mode, re-vendor and drop the delta, then map
+**Undo.** If upstream gains an OAuth mode, re-vendor and drop the delta, then map
 `GOOGLE_CALENDAR_AUTH_MODE` onto whatever upstream reads. Until then, a
 re-vendor has to re-apply the row in the tree's README, and
 `images/bundle-google/test/calendar-auth-mode.test.ts` fails if it does not.

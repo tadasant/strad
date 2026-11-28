@@ -342,6 +342,45 @@ did not create is out of `drive.file`'s reach, and it is read and write over the
 whole Drive. Adding it to an existing slug takes a **Reconnect Google** on that
 slug's page. See [Google Sheets](/servers/google-sheets/#sharing-is-its-own-tier).
 
+**google-calendar is google-docs' case again.** The conventional
+`/google-calendar` mount is a service account impersonating a Workspace user
+through bare `GCAL_SERVICE_ACCOUNT_*` and `GCAL_IMPERSONATE_EMAIL`, so a per-slug
+calendar mount drops those, and the mode selector `GOOGLE_CALENDAR_AUTH_MODE`
+with them. It always runs in `oauth` mode, so a connector names three variables
+and no fourth. An unconnected one degrades naming
+`GOOGLE_CALENDAR_OAUTH_REFRESH_TOKEN`. Name the variables
+`GOOGLE_CALENDAR_OAUTH_CLIENT_ID`, `GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET` and
+`GOOGLE_CALENDAR_OAUTH_REFRESH_TOKEN`. A deployment whose conventional
+slugs run the service account is untouched: their variables carry no OAuth
+pair, so they ask for no mount of their own. Conventional slugs switched to
+`oauth` by their own `env:` do carry one, and each gets an extra mount at
+`/<its slug>` that no route reaches, as gmail's and google-docs' do.
+
+| Tier  | Scopes              | What enforces the tier                                              |
+| ----- | ------------------- | ------------------------------------------------------------------- |
+| `-ro` | `calendar.readonly` | Google and the gateway's `tools:` list (the four reads)             |
+| `-rw` | `calendar`          | Nothing narrower; this tier is the full seven, invitations included |
+
+`create_calendar_event` and `update_calendar_event` take attendees, and
+`send_updates: "all"` emails each of them from the account. That is the reason a
+`-rw` slug is a separate decision rather than part of `-ro`.
+
+**google-drive is google-sheets' case**: OAuth only, so the refresh token is the
+only per-account name a per-slug mount drops. Name the variables
+`GOOGLE_DRIVE_OAUTH_CLIENT_ID`, `GOOGLE_DRIVE_OAUTH_CLIENT_SECRET` and
+`GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN`. Its three tiers are the server's own groups:
+
+| Tier  | Scopes                         | Tools                                                                        |
+| ----- | ------------------------------ | ---------------------------------------------------------------------------- |
+| `-ro` | `drive.readonly`               | `search_files`, `get_file`, `read_file`                                      |
+| `-rw` | `drive.readonly`, `drive.file` | the three, plus `create_folder` and `create_file`                            |
+| full  | `drive`                        | all ten: also rename, move, copy, trash and restore files that already exist |
+
+Google enforces the first two as well as the gateway: `drive.file` writes only
+files the app created, which is all the two create tools ever touch, so a `-rw`
+token cannot change a file a person made. None of the tiers can share a file or
+delete one permanently.
+
 ### The credential arrives under the slug's own variable name, and only that one
 
 A connector's variables are baked onto the container as

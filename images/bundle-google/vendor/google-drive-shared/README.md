@@ -9,8 +9,9 @@ its own, with no strad gateway: over **stdio** for a local MCP client, or over
 
 The server is strad's own. It was written here, not vendored, and has the same
 shape as `../google-sheets-shared`. The standalone entrypoint is
-`../../src/standalone/google-drive.ts`. strad's bundle does not mount this server,
-so running it on its own, as below, is the only way to use it.
+`../../src/standalone/google-drive.ts`. Inside strad, the bundle mounts it once
+per slug with an `oauth:` connector, one Google account each; this page is how
+to run it without strad.
 
 ## Tools
 

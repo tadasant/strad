@@ -157,6 +157,61 @@ describe("the marker names the bundle host looks for", () => {
     expect(tree).toContain("export const GOOGLE_DOCS_ENV_NAMES");
   });
 
+  it("are google-calendar's OAuth app pair, and its drop set spans BOTH auth modes", () => {
+    // google-docs' shape: `images/bundle-google/src/calendar.ts` injects an env
+    // into the vendored tree, whose own variable names it re-exports. The
+    // conventional /google-calendar mount's GCAL_* trio sits on the same
+    // container under bare names, and so may a bare mode selector.
+    const layer = readFileSync("images/bundle-google/src/calendar.ts", "utf8");
+    const tree = readFileSync(
+      "images/bundle-google/vendor/google-calendar-shared/src/server.ts",
+      "utf8",
+    );
+
+    const markers = layer.match(
+      /GOOGLE_CALENDAR_OAUTH_APP_ENV_NAMES = \[([^\]]*)\]/,
+    );
+    expect(markers).not.toBeNull();
+    expect(markers![1]).toContain("GOOGLE_CALENDAR_OAUTH_CLIENT_ID");
+    expect(markers![1]).toContain("GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET");
+    expect(markers![1]).not.toContain("GOOGLE_CALENDAR_OAUTH_REFRESH_TOKEN");
+    // The pair has to be names the tree really reads.
+    const oauth = tree.match(/GOOGLE_CALENDAR_OAUTH_ENV_NAMES = \[([^\]]*)\]/);
+    expect(oauth).not.toBeNull();
+    expect(oauth![1]).toContain("GOOGLE_CALENDAR_OAUTH_CLIENT_ID");
+    expect(oauth![1]).toContain("GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET");
+    expect(oauth![1]).toContain("GOOGLE_CALENDAR_OAUTH_REFRESH_TOKEN");
+
+    expect(layer).toContain("...GOOGLE_CALENDAR_OAUTH_ENV_NAMES");
+    expect(layer).toContain("...GOOGLE_CALENDAR_SERVICE_ACCOUNT_ENV_NAMES");
+    expect(layer).toContain("GOOGLE_CALENDAR_AUTH_MODE_ENV,\n] as const");
+
+    expect(host).toContain(
+      "google.calendarLayer.GOOGLE_CALENDAR_OAUTH_APP_ENV_NAMES",
+    );
+    expect(host).toContain("calendar.GOOGLE_CALENDAR_ENV_NAMES");
+    expect(host).toContain('"dist/calendar.js"');
+  });
+
+  it("are google-drive's OAuth app pair", () => {
+    const tree = readFileSync(
+      "images/bundle-google/vendor/google-drive-shared/src/server.ts",
+      "utf8",
+    );
+    const markers = tree.match(
+      /GOOGLE_DRIVE_OAUTH_APP_ENV_NAMES = \[([^\]]*)\]/,
+    );
+    expect(markers).not.toBeNull();
+    expect(markers![1]).toContain("GOOGLE_DRIVE_OAUTH_CLIENT_ID");
+    expect(markers![1]).toContain("GOOGLE_DRIVE_OAUTH_CLIENT_SECRET");
+    expect(markers![1]).not.toContain("GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN");
+    expect(tree).toContain("'GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN'");
+
+    expect(host).toContain("google.drive.GOOGLE_DRIVE_OAUTH_APP_ENV_NAMES");
+    expect(host).toContain("drive.GOOGLE_DRIVE_ENV_NAMES");
+    expect(host).toContain('"vendor/google-drive-shared/build/index.js"');
+  });
+
   it("are remote-filesystem's real prefix and bucket suffix", () => {
     const config = readFileSync(
       "servers/remote-filesystem/shared/src/config.ts",

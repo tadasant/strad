@@ -51,6 +51,16 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   same reason: google-docs has gmail's two auth modes, and the collapsed bundle
   mounts it once per Google account. Built to `dist/docs.js`; the tree stays
   verbatim. `test/docs.test.ts` is its suite.
+- `src/calendar.ts` — the same layer over `vendor/google-calendar-shared`,
+  for the collapsed bundle's PER-SLUG calendar mounts only. The vendored
+  factory takes a client factory, so this module hands it one over an
+  injected env and the tree stays as it is. It always runs in `oauth` mode
+  (`perSlugEnv`), owns the marker pair discovery keys on
+  (`GOOGLE_CALENDAR_OAUTH_APP_ENV_NAMES`) and the drop list spanning both
+  modes, and rewords `invalid_grant` to name the slug's console page. The
+  conventional `/google-calendar` mount, in both hosts, keeps the vendored
+  factory reading `process.env`. Built to `dist/calendar.js`;
+  `test/calendar.test.ts` is its suite.
 - `src/confirm.ts` — **`send_email` asks a human first**, at the URL the CALL
   carries (`_meta["dev.strad/elicitation"]`, put there by strad core from the
   caller's `X-Elicitation-Url` for a slug with `confirmations: true`), never at
@@ -123,8 +133,10 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   out of an injected env. Three tiers: three read tools on `drive.readonly`,
   two create-only tools on `drive.file` (`readwrite`), and five that rename,
   move, copy, trash and restore an existing file on the full `drive` scope
-  (`full`). No tool rewrites a file's content. **Neither this image's `src/index.ts`
-  nor the collapsed bundle mounts it.** It runs only through
+  (`full`). No tool rewrites a file's content. The collapsed bundle mounts it
+  as google-sheets: a conventional `/google-drive` and one mount per slug that
+  carries a `GOOGLE_DRIVE_OAUTH_*` app pair. This image's own `src/index.ts`
+  does not mount it. On its own it runs through
   `src/standalone/google-drive.ts`, and its README is the how-to.
   `vendor/google-drive-shared/test/` is its suite. See `HACKS.md` #124.
 - `scripts/smoke.mjs` — connects a real MCP client to all four paths and lists
@@ -187,6 +199,12 @@ can drop everything that is not the OAuth app pair; see
 | **Service account (domain-wide delegation)** — `service_account` mode | `GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL`, `GCAL_SERVICE_ACCOUNT_PRIVATE_KEY`, `GCAL_IMPERSONATE_EMAIL` |
 | **OAuth2 (one account's refresh token)** — `oauth` mode | `GOOGLE_CALENDAR_OAUTH_CLIENT_ID`, `GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET`, `GOOGLE_CALENDAR_OAUTH_REFRESH_TOKEN` |
 | **Capability toggle** | `GOOGLE_CALENDAR_ENABLED_TOOLGROUPS` = `readonly` \| `readwrite` (default: all) |
+
+That table is the conventional mount. The collapsed bundle also mounts one
+calendar per slug whose `oauth:` connector seeds a
+`GOOGLE_CALENDAR_OAUTH_CLIENT_ID` / `_CLIENT_SECRET` pair under the slug's own
+name, through `src/calendar.ts`: always `oauth` mode, never a bare `GCAL_*`
+name, token from the console's Connect Google button.
 
 The mode is named, not inferred from which variables are set, unlike gmail and
 google-docs. A deployment with no `GOOGLE_CALENDAR_AUTH_MODE` keeps the service

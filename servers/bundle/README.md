@@ -1,6 +1,6 @@
 # bundle — THE strad supplementary image
 
-Thirty-nine MCP servers. One container. One Chromium. One `op` binary. One
+Forty MCP servers. One container. One Chromium. One `op` binary. One
 `mcp-grafana` binary and one `mcp-victorialogs` binary.
 
 ```
@@ -9,14 +9,15 @@ Thirty-nine MCP servers. One container. One Chromium. One `op` binary. One
 /svg-tracer /nutrition-facts /airtable /flightaware /digitalocean /hetzner /glitchtip /vendor-billing /postgres /hatchbox
 /pulse-subregistry
 /strad-fetch /grafana /victorialogs
-/google-flights /gmail /google-calendar /google-docs /google-sheets
+/google-flights /gmail /google-calendar /google-docs /google-sheets /google-drive
 /onepassword /secrets
 /good-eggs /fetchpet /pointsyeah
 ```
 
-Thirty-nine is the floor, not a constant: eight of those mounts (`/telegram`,
-`/remote-filesystem-tmp-public`, `/google-sheets`, `/grafana`, `/victorialogs`,
-`/glitchtip`, `/postgres`, `/hatchbox`) are re-mounted once more per slug the container holds a separate
+Forty is the floor, not a constant: thirteen of those mounts (`/telegram`,
+`/remote-filesystem-tmp-public`, `/google-sheets`, `/google-drive`, `/gmail`,
+`/google-docs`, `/google-calendar`, `/grafana`, `/victorialogs`, `/glitchtip`,
+`/postgres`, `/hatchbox`, `/onepassword`) are re-mounted once more per slug the container holds a separate
 credential for, and four trees
 (telegram, google-sheets, grafana, ssh) also serve store-served instances at
 `/_instance/{tree}/{slug}` — the ONLY way an SSH host is served; `/ssh` itself
@@ -82,7 +83,7 @@ thirty different places:
 | tree | source | servers |
 | --- | --- | --- |
 | `bundle-api` | `servers/bundle-api` | slack, serpapi-hotels, tailscale, monarch-money, gcs, google-flights |
-| `bundle-google` | `images/bundle-google` | gmail, google-calendar, google-docs, google-sheets |
+| `bundle-google` | `images/bundle-google` | gmail, google-calendar, google-docs, google-sheets, google-drive |
 | `onepassword` | `servers/onepassword` | onepassword (+ the `op` CLI, baked in) |
 | `secrets` | `servers/secrets` | secrets (Google Parameter + Secret Manager viewer) |
 | `remote-filesystem` | `servers/remote-filesystem` | remote-filesystem-tmp-public (strad's artifact store) |
@@ -218,12 +219,12 @@ could perform one. See [`servers/secrets/README.md`](../secrets/README.md).
 
 ## Blast radius, honestly
 
-Thirty-nine servers share a process. A crash is a thirty-nine-server outage. Everything
+Forty servers share a process. A crash is a forty-server outage. Everything
 that *can* be made survivable is:
 
 - a browser server whose **login fails** is marked `degraded` in `/healthz`; the
   container keeps serving. (The standalone images `process.exit(1)` here — correct
-  when the process *is* the server, catastrophic when it is thirty-eight others too.)
+  when the process *is* the server, catastrophic when it is thirty-nine others too.)
   For fetchpet the mark is a report on the last attempt: the next tool call retries
   the login and a success clears it, so a form that changed and was fixed does not
   cost a redeploy. good-eggs still holds its first failure until the container
