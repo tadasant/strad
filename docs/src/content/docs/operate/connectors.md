@@ -350,9 +350,11 @@ with them. It always runs in `oauth` mode, so a connector names three variables
 and no fourth. An unconnected one degrades naming
 `GOOGLE_CALENDAR_OAUTH_REFRESH_TOKEN`. Name the variables
 `GOOGLE_CALENDAR_OAUTH_CLIENT_ID`, `GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET` and
-`GOOGLE_CALENDAR_OAUTH_REFRESH_TOKEN`. A deployment with only the conventional
-slugs is untouched: their variables carry no OAuth pair, so they ask for no
-mount of their own.
+`GOOGLE_CALENDAR_OAUTH_REFRESH_TOKEN`. A deployment whose conventional
+slugs run the service account is untouched: their variables carry no OAuth
+pair, so they ask for no mount of their own. Conventional slugs switched to
+`oauth` by their own `env:` do carry one, and each gets an extra mount at
+`/<its slug>` that no route reaches, as gmail's and google-docs' do.
 
 | Tier  | Scopes              | What enforces the tier                                              |
 | ----- | ------------------- | ------------------------------------------------------------------- |

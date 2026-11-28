@@ -14,10 +14,10 @@ Forty MCP servers. One container. One Chromium. One `op` binary. One
 /good-eggs /fetchpet /pointsyeah
 ```
 
-Forty is the floor, not a constant: ten of those mounts (`/telegram`,
-`/remote-filesystem-tmp-public`, `/google-sheets`, `/google-drive`,
-`/google-calendar`, `/grafana`, `/victorialogs`, `/glitchtip`, `/postgres`,
-`/hatchbox`) are re-mounted once more per slug the container holds a separate
+Forty is the floor, not a constant: thirteen of those mounts (`/telegram`,
+`/remote-filesystem-tmp-public`, `/google-sheets`, `/google-drive`, `/gmail`,
+`/google-docs`, `/google-calendar`, `/grafana`, `/victorialogs`, `/glitchtip`,
+`/postgres`, `/hatchbox`, `/onepassword`) are re-mounted once more per slug the container holds a separate
 credential for, and four trees
 (telegram, google-sheets, grafana, ssh) also serve store-served instances at
 `/_instance/{tree}/{slug}` — the ONLY way an SSH host is served; `/ssh` itself
@@ -224,7 +224,7 @@ that *can* be made survivable is:
 
 - a browser server whose **login fails** is marked `degraded` in `/healthz`; the
   container keeps serving. (The standalone images `process.exit(1)` here — correct
-  when the process *is* the server, catastrophic when it is thirty-eight others too.)
+  when the process *is* the server, catastrophic when it is thirty-nine others too.)
   For fetchpet the mark is a report on the last attempt: the next tool call retries
   the login and a success clears it, so a form that changed and was fixed does not
   cost a redeploy. good-eggs still holds its first failure until the container

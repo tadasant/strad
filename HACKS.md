@@ -2704,7 +2704,8 @@ DigitalOcean both times.
 
 **The edges.**
 
-- **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
+- **Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`,
+  `google-drive`, and the per-slug gmail, google-docs and google-calendar mounts),
   `grafana`, `victorialogs`, `bill-spend`, `aws-device-farm`,
   `whatsapp`, `liveoak`, `airtable`, `flightaware`, `digitalocean`, `hetzner`,
   `glitchtip`, `vendor-billing`, `postgres`, `hatchbox` and `ssh` read an injected env.** The other twelve trees

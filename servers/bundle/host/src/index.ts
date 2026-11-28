@@ -3129,7 +3129,7 @@ async function main(): Promise<void> {
   });
 
   // One stray rejection from one of forty servers must not kill the other
-  // thirty-eight. The standalone images exit here (correct, when the process IS the
+  // thirty-nine. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {
     logError("unhandledRejection", reason);
