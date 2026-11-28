@@ -5916,7 +5916,7 @@ the process's cached reading.
 - Every Connect registers a fresh client and abandons the last one at the
   upstream. A server that takes a client ID metadata document registers
   nothing: strad signs in with its own document's URL, the same on every
-  Connect (#172).
+  Connect (#173).
 - A server that issues a refresh token only for a query parameter on the sign-in
   link (Google's `access_type=offline` and `prompt=consent`) needs
   `oauthRefresh.authorizeParams:`. Its metadata does not say so, so a slug
