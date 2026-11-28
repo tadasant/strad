@@ -328,10 +328,13 @@ and [Limitations](/limitations/) #159.
 
 No field turns on a **client ID metadata document**. When the upstream's
 authorization server advertises `client_id_metadata_document_supported: true` and
-the block's `clientId` is one `${NAME}` with no `clientSecret`, Connect signs in
-with `{gateway.publicUrl}/_strad/oauth/client/{slug}.json` as the client id
-instead of registering, and writes that URL to the `${NAME}`. `clientName` is
-the document's `client_name` too. It needs an `https` `gateway.publicUrl`. See
+the block's `clientId` is one `${NAME}` with no `clientSecret` and no
+`registration:`, Connect signs in with
+`{gateway.publicUrl}/_strad/oauth/client/{slug}.json` as the client id instead
+of registering, and writes that URL to the `${NAME}`. A `registration:` block
+always registers. A client id seeded by hand under the slug's `static/`
+namespace wins over the document. It needs a `gateway.publicUrl` that is a bare
+`https` origin. See
 [Connectors](/operate/connectors/#client-id-metadata-documents) and
 [Limitations](/limitations/) #173.
 

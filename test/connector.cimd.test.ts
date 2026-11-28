@@ -100,14 +100,14 @@ describe("the client metadata document", () => {
     expect(JSON.stringify(doc)).not.toMatch(/secret|LOOPS_/i);
   });
 
-  it("takes registration.clientName as its name", () => {
+  it("is not published for a slug with registration:, which always registers", () => {
     const doc = clientMetadataDocument(
       configOf(`${REFS}
       registration:
         clientName: Claude Code (strad)`),
       "loops",
     );
-    expect(doc?.client_name).toBe("Claude Code (strad)");
+    expect(doc).toBeNull();
   });
 
   it("is a bare 404 for an unknown slug, a server that is not a Connect, and any other file", async () => {
@@ -173,6 +173,11 @@ servers:
     expect(clientMetadataDocument(http, "loops")).toBeNull();
     // A trailing slash on the origin is not a doubled one in the id.
     expect(clientMetadataUrl(configOf(REFS, `${PUBLIC}/`), "loops")).toBe(DOC);
+    // Core serves the route at its root, so a public URL with a path would
+    // name a document nothing serves: no document, as for protected-resource.
+    const pathed = configOf(REFS, `${PUBLIC}/strad`);
+    expect(clientMetadataUrl(pathed, "loops")).toBeNull();
+    expect(clientMetadataDocument(pathed, "loops")).toBeNull();
   });
 });
 
@@ -182,6 +187,16 @@ describe("clientSource: supplied > metadata document > registration > seeded", (
       "LOOPS_CLIENT_ID",
       {
         path: "/strad/test/mcp/loops/static/LOOPS_CLIENT_ID",
+        variable: "LOOPS_CLIENT_ID",
+        hasValue: true,
+      } as ParameterMeta,
+    ],
+  ]);
+  const connectWrote = new Map<string, ParameterMeta>([
+    [
+      "LOOPS_CLIENT_ID",
+      {
+        path: "/strad/test/mcp/loops/oauth/LOOPS_CLIENT_ID",
         variable: "LOOPS_CLIENT_ID",
         hasValue: true,
       } as ParameterMeta,
@@ -214,8 +229,46 @@ describe("clientSource: supplied > metadata document > registration > seeded", (
         new Map(),
       ),
     ).toEqual(doc);
-    // Ahead of a held client id, which is what an earlier Connect wrote.
-    expect(clientSource(plan, both, seeded)).toEqual(doc);
+    // Ahead of an id an earlier Connect wrote to oauth/.
+    expect(clientSource(plan, both, connectWrote)).toEqual(doc);
+    expect(clientSource(plan, both, connectWrote, null)).toEqual(doc);
+  });
+
+  it("a client HAND-SEEDED under static/ beats the document, even behind an oauth/ copy", () => {
+    const plan = planOf(configOf());
+    const handSeeded = seeded.get("LOOPS_CLIENT_ID")!;
+    expect(clientSource(plan, both, seeded, handSeeded)).toEqual({
+      kind: "seeded",
+      variable: "LOOPS_CLIENT_ID",
+      path: "/strad/test/mcp/loops/static/LOOPS_CLIENT_ID",
+    });
+    // An earlier Connect's oauth/ value hides the static one in `held`; the
+    // static one is still used, and marked so the callback overwrites the copy.
+    expect(clientSource(plan, both, connectWrote, handSeeded)).toEqual({
+      kind: "seeded",
+      variable: "LOOPS_CLIENT_ID",
+      path: "/strad/test/mcp/loops/static/LOOPS_CLIENT_ID",
+      shadowed: true,
+    });
+    // With no document offered, registration keeps its place ahead of it.
+    expect(
+      clientSource(
+        plan,
+        { metadataDocument: null, registration: true },
+        seeded,
+        handSeeded,
+      ),
+    ).toEqual({ kind: "register" });
+  });
+
+  it("a registration: block means registration, never the document", () => {
+    const plan = planOf(
+      configOf(`${REFS}
+      registration:
+        clientName: Claude Code (strad)`),
+    );
+    expect(metadataDocumentEligible(plan)).toBe(false);
+    expect(clientSource(plan, both, new Map())).toEqual({ kind: "register" });
   });
 
   it("no document to offer: registration, then the seeded client, then nothing", () => {

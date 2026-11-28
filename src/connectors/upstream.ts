@@ -13,6 +13,7 @@ import {
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
 import { withRequestDeadline } from "../util/deadline.ts";
+import { safeOrigin } from "../auth/protected-resource.ts";
 import { connectorRedirectUri, rotateOrCreate } from "./index.ts";
 import {
   buildPkceAuthorizeUrl,
@@ -1222,6 +1223,11 @@ export const CLIENT_METADATA_ROUTE_PREFIX = "/_strad/oauth/client";
  * Connect falls back to registration. No loopback exception: an authorization
  * server on the internet cannot fetch a document from this machine's
  * loopback, so allowing one would buy nothing.
+ *
+ * The URL is built from the public URL's ORIGIN, through the same
+ * `safeOrigin` guard the protected-resource route takes: core serves the
+ * route at its root, so a `publicUrl` with a path, userinfo or a query would
+ * name a document nothing serves. Such a deployment has no document either.
  */
 export function clientMetadataUrl(
   config: StradConfig,
@@ -1229,15 +1235,9 @@ export function clientMetadataUrl(
 ): string | null {
   const publicUrl = config.gateway.publicUrl;
   if (!publicUrl) return null;
-  let u: URL;
-  try {
-    u = new URL(publicUrl);
-  } catch {
-    return null;
-  }
-  if (u.protocol !== "https:" || u.username || u.password) return null;
-  if (u.search || u.hash) return null;
-  return `${publicUrl.replace(/\/$/, "")}${CLIENT_METADATA_ROUTE_PREFIX}/${slug}.json`;
+  const origin = safeOrigin(publicUrl);
+  if (!origin?.startsWith("https://")) return null;
+  return `${origin}${CLIENT_METADATA_ROUTE_PREFIX}/${slug}.json`;
 }
 
 /**
@@ -1246,14 +1246,18 @@ export function clientMetadataUrl(
  * The document declares a PUBLIC client (`token_endpoint_auth_method: none`),
  * so a block that declares `clientSecret:` — a client a human registered, or
  * Figma's confidential registration — never uses one. A literal `clientId:` is
- * a client the config already names. What is left is a `${NAME}` the flow
- * writes, the same case a public registered client covers.
+ * a client the config already names. A `registration:` block, with or without
+ * a secret, is an explicit choice of REGISTRATION: it exists to make a claim
+ * by name to a registration endpoint that admits clients by name, and a
+ * document strad vouches for is not that claim. What is left is a `${NAME}`
+ * the flow writes, the same case a public registered client covers.
  */
 export function metadataDocumentEligible(plan: UpstreamPlan): boolean {
   return (
     plan.problems.length === 0 &&
     plan.clientId?.mode === "write" &&
-    plan.clientSecretVariable === null
+    plan.clientSecretVariable === null &&
+    plan.registration === null
   );
 }
 
@@ -1277,9 +1281,9 @@ export interface ClientMetadataDocument {
  *
  * Everything in it is config, and none of it is a secret: a name, strad's
  * callback, and the grant shape every public client strad registers already
- * sends to a registration endpoint. `client_name` is `registration.clientName`
- * when the block declares one and otherwise the name strad registers under,
- * so a consent screen reads the same whichever way the client was named.
+ * sends to a registration endpoint. `client_name` is the name strad registers
+ * under, so a consent screen reads the same whichever way the client was
+ * named.
  */
 export function clientMetadataDocument(
   config: StradConfig,
@@ -1332,6 +1336,12 @@ export interface UpstreamTerms {
   /** `clientId` is strad's own client ID metadata document URL. */
   metadataDocument?: true;
   /**
+   * `clientId` is a hand-seeded `static/` value that an earlier Connect's
+   * `oauth/` copy would shadow (`ClientSource.shadowed`). The callback writes
+   * it over that copy; it is still "the configured client", not strad's.
+   */
+  overwriteClientId?: true;
+  /**
    * The secret issued with a confidential client strad registered, ENCRYPTED
    * under `ConsoleSessions.connectorSecret`. The transaction itself is only
    * signed, so the plaintext never rides in it. Absent for every other client.
@@ -1354,7 +1364,18 @@ export function upstreamConfigTerms(entry: UpstreamConnector): string {
 /** Where the client id comes from, decided from the plan and the store. */
 export type ClientSource =
   | { kind: "literal"; clientId: string }
-  | { kind: "seeded"; variable: string; path: string }
+  | {
+      kind: "seeded";
+      variable: string;
+      path: string;
+      /**
+       * The value read is a HAND-SEEDED `static/` one while an `oauth/` copy
+       * of the same name — an earlier Connect's — would shadow it at the
+       * resolver. The callback then writes the seeded id over that copy, so
+       * every refresh sends the client the token was issued to.
+       */
+      shadowed?: true;
+    }
   | { kind: "metadata_document"; clientId: string }
   | { kind: "register" };
 
@@ -1378,30 +1399,40 @@ export interface ClientOffers {
  *   1. A LITERAL `clientId:`, a client the config names. Supplied beats
  *      everything: someone registered it on purpose, and on an upstream that
  *      allowlists its clients it is the only one that works.
- *   2. strad's CLIENT ID METADATA DOCUMENT, when the server says it takes one
- *      and the block declares no client secret. The MCP authorization spec
- *      says a client SHOULD prefer it to registration, and it is the better
- *      client: nothing is minted at the upstream on each Connect, the id is
- *      the same on every Reconnect, and the redirect URI is vouched for by
- *      this deployment's own host. A server that offers both is signed into
- *      this way. Some offer only this.
- *   3. DYNAMIC REGISTRATION (RFC 7591), when the server offers it and the
+ *   2. A client HAND-SEEDED under the `${NAME}` in this slug's `static/`
+ *      namespace, when the server takes a metadata document. Connect never
+ *      writes `static/` — it writes `oauth/` — so a value there is a human's,
+ *      and it is their way out when the server advertises documents but will
+ *      not take strad's (an allowlist of document hosts, or something in front
+ *      of core the server cannot get past). That refusal happens on the
+ *      server's sign-in page, where strad cannot see it, so without this a
+ *      slug on such a server could never be reconnected.
+ *   3. strad's CLIENT ID METADATA DOCUMENT, when the server says it takes one
+ *      and the block could use one (`metadataDocumentEligible`). The MCP
+ *      authorization spec says a client SHOULD prefer it to registration, and
+ *      it is the better client: nothing is minted at the upstream on each
+ *      Connect, the id is the same on every Reconnect, and the redirect URI
+ *      is vouched for by this deployment's own host. A server that offers
+ *      both is signed into this way. Some offer only this.
+ *   4. DYNAMIC REGISTRATION (RFC 7591), when the server offers it and the
  *      block declares no client secret — or declares one AND `registration:`,
- *      which is what lets strad keep the secret it is issued.
- *   4. A client SEEDED under the `${NAME}` in this slug's own namespace. Last,
- *      not first, because that name is also where 2 and 3 WRITE their client
- *      id: a held value is usually what an earlier Connect chose rather than
- *      something a human supplied, and preferring it would keep signing in as
- *      a client strad no longer stands behind. It is the answer when nothing
- *      above applies, and what a refused registration falls back to.
- *   5. Otherwise null, and the Connect refuses with what to seed where.
+ *      which is what lets strad keep the secret it is issued. Ahead of a
+ *      hand-seeded client, unlike 2, because a refused registration is
+ *      visible here and falls back to the seeded client on its own.
+ *   5. A client SEEDED under the `${NAME}`, `oauth/` ahead of `static/`. It is
+ *      the answer when nothing above applies, and what a refused registration
+ *      falls back to.
+ *   6. Otherwise null, and the Connect refuses with what to seed where.
  *
- * `held` is the slug's namespace listing.
+ * `held` is the slug's namespace listing, as `heldVariables` folds it;
+ * `handSeeded` is the client id's own `static/` entry, read separately
+ * because an `oauth/` copy hides it in `held`.
  */
 export function clientSource(
   plan: UpstreamPlan,
   offers: ClientOffers,
   held: ReadonlyMap<string, ParameterMeta>,
+  handSeeded: ParameterMeta | null = null,
 ): ClientSource | null {
   const field = plan.clientId;
   if (!field) return null;
@@ -1409,6 +1440,16 @@ export function clientSource(
     return { kind: "literal", clientId: field.value };
   }
   if (offers.metadataDocument !== null && metadataDocumentEligible(plan)) {
+    if (handSeeded?.hasValue && handSeeded.variable === field.variable) {
+      return {
+        kind: "seeded",
+        variable: field.variable,
+        path: handSeeded.path,
+        ...(held.get(field.variable)?.path !== handSeeded.path
+          ? { shadowed: true as const }
+          : {}),
+      };
+    }
     return { kind: "metadata_document", clientId: offers.metadataDocument };
   }
   if (
@@ -1572,7 +1613,10 @@ export function upstreamWrites(
       secret: false,
     });
   }
-  if (plan.clientId?.mode === "write" && terms.registered) {
+  if (
+    plan.clientId?.mode === "write" &&
+    (terms.registered || terms.overwriteClientId)
+  ) {
     const v = plan.clientId.variable;
     out.push({
       variable: v,

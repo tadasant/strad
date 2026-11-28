@@ -5288,13 +5288,15 @@ registration. Loops' official server takes nothing else.
 
 - **The authorization server fetches the document from the internet.** The
   client id is `{gateway.publicUrl}/_strad/oauth/client/{slug}.json`, so
-  `gateway.publicUrl` must be the `https` origin core really serves, and nothing
-  in front of core may gate that path. Without an `https` public URL, Connect
+  `gateway.publicUrl` must be the bare `https` origin core really serves, with
+  no path, and nothing in front of core may gate that path. Otherwise Connect
   falls back to registration, or refuses with `no_client` and names
   `gateway.publicUrl` on a server that only takes a document.
 - **A refusal happens in the browser.** A server that cannot fetch the document,
   or will not accept it, says so on its own sign-in page. strad cannot see that,
-  so it does not fall back to registration and logs nothing for it.
+  so it does not fall back to registration and logs nothing for it. Register a
+  client there by hand and seed its id under the slug's `static/` namespace:
+  Connect prefers that to the document.
 - **Fakes only.** It is tested end to end against a fake authorization server
   that advertises `client_id_metadata_document_supported`, not against Loops.
 

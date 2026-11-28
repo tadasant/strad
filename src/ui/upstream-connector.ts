@@ -323,6 +323,17 @@ export async function handleUpstreamConnect(
         registration: discovery.registrationEndpoint !== null,
       },
       state.held,
+      // The client id's own `static/` entry: a human's, never Connect's.
+      plan.clientId?.mode === "write"
+        ? (state.metas.find(
+            (m) =>
+              m.hasValue &&
+              m.path ===
+                `${staticNamespace(opts.config.gateway.env, slug)}${
+                  plan.clientId?.mode === "write" ? plan.clientId.variable : ""
+                }`,
+          ) ?? null)
+        : null,
     );
     if (!source) {
       const variable =
@@ -338,18 +349,19 @@ export async function handleUpstreamConnect(
         metadataDocumentEligible(plan)
           ? `The authorization server ${shown(discovery.issuer)} takes a client ` +
             `ID metadata document and offers no dynamic client registration, ` +
-            `but this deployment's gateway.publicUrl is not an https URL, so ` +
-            `strad has no document address the server could fetch or would ` +
-            `accept as a client id. Set gateway.publicUrl to the deployment's ` +
-            `https origin and redeploy, or seed a client by hand: ` +
+            `but this deployment's gateway.publicUrl is not a bare https ` +
+            `origin, so strad has no document address the server could fetch ` +
+            `or would accept as a client id. Set gateway.publicUrl to the ` +
+            `deployment's https origin (no path) and redeploy, or seed a ` +
+            `client by hand: ` +
             `\${${variable}} is not seeded in this server's own namespace`
           : (discovery.registrationEndpoint === null
               ? `The authorization server ${shown(discovery.issuer)} offers no ` +
                 `dynamic client registration` +
                 (discovery.clientIdMetadataDocumentSupported
-                  ? ` and takes client ID metadata documents only from a ` +
-                    `public client, which a server declaring ` +
-                    `oauthRefresh.clientSecret is not`
+                  ? `, and strad does not sign in with its client ID ` +
+                    `metadata document for a server that declares ` +
+                    `oauthRefresh.clientSecret or oauthRefresh.registration`
                   : ` and takes no client ID metadata document`)
               : `This server declares oauthRefresh.clientSecret, so strad cannot ` +
                 `register a client for it (without oauthRefresh.registration: it registers public clients only)`) +
@@ -473,6 +485,9 @@ export async function handleUpstreamConnect(
         source.kind === "register" || source.kind === "metadata_document",
       ...(source.kind === "metadata_document"
         ? { metadataDocument: true as const }
+        : {}),
+      ...(source.kind === "seeded" && source.shadowed
+        ? { overwriteClientId: true as const }
         : {}),
       ...(sealedClientSecret ? { sealedClientSecret } : {}),
       tokenUrl: discovery.tokenEndpoint,

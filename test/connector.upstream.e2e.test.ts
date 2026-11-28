@@ -1291,6 +1291,51 @@ describe("Connect against a server that takes a client ID metadata document", ()
     expect(connected).toContain("client metadata document");
   });
 
+  it("a client seeded by hand under static/ wins over the document, and replaces an earlier Connect's id", async () => {
+    // The way out for a server that advertises documents and refuses strad's:
+    // connected once with the document, then a human seeds a client they
+    // registered by hand, and Reconnect signs in as THAT client.
+    const h = await harness(loops);
+    await roundTrip(h);
+    expect(await h.fake.store.reveal(`${OAUTH_NS}RIPPLING_CLIENT_ID`)).toBe(
+      DOC,
+    );
+    await h.fake.store.create({
+      path: `${STATIC_NS}RIPPLING_CLIENT_ID`,
+      secret: false,
+      value: "hand-registered-client",
+    });
+
+    const { authorizeUrl, callback } = await roundTrip(h);
+    expect(callback.headers.get("location")).toBe(`/ui/${SLUG}?connected=1`);
+    expect(authorizeUrl.searchParams.get("client_id")).toBe(
+      "hand-registered-client",
+    );
+    // The oauth/ copy would shadow the seeded id at the resolver, so the
+    // callback overwrote it: the refresh token and its client agree.
+    expect(await h.fake.store.reveal(`${OAUTH_NS}RIPPLING_CLIENT_ID`)).toBe(
+      "hand-registered-client",
+    );
+    const before = h.oauth.tokenRequests.length;
+    expect(await whoami(await h.mcp())).toBe("tadas");
+    const refresh = h.oauth.tokenRequests
+      .slice(before)
+      .find((r) => r.grantType === "refresh_token")!;
+    expect(refresh.clientId).toBe("hand-registered-client");
+
+    // With nothing in oauth/ to shadow it, a seeded client is not copied.
+    const fresh = await harness(loops);
+    await fresh.fake.store.create({
+      path: `${STATIC_NS}RIPPLING_CLIENT_ID`,
+      secret: false,
+      value: "hand-registered-client",
+    });
+    await roundTrip(fresh);
+    expect(await listed(fresh.fake, OAUTH_NS)).not.toContain(
+      "RIPPLING_CLIENT_ID",
+    );
+  });
+
   it("prefers the document to registration when the server offers both, and Reconnect keeps the same id", async () => {
     const h = await harness({
       mcpAuth: { clientIdMetadataDocument: true, scopes: ["mcp:read"] },
@@ -1325,7 +1370,7 @@ describe("Connect against a server that takes a client ID metadata document", ()
     expect(res.status).toBe(409);
     const html = await res.text();
     expect(html).toContain("takes a client ID metadata document");
-    expect(html).toContain("gateway.publicUrl is not an https URL");
+    expect(html).toContain("gateway.publicUrl is not a bare https");
     expect(html).toContain(STATIC_NS);
     expect(await listed(only.fake, OAUTH_NS)).toEqual([]);
   });

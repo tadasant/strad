@@ -5914,7 +5914,9 @@ the process's cached reading.
   registration answer is refused. A confidential client is registered by hand and
   seeded, and its secret is read from the store at the callback.
 - Every Connect registers a fresh client and abandons the last one at the
-  upstream.
+  upstream. A server that takes a client ID metadata document registers
+  nothing: strad signs in with its own document's URL, the same on every
+  Connect (#172).
 - A server that issues a refresh token only for a query parameter on the sign-in
   link (Google's `access_type=offline` and `prompt=consent`) needs
   `oauthRefresh.authorizeParams:`. Its metadata does not say so, so a slug
@@ -8850,13 +8852,17 @@ with a client a human registered, and Loops issues none by hand.
 **The debt.**
 
 - **The authorization server fetches the document from the internet.** It
-  works only when `gateway.publicUrl` is the `https` origin core actually
-  serves, and nothing in front of core gates `/_strad/oauth/client/`. A
-  deployment with no `https` public URL falls back to registration, or refuses
-  with `no_client` on a server that only takes a document.
+  works only when `gateway.publicUrl` is the bare `https` origin core actually
+  serves (no path: core serves the route at its root), and nothing in front of
+  core gates `/_strad/oauth/client/`. Any other deployment falls back to
+  registration, or refuses with `no_client` on a server that only takes a
+  document.
 - **A refusal happens in the browser.** A server that cannot fetch or will not
   accept the document says so on its own sign-in page. The connect POST cannot
   see it, so there is no fallback to registration and no strad event for it.
+  The way past it is a client registered by hand and seeded under the
+  `clientId` `${NAME}` in the slug's `static/` namespace, which Connect prefers
+  to the document.
 - **Fakes only.** The flow is tested against a fake authorization server that
   advertises the field (`test/connector.upstream.e2e.test.ts`); no real server
   has fetched a strad document yet.
