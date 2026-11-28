@@ -102,8 +102,8 @@ function filterArgs(args: Record<string, unknown>): Partial<Record<FilterName, s
   const out: Partial<Record<FilterName, string>> = {};
   for (const name of FILTER_NAMES) {
     const v = args[name];
-    if (v === undefined || v === null || v === "") continue;
-    if (typeof v !== "string") throw new InputError(`\`${name}\` must be a string.`);
+    if (v === undefined || v === null) continue;
+    if (typeof v !== "string" || v === "") throw new InputError(`\`${name}\` must be a non-empty string.`);
     if (v.length > MAX_FILTER_CHARS) throw new InputError(`\`${name}\` is longer than ${MAX_FILTER_CHARS} characters.`);
     out[name] = v;
   }
@@ -230,12 +230,12 @@ export const TOOLS: readonly ToolDefinition[] = [
       "(project_id; `(none)` is account-level cost such as support or tax), service " +
       "(e.g. \"Secret Manager\"), sku (sku_id, sku, and summed usage_amount in usage_unit) and day " +
       "(usage_date). Days are Pacific Time, both ends inclusive, at most " +
-      `${MAX_BREAKDOWN_DAYS} days. Optional exact-match filters on project_id, service and sku. ` +
+      `${MAX_BREAKDOWN_DAYS} days. Optional exact-match filters on project_id, service, sku_id and sku. ` +
       `Returns the top max_rows groups (default ${DEFAULT_BREAKDOWN_ROWS}); \`groups\`, ` +
       "`truncated` and `totals` (per currency, over every group) say what a cut left out. " +
       "`bytes_processed` is what the query scanned.\n\n" +
       "To find what grew: group_by [service, sku] over two equal periods and compare, then " +
-      "group_by [day] filtered to that sku to see when it started.\n\n" +
+      "group_by [day] filtered to that line's sku_id to see when it started.\n\n" +
       'Example: {"start_date":"2026-11-01","end_date":"2026-11-27","timezone":"America/Los_Angeles",' +
       '"group_by":["service","sku"],"groups":42,"returned":42,"truncated":false,' +
       '"totals":[{"currency":"USD","cost":80.1,"credits":-2,"net":78.1}],' +
@@ -243,7 +243,8 @@ export const TOOLS: readonly ToolDefinition[] = [
       '"rows":[{"service":"Secret Manager","sku_id":"6D5B-…","sku":"Secret access operations",' +
       '"usage_amount":2400000,"usage_unit":"requests","currency":"USD","cost":7.2,"credits":0,' +
       '"net":7.2},...]}\n\n' +
-      "The export lags usage by hours, and late rows can still change recent days.",
+      "The export lags usage by hours, and late rows can still change recent days. Ranges are by " +
+      "usage day, not invoice month, so a calendar month will not exactly match get_gcp_month_to_date.",
     inputSchema: {
       type: "object",
       properties: {
@@ -270,18 +271,29 @@ export const TOOLS: readonly ToolDefinition[] = [
         },
         project_id: {
           type: "string",
+          minLength: 1,
           maxLength: MAX_FILTER_CHARS,
-          description: "Only this project ID, exact match, e.g. my-project-123.",
+          description: "Only this project ID, exact match, e.g. my-project-123, or `(none)` for cost on no project.",
         },
         service: {
           type: "string",
+          minLength: 1,
           maxLength: MAX_FILTER_CHARS,
           description: "Only this service, exact match on its description, e.g. Cloud SQL.",
         },
+        sku_id: {
+          type: "string",
+          minLength: 1,
+          maxLength: MAX_FILTER_CHARS,
+          description: "Only this SKU, by the `sku_id` a row shows, e.g. 6D5B-1A2C-3E4F. Exact: one line.",
+        },
         sku: {
           type: "string",
+          minLength: 1,
           maxLength: MAX_FILTER_CHARS,
-          description: "Only this SKU, exact match on its description as a row's `sku` shows it.",
+          description:
+            "Only SKUs with this description, as a row's `sku` shows it. Descriptions are not unique " +
+            "across services; prefer sku_id to follow one line.",
         },
         max_rows: {
           type: "integer",

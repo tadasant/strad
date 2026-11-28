@@ -69,9 +69,9 @@ describe("over a real MCP client", () => {
           jobComplete: true,
           totalBytesProcessed: "2048",
           schema: {
-            fields: ["service", "sku_id", "sku", "usage_unit", "currency", "cost", "credits", "usage_amount", "group_count", "currency_cost", "currency_credits", "export_latest_usage_end_time"].map((name) => ({ name })),
+            fields: ["service", "sku_id", "sku", "usage_unit", "currency", "cost", "credits", "usage_amount", "row_rank", "group_count", "currency_cost", "currency_credits", "range_latest_usage_end_time"].map((name) => ({ name })),
           },
-          rows: [{ f: ["Secret Manager", "6D5B", "Secret access operations", "requests", "USD", "2.5", "0", "830000", "1", "2.5", "0", "2026-11-20T18:00:00Z"].map((v) => ({ v })) }],
+          rows: [{ f: ["Secret Manager", "6D5B", "Secret access operations", "requests", "USD", "2.5", "0", "830000", "1", "1", "2.5", "0", "2026-11-20T18:00:00Z"].map((v) => ({ v })) }],
         }),
       );
     }) as typeof fetch);

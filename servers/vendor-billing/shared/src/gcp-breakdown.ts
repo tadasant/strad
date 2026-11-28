@@ -18,7 +18,9 @@
  * THE RANKING IS IN SQL. Groups are ranked by net (cost + credits) descending
  * and only the top `max_rows` are returned; the number of groups and the
  * per-currency totals over ALL of them are computed by window functions in
- * the same query, so a cut answer still says what it cut.
+ * the same query, so a cut answer still says what it cut. Each currency's
+ * top group comes back too even when it ranks below the cap, carrying that
+ * currency's totals; it is read for the totals and not returned as a row.
  *
  * NO PARTITION FILTER, for the reason the month-to-date query has none: a
  * standard export's partitioning is not documented as stable, and a filter on
@@ -35,7 +37,7 @@ import {
   queryParameter,
   runQuery,
   text,
-  type MonthToDateOptions,
+  type QueryOptions,
   type QueryParameter,
 } from "./gcp.js";
 
@@ -65,11 +67,16 @@ export const GROUPS = {
 export type GroupKey = keyof typeof GROUPS;
 export const GROUP_KEYS = Object.keys(GROUPS) as GroupKey[];
 
-/** Equality filters, each a fixed column compared with one bound parameter. */
+/**
+ * Equality filters, each a fixed expression compared with one bound
+ * parameter. Each compares the SAME expression a row shows, so a `(none)`
+ * read off a row filters to exactly those rows.
+ */
 export const FILTERS = {
-  project_id: "project.id = @project_id",
-  service: "service.description = @service",
-  sku: "sku.description = @sku",
+  project_id: "IFNULL(project.id, '(none)') = @project_id",
+  service: "IFNULL(service.description, '(none)') = @service",
+  sku_id: "sku.id = @sku_id",
+  sku: "IFNULL(sku.description, '(none)') = @sku",
 } as const;
 
 export type FilterName = keyof typeof FILTERS;
@@ -112,22 +119,22 @@ export function breakdownQuery(t: BillingExportTable, groupBy: readonly GroupKey
     "), ranked AS (",
     "SELECT",
     "  *,",
-    "  cost + credits AS net,",
     `  ROW_NUMBER() OVER (ORDER BY cost + credits DESC, ${[...keys, "currency"].join(", ")}) AS row_rank,`,
+    `  ROW_NUMBER() OVER (PARTITION BY currency ORDER BY cost + credits DESC, ${keys.join(", ")}) AS currency_rank,`,
     "  COUNT(*) OVER () AS group_count,",
     "  SUM(cost) OVER (PARTITION BY currency) AS currency_cost,",
     "  SUM(credits) OVER (PARTITION BY currency) AS currency_credits,",
-    "  MAX(latest_usage_end_time) OVER () AS export_latest_usage_end_time",
+    "  MAX(latest_usage_end_time) OVER () AS range_latest_usage_end_time",
     "FROM grouped",
     ")",
     "SELECT",
     ...keys.map((k) => `  ${k},`),
     "  currency, cost, credits,",
     ...(ordered.includes("sku") ? ["  usage_amount,"] : []),
-    "  group_count, currency_cost, currency_credits,",
-    "  FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', export_latest_usage_end_time, 'UTC') AS export_latest_usage_end_time",
+    "  row_rank, group_count, currency_cost, currency_credits,",
+    "  FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', range_latest_usage_end_time, 'UTC') AS range_latest_usage_end_time",
     "FROM ranked",
-    "WHERE row_rank <= @max_rows",
+    "WHERE row_rank <= @max_rows OR currency_rank = 1",
     "ORDER BY row_rank",
   ].join("\n");
 }
@@ -198,7 +205,7 @@ const KEY_FIELDS: Record<GroupKey, readonly string[]> = {
   day: ["usage_date"],
 };
 
-export async function costBreakdown(table: BillingExportTable, req: BreakdownRequest, options: MonthToDateOptions) {
+export async function costBreakdown(table: BillingExportTable, req: BreakdownRequest, options: QueryOptions) {
   const filters = FILTER_NAMES.filter((f) => req.filters[f] !== undefined);
   const response = await runQuery(
     table,
@@ -213,15 +220,18 @@ export async function costBreakdown(table: BillingExportTable, req: BreakdownReq
   let groups = 0;
   let latest: string | null = null;
 
-  const rows = raw.map((cell) => {
+  const rows: Array<Record<string, unknown>> = [];
+  for (const cell of raw) {
     const currency = text(cell.currency);
     const cost = number(cell.cost);
     const credits = number(cell.credits);
     groups = Math.max(groups, quantity(cell.group_count) ?? 0);
-    latest = text(cell.export_latest_usage_end_time) ?? latest;
+    latest = text(cell.range_latest_usage_end_time) ?? latest;
     if (currency !== null && !totals.has(currency)) {
       totals.set(currency, { cost: number(cell.currency_cost), credits: number(cell.currency_credits) });
     }
+    // A currency's top group past the cap is here only for its totals.
+    if ((quantity(cell.row_rank) ?? 0) > req.maxRows) continue;
     const row: Record<string, unknown> = {};
     for (const k of GROUP_KEYS) {
       if (!req.groupBy.includes(k)) continue;
@@ -235,8 +245,8 @@ export async function costBreakdown(table: BillingExportTable, req: BreakdownReq
     row.cost = cost;
     row.credits = credits;
     row.net = net(cost, credits);
-    return row;
-  });
+    rows.push(row);
+  }
 
   const truncated = groups > rows.length;
   const bytes = quantity(response.totalBytesProcessed);

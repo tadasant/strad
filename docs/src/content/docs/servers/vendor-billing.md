@@ -64,9 +64,10 @@ growing, and since when". Same credential, same table, same 10 GiB ceiling.
 | `start_date` | First day, `YYYY-MM-DD`, Pacific Time. Required. May not be after today (Pacific).                              |
 | `end_date`   | Last day, inclusive. Defaults to today (Pacific). The range is at most 92 days.                                 |
 | `group_by`   | Any combination of `project`, `service`, `sku`, `day`. Defaults to `[service]`. Column order is fixed whatever order is given. |
-| `project_id` | Optional. Exact match on `project.id`.                                                                          |
-| `service`    | Optional. Exact match on `service.description`, e.g. `Secret Manager`.                                          |
-| `sku`        | Optional. Exact match on `sku.description`, as a row's `sku` shows it.                                          |
+| `project_id` | Optional. Exact match on the `project_id` a row shows, `(none)` included.                                       |
+| `service`    | Optional. Exact match on the `service` a row shows, e.g. `Secret Manager`.                                      |
+| `sku_id`     | Optional. Exact match on `sku.id`: one line.                                                                    |
+| `sku`        | Optional. Exact match on the `sku` description a row shows. Not unique across services; prefer `sku_id`.        |
 | `max_rows`   | How many groups come back, highest net first. Default 100, at most 200.                                         |
 
 Each group key adds fixed columns to a row:
@@ -85,15 +86,20 @@ the returned ones. `latest_usage_end_time` is the freshness of the range, and
 `bytes_processed` is what BigQuery scanned for the call.
 
 To find what grew, group by `[service, sku]` over two equal periods and compare,
-then group by `[day]` with `sku` set to the line that moved, to see when it
-started.
+then group by `[day]` with `sku_id` set to the line that moved, to see when it
+started. A range is by usage day, not by invoice month, so a calendar month
+will not exactly match `get_gcp_month_to_date`: late rows and adjustments land
+in the invoice month, not on the day they were used.
 
 **Nothing a caller sends becomes SQL.** `group_by` is an enum, and each value
 picks a constant fragment of SELECT columns; a filter only switches on a
-constant `AND service.description = @service` clause. The dates, the filter
+constant clause such as `AND IFNULL(service.description, '(none)') = @service`,
+which compares the same expression a row shows. The dates, the filter
 values and `max_rows` reach BigQuery as typed, named query parameters
 (`parameterMode: NAMED`). The groups are ranked, counted and totalled by window
-functions in the same query, so one job answers the whole call. A
+functions in the same query, so one job answers the whole call. Each
+currency's top group also comes back when it ranks below the cap, so `totals`
+names every currency; that row is read for its totals and not returned. A
 `[service, sku]` call renders as:
 
 ```sql
@@ -115,12 +121,12 @@ GROUP BY 1, 2, 3, 4, 5
 ), ranked AS (
 SELECT
   *,
-  cost + credits AS net,
   ROW_NUMBER() OVER (ORDER BY cost + credits DESC, service, sku_id, sku, usage_unit, currency) AS row_rank,
+  ROW_NUMBER() OVER (PARTITION BY currency ORDER BY cost + credits DESC, service, sku_id, sku, usage_unit) AS currency_rank,
   COUNT(*) OVER () AS group_count,
   SUM(cost) OVER (PARTITION BY currency) AS currency_cost,
   SUM(credits) OVER (PARTITION BY currency) AS currency_credits,
-  MAX(latest_usage_end_time) OVER () AS export_latest_usage_end_time
+  MAX(latest_usage_end_time) OVER () AS range_latest_usage_end_time
 FROM grouped
 )
 SELECT
@@ -130,19 +136,18 @@ SELECT
   usage_unit,
   currency, cost, credits,
   usage_amount,
-  group_count, currency_cost, currency_credits,
-  FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', export_latest_usage_end_time, 'UTC') AS export_latest_usage_end_time
+  row_rank, group_count, currency_cost, currency_credits,
+  FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', range_latest_usage_end_time, 'UTC') AS range_latest_usage_end_time
 FROM ranked
-WHERE row_rank <= @max_rows
+WHERE row_rank <= @max_rows OR currency_rank = 1
 ORDER BY row_rank
 ```
 
 It groups by ordinal because `service` and `sku` are also STRUCT columns of the
 export. Like the month-to-date query it has no partition filter (see
 [Limitations #158](/limitations/)): the range bounds the rows it sums, not the
-bytes it scans, which are the columns named here over the whole table. A
-currency whose every group falls outside the top `max_rows` is missing from
-`totals`.
+bytes it scans, which are the columns named here over the whole table. Groups in different currencies are ranked by their raw
+amounts, which are not comparable.
 
 ## Configuring the slug
 

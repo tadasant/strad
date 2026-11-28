@@ -206,7 +206,7 @@ function rows(response: QueryResponse): MonthToDateRow[] {
   });
 }
 
-export interface MonthToDateOptions extends HttpOptions {
+export interface QueryOptions extends HttpOptions {
   /** A token already minted, so a caller can scrub it. */
   token: string;
 }
@@ -232,7 +232,7 @@ export async function runQuery(
   query: string,
   parameters: readonly QueryParameter[],
   what: string,
-  options: MonthToDateOptions,
+  options: QueryOptions,
 ): Promise<QueryResponse> {
   const auth = { Authorization: `Bearer ${options.token}` };
   const project = encodeURIComponent(table.project);
@@ -278,7 +278,7 @@ export async function runQuery(
   return response;
 }
 
-export async function monthToDate(table: BillingExportTable, options: MonthToDateOptions) {
+export async function monthToDate(table: BillingExportTable, options: QueryOptions) {
   const response = await runQuery(table, monthToDateQuery(table), [], "month-to-date", options);
   const result = rows(response);
   return {

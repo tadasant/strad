@@ -15,7 +15,7 @@ general-purpose client.
 
 `get_gcp_cost_breakdown` takes `start_date`, `end_date` (Pacific Time, at most
 92 days), `group_by` (an enum: `project`, `service`, `sku`, `day`, any
-combination), optional exact-match `project_id` / `service` / `sku` filters and
+combination), optional exact-match `project_id` / `service` / `sku_id` / `sku` filters and
 `max_rows` (default 100, at most 200). The SQL is assembled from fixed
 fragments the enum picks; every value a caller supplies is a bound BigQuery
 query parameter.
