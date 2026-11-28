@@ -146,7 +146,7 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   collapsed bundle does**, at `/google-search-console` and once per slug whose
   `oauth:` connector names its variables. `src/standalone/google-search-console.ts`
   runs it alone, and its README is the how-to.
-  `vendor/google-search-console-shared/test/` is its suite. See `HACKS.md` #173.
+  `vendor/google-search-console-shared/test/` is its suite. See `HACKS.md` #174.
 - `scripts/smoke.mjs` — connects a real MCP client to all four paths and lists
   tools; the credential-free boot test used by CI and `npm run smoke`.
 

@@ -139,4 +139,4 @@ From `images/bundle-google`, `npm test` runs:
 - `test/standalone.test.ts` — both transports against the built entrypoint,
   with no credentials set.
 
-Nothing in CI calls Google (`HACKS.md` #173).
+Nothing in CI calls Google (`HACKS.md` #174).

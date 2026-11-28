@@ -8833,7 +8833,7 @@ name. Either one closes the store at the next deploy.
 
 ---
 
-## 173. Google Search Console is strad's own server, and has met only fakes
+## 174. Google Search Console is strad's own server, and has met only fakes
 
 **What.** `images/bundle-google/vendor/google-search-console-shared` is a
 read-only Search Console MCP server written in this repo: `list_sites`,

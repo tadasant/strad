@@ -8,7 +8,8 @@
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
 #                           gcs, google-flights
 #   servers/remote-filesystem  remote-filesystem-tmp-public (strad's artifact store)
-#   images/bundle-google    gmail, google-calendar, google-docs, google-sheets, google-drive
+#   images/bundle-google    gmail, google-calendar, google-docs, google-sheets, google-drive,
+#                           google-search-console
 #   servers/onepassword     onepassword            (+ the `op` CLI, baked below)
 #   servers/secrets         secrets                (Parameter + Secret Manager viewer)
 #   servers/good-eggs       good-eggs              ┐

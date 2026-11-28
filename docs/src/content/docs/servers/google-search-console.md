@@ -105,5 +105,5 @@ bundle-google image is the how-to.
 ## What it has not met
 
 Every test fakes the network; no request from this server has reached Google.
-[Limitation #173](/limitations/#173-google-search-console-is-strads-own-server-and-has-met-only-fakes)
+[Limitation #174](/limitations/#174-google-search-console-is-strads-own-server-and-has-met-only-fakes)
 has the rest.

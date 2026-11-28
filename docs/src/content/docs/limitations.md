@@ -5281,7 +5281,7 @@ See `HACKS.md` #172.
 
 ---
 
-### 173. Google Search Console is strad's own server, and has met only fakes
+### 174. Google Search Console is strad's own server, and has met only fakes
 
 The [Google Search Console](/servers/google-search-console/) server is written
 in this repo, read-only, against Google's API reference.
@@ -5300,4 +5300,4 @@ in this repo, read-only, against Google's API reference.
   [store-served instance](/operate/runtime-config/) tree, so a slug created at
   runtime is not served until a deploy puts its variables on the bundle.
 
-See `HACKS.md` #173.
+See `HACKS.md` #174.
