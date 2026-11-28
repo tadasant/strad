@@ -1279,7 +1279,9 @@ servers:
     # end in "/", and not be under /strad/. `format: secret-manager` writes a
     # plain secret with its OWN `keyVar:`, a consoleEnv: key that is never a
     # console admin key — a deposit-only identity holding secrets.get,
-    # secrets.create and versions.add, and nothing that reads a value. A target
+    # secrets.create, versions.list and versions.add, and nothing that reads a
+    # value; never on a project this config fronts as a parameter store, and
+    # every prefix ends in "-" or "_". A target
     # is one prefix plus one final segment. Create-only unless `replace: true`
     # here AND the request asks. Checked-in config only.
     #

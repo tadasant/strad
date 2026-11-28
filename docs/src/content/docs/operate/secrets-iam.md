@@ -380,9 +380,14 @@ its `consoleStores:` entry's admin credential, which already holds the create
 permissions on that project. A `format: secret-manager` store writes with its
 own `keyVar:` credential. Give that service account a custom role on the
 target project holding exactly `secretmanager.secrets.get`,
-`secretmanager.secrets.create` and `secretmanager.versions.add`, and nothing
-that reads a value (`versions.access`), lists, deletes or sets a policy. An IAM
-condition on `resource.name` can narrow it to the entry's prefix.
+`secretmanager.secrets.create`, `secretmanager.versions.list` and
+`secretmanager.versions.add`, and nothing that reads a value
+(`versions.access`), lists the project's secrets, deletes or sets a policy.
+`versions.list` returns version names and states, never a payload. The route
+uses it to fill a secret that a failed first version left empty. Narrowing the
+role to the entry's prefix with an IAM condition on `resource.name` has not
+been tried here. Check Google's condition docs first: a create is authorised
+on the project, not on the secret it names.
 
 A GCP key on the laptop could not be made
 write-only this cleanly: creating a secret needs `secretmanager.secrets.setIamPolicy`,

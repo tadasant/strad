@@ -5268,9 +5268,9 @@ Zimmer's parameter store or a deploy workflow's Secret Manager project.
   skill, not something strad can check. Keep it off, or on a narrow prefix.
 - **A `parameter` store is written with its console admin key.** The route
   bounds what is written. IAM does not.
-- **A failed `secret-manager` deposit can leave an empty secret.** A retry is
-  then `exists`, and the deposit key cannot delete it. Retry with
-  `replace: true` where allowed, or delete it in the console.
+- **A `secret-manager` deposit key needs `versions.list`.** It reads version
+  names and states, never a payload, so a secret that a failed first version
+  left empty is filled on retry rather than refused.
 - **A replaced secret parameter keeps its version.** The receipt's
   `valueVersion` is the new Secret Manager version behind it.
 - **Google stores only.** Anything else is still the local form-POST hand-off.

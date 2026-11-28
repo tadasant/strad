@@ -12,23 +12,29 @@ import { ParameterStoreError } from "./parameters/types.ts";
  * `format: secret-manager` deposit store (src/config/schema.ts, `DepositStore`)
  * that talks to Google.
  *
- * Three verbs and no fourth:
+ * Four verbs and no fifth:
  *
  *   - `exists` — `GET projects/{p}/secrets/{id}`, the secret's METADATA. It
  *     needs `secretmanager.secrets.get` and returns no version and no value.
+ *   - `hasVersion` — `GET projects/{p}/secrets/{id}/versions`, version NAMES
+ *     and states. Needs `secretmanager.versions.list`; no payload comes back.
+ *     It is how a secret a failed deposit left EMPTY is told from a real one.
  *   - `create` — `POST projects/{p}/secrets?secretId={id}`, automatic
  *     replication, the store's labels. Needs `secretmanager.secrets.create`.
  *   - `addVersion` — `POST projects/{p}/secrets/{id}:addVersion`, the bytes as
  *     they are. Needs `secretmanager.versions.add`.
  *
- * There is no `:access`, no list and no delete in this module, so the identity
- * it is built for — a custom role holding exactly those three permissions —
+ * There is no `:access`, no project listing and no delete in this module, so
+ * the identity it is built for — a custom role holding exactly those four
+ * permissions —
  * can be granted nothing that reads a value, and this code would not use it if
  * it were. The payload is never logged and never echoed into an error: an
  * error carries the method, the resource and Google's status.
  */
 export interface SecretManagerDepositor {
   exists(secretId: string): Promise<boolean>;
+  /** Whether the secret has an ENABLED version, from the version list alone. */
+  hasVersion(secretId: string): Promise<boolean>;
   create(secretId: string, labels: Record<string, string>): Promise<void>;
   /** Returns the version number Google assigned, e.g. `"3"`. */
   addVersion(secretId: string, value: string): Promise<{ version: string }>;
@@ -108,6 +114,19 @@ export function createSecretManagerDepositor(
           return false;
         throw err;
       }
+    },
+    async hasVersion(secretId) {
+      const out = await call(
+        "GET",
+        `${secretPath(secretId)}/versions?filter=${encodeURIComponent("state:ENABLED")}&pageSize=1`,
+      );
+      const versions = Array.isArray(out.versions) ? out.versions : [];
+      return versions.some(
+        (v) =>
+          !!v &&
+          typeof v === "object" &&
+          (v as { state?: unknown }).state === "ENABLED",
+      );
     },
     async create(secretId, labels) {
       await call(

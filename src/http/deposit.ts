@@ -3,6 +3,7 @@ import type { Request, RequestHandler, Response } from "express";
 import { bearerToken, secretEquals } from "../auth/credential.ts";
 import {
   depositKeyRef,
+  isStradOwnedTarget,
   gatewayDepositRefusal,
   gatewayDepositSharedBy,
   type StradConfig,
@@ -33,7 +34,6 @@ import {
 } from "../secrets/parameters/index.ts";
 import type { ServerSecretProviders } from "../secrets/provider/index.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
-import { normaliseNamespace } from "../secrets/parameters/namespace.ts";
 import {
   createSecretManagerDepositor,
   type SecretManagerDepositor,
@@ -414,18 +414,16 @@ export function refusalForStoreTarget(
   store: DepositStoreEntry,
   target: string,
 ): string | undefined {
+  if (isStradOwnedTarget(target))
+    return "that spells one of strad's own parameters or secrets; strad's namespaces are deposited through the slug route, never as a deposit store";
   if (store.format === "parameter") {
-    if (normaliseNamespace(target).startsWith("/strad/"))
-      return "strad's own namespaces are deposited through the slug route, never as a deposit store";
-    const prefix = store.prefixes.find(
-      (p) => p.endsWith("/") && target.startsWith(p),
-    );
-    const variable = prefix ? target.slice(prefix.length) : "";
-    if (
-      !prefix ||
-      !isDepositVariable(variable) ||
-      validateVariableName(variable) !== null
-    )
+    // Any prefix that leaves exactly one variable name — so overlapping
+    // prefixes (`/a/`, `/a/b/`) each grant their own directory.
+    const variable = store.prefixes
+      .filter((p) => p.endsWith("/") && target.startsWith(p))
+      .map((p) => target.slice(p.length))
+      .find((v) => isDepositVariable(v) && validateVariableName(v) === null);
+    if (variable === undefined)
       return `${target} is not one of ${store.name}'s prefixes (${store.prefixes.join(", ")}) followed by one environment-variable name`;
     if (DEPOSIT_PROCESS_CONTROL.test(variable))
       return `${variable} is a name a process reads as configuration, not a credential; it cannot be deposited`;
@@ -458,8 +456,12 @@ function stored(
   valueVersion?: string,
 ): void {
   // `caller` and the store's name are config strings; the target is the
-  // caller's bytes and goes to stderr only.
-  event({ evt: "strad.deposit_written", caller: caller.slug });
+  // caller's bytes and goes to the process log only.
+  event({
+    evt: "strad.deposit_written",
+    caller: caller.slug,
+    store: store.name,
+  });
   console.log(
     `[strad] ${caller.slug} ${replaced ? "replaced" : "deposited"} ${path} in deposit store ${store.name}`,
   );
@@ -572,11 +574,18 @@ async function depositIntoStore(
       return;
     }
     try {
-      const secret = client.isSecret
-        ? await client.isSecret(target)
-        : (await exists(client, target))
-          ? true
-          : undefined;
+      // Whether a target exists AS A SECRET decides a replace, and a listing
+      // alone cannot say: a client that cannot answer is not guessed for.
+      if (!client.isSecret) {
+        refuse(
+          res,
+          503,
+          "store_unavailable",
+          `${server.slug}'s client for ${store.project} cannot say whether a parameter is a secret`,
+        );
+        return;
+      }
+      const secret = await client.isSecret(target);
       if (secret === undefined) {
         const created = await client.create({
           path: target,
@@ -664,7 +673,12 @@ async function depositIntoStore(
     depositorCache.set(key, createSecretManagerDepositor(cfg)).get(key)!;
   const path = `projects/${store.project}/secrets/${target}`;
   try {
-    const there = await depositor.exists(target);
+    // A secret with no enabled version is what a deposit whose first
+    // version failed leaves behind. It holds nothing a reader can read, and
+    // this key cannot delete it, so it is filled rather than refused.
+    const there =
+      (await depositor.exists(target)) && (await depositor.hasVersion(target));
+    const shell = !there && (await depositor.exists(target));
     if (there && !replace.value) {
       refuse(
         res,
@@ -675,7 +689,7 @@ async function depositIntoStore(
       return;
     }
     let replaced = there;
-    if (!there) {
+    if (!there && !shell) {
       try {
         await depositor.create(target, store.labels);
       } catch (err) {

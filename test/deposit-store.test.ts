@@ -65,7 +65,7 @@ servers:
       Authorization: "Bearer \${HOSTD_CUSTODY_KEY}"
     deposit:
       into: [linear]
-      stores: [zimmer-production, zimmer-rotatable, deploy-workflow, deploy-create-only]
+      stores: [zimmer-production, zimmer-rotatable, deploy-workflow, deploy-create-only, unkeyed]
   - slug: custody-other-mbp
     kind: local-tunnel
     url: https://hostd.example.com/custody/mcp
@@ -82,6 +82,7 @@ servers:
     consoleEnv:
       ZIMMER_ADMIN_KEY_JSON: "\${ZIMMER_ADMIN_KEY_JSON}"
       DEPLOY_DEPOSIT_KEY_JSON: "\${DEPLOY_DEPOSIT_KEY_JSON}"
+      NEVER_SEEDED_KEY_JSON: "\${NEVER_SEEDED_KEY_JSON}"
     consoleStores:
       - project: zimmer-secrets-test
         namespaces: ["/zimmer/test/secrets/"]
@@ -90,7 +91,8 @@ servers:
       - name: zimmer-production
         format: parameter
         project: zimmer-secrets-test
-        prefixes: ["/zimmer/test/secrets/static/"]
+        # Overlapping on purpose, the broad one first: each grants its own directory.
+        prefixes: ["/zimmer/test/secrets/", "/zimmer/test/secrets/static/"]
       - name: zimmer-rotatable
         format: parameter
         project: zimmer-secrets-test
@@ -108,6 +110,11 @@ servers:
         project: ${sm.endpoints.projectId}
         keyVar: DEPLOY_DEPOSIT_KEY_JSON
         prefixes: ["once-"]
+      - name: unkeyed
+        format: secret-manager
+        project: other-deploy-secrets
+        keyVar: NEVER_SEEDED_KEY_JSON
+        prefixes: ["app-"]
 `;
 
 const CONFIG = parseConfig(YAML);
@@ -281,7 +288,8 @@ describe("a parameter store (Zimmer's envelope)", () => {
   it.each([
     ["outside every prefix", "/zimmer/test/secrets/other/KEY"],
     ["one segment too deep", "/zimmer/test/secrets/static/nested/KEY"],
-    ["the prefix itself", "/zimmer/test/secrets/static"],
+    ["strad's own namespace, folded", "/STRAD/test/mcp/linear/static/KEY"],
+    ["the prefix itself", "/zimmer/test/secrets"],
     ["a process-control name", "/zimmer/test/secrets/static/NODE_OPTIONS"],
     ["strad's own namespace", "/strad/test/mcp/linear/static/KEY"],
   ])("refuses a target %s", async (_why, target) => {
@@ -326,6 +334,35 @@ describe("a Secret Manager store (a deploy workflow's)", () => {
       replaced: true,
     });
     expect(sm.secrets.get(id)).toEqual([VALUE, "rotated-0123456789"]);
+  });
+
+  it("fills a secret a failed first version left EMPTY, rather than refusing it", async () => {
+    sm.secrets.set("app-left-empty", []);
+    const res = await into("deploy-workflow", "app-left-empty");
+    expect(res.status).toBe(201);
+    expect(parseDepositReceipt(await res.json())).toMatchObject({
+      version: "1",
+    });
+    expect(sm.secrets.get("app-left-empty")).toEqual([VALUE]);
+  });
+
+  it("answers 503 for a store whose key was never seeded, and echoes nothing", async () => {
+    const res = await into("unkeyed", "app-anything");
+    const raw = await res.text();
+    expect(res.status).toBe(503);
+    expect(JSON.parse(raw).error).toBe("store_unavailable");
+    expect(raw).not.toContain(VALUE);
+  });
+
+  it("refuses an id that spells one of strad's own secrets", async () => {
+    const res = await into(
+      "deploy-workflow",
+      "strad-prod-mcp-linear-static-key",
+    );
+    expect(await refusal(res)).toMatchObject({
+      status: 403,
+      error: "not_permitted",
+    });
   });
 
   it("refuses replace on a create-only Secret Manager store", async () => {
@@ -384,6 +421,15 @@ describe("who may name a store", () => {
       status: 400,
       error: "bad_body",
     });
+  });
+
+  it("decodes the target exactly once: a double-encoded slash is refused", async () => {
+    const res = await post(
+      `/_strad/deposit/_store/zimmer-production/${encodeURIComponent(
+        encodeURIComponent("/zimmer/test/secrets/static/DOUBLE"),
+      )}`,
+    );
+    expect(res.status).toBe(400);
   });
 
   it("never reads: GET is a 405", async () => {
@@ -493,6 +539,26 @@ ${stores}
       "a Secret Manager key that is not a consoleEnv key",
       `      - { name: a, format: secret-manager, project: q, keyVar: NOPE, prefixes: ["app-"] }`,
       /not a key of this server's consoleEnv/,
+    ],
+    [
+      "a Secret Manager store on a project fronted as a parameter store",
+      `      - { name: a, format: secret-manager, project: p, keyVar: DEP, prefixes: ["app-"] }`,
+      /fronts as a parameter store/,
+    ],
+    [
+      "a Secret Manager prefix with no separator at its end",
+      `      - { name: a, format: secret-manager, project: q, keyVar: DEP, prefixes: ["a"] }`,
+      /ends in "-" or "_"/,
+    ],
+    [
+      "a Secret Manager prefix that spells a strad-owned id",
+      `      - { name: a, format: secret-manager, project: q, keyVar: DEP, prefixes: ["strad-prod-"] }`,
+      /strad-owned secret id/,
+    ],
+    [
+      "a parameter prefix that folds into strad's namespace",
+      `      - { name: a, format: parameter, project: p, prefixes: ["/STRAD/test/mcp/x/"] }`,
+      /under \/strad\//,
     ],
     [
       "two stores under one name",

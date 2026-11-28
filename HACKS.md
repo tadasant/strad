@@ -8816,11 +8816,11 @@ Mac or pasted by hand. That is the route custody exists to replace.
 - **A `parameter` store is written with that project's console ADMIN key**, the
   same credential the console and the slug route already use. It is not a
   narrower identity. The route bounds what it writes, not IAM.
-- **A `secret-manager` create can leave an empty secret.** The create and the
-  first version are two calls. If the second fails, the secret exists with no
-  version, a retry is a 409 `exists`, and the deposit key cannot delete it by
-  design. Retry with `replace: true` where the entry allows it, or delete the
-  empty secret in the console.
+- **A `secret-manager` deposit needs `versions.list`.** Create and first
+  version are two calls, so a failed second one leaves an empty secret. The
+  route reads the version list (names and states, no payload) and fills such a
+  secret instead of refusing it, which costs the deposit key one permission
+  beyond create and add.
 - **A replaced secret parameter keeps its parameter version.** The bytes are a
   new Secret Manager version behind it, reported as `valueVersion`. A metadata
   listing of the parameter does not show the change by timestamp.

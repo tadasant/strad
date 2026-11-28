@@ -634,6 +634,17 @@ export function createFakeGcp(opts: FakeGcpOptions = {}): FakeGcp {
       });
     }
     const [id = "", ...tail] = rest.split("/");
+    // The secret's VERSION LIST: names and states, never a payload.
+    if (tail.length === 1 && tail[0] === "versions" && method === "GET") {
+      const versions = secrets.get(id);
+      if (!versions) throw new HttpError(404);
+      return json(200, {
+        versions: versions.map((_, i) => ({
+          name: `${secretsParent}/${id}/versions/${i + 1}`,
+          state: "ENABLED",
+        })),
+      });
+    }
     // The secret's METADATA: name and labels, never a version or a value.
     if (tail.length === 0 && method === "GET") {
       if (!secrets.has(id)) throw new HttpError(404);

@@ -524,10 +524,14 @@ Secret Manager directly, such as a GitHub workflow over OIDC.
 
 The `secret-manager` key is meant to be deposit-only. Give its service account
 a custom role holding exactly `secretmanager.secrets.get`,
-`secretmanager.secrets.create` and `secretmanager.versions.add` on that project.
-It can then check that a secret exists, create one, and add a version. It
-cannot read a value, list the project or delete anything. An IAM condition on
-`resource.name` can narrow it to the entry's prefix as well.
+`secretmanager.secrets.create`, `secretmanager.versions.list` and
+`secretmanager.versions.add` on that project. With it the key can check that a
+secret exists and has a version, create one, and add a version. It cannot read
+a value, list the project's secrets or delete anything. If an earlier deposit's
+first version failed and left a secret empty, the next deposit fills it rather
+than answering `exists`. The schema refuses a `secret-manager` store on any
+project the config fronts as a parameter store, and a prefix that spells a
+strad-owned id. Every prefix must end in `-` or `_`.
 
 ### What a deposit store refuses
 
