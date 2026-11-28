@@ -19,6 +19,7 @@ import {
   ParameterStoreError,
   SERVER_PARAM_KINDS,
   type ParameterResolver,
+  type ParameterStore,
   type ServerParamKind,
 } from "../secrets/parameters/index.ts";
 import { connectorVariables } from "../deploy/server-namespaces.ts";
@@ -235,7 +236,7 @@ function isMissing(err: unknown): boolean {
  * or a 5xx would write a copy the higher one still shadows.
  */
 async function rotateFirstHeld(
-  store: { rotate(path: string, value: string): Promise<void> },
+  store: Pick<ParameterStore, "rotate">,
   paths: readonly string[],
   value: string,
 ): Promise<string> {

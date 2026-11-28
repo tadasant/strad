@@ -4538,6 +4538,8 @@ What that leaves:
   `deposit.paramsVariables:` names that exact slug and variable. One gateway
   name is reachable too, when the custody slug lists it in
   `deposit.gatewayVariables:`: a bundle's `tailnet.authKey`, create-only. A
+  store the slug lists in `deposit.stores:` is reachable under that store's
+  prefixes, and replaceable where its entry says `replace: true` (#172). A
   caller that seeds it first with another tailnet's key can make the bundle
   join that tailnet. The node runs `--shields-up`, only the `ssh` tree dials
   through it, and pinned host keys refuse a fake host before anything is
@@ -5251,3 +5253,26 @@ The [Hatchbox](/servers/hatchbox/) server is a port of the npm
   either fails every call until it is removed.
 
 See `HACKS.md` #170.
+
+---
+
+### 172. A custody deposit can reach another system's store, and replace in one
+
+A [deposit store](/servers/hostd-custody/#another-store-deposit-stores) lets
+the custody slug write into a store outside strad's own namespaces, such as
+Zimmer's parameter store or a deploy workflow's Secret Manager project.
+
+- **`replace: true` is an overwrite for whoever holds the custody key**, under
+  that entry's prefixes. That includes a shell grant on the Mac while custody
+  holds nothing. "Only when explicitly approved" is the agent following the
+  skill, not something strad can check. Keep it off, or on a narrow prefix.
+- **A `parameter` store is written with its console admin key.** The route
+  bounds what is written. IAM does not.
+- **A failed `secret-manager` deposit can leave an empty secret.** A retry is
+  then `exists`, and the deposit key cannot delete it. Retry with
+  `replace: true` where allowed, or delete it in the console.
+- **A replaced secret parameter keeps its version.** The receipt's
+  `valueVersion` is the new Secret Manager version behind it.
+- **Google stores only.** Anything else is still the local form-POST hand-off.
+
+See `HACKS.md` #172.

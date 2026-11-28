@@ -460,12 +460,15 @@ export const DEPLOY_ONLY_FIELDS = [
  * layer resolves off the box. Where a stored credential is sent is a decision
  * for a reviewed change to the checked-in config, not for a roster write.
  * `skipConfirmations:` takes the human out of a confirmed tool entirely, which
- * is the same kind of decision.
+ * is the same kind of decision. `depositStores:` decides which stores a
+ * custody deposit may write into, and with which credential — the same
+ * decision about where a credential goes.
  */
 export const CHECKED_IN_ONLY_FIELDS = [
   "confirmations",
   "confirmationHeaders",
   "skipConfirmations",
+  "depositStores",
 ] as const;
 
 /** Set to anything but its default. */

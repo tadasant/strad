@@ -558,6 +558,10 @@ servers:
   # /strad/{env}/gateway/static/{VARIABLE}, create-only, for a listed name that
   # is some bundle's `tailnet.authKey` ${NAME} (enabled or not), read by nothing
   # outside `bundles:`, and not a boot key. The schema refuses any other name.
+  # `stores:` names stores OUTSIDE strad's namespaces — each a `depositStores:`
+  # entry on a secrets server (see the `secrets` example below) — through
+  # POST /_strad/deposit/_store/{store}/{target}. Create-only unless that entry
+  # says `replace: true` and the request asks.
   # Checked-in config only: a runtime roster write cannot add or change it.
   #
   # - slug: custody-my-mbp
@@ -571,6 +575,7 @@ servers:
   #     paramsVariables:
   #       ssh-example-staging: [SSH_PRIVATE_KEY]
   #     gatewayVariables: [STRAD_TAILNET_OAUTH_CLIENT_SECRET]
+  #     stores: [zimmer-production]
 
   # --- kind: supplementary-image --------------------------------------------
   # A server published as its own container image. strad deploys it as an
@@ -1265,6 +1270,30 @@ servers:
     #     # env: key carrying the same ${REF} is refused too. Declare it under
     #     # `env:` above alongside the first.
     #     viewerKeyVar: ZIMMER_SECRETS_VIEWER_SERVICE_ACCOUNT_KEY_JSON
+    #
+    # `depositStores:` — stores a custody deposit may write into that are NOT
+    # strad's own slug namespaces, by NAME. A caller reaches one only when its
+    # own `deposit.stores:` lists the name too. `format: parameter` writes
+    # strad's envelope through the consoleStores: entry for the same project
+    # (its adminKeyVar); every prefix must sit inside that entry's namespaces,
+    # end in "/", and not be under /strad/. `format: secret-manager` writes a
+    # plain secret with its OWN `keyVar:`, a consoleEnv: key that is never a
+    # console admin key — a deposit-only identity holding secrets.get,
+    # secrets.create and versions.add, and nothing that reads a value. A target
+    # is one prefix plus one final segment. Create-only unless `replace: true`
+    # here AND the request asks. Checked-in config only.
+    #
+    # depositStores:
+    #   - name: zimmer-staging
+    #     format: parameter
+    #     project: zimmer-secrets-staging
+    #     prefixes: ["/zimmer/staging/secrets/static/"]
+    #   - name: deploy-workflow
+    #     format: secret-manager
+    #     project: my-deploy-secrets
+    #     keyVar: DEPLOY_DEPOSIT_SERVICE_ACCOUNT_KEY_JSON
+    #     prefixes: ["app-"]
+    #     labels: { app: my-app }
 
   # A server that draws its credentials from the secrets system instead of from
   # hand-written `${REF}` secrets. `params: true` opts it in: at deploy time

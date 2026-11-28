@@ -989,7 +989,10 @@ export function createGcpParameterStore(
     };
   }
 
-  async function rotate(path: string, value: string): Promise<void> {
+  async function rotate(
+    path: string,
+    value: string,
+  ): Promise<{ valueVersion?: string }> {
     const id = parameterId(path);
     const cur = await currentEnvelope(id);
     if (!cur) throw new ParameterStoreError(`no such parameter: ${path}`, 404);
@@ -1024,13 +1027,20 @@ export function createGcpParameterStore(
       try {
         // The Secret Manager version is the value; the Parameter Manager `__REF__`
         // already points at `versions/latest`, so it needs no new version.
-        await sm("POST", `${smParent}/secrets/${id}:addVersion`, {
-          payload: {
-            data: Buffer.from(encodeSecretValue(value), "utf8").toString(
-              "base64",
-            ),
+        const added = (await sm(
+          "POST",
+          `${smParent}/secrets/${id}:addVersion`,
+          {
+            payload: {
+              data: Buffer.from(encodeSecretValue(value), "utf8").toString(
+                "base64",
+              ),
+            },
           },
-        });
+        )) as { name?: unknown } | undefined;
+        const name = typeof added?.name === "string" ? added.name : "";
+        const valueVersion = name.slice(name.lastIndexOf("/") + 1);
+        return valueVersion ? { valueVersion } : {};
       } catch (err) {
         // Put the envelope back. Without this the window above is not a window
         // at all — a 403 or a socket reset here strands the parameter declaring
@@ -1042,6 +1052,7 @@ export function createGcpParameterStore(
       }
     } else {
       await addVersion(id, { ...cur.envelope, value });
+      return {};
     }
   }
 

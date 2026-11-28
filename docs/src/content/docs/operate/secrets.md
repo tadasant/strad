@@ -273,6 +273,16 @@ The caller authenticates with a bearer derived from its custody slug's key, and
 only a `local-tunnel` entry with `deposit:` in the checked-in config can call
 it. See [custody and deposit](/servers/hostd-custody/).
 
+A secret another system reads from its OWN store, such as Zimmer's
+`zimmer-secrets-prod` or a deploy workflow's Secret Manager project, goes
+through `POST /_strad/deposit/_store/{store}/{target}`. The store must be a
+`depositStores:` entry on the secrets server, and the custody slug must list it
+in `deposit.stores:`. A `format: parameter` store is written exactly as the
+console writes it. A `format: secret-manager` store gets plain bytes, written
+with that entry's own deposit-only key. Both are create-only unless the entry
+says `replace: true` and the request asks. See
+[deposit stores](/servers/hostd-custody/#another-store-deposit-stores).
+
 ### Secret or not: the one question to ask
 
 Not "will this value store cleanly" — that used to matter and no longer does, see

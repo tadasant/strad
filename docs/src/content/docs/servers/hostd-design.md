@@ -808,7 +808,7 @@ Recommended tiering:
 | `browser-use-*-headless` | `admin` only. `evaluate_script` in a signed-in profile reaches every account the owner is logged in to, which is arguably wider than the shell. With the extension installed there is no Chrome prompt in front of that at all. |
 | `computer-use-*-headless` | `admin` only. Every app's contents, fields and buttons, in the background. |
 | `computer-use-*` | `admin` only. The screen and the keyboard; a caller here is the person at the machine. |
-| `custody-*` | `admin` only, and attached to a session only after a human approved the specific secrets it will capture. It is write-only into strad and create-only, but it clicks "generate" on the owner's accounts, and a prompt-injected page could steer it to mint a token with more scope than intended. |
+| `custody-*` | `admin` only, and attached to a session only after a human approved the specific secrets it will capture. It is write-only into strad and create-only (a [deposit store](/servers/hostd-custody/#another-store-deposit-stores) whose entry says `replace: true` is the one exception), but it clicks "generate" on the owner's accounts, and a prompt-injected page could steer it to mint a token with more scope than intended. |
 | `imessage-*` | `admin` only, and handed to the session that sweeps it. Read-only, but every conversation the owner has had, and allowed on timeout by default, so with nobody at the screen the dialog refuses nothing. A message is also untrusted text: a sweep that reads it should not hold a tool that can send on its say-so. |
 
 None of them is a candidate for fleet-wide entitlement today. If one is widened,

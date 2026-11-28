@@ -477,6 +477,24 @@ function resolveAdminKey(
     : { account: null, accountReason: `${adminKeyVar} ${parsed.reason}` };
 }
 
+/**
+ * One `consoleEnv:` key of one server, parsed as a service-account key, out
+ * of that server's console-only scope and nowhere else — the same lookup a
+ * console store's `adminKeyVar` gets. A `format: secret-manager` deposit
+ * store's `keyVar` is read through this (src/http/deposit.ts).
+ */
+export function resolveConsoleKey(
+  config: StradConfig,
+  slug: string,
+  keyVar: string,
+  secrets: SecretBag,
+): { account: ServiceAccount | null; accountReason?: string } {
+  const server = config.servers.find((s) => s.slug === slug);
+  if (!server) return { account: null, accountReason: `no server ${slug}` };
+  const exact = resolveEnv(serverEnv(server), consoleEnvKeys(server), secrets);
+  return resolveAdminKey(server, keyVar, exact);
+}
+
 /** A comma-separated env list, trimmed and de-blanked. */
 function splitList(raw: string | undefined): string[] {
   return (raw ?? "")

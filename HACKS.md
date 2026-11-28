@@ -8788,3 +8788,45 @@ rather than storing a weaker artifact than was asked for.
 **Undo.** Use a bucket in a project where object ACLs are allowed and unset the
 flag, or build sensitivity on something UBLA permits, such as a second bucket
 whose IAM grants the viewer domain.
+
+## 172. A custody deposit can reach another system's store, and replace in one
+
+**What.** `depositStores:` on a secrets server names stores outside strad's
+own slug namespaces, and `deposit.stores:` on the custody slug lets it write
+into them through `POST /_strad/deposit/_store/{store}/{target}`. Two formats:
+`parameter` (strad's envelope, through the `consoleStores:` entry's admin
+client, for a reader like Zimmer's resolver) and `secret-manager` (plain bytes
+with the entry's own deposit-only key, for a reader that calls Secret Manager
+directly). An entry with `replace: true` lets a request that asks write a new
+version over an existing value.
+
+**Why.** Secrets that Zimmer or a deploy workflow read from their own store
+had no custody route, so they were seeded by running `gcloud` on the owner's
+Mac or pasted by hand. That is the route custody exists to replace.
+
+**What it costs.**
+
+- **Replace is an overwrite primitive for whoever holds the custody key.**
+  Under a `replace: true` entry's prefixes, that includes a shell grant on the
+  Mac while custody holds nothing. A replaced credential can point a reader at
+  an account of the writer's choosing, which is the harm the slug route's
+  create-only rule exists to rule out. The "only when explicitly approved"
+  rule is the agent following `procure-secrets-via-custody`, not a check strad
+  or hostd can make. Keep `replace: true` off, or on a narrow prefix.
+- **A `parameter` store is written with that project's console ADMIN key**, the
+  same credential the console and the slug route already use. It is not a
+  narrower identity. The route bounds what it writes, not IAM.
+- **A `secret-manager` create can leave an empty secret.** The create and the
+  first version are two calls. If the second fails, the secret exists with no
+  version, a retry is a 409 `exists`, and the deposit key cannot delete it by
+  design. Retry with `replace: true` where the entry allows it, or delete the
+  empty secret in the console.
+- **A replaced secret parameter keeps its parameter version.** The bytes are a
+  new Secret Manager version behind it, reported as `valueVersion`. A metadata
+  listing of the parameter does not show the change by timestamp.
+- **Only Google stores.** A store that is neither Parameter Manager nor Secret
+  Manager (1Password, a GitHub Actions secret) is still the local form-POST
+  hand-off.
+
+**Undo.** Delete the `depositStores:` entry or the caller's `deposit.stores:`
+name. Either one closes the store at the next deploy.

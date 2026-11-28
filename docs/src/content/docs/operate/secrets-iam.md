@@ -374,7 +374,17 @@ touches an `oauth/` name. The one gateway name it can create is a bundle's
 create-only, under `/strad/<env>/gateway/static/`. It writes through the
 same console store, so it needs no new grant either, but that store's
 `consoleEnv.SECRETS_NAMESPACES` has to cover `/strad/<env>/gateway/static/`.
-Without it, the route answers 503 `store_unavailable`. A GCP key on the laptop could not be made
+Without it, the route answers 503 `store_unavailable`. A [deposit store](/servers/hostd-custody/#another-store-deposit-stores) is
+the exception that does need IAM. A `format: parameter` store writes through
+its `consoleStores:` entry's admin credential, which already holds the create
+permissions on that project. A `format: secret-manager` store writes with its
+own `keyVar:` credential. Give that service account a custom role on the
+target project holding exactly `secretmanager.secrets.get`,
+`secretmanager.secrets.create` and `secretmanager.versions.add`, and nothing
+that reads a value (`versions.access`), lists, deletes or sets a policy. An IAM
+condition on `resource.name` can narrow it to the entry's prefix.
+
+A GCP key on the laptop could not be made
 write-only this cleanly: creating a secret needs `secretmanager.secrets.setIamPolicy`,
 and anything holding that can grant itself read. That is the "speed bump, not a
 wall" this page closes with a deny policy for the console. Keeping the GCP

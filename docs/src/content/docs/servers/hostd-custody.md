@@ -461,6 +461,107 @@ in its console. For an agent to check it, that strad needs a viewer key on its
 a role that allows only `list_parameters` there, and a token for that role in
 the agent's MCP config.
 
+## Another store: deposit stores
+
+A named destination is another strad. A **deposit store** is a store this
+strad writes for its owner that is not one of its own slug namespaces:
+Zimmer's parameter store, say, or a plain Secret Manager project a deploy
+workflow reads. The value still goes laptop → core over TLS, and core writes
+it the way that store's reader reads it.
+
+The route is `POST /_strad/deposit/_store/{store}/{target}`, with body
+`{"value": "…"}` or `{"value": "…", "replace": true}`. `target` is one
+percent-encoded segment: a whole parameter path, or a secret id. In the tool
+it is the `store` and `target` arguments:
+
+```json
+{ "handle": "h_3kd9…", "store": "zimmer-production",
+  "target": "/zimmer/production/secrets/static/TRANSCRIPT_STORAGE_BUCKET" }
+```
+
+A store is reachable only when BOTH sides of the checked-in config say so,
+like `reaches:` and `reachableFrom:`:
+
+```yaml
+- slug: custody-my-mbp
+  kind: local-tunnel
+  deposit:
+    stores: [zimmer-production]
+- slug: secrets
+  kind: supplementary-image
+  consoleEnv:
+    ZIMMER_SECRETS_ADMIN_KEY_JSON: "${ZIMMER_SECRETS_ADMIN_KEY_JSON}"
+    DEPLOY_DEPOSIT_SERVICE_ACCOUNT_KEY_JSON: "${DEPLOY_DEPOSIT_SERVICE_ACCOUNT_KEY_JSON}"
+  consoleStores:
+    - project: zimmer-secrets-prod
+      namespaces: ["/zimmer/production/secrets/"]
+      adminKeyVar: ZIMMER_SECRETS_ADMIN_KEY_JSON
+  depositStores:
+    - name: zimmer-production
+      format: parameter
+      project: zimmer-secrets-prod
+      prefixes: ["/zimmer/production/secrets/static/"]
+    - name: deploy-workflow
+      format: secret-manager
+      project: my-deploy-secrets
+      keyVar: DEPLOY_DEPOSIT_SERVICE_ACCOUNT_KEY_JSON
+      prefixes: ["app-"]
+      labels: { app: my-app }
+```
+
+Adding a store is a config entry. It needs no code.
+
+### The two formats
+
+| `format`         | What is written                                                                                                                              | With which credential                                                                                     |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `parameter`      | A secret parameter, exactly as the console writes one: the value in Secret Manager behind a `__REF__`, base64url-encoded, with its grant.    | The `consoleStores:` entry for the same project, through its `adminKeyVar`. The project must be one.      |
+| `secret-manager` | A plain Secret Manager secret, the bytes as they are. A new secret gets automatic replication and the entry's `labels:`.                     | The entry's own `keyVar:`, a `consoleEnv:` key, never a console admin key. The schema refuses one.        |
+
+Use `parameter` for a reader that resolves strad's envelope, such as Zimmer's
+resolver for `zimmer-secrets-*`. Use `secret-manager` for a reader that calls
+Secret Manager directly, such as a GitHub workflow over OIDC.
+
+The `secret-manager` key is meant to be deposit-only. Give its service account
+a custom role holding exactly `secretmanager.secrets.get`,
+`secretmanager.secrets.create` and `secretmanager.versions.add` on that project.
+It can then check that a secret exists, create one, and add a version. It
+cannot read a value, list the project or delete anything. An IAM condition on
+`resource.name` can narrow it to the entry's prefix as well.
+
+### What a deposit store refuses
+
+- **A target outside the prefixes.** A target is one prefix plus ONE segment.
+  For `parameter` that segment is an environment-variable name, and for
+  `secret-manager` it is the rest of a secret id. A prefix grants a directory,
+  never the tree under it. Process-control names such as `NODE_OPTIONS` are
+  refused as they are on the slug route.
+- **Anything under `/strad/`.** strad's own namespaces go through the slug
+  route and its refusals, on the deployment that owns them. The schema refuses
+  such a prefix, and the route refuses such a target.
+- **A store not on both lists.** A caller whose `deposit.stores:` does not name
+  the store, or a name no enabled secrets server declares, is a 403. A store
+  with no `depositStores:` entry, like the CI store, cannot be reached by any
+  spelling.
+- **An existing value, unless replace is asked AND allowed.** The default is
+  create-only, and an existing target is a 409. `replace: true` in the body
+  writes a new version, and only where the store's entry says `replace: true`.
+  Otherwise it is a 403. The old versions stay. A plain (non-secret) parameter
+  is never replaced with a secret. `replace` on the slug or gateway route is a
+  400, because strad's own namespaces stay create-only.
+- **A read.** Existence is checked from metadata: a parameter listing, or a
+  secret's resource. No answer carries a value.
+
+### Verifying a store deposit
+
+The receipt names the path and the version the write produced. For a replaced
+secret parameter, the parameter keeps its version, and `valueVersion` (in the
+tool's result, `value_version`) is the new Secret Manager version behind it.
+For an independent check, use that store's own metadata: the console's store
+picker on this strad shows the parameter and its timestamp, and
+`gcloud secrets versions list` shows a Secret Manager secret's versions with
+their times. Neither reads a value.
+
 ## Verifying a deposit
 
 Check for the parameter and its timestamp with the `secrets` server's
@@ -495,6 +596,6 @@ Mac or through the extension route.
 
 - **A CI caller.** A second kind of caller with its own bearer and its own
   namespace fence, so a workflow can move a GitHub Actions secret into strad.
-- **Zimmer's production store.** Letting the same route write to
-  `/zimmer/production/mcp/static/`.
-- **Rotation.** Overwriting stays in the console.
+- **Rotation in strad's own store.** The slug and gateway routes stay
+  create-only, so overwriting there stays in the console. Only a deposit store
+  whose entry says `replace: true` can be written over.

@@ -337,6 +337,7 @@ describe("consoleScopeProblems", () => {
       },
       consoleStores: [],
       mcpStores: [],
+      depositStores: [],
       reaches: [],
       reachableFrom: [],
     });
