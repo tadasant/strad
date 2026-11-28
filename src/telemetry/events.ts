@@ -490,10 +490,11 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      * `caller` is the depositing `local-tunnel` entry's slug, from the CONFIG —
      * the one matched by its derived bearer. The TARGET slug and variable are
      * the caller's own bytes and go to core's stderr only, for the reason
-     * `strad.param_refused` gives. `status` is the store's HTTP status on a
-     * failed create. A refused bearer carries nothing.
+     * `strad.param_refused` gives. `store` is a `depositStores:` entry's name,
+     * also from the config, on a deposit into a named store. `status` is the
+     * store's HTTP status on a failed create. A refused bearer carries nothing.
      */
-    "strad.deposit_written": ["caller"],
+    "strad.deposit_written": ["caller", "store"],
     "strad.deposit_failed": ["caller", "status"],
     "strad.deposit_refused": [],
     /**

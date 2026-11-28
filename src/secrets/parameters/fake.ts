@@ -52,6 +52,8 @@ export interface FakeGcp {
    * regression that drops the grant fails a test instead of failing a deploy.
    */
   secretPolicies: Map<string, FakeBinding[]>;
+  /** Secret Manager labels, as a create set them: secretId -> labels. */
+  secretLabels: Map<string, Record<string, string>>;
   /**
    * The IAM DENY policy, modelled: permissions no allow can grant back.
    *
@@ -253,6 +255,7 @@ export function createFakeGcp(opts: FakeGcpOptions = {}): FakeGcp {
   const parameters = new Map<string, FakeParameter>();
   const secrets = new Map<string, string[]>();
   const secretPolicies = new Map<string, FakeBinding[]>();
+  const secretLabels = new Map<string, Record<string, string>>();
   const denied = new Set<string>();
 
   /**
@@ -566,6 +569,9 @@ export function createFakeGcp(opts: FakeGcpOptions = {}): FakeGcp {
       if (secrets.has(id)) throw new HttpError(409);
       secrets.set(id, []);
       secretPolicies.set(id, []);
+      const labels = (body as { labels?: Record<string, string> } | undefined)
+        ?.labels;
+      secretLabels.set(id, { ...(labels ?? {}) });
       return json(200, { name: `${secretsParent}/${id}` });
     }
     const rest = pathOnly.startsWith(`${secretsParent}/`)
@@ -623,12 +629,34 @@ export function createFakeGcp(opts: FakeGcpOptions = {}): FakeGcp {
           "base64",
         ).toString("utf8"),
       );
-      return json(200, {});
+      return json(200, {
+        name: `${secretsParent}/${id}/versions/${versions.length}`,
+      });
     }
     const [id = "", ...tail] = rest.split("/");
+    // The secret's VERSION LIST: names and states, never a payload.
+    if (tail.length === 1 && tail[0] === "versions" && method === "GET") {
+      const versions = secrets.get(id);
+      if (!versions) throw new HttpError(404);
+      return json(200, {
+        versions: versions.map((_, i) => ({
+          name: `${secretsParent}/${id}/versions/${i + 1}`,
+          state: "ENABLED",
+        })),
+      });
+    }
+    // The secret's METADATA: name and labels, never a version or a value.
+    if (tail.length === 0 && method === "GET") {
+      if (!secrets.has(id)) throw new HttpError(404);
+      return json(200, {
+        name: `${secretsParent}/${id}`,
+        labels: secretLabels.get(id) ?? {},
+      });
+    }
     if (tail.length === 0 && method === "DELETE") {
       if (!secrets.has(id)) throw new HttpError(404);
       secrets.delete(id);
+      secretLabels.delete(id);
       // An IAM policy does not outlive its resource.
       secretPolicies.delete(id);
       return json(200, {});
@@ -694,6 +722,7 @@ export function createFakeGcp(opts: FakeGcpOptions = {}): FakeGcp {
     parameters,
     secrets,
     secretPolicies,
+    secretLabels,
     denied,
     callerMember: CALLER_MEMBER,
     principalOf: principalFor,

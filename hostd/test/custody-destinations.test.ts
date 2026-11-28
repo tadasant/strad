@@ -319,7 +319,10 @@ describe("deposit, through the daemon, to named destinations", () => {
       "gateway",
       "grant_id",
       "handle",
+      "replace",
       "slug",
+      "store",
+      "target",
       "variable",
     ]);
     expect(deposit.inputSchema.required).not.toContain("destination");

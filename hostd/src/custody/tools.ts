@@ -14,9 +14,12 @@ import {
   depositToken,
   gatewayDepositRoutePath,
   isDepositSlug,
+  isDepositStoreName,
+  isDepositStoreTarget,
   isDepositVariable,
   MAX_DEPOSIT_VALUE_LENGTH,
   parseDepositReceipt,
+  storeDepositRoutePath,
 } from "./deposit-wire.js";
 import { destinationNames, resolveDestination } from "./destinations.js";
 import { KEY_COMMENT, KEY_TYPES, mintKeypair } from "./keygen.js";
@@ -44,6 +47,12 @@ const P = {
   slug: 'The strad server slug the secret is for, e.g. "linear". Lowercase, dashes. Omit it when gateway is true.',
   variable:
     'The environment-variable name the server reads it as, e.g. "LINEAR_API_KEY".',
+  store:
+    'A deposit store strad lists for this machine in deposit.stores, by name, e.g. "zimmer-production" — another system\'s parameter store or a Secret Manager project, reached through that strad. Pass target with it, and neither slug, variable nor gateway.',
+  target:
+    'Where in that store, exactly as the approved list names it: a full parameter path for a parameter store, e.g. "/zimmer/production/secrets/static/TRANSCRIPT_STORAGE_BUCKET", or a secret id for Secret Manager, e.g. "app-otel-ingest-token".',
+  replace:
+    "true ONLY when the owner's approved list explicitly says to REPLACE (add a new version to) an existing value at this exact store and target. Store deposits only, and only where strad's entry for the store allows it. Omit it otherwise: without it an existing value is refused (exists) and left alone.",
   gateway:
     "true to deposit into strad's GATEWAY namespace instead of a slug's — for a bundle's tailnet key, e.g. variable STRAD_TAILNET_OAUTH_CLIENT_SECRET. Only names strad lists for this machine in deposit.gatewayVariables. Omit slug when true.",
 } as const;
@@ -713,6 +722,8 @@ public_key is one authorized_keys line. The private key is OpenSSH format, unenc
 
 With gateway: true and no slug, it goes to /strad/<env>/gateway/static/<VARIABLE> instead. That form exists for ONE kind of name: a bundle's tailnet key (e.g. STRAD_TAILNET_OAUTH_CLIENT_SECRET), and only a name that strad lists for this machine in deposit.gatewayVariables. Every other gateway name is refused (not_permitted).
 
+With store and target (and no slug, variable or gateway), it goes into a store OUTSIDE strad's own namespaces that this strad writes for its owner — another system's parameter store (e.g. Zimmer's) or a Secret Manager project (e.g. a deploy workflow's), written the way that store's reader reads it. Only stores strad lists for this machine in deposit.stores, and only under the prefixes strad's entry for the store allows; anything else is not_permitted. These are create-only too, unless you pass replace: true — which you may do only when the approved list explicitly says to replace that exact target — and strad's entry for the store allows it.
+
 Where it can go is fixed by this machine's own config, by NAME — there is no URL argument:
 ${destinationList}
 Name the strad the approved list names. Omit destination for the default.
@@ -720,19 +731,23 @@ Name the strad the approved list names. Omit destination for the default.
 Create-only: if that name already exists for the slug — in its static/ or oauth/ namespace, or resolved from the gateway — strad refuses with "exists" and the handle stays held; a human rotates existing credentials in strad's console. strad also refuses (not_permitted) a name in the slug's url, a process-control name such as NODE_OPTIONS or HTTPS_PROXY, a local-tunnel machine's slug, and a params: true slug this machine is not configured for. It only ever writes the slug's static/ namespace (or, with gateway: true, that one gateway name) and never reads anything back.
 
 **Returns:** {"deposited":true,"destination":"${config.custody.stradName}","path":"/strad/prod/mcp/linear/static/LINEAR_API_KEY","version":"v1"}
-The handle ends on success. Confirm through that strad's secrets server (list_parameters shows the parameter and its timestamp), never by reading the value.
+A store deposit also returns "store", and on a replace "replaced":true and, for a parameter store, "value_version" — the parameter keeps its version and timestamp, and value_version is the new version of its value. The handle ends on success. Confirm a create by the returned path and version, or a metadata listing (list_parameters shows the parameter and its timestamp); confirm a replace by replaced and value_version. Never by reading the value.
 
 **On refusal** the error names strad's reason: exists, not_permitted (this machine may not deposit into that slug), unauthorized (that strad does not accept this machine's deposit key for it), bad_target, store_unavailable, write_failed. An unknown destination is refused here and nothing is sent.
 
 **Use cases:**
 - The last step for each secret the owner approved: capture, check the shape, deposit
 - The same, into another organisation's strad the approved list names
-- A bundle's tailnet OAuth client secret, with gateway: true`,
+- A bundle's tailnet OAuth client secret, with gateway: true
+- A secret another system reads from its own store (Zimmer's, a deploy workflow's), with store and target`,
     schema: z.object({
       handle: z.string().min(1),
       slug: z.string().min(1).optional(),
-      variable: z.string().min(1),
+      variable: z.string().min(1).optional(),
       gateway: z.boolean().optional(),
+      store: z.string().min(1).optional(),
+      target: z.string().min(1).optional(),
+      replace: z.boolean().optional(),
       destination: z.string().min(1).optional(),
     }),
     inputSchema: {
@@ -742,13 +757,16 @@ The handle ends on success. Confirm through that strad's secrets server (list_pa
         slug: { type: "string", description: P.slug },
         variable: { type: "string", description: P.variable },
         gateway: { type: "boolean", description: P.gateway },
+        store: { type: "string", description: P.store },
+        target: { type: "string", description: P.target },
+        replace: { type: "boolean", description: P.replace },
         destination: {
           type: "string",
           enum: names,
           description: `Which strad to deposit into, by name. Omit it for the default, "${config.custody.stradName}".`,
         },
       },
-      required: ["handle", "variable"],
+      required: ["handle"],
     },
     annotations: {
       title: "Deposit a secret into strad",
@@ -757,35 +775,69 @@ The handle ends on success. Confirm through that strad's secrets server (list_pa
       openWorldHint: true,
     },
     summarize: (a) =>
-      `deposit: ${a.handle} → ${a.destination ?? config.custody.stradName}:${a.gateway ? "gateway" : a.slug}/${a.variable}`,
+      a.store !== undefined
+        ? `deposit: ${a.handle} → ${a.destination ?? config.custody.stradName}:store ${a.store} ${a.target}${a.replace ? " (replace)" : ""}`
+        : `deposit: ${a.handle} → ${a.destination ?? config.custody.stradName}:${a.gateway ? "gateway" : a.slug}/${a.variable}`,
     handler: async (a, { grant }) => {
-      if (a.gateway === true && a.slug !== undefined)
-        return text(
-          "Pass slug OR gateway: true, not both: a gateway deposit has no slug. Nothing was sent.",
-          true,
-        );
-      if (a.gateway !== true && a.slug === undefined)
-        return text(
-          "slug is required unless gateway is true. Nothing was sent.",
-          true,
-        );
-      if (a.slug === undefined && !isDepositVariable(a.variable))
-        return text(
-          "variable must be an environment-variable name. Nothing was sent.",
-          true,
-        );
-      if (
-        (a.slug !== undefined && !isDepositSlug(a.slug)) ||
-        !isDepositVariable(a.variable)
-      )
-        return text(
-          "slug must be a strad slug (lowercase, single dashes) and variable an environment-variable name. Nothing was sent.",
-          true,
-        );
-      const route =
-        a.slug === undefined
-          ? gatewayDepositRoutePath(a.variable)
-          : depositRoutePath(a.slug, a.variable);
+      let route: string;
+      if (a.store !== undefined || a.target !== undefined) {
+        if (
+          a.store === undefined ||
+          a.target === undefined ||
+          a.slug !== undefined ||
+          a.variable !== undefined ||
+          a.gateway !== undefined
+        )
+          return text(
+            "A store deposit takes store AND target, and none of slug, variable or gateway. Nothing was sent.",
+            true,
+          );
+        if (!isDepositStoreName(a.store) || !isDepositStoreTarget(a.target))
+          return text(
+            "store must be a deposit store's name (lowercase, single dashes) and target a parameter path or a secret id (letters, digits, _ and -, separated by /). Nothing was sent.",
+            true,
+          );
+        route = storeDepositRoutePath(a.store, a.target);
+      } else {
+        if (a.replace !== undefined)
+          return text(
+            "replace is for a store deposit only; strad's own namespaces are create-only. Nothing was sent.",
+            true,
+          );
+        if (a.variable === undefined)
+          return text(
+            "variable is required unless this is a store deposit. Nothing was sent.",
+            true,
+          );
+        const variable = a.variable;
+        if (a.gateway === true && a.slug !== undefined)
+          return text(
+            "Pass slug OR gateway: true, not both: a gateway deposit has no slug. Nothing was sent.",
+            true,
+          );
+        if (a.gateway !== true && a.slug === undefined)
+          return text(
+            "slug is required unless gateway is true. Nothing was sent.",
+            true,
+          );
+        if (a.slug === undefined && !isDepositVariable(variable))
+          return text(
+            "variable must be an environment-variable name. Nothing was sent.",
+            true,
+          );
+        if (
+          (a.slug !== undefined && !isDepositSlug(a.slug)) ||
+          !isDepositVariable(variable)
+        )
+          return text(
+            "slug must be a strad slug (lowercase, single dashes) and variable an environment-variable name. Nothing was sent.",
+            true,
+          );
+        route =
+          a.slug === undefined
+            ? gatewayDepositRoutePath(variable)
+            : depositRoutePath(a.slug, variable);
+      }
       const found = resolveDestination(config, a.destination);
       if (!found.ok)
         return text(
@@ -807,7 +859,9 @@ The handle ends on success. Confirm through that strad's secrets server (list_pa
             "content-type": "application/json",
             authorization: `Bearer ${depositToken(dest.key)}`,
           },
-          body: JSON.stringify({ value }),
+          body: JSON.stringify(
+            a.replace === true ? { value, replace: true } : { value },
+          ),
           signal: AbortSignal.any([grant.signal, AbortSignal.timeout(20_000)]),
           redirect: "error",
         });
@@ -839,8 +893,13 @@ The handle ends on success. Confirm through that strad's secrets server (list_pa
       return json({
         deposited: true,
         destination: dest.name,
+        ...(a.store !== undefined ? { store: a.store } : {}),
         path: receipt.path,
         version: receipt.version,
+        ...(receipt.replaced ? { replaced: true } : {}),
+        ...(receipt.valueVersion
+          ? { value_version: receipt.valueVersion }
+          : {}),
       });
     },
   });

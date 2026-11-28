@@ -26,6 +26,19 @@
  * knows which caller is depositing from WHICH key matched, never from anything
  * the caller claims.
  *
+ * ## A deposit into a named STORE
+ *
+ * `POST {prefix}/_store/{store}/{target}` writes into a store core can reach
+ * that is not this strad's own slug namespace: another system's parameter
+ * store (Zimmer's), or a plain Secret Manager project (a deploy workflow's).
+ * The store is addressed by a NAME the checked-in config gives it
+ * (`depositStores:` on the secrets server) and the caller must list that name
+ * in `deposit.stores:`. `target` is ONE segment, percent-encoded: a whole
+ * parameter path for a parameter store, a secret id for Secret Manager. Both
+ * ends check its shape; core also checks it against the store's prefixes.
+ * That is the one deposit that may REPLACE a value, and only when the body
+ * says `replace: true` AND the store's own entry says `replace: true`.
+ *
  * Revoking it is revoking the `deposit:` block in strad's checked-in config, or
  * rotating the slug's key — which the console does without a deploy.
  *
@@ -50,6 +63,13 @@ export const DEPOSIT_ROUTE_PREFIX = "/_strad/deposit";
  */
 export const DEPOSIT_GATEWAY_TARGET = "_gateway";
 
+/**
+ * The reserved target segment for a deposit into a NAMED store:
+ * `{prefix}/_store/{store}/{target}`. Underscored for the reason `_gateway`
+ * is: no slug can be spelled this way.
+ */
+export const DEPOSIT_STORE_TARGET = "_store";
+
 /** Bumped on any change a peer one version behind would misread. */
 export const DEPOSIT_PROTOCOL = 1;
 
@@ -72,6 +92,33 @@ const MAX_SLUG_LENGTH = 63;
 /** An environment-variable name (`ENV_NAME_SOURCE`), plus its length cap. */
 const VARIABLE_SHAPE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const MAX_VARIABLE_LENGTH = 200;
+
+/**
+ * A deposit store's name: the slug alphabet. It is a config string the caller
+ * repeats, never a project id or a URL.
+ */
+const STORE_NAME_SHAPE = SLUG_SHAPE;
+/**
+ * A store target: a parameter path (`/a/b/VAR`) or a Secret Manager secret id
+ * (`app-otel-token`). No `.`, no `//`, no trailing `/`, at most 255 long.
+ */
+const STORE_TARGET_SHAPE = /^\/?[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/;
+const MAX_STORE_TARGET_LENGTH = 255;
+
+/** True when `name` could name a deposit store. */
+export function isDepositStoreName(name: string): boolean {
+  return name.length <= MAX_SLUG_LENGTH && STORE_NAME_SHAPE.test(name);
+}
+
+/**
+ * True when `target` has a shape a store target could have. Core narrows it
+ * further, per store format and against the store's prefixes.
+ */
+export function isDepositStoreTarget(target: string): boolean {
+  return (
+    target.length <= MAX_STORE_TARGET_LENGTH && STORE_TARGET_SHAPE.test(target)
+  );
+}
 
 /** True when `slug` has a shape the config schema could accept. */
 export function isDepositSlug(slug: string): boolean {
@@ -111,20 +158,35 @@ export function gatewayDepositRoutePath(variable: string): string {
   return `${DEPOSIT_ROUTE_PREFIX}/${DEPOSIT_GATEWAY_TARGET}/${encodeURIComponent(variable)}`;
 }
 
-/** The request body. The value is the only thing in it. */
+/** The route path for one target in a NAMED store (`DEPOSIT_STORE_TARGET`). */
+export function storeDepositRoutePath(store: string, target: string): string {
+  return `${DEPOSIT_ROUTE_PREFIX}/${DEPOSIT_STORE_TARGET}/${encodeURIComponent(store)}/${encodeURIComponent(target)}`;
+}
+
+/**
+ * The request body. The value, and — for a named store only — `replace: true`,
+ * the explicit ask to write over a value that exists. Every other route
+ * refuses a body that carries it, so it can never be ignored silently.
+ */
 export interface DepositRequest {
   value: string;
+  replace?: boolean;
 }
 
 /**
  * What core answers on success: WHERE the value went, never the value.
- * `version` is the parameter's first version, `v1`, since a deposit only
- * ever creates.
+ * `version` is the version the deposit wrote — `v1` on a create. `replaced`
+ * is true only when a named-store deposit wrote over an existing value.
+ * `valueVersion` is the Secret Manager version that holds the bytes, when it
+ * differs from `version`: a replaced secret PARAMETER keeps its version and
+ * gets a new value version behind it.
  */
 export interface DepositReceipt {
   protocol: number;
   path: string;
   version: string;
+  replaced?: boolean;
+  valueVersion?: string;
 }
 
 /**
@@ -134,10 +196,13 @@ export interface DepositReceipt {
  * - `bad_target` — the slug or variable has an impossible shape (400).
  * - `not_permitted` — the caller's `deposit.into:` list does not name the slug,
  *   or, for `_gateway`, its `deposit.gatewayVariables:` does not name the
- *   variable (403).
+ *   variable, or, for `_store`, its `deposit.stores:` does not name the store,
+ *   no prefix of that store covers the target, or `replace` was asked of a
+ *   store that does not allow it (403).
  * - `bad_body` — no value, a non-string value, or an over-long one (400 / 413).
  * - `exists` — a parameter already exists under that name, in `static/` or
- *   `oauth/`; a deposit never overwrites (409).
+ *   `oauth/`, or the named-store target exists and `replace` was not asked
+ *   (409).
  * - `store_unavailable` — no parameter store owns the path (503).
  * - `write_failed` — the store refused the create (its own status).
  */
@@ -179,6 +244,26 @@ export function parseDepositRequest(body: unknown): DepositParse<string> {
   return { ok: true, value };
 }
 
+/**
+ * Whether the body asks to REPLACE an existing value. Only `true` asks; a
+ * non-boolean `replace` is a malformed body rather than a no.
+ */
+export function parseDepositReplace(body: unknown): DepositParse<boolean> {
+  const replace =
+    body && typeof body === "object"
+      ? (body as Record<string, unknown>).replace
+      : undefined;
+  if (replace === undefined || replace === false)
+    return { ok: true, value: false };
+  if (replace === true) return { ok: true, value: true };
+  return {
+    ok: false,
+    status: 400,
+    error: "bad_body",
+    message: "replace, when present, must be true or false",
+  };
+}
+
 /** Read a success body, or null when it is not one this protocol wrote. */
 export function parseDepositReceipt(body: unknown): DepositReceipt | null {
   if (!body || typeof body !== "object") return null;
@@ -189,5 +274,13 @@ export function parseDepositReceipt(body: unknown): DepositReceipt | null {
     typeof b.version !== "string"
   )
     return null;
-  return { protocol: b.protocol, path: b.path, version: b.version };
+  return {
+    protocol: b.protocol,
+    path: b.path,
+    version: b.version,
+    ...(b.replaced === true ? { replaced: true } : {}),
+    ...(typeof b.valueVersion === "string"
+      ? { valueVersion: b.valueVersion }
+      : {}),
+  };
 }

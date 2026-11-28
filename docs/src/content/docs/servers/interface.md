@@ -403,6 +403,7 @@ server's own docs for the URL it tells clients to connect to, and use that.
         ssh-example-staging: [SSH_PRIVATE_KEY]
       gatewayVariables: # optional; a bundle's tailnet.authKey, gateway namespace
         [STRAD_TAILNET_OAUTH_CLIENT_SECRET]
+      stores: [zimmer-production] # optional; depositStores: names, see below
 ```
 
 This lets the machine call `POST /_strad/deposit/{slug}/{VARIABLE}`, which
@@ -426,8 +427,46 @@ gateway namespace: `POST /_strad/deposit/_gateway/{VARIABLE}` creates
 The schema refuses a listed name unless it is the `${NAME}` of some bundle's
 `tailnet.authKey` (enabled or not) and not a name core or a bundle reads for
 itself at boot. `config:check` and the route also refuse one that something
-outside `bundles:` reads. The block is read from the
+outside `bundles:` reads. `stores:` names stores outside strad's own
+namespaces, each a `depositStores:` entry on a secrets server (below), through
+`POST /_strad/deposit/_store/{store}/{target}`. `into:` does not narrow it, and
+`config:check` refuses a name no entry declares. The block is read from the
 checked-in config only, and a runtime roster write cannot add or change it.
+
+#### `depositStores:` — stores a custody deposit may write into
+
+On a `secrets` supplementary server, beside `consoleStores:`:
+
+```yaml
+depositStores:
+  - name: zimmer-production # what deposit.stores names; unique in the config
+    title: Zimmer production # optional, for refusals
+    format: parameter # strad's envelope, via the consoleStores: entry
+    project: zimmer-secrets-prod # must be one of this server's consoleStores:
+    prefixes: ["/zimmer/production/secrets/static/"]
+  - name: deploy-workflow
+    format: secret-manager # a plain Secret Manager secret
+    project: my-deploy-secrets
+    keyVar: DEPLOY_DEPOSIT_SERVICE_ACCOUNT_KEY_JSON # a consoleEnv: key
+    prefixes: ["app-"] # secret-id prefixes
+    labels: { app: my-app } # set on a secret the deposit creates
+    replace: true # default false
+```
+
+A target is one prefix plus one final segment. The schema refuses:
+
+- a `parameter` project that is not one of this server's `consoleStores:`, a
+  prefix that does not start and end with `/`, one no namespace of that store
+  covers, one under `/strad/`, and `keyVar:` or `labels:` on this format;
+- a `secret-manager` entry with no `keyVar:`, a `keyVar:` that is not a
+  `consoleEnv:` key, one that is a `consoleStores:` `adminKeyVar`, one that any
+  server's `env:` declares, and a prefix outside the secret-id alphabet;
+- two entries with one `name`.
+
+`replace: true` lets a request that asks for it (`"replace": true`) write a new
+version over an existing value. Without it every deposit is create-only. The
+field is checked-in config only. A runtime roster write cannot add or change
+it. See [custody and deposit](/servers/hostd-custody/#another-store-deposit-stores).
 
 #### `troubleshoot_host`: the tool a machine that is off still serves
 

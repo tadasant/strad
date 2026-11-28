@@ -26,6 +26,7 @@ import {
 import { RESOLVER_ENV } from "../secrets/parameters/resolver.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
 import { normaliseNamespace } from "../secrets/parameters/namespace.ts";
+import { parameterId } from "../secrets/parameters/wire.ts";
 import {
   INSTANCE_PATH_PREFIX,
   INSTANCE_TREES,
@@ -561,6 +562,73 @@ const McpStore = z.object({
 });
 
 /**
+ * ONE store a custody deposit may write into, by NAME — a store that is not
+ * this strad's own slug namespace. See `src/http/deposit.ts`.
+ *
+ *   depositStores:
+ *     - name: zimmer-production
+ *       format: parameter          # strad's parameter envelope
+ *       project: zimmer-secrets-prod
+ *       prefixes: ["/zimmer/production/secrets/static/"]
+ *     - name: deploy-workflow
+ *       format: secret-manager     # a plain Secret Manager secret
+ *       project: my-deploy-secrets
+ *       keyVar: DEPLOY_DEPOSIT_SERVICE_ACCOUNT_KEY_JSON
+ *       prefixes: ["app-"]
+ *       labels: { app: my-app }
+ *       replace: true
+ *
+ * The caller must ALSO list the name in its own `deposit.stores:`, so a store
+ * is reachable only when both the store's entry and the caller's grant say so
+ * — the same two-sided consent as `reaches:` / `reachableFrom:`. A store with
+ * no entry here (the CI store, say) is not depositable by any spelling.
+ *
+ * TWO FORMATS, chosen by how the store's READER reads it, not by taste:
+ *
+ *   - `parameter` writes what strad's console writes: a secret parameter in
+ *     Parameter Manager, its value in Secret Manager, base64url-enveloped, with
+ *     the per-parameter `secretAccessor` grant — the format Zimmer's resolver
+ *     reads `zimmer-secrets-*` in. The project must be one of this server's
+ *     `consoleStores:`, and the write goes through that entry's admin client
+ *     (`adminKeyVar`); every prefix must sit inside that entry's namespaces.
+ *   - `secret-manager` writes a plain Secret Manager secret, the bytes as
+ *     they are, for a reader that accesses Secret Manager directly (a deploy
+ *     workflow over OIDC). Its credential is its OWN `keyVar`, a `consoleEnv:`
+ *     key, and never a console admin key: it is meant to be a deposit-only
+ *     identity holding `secretmanager.secrets.get`, `secrets.create`,
+ *     `versions.list` and `versions.add`, and nothing that reads a value. Never
+ *     on a project the config fronts as a parameter store
+ *     (`parameterStoreProjects`), and never a prefix `isStradOwnedTarget`
+ *     matches.
+ *
+ * `prefixes` bind what may be written: a target is a prefix plus ONE final
+ * segment. For `parameter` a prefix is a path ending in `/` and the segment an
+ * environment-variable name; for `secret-manager` it is the start of a secret
+ * id. Nothing under `/strad/` is a deposit store — strad's own namespaces go
+ * through the slug route and its refusals, on the deployment that owns them.
+ *
+ * `replace: true` is the only deposit that can write over an existing value,
+ * and then only when the request asks for it. Off by default.
+ */
+const DepositStore = z
+  .object({
+    /** What the caller names. The slug alphabet; unique across the config. */
+    name: SLUG,
+    /** Who reads it, for a refusal or a receipt. */
+    title: z.string().min(1).optional(),
+    format: z.enum(["parameter", "secret-manager"]),
+    /** The GCP project id. */
+    project: z.string().min(1),
+    prefixes: z.array(z.string().min(1)).min(1),
+    /** `secret-manager` only, and required there: a `consoleEnv:` key. */
+    keyVar: z.string().min(1).optional(),
+    /** `secret-manager` only: labels set on a secret the deposit CREATES. */
+    labels: z.record(z.string().min(1), z.string()).default({}),
+    replace: z.boolean().default(false),
+  })
+  .strict();
+
+/**
  * One FLOW-THROUGH grant: a hosted server calling ANOTHER slug through core.
  *
  *   - slug: housing-search-2026
@@ -985,6 +1053,18 @@ const LocalTunnelServer = ServerBase.extend({
    * `STRAD_TOKENS` included, stays out of reach. Create-only, like every
    * deposit; `into:` does not narrow it, and it widens nothing else.
    *
+   * `stores:` names stores OUTSIDE this strad's slug namespaces — another
+   * system's parameter store, or a Secret Manager project — through
+   * `POST /_strad/deposit/_store/{store}/{target}`:
+   *
+   *   deposit:
+   *     stores: [zimmer-production]
+   *
+   * Each name must be a `depositStores:` entry on a secrets server, which
+   * says what the store is, what may be written there and with which
+   * credential. `into:` does not narrow it. It is the one deposit that can
+   * replace a value, and only where that entry says `replace: true`.
+   *
    * Honoured from the CHECKED-IN config only: a runtime roster write may not
    * declare or change it (src/config/overlay.ts), and the route reads its
    * callers from the deploy's own document.
@@ -996,6 +1076,7 @@ const LocalTunnelServer = ServerBase.extend({
         .record(SLUG, z.array(z.string().min(1)).min(1))
         .optional(),
       gatewayVariables: z.array(z.string().min(1)).min(1).optional(),
+      stores: z.array(SLUG).min(1).optional(),
     })
     .strict()
     .optional(),
@@ -1092,6 +1173,159 @@ export function gatewayVariableConflicts(cfg: StradConfig): string[] {
           `server "${s.slug}" lists ${name} in deposit.gatewayVariables, but ` +
             "something outside bundles: also reads it, so a deposit would seed " +
             "more than a tailnet key. The route refuses it.",
+        );
+  }
+  return out;
+}
+
+/**
+ * A Secret Manager secret id prefix: the id alphabet, ending in a separator,
+ * so a prefix names a family of ids (`app-`) and never most of a project (`a`).
+ */
+const SECRET_ID_PREFIX = /^[A-Za-z0-9][A-Za-z0-9_-]{0,198}[-_]$/;
+
+/**
+ * Whether a parameter path or a secret id is strad's OWN, by its FOLDED form —
+ * the id Parameter Manager and Secret Manager actually key on — so `/STRAD/`
+ * or `strad-prod-…` cannot spell around a lexical `/strad/` check.
+ */
+export function isStradOwnedTarget(pathOrId: string): boolean {
+  return pathOrId.startsWith("/")
+    ? parameterId(`${pathOrId}x`).startsWith("strad-")
+    : pathOrId.toLowerCase().startsWith("strad");
+}
+
+/**
+ * Every GCP project the config fronts as a PARAMETER store: each console and
+ * mcp store, and each `format: parameter` deposit store. A plain Secret
+ * Manager deposit into one of these would write raw bytes beside — or as a
+ * new version of — a secret a parameter's envelope points at.
+ */
+export function parameterStoreProjects(cfg: {
+  servers: ServerConfig[];
+}): Set<string> {
+  const out = new Set<string>();
+  for (const s of cfg.servers) {
+    if (s.kind !== "supplementary-image") continue;
+    for (const c of s.consoleStores) out.add(c.project);
+    for (const m of s.mcpStores) out.add(m.project);
+    for (const d of s.depositStores)
+      if (d.format === "parameter") out.add(d.project);
+    const declared = { ...s.env, ...s.consoleEnv };
+    const single = declared.SECRETS_PROJECT_ID;
+    if (single && !single.includes("${")) out.add(single);
+  }
+  return out;
+}
+
+/**
+ * Every problem with the config's `depositStores:` entries and the callers'
+ * `deposit.stores:` grants, as sentences. Empty means the deposit route will
+ * find each named store exactly where the grant says. See `DepositStore`.
+ */
+export function depositStoreIssues(cfg: { servers: ServerConfig[] }): string[] {
+  const out: string[] = [];
+  const owners = new Map<string, string>();
+  const parameterStores = parameterStoreProjects(cfg);
+  for (const s of cfg.servers) {
+    if (s.kind !== "supplementary-image" || s.depositStores.length === 0)
+      continue;
+    const adminKeyVars = new Set(s.consoleStores.map((c) => c.adminKeyVar));
+    for (const store of s.depositStores) {
+      const where = `server "${s.slug}" deposit store "${store.name}"`;
+      const twin = owners.get(store.name);
+      if (twin)
+        out.push(
+          `${where} reuses a name server "${twin}" already gives a deposit store. A caller names a store, so the name must be unique across the config.`,
+        );
+      owners.set(store.name, s.slug);
+
+      if (store.format === "parameter") {
+        const console = s.consoleStores.find(
+          (c) => c.project === store.project,
+        );
+        if (!console) {
+          out.push(
+            `${where} is format: parameter on project "${store.project}", which is not one of this server's consoleStores:. A parameter deposit writes through that store's console admin client, so the store must be one.`,
+          );
+        }
+        if (store.keyVar !== undefined)
+          out.push(
+            `${where} is format: parameter and names keyVar:. A parameter deposit uses its consoleStores: entry's adminKeyVar; keyVar is for format: secret-manager.`,
+          );
+        if (Object.keys(store.labels).length > 0)
+          out.push(
+            `${where} is format: parameter and declares labels:, which only format: secret-manager sets.`,
+          );
+        for (const prefix of store.prefixes) {
+          if (!prefix.startsWith("/") || !prefix.endsWith("/")) {
+            out.push(
+              `${where} lists prefix "${prefix}". A parameter prefix is a path that starts and ends with "/", and a deposit adds one variable name to it.`,
+            );
+            continue;
+          }
+          if (isStradOwnedTarget(prefix))
+            out.push(
+              `${where} lists prefix "${prefix}", under /strad/. strad's own namespaces are deposited through the slug route, with its refusals, on the deployment that owns them — never as a deposit store.`,
+            );
+          if (
+            console &&
+            !console.namespaces.some((ns) =>
+              normaliseNamespace(prefix).startsWith(normaliseNamespace(ns)),
+            )
+          )
+            out.push(
+              `${where} lists prefix "${prefix}", which none of store "${store.project}"'s consoleStores: namespaces covers.`,
+            );
+        }
+      } else {
+        if (store.keyVar === undefined) {
+          out.push(
+            `${where} is format: secret-manager and names no keyVar:. It needs its own deposit credential, a consoleEnv: key.`,
+          );
+        } else {
+          if (!(store.keyVar in s.consoleEnv))
+            out.push(
+              `${where} names keyVar: ${store.keyVar}, which is not a key of this server's consoleEnv:. A deposit credential may only arrive by consoleEnv:, the one scope rendered onto core alone.`,
+            );
+          if (adminKeyVars.has(store.keyVar))
+            out.push(
+              `${where} names keyVar: ${store.keyVar}, a consoleStores: adminKeyVar. A Secret Manager deposit uses its own deposit-only credential, never a console admin key.`,
+            );
+          for (const other of cfg.servers)
+            if (
+              other.kind === "supplementary-image" &&
+              other.enabled &&
+              store.keyVar in other.env
+            )
+              out.push(
+                `${where} names keyVar: ${store.keyVar}, and server "${other.slug}" declares that key under env:, which is baked onto a bundle. Rename one of them.`,
+              );
+        }
+        if (parameterStores.has(store.project))
+          out.push(
+            `${where} is format: secret-manager on project "${store.project}", which this config fronts as a parameter store. Raw bytes there would land beside the secrets parameters point at; use format: parameter.`,
+          );
+        for (const prefix of store.prefixes) {
+          if (!SECRET_ID_PREFIX.test(prefix))
+            out.push(
+              `${where} lists prefix "${prefix}". A Secret Manager prefix is the start of a secret id — letters, digits, "_" and "-" — and ends in "-" or "_", so it names a family of ids.`,
+            );
+          if (isStradOwnedTarget(prefix))
+            out.push(
+              `${where} lists prefix "${prefix}", which spells a strad-owned secret id. strad's own secrets are never a deposit store.`,
+            );
+        }
+      }
+    }
+  }
+
+  for (const s of cfg.servers) {
+    if (s.kind !== "local-tunnel" || !s.deposit?.stores) continue;
+    for (const name of s.deposit.stores)
+      if (!owners.has(name))
+        out.push(
+          `server "${s.slug}" lists ${name} in deposit.stores, but no secrets server declares a depositStores: entry named ${name}.`,
         );
   }
   return out;
@@ -1344,6 +1578,11 @@ const SupplementaryImageServer = ServerBase.extend({
    * servers/secrets/shared/src/capabilities.ts.
    */
   mcpStores: z.array(McpStore).default([]),
+  /**
+   * Stores a custody deposit may write into by NAME, besides this strad's own
+   * slug namespaces. See {@link DepositStore}. Checked-in config only.
+   */
+  depositStores: z.array(DepositStore).default([]),
   /**
    * Other slugs this server may call through core — flow-through. See
    * {@link ReachGrant}. Supplementary images only: the caller is identified by
@@ -2319,6 +2558,15 @@ export const StradConfig = z
         }
       }
     }
+
+    // DEPOSIT STORES: what a named store may be, and who may name it. One
+    // function so the route's tests and this parse share every sentence.
+    for (const message of depositStoreIssues(cfg))
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message,
+        path: ["servers"],
+      });
 
     // A `deposit.gatewayVariables:` NAME IS A BUNDLE'S TAILNET KEY AND
     // NOTHING ELSE. It is the only door into the gateway namespace, so a list

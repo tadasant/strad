@@ -74,8 +74,15 @@ import {
   createParamWriteHandler,
   createStoreRefreshHandler,
 } from "./params.ts";
-import { createDepositHandler, depositMethodNotAllowed } from "./deposit.ts";
-import { DEPOSIT_ROUTE_PREFIX } from "../secrets/deposit-wire.ts";
+import {
+  createDepositHandler,
+  depositMethodNotAllowed,
+  type DepositHandlerOptions,
+} from "./deposit.ts";
+import {
+  DEPOSIT_ROUTE_PREFIX,
+  DEPOSIT_STORE_TARGET,
+} from "../secrets/deposit-wire.ts";
 import {
   createInstanceEnvHandler,
   createInstanceListHandler,
@@ -142,6 +149,8 @@ export interface AppOptions {
   gcsList?: GcsLister;
   /** Test seam: substitute the parameter store behind the console UI. */
   parametersStore?: ConsoleUiOptions["parametersStore"];
+  /** Test seam: the Secret Manager client a `format: secret-manager` deposit store writes with. */
+  secretManagerDepositor?: DepositHandlerOptions["secretManagerDepositor"];
   /**
    * Test seam: the transport a CONNECTOR's Google token exchange uses.
    *
@@ -564,8 +573,11 @@ export function createApp(opts: AppOptions): Express {
     // derived from that `local-tunnel` entry's own key and honoured only when
     // the CHECKED-IN config declares `deposit:` on it. See src/http/deposit.ts.
     const depositRoute = `${DEPOSIT_ROUTE_PREFIX}/:slug/:variable`;
+    // The named-store form, one segment longer: `_store/{store}/{target}`,
+    // the target percent-encoded into one segment. Same handler, same caller.
+    const storeDepositRoute = `${DEPOSIT_ROUTE_PREFIX}/${DEPOSIT_STORE_TARGET}/:store/:target`;
     app.post(
-      depositRoute,
+      [depositRoute, storeDepositRoute],
       createDepositHandler({
         config: opts.config,
         env,
@@ -574,9 +586,10 @@ export function createApp(opts: AppOptions): Express {
         secretProvider: opts.secretProvider,
         parametersStore: opts.parametersStore,
         diagnosticStore: opts.diagnosticStore,
+        secretManagerDepositor: opts.secretManagerDepositor,
       }),
     );
-    app.all(depositRoute, depositMethodNotAllowed);
+    app.all([depositRoute, storeDepositRoute], depositMethodNotAllowed);
     // The store-served instance pair, same direction, same token: which
     // instances a bundle should run, and one instance's own namespace. Built
     // from THIS app's config, and the app is rebuilt on every roster change, so

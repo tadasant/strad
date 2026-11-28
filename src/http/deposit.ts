@@ -3,6 +3,7 @@ import type { Request, RequestHandler, Response } from "express";
 import { bearerToken, secretEquals } from "../auth/credential.ts";
 import {
   depositKeyRef,
+  isStradOwnedTarget,
   gatewayDepositRefusal,
   gatewayDepositSharedBy,
   type StradConfig,
@@ -14,7 +15,10 @@ import {
   DEPOSIT_PROTOCOL,
   depositToken,
   isDepositSlug,
+  isDepositStoreName,
+  isDepositStoreTarget,
   isDepositVariable,
+  parseDepositReplace,
   parseDepositRequest,
   type DepositReceipt,
   type DepositRefusal,
@@ -30,8 +34,18 @@ import {
 } from "../secrets/parameters/index.ts";
 import type { ServerSecretProviders } from "../secrets/provider/index.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
+import {
+  createSecretManagerDepositor,
+  type SecretManagerDepositor,
+  type SecretManagerDepositorConfig,
+} from "../secrets/secret-manager-deposit.ts";
+import { resolveConsoleKey, resolveServerView } from "../ui/resolve.ts";
 import { forgetDeploymentDiagnosis } from "../ui/secret-status.ts";
-import { storeForPath, type StoreClientOptions } from "../ui/store-client.ts";
+import {
+  storeFor,
+  storeForPath,
+  type StoreClientOptions,
+} from "../ui/store-client.ts";
 import { event } from "../telemetry/index.ts";
 import { errorSummary } from "../util/error-text.ts";
 import { asyncRoute, jsonFailure } from "./async-route.ts";
@@ -101,6 +115,10 @@ export interface DepositHandlerOptions {
   /** Test seam: the admin store, as the console and the write-back route take it. */
   parametersStore?: StoreClientOptions["parametersStore"];
   diagnosticStore?: Parameters<typeof forgetDeploymentDiagnosis>[0]["store"];
+  /** Test seam: the Secret Manager client a `format: secret-manager` store writes with. */
+  secretManagerDepositor?: (
+    cfg: SecretManagerDepositorConfig,
+  ) => SecretManagerDepositor;
 }
 
 type Caller = Extract<StradConfig["servers"][number], { kind: "local-tunnel" }>;
@@ -364,6 +382,335 @@ async function depositIntoGateway(
   }
 }
 
+type SupplementaryServer = Extract<
+  StradConfig["servers"][number],
+  { kind: "supplementary-image" }
+>;
+type DepositStoreEntry = SupplementaryServer["depositStores"][number];
+
+/** The enabled secrets server that declares the deposit store `name`, and its entry. */
+export function findDepositStore(
+  config: StradConfig,
+  name: string,
+): { server: SupplementaryServer; store: DepositStoreEntry } | null {
+  for (const server of config.servers) {
+    if (server.kind !== "supplementary-image" || !server.enabled) continue;
+    const store = server.depositStores.find((d) => d.name === name);
+    if (store) return { server, store };
+  }
+  return null;
+}
+
+/** A Secret Manager secret id: the id alphabet, at most 255 long. */
+const SECRET_ID = /^[A-Za-z0-9_-]{1,255}$/;
+
+/**
+ * Why `target` may not be written in `store`, or undefined. A target is ONE
+ * of the store's prefixes plus ONE final segment — an environment-variable
+ * name for a parameter store, the rest of a secret id for Secret Manager —
+ * so a prefix grants a directory and never the tree under it.
+ */
+export function refusalForStoreTarget(
+  store: DepositStoreEntry,
+  target: string,
+): string | undefined {
+  if (isStradOwnedTarget(target))
+    return "that spells one of strad's own parameters or secrets; strad's namespaces are deposited through the slug route, never as a deposit store";
+  if (store.format === "parameter") {
+    // Any prefix that leaves exactly one variable name — so overlapping
+    // prefixes (`/a/`, `/a/b/`) each grant their own directory.
+    const variable = store.prefixes
+      .filter((p) => p.endsWith("/") && target.startsWith(p))
+      .map((p) => target.slice(p.length))
+      .find((v) => isDepositVariable(v) && validateVariableName(v) === null);
+    if (variable === undefined)
+      return `${target} is not one of ${store.name}'s prefixes (${store.prefixes.join(", ")}) followed by one environment-variable name`;
+    if (DEPOSIT_PROCESS_CONTROL.test(variable))
+      return `${variable} is a name a process reads as configuration, not a credential; it cannot be deposited`;
+    return undefined;
+  }
+  if (
+    !SECRET_ID.test(target) ||
+    !store.prefixes.some(
+      (p) => target.startsWith(p) && target.length > p.length,
+    )
+  )
+    return `${target} is not a secret id that starts with one of ${store.name}'s prefixes (${store.prefixes.join(", ")})`;
+  return undefined;
+}
+
+/**
+ * Secret Manager clients, memoised per (project, identity) for the reason the
+ * console's admin clients are: each holds an hour's access token.
+ */
+const depositorCache = new Map<string, SecretManagerDepositor>();
+
+/** Answer a named-store deposit with where it went. */
+function stored(
+  res: Response,
+  caller: Caller,
+  store: DepositStoreEntry,
+  path: string,
+  version: string,
+  replaced: boolean,
+  valueVersion?: string,
+): void {
+  // `caller` and the store's name are config strings; the target is the
+  // caller's bytes and goes to the process log only.
+  event({
+    evt: "strad.deposit_written",
+    caller: caller.slug,
+    store: store.name,
+  });
+  console.log(
+    `[strad] ${caller.slug} ${replaced ? "replaced" : "deposited"} ${path} in deposit store ${store.name}`,
+  );
+  const receipt: DepositReceipt = {
+    protocol: DEPOSIT_PROTOCOL,
+    path,
+    version,
+    ...(replaced ? { replaced: true } : {}),
+    ...(valueVersion ? { valueVersion } : {}),
+  };
+  res.status(201).set("cache-control", "no-store").json(receipt);
+}
+
+/**
+ * `POST /_strad/deposit/_store/{store}/{target}`: write one value into a
+ * store the checked-in config names in `depositStores:` and the caller names
+ * in `deposit.stores:`. See `DepositStore` in src/config/schema.ts.
+ *
+ * Create-only unless the body says `replace: true` AND the store's entry says
+ * `replace: true`; then a target that exists gets a NEW version (the old ones
+ * stay, so the write is undoable by whoever holds the store's admin role).
+ * Existence is read from metadata — a parameter's listing, a secret's
+ * resource — and never from a value.
+ */
+async function depositIntoStore(
+  req: Request,
+  res: Response,
+  caller: Caller,
+  name: string,
+  target: string,
+  opts: DepositHandlerOptions,
+): Promise<void> {
+  if (!isDepositStoreName(name) || !isDepositStoreTarget(target)) {
+    refuse(
+      res,
+      400,
+      "bad_target",
+      "the store must be a deposit store's name and the target a parameter path or a secret id",
+    );
+    return;
+  }
+  if (!caller.deposit?.stores?.includes(name)) {
+    refuse(
+      res,
+      403,
+      "not_permitted",
+      `${caller.slug} may deposit only into the stores its deposit.stores lists` +
+        (caller.deposit?.stores
+          ? ` (${caller.deposit.stores.join(", ")})`
+          : ", and it lists none"),
+    );
+    return;
+  }
+  // From the config that RUNS: a store whose entry was removed or whose
+  // server was disabled is gone, whatever the caller's grant still says.
+  const found = findDepositStore(opts.config, name);
+  if (!found) {
+    refuse(
+      res,
+      403,
+      "not_permitted",
+      `no enabled secrets server declares a deposit store named ${name}`,
+    );
+    return;
+  }
+  const { server, store } = found;
+  const why = refusalForStoreTarget(store, target);
+  if (why) {
+    refuse(res, 403, "not_permitted", why);
+    return;
+  }
+  const parsed = parseDepositRequest(req.body);
+  if (!parsed.ok) {
+    refuse(res, parsed.status, parsed.error, parsed.message);
+    return;
+  }
+  const replace = parseDepositReplace(req.body);
+  if (!replace.ok) {
+    refuse(res, replace.status, replace.error, replace.message);
+    return;
+  }
+  if (replace.value && !store.replace) {
+    refuse(
+      res,
+      403,
+      "not_permitted",
+      `deposit store ${name} is create-only: its entry does not say replace: true`,
+    );
+    return;
+  }
+
+  if (store.format === "parameter") {
+    const view = resolveServerView(opts.config, server.slug, opts.secrets);
+    const selected =
+      view.kind === "secrets"
+        ? view.stores.find((st) => st.projectId === store.project)
+        : undefined;
+    const client =
+      view.kind === "secrets" && selected
+        ? storeFor(view, selected, opts)
+        : null;
+    if (!client) {
+      refuse(
+        res,
+        503,
+        "store_unavailable",
+        selected?.accountReason ??
+          `${server.slug} has no console store for ${store.project}`,
+      );
+      return;
+    }
+    try {
+      // Whether a target exists AS A SECRET decides a replace, and a listing
+      // alone cannot say: a client that cannot answer is not guessed for.
+      if (!client.isSecret) {
+        refuse(
+          res,
+          503,
+          "store_unavailable",
+          `${server.slug}'s client for ${store.project} cannot say whether a parameter is a secret`,
+        );
+        return;
+      }
+      const secret = await client.isSecret(target);
+      if (secret === undefined) {
+        const created = await client.create({
+          path: target,
+          secret: true,
+          value: parsed.value,
+          note: `deposited by ${caller.slug}`,
+        });
+        stored(
+          res,
+          caller,
+          store,
+          target,
+          created.latestVersion ?? "v1",
+          false,
+        );
+        return;
+      }
+      if (!replace.value) {
+        refuse(
+          res,
+          409,
+          "exists",
+          `${target} already exists in ${name}; a deposit replaces it only when it asks to (replace: true) and the store allows it`,
+        );
+        return;
+      }
+      if (secret === false) {
+        refuse(
+          res,
+          409,
+          "exists",
+          `${target} exists as a PLAIN parameter; a deposit only ever writes a secret, so it will not replace it`,
+        );
+        return;
+      }
+      // The parameter keeps its version — its `__REF__` names the secret's
+      // `latest` — and the bytes land as a new Secret Manager version, which
+      // is what the receipt reports.
+      const rotated = await client.rotate(target, parsed.value);
+      const prefix = target.slice(0, target.lastIndexOf("/") + 1);
+      const meta = (await client.list(prefix)).find((p) => p.path === target);
+      stored(
+        res,
+        caller,
+        store,
+        target,
+        meta?.latestVersion ?? "unknown",
+        true,
+        rotated?.valueVersion,
+      );
+    } catch (err) {
+      failed(res, caller, target, err);
+    }
+    return;
+  }
+
+  // format: secret-manager — its OWN deposit-only key, never a console admin key.
+  const { account, accountReason } = resolveConsoleKey(
+    opts.config,
+    server.slug,
+    store.keyVar ?? "",
+    opts.secrets,
+  );
+  if (!account) {
+    refuse(
+      res,
+      503,
+      "store_unavailable",
+      accountReason ?? `deposit store ${name} has no credential`,
+    );
+    return;
+  }
+  const view = resolveServerView(opts.config, server.slug, opts.secrets);
+  const cfg: SecretManagerDepositorConfig = {
+    projectId: store.project,
+    account,
+    ...(view.kind === "secrets"
+      ? { smApiBase: view.smApiBase, tokenUrl: view.tokenUrl }
+      : {}),
+  };
+  const key = `${store.project} ${account.client_email}`;
+  const depositor =
+    opts.secretManagerDepositor?.(cfg) ??
+    depositorCache.get(key) ??
+    depositorCache.set(key, createSecretManagerDepositor(cfg)).get(key)!;
+  const path = `projects/${store.project}/secrets/${target}`;
+  try {
+    // A secret with no enabled version is what a deposit whose first
+    // version failed leaves behind. It holds nothing a reader can read, and
+    // this key cannot delete it, so it is filled rather than refused.
+    const there =
+      (await depositor.exists(target)) && (await depositor.hasVersion(target));
+    const shell = !there && (await depositor.exists(target));
+    if (there && !replace.value) {
+      refuse(
+        res,
+        409,
+        "exists",
+        `${path} already exists; a deposit adds a version to it only when it asks to (replace: true) and the store allows it`,
+      );
+      return;
+    }
+    let replaced = there;
+    if (!there && !shell) {
+      try {
+        await depositor.create(target, store.labels);
+      } catch (err) {
+        // Created between the read and the write: create-only means refuse,
+        // and a replace goes on to add its version to the one that won.
+        if (!(err instanceof ParameterStoreError && err.status === 409))
+          throw err;
+        if (!replace.value) {
+          refuse(res, 409, "exists", `${path} already exists`);
+          return;
+        }
+        replaced = true;
+      }
+    }
+    const { version } = await depositor.addVersion(target, parsed.value);
+    stored(res, caller, store, path, version, replaced);
+  } catch (err) {
+    failed(res, caller, path, err);
+  }
+}
+
 export function createDepositHandler(
   opts: DepositHandlerOptions,
 ): RequestHandler {
@@ -379,8 +726,34 @@ export function createDepositHandler(
       return;
     }
 
+    if (req.params.store !== undefined) {
+      await depositIntoStore(
+        req,
+        res,
+        caller,
+        req.params.store,
+        req.params.target ?? "",
+        opts,
+      );
+      return;
+    }
     const slug = req.params.slug ?? "";
     const variable = req.params.variable ?? "";
+    // `replace` exists for named stores alone. Anywhere else it is refused
+    // rather than ignored, so nobody believes it overwrote strad's store.
+    if (
+      req.body &&
+      typeof req.body === "object" &&
+      (req.body as Record<string, unknown>).replace !== undefined
+    ) {
+      refuse(
+        res,
+        400,
+        "bad_body",
+        "replace is honoured only by a deposit into a named store (_store); strad's own namespaces are create-only",
+      );
+      return;
+    }
     if (slug === DEPOSIT_GATEWAY_TARGET) {
       await depositIntoGateway(req, res, caller, variable, opts);
       return;

@@ -438,6 +438,10 @@ slop behind when you fix a stale fact.
   `POST /_strad/deposit` — the value never reaches a model. While the vault
   holds anything, the daemon itself refuses shell, computer-use and browser
   reads, and filters every result for the held values (`HACKS.md` #141).
+  Through core it can also reach a store OUTSIDE strad's namespaces that the
+  checked-in config names twice — `depositStores:` on the secrets server and
+  `deposit.stores:` on the custody slug — written in that store's reader's
+  format, create-only unless the entry says `replace: true` (`HACKS.md` #172).
 - `servers/liveoak/` — strad's own LiveOak Bank server, behind `liveoak`. Lists
   and fetches account statements so the password never reaches a model: the
   login is Cognito SRP through the portal's own client library, as a REMEMBERED

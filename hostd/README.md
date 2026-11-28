@@ -24,7 +24,9 @@ with Full Disk Access. It cannot send.
 `strad-hostd add custody` turns it on. It captures a credential the browser
 shows or downloads into a handle, never returning the value, and deposits it
 into strad: this machine's own by default, or another strad the config names
-under `custody.destinations` (`strad-hostd destination add`). While it holds one, the shell and computer-use servers refuse every
+under `custody.destinations` (`strad-hostd destination add`), or, through
+that strad, a deposit store it names for this machine (`store` + `target`:
+Zimmer's parameter store, a deploy workflow's Secret Manager). While it holds one, the shell and computer-use servers refuse every
 call and the browser server refuses its reads. That is enforced here, in
 `src/custody/enforce.ts`, and every result from every server is checked for a
 held value before it leaves. See

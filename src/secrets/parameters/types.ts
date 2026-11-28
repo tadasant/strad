@@ -140,8 +140,16 @@ export interface ParameterAdmin {
    */
   isSecret?(path: string): Promise<boolean | undefined>;
   create(input: CreateParameterInput): Promise<ParameterMeta>;
-  /** Rotate: set a new value. Non-secret → new PM version; secret → new SM version. */
-  rotate(path: string, value: string): Promise<void>;
+  /**
+   * Rotate: set a new value. Non-secret → new PM version; secret → new SM
+   * version. A client that knows which Secret Manager version now holds a
+   * secret's bytes returns it (`"2"`), so a caller can confirm a rotation by
+   * version rather than by reading the value.
+   */
+  rotate(
+    path: string,
+    value: string,
+  ): Promise<{ valueVersion?: string } | void>;
   setNote(path: string, note: string): Promise<void>;
   /**
    * The reveal. Returns the current value of ANY parameter — the admin credential
