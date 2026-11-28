@@ -1659,8 +1659,10 @@ never from the request.
 **A `remote-http` server with `oauthRefresh:` connects through the same two
 routes.** Its terms are not configured but **discovered**: the connect POST asks
 the upstream for its protected-resource metadata (RFC 9728) and its authorization
-server's metadata (RFC 8414), registers a public client (RFC 7591) whose one
-redirect URI is `/ui/oauth/callback`, and seals what it found — the client id, the
+server's metadata (RFC 8414), names a public client whose one redirect URI is
+`/ui/oauth/callback` — strad's own client ID metadata document at
+`/_strad/oauth/client/{slug}.json` when the server takes one, otherwise a client
+it registers (RFC 7591) — and seals what it found — the client id, the
 token endpoint, the resource and the issuer — into the same signed transaction
 under provider `mcp`. The callback dispatches on that sealed provider after every
 check above has passed. Two consequences of the cookie being signed and not

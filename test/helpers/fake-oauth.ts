@@ -85,6 +85,12 @@ export interface TokenRequest {
 export interface McpAuthOptions {
   /** Offer `/register`. Default true. */
   registration?: boolean;
+  /**
+   * Advertise `client_id_metadata_document_supported: true`. With
+   * `registration: false` it is LOOPS' SHAPE: a metadata document is the only
+   * way to name a client.
+   */
+  clientIdMetadataDocument?: boolean;
   /** `/register` answers with a confidential client. */
   confidential?: boolean;
   /** Serve the protected-resource metadata with this status instead. */
@@ -231,6 +237,12 @@ export async function startFakeOAuth(
         ...(auth.registration === false || auth.googleOffline
           ? {}
           : { registration_endpoint: `${base}/register` }),
+        ...(auth.clientIdMetadataDocument
+          ? {
+              client_id_metadata_document_supported: true,
+              token_endpoint_auth_methods_supported: ["none"],
+            }
+          : {}),
         response_types_supported: ["code"],
         code_challenge_methods_supported: ["S256"],
         ...(auth.googleOffline

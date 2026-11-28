@@ -67,6 +67,10 @@ import {
   tokenLoginUrlGuard,
 } from "./console-tokens.ts";
 import { createReadinessHandler } from "./readiness.ts";
+import {
+  CLIENT_METADATA_ROUTE,
+  createClientMetadataHandler,
+} from "./client-metadata.ts";
 import { createPresenceHandler } from "./presence.ts";
 import { PRESENCE_ROUTE } from "../secrets/presence.ts";
 import {
@@ -518,6 +522,12 @@ export function createApp(opts: AppOptions): Express {
           "no resource_metadata. Declare scheme, host and port only.",
       );
     }
+
+    // strad's own client ID metadata documents, one per remote-http Connect:
+    // what an upstream's authorization server fetches when Connect signs in
+    // with the document's URL as its client id. Unauthenticated for the same
+    // reason the discovery documents above are. See src/http/client-metadata.ts.
+    app.get(CLIENT_METADATA_ROUTE, createClientMetadataHandler(opts.config));
 
     // The machine's read of the human console's secret roster.
     //

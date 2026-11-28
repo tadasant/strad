@@ -17,8 +17,10 @@ import {
 } from "../connectors/index.ts";
 import {
   beginUpstreamAuthorization,
+  clientMetadataUrl,
   clientSource,
   completeUpstreamAuthorization,
+  metadataDocumentEligible,
   discoverUpstream,
   checkTokenEndpoint,
   heldVariables,
@@ -29,6 +31,7 @@ import {
   storeUpstreamWrites,
   UPSTREAM_PROVIDER,
   UpstreamConnectError,
+  upstreamClientName,
   upstreamConfigTerms,
   upstreamConnectorFor,
   upstreamNote,
@@ -75,7 +78,8 @@ import {
  *
  * What differs is where the terms come from. An `oauth:` connector's endpoints
  * and client are configured; this flow DISCOVERS the authorization server from
- * the upstream itself and, where it can, registers its own client. So the
+ * the upstream itself and, where it can, names its own client — a client ID
+ * metadata document strad serves, or a registration. So the
  * connect POST makes outbound requests before it redirects, and every way that
  * can fail is a 409 rendered on this page in strad's own words — above all the
  * one that motivated it: a metadata document a firewall refuses to serve to
@@ -306,23 +310,66 @@ export async function handleUpstreamConnect(
     // before anything is registered and before anyone signs in.
     await checkTokenEndpoint(discovery.tokenEndpoint, fetchImpl);
 
+    // A server that takes client ID metadata documents is offered strad's
+    // own — when this deployment has an https public URL to serve it from.
+    // `clientSource` decides whether it is used; see the order there.
+    const metadataDocument = discovery.clientIdMetadataDocumentSupported
+      ? clientMetadataUrl(opts.config, slug)
+      : null;
     let source: ClientSource | null = clientSource(
       plan,
-      discovery.registrationEndpoint !== null,
+      {
+        metadataDocument,
+        registration: discovery.registrationEndpoint !== null,
+      },
       state.held,
+      // The client id's own `static/` entry: a human's, never Connect's.
+      plan.clientId?.mode === "write"
+        ? (state.metas.find(
+            (m) =>
+              m.hasValue &&
+              m.path ===
+                `${staticNamespace(opts.config.gateway.env, slug)}${
+                  plan.clientId?.mode === "write" ? plan.clientId.variable : ""
+                }`,
+          ) ?? null)
+        : null,
     );
     if (!source) {
       const variable =
         plan.clientId?.mode === "write" ? plan.clientId.variable : "clientId";
+      // Why strad could not name a client itself. A server that takes a
+      // metadata document, for a plan that could use one, on a deployment with
+      // no https URL to serve it from, is the deployment's to fix — so that is
+      // said first. (A plan that could use one never reaches here when the
+      // server also offers registration: it registers instead.)
+      const why =
+        discovery.clientIdMetadataDocumentSupported &&
+        metadataDocument === null &&
+        metadataDocumentEligible(plan)
+          ? `The authorization server ${shown(discovery.issuer)} takes a client ` +
+            `ID metadata document and offers no dynamic client registration, ` +
+            `but this deployment's gateway.publicUrl is not a bare https ` +
+            `origin, so strad has no document address the server could fetch ` +
+            `or would accept as a client id. Set gateway.publicUrl to the ` +
+            `deployment's https origin (no path) and redeploy, or seed a ` +
+            `client by hand: ` +
+            `\${${variable}} is not seeded in this server's own namespace`
+          : (discovery.registrationEndpoint === null
+              ? `The authorization server ${shown(discovery.issuer)} offers no ` +
+                `dynamic client registration` +
+                (discovery.clientIdMetadataDocumentSupported
+                  ? `, and strad does not sign in with its client ID ` +
+                    `metadata document for a server that declares ` +
+                    `oauthRefresh.clientSecret or oauthRefresh.registration`
+                  : ` and takes no client ID metadata document`)
+              : `This server declares oauthRefresh.clientSecret, so strad cannot ` +
+                `register a client for it (without oauthRefresh.registration: it registers public clients only)`) +
+            `, and \${${variable}} is not seeded in this server's own namespace`;
       throw new UpstreamConnectError(
         "no_client",
-        (discovery.registrationEndpoint === null
-          ? `The authorization server ${shown(discovery.issuer)} offers no dynamic ` +
-            `client registration`
-          : `This server declares oauthRefresh.clientSecret, so strad cannot ` +
-            `register a client for it (without oauthRefresh.registration: it registers public clients only)`) +
-          `, and \${${variable}} is not seeded in this server's own ` +
-          `namespace. Register a client at the upstream with the redirect URI ` +
+        why +
+          `. Register a client at the upstream with the redirect URI ` +
           `${redirectUri}, seed its id as ${variable}` +
           (plan.clientSecretVariable !== null
             ? ` and its secret as ${plan.clientSecretVariable}`
@@ -351,7 +398,7 @@ export async function handleUpstreamConnect(
 
     let clientId: string | null = null;
     let sealedClientSecret: string | undefined;
-    if (source.kind === "literal") {
+    if (source.kind === "literal" || source.kind === "metadata_document") {
       clientId = source.clientId;
     } else if (source.kind === "register") {
       try {
@@ -365,9 +412,7 @@ export async function handleUpstreamConnect(
           {
             registrationEndpoint: discovery.registrationEndpoint!,
             redirectUri,
-            clientName:
-              plan.registration?.clientName ??
-              `strad (${opts.config.gateway.env}) ${slug}`,
+            clientName: upstreamClientName(opts.config, slug, plan),
             scopes: discovery.scopes,
             ...(confidential
               ? { confidential: { clientAuth: entry.oauth.clientAuth } }
@@ -433,7 +478,17 @@ export async function handleUpstreamConnect(
 
     terms = {
       clientId,
-      registered: source.kind === "register",
+      // A metadata-document client id is written like a registered one: the
+      // `${NAME}` is what every refresh reads, so the refresh token must land
+      // beside the id it was issued to.
+      registered:
+        source.kind === "register" || source.kind === "metadata_document",
+      ...(source.kind === "metadata_document"
+        ? { metadataDocument: true as const }
+        : {}),
+      ...(source.kind === "seeded" && source.shadowed
+        ? { overwriteClientId: true as const }
+        : {}),
       ...(sealedClientSecret ? { sealedClientSecret } : {}),
       tokenUrl: discovery.tokenEndpoint,
       resource: discovery.resource,
@@ -930,6 +985,11 @@ ${button(
 
   const clientVariable =
     plan.clientId?.mode === "write" ? plan.clientId.variable : "";
+  // Shown only where the route serves it: an eligible plan on a deployment
+  // with an https public URL. See `clientMetadataDocument`.
+  const documentUrl = metadataDocumentEligible(plan)
+    ? clientMetadataUrl(opts.config, slug)
+    : null;
   const registersAs = plan.registration
     ? ` registered under the name <code>${esc(plan.registration.clientName)}</code> ` +
       `(this server's <code>registration:</code>)`
@@ -946,8 +1006,12 @@ ${button(
           ? `the client seeded as <code>\${${esc(
               plan.clientId?.mode === "write" ? plan.clientId.variable : "",
             )}}</code> and <code>\${${esc(plan.clientSecretVariable)}}</code>`
-          : `a public client strad registers at the upstream (RFC 7591)${registersAs}, or — if ` +
-            `the upstream offers no registration — the client id seeded as ` +
+          : (documentUrl
+              ? `strad's own client ID metadata document, <code>${esc(documentUrl)}</code>, as the ` +
+                `client id when the upstream takes one; otherwise `
+              : "") +
+            `a public client strad registers at the upstream (RFC 7591)${registersAs}, or — if ` +
+            `the upstream offers neither — the client id seeded as ` +
             `<code>\${${esc(
               plan.clientId?.mode === "write" ? plan.clientId.variable : "",
             )}}</code>`;
@@ -994,7 +1058,7 @@ ${state.kind === "ready" || state.kind === "connected" ? pasteForm(action, entry
     <span class="panel-note">the refresh token is never displayed, never logged</span></div>
   <ul class="scope-list">
     ${describeField("tokenUrl", plan.tokenUrl, "the discovered token endpoint")}
-    ${describeField("clientId", plan.clientId, "the client id, when strad registered it")}
+    ${describeField("clientId", plan.clientId, "the client id, when strad registered it or signed in with its metadata document")}
     ${
       plan.registration && plan.clientSecretVariable !== null
         ? `<li><code>\${${esc(plan.clientSecretVariable)}}</code> — the client secret, when strad registered the client, as a secret parameter</li>`
@@ -1012,8 +1076,8 @@ ${state.kind === "ready" || state.kind === "connected" ? pasteForm(action, entry
   <div class="field">
     <span class="field-l">Redirect URI</span>
     <code class="pathpart">${redirectUri ? esc(redirectUri) : "—"}</code>
-    <span class="field-h">Registered automatically when strad registers the client. A client registered by
-      hand must list this exact string.</span>
+    <span class="field-h">Registered automatically when strad registers the client, and the one redirect URI
+      strad's client metadata document lists. A client registered by hand must list this exact string.</span>
   </div>
   <div class="field">
     <span class="field-l">When the server sees it</span>

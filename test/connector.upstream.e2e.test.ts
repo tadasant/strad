@@ -88,6 +88,8 @@ async function harness(
      * reads through `RESOLVER_PERMISSIONS`, two clients over the same store.
      */
     prodIam?: boolean;
+    /** `gateway.publicUrl`, when it is not `https://strad.example`. */
+    publicUrl?: string;
   } = {},
 ): Promise<Harness> {
   const oauth =
@@ -105,7 +107,7 @@ version: 1
 gateway:
   name: strad
   env: test
-  publicUrl: https://strad.example
+  publicUrl: ${more.publicUrl ?? "https://strad.example"}
   secrets: { provider: gcp-parameter-store, ttlSeconds: 86400 }
 auth:
   staticTokens: { enabled: true }
@@ -1210,5 +1212,166 @@ describe("registration: — an upstream that registers only clients it recognise
       token_endpoint_auth_method: "none",
     });
     expect(await whoami(await h.mcp())).toBe("tadas");
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("Connect against a server that takes a client ID metadata document", () => {
+  const DOC = `https://strad.example/_strad/oauth/client/${SLUG}.json`;
+  // LOOPS' SHAPE: `client_id_metadata_document_supported: true`, auth method
+  // `none`, S256, and no registration endpoint at all.
+  const loops = {
+    rotate: true,
+    mcpAuth: {
+      registration: false,
+      clientIdMetadataDocument: true,
+      scopes: ["mcp:read"],
+    },
+  };
+
+  it("signs in with strad's document as the client id, exchanges and refreshes with no secret, and /mcp is served", async () => {
+    const h = await harness(loops);
+
+    // The page names the document before anyone clicks.
+    const page = await (
+      await fetch(`${h.base}/ui/${SLUG}`, { headers: auth })
+    ).text();
+    expect(page).toContain(DOC);
+
+    const { authorizeUrl, callback } = await roundTrip(h);
+    expect(h.oauth.registrations).toEqual([]);
+    const q = authorizeUrl.searchParams;
+    expect(q.get("client_id")).toBe(DOC);
+    expect(q.get("code_challenge_method")).toBe("S256");
+    expect(q.get("redirect_uri")).toBe(
+      "https://strad.example/ui/oauth/callback",
+    );
+
+    // What the authorization server would fetch: served by strad itself,
+    // unauthenticated, at the path of its own client_id, listing exactly the
+    // redirect URI the consent carried.
+    const doc = await fetch(`${h.base}${new URL(DOC).pathname}`);
+    expect(doc.status).toBe(200);
+    expect(await doc.json()).toMatchObject({
+      client_id: DOC,
+      redirect_uris: [q.get("redirect_uri")],
+      token_endpoint_auth_method: "none",
+    });
+
+    expect(callback.headers.get("location")).toBe(`/ui/${SLUG}?connected=1`);
+    const exchange = h.oauth.tokenRequests.find(
+      (r) => r.grantType === "authorization_code",
+    )!;
+    expect(exchange).toMatchObject({
+      clientId: DOC,
+      clientSecret: undefined,
+      authorization: undefined,
+    });
+    expect(exchange.keys).not.toContain("client_secret");
+
+    // The client id is written beside the refresh token, so every refresh —
+    // in this process or the next one, which reads the same store — sends it.
+    expect(await h.fake.store.reveal(`${OAUTH_NS}RIPPLING_CLIENT_ID`)).toBe(
+      DOC,
+    );
+    expect(await whoami(await h.mcp())).toBe("tadas");
+    const refresh = h.oauth.tokenRequests.find(
+      (r) => r.grantType === "refresh_token",
+    )!;
+    expect(refresh).toMatchObject({
+      clientId: DOC,
+      clientSecret: undefined,
+      authorization: undefined,
+    });
+
+    const connected = await (
+      await fetch(`${h.base}/ui/${SLUG}`, { headers: auth })
+    ).text();
+    expect(connected).toContain("client metadata document");
+  });
+
+  it("a client seeded by hand under static/ wins over the document, and replaces an earlier Connect's id", async () => {
+    // The way out for a server that advertises documents and refuses strad's:
+    // connected once with the document, then a human seeds a client they
+    // registered by hand, and Reconnect signs in as THAT client.
+    const h = await harness(loops);
+    await roundTrip(h);
+    expect(await h.fake.store.reveal(`${OAUTH_NS}RIPPLING_CLIENT_ID`)).toBe(
+      DOC,
+    );
+    await h.fake.store.create({
+      path: `${STATIC_NS}RIPPLING_CLIENT_ID`,
+      secret: false,
+      value: "hand-registered-client",
+    });
+
+    const { authorizeUrl, callback } = await roundTrip(h);
+    expect(callback.headers.get("location")).toBe(`/ui/${SLUG}?connected=1`);
+    expect(authorizeUrl.searchParams.get("client_id")).toBe(
+      "hand-registered-client",
+    );
+    // The oauth/ copy would shadow the seeded id at the resolver, so the
+    // callback overwrote it: the refresh token and its client agree.
+    expect(await h.fake.store.reveal(`${OAUTH_NS}RIPPLING_CLIENT_ID`)).toBe(
+      "hand-registered-client",
+    );
+    const before = h.oauth.tokenRequests.length;
+    expect(await whoami(await h.mcp())).toBe("tadas");
+    const refresh = h.oauth.tokenRequests
+      .slice(before)
+      .find((r) => r.grantType === "refresh_token")!;
+    expect(refresh.clientId).toBe("hand-registered-client");
+
+    // With nothing in oauth/ to shadow it, a seeded client is not copied.
+    const fresh = await harness(loops);
+    await fresh.fake.store.create({
+      path: `${STATIC_NS}RIPPLING_CLIENT_ID`,
+      secret: false,
+      value: "hand-registered-client",
+    });
+    await roundTrip(fresh);
+    expect(await listed(fresh.fake, OAUTH_NS)).not.toContain(
+      "RIPPLING_CLIENT_ID",
+    );
+  });
+
+  it("prefers the document to registration when the server offers both, and Reconnect keeps the same id", async () => {
+    const h = await harness({
+      mcpAuth: { clientIdMetadataDocument: true, scopes: ["mcp:read"] },
+    });
+    await roundTrip(h);
+    const { authorizeUrl, callback } = await roundTrip(h);
+    expect(callback.headers.get("location")).toBe(`/ui/${SLUG}?connected=1`);
+    expect(authorizeUrl.searchParams.get("client_id")).toBe(DOC);
+    expect(h.oauth.registrations).toEqual([]);
+    expect(await h.fake.store.reveal(`${OAUTH_NS}RIPPLING_CLIENT_ID`)).toBe(
+      DOC,
+    );
+  });
+
+  it("without an https public URL: falls back to registration, or says why there is no client", async () => {
+    const both = await harness(
+      { mcpAuth: { clientIdMetadataDocument: true, scopes: ["mcp:read"] } },
+      undefined,
+      { publicUrl: "http://strad.example" },
+    );
+    const begun = await connect(both);
+    expect(begun.status).toBe(302);
+    expect(both.oauth.registrations).toHaveLength(1);
+    expect(
+      new URL(begun.headers.get("location")!).searchParams.get("client_id"),
+    ).toBe("client-1");
+
+    const only = await harness(loops, undefined, {
+      publicUrl: "http://strad.example",
+    });
+    const res = await connect(only);
+    expect(res.status).toBe(409);
+    const html = await res.text();
+    expect(html).toContain("takes a client ID metadata document");
+    expect(html).toContain("gateway.publicUrl is not a bare https");
+    expect(html).toContain(STATIC_NS);
+    expect(await listed(only.fake, OAUTH_NS)).toEqual([]);
   });
 });

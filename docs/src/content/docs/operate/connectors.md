@@ -689,7 +689,13 @@ What happens behind the button, in order:
    https; plain http is followed only when the configured `url:` is itself on
    loopback, which is a local test rig and never a deployment.
 2. **Pick a client.** A literal `clientId` is a pre-registered client and is used
-   as is. A `${NAME}` is registered fresh (RFC 7591) when the server offers
+   as is. Otherwise, when the authorization server's metadata says
+   `client_id_metadata_document_supported: true` and the block declares no
+   `clientSecret`, strad signs in with its own
+   [client ID metadata document](#client-id-metadata-documents) as the client
+   id, and registers nothing. That wins over registration when a server offers
+   both, as the MCP authorization spec asks. Failing that, a `${NAME}` is
+   registered fresh (RFC 7591) when the server offers
    registration and the block declares no `clientSecret`: a **public** client,
    `token_endpoint_auth_method: none`, whose one redirect URI is this
    deployment's `/ui/oauth/callback`, registered as `strad (<env>) <slug>`.
@@ -708,7 +714,8 @@ What happens behind the button, in order:
 4. **Exchange and store.** The callback exchanges the code at the discovered
    token endpoint, with the same client and `resource`, and insists on a refresh
    token. Then it writes, under `/strad/{env}/mcp/{slug}/oauth/`: the token URL,
-   the client id (only when strad registered it), the client secret (only when
+   the client id (only when strad registered it or signed in with its metadata
+   document), the client secret (only when
    strad registered a client with one) and the resource for whichever of them
    are `${NAME}`s, and the refresh token last, as a secret parameter. It
    drops the process's cached reading of the store, and the minter takes the new
@@ -726,6 +733,77 @@ A literal `tokenUrl` that is not the discovered token endpoint is refused before
 anything is registered: a refresh token minted at one endpoint and spent at
 another is a slug that never works. `url:` and `scope:` must be literals, and a
 `${NAME}` inside a longer string is reported on the page instead of a button.
+
+### Client ID metadata documents
+
+Some authorization servers name a client by URL instead of registering one
+([draft-ietf-oauth-client-id-metadata-document](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/),
+the MCP spec's preferred registration). Loops' official server
+(`https://mcp.loops.so/`) is one, and offers nothing else: its metadata has
+`client_id_metadata_document_supported: true` and no `registration_endpoint`.
+
+strad serves one document per Connect slug, on core, at:
+
+```
+{gateway.publicUrl}/_strad/oauth/client/{slug}.json
+```
+
+That URL is the client id. The document is public JSON with no secret in it:
+
+```json
+{
+  "client_id": "https://strad.example.com/_strad/oauth/client/loops.json",
+  "client_name": "strad (prod) loops",
+  "redirect_uris": ["https://strad.example.com/ui/oauth/callback"],
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "none"
+}
+```
+
+`client_name` is the name strad registers under. The route answers `404` for
+any slug that is not an enabled `remote-http` with `oauthRefresh:`, for a slug
+with a literal `clientId`, a `clientSecret` or a `registration:` block (none of
+them ever signs in this way: `registration:` is an explicit choice to
+register), and for every slug when `gateway.publicUrl` is not a bare `https`
+origin. Core serves the route at its root, so a public URL with a path has no
+document, the same rule the protected-resource metadata follows.
+
+Connect sends the URL as `client_id` with PKCE and no secret, the exchange and
+every refresh send it the same way, and the callback writes it to the
+`clientId` `${NAME}` beside the refresh token. A Reconnect uses the same id.
+There is nothing to configure: the server's metadata decides.
+
+The order Connect picks a client in is:
+
+1. a literal `clientId`;
+2. on a server that takes a document, a client seeded by hand under the
+   `${NAME}` in the slug's `static/` namespace;
+3. the metadata document;
+4. registration;
+5. a client held under the `${NAME}`, `oauth/` ahead of `static/`;
+6. a `no_client` refusal.
+
+Connect writes the document URL and registered ids to `oauth/` and never to
+`static/`, so a `static/` value is a human's. That is the way out when a server
+advertises documents but will not take strad's: register a client there by hand,
+seed its id under `static/`, and Reconnect. If an earlier Connect left an id in
+`oauth/`, the callback overwrites it with the seeded one, so the refresh token
+and its client agree. Registration still comes ahead of a hand-seeded client,
+because a refused registration falls back to the seeded client on its own.
+
+Two things this needs, stated in [Known limitations](/limitations/) #173:
+
+- **The authorization server fetches the document from the internet.**
+  `gateway.publicUrl` must be the `https` origin core really serves, and nothing
+  in front of it may gate `/_strad/oauth/client/`. Without a bare `https`
+  public URL Connect falls back to registration, and on a server that only takes
+  a document it refuses with `no_client`, naming `gateway.publicUrl` as the
+  reason.
+- **A server that refuses the document refuses it in the browser,** at its own
+  sign-in page. strad cannot see that from the connect POST, so it does not fall
+  back to registration. A client seeded by hand under `static/` is the way past
+  it.
 
 **Rotation lands where Connect wrote.** Core's `oauthRefresh:` write-back
 checks the slug's `oauth/` path first, then `static/`, then the gateway's, the
@@ -935,7 +1013,8 @@ session, deployment), then refuses a transaction whose upstream URL or
 ### What it does not do
 
 It proves no identity (the page says `account: not checked`), it registers a new
-client on every Connect and never deletes the old one, and it has been tested
+client on every Connect and never deletes the old one (a server that takes a
+client ID metadata document is spared this), and it has been tested
 against a fake authorization server rather than a real provider. See
 [Known limitations](/limitations/) #111.
 
